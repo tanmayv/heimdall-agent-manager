@@ -53,6 +53,7 @@ export const HEIMDALL_TAG_TYPES = [
   'LspServerConfigs',
   'Issue',
   'IssueComments',
+  'TaskChainFleets',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

@@ -8,6 +8,15 @@ import Markdown from '../Markdown';
 
 import { Checkbox, Icon, PageShell, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
+  FleetSlotChips,
+  FleetManagementDrawer,
+  getQueuedWaitingSlotName,
+  formatFleetRoleName,
+  isRoleAssignedWithoutLiveInstance,
+  canStartTask,
+  hasLiveNudgeTarget,
+} from '../tasks/FleetManagementDrawer';
+import {
   appendArtifactLinks,
   artifactIdFromLink,
   artifactIdsFromText,
@@ -140,6 +149,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     return map;
   }, [allInstancesQuery.data]);
 
+  const allInstances = React.useMemo(
+    () => (allInstancesQuery.data?.instances || []) as any[],
+    [allInstancesQuery.data]
+  );
+
   const [createTask] = useCreateTaskMutation();
   const [updateTask] = useUpdateTaskDetailMutation();
   const [setStatus] = useSetTaskStatusMutation();
@@ -189,20 +203,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDesc, setNewTaskDesc] = useState('');
-  const [newTaskAssigneeMode, setNewTaskAssigneeMode] = useState<'unassigned' | 'member' | 'existing' | 'user'>('unassigned');
+  const [newTaskAssigneeMode, setNewTaskAssigneeMode] = useState<'agent' | 'unassigned' | 'user'>('agent');
   const [newTaskAssigneeMemberInstanceId, setNewTaskAssigneeMemberInstanceId] = useState('');
-  const [newTaskAssigneeAgentId, setNewTaskAssigneeAgentId] = useState('');
+  const [newTaskAssigneeAgentId, setNewTaskAssigneeAgentId] = useState('agt_worker');
   const [newTaskAssigneeInstanceId, setNewTaskAssigneeInstanceId] = useState('');
   const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
   const [newTaskStagedReviewerRefs, setNewTaskStagedReviewerRefs] = useState<any[]>([]);
-  const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'member' | 'existing' | 'user'>('member');
+  const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'agent' | 'user'>('agent');
   const [newTaskAddReviewerMemberInstanceId, setNewTaskAddReviewerMemberInstanceId] = useState('');
-  const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('');
+  const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('agt_reviewer');
   const [newTaskAddReviewerInstanceId, setNewTaskAddReviewerInstanceId] = useState('');
   const [newTaskAddReviewerUserId, setNewTaskAddReviewerUserId] = useState('');
   const [newTaskDependsOnIds, setNewTaskDependsOnIds] = useState<string[]>([]);
   const [newTaskError, setNewTaskError] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
+  const [isFleetDrawerOpen, setIsFleetDrawerOpen] = useState(false);
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [newMemberRole, setNewMemberRole] = useState('worker');
   // H14: two modes — add an EXISTING agent instance (default; the user's mental
@@ -337,18 +352,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   );
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const reviewerExistingInstances: any[] = reviewerInstancesQuery.data?.instances || [];
-  const newTaskAssigneeInstancesQuery = useListAgentInstancesQuery(
-    { agentId: newTaskAssigneeAgentId },
-    { skip: !newTaskAssigneeAgentId || newTaskAssigneeMode !== 'existing' },
-  );
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const newTaskAssigneeExistingInstances: any[] = newTaskAssigneeInstancesQuery.data?.instances || [];
-  const newTaskReviewerInstancesQuery = useListAgentInstancesQuery(
-    { agentId: newTaskAddReviewerAgentId },
-    { skip: !newTaskAddReviewerAgentId || newTaskAddReviewerMode !== 'existing' },
-  );
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const newTaskReviewerExistingInstances: any[] = newTaskReviewerInstancesQuery.data?.instances || [];
+
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
@@ -361,12 +365,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   const handleAddNewTaskStagedReviewer = () => {
     let ref: any = null;
-    if (newTaskAddReviewerMode === 'member') {
-      if (!newTaskAddReviewerMemberInstanceId) return;
-      ref = { type: 'agent_instance', agent_instance_id: newTaskAddReviewerMemberInstanceId };
-    } else if (newTaskAddReviewerMode === 'existing') {
-      if (!newTaskAddReviewerInstanceId) return;
-      ref = { type: 'agent_instance', agent_instance_id: newTaskAddReviewerInstanceId };
+    if (newTaskAddReviewerMode === 'agent') {
+      if (!newTaskAddReviewerAgentId) return;
+      ref = {
+        type: 'agent_id',
+        agent_id: newTaskAddReviewerAgentId,
+        display_name: formatFleetRoleName(newTaskAddReviewerAgentId, agentIdentities),
+      };
     } else if (newTaskAddReviewerMode === 'user') {
       const uid = newTaskAddReviewerUserId.trim();
       if (!uid) return;
@@ -375,6 +380,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     if (!ref) return;
     const exists = newTaskStagedReviewerRefs.some((r) =>
       r.type === ref.type && (
+        (ref.agent_id && (r.agent_id === ref.agent_id || r.agentId === ref.agent_id)) ||
         (ref.agent_instance_id && r.agent_instance_id === ref.agent_instance_id) ||
         (ref.user_id && r.user_id === ref.user_id)
       )
@@ -382,8 +388,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     if (!exists) {
       setNewTaskStagedReviewerRefs((prev) => [...prev, ref]);
     }
-    setNewTaskAddReviewerMemberInstanceId('');
-    setNewTaskAddReviewerInstanceId('');
     setNewTaskAddReviewerUserId('');
   };
 
@@ -394,15 +398,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const resetNewTaskForm = () => {
     setNewTaskTitle('');
     setNewTaskDesc('');
-    setNewTaskAssigneeMode('unassigned');
+    setNewTaskAssigneeMode('agent');
     setNewTaskAssigneeMemberInstanceId('');
-    setNewTaskAssigneeAgentId('');
+    setNewTaskAssigneeAgentId('agt_worker');
     setNewTaskAssigneeInstanceId('');
     setNewTaskAssigneeUserId('');
     setNewTaskStagedReviewerRefs([]);
-    setNewTaskAddReviewerMode('member');
+    setNewTaskAddReviewerMode('agent');
     setNewTaskAddReviewerMemberInstanceId('');
-    setNewTaskAddReviewerAgentId('');
+    setNewTaskAddReviewerAgentId('agt_reviewer');
     setNewTaskAddReviewerInstanceId('');
     setNewTaskAddReviewerUserId('');
     setNewTaskDependsOnIds([]);
@@ -416,18 +420,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     if (!newTaskTitle.trim()) return;
 
     let assigneeRef: any = undefined;
-    if (newTaskAssigneeMode === 'member') {
-      if (!newTaskAssigneeMemberInstanceId) {
-        setNewTaskError('Please select a chain member or change assignee mode.');
+    if (newTaskAssigneeMode === 'agent') {
+      if (!newTaskAssigneeAgentId) {
+        setNewTaskError('Please select an agent role.');
         return;
       }
-      assigneeRef = { type: 'agent_instance', agent_instance_id: newTaskAssigneeMemberInstanceId };
-    } else if (newTaskAssigneeMode === 'existing') {
-      if (!newTaskAssigneeInstanceId) {
-        setNewTaskError('Please select an existing agent instance or change assignee mode.');
-        return;
-      }
-      assigneeRef = { type: 'agent_instance', agent_instance_id: newTaskAssigneeInstanceId };
+      assigneeRef = {
+        type: 'agent_id',
+        agent_id: newTaskAssigneeAgentId,
+        display_name: formatFleetRoleName(newTaskAssigneeAgentId, agentIdentities),
+      };
     } else if (newTaskAssigneeMode === 'user') {
       const uid = newTaskAssigneeUserId.trim();
       if (!uid) {
@@ -871,15 +873,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </div>
 
           {/* Row 2: Left metadata chips + Right contextual action buttons */}
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 min-w-0">
             {/* Left: Metadata chips */}
-            <div className="flex flex-wrap items-center gap-2.5 text-caption text-muted">
+            <div className="flex flex-wrap items-center gap-2 text-caption text-muted min-w-0">
               <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
                 {task.assigneeRef ? (
                   <>
-                    assignee: {task.assigneeRef.agent_instance_id
-                      ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
-                      : <span className="text-primary">{task.assigneeRef.user_id}</span>}
+                    assignee: {task.assigneeRef.agent_instance_id ? (
+                      <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
+                    ) : task.assigneeRef.agent_id || task.assigneeRef.agentId ? (
+                      <span className="font-semibold text-primary">{formatFleetRoleName(task.assigneeRef.agent_id || task.assigneeRef.agentId, agentIdentities)}</span>
+                    ) : (
+                      <span className="text-primary">{task.assigneeRef.user_id}</span>
+                    )}
                   </>
                 ) : (
                   <span>assignee: <span className="text-faint">unassigned</span></span>
@@ -901,11 +907,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                     {task.reviewerRefs.map((r: any, ri: number) => (
                       // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                      <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                      <React.Fragment key={r.agent_instance_id || r.agent_id || r.agentId || r.user_id || ri}>
                         {ri > 0 ? ', ' : ''}
-                        {r.agent_instance_id
-                          ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                          : <span className="text-primary">{r.user_id}</span>}
+                        {r.agent_instance_id ? (
+                          <InstanceIdLink instanceId={r.agent_instance_id} />
+                        ) : r.agent_id || r.agentId ? (
+                          <span className="font-semibold text-primary">{formatFleetRoleName(r.agent_id || r.agentId, agentIdentities)}</span>
+                        ) : (
+                          <span className="text-primary">{r.user_id}</span>
+                        )}
                       </React.Fragment>
                     ))}
                   </span>
@@ -954,6 +964,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 {task.status}
               </span>
 
+              {task.status === 'queued' && (
+                <span
+                  data-debug-id={`taskchain-task-queued-slot-${taskId}`}
+                  className="rounded bg-warning-soft px-1.5 py-0.5 font-semibold text-warning"
+                >
+                  Queued (Waiting for {getQueuedWaitingSlotName(task, agentIdentities)} slot)
+                </span>
+              )}
+
               {task.blocked && (
                 <span
                   data-debug-id={`taskchain-task-blocked-${taskId}`}
@@ -965,7 +984,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             </div>
 
             {/* Right: Contextual Action Buttons / Menu strictly implementing the validated Action Matrix */}
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex flex-wrap items-center gap-1.5">
               {(() => {
                 const status = String(task.status || '').toLowerCase();
                 if (status === 'cancelled') {
@@ -990,7 +1009,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       data-debug-id={`taskchain-task-unpause-btn-${taskId}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        void handleStatusChange(taskId, 'in_progress');
+                        if (isRoleAssignedWithoutLiveInstance(task, allInstances)) {
+                          void handleStatusChange(taskId, 'queued');
+                        } else {
+                          void handleStatusChange(taskId, 'in_progress');
+                        }
                       }}
                       className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
                     >
@@ -1062,17 +1085,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         Cancel
                       </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleNudge(taskId);
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                      >
-                        Nudge
-                      </button>
+                      {hasLiveNudgeTarget(task, allInstances) && (
+                        <button
+                          type="button"
+                          data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleNudge(taskId);
+                          }}
+                          className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
+                        >
+                          Nudge
+                        </button>
+                      )}
                     </>
                   );
                 }
@@ -1123,34 +1148,38 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         Cancel
                       </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleNudge(taskId);
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                      >
-                        Nudge
-                      </button>
+                      {hasLiveNudgeTarget(task, allInstances) && (
+                        <button
+                          type="button"
+                          data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleNudge(taskId);
+                          }}
+                          className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
+                        >
+                          Nudge
+                        </button>
+                      )}
                     </>
                   );
                 }
                 // default for 'assigned' / 'queued' (and any other pending status):
                 return (
                   <>
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-start-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleStatusChange(taskId, 'in_progress');
-                      }}
-                      className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
-                    >
-                      Start
-                    </button>
+                    {canStartTask(task, allInstances) && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-start-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'in_progress');
+                        }}
+                        className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
+                      >
+                        Start
+                      </button>
+                    )}
                     <button
                       type="button"
                       data-debug-id={`taskchain-task-pause-btn-${taskId}`}
@@ -1173,17 +1202,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     >
                       Cancel
                     </button>
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleNudge(taskId);
-                      }}
-                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                    >
-                      Nudge
-                    </button>
+                    {hasLiveNudgeTarget(task, allInstances) && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleNudge(taskId);
+                        }}
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
+                      >
+                        Nudge
+                      </button>
+                    )}
                   </>
                 );
               })()}
@@ -1350,7 +1381,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   return (
     <div
       data-debug-id="taskchain-overview"
-      className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-primary pb-28 sm:pb-12"
+      className="flex h-full w-full max-w-full min-w-0 flex-col overflow-y-auto overflow-x-hidden bg-canvas text-primary pb-28 sm:pb-12"
     >
       {/* Page frame + single <h1> — migrated to PageShell (ui-audit W2). Fixes the
           h2-as-page-title heading-hierarchy defect (finding #7): the chain title is
@@ -1365,20 +1396,31 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </span>
         }
         actions={
-          <span
-            data-debug-id="taskchain-overview-status"
-            className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
-              chain.status === 'completed'
-                ? 'bg-success-soft text-success'
-                : chain.status === 'cancelled'
-                ? 'bg-danger-soft text-danger'
-                : 'bg-accent/20 text-accent'
-            }`}
-          >
-            {chain.status}
-          </span>
+          <div className="flex flex-wrap items-center gap-2 max-w-full">
+            <FleetSlotChips
+              chainId={chainId}
+              onOpenDrawer={() => setIsFleetDrawerOpen(true)}
+            />
+            <span
+              data-debug-id="taskchain-overview-status"
+              className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider shrink-0 ${
+                chain.status === 'completed'
+                  ? 'bg-success-soft text-success'
+                  : chain.status === 'cancelled'
+                  ? 'bg-danger-soft text-danger'
+                  : 'bg-accent/20 text-accent'
+              }`}
+            >
+              {chain.status}
+            </span>
+          </div>
         }
       >
+        <FleetManagementDrawer
+          chainId={chainId}
+          isOpen={isFleetDrawerOpen}
+          onClose={() => setIsFleetDrawerOpen(false)}
+        />
         {/* Chain meta band (description, progress, members) — unchanged markup,
             regrouped directly under the PageShell header. */}
         <div className="border-b border-subtle px-4 pb-4 sm:px-6 sm:pb-6">
@@ -1450,11 +1492,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
 
       {/* Task List Header */}
-      <div className="flex items-center justify-between px-4 py-3 sm:px-6">
-        <h3 className="text-sm font-bold uppercase tracking-wider text-muted">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">
+        <h3 className="text-sm font-bold uppercase tracking-wider text-muted min-w-0">
           Tasks ({tasks.length})
         </h3>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             data-debug-id="taskchain-overview-reconcile-btn"
@@ -1476,7 +1518,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       </div>
       {reconcileMsg ? (
-        <div data-debug-id="taskchain-overview-reconcile-banner" className="mx-4 mb-2 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning sm:mx-6">
+        <div data-debug-id="taskchain-overview-reconcile-banner" className="mx-4 mb-2 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning break-words sm:mx-6">
           {reconcileMsg}
         </div>
       ) : null}
@@ -1625,97 +1667,60 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
 
               {/* Assignee Section */}
-              <div className="rounded border border-subtle bg-surface-raised/40 p-3">
-                <label className="block font-semibold text-primary mb-2">Initial Assignee</label>
-                <div data-debug-id="taskchain-new-task-assignee-mode" className="flex gap-1 rounded bg-surface p-1 mb-3">
+              <div className="rounded border border-subtle bg-surface-raised/40 p-3 space-y-2.5">
+                <label className="block font-semibold text-primary">Initial Assignee</label>
+                <div data-debug-id="taskchain-new-task-assignee-mode" className="flex gap-1 rounded bg-surface p-1">
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-new-task-assignee-mode-agent"
+                    onClick={() => setNewTaskAssigneeMode('agent')}
+                    className={`rounded px-2.5 py-1 font-semibold transition-colors cursor-pointer ${
+                      newTaskAssigneeMode === 'agent' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    Agent Role
+                  </button>
                   <button
                     type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-unassigned"
                     onClick={() => setNewTaskAssigneeMode('unassigned')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'unassigned' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
+                    className={`rounded px-2.5 py-1 font-semibold transition-colors cursor-pointer ${
+                      newTaskAssigneeMode === 'unassigned' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
+                    }`}
                   >
                     Unassigned
                   </button>
                   <button
                     type="button"
-                    data-debug-id="taskchain-new-task-assignee-mode-member"
-                    onClick={() => setNewTaskAssigneeMode('member')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
-                  >
-                    Chain member
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id="taskchain-new-task-assignee-mode-existing"
-                    onClick={() => setNewTaskAssigneeMode('existing')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
-                  >
-                    Other instance
-                  </button>
-                  <button
-                    type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-user"
                     onClick={() => setNewTaskAssigneeMode('user')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
+                    className={`rounded px-2.5 py-1 font-semibold transition-colors cursor-pointer ${
+                      newTaskAssigneeMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
+                    }`}
                   >
                     User
                   </button>
                 </div>
 
-                {newTaskAssigneeMode === 'member' && (
+                {newTaskAssigneeMode === 'agent' && (
                   <div>
-                    <Select
-                      data-debug-id="taskchain-new-task-assignee-member-select"
-                      width="full"
-                      value={newTaskAssigneeMemberInstanceId}
-                      onChange={setNewTaskAssigneeMemberInstanceId}
-                      options={[
-                        { value: '', label: 'Select member…' },
-                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                        ...members.map((m: any) => {
-                          const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                          return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
-                        }),
-                      ]}
-                    />
-                    {members.length === 0 && (
-                      <p className="mt-1 text-caption text-warning">No members in this task chain.</p>
-                    )}
-                  </div>
-                )}
-
-                {newTaskAssigneeMode === 'existing' && (
-                  <div className="space-y-2">
                     <Select
                       data-debug-id="taskchain-new-task-assignee-agentid-select"
                       width="full"
                       value={newTaskAssigneeAgentId}
-                      onChange={(v) => { setNewTaskAssigneeAgentId(v); setNewTaskAssigneeInstanceId(''); }}
-                    >
-                      <option value="">Choose agent…</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {agentIdentities.map((a: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const id = String(a.agent_id || a.agentId || a.id || '');
-                        return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
-                      })}
-                    </Select>
-                    <Select
-                      data-debug-id="taskchain-new-task-assignee-existing-instance-select"
-                      width="full"
-                      value={newTaskAssigneeInstanceId}
-                      onChange={setNewTaskAssigneeInstanceId}
-                      disabled={!newTaskAssigneeAgentId || newTaskAssigneeInstancesQuery.isFetching}
+                      onChange={setNewTaskAssigneeAgentId}
                       options={[
-                        { value: '', label: !newTaskAssigneeAgentId ? 'Choose an agent first…' : newTaskAssigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
-                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                        ...newTaskAssigneeExistingInstances.map((inst: any) => {
-                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                          const name = selectedNewTaskAssigneeAgent?.name || selectedNewTaskAssigneeAgent?.display_name || selectedNewTaskAssigneeAgent?.agent_id || '';
-                          return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                        { value: '', label: 'Select agent role…' },
+                        ...agentIdentities.map((a: any) => {
+                          const id = String(a.agent_id || a.agentId || a.id || '');
+                          const displayName = a.name || a.display_name || formatFleetRoleName(id, agentIdentities);
+                          return { value: id, label: displayName };
                         }),
                       ]}
                     />
+                    <p className="text-[11px] text-muted mt-1">
+                      The task will automatically dispatch to an idle warm instance or JIT-provision up to fleet capacity.
+                    </p>
                   </div>
                 )}
 
@@ -1734,22 +1739,28 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
 
               {/* Reviewers Section */}
-              <div className="rounded border border-subtle bg-surface-raised/40 p-3">
-                <label className="block font-semibold text-primary mb-1">Reviewers ({newTaskStagedReviewerRefs.length})</label>
+              <div className="rounded border border-subtle bg-surface-raised/40 p-3 space-y-2.5">
+                <label className="block font-semibold text-primary">Reviewers ({newTaskStagedReviewerRefs.length})</label>
                 {newTaskStagedReviewerRefs.length > 0 && (
                   <div data-debug-id="taskchain-new-task-reviewers-list" className="mb-2 flex flex-wrap gap-1.5 rounded border border-subtle bg-surface p-2">
                     {newTaskStagedReviewerRefs.map((r, idx) => (
                       <span
-                        key={r.agent_instance_id || r.user_id || idx}
+                        key={r.agent_id || r.agentInstanceId || r.agent_instance_id || r.user_id || idx}
                         data-debug-id={`taskchain-new-task-reviewer-chip-${idx}`}
                         className="inline-flex items-center gap-1.5 rounded bg-neutral-soft px-2 py-1 text-xs text-primary"
                       >
-                        {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
+                        {r.agent_id || r.agentId ? (
+                          <span className="font-semibold">{r.display_name || formatFleetRoleName(r.agent_id || r.agentId, agentIdentities)}</span>
+                        ) : r.agent_instance_id ? (
+                          <InstanceIdLink instanceId={r.agent_instance_id} />
+                        ) : (
+                          <span>{r.user_id}</span>
+                        )}
                         <button
                           type="button"
                           data-debug-id={`taskchain-new-task-reviewer-remove-btn-${idx}`}
                           onClick={() => handleRemoveNewTaskStagedReviewer(idx)}
-                          className="text-muted hover:text-danger"
+                          className="text-muted hover:text-danger cursor-pointer"
                           title="Remove reviewer"
                         >
                           ×
@@ -1759,83 +1770,44 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   </div>
                 )}
 
-                <div className="mt-2 border-t border-subtle pt-2 space-y-2">
+                <div className="border-t border-subtle pt-2 space-y-2">
                   <span className="text-caption text-muted">Add a reviewer:</span>
                   <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-surface p-1">
                     <button
                       type="button"
-                      data-debug-id="taskchain-new-task-add-reviewer-mode-member"
-                      onClick={() => setNewTaskAddReviewerMode('member')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
+                      data-debug-id="taskchain-new-task-add-reviewer-mode-agent"
+                      onClick={() => setNewTaskAddReviewerMode('agent')}
+                      className={`rounded px-2 py-1 font-semibold transition-colors cursor-pointer ${
+                        newTaskAddReviewerMode === 'agent' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
+                      }`}
                     >
-                      Member
-                    </button>
-                    <button
-                      type="button"
-                      data-debug-id="taskchain-new-task-add-reviewer-mode-existing"
-                      onClick={() => setNewTaskAddReviewerMode('existing')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
-                    >
-                      Other
+                      Agent Role
                     </button>
                     <button
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-mode-user"
                       onClick={() => setNewTaskAddReviewerMode('user')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
+                      className={`rounded px-2 py-1 font-semibold transition-colors cursor-pointer ${
+                        newTaskAddReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
+                      }`}
                     >
                       User
                     </button>
                   </div>
 
-                  {newTaskAddReviewerMode === 'member' && (
-                    <div>
-                      <Select
-                        data-debug-id="taskchain-new-task-add-reviewer-member-select"
-                        width="full"
-                        value={newTaskAddReviewerMemberInstanceId}
-                        onChange={setNewTaskAddReviewerMemberInstanceId}
-                        options={[
-                          { value: '', label: 'Select member…' },
-                          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                          ...members.map((m: any) => {
-                            const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                            return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
-                          }),
-                        ]}
-                      />
-                    </div>
-                  )}
-
-                  {newTaskAddReviewerMode === 'existing' && (
+                  {newTaskAddReviewerMode === 'agent' && (
                     <div className="space-y-2">
                       <Select
                         data-debug-id="taskchain-new-task-add-reviewer-agentid-select"
                         width="full"
                         value={newTaskAddReviewerAgentId}
-                        onChange={(v) => { setNewTaskAddReviewerAgentId(v); setNewTaskAddReviewerInstanceId(''); }}
-                      >
-                        <option value="">Choose agent…</option>
-                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                        {agentIdentities.map((a: any) => {
-                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                          const id = String(a.agent_id || a.agentId || a.id || '');
-                          return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
-                        })}
-                      </Select>
-                      <Select
-                        data-debug-id="taskchain-new-task-add-reviewer-existing-instance-select"
-                        width="full"
-                        value={newTaskAddReviewerInstanceId}
-                        onChange={setNewTaskAddReviewerInstanceId}
-                        disabled={!newTaskAddReviewerAgentId || newTaskReviewerInstancesQuery.isFetching}
+                        onChange={setNewTaskAddReviewerAgentId}
                         options={[
-                          { value: '', label: !newTaskAddReviewerAgentId ? 'Choose an agent first…' : newTaskReviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
-                          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                          ...newTaskReviewerExistingInstances.map((inst: any) => {
-                            const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                            const name = selectedNewTaskReviewerAgent?.name || selectedNewTaskReviewerAgent?.display_name || selectedNewTaskReviewerAgent?.agent_id || '';
-                            return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                          { value: '', label: 'Select reviewer role…' },
+                          ...agentIdentities.map((a: any) => {
+                            const id = String(a.agent_id || a.agentId || a.id || '');
+                            const displayName = a.name || a.display_name || formatFleetRoleName(id, agentIdentities);
+                            return { value: id, label: displayName };
                           }),
                         ]}
                       />
@@ -1860,7 +1832,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-btn"
                       onClick={handleAddNewTaskStagedReviewer}
-                      className="rounded bg-neutral-soft px-3 py-1 font-semibold text-accent hover:opacity-80"
+                      className="rounded bg-neutral-soft px-3 py-1 font-semibold text-accent hover:opacity-80 cursor-pointer"
                     >
                       + Add reviewer
                     </button>

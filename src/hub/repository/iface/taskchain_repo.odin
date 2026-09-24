@@ -42,6 +42,10 @@ Task_Chain_Directory_Get_Proc :: proc(ctx: rawptr, directory_id: string, chain_i
 Task_Chain_Directory_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error)
 Task_Chain_Directory_Remove_Proc :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 
+Task_Chain_Fleet_Upsert_Proc :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet) -> (domain.Task_Chain_Fleet, domain.Domain_Error)
+Task_Chain_Fleet_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error)
+Task_Chain_Fleet_Delete_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
+
 Taskchain_Repository :: struct {
 	ctx: rawptr,
 	get_chain: Task_Chain_Get_Proc,
@@ -71,6 +75,9 @@ Taskchain_Repository :: struct {
 	get_directory: Task_Chain_Directory_Get_Proc,
 	list_directories_by_chain: Task_Chain_Directory_List_By_Chain_Proc,
 	remove_directory: Task_Chain_Directory_Remove_Proc,
+	upsert_fleet: Task_Chain_Fleet_Upsert_Proc,
+	list_fleets_by_chain: Task_Chain_Fleet_List_By_Chain_Proc,
+	delete_fleet: Task_Chain_Fleet_Delete_Proc,
 }
 
 taskchain_get_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -209,4 +216,20 @@ taskchain_remove_directory :: proc(repo: ^Taskchain_Repository, directory_id: st
 	if repo == nil || repo.remove_directory == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.remove_directory(repo.ctx, directory_id, chain_id, owner_user_id)
 }
+
+taskchain_list_fleets_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
+	if repo == nil || repo.list_fleets_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_fleets_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_upsert_fleet :: proc(repo: ^Taskchain_Repository, fleet: domain.Task_Chain_Fleet) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
+	if repo == nil || repo.upsert_fleet == nil do return domain.Task_Chain_Fleet{}, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.upsert_fleet(repo.ctx, fleet)
+}
+
+taskchain_delete_fleet :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.delete_fleet == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.delete_fleet(repo.ctx, chain_id, agent_id, owner_user_id)
+}
+
 

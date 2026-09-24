@@ -633,6 +633,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [openSearchInFilesOnMount, setOpenSearchInFilesOnMount] = useState(false);
   const [openCommandPaletteOnMount, setOpenCommandPaletteOnMount] = useState(false);
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
+  const [vcsFileToOpen, setVcsFileToOpen] = useState<string | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Guards the one-shot chain-tab auto-open so it only fires once per conversation load.
@@ -1545,8 +1546,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 selectRightPanelTab('tasks');
               }}
               onOpenFileDiff={(filePath) => {
-                selectRightPanelTab('files');
-                setEditorFileToOpen(filePath);
+                selectRightPanelTab('vcs');
+                setVcsFileToOpen(filePath);
               }}
               onOpenVcsFiles={() => {
                 selectRightPanelTab('vcs');
@@ -1583,6 +1584,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
               onOpenDirectory={() => selectRightPanelTab('files')}
+              openFilePath={vcsFileToOpen}
+              onFileOpened={() => setVcsFileToOpen(null)}
             />
           ) : active === 'shells' && hasShells ? (
             <ShellsPanel

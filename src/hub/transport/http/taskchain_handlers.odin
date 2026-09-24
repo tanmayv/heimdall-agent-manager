@@ -2,6 +2,7 @@ package http
 
 import "core:fmt"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -513,7 +514,15 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), kind = json_string(req.body, "kind"), coordinator_agent_id = json_string(req.body, "coordinator_agent_id"), default_reviewer_refs_json = json_array_raw(req.body, "default_reviewer_refs")})
+	coord_inst_id := json_string(req.body, "coordinator_agent_instance_id")
+	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{
+		title = json_string(req.body, "title"),
+		description = json_string(req.body, "description"),
+		owner_user_id = json_string(req.body, "owner_user_id"),
+		kind = json_string(req.body, "kind"),
+		coordinator_agent_id = coord_inst_id,
+		default_reviewer_refs_json = json_array_raw(req.body, "default_reviewer_refs"),
+	})
 	if !created do return respond_error(err, req.request_id)
 	if coord_agent_id := json_string(req.body, "coordinator_agent_id"); coord_agent_id != "" {
 		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
@@ -1107,6 +1116,110 @@ get_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	b := strings.builder_make()
 	write_directory_json(&b, dir)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+write_fleet_json :: proc(b: ^strings.Builder, f: domain.Task_Chain_Fleet, active_count: int = 0) {
+	strings.write_string(b, "{\"task_chain_id\":\"")
+	write_handler_json_string(b, string(f.task_chain_id))
+	strings.write_string(b, "\",\"agent_id\":\"")
+	write_handler_json_string(b, f.agent_id)
+	fmt.sbprintf(b, "\",\"capacity\":%d,\"active_count\":%d,\"min_warm\":%d,\"idle_ttl_seconds\":%d,\"created_at\":\"", f.capacity, active_count, f.min_warm, f.idle_ttl_seconds)
+	write_handler_json_string(b, f.created_at)
+	strings.write_string(b, "\",\"updated_at\":\"")
+	write_handler_json_string(b, f.updated_at)
+	strings.write_string(b, "\"}")
+}
+
+json_int_field :: proc(body, key: string, default_value: int) -> int {
+	needle := fmt.tprintf("\"%s\"", key)
+	idx := strings.index(body, needle)
+	if idx < 0 do return default_value
+	rest := body[idx + len(needle):]
+	colon := strings.index_byte(rest, ':')
+	if colon < 0 do return default_value
+	rest = strings.trim_space(rest[colon + 1:])
+	if strings.starts_with(rest, "\"") {
+		quote_end := strings.index_byte(rest[1:], '"')
+		if quote_end < 0 do return default_value
+		val_str := rest[1:quote_end + 1]
+		if p, ok := strconv.parse_int(val_str); ok do return int(p)
+		return default_value
+	}
+	end := 0
+	for end < len(rest) && ((rest[end] >= '0' && rest[end] <= '9') || (end == 0 && rest[end] == '-')) {
+		end += 1
+	}
+	if end == 0 do return default_value
+	if p, ok := strconv.parse_int(rest[:end]); ok do return int(p)
+	return default_value
+}
+
+list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	fleets, err := taskchain_service.list_fleets(h.taskchains, auth_ctx, chain_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
+	defer delete(members)
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for f, i in fleets {
+		if i > 0 do strings.write_byte(&b, ',')
+		active_count := 0
+		for m in members {
+			if m.agent_id == f.agent_id {
+				if h.agents != nil {
+					if inst, inst_ok, _ := agent_service.get_instance(h.agents, auth_ctx, m.agent_instance_id); inst_ok {
+						if inst.runtime_status != "stopped" && inst.runtime_status != "failed" && inst.runtime_status != "terminated" {
+							active_count += 1
+						}
+					}
+				} else {
+					active_count += 1
+				}
+			}
+		}
+		write_fleet_json(&b, f, active_count)
+	}
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	agent_id := path_part(req.path, 6)
+	capacity := json_int_field(req.body, "capacity", 1)
+	min_warm := json_int_field(req.body, "min_warm", 0)
+	idle_ttl_seconds := json_int_field(req.body, "idle_ttl_seconds", 600)
+	fleet, err := taskchain_service.upsert_fleet(h.taskchains, auth_ctx, taskchain_service.Upsert_Fleet_Input{
+		chain_id         = chain_id,
+		agent_id         = agent_id,
+		capacity         = capacity,
+		min_warm         = min_warm,
+		idle_ttl_seconds = idle_ttl_seconds,
+	})
+	if err.code != .None do return respond_error(err, req.request_id)
+	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
+	b := strings.builder_make()
+	write_fleet_json(&b, fleet)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+delete_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	agent_id := path_part(req.path, 6)
+	deleted, err := taskchain_service.delete_fleet(h.taskchains, auth_ctx, chain_id, agent_id)
+	if !deleted do return respond_error(err, req.request_id)
+	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
+	return respond_success("{\"deleted\":true,\"removed\":true}", req.request_id, auth_ctx_server_time(req))
 }
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {

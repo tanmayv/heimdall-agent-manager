@@ -124,6 +124,8 @@ export type ProjectVcsPanelProps = {
   // Invoked when an untracked directory row is opened from the Changes tab. The host
   // switches the sidebar to the Files explorer (directories have no diffable content).
   onOpenDirectory?: (path: string) => void;
+  openFilePath?: string | null;
+  onFileOpened?: () => void;
 };
 
 export default function ProjectVcsPanel({
@@ -132,6 +134,8 @@ export default function ProjectVcsPanel({
   debugPrefix = 'project-vcs',
   isMobile = false,
   onOpenDirectory,
+  openFilePath,
+  onFileOpened,
 }: ProjectVcsPanelProps) {
   // On a narrow (mobile) panel we show one column at a time — either the list or the
   // diff — toggled by activePane, instead of the side-by-side two-pane layout.
@@ -187,6 +191,20 @@ export default function ProjectVcsPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
+
+  // Auto-select file when requested via openFilePath prop
+  useEffect(() => {
+    if (!openFilePath || files.length === 0) return;
+    const match = files.find((f) => f.path === openFilePath);
+    if (match) {
+      setSelectedFile(match);
+      setActiveSubTab('changes');
+      if (isMobile) {
+        setActivePane('diff');
+      }
+      onFileOpened?.();
+    }
+  }, [openFilePath, files, isMobile, onFileOpened]);
 
   // ---- Write mutations ------------------------------------------------------
   const [stageFile, stageState] = useStageVcsFileMutation();

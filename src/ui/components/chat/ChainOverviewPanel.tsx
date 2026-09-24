@@ -27,7 +27,14 @@ import {
   useStartInstanceMutation,
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
+  useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
+import {
+  FleetSlotChips,
+  FleetManagementDrawer,
+  getQueuedWaitingSlotName,
+  formatFleetRoleName,
+} from '../tasks/FleetManagementDrawer';
 import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
@@ -357,6 +364,10 @@ export default function ChainOverviewPanel({
   const [capturedTerminalIds, setCapturedTerminalIds] = useState<Record<string, boolean>>({});
   const [maximizedTerminalInstanceId, setMaximizedTerminalInstanceId] = useState<string | null>(null);
   const [pinnedAgentIds, setPinnedAgentIds] = useState<string[]>(() => readPinnedMonitorAgents());
+  const [isFleetDrawerOpen, setIsFleetDrawerOpen] = useState(false);
+
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const agentIdentities = agentIdentitiesQuery.data?.agents || [];
 
   React.useEffect(() => {
     setPinnedAgentIds(readPinnedMonitorAgents());
@@ -455,9 +466,13 @@ export default function ChainOverviewPanel({
       if (instanceId) {
         return memberNameMap.get(instanceId) || instanceId;
       }
+      const agentId = ref.agentId || ref.agent_id;
+      if (agentId) {
+        return formatFleetRoleName(agentId, agentIdentities);
+      }
       return fallback;
     },
-    [memberNameMap]
+    [memberNameMap, agentIdentities]
   );
 
   // Toggle terminal accordion
@@ -562,6 +577,51 @@ export default function ChainOverviewPanel({
           <Spinner size="sm" /> Loading chain overview…
         </div>
       )}
+
+      {/* Chain Header Toolbar with Fleet Slot Chips */}
+      <div
+        data-debug-id="chain-overview-header-toolbar"
+        className="rounded-xl border border-subtle bg-surface-secondary/40 p-3 space-y-2.5"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-xs font-bold text-primary truncate">
+              {chain?.title || 'Task Chain Overview'}
+            </h2>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="font-mono text-[10px] text-muted">{chainId}</span>
+              {chain?.status && (
+                <StatusPill tone={statusTone(chain.status)}>
+                  {chain.status}
+                </StatusPill>
+              )}
+            </div>
+          </div>
+          {onClose && (
+            <IconButton
+              icon="close"
+              label="Close panel"
+              size="sm"
+              onClick={onClose}
+            />
+          )}
+        </div>
+
+        {/* Fleet Slot Chips */}
+        <div className="pt-2 border-t border-subtle/60 flex items-center justify-between gap-2 flex-wrap">
+          <span className="text-[11px] font-semibold text-muted">Fleet Slots:</span>
+          <FleetSlotChips
+            chainId={chainId}
+            onOpenDrawer={() => setIsFleetDrawerOpen(true)}
+          />
+        </div>
+      </div>
+
+      <FleetManagementDrawer
+        chainId={chainId}
+        isOpen={isFleetDrawerOpen}
+        onClose={() => setIsFleetDrawerOpen(false)}
+      />
 
       {/* SECTION 1: Chain Agents */}
       <section data-debug-id="chain-overview-section-agents" className="space-y-2.5">
@@ -785,6 +845,14 @@ export default function ChainOverviewPanel({
                           <StatusPill tone={statusTone(task.status)}>
                             {task.status}
                           </StatusPill>
+                          {task.status === 'queued' && (
+                            <span
+                              data-debug-id={`chain-overview-attention-queued-slot-${taskId}`}
+                              className="rounded bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning"
+                            >
+                              Queued (Waiting for {getQueuedWaitingSlotName(task, agentIdentities)} slot)
+                            </span>
+                          )}
                           <span className="text-[11px] font-medium text-warning truncate">
                             {reason}
                           </span>
@@ -893,6 +961,14 @@ export default function ChainOverviewPanel({
                         <StatusPill tone={statusTone(task.status)}>
                           {task.status}
                         </StatusPill>
+                        {task.status === 'queued' && (
+                          <span
+                            data-debug-id={`chain-overview-queued-slot-${taskId}`}
+                            className="rounded bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning"
+                          >
+                            Queued (Waiting for {getQueuedWaitingSlotName(task, agentIdentities)} slot)
+                          </span>
+                        )}
                       </div>
                       <span className="font-mono text-[10px] text-muted">{taskId}</span>
                     </div>

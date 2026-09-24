@@ -71,9 +71,9 @@ result-devproxy/bin/ham-dev-proxy \
 result-bridge/bin/ham-bridge \
   --hub http://127.0.0.1:8081 \
   --bridge-token "$(cat .run-logs/bridge/bridge-token)" \
-  --bind-host 127.0.0.1 --port 49323 \
-  --local-endpoint-port 49324 \
-  --local-run-dir /tmp/heimdall-bridge-local
+  --bind-host 127.0.0.1 --port 49327 \
+  --local-endpoint-port 49328 \
+  --local-run-dir /tmp/heimdall-bridge-dev
 ```
 
 ---

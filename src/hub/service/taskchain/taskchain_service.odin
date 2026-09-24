@@ -14,6 +14,7 @@ import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 
 Nudge_Target :: enum {
 	None,
@@ -42,6 +43,7 @@ Taskchain_Service :: struct {
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
 	bridge_command_sink: project.Bridge_Command_Sink,
+	agent_service: ^agent.Agent_Service,
 	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
 	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
 	// set on every connect. Guarded by replay_mutex.
@@ -136,6 +138,11 @@ new_taskchain_service_with_runtime :: proc(repo: ^iface.Taskchain_Repository, ag
 	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, bridge_command_sink = bridge_command_sink}
 }
 
+set_agent_service :: proc(service: ^Taskchain_Service, agent_svc: ^agent.Agent_Service) {
+	if service == nil do return
+	service.agent_service = agent_svc
+}
+
 // is_instance_member_or_coordinator: membership OR coordinator authority, read
 // from the SINGLE canonical source (H9) — the task_chain_members table. The
 // coordinator is just a member whose role is "coordinator"; both notions live in
@@ -208,6 +215,11 @@ set_chain_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Ch
 	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if err.code == .None {
 		for m in members {
+			if strings.has_prefix(m.agent_instance_id, "agt_") {
+				// Clean up any legacy phantom agent_id member
+				iface.taskchain_remove_member(service.repo, chain.chain_id, m.agent_instance_id, chain.owner_user_id)
+				continue
+			}
 			if m.role == "coordinator" && m.agent_instance_id != target_instance_id {
 				demoted := m
 				demoted.role = "member"
@@ -328,7 +340,7 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	// Write the coordinator to the SINGLE canonical source (members table), then
 	// stamp the derived mirror column. An instance creator defaults to coordinator;
 	// a user-token creator may name one via coordinator_agent_id.
-	if coordinator_id != "" {
+	if coordinator_id != "" && !strings.has_prefix(coordinator_id, "agt_") {
 		member := domain.Task_Chain_Member{
 			chain_id = saved_chain.chain_id,
 			agent_instance_id = coordinator_id,
@@ -1714,6 +1726,7 @@ add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		return domain.Task_Chain_Member{}, false, domain.domain_error(.Forbidden, "only chain coordinator can add members")
 	}
 	if agent_instance_id == "" do return domain.Task_Chain_Member{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
+	if strings.has_prefix(agent_instance_id, "agt_") do return domain.Task_Chain_Member{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id must be an instance ID, not an agent ID")
 
 	agent_id := ""
 	if service.agents != nil {
@@ -1825,7 +1838,15 @@ list_chain_members :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	// READ: owner-scoped (REQ-SEC-3).
 	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
-	return iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	members, list_err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if list_err.code != .None do return nil, list_err
+	valid_members := make([dynamic]domain.Task_Chain_Member, context.allocator)
+	for m in members {
+		if !strings.has_prefix(m.agent_instance_id, "agt_") {
+			append(&valid_members, m)
+		}
+	}
+	return valid_members[:], domain.Domain_Error{}
 }
 
 // --- Task Dependencies ---
@@ -2203,17 +2224,10 @@ agent_instance_same_chain :: proc(service: ^Taskchain_Service, instance_id: stri
 agent_instance_ref_json :: proc(instance_id: string) -> string { return strings.concatenate({`{"type":"agent_instance","agent_instance_id":"`, instance_id, `"}`}) }
 user_ref_json :: proc(user_id: string) -> string { return strings.concatenate({`{"type":"user","user_id":"`, user_id, `"}`}) }
 
-// normalize_actor_refs rewrites any {"type":"agent_id","agent_id":"..."} ref into a
-// concrete {"type":"agent_instance",...} ref by resolving a reusable instance of that
-// durable agent_id for the chain owner (Phase 1: resolve-by-reuse). The resolved
-// instance is added to the chain members (idempotently) so downstream
-// validate_actor_refs / agent_instance_same_chain pass. Refs of type agent_instance
-// and user are returned unchanged. Returns the rewritten blob.
-//
-// Reuse policy (default "chain"): prefer an instance already in this chain
-// (coordinator or member) of the requested agent_id; otherwise any active instance of
-// that agent_id owned by the chain owner. If none is found we return a clear error
-// (Phase 2 will launch a new instance via agent_service.create_instance).
+// normalize_actor_refs handles actor ref normalization.
+// With Fleet Management (REQ-FLEET-DISPATCHER-1), tasks store declarative
+// {"type":"agent_id","agent_id":"agt_..."} refs without requiring an instance upfront
+// or failing if none exists. The reconcile engine acts as the dynamic fleet scheduler.
 normalize_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, blob: string) -> (string, bool, domain.Domain_Error) {
 	if blob == "" do return blob, true, domain.Domain_Error{}
 	if !strings.contains(blob, "\"agent_id\"") do return blob, true, domain.Domain_Error{}
@@ -2231,24 +2245,126 @@ normalize_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Cha
 		id_idx := type_idx + id_rel
 		agent_id := json_string_value_after(result, id_idx)
 		if agent_id == "" { search = id_idx + len("agent_id"); continue }
-		instance_id, resolve_ok, resolve_err := resolve_agent_id_instance(service, chain, agent_id)
-		if !resolve_ok do return blob, false, resolve_err
-		// Ensure it is a chain member so the ref validates.
-		if !is_instance_member_or_coordinator(service, chain, instance_id) {
-			ensure_chain_member(service, chain, instance_id, agent_id)
-		}
-		// Replace the whole ref object {...} that contains this type with an
-		// agent_instance ref.
-		obj_start := strings.last_index_byte(result[:type_idx], '{')
-		if obj_start < 0 do return blob, false, domain.domain_error(.Validation_Failed, "malformed agent_id ref")
-		obj_end := strings.index_byte(result[type_idx:], '}')
-		if obj_end < 0 do return blob, false, domain.domain_error(.Validation_Failed, "malformed agent_id ref")
-		obj_end = type_idx + obj_end + 1
-		replacement := agent_instance_ref_json(instance_id)
-		result = strings.concatenate({result[:obj_start], replacement, result[obj_end:]})
-		search = obj_start + len(replacement)
+		// REQ-FLEET-DISPATCHER-1: do NOT error if no instance exists for an agent_id.
+		// Allow tasks to store {"type":"agent_id","agent_id":"agt_..."} declaratively
+		// in assignee_ref_json and reviewer_refs_json.
+		search = id_idx + len("agent_id")
 	}
 	return result, true, domain.Domain_Error{}
+}
+
+primary_assignee_agent_id :: proc(assignee_ref_json: string) -> string {
+	search := 0
+	for search < len(assignee_ref_json) {
+		rel := strings.index(assignee_ref_json[search:], "\"agent_id\"")
+		if rel < 0 do break
+		idx := search + rel
+		after_quote := idx + len("\"agent_id\"")
+		colon := strings.index_byte(assignee_ref_json[after_quote:], ':')
+		is_key := colon >= 0
+		if is_key {
+			for b in assignee_ref_json[after_quote : after_quote + colon] {
+				if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+					is_key = false
+					break
+				}
+			}
+		}
+		if is_key {
+			id := json_string_value_after(assignee_ref_json, idx)
+			if id != "" {
+				return strings.clone(id)
+			}
+		}
+		search = after_quote
+	}
+	return ""
+}
+
+extract_agent_ids_from_ref_blob :: proc(blob: string) -> [dynamic]string {
+	agent_ids := make([dynamic]string)
+	search := 0
+	for search < len(blob) {
+		rel := strings.index(blob[search:], "\"agent_id\"")
+		if rel < 0 do break
+		idx := search + rel
+		after_quote := idx + len("\"agent_id\"")
+		colon := strings.index_byte(blob[after_quote:], ':')
+		is_key := colon >= 0
+		if is_key {
+			for b in blob[after_quote : after_quote + colon] {
+				if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+					is_key = false
+					break
+				}
+			}
+		}
+		if is_key {
+			id := json_string_value_after(blob, idx)
+			if id != "" {
+				append(&agent_ids, strings.clone(id))
+			}
+		}
+		search = after_quote
+	}
+	return agent_ids
+}
+
+bind_agent_id_to_instance :: proc(blob: string, target_agent_id: string, instance_id: string) -> string {
+	if blob == "" do return strings.clone(blob)
+	result := blob
+	search := 0
+	for search < len(result) {
+		rel := strings.index(result[search:], "\"type\"")
+		if rel < 0 do break
+		type_idx := search + rel
+		type_val := json_string_value_after(result, type_idx)
+		if type_val != "agent_id" {
+			search = type_idx + len("\"type\"")
+			continue
+		}
+		id_search := type_idx + len("\"type\"")
+		found_id_idx := -1
+		for id_search < len(result) {
+			id_rel := strings.index(result[id_search:], "\"agent_id\"")
+			if id_rel < 0 do break
+			cur_id_idx := id_search + id_rel
+			after_quote := cur_id_idx + len("\"agent_id\"")
+			colon := strings.index_byte(result[after_quote:], ':')
+			is_key := colon >= 0
+			if is_key {
+				for b in result[after_quote : after_quote + colon] {
+					if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+						is_key = false
+						break
+					}
+				}
+			}
+			if is_key {
+				found_id_idx = cur_id_idx
+				break
+			}
+			id_search = after_quote
+		}
+		if found_id_idx < 0 {
+			search = type_idx + len("\"type\"")
+			continue
+		}
+		found_agent_id := json_string_value_after(result, found_id_idx)
+		if found_agent_id != target_agent_id {
+			search = found_id_idx + len("\"agent_id\"")
+			continue
+		}
+		obj_start := strings.last_index_byte(result[:type_idx], '{')
+		if obj_start < 0 do break
+		obj_end := strings.index_byte(result[type_idx:], '}')
+		if obj_end < 0 do break
+		obj_end = type_idx + obj_end + 1
+		replacement := agent_instance_ref_json(instance_id)
+		defer delete(replacement)
+		return strings.concatenate({result[:obj_start], replacement, result[obj_end:]})
+	}
+	return strings.clone(blob)
 }
 
 // resolve_agent_id_instance finds a reusable instance of the durable agent_id for the
@@ -2416,4 +2532,67 @@ remove_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 	if !removed do return false, domain.domain_error(.Not_Found, "directory not found")
 	return true, domain.Domain_Error{}
 }
+
+// --- Fleet Management (REQ-FLEET-SCHEMA-1, REQ-FLEET-API-CLI-1) ---
+
+Upsert_Fleet_Input :: struct {
+	chain_id:         domain.Task_Chain_ID,
+	agent_id:         string,
+	capacity:         int,
+	min_warm:         int,
+	idle_ttl_seconds: int,
+}
+
+list_fleets :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+}
+
+list_chain_fleets :: list_fleets
+
+upsert_fleet :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Upsert_Fleet_Input) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
+	trimmed_agent := strings.trim_space(input.agent_id)
+	if trimmed_agent == "" do return domain.Task_Chain_Fleet{}, domain.domain_error(.Validation_Failed, "agent_id is required")
+	chain, ok, err := get_chain(service, auth, input.chain_id)
+	if !ok do return domain.Task_Chain_Fleet{}, err
+
+	capacity := input.capacity
+	if capacity < 1 do capacity = 1
+	min_warm := input.min_warm
+	if min_warm < 0 do min_warm = 0
+	idle_ttl := input.idle_ttl_seconds
+	if idle_ttl <= 0 do idle_ttl = 600
+
+	now := platform.clock_now(service.clock)
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain.chain_id,
+		agent_id         = trimmed_agent,
+		capacity         = capacity,
+		min_warm         = min_warm,
+		idle_ttl_seconds = idle_ttl,
+		created_at       = now,
+		updated_at       = now,
+	}
+
+	return iface.taskchain_upsert_fleet(service.repo, fleet)
+}
+
+upsert_chain_fleet :: upsert_fleet
+
+delete_fleet :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_id: string) -> (bool, domain.Domain_Error) {
+	trimmed_agent := strings.trim_space(agent_id)
+	if trimmed_agent == "" do return false, domain.domain_error(.Validation_Failed, "agent_id is required")
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return false, err
+
+	deleted, del_err := iface.taskchain_delete_fleet(service.repo, chain.chain_id, trimmed_agent, chain.owner_user_id)
+	if del_err.code != .None do return false, del_err
+	if !deleted do return false, domain.domain_error(.Not_Found, "fleet not found")
+	return true, domain.Domain_Error{}
+}
+
+delete_chain_fleet :: delete_fleet
+remove_chain_fleet :: delete_fleet
+
 

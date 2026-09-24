@@ -19,11 +19,19 @@ All commands use the managed wrapper from your run directory: `./.heimdall/bin/h
 - Update it whenever scope/tasks/dependencies/reviewers change: `./.heimdall/bin/ham-ctl task-chain set-description "<markdown>" [--chain <id>]`. A stale description is a correctness bug.
 
 ## 3. Create tasks and DELEGATE them
-- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl task create --title "<title>" --description "<the filled-in template from §4>" --assignee <agent_instance_id> [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]`.
+- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl task create --title "<title>" --description "<the filled-in template from §4>" --assignee <agent_instance_id|agent_id> [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]`.
 - Order work with dependencies: `./.heimdall/bin/ham-ctl task depend <task-id> --on <dependency-task-id>` (or `task update <id> --depends-on <id,id>` to replace the whole list).
 - Edit an existing task (title/description/priority/assignee/reviewers/deps): `./.heimdall/bin/ham-ctl task update <task-id> [...]`.
 - Do NOT create one giant task you then implement yourself. Split the goal so each substantial piece has an assignee.
 - Staging note: creating tasks and wiring deps does NOT start anyone. Nothing promotes or nudges until you run `reconcile` (see §8).
+
+### Fleet-based task delegation & capacity management
+Instead of binding tasks to specific ephemeral instance IDs (`inst_...`) upfront, coordinators can delegate tasks directly to durable agent templates (`agt_...`) and configure fleet capacity quotas for the chain:
+- **Set fleet capacity**: Define concurrency limits and warm standby policies for each worker type on the chain:
+  `./.heimdall/bin/ham-ctl task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>]`
+- **Inspect fleet allocations**: Check configured capacity and live active instance counts:
+  `./.heimdall/bin/ham-ctl task-chain fleet list <chain-id>`
+- **Assign to durable agent IDs**: When creating or updating tasks, specify `--assignee <agt_id>` or `--reviewer <agt_id>`. During `reconcile`, Heimdall dynamically routes actionable tasks to idle instances of that agent template, or provisions new instances just-in-time up to the configured fleet capacity limit.
 
 ## 4. Write a self-contained task (the task-creation template)
 Assume the assignee is a LOW-CAPABILITY agent that knows NOTHING beyond the task description and will NOT search the codebase to fill gaps. **Rule: if you had to search or already know something to make the task doable, put it in the task.** Every `--description` MUST fill in every field below (write "none" where a field truly does not apply — never leave a field out):

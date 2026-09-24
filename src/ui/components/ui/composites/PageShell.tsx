@@ -152,15 +152,15 @@ export const PageShell: React.FC<PageShellProps> = ({
               actions would otherwise crush the title and description into a
               one-word-per-line column (REQ-UI-13). `basis` keeps them side by side
               wherever there is room, which is every desktop width. */}
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 basis-64">
-              <h1 id={titleId} className="text-display text-primary">{title}</h1>
+          <div className="flex flex-wrap items-start justify-between gap-3 min-w-0 max-w-full">
+            <div className="min-w-0 flex-1 basis-64 max-w-full">
+              <h1 id={titleId} className="text-display text-primary break-words">{title}</h1>
               {description ? (
                 <p className="ui-measure mt-1 text-body-sm text-muted">{description}</p>
               ) : null}
             </div>
             {actions ? (
-              <div className="flex shrink-0 items-center gap-2">{actions}</div>
+              <div className="flex flex-wrap items-center gap-2 max-w-full sm:shrink-0">{actions}</div>
             ) : null}
           </div>
         </header>

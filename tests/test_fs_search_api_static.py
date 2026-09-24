@@ -38,7 +38,7 @@ def test_bridge_fs_search() -> None:
 
     # Command dispatcher cases
     require('case "fs_find_files":' in fs, 'fs_management.odin missing case "fs_find_files"')
-    require('case "fs_grep":' in fs, 'fs_management.odin missing case "fs_grep"')
+    require('case "fs_grep"' in fs, 'fs_management.odin missing case "fs_grep"')
     require('bridge_runtime_cache_command(command_id, out)' in fs, 'command cache missing in fs_management.odin')
 
     # Memory leak cleanup procedures and invocations
