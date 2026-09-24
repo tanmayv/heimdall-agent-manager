@@ -380,12 +380,17 @@ export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // TC-PAGE: default project-grouped task-chains list (no params) -> array of
     // groups, each previewing up to 5 chains with has_more/next_cursor for paging.
-    fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void | { hasTasks?: boolean }>({
+    fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void | { hasTasks?: boolean; includeArchived?: boolean }>({
       queryFn: async (arg) => {
         try {
           // ?has_tasks=1 drops chains with no tasks server-side, so chain_total and
           // the paging cursors stay consistent with what is displayed.
-          const raw = await cookieJsonFetch(`/task-chains${arg && arg.hasTasks ? '?has_tasks=1' : ''}`);
+          const params = new URLSearchParams();
+          const options = typeof arg === 'object' && arg !== null ? arg : undefined;
+          if (options?.hasTasks) params.set('has_tasks', '1');
+          if (options?.includeArchived) params.set('include_archived', '1');
+          const qs = params.toString();
+          const raw = await cookieJsonFetch(`/task-chains${qs ? `?${qs}` : ''}`);
           const arr = Array.isArray(raw) ? raw : (raw?.groups || []);
           return { data: { groups: arr.map(normalizeChainProjectGroup) } };
         } catch (error: any) {

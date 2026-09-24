@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useDispatch } from 'react-redux';
 import {
   useListTaskChainsQuery,
@@ -7,6 +7,7 @@ import {
 } from '../../api/endpoints/tasks';
 import type { ChainListItem } from '../../api/endpoints/tasks';
 import { showToast } from '../../store/toastSlice';
+import { useArchivedProjectIds } from '../projects/projectModel';
 import CreateChainModal from './CreateChainModal';
 import { StatusDot, Icon } from '@ui';
 
@@ -187,7 +188,14 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
   const dispatch = useDispatch();
   const { data: pinnedData } = useListPinnedTaskChainsQuery();
   const [togglePin] = useTogglePinTaskChainMutation();
-  const pinnedChains = pinnedData?.chains ?? [];
+  const archivedProjectIds = useArchivedProjectIds();
+  const pinnedChains = useMemo(() => {
+    const list = pinnedData?.chains ?? [];
+    return list.filter((c) => !c.projectId || !archivedProjectIds.has(c.projectId));
+  }, [pinnedData, archivedProjectIds]);
+  const visibleProjects = useMemo(() => {
+    return projects.filter((p) => !archivedProjectIds.has(p.projectId));
+  }, [projects, archivedProjectIds]);
 
   const handleTogglePin = async (chain: ChainListItem, e: React.MouseEvent) => {
     e.preventDefault();
@@ -246,10 +254,10 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
         </div>
       )}
 
-      {projects.length === 0 ? (
+      {visibleProjects.length === 0 ? (
         <div className="px-2.5 py-2 text-[11.5px] text-faint">No projects.</div>
       ) : (
-        projects.map((p) => (
+        visibleProjects.map((p) => (
           <ProjectChainGroup
             key={p.projectId}
             projectId={p.projectId}
@@ -333,7 +341,11 @@ export function CollapsedPinnedChains({
   onNavigate: (path: string) => void;
 }) {
   const { data: pinnedData } = useListPinnedTaskChainsQuery();
-  const pinnedChains = pinnedData?.chains ?? [];
+  const archivedProjectIds = useArchivedProjectIds();
+  const pinnedChains = useMemo(() => {
+    const list = pinnedData?.chains ?? [];
+    return list.filter((c) => !c.projectId || !archivedProjectIds.has(c.projectId));
+  }, [pinnedData, archivedProjectIds]);
 
   if (pinnedChains.length === 0) {
     return null;

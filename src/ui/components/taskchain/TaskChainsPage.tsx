@@ -11,6 +11,7 @@ import {
   type ChainProjectGroup,
 } from '../../api/endpoints/tasks';
 import { useListProjectsQuery, type Project } from '../../api/endpoints/projects';
+import { useArchivedProjectIds } from '../projects/projectModel';
 import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
@@ -242,6 +243,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   // Roughly half of real chains carry no tasks yet and have nothing to show, so
   // the list hides them by default; the toggle brings them back.
   const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
+  const [showArchivedProjects, setShowArchivedProjects] = useState<boolean>(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
 
@@ -252,20 +254,32 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   // KEEP the chain-detail branch (deep link / row click into a specific chain).
   const showList = !selectedChainId;
 
-  const groupsQuery = useFetchTaskChainGroupsQuery({ hasTasks: onlyWithTasks }, { skip: !showList || Boolean(filterProjectId) });
+  const groupsQuery = useFetchTaskChainGroupsQuery(
+    { hasTasks: onlyWithTasks, includeArchived: showArchivedProjects },
+    { skip: !showList || Boolean(filterProjectId) },
+  );
   const projectPageQuery = useFetchTaskChainProjectPageQuery(
     { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks },
     { skip: !showList || !filterProjectId },
   );
   const projectsQuery = useListProjectsQuery();
+  const archivedProjectIds = useArchivedProjectIds();
 
-  const projects: Project[] = projectsQuery.data?.projects || [];
+  const projects: Project[] = useMemo(() => {
+    const list: Project[] = projectsQuery.data?.projects || [];
+    if (showArchivedProjects) return list;
+    return list.filter((p) => !archivedProjectIds.has(p.project_id));
+  }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
+
   const groups: ChainProjectGroup[] = useMemo(() => {
-    if (filterProjectId) {
-      return projectPageQuery.data ? [projectPageQuery.data] : [];
+    const rawGroups = filterProjectId
+      ? (projectPageQuery.data ? [projectPageQuery.data] : [])
+      : (groupsQuery.data?.groups || []);
+    if (!showArchivedProjects) {
+      return rawGroups.filter((g) => !g.projectId || !archivedProjectIds.has(g.projectId));
     }
-    return groupsQuery.data?.groups || [];
-  }, [filterProjectId, projectPageQuery.data, groupsQuery.data]);
+    return rawGroups;
+  }, [filterProjectId, projectPageQuery.data, groupsQuery.data, showArchivedProjects, archivedProjectIds]);
 
   const totalChains = useMemo(() => groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups]);
   const isLoading = filterProjectId ? projectPageQuery.isLoading : groupsQuery.isLoading;
@@ -330,6 +344,21 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             className="h-4 w-4 accent-accent"
           />
           Only chains with tasks
+        </label>
+
+        <label
+          htmlFor="task-chains-include-archived-filter"
+          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
+        >
+          <input
+            id="task-chains-include-archived-filter"
+            data-debug-id="task-chains-include-archived-filter"
+            type="checkbox"
+            checked={showArchivedProjects}
+            onChange={(e) => setShowArchivedProjects(e.target.checked)}
+            className="h-4 w-4 accent-accent"
+          />
+          Include archived projects
         </label>
       </div>
 
