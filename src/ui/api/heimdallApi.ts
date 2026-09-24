@@ -46,12 +46,14 @@ export const HEIMDALL_TAG_TYPES = [
   'Action',
   'Cards',
   'Card',
+  'BridgeFigWorkspaces',
   'ShellSessions',
   'ShellSession',
   'Experiments',
   'LspServerConfigs',
   'Issue',
   'IssueComments',
+  'TaskChainFleets',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

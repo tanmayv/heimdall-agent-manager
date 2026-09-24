@@ -23,6 +23,27 @@ export type LspPosition = { line: number; character: number };
 export type LspRange = { start: LspPosition; end: LspPosition };
 export type LspLocation = { uri: string; range: LspRange };
 export type LspLocationLink = { targetUri: string; targetSelectionRange?: LspRange; targetRange: LspRange };
+export type LspSymbolKind = number;
+
+export type LspDocumentSymbol = {
+  name: string;
+  detail?: string;
+  kind: LspSymbolKind;
+  tags?: number[];
+  deprecated?: boolean;
+  range: LspRange;
+  selectionRange: LspRange;
+  children?: LspDocumentSymbol[];
+};
+
+export type LspSymbolInformation = {
+  name: string;
+  kind: LspSymbolKind;
+  tags?: number[];
+  deprecated?: boolean;
+  location: LspLocation;
+  containerName?: string;
+};
 
 export type LspMarkupContent = { kind: 'plaintext' | 'markdown'; value: string };
 export type LspMarkedString = string | { language: string; value: string };
@@ -63,6 +84,20 @@ export type Monaco_Range = {
   startColumn: number;
   endLineNumber: number;
   endColumn: number;
+};
+export type Monaco_Location = {
+  uri: any;
+  range: Monaco_Range;
+};
+export type Monaco_DocumentSymbol = {
+  name: string;
+  detail: string;
+  kind: number;
+  tags: readonly number[];
+  containerName?: string;
+  range: Monaco_Range;
+  selectionRange: Monaco_Range;
+  children?: Monaco_DocumentSymbol[];
 };
 
 // Monaco's MarkerSeverity enum values. Hardcoded rather than imported so this
@@ -233,6 +268,72 @@ export function lspToMonacoCompletionKind(kind?: number): number {
   return mapped === undefined ? MONACO_COMPLETION_KIND.Text : mapped;
 }
 
+// LSP SymbolKind (1..26) -> Monaco languages.SymbolKind (0..25).
+// LSP is 1-based, Monaco is 0-based across all 26 symbol types.
+export const MONACO_SYMBOL_KIND = {
+  File: 0,
+  Module: 1,
+  Namespace: 2,
+  Package: 3,
+  Class: 4,
+  Method: 5,
+  Property: 6,
+  Field: 7,
+  Constructor: 8,
+  Enum: 9,
+  Interface: 10,
+  Function: 11,
+  Variable: 12,
+  Constant: 13,
+  String: 14,
+  Number: 15,
+  Boolean: 16,
+  Array: 17,
+  Object: 18,
+  Key: 19,
+  Null: 20,
+  EnumMember: 21,
+  Struct: 22,
+  Event: 23,
+  Operator: 24,
+  TypeParameter: 25,
+} as const;
+
+export const LSP_TO_MONACO_SYMBOL_KIND: Record<number, number> = {
+  1: MONACO_SYMBOL_KIND.File,
+  2: MONACO_SYMBOL_KIND.Module,
+  3: MONACO_SYMBOL_KIND.Namespace,
+  4: MONACO_SYMBOL_KIND.Package,
+  5: MONACO_SYMBOL_KIND.Class,
+  6: MONACO_SYMBOL_KIND.Method,
+  7: MONACO_SYMBOL_KIND.Property,
+  8: MONACO_SYMBOL_KIND.Field,
+  9: MONACO_SYMBOL_KIND.Constructor,
+  10: MONACO_SYMBOL_KIND.Enum,
+  11: MONACO_SYMBOL_KIND.Interface,
+  12: MONACO_SYMBOL_KIND.Function,
+  13: MONACO_SYMBOL_KIND.Variable,
+  14: MONACO_SYMBOL_KIND.Constant,
+  15: MONACO_SYMBOL_KIND.String,
+  16: MONACO_SYMBOL_KIND.Number,
+  17: MONACO_SYMBOL_KIND.Boolean,
+  18: MONACO_SYMBOL_KIND.Array,
+  19: MONACO_SYMBOL_KIND.Object,
+  20: MONACO_SYMBOL_KIND.Key,
+  21: MONACO_SYMBOL_KIND.Null,
+  22: MONACO_SYMBOL_KIND.EnumMember,
+  23: MONACO_SYMBOL_KIND.Struct,
+  24: MONACO_SYMBOL_KIND.Event,
+  25: MONACO_SYMBOL_KIND.Operator,
+  26: MONACO_SYMBOL_KIND.TypeParameter,
+};
+
+export function lspToMonacoSymbolKind(kind?: number): number {
+  if (kind === undefined || kind === null) return MONACO_SYMBOL_KIND.Variable;
+  const mapped = LSP_TO_MONACO_SYMBOL_KIND[kind];
+  return mapped === undefined ? MONACO_SYMBOL_KIND.Variable : mapped;
+}
+
 // --- Hover content normalisation --------------------------------------------
 
 // LSP's Hover.contents has three legal shapes across protocol revisions:
@@ -304,6 +405,100 @@ export function pathToFileUri(absPath: string): string {
 export function fileUriToPath(uri: string): string {
   if (!uri.startsWith('file://')) return decodeURI(uri);
   return decodeURI(uri.slice('file://'.length));
+}
+
+// --- Location & Document Symbol converters ----------------------------------
+
+export const normaliseLocationResult = normaliseDefinitionResult;
+
+export function findModelForPath(monaco: any, absPath: string, rootAbs?: string): any {
+  if (!monaco || !absPath) return null;
+  const root = (rootAbs || '').replace(/\/+$/, '');
+  const rel = root && absPath.startsWith(root + '/') ? absPath.slice(root.length + 1) : absPath.replace(/^\/+/, '');
+  if (!monaco.editor?.getModels) return null;
+  for (const model of monaco.editor.getModels()) {
+    const mPath = String(model?.uri?.path ?? '').replace(/^\/+/, '');
+    if (mPath === rel) return model;
+  }
+  return null;
+}
+
+export function lspToMonacoLocation(
+  loc: LspLocation,
+  rootAbs?: string,
+  monaco?: any
+): Monaco_Location {
+  const range = lspToMonacoRange(loc.range);
+  const targetPath = fileUriToPath(loc.uri);
+  if (monaco) {
+    const existing = findModelForPath(monaco, targetPath, rootAbs);
+    if (existing) {
+      return { uri: existing.uri, range };
+    }
+    if (typeof monaco.Uri?.file === 'function') {
+      return { uri: monaco.Uri.file(targetPath), range };
+    }
+  }
+  return { uri: loc.uri, range };
+}
+
+export function normaliseDocumentSymbols(
+  raw: LspDocumentSymbol[] | LspSymbolInformation[] | null | undefined
+): Monaco_DocumentSymbol[] {
+  if (!raw || !Array.isArray(raw) || raw.length === 0) return [];
+
+  const hasLocation = raw.some((item) => item && typeof item === 'object' && 'location' in item);
+  if (!hasLocation) {
+    const convertOne = (sym: LspDocumentSymbol): Monaco_DocumentSymbol => ({
+      name: sym.name,
+      detail: sym.detail ?? '',
+      kind: lspToMonacoSymbolKind(sym.kind),
+      tags: sym.tags ?? (sym.deprecated ? [1] : []),
+      containerName: undefined,
+      range: lspToMonacoRange(sym.range),
+      selectionRange: lspToMonacoRange(sym.selectionRange ?? sym.range),
+      children: Array.isArray(sym.children) ? sym.children.map(convertOne) : [],
+    });
+    return (raw as LspDocumentSymbol[]).filter(Boolean).map(convertOne);
+  }
+
+  const flatItems = (raw as LspSymbolInformation[]).filter(
+    (item) => item && typeof item === 'object' && item.location && item.location.range
+  );
+
+  const mapped: Array<{ symbol: Monaco_DocumentSymbol; containerName?: string }> = flatItems.map((item) => ({
+    containerName: item.containerName,
+    symbol: {
+      name: item.name,
+      detail: item.containerName ?? '',
+      kind: lspToMonacoSymbolKind(item.kind),
+      tags: item.tags ?? (item.deprecated ? [1] : []),
+      containerName: item.containerName,
+      range: lspToMonacoRange(item.location.range),
+      selectionRange: lspToMonacoRange(item.location.range),
+      children: [],
+    },
+  }));
+
+  const byName = new Map<string, Monaco_DocumentSymbol>();
+  for (const entry of mapped) {
+    byName.set(entry.symbol.name, entry.symbol);
+  }
+
+  const result: Monaco_DocumentSymbol[] = [];
+  for (const entry of mapped) {
+    if (entry.containerName && byName.has(entry.containerName)) {
+      const parent = byName.get(entry.containerName)!;
+      if (parent !== entry.symbol) {
+        parent.children = parent.children ?? [];
+        parent.children.push(entry.symbol);
+        continue;
+      }
+    }
+    result.push(entry.symbol);
+  }
+
+  return result;
 }
 
 // --- JSON-RPC framing -------------------------------------------------------

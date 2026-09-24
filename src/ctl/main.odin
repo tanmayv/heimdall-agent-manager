@@ -98,7 +98,7 @@ main :: proc() {
 	// context (so `ham-ctl task --help` documents the agent surface).
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
 		switch cmd[0] {
-		case "bridge", "bridges", "agents", "chat", "chats", "artifact", "artifacts", "memory", "cards", "card", "shell-cmd", "shell", "issue", "issues":
+		case "bridge", "bridges", "agents", "task-chain", "task-chains", "task", "tasks", "chat", "chats", "artifact", "artifacts", "memory", "cards", "card", "shell-cmd", "shell", "issue", "issues":
 			print_agent_help(cmd[:]); return
 		}
 	}

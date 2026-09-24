@@ -69,4 +69,28 @@ require('has_prefix(plain_value, "inst_")' in CTL,
 require('--assignee-agent-id' in CTL and '--reviewer-agent-id' in CTL,
         'ctl must expose explicit --assignee-agent-id / --reviewer-agent-id flags')
 
+# --- ctl agent mode: emits agent_id refs for agt_ ids, agent_instance for other ids ---
+AGENT_MODE = (ROOT / 'src/ctl/agent_mode.odin').read_text(encoding='utf-8')
+require('ctl_v2_actor_ref ::' in AGENT_MODE, 'agent_mode must define ctl_v2_actor_ref')
+require('ctl_v2_task_chain_fleet ::' in AGENT_MODE, 'agent_mode must define ctl_v2_task_chain_fleet')
+require('case "fleet", "fleets":' in AGENT_MODE, 'agent_mode task-chain must dispatch fleet')
+require('/api/v1/task-chains/%s/fleets' in AGENT_MODE, 'agent_mode fleet must call /fleets endpoint')
+
+# --- ctl tasks mode: fleet dispatch & actor ref ---
+TASKS_MODE = (ROOT / 'src/ctl/tasks.odin').read_text(encoding='utf-8')
+require('ctl_task_chains_fleet_command ::' in TASKS_MODE, 'tasks.odin must define ctl_task_chains_fleet_command')
+require('action == "fleet" || action == "fleets"' in TASKS_MODE, 'tasks.odin must route fleet action')
+
+# --- Skills documentation ---
+SKILL_HAM_CTL = (ROOT / 'src/prompts/skills/ham-ctl-reference/SKILL.md').read_text(encoding='utf-8')
+require('### Fleet management (`task-chain fleet`)' in SKILL_HAM_CTL, 'ham-ctl-reference must document task-chain fleet')
+require('task-chain fleet list' in SKILL_HAM_CTL, 'ham-ctl-reference must document task-chain fleet list')
+require('task-chain fleet set' in SKILL_HAM_CTL, 'ham-ctl-reference must document task-chain fleet set')
+require('agent_id' in SKILL_HAM_CTL and 'instance-or-agent-id' in SKILL_HAM_CTL, 'ham-ctl-reference must document polymorphic assignee/reviewer')
+
+SKILL_COORD = (ROOT / 'src/prompts/skills/coordinator-task-management/SKILL.md').read_text(encoding='utf-8')
+require('Fleet-based task delegation & capacity management' in SKILL_COORD, 'coordinator-task-management must document fleet delegation')
+require('task-chain fleet set' in SKILL_COORD, 'coordinator-task-management must document fleet set command')
+require('task-chain fleet list' in SKILL_COORD, 'coordinator-task-management must document fleet list command')
+
 print('AGENT_ID ACTOR REF STATIC TEST PASSED')

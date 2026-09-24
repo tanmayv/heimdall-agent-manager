@@ -160,6 +160,16 @@ Task_Chain_Directory :: struct {
 	updated_at:    string,
 }
 
+Task_Chain_Fleet :: struct {
+	task_chain_id:    Task_Chain_ID,
+	agent_id:         string,
+	capacity:         int,
+	min_warm:         int,
+	idle_ttl_seconds: int,
+	created_at:       string,
+	updated_at:       string,
+}
+
 task_status_unblocks_dependents :: proc(status: Task_Status) -> bool {
 	return status == .Completed || status == .Cancelled
 }

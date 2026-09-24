@@ -4,6 +4,7 @@ import "core:c"
 import "core:fmt"
 import "core:net"
 import "core:os"
+import "core:strconv"
 import base64 "core:encoding/base64"
 import json "core:encoding/json"
 import "core:strings"
@@ -297,9 +298,87 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "false")))
 	case "directory", "directories":
 		ctl_task_chains_command(tokens, args)
+	case "fleet", "fleets":
+		ctl_v2_task_chain_fleet(endpoint, token, tokens[1:], args)
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
+}
+
+ctl_v2_task_chain_fleet :: proc(endpoint, token: string, tokens, args: []string) {
+	if has_flag(args, "--help") || has_flag(args, "-h") || (len(tokens) > 0 && tokens[0] == "help") {
+		print_help_task_chain_fleet()
+		return
+	}
+	sub := pos(tokens, 0)
+	if sub == "" || sub == "list" {
+		chain_id := pos(tokens, 1)
+		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
+		if chain_id == "" {
+			res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}")
+			if ok {
+				chain_id = extract_json_string_unescaped(res, "chain_id", "")
+			}
+		}
+		if chain_id == "" {
+			fmt.println("usage: ham-ctl task-chain fleet list <chain-id>")
+			return
+		}
+		path := fmt.tprintf("/api/v1/task-chains/%s/fleets", safe_path_part(chain_id))
+		params := json_object(
+			json_kv("http_method", "GET"),
+			json_kv("path", path),
+			json_kv("body", ""),
+		)
+		ctl_agent_call(endpoint, token, "agent.rest.request", params)
+		return
+	}
+	if sub == "set" {
+		chain_id := pos(tokens, 1)
+		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
+		if chain_id == "" {
+			res, ok := ctl_agent_local_call(endpoint, token, "agent.context.get", "{}")
+			if ok {
+				chain_id = extract_json_string_unescaped(res, "chain_id", "")
+			}
+		}
+		agent_id := option_value(args, "--agent", option_value(args, "--agent-id", ""))
+		capacity_str := option_value(args, "--capacity", "")
+		if chain_id == "" || agent_id == "" || capacity_str == "" {
+			fmt.println("usage: ham-ctl task-chain fleet set <chain-id> --agent <agent_id> --capacity <N>")
+			return
+		}
+		capacity := 1
+		if c, c_ok := strconv.parse_int(capacity_str); c_ok {
+			capacity = int(c)
+		}
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv_raw("capacity", fmt.tprintf("%d", capacity)))
+		if mw := option_value(args, "--min-warm", ""); mw != "" {
+			if v, v_ok := strconv.parse_int(mw); v_ok do append(&fields, json_kv_raw("min_warm", fmt.tprintf("%d", v)))
+		}
+		if ttl := option_value(args, "--idle-ttl", option_value(args, "--idle-ttl-seconds", "")); ttl != "" {
+			if v, v_ok := strconv.parse_int(ttl); v_ok do append(&fields, json_kv_raw("idle_ttl_seconds", fmt.tprintf("%d", v)))
+		}
+		path := fmt.tprintf("/api/v1/task-chains/%s/fleets/%s", safe_path_part(chain_id), safe_path_part(agent_id))
+		params := json_object(
+			json_kv("http_method", "PUT"),
+			json_kv("path", path),
+			json_kv("body", json_object_from_slice(fields[:])),
+		)
+		ctl_agent_call(endpoint, token, "agent.rest.request", params)
+		return
+	}
+	// Fallback: if sub is a chain_id
+	chain_id := sub
+	path := fmt.tprintf("/api/v1/task-chains/%s/fleets", safe_path_part(chain_id))
+	params := json_object(
+		json_kv("http_method", "GET"),
+		json_kv("path", path),
+		json_kv("body", ""),
+	)
+	ctl_agent_call(endpoint, token, "agent.rest.request", params)
 }
 
 // ---- task (one command per action) --------------------------------------
@@ -342,7 +421,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 			}
 			append(&fields, json_kv("priority", v))
 		}
-		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
+		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 		// --reviewer accepts a comma-separated list for multiple reviewers.
 		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
 		if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
@@ -393,7 +472,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		if v := option_value(args, "--title", ""); v != "" do append(&fields, json_kv("title", v))
 		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
 		if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
-		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
+		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 		// Presence-checked (not value-checked) so `--reviewer ""` / `--depends-on ""`
 		// can explicitly CLEAR the list; omitting the flag leaves it unchanged.
 		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
@@ -482,8 +561,18 @@ json_string_array_field :: proc(key: string, values: []string) -> string {
 	return strings.to_string(b)
 }
 
-// ctl_v2_reviewer_refs builds a "reviewer_refs":[{type,agent_instance_id},...]
-// field from a comma-separated list of agent-instance ids, so a task can carry
+// ctl_v2_actor_ref formats an actor reference for tasks: if the ID begins with
+// "agt_", it is formatted as a durable declarative agent_id ref {"type":"agent_id","agent_id":"..."}.
+// Otherwise, it is formatted as an agent_instance ref {"type":"agent_instance","agent_instance_id":"..."}.
+ctl_v2_actor_ref :: proc(id: string) -> string {
+	if strings.has_prefix(id, "agt_") {
+		return json_object(json_kv("type", "agent_id"), json_kv("agent_id", id))
+	}
+	return json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", id))
+}
+
+// ctl_v2_reviewer_refs builds a "reviewer_refs":[{type,...},...]
+// field from a comma-separated list of agent-instance or durable agent ids, so a task can carry
 // MULTIPLE reviewers (the hub reviewer_refs is an array). Empty/blank ids are
 // skipped; an all-blank csv still emits an empty array so callers can CLEAR the
 // reviewer list explicitly.
@@ -498,7 +587,7 @@ ctl_v2_reviewer_refs :: proc(csv: string) -> string {
 		if id == "" do continue
 		if !first do strings.write_byte(&b, ',')
 		first = false
-		strings.write_string(&b, json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", id)))
+		strings.write_string(&b, ctl_v2_actor_ref(id))
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
@@ -1171,17 +1260,26 @@ strconv_parse_int_agent :: proc(value: string) -> (int, bool) {
 // detailed reference per group. Deterministic + no network.
 print_agent_help :: proc(cmd: []string) {
 	resource := ""
+	sub := ""
 	if len(cmd) > 0 {
 		if cmd[0] == "agent" || cmd[0] == "help" {
 			if len(cmd) > 1 do resource = cmd[1]
+			if len(cmd) > 2 do sub = cmd[2]
 		} else {
 			resource = cmd[0]
+			if len(cmd) > 1 do sub = cmd[1]
 		}
 	}
 	switch resource {
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
-	case "task-chain", "task-chains": print_help_task_chain(); return
+	case "task-chain", "task-chains":
+		if sub == "fleet" || sub == "fleets" {
+			print_help_task_chain_fleet()
+			return
+		}
+		print_help_task_chain()
+		return
 	case "task", "tasks": print_help_task(); return
 	case "chat", "chats": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
@@ -1320,6 +1418,7 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      published to its tasks — until then nothing in the")
 	fmt.println("                                      chain promotes or can be nudged.")
 	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
+	fmt.println("  fleet <list|set>                    Manage chain fleet capacities and active workers.")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -1329,7 +1428,27 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain set-description 'Harden auth: rotate tokens, add tests.'")
+	fmt.println("  ham-ctl task-chain fleet list chain_abc")
+	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --capacity 4")
 	fmt.println("  ham-ctl task-chain publish chain_abc")
+}
+
+print_help_task_chain_fleet :: proc() {
+	fmt.println("ham-ctl task-chain fleet — fleet management for task chains")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list <chain-id>                             List fleet capacities and active agent counts.")
+	fmt.println("  set <chain-id> --agent <id> --capacity <N>  Set or adjust fleet capacity for an agent.")
+	fmt.println("")
+	fmt.println("FLAGS (set)")
+	fmt.println("  --agent <agent_id>      Durable agent ID (e.g. agt_worker).")
+	fmt.println("  --capacity <N>          Maximum concurrent instances for this agent on the chain.")
+	fmt.println("  --min-warm <N>          Minimum warm idle instances to maintain (optional).")
+	fmt.println("  --idle-ttl <seconds>    Idle TTL before scaling down warm instances (default: 600).")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl task-chain fleet list chain_abc")
+	fmt.println("  ham-ctl task-chain fleet set chain_abc --agent agt_worker --capacity 4")
 }
 
 print_help_task :: proc() {
@@ -1345,10 +1464,10 @@ print_help_task :: proc() {
 	fmt.println("  show <task-id>                          Show a task + comment_summary + votes (no bodies).")
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
-	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>]")
+	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
 	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
-	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>]")
+	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
 	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>]  --reviewer/--depends-on REPLACE the")
 	fmt.println("      whole list (pass \"\" to clear). Only the fields you pass change.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")

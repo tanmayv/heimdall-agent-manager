@@ -106,6 +106,52 @@ ham-ctl task-chain directory remove dir_18d7a123bc45de67
 ham-ctl task-chain show chain_18d711c5384a0119
 ```
 
+### Fleet management (`task-chain fleet`)
+Configure and inspect agent concurrency caps (fleets) for a task chain. Fleets allow tasks to be assigned to durable agent types (`agt_...`) instead of individual instances (`inst_...`). Heimdall dynamically routes or provisions worker instances to satisfy fleet capacity quotas.
+
+- `task-chain fleet list [<chain-id>]` — list fleet capacities and live active worker counts for a chain (defaults to current chain if omitted).
+- `task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>]` — configure fleet capacity for an agent class on the chain.
+
+#### Fleet JSON shape
+`task-chain fleet list` returns a JSON array of fleet configurations:
+```json
+[
+  {
+    "chain_id": "chain_18d711c5384a0119",
+    "agent_id": "agt_worker",
+    "capacity": 3,
+    "active_count": 1,
+    "min_warm": 0,
+    "idle_ttl_seconds": 300,
+    "created_at": "2026-09-24T00:00:00Z",
+    "updated_at": "2026-09-24T00:00:00Z"
+  }
+]
+```
+
+Fields:
+- `chain_id`: Unique identifier of the task chain (`chain_...`).
+- `agent_id`: Durable agent template identifier (`agt_...`).
+- `capacity`: Maximum concurrent running worker instances allocated for this agent on the chain.
+- `active_count`: Currently active (running or busy) worker instances assigned to tasks in this chain.
+- `min_warm`: Minimum warm standby instances to maintain.
+- `idle_ttl_seconds`: Time before idle instances are stopped or decommissioned.
+
+#### Command examples
+```bash
+# List fleets for the current chain
+ham-ctl task-chain fleet list
+
+# List fleets for a specific chain
+ham-ctl task-chain fleet list chain_18d711c5384a0119
+
+# Set worker fleet capacity to 4
+ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_worker --capacity 4
+
+# Set reviewer fleet capacity with warm standby and idle timeout
+ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_reviewer --capacity 2 --min-warm 1 --idle-ttl 600
+```
+
 ## task — tasks within a chain
 A positional `<task-id>` identifies the task and is enough on its own (task ids are
 globally unique — you rarely need `--chain`).
@@ -114,10 +160,11 @@ globally unique — you rarely need `--chain`).
   (count, last_comment_at, author, preview) — NOT full comment bodies.
 - `task show <task-id> [--chain <id>]` — a task + its `comment_summary` + votes (no bodies).
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
-- `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]` — create a task.
+- `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]` — create a task.
+  `--assignee` and `--reviewer` accept both live instance IDs (`inst_...`) and durable agent IDs (`agt_...`). When an `agt_...` ID is provided, it is automatically serialized as an actor reference `{"type":"agent_id","agent_id":"<id>"}` for fleet dispatch.
   `--reviewer` and `--depends-on` accept comma-separated lists.
-- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>] [--reviewer <id,id,...>] [--depends-on <id,id>]` — edit an
-  existing task (coordinator only). Only the fields you pass change; `--reviewer` and
+- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>] [--reviewer <id,id,...>] [--depends-on <id,id>]` — edit an
+  existing task (coordinator only). Only the fields you pass change; `--assignee` and `--reviewer` support both `inst_...` and `agt_...` IDs; `--reviewer` and
   `--depends-on` REPLACE the whole list (pass `""` to clear).
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment
   (the only way to comment).

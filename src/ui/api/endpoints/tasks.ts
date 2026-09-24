@@ -39,11 +39,22 @@ function normalizeTask(task: any) {
     if (normalizedAssigneeRef.agentInstanceId && !normalizedAssigneeRef.agent_instance_id) {
       normalizedAssigneeRef.agent_instance_id = normalizedAssigneeRef.agentInstanceId;
     }
+    if (normalizedAssigneeRef.agent_id && !normalizedAssigneeRef.agentId) {
+      normalizedAssigneeRef.agentId = normalizedAssigneeRef.agent_id;
+    }
+    if (normalizedAssigneeRef.agentId && !normalizedAssigneeRef.agent_id) {
+      normalizedAssigneeRef.agent_id = normalizedAssigneeRef.agentId;
+    }
     if (normalizedAssigneeRef.display_name && !normalizedAssigneeRef.displayName) {
       normalizedAssigneeRef.displayName = normalizedAssigneeRef.display_name;
     }
     if (normalizedAssigneeRef.displayName && !normalizedAssigneeRef.display_name) {
       normalizedAssigneeRef.display_name = normalizedAssigneeRef.displayName;
+    }
+    if (!normalizedAssigneeRef.displayName && !normalizedAssigneeRef.display_name && (normalizedAssigneeRef.agent_id || normalizedAssigneeRef.agentId)) {
+      const aid = normalizedAssigneeRef.agent_id || normalizedAssigneeRef.agentId;
+      normalizedAssigneeRef.displayName = aid;
+      normalizedAssigneeRef.display_name = aid;
     }
   }
 
@@ -71,11 +82,22 @@ function normalizeTask(task: any) {
     if (item.agentInstanceId && !item.agent_instance_id) {
       item.agent_instance_id = item.agentInstanceId;
     }
+    if (item.agent_id && !item.agentId) {
+      item.agentId = item.agent_id;
+    }
+    if (item.agentId && !item.agent_id) {
+      item.agent_id = item.agentId;
+    }
     if (item.display_name && !item.displayName) {
       item.displayName = item.display_name;
     }
     if (item.displayName && !item.display_name) {
       item.display_name = item.displayName;
+    }
+    if (!item.displayName && !item.display_name && (item.agent_id || item.agentId)) {
+      const aid = item.agent_id || item.agentId;
+      item.displayName = aid;
+      item.display_name = aid;
     }
     return item;
   });
@@ -1121,3 +1143,10 @@ export const {
   useVoteTaskMutation,
   useNudgeTaskMutation,
 } = tasksApi;
+
+export {
+  useGetTaskChainFleetsQuery,
+  useLazyGetTaskChainFleetsQuery,
+  useUpdateTaskChainFleetMutation,
+} from './taskChains';
+export type { TaskChainFleet } from './taskChains';

@@ -32,6 +32,7 @@ import {
   jsonRpcNotification,
   jsonRpcRequest,
   type JsonRpcIncoming,
+  type LspSymbolInformation,
 } from './lspProtocol';
 
 // The Hub closes a silent socket after LSP_IDLE_TIMEOUT (15 minutes,
@@ -231,9 +232,6 @@ export class LspClient {
         break;
       case 'lsp_started':
         if (frame.ok) {
-          if (frame.root_path && typeof frame.root_path === 'string') {
-            this.opts.rootPath = frame.root_path;
-          }
           void this.initialize();
         } else {
           this.setStatus('error', String(frame.error || 'language server failed to start'));
@@ -319,9 +317,15 @@ export class LspClient {
             },
             hover: { dynamicRegistration: false, contentFormat: ['markdown', 'plaintext'] },
             definition: { dynamicRegistration: false, linkSupport: true },
+            references: { dynamicRegistration: false },
+            implementation: { dynamicRegistration: false, linkSupport: true },
+            documentSymbol: { dynamicRegistration: false, hierarchicalDocumentSymbolSupport: true },
             publishDiagnostics: { relatedInformation: false },
           },
-          workspace: { workspaceFolders: Boolean(this.opts.rootPath) },
+          workspace: {
+            workspaceFolders: Boolean(this.opts.rootPath),
+            symbol: { dynamicRegistration: false },
+          },
         },
       });
       if (this.disposed) return;
@@ -375,6 +379,17 @@ export class LspClient {
   /** True once initialize/initialized has completed and requests are meaningful. */
   isReady(): boolean {
     return !this.disposed && this.status === 'ready';
+  }
+
+  /** Query workspace symbols via workspace/symbol (REQ-LSP-SYMBOLS-1). */
+  async queryWorkspaceSymbols(query: string): Promise<LspSymbolInformation[]> {
+    if (!this.isReady()) return [];
+    try {
+      const raw = await this.request('workspace/symbol', { query });
+      return (Array.isArray(raw) ? raw : []) as LspSymbolInformation[];
+    } catch {
+      return [];
+    }
   }
 
   private startPing() {

@@ -40,6 +40,9 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		get_directory = taskchain_get_directory_sqlite,
 		list_directories_by_chain = taskchain_list_directories_by_chain_sqlite,
 		remove_directory = taskchain_remove_directory_sqlite,
+		upsert_fleet = taskchain_upsert_fleet_sqlite,
+		list_fleets_by_chain = taskchain_list_fleets_by_chain_sqlite,
+		delete_fleet = taskchain_delete_fleet_sqlite,
 	}
 }
 
@@ -402,6 +405,65 @@ taskchain_remove_directory_sqlite :: proc(ctx: rawptr, directory_id: string, cha
 	bind_text(stmt, 2, string(chain_id))
 	bind_text(stmt, 3, string(owner_user_id))
 	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to delete directory")
+	changes := int(sqlite3_changes(impl.conn.db))
+	return changes > 0, domain.Domain_Error{}
+}
+
+fleet_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Chain_Fleet {
+	return domain.Task_Chain_Fleet{
+		task_chain_id    = domain.Task_Chain_ID(column_text(stmt, 0)),
+		agent_id         = column_text(stmt, 1),
+		capacity         = int_v(column_text_unowned(stmt, 2)),
+		min_warm         = int_v(column_text_unowned(stmt, 3)),
+		idle_ttl_seconds = int_v(column_text_unowned(stmt, 4)),
+		created_at       = column_text(stmt, 5),
+		updated_at       = column_text(stmt, 6),
+	}
+}
+
+taskchain_upsert_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle_ttl_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_chain_id, agent_id) DO UPDATE SET capacity=excluded.capacity, min_warm=excluded.min_warm, idle_ttl_seconds=excluded.idle_ttl_seconds, updated_at=excluded.updated_at;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task_Chain_Fleet{}, domain.domain_error(.Internal_Error, "failed to prepare fleet upsert")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(fleet.task_chain_id))
+	bind_text(stmt, 2, fleet.agent_id)
+	sqlite3_bind_int(stmt, 3, c.int(fleet.capacity))
+	sqlite3_bind_int(stmt, 4, c.int(fleet.min_warm))
+	sqlite3_bind_int(stmt, 5, c.int(fleet.idle_ttl_seconds))
+	bind_text(stmt, 6, fleet.created_at)
+	bind_text(stmt, 7, fleet.updated_at)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Chain_Fleet{}, domain.domain_error(.Conflict, "fleet could not be saved")
+	return fleet, domain.Domain_Error{}
+}
+
+taskchain_list_fleets_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT f.task_chain_id, f.agent_id, f.capacity, f.min_warm, f.idle_ttl_seconds, f.created_at, f.updated_at FROM task_chain_fleets f JOIN task_chains tc ON f.task_chain_id = tc.chain_id WHERE f.task_chain_id = ? AND (tc.owner_user_id = ? OR ? = '') ORDER BY f.created_at ASC, f.agent_id ASC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare fleet list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id))
+	bind_text(stmt, 2, string(owner_user_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Chain_Fleet)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, fleet_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
+taskchain_delete_fleet_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM task_chain_fleets WHERE task_chain_id = ? AND agent_id = ? AND task_chain_id IN (SELECT chain_id FROM task_chains WHERE chain_id = ? AND (owner_user_id = ? OR ? = ''));"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare fleet deletion")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id))
+	bind_text(stmt, 2, agent_id)
+	bind_text(stmt, 3, string(chain_id))
+	bind_text(stmt, 4, string(owner_user_id))
+	bind_text(stmt, 5, string(owner_user_id))
+	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to delete fleet")
 	changes := int(sqlite3_changes(impl.conn.db))
 	return changes > 0, domain.Domain_Error{}
 }

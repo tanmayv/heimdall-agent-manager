@@ -278,7 +278,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
   if (selectedChainId) {
     return (
-      <div className="h-full w-full">
+      <div className="h-full w-full max-w-full min-w-0 overflow-x-hidden">
         <TaskChainOverview chainId={selectedChainId} focusTaskId={focusTaskId} onClose={() => setSelectedChainId('')} isMobile={isMobile} />
       </div>
     );

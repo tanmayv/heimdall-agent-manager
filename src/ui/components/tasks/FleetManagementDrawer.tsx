@@ -1,0 +1,646 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Badge,
+  Icon,
+  IconButton,
+  Select,
+  Spinner,
+  StatusDot,
+} from '@ui';
+import {
+  useGetTaskChainFleetsQuery,
+  useUpdateTaskChainFleetMutation,
+  type TaskChainFleet,
+} from '../../api/endpoints/taskChains';
+import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
+import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
+
+export function formatFleetRoleName(agentId?: string, identities?: any[]): string {
+  if (!agentId) return 'Worker';
+  const found = identities?.find(
+    (a) => String(a.agent_id || a.agentId || a.id || '') === agentId
+  );
+  if (found?.name) return found.name;
+  if (found?.display_name) return found.display_name;
+  if (agentId.startsWith('agt_')) {
+    const raw = agentId.slice(4);
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+  return agentId.charAt(0).toUpperCase() + agentId.slice(1);
+}
+
+export function renderSlotDots(active: number, capacity: number): string {
+  const cap = Math.max(1, Math.min(capacity, 10));
+  const act = Math.max(0, Math.min(active, cap));
+  let dots = '';
+  for (let i = 0; i < cap; i++) {
+    dots += i < act ? '●' : '○';
+  }
+  return dots;
+}
+
+export function getQueuedWaitingSlotName(task: any, identities?: any[]): string {
+  if (!task) return 'Worker';
+  const status = String(task.status || '').toLowerCase();
+  if (status === 'in_validation') {
+    return 'Reviewer';
+  }
+  const assigneeRef = task.assigneeRef || task.assignee_ref;
+  const targetAgentId =
+    assigneeRef?.agent_id ||
+    assigneeRef?.agentId ||
+    task.assigneeAgentId ||
+    task.assignee_agent_id ||
+    '';
+  if (targetAgentId) {
+    return formatFleetRoleName(targetAgentId, identities);
+  }
+  return 'Worker';
+}
+
+export {
+  isRoleAssignedWithoutLiveInstance,
+  canStartTask,
+  hasLiveNudgeTarget,
+  getUnpauseStatus,
+} from './TaskCard';
+
+export interface FleetSlotChipsProps {
+  chainId: string;
+  onOpenDrawer?: () => void;
+  className?: string;
+}
+
+export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
+  chainId,
+  onOpenDrawer,
+  className = '',
+}) => {
+  const { data: rawFleets = [], isLoading } = useGetTaskChainFleetsQuery(
+    { chainId },
+    { skip: !chainId, pollingInterval: 5000 }
+  );
+  const chainDetailQuery = useFetchTaskChainDetailQuery(
+    { chainId },
+    { skip: !chainId }
+  );
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const agentIdentities = agentIdentitiesQuery.data?.agents || [];
+  const members = (chainDetailQuery.data?.chain?.members || []) as any[];
+
+  // Merge server-returned fleets with default standard roles (worker, reviewer) if not yet configured
+  const fleets = useMemo(() => {
+    const list: TaskChainFleet[] = [...rawFleets];
+    const seen = new Set(list.map((f) => f.agent_id));
+
+    // Default roles to always surface
+    const standardRoles = ['agt_worker', 'agt_reviewer'];
+    for (const roleId of standardRoles) {
+      if (!seen.has(roleId)) {
+        const activeCount = members.filter((m) => {
+          const aid = String(m.agent_id || m.agentId || '');
+          const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
+          return aid === roleId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
+        }).length;
+        list.push({
+          task_chain_id: chainId,
+          agent_id: roleId,
+          capacity: 1,
+          active_count: activeCount,
+        });
+      }
+    }
+    return list;
+  }, [rawFleets, members, chainId]);
+
+  if (!chainId) return null;
+
+  return (
+    <div
+      data-debug-id="fleet-slot-chips"
+      className={`flex items-center gap-1.5 flex-wrap ${className}`}
+    >
+      {fleets.map((fleet) => {
+        const roleName = formatFleetRoleName(fleet.agent_id, agentIdentities);
+        const capacity = fleet.capacity ?? 1;
+        const activeCount = fleet.active_count ?? fleet.activeCount ?? 0;
+        const isSaturated = activeCount >= capacity;
+
+        return (
+          <button
+            key={fleet.agent_id}
+            type="button"
+            data-debug-id={`fleet-slot-chip-${fleet.agent_id}`}
+            onClick={onOpenDrawer}
+            title={`Fleet ${roleName}: ${activeCount}/${capacity} active slots. Click to manage capacity.`}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border transition-colors cursor-pointer shadow-xs ${
+              isSaturated
+                ? 'border-warning/40 bg-warning-soft/30 text-warning hover:bg-warning-soft/50'
+                : 'border-subtle bg-surface-raised hover:bg-neutral-soft text-primary'
+            }`}
+          >
+            <span className="font-semibold">{roleName}:</span>
+            <span className="font-mono text-[11px]">{activeCount}/{capacity} active</span>
+            <span className="text-accent text-[11px] tracking-tighter select-none font-mono">
+              {renderSlotDots(activeCount, capacity)}
+            </span>
+          </button>
+        );
+      })}
+
+      {onOpenDrawer && (
+        <button
+          type="button"
+          data-debug-id="fleet-slot-chips-manage-btn"
+          onClick={onOpenDrawer}
+          title="Open Fleet Management Drawer"
+          className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-muted hover:text-primary hover:bg-neutral-soft transition-colors cursor-pointer border border-dashed border-subtle"
+        >
+          <Icon name="layers" size={12} />
+          <span>Fleet</span>
+        </button>
+      )}
+    </div>
+  );
+};
+
+export interface FleetManagementDrawerProps {
+  chainId: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
+  chainId,
+  isOpen,
+  onClose,
+}) => {
+  const { data: rawFleets = [], refetch } = useGetTaskChainFleetsQuery(
+    { chainId },
+    { skip: !chainId, pollingInterval: 4000 }
+  );
+  const chainDetailQuery = useFetchTaskChainDetailQuery(
+    { chainId },
+    { skip: !chainId }
+  );
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const agentIdentities = agentIdentitiesQuery.data?.agents || [];
+  const members = (chainDetailQuery.data?.chain?.members || []) as any[];
+  const tasks = (chainDetailQuery.data?.chain?.tasks || []) as any[];
+
+  const [updateFleet, { isLoading: isUpdating }] = useUpdateTaskChainFleetMutation();
+  const [selectedNewAgentId, setSelectedNewAgentId] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+  const [isApplying, setIsApplying] = useState(false);
+  const [draftCapacities, setDraftCapacities] = useState<Record<string, number>>({});
+
+  const prevIsOpenRef = useRef(false);
+
+  // Sync draftCapacities when drawer opens
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
+      const init: Record<string, number> = {};
+      for (const f of rawFleets) {
+        init[f.agent_id] = f.capacity ?? 1;
+      }
+      setDraftCapacities(init);
+      setErrorMsg('');
+      setSuccessMsg('');
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, rawFleets]);
+
+  // Merge configured fleets with standard roles and draft-staged roles
+  const fleets = useMemo(() => {
+    const list: TaskChainFleet[] = [...rawFleets];
+    const seen = new Set(list.map((f) => f.agent_id));
+
+    const standardRoles = ['agt_worker', 'agt_reviewer'];
+    for (const roleId of standardRoles) {
+      if (!seen.has(roleId)) {
+        const activeCount = members.filter((m) => {
+          const aid = String(m.agent_id || m.agentId || '');
+          const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
+          return aid === roleId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
+        }).length;
+        list.push({
+          task_chain_id: chainId,
+          agent_id: roleId,
+          capacity: 1,
+          active_count: activeCount,
+        });
+        seen.add(roleId);
+      }
+    }
+
+    // Also include any newly added agent roles staged in draftCapacities
+    for (const [aid, cap] of Object.entries(draftCapacities)) {
+      if (!seen.has(aid)) {
+        list.push({
+          task_chain_id: chainId,
+          agent_id: aid,
+          capacity: cap,
+          active_count: 0,
+        });
+        seen.add(aid);
+      }
+    }
+
+    return list;
+  }, [rawFleets, members, chainId, draftCapacities]);
+
+  const getOriginalCapacity = useCallback(
+    (agentId: string) => {
+      const found = rawFleets.find((f) => f.agent_id === agentId);
+      if (found) return found.capacity ?? 1;
+      if (agentId === 'agt_worker' || agentId === 'agt_reviewer') return 1;
+      return null;
+    },
+    [rawFleets]
+  );
+
+  const handleDraftCapacityChange = useCallback((agentId: string, newCapacity: number) => {
+    const clamped = Math.max(1, Math.min(20, newCapacity));
+    setDraftCapacities((prev) => ({
+      ...prev,
+      [agentId]: clamped,
+    }));
+    setErrorMsg('');
+    setSuccessMsg('');
+  }, []);
+
+  const handleAddFleet = useCallback((agentId: string) => {
+    if (!agentId) return;
+    setDraftCapacities((prev) => ({
+      ...prev,
+      [agentId]: prev[agentId] ?? 1,
+    }));
+    setSelectedNewAgentId('');
+    setErrorMsg('');
+    setSuccessMsg('');
+  }, []);
+
+  const changedFleets = useMemo(() => {
+    const list: { agentId: string; capacity: number }[] = [];
+    for (const fleet of fleets) {
+      const aid = fleet.agent_id;
+      const draft = draftCapacities[aid];
+      if (draft === undefined) continue;
+      const orig = getOriginalCapacity(aid);
+      if (orig === null || draft !== orig) {
+        list.push({ agentId: aid, capacity: draft });
+      }
+    }
+    return list;
+  }, [fleets, draftCapacities, getOriginalCapacity]);
+
+  const hasPendingChanges = changedFleets.length > 0;
+
+  const handleReset = useCallback(() => {
+    const init: Record<string, number> = {};
+    for (const f of rawFleets) {
+      init[f.agent_id] = f.capacity ?? 1;
+    }
+    setDraftCapacities(init);
+    setErrorMsg('');
+    setSuccessMsg('');
+  }, [rawFleets]);
+
+  const handleApply = useCallback(async () => {
+    if (!hasPendingChanges || isUpdating || isApplying) return;
+    setErrorMsg('');
+    setSuccessMsg('');
+    setIsApplying(true);
+    try {
+      await Promise.all(
+        changedFleets.map((cf) =>
+          updateFleet({
+            chainId,
+            agentId: cf.agentId,
+            capacity: cf.capacity,
+          }).unwrap()
+        )
+      );
+      await refetch();
+      await chainDetailQuery.refetch();
+      setSuccessMsg(
+        `Applied capacity updates for ${changedFleets.length} ${
+          changedFleets.length === 1 ? 'role' : 'roles'
+        }`
+      );
+    } catch (err: any) {
+      setErrorMsg(
+        String(err?.data?.error?.message || err?.message || 'Failed to update capacity')
+      );
+    } finally {
+      setIsApplying(false);
+    }
+  }, [
+    hasPendingChanges,
+    isUpdating,
+    isApplying,
+    changedFleets,
+    updateFleet,
+    chainId,
+    refetch,
+    chainDetailQuery,
+  ]);
+
+  // Available agent identities not yet in fleets
+  const availableIdentitiesToAdd = useMemo(() => {
+    const existing = new Set(fleets.map((f) => f.agent_id));
+    return agentIdentities.filter(
+      (a: any) => !existing.has(String(a.agent_id || a.agentId || a.id || ''))
+    );
+  }, [fleets, agentIdentities]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      data-debug-id="fleet-management-drawer-backdrop"
+      className="fixed inset-0 z-50 flex justify-end bg-surface-overlay/80 backdrop-blur-sm transition-opacity"
+      onClick={onClose}
+    >
+      <div
+        data-debug-id="fleet-management-drawer"
+        className="flex h-full w-full max-w-md flex-col bg-surface border-l border-subtle shadow-panel overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Drawer Header */}
+        <div className="flex items-center justify-between border-b border-subtle px-4 py-3.5 bg-canvas/90">
+          <div className="flex items-center gap-2">
+            <Icon name="layers" size={18} className="text-accent" />
+            <div>
+              <h2 className="text-sm font-bold text-primary">Fleet Management</h2>
+              <p className="text-[11px] text-muted">Concurrency quotas & live slots</p>
+            </div>
+          </div>
+          <IconButton
+            icon="close"
+            label="Close drawer"
+            size="sm"
+            onClick={onClose}
+          />
+        </div>
+
+        {errorMsg && (
+          <div className="bg-danger-soft/30 border-b border-danger/30 px-4 py-2 text-xs text-danger">
+            {errorMsg}
+          </div>
+        )}
+
+        {/* Drawer Content */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="text-xs text-muted">
+            Configure concurrency limits per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
+          </div>
+
+          <div className="space-y-3">
+            {fleets.map((fleet) => {
+              const agentId = fleet.agent_id;
+              const roleName = formatFleetRoleName(agentId, agentIdentities);
+              const effectiveCapacity = draftCapacities[agentId] ?? fleet.capacity ?? 1;
+              const origCapacity = getOriginalCapacity(agentId);
+              const isModified = origCapacity === null || effectiveCapacity !== origCapacity;
+              const activeCount = fleet.active_count ?? fleet.activeCount ?? 0;
+              const isSaturated = activeCount >= effectiveCapacity;
+
+              // Find live instances for this agentId
+              const liveInstances = members.filter((m) => {
+                const aid = String(m.agent_id || m.agentId || '');
+                const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
+                return aid === agentId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
+              });
+
+              // Find active tasks for this agentId
+              const activeTasks = tasks.filter((t) => {
+                const s = String(t.status || '').toLowerCase();
+                if (s !== 'in_progress' && s !== 'in_validation' && s !== 'queued') return false;
+                const assigneeAid = t.assigneeRef?.agent_id || t.assigneeRef?.agentId;
+                if (assigneeAid === agentId) return true;
+                if (t.assigneeAgentInstanceId) {
+                  const m = members.find((mem) => (mem.agentInstanceId || mem.agent_instance_id) === t.assigneeAgentInstanceId);
+                  if (m && (m.agent_id === agentId || m.agentId === agentId)) return true;
+                }
+                return false;
+              });
+
+              return (
+                <div
+                  key={agentId}
+                  data-debug-id={`fleet-drawer-role-card-${agentId}`}
+                  className={`rounded-xl border p-3.5 space-y-3 transition-colors ${
+                    isModified
+                      ? 'border-warning/50 bg-warning-soft/10'
+                      : 'border-subtle bg-surface-secondary/30'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="grid h-8 w-8 place-items-center rounded-lg bg-accent/10 text-accent font-bold text-xs uppercase">
+                        {roleName.slice(0, 2)}
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-primary flex items-center gap-1.5">
+                          {roleName}
+                          <span className="font-mono text-[10px] text-muted font-normal">({agentId})</span>
+                        </h4>
+                        <div className="flex items-center gap-1 text-[11px] text-muted font-mono mt-0.5">
+                          <span className="text-accent">{renderSlotDots(activeCount, effectiveCapacity)}</span>
+                          <span>{activeCount}/{effectiveCapacity} active</span>
+                          {isModified && (
+                            <span
+                              data-debug-id={`fleet-staged-indicator-${agentId}`}
+                              className="ml-1.5 rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning"
+                            >
+                              Pending: {origCapacity ?? 0} → {effectiveCapacity}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <Badge tone={isSaturated ? 'warning' : 'neutral'}>
+                      {isSaturated ? 'Saturated' : 'Available'}
+                    </Badge>
+                  </div>
+
+                  {/* Inline +/- and Slider controls */}
+                  <div className="rounded-lg border border-subtle bg-surface p-2.5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-primary">Capacity Limit</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          data-debug-id={`fleet-capacity-dec-${agentId}`}
+                          onClick={() => handleDraftCapacityChange(agentId, Math.max(1, effectiveCapacity - 1))}
+                          disabled={effectiveCapacity <= 1 || isUpdating || isApplying}
+                          aria-label={`Decrease capacity for ${roleName}`}
+                          className="h-6 w-6 rounded border border-subtle bg-surface-raised hover:bg-neutral-soft text-primary font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <span
+                          data-debug-id={`fleet-capacity-val-${agentId}`}
+                          className={`w-7 text-center font-mono font-bold text-xs ${
+                            isModified ? 'text-warning font-black' : 'text-primary'
+                          }`}
+                        >
+                          {effectiveCapacity}
+                        </span>
+                        <button
+                          type="button"
+                          data-debug-id={`fleet-capacity-inc-${agentId}`}
+                          onClick={() => handleDraftCapacityChange(agentId, effectiveCapacity + 1)}
+                          disabled={effectiveCapacity >= 20 || isUpdating || isApplying}
+                          aria-label={`Increase capacity for ${roleName}`}
+                          className="h-6 w-6 rounded border border-subtle bg-surface-raised hover:bg-neutral-soft text-primary font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={effectiveCapacity}
+                      data-debug-id={`fleet-capacity-slider-${agentId}`}
+                      onChange={(e) => handleDraftCapacityChange(agentId, parseInt(e.target.value, 10))}
+                      disabled={isUpdating || isApplying}
+                      aria-label={`Capacity slider for ${roleName}`}
+                      className="w-full h-1.5 bg-neutral-soft rounded-lg appearance-none cursor-pointer accent-accent"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted">
+                      <span>1 slot</span>
+                      <span>5 slots</span>
+                      <span>10 slots</span>
+                    </div>
+                  </div>
+
+                  {/* Live Instances */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-muted">
+                      <span>Live Instances ({liveInstances.length})</span>
+                      <span>Active Tasks ({activeTasks.length})</span>
+                    </div>
+                    {liveInstances.length === 0 ? (
+                      <p className="text-[11px] text-faint italic py-0.5">No warm instances spawned yet.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {liveInstances.map((inst) => {
+                          const iid = String(inst.agentInstanceId || inst.agent_instance_id || '');
+                          return (
+                            <span
+                              key={iid}
+                              className="inline-flex items-center gap-1 rounded bg-surface px-1.5 py-0.5 text-[10px] font-mono border border-subtle text-primary"
+                            >
+                              <StatusDot size="sm" tone="success" label="Running" />
+                              <span className="truncate max-w-[100px]">{inst.displayName || iid}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Add Fleet Role if unconfigured roles exist */}
+          {availableIdentitiesToAdd.length > 0 && (
+            <div className="rounded-xl border border-dashed border-subtle p-3 space-y-2">
+              <span className="text-xs font-semibold text-primary">Configure Another Agent Role</span>
+              <div className="flex items-center gap-2">
+                <Select
+                  data-debug-id="fleet-drawer-add-role-select"
+                  width="full"
+                  value={selectedNewAgentId}
+                  onChange={setSelectedNewAgentId}
+                  options={[
+                    { value: '', label: 'Select agent identity…' },
+                    ...availableIdentitiesToAdd.map((a: any) => {
+                      const id = String(a.agent_id || a.agentId || a.id || '');
+                      const name = a.name || a.display_name || formatFleetRoleName(id, agentIdentities);
+                      return { value: id, label: name };
+                    }),
+                  ]}
+                />
+                <button
+                  type="button"
+                  data-debug-id="fleet-drawer-add-role-btn"
+                  disabled={!selectedNewAgentId || isUpdating || isApplying}
+                  onClick={() => handleAddFleet(selectedNewAgentId)}
+                  className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40 cursor-pointer shrink-0"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Drawer Footer with Batch Apply / Reset */}
+        <div className="border-t border-subtle p-3 flex flex-wrap items-center justify-between gap-2.5 bg-canvas/90">
+          <div className="text-xs text-muted">
+            {hasPendingChanges ? (
+              <span
+                data-debug-id="fleet-drawer-pending-count"
+                className="text-warning font-semibold flex items-center gap-1.5"
+              >
+                <span className="inline-block h-2 w-2 rounded-full bg-warning animate-pulse" />
+                {changedFleets.length} {changedFleets.length === 1 ? 'role change' : 'role changes'} pending
+              </span>
+            ) : successMsg ? (
+              <span className="text-success font-medium flex items-center gap-1">
+                ✓ {successMsg}
+              </span>
+            ) : (
+              <span className="text-faint">No pending changes</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {hasPendingChanges && (
+              <button
+                type="button"
+                data-debug-id="fleet-drawer-reset-btn"
+                onClick={handleReset}
+                disabled={isUpdating || isApplying}
+                className="rounded border border-subtle bg-surface px-3 py-1.5 text-xs font-semibold text-muted hover:text-primary hover:bg-neutral-soft cursor-pointer transition-colors disabled:opacity-40"
+              >
+                Reset
+              </button>
+            )}
+            <button
+              type="button"
+              data-debug-id="fleet-drawer-apply-btn"
+              onClick={handleApply}
+              disabled={!hasPendingChanges || isUpdating || isApplying}
+              className="rounded bg-accent px-4 py-1.5 text-xs font-semibold text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-40 transition-opacity flex items-center gap-1.5"
+            >
+              {isApplying || isUpdating ? (
+                <>
+                  <span className="inline-block h-3 w-3 border-2 border-accent-fg border-t-transparent rounded-full animate-spin" />
+                  Applying…
+                </>
+              ) : (
+                'Apply'
+              )}
+            </button>
+            <button
+              type="button"
+              data-debug-id="fleet-drawer-done-btn"
+              onClick={onClose}
+              className="rounded bg-neutral-soft px-3 py-1.5 text-xs font-semibold text-primary hover:bg-surface-raised cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

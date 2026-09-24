@@ -27,12 +27,12 @@ mkdir -p "$RUN_DIR/bridge"
 
 HUB_ADDR="127.0.0.1:8081"
 PROXY_ADDR="127.0.0.1:8080"
-BRIDGE_PORT="49323"
-BRIDGE_LOCAL_ENDPOINT_PORT="49324"
+BRIDGE_PORT="49327"
+BRIDGE_LOCAL_ENDPOINT_PORT="49328"
 HUB_DB="$ROOT/hub.db"
 MIGRATIONS="$ROOT/src/hub/repository/sqlite/migrations"
 BRIDGE_CONFIG="$RUN_DIR/bridge/bridge-config-full.toml"
-BRIDGE_RUN_DIR="/tmp/heimdall-bridge-local"
+BRIDGE_RUN_DIR="/tmp/heimdall-bridge-dev"
 
 build() {
   echo "[dev-stack] building fresh binaries via nix..."

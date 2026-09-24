@@ -147,6 +147,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
+	graph.taskchains.agent_service = &graph.agents
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = config.vapid_public_key,
@@ -408,6 +409,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.get_chain_directory_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.patch_chain_directory_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.remove_chain_directory_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/fleets", rawptr(&graph.taskchain_handlers), http.list_chain_fleets_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/fleets/*", rawptr(&graph.taskchain_handlers), http.upsert_chain_fleet_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/fleets/*", rawptr(&graph.taskchain_handlers), http.delete_chain_fleet_handler)
 	// Task chain directory filesystem browser (resolves chain+directory -> bridge+path, relays fs_* WS commands).
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs", rawptr(&graph.bridge_handlers), http.list_chain_directory_fs_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/quick-open", rawptr(&graph.bridge_handlers), http.quick_open_chain_directory_fs_handler)

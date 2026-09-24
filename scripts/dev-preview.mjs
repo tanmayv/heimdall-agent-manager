@@ -36,6 +36,39 @@ const ROOT = path.resolve(argValue('--root', process.env.HEIMDALL_ROOT || proces
 const PORT = Number(argValue('--port', process.env.HEIMDALL_PREVIEW_PORT || '5173'));
 const VITE_PORT = Number(argValue('--vite-port', process.env.HEIMDALL_VITE_PORT || '5174'));
 let sessionId = argValue('--session-id', process.env.HEIMDALL_PREVIEW_SESSION_ID || '');
+const UPSTREAM = new URL(argValue('--upstream', process.env.HEIMDALL_PREVIEW_UPSTREAM || 'http://127.0.0.1:8080'));
+
+/** Forward `/api/v1/...` and `/_dev/...` to local ham-dev-proxy (127.0.0.1:8080). */
+function proxyApi(req, res, targetPath) {
+  const headers = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    const lower = key.toLowerCase();
+    if (lower.startsWith('x-authentik')) continue;
+    if (lower === 'host' || lower === 'connection') continue;
+    headers[key] = value;
+  }
+  headers.host = UPSTREAM.host;
+
+  const upstreamReq = http.request(
+    {
+      protocol: UPSTREAM.protocol,
+      hostname: UPSTREAM.hostname,
+      port: UPSTREAM.port,
+      method: req.method,
+      path: targetPath,
+      headers,
+    },
+    (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    },
+  );
+  upstreamReq.on('error', (err) => {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'upstream_unreachable', message: String(err.message || err) } }));
+  });
+  req.pipe(upstreamReq);
+}
 
 // Two URL traps the preview prefix creates (from preview-server.mjs / ham-ctl-reference):
 // 1. TRAILING SLASH: /api/v1/preview/<sid> must have trailing slash.
@@ -108,6 +141,8 @@ function startVite(sid) {
     stdio: ['inherit', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      VITE_API_BASE: '.',
+      VITE_BASE_API: '.',
       FORCE_COLOR: '1',
     },
   });
@@ -183,6 +218,18 @@ const server = http.createServer((req, res) => {
   const handler = () => {
     const basePrefix = sessionId ? `/api/v1/preview/${sessionId}` : '';
     let targetPath = req.url || '/';
+
+    // Normalize path by stripping preview prefix if present
+    let cleanPath = targetPath;
+    if (basePrefix && cleanPath.startsWith(basePrefix)) {
+      cleanPath = cleanPath.slice(basePrefix.length) || '/';
+    }
+
+    // Forward API and dev-auth routes directly to local ham-dev-proxy (8080)
+    if (cleanPath.startsWith('/api/v1/') || cleanPath.startsWith('/_dev/')) {
+      proxyApi(req, res, cleanPath);
+      return;
+    }
 
     // If incoming request doesn't have the base prefix, prepend it so Vite router matches
     if (basePrefix && !targetPath.startsWith(basePrefix)) {
@@ -264,10 +311,48 @@ const server = http.createServer((req, res) => {
   }
 });
 
-// Relay WebSocket upgrades to Vite (critical for HMR)
+// Relay WebSocket upgrades (API WebSockets to ham-dev-proxy, HMR to Vite)
 server.on('upgrade', (req, clientSocket, head) => {
   const basePrefix = sessionId ? `/api/v1/preview/${sessionId}` : '';
   let targetPath = req.url || '/';
+  let cleanPath = targetPath;
+  if (basePrefix && cleanPath.startsWith(basePrefix)) {
+    cleanPath = cleanPath.slice(basePrefix.length) || '/';
+  }
+
+  // Forward API WebSockets (e.g. /api/v1/user-ws, /api/v1/lsp/) to ham-dev-proxy (8080)
+  if (cleanPath.startsWith('/api/v1/')) {
+    const headers = { ...req.headers, host: UPSTREAM.host };
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase().startsWith('x-authentik')) delete headers[key];
+    }
+    const upstreamReq = http.request({
+      protocol: UPSTREAM.protocol,
+      hostname: UPSTREAM.hostname,
+      port: UPSTREAM.port,
+      method: req.method,
+      path: cleanPath,
+      headers,
+    });
+    upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+      const statusLine = Object.entries(upstreamRes.headers)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+        .join('\r\n');
+      clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${statusLine}\r\n\r\n`);
+      if (upstreamHead?.length) clientSocket.unshift(upstreamHead);
+      upstreamSocket.pipe(clientSocket).pipe(upstreamSocket);
+      upstreamSocket.on('error', () => clientSocket.destroy());
+      clientSocket.on('error', () => upstreamSocket.destroy());
+    });
+    upstreamReq.on('response', (upstreamRes) => {
+      clientSocket.end(`HTTP/1.1 ${upstreamRes.statusCode} ${upstreamRes.statusMessage}\r\n\r\n`);
+    });
+    upstreamReq.on('error', () => clientSocket.destroy());
+    if (head?.length) upstreamReq.write(head);
+    upstreamReq.end();
+    return;
+  }
+
   if (basePrefix && !targetPath.startsWith(basePrefix)) {
     if (!targetPath.startsWith('/')) targetPath = '/' + targetPath;
     targetPath = `${basePrefix}${targetPath}`;

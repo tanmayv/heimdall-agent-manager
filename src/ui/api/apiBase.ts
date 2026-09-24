@@ -18,9 +18,9 @@
 // `base: './'` already makes the asset URLs inherit it.
 //
 // Opt-in, and build-time only: Vite statically replaces `import.meta.env.*`, so an
-// ordinary `npm run build` (no VITE_API_BASE in the environment) emits `''` here
+// ordinary `npm run build` (no VITE_API_BASE or VITE_BASE_API in the environment) emits `''` here
 // and every call site keeps its absolute path.
-const configured = String((import.meta as any).env?.VITE_API_BASE ?? '').trim();
+const configured = String((import.meta as any).env?.VITE_API_BASE ?? (import.meta as any).env?.VITE_BASE_API ?? '').trim();
 
 /** `''` in every normal build; `'.'` (document-relative) in a preview build. */
 export const API_BASE: string = configured;

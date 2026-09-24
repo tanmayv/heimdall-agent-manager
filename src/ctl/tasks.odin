@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import http "odin_test:lib/http_client"
 
@@ -139,8 +140,59 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|directory|add-agent|publish|complete|reopen|pin|unpin>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
+	fmt.println("  fleet <list|set>                        manage chain fleet capacities")
+}
+
+ctl_task_chains_fleet_command :: proc(transport: Ctl_Transport, tokens: []string, args: []string) {
+	if has_flag(args, "--help") || has_flag(args, "-h") || (len(tokens) > 0 && tokens[0] == "help") {
+		print_help_task_chain_fleet()
+		return
+	}
+	sub := pos(tokens, 0)
+	if sub == "" || sub == "list" {
+		chain_id := pos(tokens, 1)
+		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
+		if chain_id == "" do chain_id = resolve_chain_id(transport, args)
+		if chain_id == "" {
+			fmt.println("usage: ham-ctl task-chains fleet list <chain-id>")
+			return
+		}
+		path := fmt.tprintf("/api/v1/task-chains/%s/fleets", safe_path_part(chain_id))
+		ctl_tasks_request(transport, "GET", path, "")
+		return
+	}
+	if sub == "set" {
+		chain_id := pos(tokens, 1)
+		if chain_id == "" do chain_id = option_value(args, "--chain", option_value(args, "--chain-id", ""))
+		if chain_id == "" do chain_id = resolve_chain_id(transport, args)
+		agent_id := option_value(args, "--agent", option_value(args, "--agent-id", ""))
+		capacity_str := option_value(args, "--capacity", "")
+		if chain_id == "" || agent_id == "" || capacity_str == "" {
+			fmt.println("usage: ham-ctl task-chains fleet set <chain-id> --agent <agent_id> --capacity <N>")
+			return
+		}
+		capacity := 1
+		if c, c_ok := strconv.parse_int(capacity_str); c_ok {
+			capacity = int(c)
+		}
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv_raw("capacity", fmt.tprintf("%d", capacity)))
+		if mw := option_value(args, "--min-warm", ""); mw != "" {
+			if v, v_ok := strconv.parse_int(mw); v_ok do append(&fields, json_kv_raw("min_warm", fmt.tprintf("%d", v)))
+		}
+		if ttl := option_value(args, "--idle-ttl", option_value(args, "--idle-ttl-seconds", "")); ttl != "" {
+			if v, v_ok := strconv.parse_int(ttl); v_ok do append(&fields, json_kv_raw("idle_ttl_seconds", fmt.tprintf("%d", v)))
+		}
+		path := fmt.tprintf("/api/v1/task-chains/%s/fleets/%s", safe_path_part(chain_id), safe_path_part(agent_id))
+		ctl_tasks_request(transport, "PUT", path, json_object_from_slice(fields[:]))
+		return
+	}
+	chain_id := sub
+	path := fmt.tprintf("/api/v1/task-chains/%s/fleets", safe_path_part(chain_id))
+	ctl_tasks_request(transport, "GET", path, "")
 }
 
 // Destructive chain verbs must NEVER fall back to the auto-resolved caller
@@ -169,6 +221,11 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 
 	transport, ok := resolve_ctl_transport(args)
 	if !ok do return
+
+	if action == "fleet" || action == "fleets" {
+		ctl_task_chains_fleet_command(transport, cmd[idx + 1:], args)
+		return
+	}
 
 	if action == "" || action == "list" {
 		if has_flag(args, "--pinned") {
@@ -432,7 +489,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			append(&fields, json_kv("priority", prio))
 		}
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
-			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+			append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(assignee)}))
 		}
 		// --reviewer accepts a comma-separated list for multiple reviewers.
 		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, ctl_v2_reviewer_refs(reviewer))
@@ -466,9 +523,10 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		
 		assignee := "\x1b[31mNONE\x1b[0m"
 		if !strings.contains(resp_str, "\"assignee_ref\":null") && !strings.contains(resp_str, "\"assignee_ref\":{}") && strings.contains(resp_str, "\"assignee_ref\":") { 
-			// Attempt to loosely find agent_instance_id or fallback to "assigned"
+			// Attempt to loosely find agent_instance_id, agent_id or fallback to "assigned"
 			aref_idx := strings.index(resp_str, "\"assignee_ref\":")
-			maybe_id := extract_json_string_unescaped(resp_str[aref_idx:], "agent_instance_id", "assigned")
+			maybe_id := extract_json_string_unescaped(resp_str[aref_idx:], "agent_instance_id", "")
+			if maybe_id == "" do maybe_id = extract_json_string_unescaped(resp_str[aref_idx:], "agent_id", "assigned")
 			assignee = maybe_id
 		}
 		
@@ -506,7 +564,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
 		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
-			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+			append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(assignee)}))
 		}
 		// --reviewer is comma-separated for MULTIPLE reviewers; presence-checked so
 		// `--reviewer ""` clears the list.
