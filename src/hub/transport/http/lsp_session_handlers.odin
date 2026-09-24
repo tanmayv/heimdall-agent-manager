@@ -673,6 +673,14 @@ lsp_bridge_frame_for_client :: proc(frame_type, text, client_session_id: string)
 			strings.write_string(&b, ",\"error\":\"")
 			write_handler_json_string(&b, err_msg)
 			strings.write_byte(&b, '"')
+		} else {
+			root_path := json_string(text, "root_path")
+			defer delete(root_path)
+			if root_path != "" {
+				strings.write_string(&b, ",\"root_path\":\"")
+				write_handler_json_string(&b, root_path)
+				strings.write_byte(&b, '"')
+			}
 		}
 	case "lsp_stopped":
 	// no payload beyond the type and session id
@@ -950,6 +958,7 @@ lsp_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_So
 			sent, send_err := bridge_service.send_lsp_start(
 				h.bridges, auth_ctx, bridge_id, wire_id,
 				language, cfg.cmd, cfg.args, cwd, auth_ctx.user_id,
+				cfg.root_markers, file_path,
 				h.bridge_command_sink,
 			)
 			if !sent {

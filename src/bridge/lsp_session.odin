@@ -21,6 +21,7 @@ import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -561,26 +562,86 @@ bridge_lsp_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 	return false
 }
 
+// bridge_lsp_find_root_dir searches upwards from file_path (or cwd) towards the
+// filesystem root for the nearest ancestor directory containing any of the
+// comma-separated root_markers (e.g. "tsconfig.json,package.json", "go.mod,.git").
+// Returns a heap-allocated copy of the directory path if found, or "" otherwise.
+bridge_lsp_find_root_dir :: proc(file_path, cwd, root_markers: string, allocator := context.allocator) -> string {
+	if strings.trim_space(root_markers) == "" do return ""
+
+	// Determine starting search directory.
+	start_dir := ""
+	if strings.trim_space(file_path) != "" {
+		fp := file_path
+		if !filepath.is_abs(fp) && strings.trim_space(cwd) != "" {
+			if joined, err := filepath.join([]string{cwd, fp}, context.temp_allocator); err == nil {
+				fp = joined
+			}
+		}
+		clean_fp, _ := filepath.clean(fp, context.temp_allocator)
+		if os.is_dir(clean_fp) {
+			start_dir = clean_fp
+		} else {
+			start_dir = filepath.dir(clean_fp)
+		}
+	} else if strings.trim_space(cwd) != "" {
+		start_dir, _ = filepath.clean(cwd, context.temp_allocator)
+	}
+
+	if start_dir == "" do return ""
+
+	// Split comma-separated markers.
+	markers_raw := strings.split(root_markers, ",", context.temp_allocator)
+	markers := make([dynamic]string, context.temp_allocator)
+	for m in markers_raw {
+		trimmed := strings.trim_space(m)
+		if trimmed != "" {
+			append(&markers, trimmed)
+		}
+	}
+	if len(markers) == 0 do return ""
+
+	curr := start_dir
+	for {
+		for m in markers {
+			candidate, jerr := filepath.join([]string{curr, m}, context.temp_allocator)
+			if jerr == nil && os.exists(candidate) {
+				return strings.clone(curr, allocator)
+			}
+		}
+
+		parent := filepath.dir(curr)
+		if parent == curr || curr == "." || curr == "" {
+			break
+		}
+		curr = parent
+	}
+
+	return ""
+}
+
 // ---- lsp_start: spawn server process ----------------------------------------
 
 bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
-	command_id  := extract_json_string(text, "command_id",    "")
-	session_id  := extract_json_string(text, "session_id",    "")
-	language    := extract_json_string(text, "language",      "")
-	cmd_str     := extract_json_string(text, "cmd",           "")
-	args_str    := extract_json_string(text, "args",          "")
-	cwd         := extract_json_string(text, "cwd",           "")
-	owner_uid   := extract_json_string(text, "owner_user_id", "")
+	command_id   := extract_json_string(text, "command_id",    "")
+	session_id   := extract_json_string(text, "session_id",    "")
+	language     := extract_json_string(text, "language",      "")
+	cmd_str      := extract_json_string(text, "cmd",           "")
+	args_str     := extract_json_string(text, "args",          "")
+	cwd          := extract_json_string(text, "cwd",           "")
+	owner_uid    := extract_json_string(text, "owner_user_id", "")
+	root_markers := extract_json_string(text, "root_markers",  "")
+	file_path    := extract_json_string(text, "file_path",     "")
 	// extract_json_string returns a heap string per call (json_unescape,
 	// main.odin:732). This loop is NOT arena-covered, so every one is freed
 	// here; the session keeps its own lsp_heap clones.
 	defer {
-		delete(command_id); delete(session_id); delete(language)
-		delete(cmd_str);    delete(args_str);   delete(cwd)
-		delete(owner_uid)
+		delete(command_id);   delete(session_id); delete(language)
+		delete(cmd_str);      delete(args_str);   delete(cwd)
+		delete(owner_uid);    delete(root_markers); delete(file_path)
 	}
 
-	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, err_msg: string) {
+	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, err_msg: string, root_path: string = "") {
 		b := strings.builder_make()
 		strings.write_string(&b, "{\"type\":\"lsp_started\",\"session_id\":\"")
 		bridge_runtime_write_json_string(&b, session_id)
@@ -591,6 +652,10 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 		if !ok {
 			strings.write_string(&b, ",\"error\":\"")
 			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_byte(&b, '"')
+		} else if strings.trim_space(root_path) != "" {
+			strings.write_string(&b, ",\"root_path\":\"")
+			bridge_runtime_write_json_string(&b, root_path)
 			strings.write_byte(&b, '"')
 		}
 		strings.write_byte(&b, '}')
@@ -638,8 +703,15 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
+	// Detect project root directory if root markers are configured.
+	detected_root := bridge_lsp_find_root_dir(file_path, cwd, root_markers)
+	defer delete(detected_root)
+
 	// Spawn the language server. The child gets stdin_r as stdin and stdout_w as stdout.
 	working_dir := cwd
+	if detected_root != "" {
+		working_dir = detected_root
+	}
 	process, spawn_err := os.process_start(os.Process_Desc{
 		command     = argv[:],
 		stdin       = stdin_r,
@@ -664,7 +736,7 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 		session_id    = strings.clone(session_id,  lsp_heap()),
 		language      = strings.clone(language,    lsp_heap()),
 		cmd           = strings.clone(cmd_str,     lsp_heap()),
-		cwd           = strings.clone(cwd,         lsp_heap()),
+		cwd           = strings.clone(working_dir, lsp_heap()),
 		owner_user_id = strings.clone(owner_uid,   lsp_heap()),
 		pid           = process.pid,
 		status        = .Running,
@@ -681,7 +753,7 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 	thread.run_with_data(rawptr(ctx), bridge_lsp_read_worker)
 
 	fmt.println("bridge lsp_start: session", session_id, "pid", process.pid, "cmd", cmd_str)
-	send_result(conn, session_id, command_id, true, "")
+	send_result(conn, session_id, command_id, true, "", detected_root)
 }
 
 // ---- lsp_stop: terminate server process -------------------------------------
