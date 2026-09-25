@@ -39,7 +39,6 @@ import {
 import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
-import { VaultText } from '../vault/VaultText';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   readChainOverviewCollapsedState,
