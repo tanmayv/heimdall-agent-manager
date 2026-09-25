@@ -102,8 +102,27 @@ def test_live_cli_roundtrip() -> None:
             endpoint = f"unix:{sock_path}"
         else:
             endpoint = "tcp:127.0.0.1:49324"
-    token = os.environ.get("HEIMDALL_AGENT_TOKEN", "hlat_18d8984563e99ba0_204")
-    inst_id = os.environ.get("HEIMDALL_AGENT_INSTANCE_ID", "inst_18d892f10fff400b")
+    token = os.environ.get("HEIMDALL_AGENT_TOKEN", "")
+    inst_id = os.environ.get("HEIMDALL_AGENT_INSTANCE_ID", "")
+    if not token or not inst_id:
+        instances_dir = pathlib.Path("/tmp/heimdall-bridge-local/instances")
+        if instances_dir.exists():
+            wrappers = sorted(instances_dir.glob("*/.heimdall/bin/ham-ctl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for wrapper in wrappers:
+                try:
+                    for line in wrapper.read_text(encoding="utf-8").splitlines():
+                        if "HEIMDALL_AGENT_TOKEN=" in line and not token:
+                            token = line.split("HEIMDALL_AGENT_TOKEN=")[1].strip("'\"")
+                        if "HEIMDALL_AGENT_INSTANCE_ID=" in line and not inst_id:
+                            inst_id = line.split("HEIMDALL_AGENT_INSTANCE_ID=")[1].strip("'\"")
+                    if token and inst_id:
+                        break
+                except Exception:
+                    pass
+    if not token:
+        token = "hlat_18d8984563e99ba0_204"
+    if not inst_id:
+        inst_id = "inst_18d892f10fff400b"
 
     env = os.environ.copy()
     env["HEIMDALL_BRIDGE_ENDPOINT"] = endpoint
