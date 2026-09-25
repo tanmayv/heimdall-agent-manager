@@ -32,7 +32,8 @@ export function getRoutePathname(): string {
   }
   const qIndex = raw.indexOf('?');
   const path = qIndex >= 0 ? raw.slice(0, qIndex) : raw;
-  return path || '/';
+  if (!path) return '/';
+  return path.startsWith('/') ? path : `/${path}`;
 }
 
 // Route search string including the leading `?` (e.g. `?memoryId=m1`). Falls back to
