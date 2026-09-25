@@ -365,11 +365,20 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 		capacity := fleet_capacity_for_agent(fleets, target_agent_id)
 
 		idle_instance_id := ""
+		warm_stopped_id := ""
 		live_count := 0
 
 		for inst in chain_instances {
 			if inst.agent_id != target_agent_id do continue
-			if inst.runtime_status == "stopped" || inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+			if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+
+			if inst.runtime_status == "stopped" {
+				if warm_stopped_id == "" && !busy_instances[inst.agent_instance_id] {
+					warm_stopped_id = inst.agent_instance_id
+				}
+				continue
+			}
+
 			live_count += 1
 
 			if idle_instance_id == "" && !busy_instances[inst.agent_instance_id] {
@@ -377,8 +386,12 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			}
 		}
 
-		if idle_instance_id != "" {
-			bound_ref := bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, idle_instance_id)
+		chosen_instance_id := idle_instance_id if idle_instance_id != "" else warm_stopped_id
+
+		if chosen_instance_id != "" {
+			ensure_chain_member(service, chain, chosen_instance_id, target_agent_id)
+
+			bound_ref := bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, chosen_instance_id)
 			defer delete(bound_ref)
 
 			nt := cand
@@ -386,8 +399,17 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			nt.updated_at = now
 			_, _, _ = iface.taskchain_save_task(service.repo, nt)
 
-			mark_busy(&busy_instances, &busy_keys, idle_instance_id)
+			mark_busy(&busy_instances, &busy_keys, chosen_instance_id)
 			modified = true
+
+			if chosen_instance_id == warm_stopped_id {
+				for i in 0..<len(chain_instances) {
+					if chain_instances[i].agent_instance_id == chosen_instance_id {
+						chain_instances[i].runtime_status = "launching"
+						break
+					}
+				}
+			}
 		} else if live_count < capacity {
 			new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], target_agent_id, "worker")
 			if new_instance_id != "" {
@@ -457,12 +479,21 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			capacity := fleet_capacity_for_agent(fleets, rev_agent_id)
 
 			idle_reviewer_id := ""
+			warm_stopped_reviewer_id := ""
 			live_count := 0
 
 			for inst in chain_instances {
 				if inst.agent_id != rev_agent_id do continue
 				if inst.agent_instance_id == assignee_id do continue
-				if inst.runtime_status == "stopped" || inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+				if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+
+				if inst.runtime_status == "stopped" {
+					if warm_stopped_reviewer_id == "" && !busy_instances[inst.agent_instance_id] {
+						warm_stopped_reviewer_id = inst.agent_instance_id
+					}
+					continue
+				}
+
 				live_count += 1
 
 				if idle_reviewer_id == "" && !busy_instances[inst.agent_instance_id] {
@@ -475,8 +506,12 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				target_ref_json = chain.default_reviewer_refs_json
 			}
 
-			if idle_reviewer_id != "" {
-				bound_ref := bind_agent_id_to_instance(target_ref_json, rev_agent_id, idle_reviewer_id)
+			chosen_reviewer_id := idle_reviewer_id if idle_reviewer_id != "" else warm_stopped_reviewer_id
+
+			if chosen_reviewer_id != "" {
+				ensure_chain_member(service, chain, chosen_reviewer_id, rev_agent_id)
+
+				bound_ref := bind_agent_id_to_instance(target_ref_json, rev_agent_id, chosen_reviewer_id)
 				defer delete(bound_ref)
 
 				nt := t
@@ -484,8 +519,17 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				nt.updated_at = now
 				_, _, _ = iface.taskchain_save_task(service.repo, nt)
 
-				mark_busy(&busy_instances, &busy_keys, idle_reviewer_id)
+				mark_busy(&busy_instances, &busy_keys, chosen_reviewer_id)
 				modified = true
+
+				if chosen_reviewer_id == warm_stopped_reviewer_id {
+					for i in 0..<len(chain_instances) {
+						if chain_instances[i].agent_instance_id == chosen_reviewer_id {
+							chain_instances[i].runtime_status = "launching"
+							break
+						}
+					}
+				}
 			} else if live_count < capacity {
 				new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], rev_agent_id, "reviewer")
 				if new_instance_id != "" {
@@ -801,6 +845,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		// Emit runtime wake/stop (coordinators exempt).
 		if cf.instance_id == coordinator_id do continue
 		if cf.new_task_id != "" {
+			remove_from_all_stops(&stops, cf.instance_id)
 			role := "worker"
 			if cf.new_role == .Review do role = "reviewer"
 			// REQ-37: carry the full descriptor so the bridge takes the agent-keyed
@@ -858,8 +903,9 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	}
 
 	// Actionable tasks sweep: evaluate current running states for all actionable
-	// tasks. If an In_Progress task has a non-running assignee or an In_Validation task
-	// has an unvoted non-running reviewer, ensure reconciliation starts them.
+	// tasks and active focus instances. If an In_Progress task has a non-running assignee,
+	// an In_Validation task has an unvoted non-running reviewer, or an instance has an active
+	// focus, ensure reconciliation starts them and removes them from all stops.
 	eval_tasks := fresh_tasks if ft_err.code == .None else tasks[:]
 	for t in eval_tasks {
 		if t.status == .In_Progress {
@@ -883,6 +929,28 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 				}
 			}
 			delete(def_reviewers)
+		}
+	}
+
+	for inst_id, f in focus {
+		if f.task_id != "" && f.role != .None {
+			task, task_ok := lookup_task(eval_tasks, f.task_id)
+			if !task_ok do task, task_ok = lookup_task(tasks[:], f.task_id)
+			if task_ok {
+				ensure_actionable_agent_started(service, chain, task, inst_id, f.role, &runs, &stops, &bridge_order, &seen_bridge)
+			}
+		}
+	}
+
+	// Guarantee actionable agents are safely removed from any pending stops
+	for inst_id, f in focus {
+		if f.task_id != "" {
+			remove_from_all_stops(&stops, inst_id)
+		}
+	}
+	for _, entries in runs {
+		for entry in entries {
+			remove_from_all_stops(&stops, entry.agent_instance_id)
 		}
 	}
 

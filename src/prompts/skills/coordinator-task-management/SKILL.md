@@ -19,19 +19,19 @@ All commands use the managed wrapper from your run directory: `./.heimdall/bin/h
 - Update it whenever scope/tasks/dependencies/reviewers change: `./.heimdall/bin/ham-ctl task-chain set-description "<markdown>" [--chain <id>]`. A stale description is a correctness bug.
 
 ## 3. Create tasks and DELEGATE them
-- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl task create --title "<title>" --description "<the filled-in template from §4>" --assignee <agent_instance_id|agent_id> [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]`.
+- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl task create --title "<title>" --description "<the filled-in template from §4>" --assignee <agt_id> [--reviewer <agt_id,...>] [--depends-on <id,id>] [--chain <id>]`. Coordinators must exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`; never manually create agent instances (`agents new-instance`) or bind tasks to ephemeral instance IDs (`inst_...`).
 - Order work with dependencies: `./.heimdall/bin/ham-ctl task depend <task-id> --on <dependency-task-id>` (or `task update <id> --depends-on <id,id>` to replace the whole list).
-- Edit an existing task (title/description/priority/assignee/reviewers/deps): `./.heimdall/bin/ham-ctl task update <task-id> [...]`.
+- Edit an existing task (title/description/priority/assignee/reviewers/deps): `./.heimdall/bin/ham-ctl task update <task-id> [...]`. When reassigning or updating reviewers, exclusively pass `agt_...` IDs.
 - Do NOT create one giant task you then implement yourself. Split the goal so each substantial piece has an assignee.
 - Staging note: creating tasks and wiring deps does NOT start anyone. Nothing promotes or nudges until you run `reconcile` (see §8).
 
 ### Fleet-based task delegation & capacity management
-Instead of binding tasks to specific ephemeral instance IDs (`inst_...`) upfront, coordinators can delegate tasks directly to durable agent templates (`agt_...`) and configure fleet capacity quotas for the chain:
+Coordinators must delegate tasks exclusively to durable agent templates (`agt_...`) rather than binding tasks to specific ephemeral instance IDs (`inst_...`) or manually provisioning instances. Fleet capacity quotas and JIT dispatch manage the worker and reviewer instance lifecycles automatically:
 - **Set fleet capacity**: Define concurrency limits and warm standby policies for each worker type on the chain:
   `./.heimdall/bin/ham-ctl task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>]`
 - **Inspect fleet allocations**: Check configured capacity and live active instance counts:
   `./.heimdall/bin/ham-ctl task-chain fleet list <chain-id>`
-- **Assign to durable agent IDs**: When creating or updating tasks, specify `--assignee <agt_id>` or `--reviewer <agt_id>`. During `reconcile`, Heimdall dynamically routes actionable tasks to idle instances of that agent template, or provisions new instances just-in-time up to the configured fleet capacity limit.
+- **Assign to durable agent IDs**: When creating or updating tasks, exclusively specify `--assignee <agt_id>` and `--reviewer <agt_id>`. During `reconcile`, Heimdall dynamically routes actionable tasks to idle instances of that agent template, or provisions new instances just-in-time up to the configured fleet capacity limit.
 
 ## 4. Write a self-contained task (the task-creation template)
 Assume the assignee is a LOW-CAPABILITY agent that knows NOTHING beyond the task description and will NOT search the codebase to fill gaps. **Rule: if you had to search or already know something to make the task doable, put it in the task.** Every `--description` MUST fill in every field below (write "none" where a field truly does not apply — never leave a field out):
@@ -51,7 +51,7 @@ Acceptance criteria (CHECKLIST): <each item independently checkable, one per lin
   [ ] <criterion 1>
   [ ] <criterion 2> ...>
 How to VERIFY (actual behavior, not "looks right"): <the exact command to run / source file:line to read / build+test to run that proves each criterion>
-Dependencies & handoff: <which task(s) must finish first; the reviewer instance id(s); the required REVIEW TIER — "quick" or "comprehensive" per §7>
+Dependencies & handoff: <which task(s) must finish first; the assignee agent ID (--assignee <agt_id>) and reviewer agent ID(s) (--reviewer <agt_id>); the required REVIEW TIER — "quick" or "comprehensive" per §7. Note: fleet capacity and JIT dispatch manage the instance lifecycle — do not bind to ephemeral instance IDs>
 Links / artifacts: <audit ids, prior task ids, docs — or "none">
 ```
 
@@ -72,7 +72,7 @@ Acceptance criteria (CHECKLIST):
   [ ] `task show <id>` with no flag prints the same formatted output as before.
   [ ] ctl binary builds with no errors.
 How to VERIFY: run the two commands above; pipe the --json output through `python3 -m json.tool` (must succeed); diff the no-flag output against current behavior.
-Dependencies & handoff: none first; reviewer inst_abc; review tier: comprehensive (changes CLI behavior).
+Dependencies & handoff: none first; assignee agt_worker_odin; reviewer agt_reviewer_lead; review tier: comprehensive (changes CLI behavior).
 Links / artifacts: none.
 ```
 
