@@ -929,8 +929,8 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
   const listColumn = (
     <div data-debug-id="memory-list-page" className="flex w-full min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden">
       {searchFilter}
-      {filterChipRow ? <div className="shrink-0 px-2">{filterChipRow}</div> : null}
-      <div className="flex-1 min-h-0 overflow-hidden flex flex-col px-2">
+      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {listSection}
       </div>
     </div>

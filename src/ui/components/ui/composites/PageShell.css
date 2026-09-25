@@ -63,14 +63,16 @@
  * visible "spacing is wrong" in the rendered page.
  */
 .ui-pageshell {
-  --ps-band-gap: var(--space-5);
-  --ps-pad-x: var(--space-4);
-  --ps-pad-y: var(--space-5);
+  --ps-band-gap: var(--space-4);
+  --ps-pad-x: var(--space-3);
+  --ps-pad-y: var(--space-4);
 }
 
 @media (min-width: 640px) {
   .ui-pageshell {
+    --ps-band-gap: var(--space-5);
     --ps-pad-x: var(--space-6);
+    --ps-pad-y: var(--space-5);
   }
 }
 

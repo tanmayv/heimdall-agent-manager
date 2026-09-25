@@ -1065,7 +1065,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
 
   const isDesktopTwoPaneRoute =
     viewport === 'desktop' &&
-    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory'].some(
+    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory', '/issues'].some(
       (prefix) => path === prefix || path.startsWith(`${prefix}/`)
     ) &&
     !path.endsWith('/new') &&
@@ -1093,8 +1093,8 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       <section
         className={
           isDesktopTwoPaneRoute
-            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
-            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
+            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
+            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
         }
       >
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
