@@ -28,16 +28,12 @@ import {
   Button,
   EmptyState,
   Icon,
-  Input,
   Modal,
   ModalBody,
   ModalFooter,
-  PageShell,
+  ResourceContainer,
+  ResourceSearchFilter,
   StatusPill,
-  Tab,
-  Tabs,
-  TabsList,
-  TabsPanel,
   Text,
   Toast,
   TOUCH_TARGET_CLASS,
@@ -49,6 +45,7 @@ import AgentRow from './AgentRow';
 import {
   AgentDetailActions,
   AgentDetailBody,
+  AgentDetailHeader,
   AgentDetailMeta,
   AgentDetailPaneSkeleton,
   LiveInstanceDetailPane,
@@ -816,66 +813,29 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     </div>
   );
 
-  /* ---------------- Toolbar ---------------- */
-  const toolbar = (
-    <div className="flex items-center gap-2" data-debug-id="agent-toolbar">
-      <Input
-        type="search"
-        value={queryInput}
-        onChange={setQueryInput}
-        width="full"
-        size={isMobile ? 'md' : 'sm'}
-        leading={<Icon name="search" size="sm" />}
-        placeholder={tab === 'live' ? 'Search live instances…' : 'Search names and slugs…'}
-        aria-label={tab === 'live' ? 'Search live instances' : 'Search agent names and slugs'}
-        data-debug-id="agent-search-input"
-        ref={searchRef}
-        className={['min-w-0 flex-1', isMobile ? TOUCH_TARGET_CLASS : ''].filter(Boolean).join(' ')}
-      />
-      {urlState.q ? (
-        <ActionButton
-          icon="close"
-          label="Clear"
-          aria-label="Clear search"
-          data-debug-id="agent-search-clear"
-          onClick={() => { setQueryInput(''); applyUrlState({ ...urlState, q: '' }); }}
-        />
-      ) : null}
-    </div>
-  );
-
-  const tabsBlock = (
-    <Tabs
-      value={searching && tab !== 'live' ? '' : tab}
-      onChange={(next) => applyUrlState({ ...urlState, tab: next as AgentTab })}
-      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
-    >
-      <TabsList label="Agent state" className="shrink-0">
-        {AGENT_TABS.map((entry) => (
-          <Tab
-            key={entry.value}
-            value={entry.value}
-            disabled={searching && tab !== 'live'}
-            data-debug-id={`agent-tab-${entry.value}`}
-          >
-            {entry.label}
-          </Tab>
-        ))}
-      </TabsList>
-      {searching && tab !== 'live' ? null : (
-        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
-          {tab === 'live' ? liveSection : listSection}
-        </TabsPanel>
-      )}
-    </Tabs>
-  );
-
   const listColumn = (
-    <div data-debug-id="agent-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
-      <div className="shrink-0">{toolbar}</div>
-      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
-        {tabsBlock}
-        {searching && tab !== 'live' ? listSection : null}
+    <div className="flex w-full min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden">
+      <div data-debug-id="agent-toolbar">
+        <ResourceSearchFilter
+          searchQuery={queryInput}
+          onSearchChange={setQueryInput}
+          searchPlaceholder={tab === 'live' ? 'Search live instances…' : 'Search names and slugs…'}
+          searchDebugId="agent-search-input"
+          searchClearDebugId="agent-search-clear"
+          searchRef={searchRef}
+          activeTab={searching && tab !== 'live' ? '' : tab}
+          onTabChange={(next) => applyUrlState({ ...urlState, tab: next as AgentTab })}
+          tabs={AGENT_TABS.map((entry) => ({
+            value: entry.value,
+            label: entry.label,
+            disabled: searching && tab !== 'live',
+            debugId: `agent-tab-${entry.value}`,
+          }))}
+          tabsLabel="Agent state"
+        />
+      </div>
+      <div className="flex min-w-0 flex-col gap-4 flex-1 min-h-0 overflow-hidden">
+        {tab === 'live' ? liveSection : listSection}
       </div>
     </div>
   );
@@ -946,60 +906,52 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
 
   const headerDescription = 'An agent is a persona — instructions, a model, and an identity — that can run across your bridges.';
 
-  /* ---------------- Two-pane ---------------- */
-  if (twoPane) {
-    return (
-      <PageShell
-        width="full"
-        rhythm="banded"
-        title="Agents"
-        breadcrumbs={listCrumbs()}
-        description={headerDescription}
-        className="h-full min-h-0 overflow-hidden"
-        actions={
-          <Button
-            variant="primary"
-            data-debug-id="agent-new-btn"
-            leading={<Icon name="plus" size="sm" />}
-            onClick={() => navigateTo(agentNewHref())}
-          >
-            New agent
-          </Button>
-        }
-      >
-        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="agent-detail-pane">
-            {tab === 'live' ? (
-              activeInstanceId ? (
-                <LiveInstanceDetailPane instanceId={activeInstanceId} onStopped={() => void liveInstancesQuery.refetch()} />
-              ) : (
-                <div className="flex h-full items-center justify-center p-6">
-                  <Text role="body-sm" tone="muted">No live instances running.</Text>
-                </div>
-              )
-            ) : selectedId ? (
-              <AgentDetailPane agentId={selectedId} onAfterArchive={() => undefined} />
-            ) : (
-              <div className="flex h-full items-center justify-center p-6">
-                <Text role="body-sm" tone="muted">Select an agent to see it here.</Text>
-              </div>
-            )}
-          </div>
-        </div>
-        {overlays}
-      </PageShell>
-    );
-  }
+  const detail = tab === 'live' ? (
+    (twoPane ? activeInstanceId : urlState.instanceId) ? (
+      <LiveInstanceDetailPane
+        instanceId={twoPane ? activeInstanceId : (urlState.instanceId || '')}
+        onStopped={() => void liveInstancesQuery.refetch()}
+      />
+    ) : null
+  ) : selectedId ? (
+    <AgentDetailPane agentId={selectedId} onAfterArchive={() => undefined} />
+  ) : null;
 
-  if (!twoPane && tab === 'live' && urlState.instanceId) {
-    return (
-      <PageShell
-        width={viewport === 'tablet' ? 'content' : 'full'}
-        rhythm="banded"
-        title="Live Instance"
-        breadcrumbs={[{ label: 'Agents', href: agentListHref({ tab: 'live', q: '' }) }, { label: urlState.instanceId }]}
-        actions={
+  const emptyDetail = tab === 'live' ? (
+    <div className="flex h-full items-center justify-center p-6">
+      <Text role="body-sm" tone="muted">No live instances running.</Text>
+    </div>
+  ) : (
+    <div className="flex h-full items-center justify-center p-6">
+      <Text role="body-sm" tone="muted">Select an agent to see it here.</Text>
+    </div>
+  );
+
+  return (
+    <ResourceContainer
+      title="Agents"
+      description={headerDescription}
+      breadcrumbs={listCrumbs()}
+      actions={
+        <Button
+          variant="primary"
+          data-debug-id="agent-new-btn"
+          leading={<Icon name="plus" size="sm" />}
+          onClick={() => navigateTo(agentNewHref())}
+        >
+          New agent
+        </Button>
+      }
+      hasSelection={twoPane ? (tab === 'live' ? Boolean(activeInstanceId) : Boolean(selectedId)) : (tab === 'live' ? Boolean(urlState.instanceId) : Boolean(selectedId))}
+      selectedId={tab === 'live' ? (twoPane ? activeInstanceId : urlState.instanceId) : selectedId}
+      detailTitle={tab === 'live' ? 'Live Instance' : 'Agent Details'}
+      detailBreadcrumbs={
+        tab === 'live' && urlState.instanceId
+          ? [{ label: 'Agents', href: agentListHref({ tab: 'live', q: '' }) }, { label: urlState.instanceId }]
+          : undefined
+      }
+      detailActions={
+        tab === 'live' && urlState.instanceId ? (
           <Button
             variant="secondary"
             data-debug-id="live-instance-back-btn"
@@ -1008,48 +960,16 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
           >
             Back to Live Instances
           </Button>
-        }
-      >
-        <div className="flex flex-col gap-4">
-          <div className="mb-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              data-debug-id="live-instance-back-btn"
-              leading={<Icon name="arrow-left" size="sm" />}
-              onClick={() => applyUrlState({ ...urlState, instanceId: undefined })}
-            >
-              Back to Live Instances
-            </Button>
-          </div>
-          <LiveInstanceDetailPane instanceId={urlState.instanceId} onStopped={() => void liveInstancesQuery.refetch()} />
-        </div>
-        {overlays}
-      </PageShell>
-    );
-  }
-
-  return (
-    <PageShell
-      width={viewport === 'tablet' ? 'content' : 'full'}
-      rhythm="banded"
-      title="Agents"
-      breadcrumbs={listCrumbs()}
-      description={headerDescription}
-      actions={
-        <ActionButton
-          icon="plus"
-          label="New agent"
-          variant="primary"
-          showIconOnDesktop
-          data-debug-id="agent-new-btn"
-          onClick={() => navigateTo(agentNewHref())}
-        />
+        ) : undefined
       }
+      listDebugId="agent-list-page"
+      detailDebugId="agent-detail-pane"
+      emptyDetail={emptyDetail}
+      list={listColumn}
+      detail={detail}
     >
-      {listColumn}
       {overlays}
-    </PageShell>
+    </ResourceContainer>
   );
 }
 
@@ -1074,24 +994,14 @@ function AgentDetailPane({ agentId, onAfterArchive }: { agentId: string; onAfter
     );
   }
 
-  const title = agentTitle(record);
-
   return (
     <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
-      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <a
-            href={agentViewHref(record.agentId)}
-            data-debug-id="agent-pane-title"
-            className="block truncate rounded-[var(--radius-sm)] text-page-title text-primary focus-visible:shadow-focus focus-visible:outline-none"
-          >
-            {title}
-          </a>
-          <AgentDetailMeta record={record} />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <AgentDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
-        </div>
+      <div className="mb-3 shrink-0">
+        <AgentDetailHeader
+          record={record}
+          busy={busy}
+          onVerb={(verb) => void runVerb(verb)}
+        />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         <AgentDetailBody record={record} actionError={actionError} wide={wide} />

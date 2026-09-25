@@ -29,6 +29,8 @@ import {
   Menu,
   MenuItem,
   Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   Spinner,
   StatusPill,
   Text,
@@ -220,6 +222,61 @@ export function AgentDetailMeta({ record }: { record: AgentRecord }) {
   );
 }
 
+export function AgentDetailHeader({
+  record,
+  busy,
+  onVerb,
+  onBack,
+  alert,
+}: {
+  record: AgentRecord;
+  busy: AgentVerb | '';
+  onVerb: (verb: AgentVerb) => void;
+  onBack?: () => void;
+  alert?: React.ReactNode;
+}) {
+  const state = agentState(record);
+  const title = agentTitle(record);
+
+  return (
+    <ResourceDetailHeader
+      dataDebugId="agent-pane-header"
+      title={
+        <a
+          href={agentViewHref(record.agentId)}
+          data-debug-id="agent-pane-title"
+          className="rounded-[var(--radius-sm)] hover:underline focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          {title}
+        </a>
+      }
+      id={record.agentId}
+      status={
+        state === 'archived' ? (
+          <StatusPill tone={stateTone(state)} data-debug-id="agent-view-state">
+            {stateLabel(state)}
+          </StatusPill>
+        ) : undefined
+      }
+      badges={
+        <>
+          {record.defaultProvider ? (
+            <Badge data-debug-id="agent-view-provider">{record.defaultProvider}</Badge>
+          ) : null}
+          {record.defaultTier ? (
+            <Badge data-debug-id="agent-view-tier">{record.defaultTier}</Badge>
+          ) : null}
+        </>
+      }
+      timestamp={`Updated ${relativeTime(record.updatedAt)}`}
+      timestampTooltip={absoluteTime(record.updatedAt)}
+      alert={alert}
+      onBack={onBack}
+      actions={<AgentDetailActions record={record} busy={busy} onVerb={onVerb} />}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Cards
  * ------------------------------------------------------------------ */
@@ -238,16 +295,14 @@ export function Card({
   debugId: string;
 }) {
   return (
-    <Panel data-debug-id={debugId} className="p-4">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title">{title}</Text>
-          {helper ? <Text as="div" role="body-sm" tone="muted" className="ui-measure">{helper}</Text> : null}
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
+    <ResourceSectionCard
+      title={title}
+      subtitle={helper}
+      action={action}
+      dataDebugId={debugId}
+    >
       {children}
-    </Panel>
+    </ResourceSectionCard>
   );
 }
 
@@ -721,50 +776,53 @@ export function LiveInstanceDetailPane({
 
   return (
     <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="live-instance-detail-pane">
-      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title" className="text-page-title truncate" data-debug-id="live-instance-title">
-            {displayName}
-          </Text>
-          <div className="flex flex-wrap items-center gap-2 mt-1">
-            {provider ? <Badge data-debug-id="live-instance-header-provider">{provider}</Badge> : null}
-            {tier ? <Badge data-debug-id="live-instance-header-tier">{tier}</Badge> : null}
+      <div className="mb-3 shrink-0">
+        <ResourceDetailHeader
+          dataDebugId="live-instance-header"
+          title={<span data-debug-id="live-instance-title">{displayName}</span>}
+          id={instanceId}
+          status={
             <StatusPill tone={runtimeTone} data-debug-id="live-instance-header-status">
               {runtimeStatus || 'unknown'}
             </StatusPill>
-            {startedAt ? (
-              <Text as="span" role="body-sm" tone="muted" title={absoluteTime(startedAt)}>
-                Started {relativeTime(startedAt)}
-              </Text>
-            ) : null}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            variant="secondary"
-            data-debug-id="live-instance-chat-link"
-            leading={<Icon name="chat" size="sm" />}
-            onClick={() => navigateTo(buildRouteHash('/conversations/' + encodeURIComponent(instanceId), ''))}
-          >
-            Open Chat
-          </Button>
-          <Button
-            variant="secondary"
-            data-debug-id="live-instance-restart-btn"
-            loading={isRestarting}
-            onClick={handleRestart}
-          >
-            Restart
-          </Button>
-          <Button
-            variant="danger"
-            data-debug-id="live-instance-stop-btn"
-            loading={isStopping}
-            onClick={handleStop}
-          >
-            Stop
-          </Button>
-        </div>
+          }
+          badges={
+            <>
+              {provider ? <Badge data-debug-id="live-instance-header-provider">{provider}</Badge> : null}
+              {tier ? <Badge data-debug-id="live-instance-header-tier">{tier}</Badge> : null}
+            </>
+          }
+          timestamp={startedAt ? `Started ${relativeTime(startedAt)}` : undefined}
+          timestampTooltip={startedAt ? absoluteTime(startedAt) : undefined}
+          actions={
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="secondary"
+                data-debug-id="live-instance-chat-link"
+                leading={<Icon name="chat" size="sm" />}
+                onClick={() => navigateTo(buildRouteHash('/conversations/' + encodeURIComponent(instanceId), ''))}
+              >
+                Open Chat
+              </Button>
+              <Button
+                variant="secondary"
+                data-debug-id="live-instance-restart-btn"
+                loading={isRestarting}
+                onClick={handleRestart}
+              >
+                Restart
+              </Button>
+              <Button
+                variant="danger"
+                data-debug-id="live-instance-stop-btn"
+                loading={isStopping}
+                onClick={handleStop}
+              >
+                Stop
+              </Button>
+            </div>
+          }
+        />
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto pr-1">

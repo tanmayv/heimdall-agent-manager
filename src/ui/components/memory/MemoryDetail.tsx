@@ -33,6 +33,8 @@ import {
   Menu,
   MenuItem,
   Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   StatusPill,
   Text,
   useViewport,
@@ -231,6 +233,36 @@ export function MemoryDetailMeta({ record }: { record: any }) {
   );
 }
 
+export function MemoryDetailHeader({
+  record,
+  busy,
+  onVerb,
+  onBack,
+  alert,
+}: {
+  record: any;
+  busy: MemoryVerb | '';
+  onVerb: (verb: MemoryVerb) => void;
+  onBack?: () => void;
+  alert?: React.ReactNode;
+}) {
+  const status = memoryStatus(record);
+  return (
+    <ResourceDetailHeader
+      dataDebugId="memory-pane-header"
+      title={<span data-debug-id="memory-pane-title">{memoryTitle(record)}</span>}
+      id={String(record.memoryId || '')}
+      status={<StatusPill tone={statusTone(status)} data-debug-id="memory-view-status">{statusLabel(status)}</StatusPill>}
+      badges={<Badge data-debug-id="memory-view-type">{String(record.type || 'fact')}</Badge>}
+      timestamp={`Updated ${relativeTime(record.updatedAt)}`}
+      timestampTooltip={absoluteTime(record.updatedAt)}
+      alert={alert}
+      onBack={onBack}
+      actions={<MemoryDetailActions record={record} busy={busy} onVerb={onVerb} />}
+    />
+  );
+}
+
 function Card({
   title,
   helper,
@@ -245,18 +277,14 @@ function Card({
   debugId: string;
 }) {
   return (
-    <Panel data-debug-id={debugId} className="p-4">
-      {/* The card's affordance sits INLINE with its label, not on a row of its own —
-          a separate row costs 24px to say nothing. */}
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title">{title}</Text>
-          {helper ? <Text as="div" role="body-sm" tone="muted" className="ui-measure">{helper}</Text> : null}
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
+    <ResourceSectionCard
+      title={title}
+      subtitle={helper}
+      action={action}
+      dataDebugId={debugId}
+    >
       {children}
-    </Panel>
+    </ResourceSectionCard>
   );
 }
 
@@ -289,7 +317,7 @@ function ScopeRows({ record, catalog }: { record: any; catalog: ScopeCatalog }) 
       {SCOPE_DIMS.map((dim) => {
         const ids = targeting[dim.key];
         return (
-          <div key={dim.key} data-debug-id={`memory-view-linked-${dim.debug}`} className="flex flex-wrap items-baseline gap-2">
+          <div key={dim.key} data-debug-id={`memory-view-linked-${dim.debug}`} className="flex flex-wrap items-center gap-2">
             <dt className="w-24 shrink-0">
               <Text as="span" role="label" tone="muted">{dim.label}</Text>
             </dt>
@@ -305,7 +333,7 @@ function ScopeRows({ record, catalog }: { record: any; catalog: ScopeCatalog }) 
                     <a
                       key={id}
                       href={linkForDimension(dim.key, id)}
-                      className="inline-flex items-center rounded-pill border border-subtle px-2 py-0.5 text-body-sm text-primary hover:border-strong"
+                      className="inline-flex items-center rounded-pill border border-subtle px-2 py-0.5 text-body-sm text-primary transition-colors hover:border-strong"
                     >
                       {name || id}
                       {name ? null : <span className="ml-1 text-muted">(not found)</span>}

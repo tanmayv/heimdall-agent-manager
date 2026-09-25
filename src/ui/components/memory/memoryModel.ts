@@ -65,17 +65,19 @@ export type MemoryType = (typeof MEMORY_TYPE_OPTIONS)[number];
  * tab nor the sub-control can ever misdescribe what is on screen. There is
  * deliberately NO status filter anywhere else on the page.
  */
-export type MemoryTab = 'proposals' | 'active' | 'archived';
+export type MemoryTab = 'all' | 'proposals' | 'active' | 'archived';
 export type ArchivedView = 'archived' | 'rejected';
 
 export const MEMORY_TABS: { value: MemoryTab; label: string }[] = [
-  { value: 'proposals', label: 'Proposals' },
+  { value: 'all', label: 'All' },
+  { value: 'proposals', label: 'Proposed' },
   { value: 'active', label: 'Active' },
   { value: 'archived', label: 'Archived' },
 ];
 
 /** The status a tab (plus, for Archived, its sub-view) queries. */
-export function statusForTab(tab: MemoryTab, archivedView: ArchivedView): MemoryStatus {
+export function statusForTab(tab: MemoryTab, archivedView: ArchivedView): MemoryStatus | '' {
+  if (tab === 'all') return '';
   if (tab === 'proposals') return 'pending';
   if (tab === 'active') return 'active';
   return archivedView === 'rejected' ? 'rejected' : 'archived';

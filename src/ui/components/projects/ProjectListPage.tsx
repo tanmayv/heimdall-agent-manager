@@ -40,16 +40,12 @@ import {
   EmptyState,
   FilterBar,
   Icon,
-  Input,
   Modal,
   ModalBody,
   ModalFooter,
-  PageShell,
+  ResourceContainer,
+  ResourceSearchFilter,
   Select,
-  Tab,
-  Tabs,
-  TabsList,
-  TabsPanel,
   Text,
   Toast,
   TOUCH_TARGET_CLASS,
@@ -60,6 +56,7 @@ import ProjectRow from './ProjectRow';
 import {
   ProjectDetailActions,
   ProjectDetailBody,
+  ProjectDetailHeader,
   ProjectDetailMeta,
   ProjectDetailPaneSkeleton,
   useProjectDetail,
@@ -627,56 +624,6 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
     </div>
   );
 
-  /* ---------------- Toolbar ---------------- */
-  const toolbar = (
-    <div className="flex items-center gap-2" data-debug-id="project-toolbar">
-      <Input
-        type="search"
-        value={queryInput}
-        onChange={setQueryInput}
-        width="full"
-        size={isMobile ? 'md' : 'sm'}
-        leading={<Icon name="search" size="sm" />}
-        placeholder="Search names, paths and repos…"
-        aria-label="Search project names, paths and repository URLs"
-        data-debug-id="project-search-input"
-        ref={searchRef}
-        className={['min-w-0 flex-1', isMobile ? TOUCH_TARGET_CLASS : ''].filter(Boolean).join(' ')}
-      />
-      {urlState.q ? (
-        <ActionButton
-          icon="close"
-          label="Clear"
-          aria-label="Clear search"
-          data-debug-id="project-search-clear"
-          onClick={() => { setQueryInput(''); applyUrlState({ ...urlState, q: '' }); }}
-        />
-      ) : null}
-      <FilterBar
-        active={filtersActive}
-        activeCount={activeFilterCount}
-        iconTrigger
-        disabled={searching}
-        disabledTitle="Filters don't apply while you're searching"
-        surface={isMobile ? 'sheet' : 'popover'}
-        note={<>Version control is read from each project&apos;s own setting, not detected on disk.</>}
-      >
-        <Select
-          value={urlState.vcs}
-          onChange={(next) => applyUrlState({ ...urlState, vcs: next })}
-          size="sm"
-          aria-label="Version control"
-          data-debug-id="project-filter-vcs"
-        >
-          <option value="">Any version control</option>
-          <option value="git">git</option>
-          <option value="jj">jj</option>
-          <option value="none">No VCS</option>
-        </Select>
-      </FilterBar>
-    </div>
-  );
-
   /* Active filters as removable chips, under the toolbar. */
   const filterChipRow =
     filtersActive && !searching ? (
@@ -691,48 +638,60 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
           {vcsFilterLabel(urlState.vcs)}
           <Icon name="close" size="sm" aria-hidden="true" />
         </button>
-        {/* Gated on `!searching` for Amendment 3's reason: `FilterBar`'s actions and
-            anything beside it stay live while the bar is disabled, and clearing the
-            held filter state while a query is active destroys what is restored when
-            the query is cleared. */}
         <Button size="sm" variant="ghost" data-debug-id="project-filter-clear" onClick={clearFilters}>
           Clear filter
         </Button>
       </div>
     ) : null;
 
-  const tabsBlock = (
-    <Tabs
-      value={searching ? '' : tab}
-      onChange={(next) => applyUrlState({ ...urlState, tab: next as ProjectTab })}
-      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
-    >
-      {/* No count badges: the list API returns no totals, and a loaded-row count on
-          a keyset-paged list is a number that looks like a total and is not — which
-          would be doubly wrong here, where the tab is applied client-side over
-          however much of the stream happens to be loaded. */}
-      <TabsList label="Project state" className="shrink-0">
-        {PROJECT_TABS.map((entry) => (
-          <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`project-tab-${entry.value}`}>
-            {entry.label}
-          </Tab>
-        ))}
-      </TabsList>
-      {searching ? null : (
-        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
-          {listSection}
-        </TabsPanel>
-      )}
-    </Tabs>
-  );
-
   const listColumn = (
-    <div data-debug-id="project-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
-      <div className="shrink-0">{toolbar}</div>
+    <div className="flex w-full min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden">
+      <div data-debug-id="project-toolbar">
+        <ResourceSearchFilter
+          searchQuery={queryInput}
+          onSearchChange={setQueryInput}
+          searchPlaceholder="Search names, paths and repos…"
+          searchDebugId="project-search-input"
+          searchClearDebugId="project-search-clear"
+          searchRef={searchRef}
+          activeTab={searching ? '' : tab}
+          onTabChange={(next) => applyUrlState({ ...urlState, tab: next as ProjectTab })}
+          tabs={PROJECT_TABS.map((entry) => ({
+            value: entry.value,
+            label: entry.label,
+            disabled: searching,
+            debugId: `project-tab-${entry.value}`,
+          }))}
+          tabsLabel="Project state"
+        >
+          <FilterBar
+            active={filtersActive}
+            activeCount={activeFilterCount}
+            iconTrigger
+            disabled={searching}
+            disabledTitle="Filters don't apply while you're searching"
+            surface={isMobile ? 'sheet' : 'popover'}
+            note={<>Version control is read from each project&apos;s own setting, not detected on disk.</>}
+          >
+            <Select
+              value={urlState.vcs}
+              onChange={(next) => applyUrlState({ ...urlState, vcs: next })}
+              size="sm"
+              aria-label="Version control"
+              data-debug-id="project-filter-vcs"
+              options={[
+                { value: '', label: 'Any version control' },
+                { value: 'git', label: 'git' },
+                { value: 'jj', label: 'jj' },
+                { value: 'none', label: 'No VCS' },
+              ]}
+            />
+          </FilterBar>
+        </ResourceSearchFilter>
+      </div>
       {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
-      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
-        {tabsBlock}
-        {searching ? listSection : null}
+      <div className="flex min-w-0 flex-col gap-4 flex-1 min-h-0 overflow-hidden">
+        {listSection}
       </div>
     </div>
   );
@@ -804,65 +763,35 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
   const headerDescription =
     'A project points Heimdall at a folder on your machines. Chains, conversations and memory all hang off one.';
 
-  /* ---------------- Two-pane ---------------- */
-  if (twoPane) {
-    return (
-      <PageShell
-        width="full"
-        rhythm="banded"
-        title="Projects"
-        breadcrumbs={listCrumbs()}
-        description={headerDescription}
-        className="h-full min-h-0 overflow-hidden"
-        actions={
-          <Button
-            variant="primary"
-            data-debug-id="project-new-btn"
-            leading={<Icon name="plus" size="sm" />}
-            onClick={() => navigateTo(projectNewHref())}
-          >
-            New project
-          </Button>
-        }
-      >
-        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="project-detail-pane">
-            {selectedId ? (
-              <ProjectDetailPane projectId={selectedId} onAfterArchive={() => undefined} />
-            ) : (
-              <div className="flex h-full items-center justify-center p-6">
-                <Text role="body-sm" tone="muted">Select a project to see it here.</Text>
-              </div>
-            )}
-          </div>
-        </div>
-        {overlays}
-      </PageShell>
-    );
-  }
-
   return (
-    <PageShell
-      width={viewport === 'tablet' ? 'content' : 'full'}
-      rhythm="banded"
+    <ResourceContainer
       title="Projects"
-      breadcrumbs={listCrumbs()}
       description={headerDescription}
+      breadcrumbs={listCrumbs()}
       actions={
-        <ActionButton
-          icon="plus"
-          label="New project"
+        <Button
           variant="primary"
-          showIconOnDesktop
           data-debug-id="project-new-btn"
+          leading={<Icon name="plus" size="sm" />}
           onClick={() => navigateTo(projectNewHref())}
-        />
+        >
+          New project
+        </Button>
+      }
+      selectedId={selectedId}
+      detailTitle="Project Details"
+      listDebugId="project-list-page"
+      detailDebugId="project-detail-pane"
+      emptyDetailText="Select a project to see it here."
+      list={listColumn}
+      detail={
+        selectedId ? (
+          <ProjectDetailPane projectId={selectedId} onAfterArchive={() => undefined} />
+        ) : null
       }
     >
-      {listColumn}
       {overlays}
-    </PageShell>
+    </ResourceContainer>
   );
 }
 
@@ -889,24 +818,14 @@ function ProjectDetailPane({ projectId, onAfterArchive }: { projectId: string; o
     );
   }
 
-  const title = projectTitle(record);
-
   return (
     <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
-      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <a
-            href={projectViewHref(record.projectId)}
-            data-debug-id="project-pane-title"
-            className="block truncate rounded-[var(--radius-sm)] text-page-title text-primary focus-visible:shadow-focus focus-visible:outline-none"
-          >
-            {title}
-          </a>
-          <ProjectDetailMeta record={record} />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <ProjectDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
-        </div>
+      <div className="mb-3 shrink-0">
+        <ProjectDetailHeader
+          record={record}
+          busy={busy}
+          onVerb={(verb) => void runVerb(verb)}
+        />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         <ProjectDetailBody record={record} actionError={actionError} wide={wide} />

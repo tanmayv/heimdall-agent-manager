@@ -23,16 +23,12 @@ import {
   EmptyState,
   FilterBar,
   Icon,
-  Input,
   Modal,
   ModalBody,
   ModalFooter,
-  PageShell,
+  ResourceContainer,
+  ResourceSearchFilter,
   Select,
-  Tab,
-  Tabs,
-  TabsList,
-  TabsPanel,
   Text,
   Toast,
   TOUCH_TARGET_CLASS,
@@ -48,9 +44,8 @@ import {
 } from '@ui';
 import MemoryRow from './MemoryRow';
 import {
-  MemoryDetailActions,
   MemoryDetailBody,
-  MemoryDetailMeta,
+  MemoryDetailHeader,
   useMemoryDetail,
   usePaneIsWide,
 } from './MemoryDetail';
@@ -139,7 +134,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
   const [probedTab, setProbedTab] = React.useState<MemoryTab | ''>('');
   const tab: MemoryTab = urlState.tab || probedTab || 'active';
   const archivedView: ArchivedView = urlState.archivedView;
-  const listStatus: MemoryStatus = statusForTab(tab, archivedView);
+  const listStatus = statusForTab(tab, archivedView);
   const searching = Boolean(urlState.q);
 
   /** Writes state to React AND to the URL, which is replaced, never pushed. */
@@ -195,7 +190,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
   const list = useInfiniteList<any>({
     fetchPage: ({ cursor, signal }) =>
       fetchMemoryPage({
-        status: listStatus,
+        status: listStatus || undefined,
         type: urlState.type || undefined,
         projectId: urlState.project || undefined,
         agentId: urlState.agent || undefined,
@@ -832,73 +827,59 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    * One row, 12px below the header: search takes the slack, then Filters carrying a
    * count of what is actually applied, then Select. Below 768 Filters and Select are
    * icon buttons — `ActionButton` makes that the component's rule, not the page's. */
-  const toolbar = (
-    <div className="flex items-center gap-2" data-debug-id="memory-toolbar">
-      <Input
-        type="search"
-        value={queryInput}
-        onChange={setQueryInput}
-        width="full"
-        size={isMobile ? 'md' : 'sm'}
-        leading={<Icon name="search" size="sm" />}
-        // The placeholder states what is searchable rather than letting a user infer
-        // from a miss that search is broken: the FTS index covers title and body.
-        placeholder="Search titles and bodies…"
-        aria-label="Search memory titles and bodies"
-        data-debug-id="memory-search-input"
-        ref={searchRef}
-        className={['min-w-0 flex-1', isMobile ? TOUCH_TARGET_CLASS : ''].filter(Boolean).join(' ')}
-      />
-      {urlState.q ? (
-        <ActionButton
-          icon="close"
-          label="Clear"
-          aria-label="Clear search"
-          data-debug-id="memory-search-clear"
-          onClick={() => { setQueryInput(''); applyUrlState({ ...urlState, q: '' }); }}
-        />
-      ) : null}
-      <FilterBar
-        active={filtersActive}
-        activeCount={activeFilterCount}
-        // User ruling: the Filters control is an ICON button sitting immediately
-        // right of the search field, on desktop as well as mobile.
-        iconTrigger
-        disabled={searching}
-        // No `disabledReason`: it renders the same paragraph the user asked to
-        // remove. The control is visibly disabled, which is the signal that
-        // survives; `title` carries the why for anyone who hovers it.
-        disabledTitle="Filters don't apply while you're searching"
-
-        // The panel is a popover on desktop and a bottom sheet on mobile (spec).
-        surface={isMobile ? 'sheet' : 'popover'}
-        // Clear filters is NOT in the toolbar: it belongs with the chips it clears,
-        // on the row below the search bar (user ruling).
-        note={
-          <>
-            Scope filters show memories that <strong>apply to</strong> the selection — including global memories.
-          </>
+  const searchFilter = (
+    <ResourceSearchFilter
+      searchQuery={queryInput}
+      onSearchChange={(next) => {
+        setQueryInput(next);
+        if (!next) {
+          applyUrlState({ ...urlState, q: '' });
         }
-      >
-        <Select
-          value={urlState.type}
-          onChange={(next) => applyUrlState({ ...urlState, type: next })}
-          size="sm"
-          aria-label="Type"
-          data-debug-id="memory-filter-type"
+      }}
+      searchPlaceholder="Search titles and bodies…"
+      searchDebugId="memory-search-input"
+      searchRef={searchRef}
+      searchClearDebugId="memory-search-clear"
+      activeTab={searching ? '' : tab}
+      onTabChange={(next) => applyUrlState({ ...urlState, tab: next as MemoryTab })}
+      tabsLabel="Memory status"
+      tabs={MEMORY_TABS.map((entry) => ({
+        value: entry.value,
+        label: entry.label,
+        disabled: searching,
+        debugId: `memory-tab-${entry.value}`,
+      }))}
+    >
+      <div className="flex items-center gap-2">
+        <FilterBar
+          active={filtersActive}
+          activeCount={activeFilterCount}
+          iconTrigger
+          disabled={searching}
+          disabledTitle="Filters don't apply while you're searching"
+          surface={isMobile ? 'sheet' : 'popover'}
+          note={
+            <>
+              Scope filters show memories that <strong>apply to</strong> the selection — including global memories.
+            </>
+          }
         >
-          <option value="">All types</option>
-          {MEMORY_TYPE_OPTIONS.map((type) => (
-            <option key={type} value={type}>{type}</option>
-          ))}
-        </Select>
-        {scopeFilterControls}
-      </FilterBar>
-      {/* No Select toggle: checkboxes are PERSISTENT on every viewport (user
-          ruling), so there is no mode to enter. REQ-UI-19 is still satisfied — and
-          more directly than before, since nothing is revealed on hover or hidden
-          behind a mode. The bulk bar appears as soon as a row is ticked. */}
-    </div>
+          <Select
+            value={urlState.type}
+            onChange={(next) => applyUrlState({ ...urlState, type: next })}
+            size="sm"
+            aria-label="Type"
+            data-debug-id="memory-filter-type"
+          >
+            <option value="">All types</option>
+            {MEMORY_TYPE_OPTIONS.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </Select>
+          {scopeFilterControls}
+        </FilterBar>
+      </div>
+    </ResourceSearchFilter>
   );
 
   /* Active filters as removable chips, under the toolbar. Only what is ON gets page
@@ -929,43 +910,12 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
       </div>
     ) : null;
 
-  const tabsBlock = (
-    <Tabs
-      value={searching ? '' : tab}
-      onChange={(next) => applyUrlState({ ...urlState, tab: next as MemoryTab })}
-      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
-    >
-      {/* Tabs carry NO count badges: the list APIs return no totals (F10), and a
-          loaded-row count on a keyset-paged list would be a number that means
-          something different from what it looks like. */}
-      <TabsList label="Memory status" className="shrink-0">
-        {MEMORY_TABS.map((entry) => (
-          <Tab
-            key={entry.value}
-            value={entry.value}
-            disabled={searching}
-            data-debug-id={`memory-tab-${entry.value}`}
-          >
-            {entry.label}
-          </Tab>
-        ))}
-      </TabsList>
-      {searching ? null : (
-        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
-          {listSection}
-        </TabsPanel>
-      )}
-    </Tabs>
-  );
-
   const listColumn = (
-    <div data-debug-id="memory-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
-      <div className="shrink-0">{toolbar}</div>
-      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
-      {/* 16px between the tabs and the content they label. */}
-      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
-        {tabsBlock}
-        {searching ? listSection : null}
+    <div data-debug-id="memory-list-page" className="flex w-full min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden">
+      {searchFilter}
+      {filterChipRow ? <div className="shrink-0 px-2">{filterChipRow}</div> : null}
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col px-2">
+        {listSection}
       </div>
     </div>
   );
@@ -1024,72 +974,43 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    * to the same memory — so a pasted link and a click land in the same place, and
    * the same memory never has two URLs. Between 768 and 1023 the spec asks for a
    * single centred column, which is what `width="content"` gives. */
-  if (twoPane) {
-    return (
-      <PageShell
-        width="full"
-        rhythm="banded"
-        title="Memory"
-        breadcrumbs={listCrumbs()}
-        description="Durable facts, habits and skills your agents carry between sessions. An empty scope applies to all."
-        className="h-full min-h-0 overflow-hidden"
-        actions={
-          <Button
-            variant="primary"
-            data-debug-id="memory-new-btn"
-            leading={<Icon name="plus" size="sm" />}
-            onClick={() => navigateTo(memoryNewHref())}
-          >
-            New memory
-          </Button>
-        }
-      >
-        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="memory-detail-pane">
-            {selectedId ? (
-              <MemoryDetailPane
-                memoryId={selectedId}
-                onAfterVerb={() => {
-                  const next = advanceFrom(selectedId);
-                  // Auto-advance to the next proposal; if this was the last one,
-                  // close the pane rather than leaving a stale record open.
-                  navigateTo(next ? memoryViewHref(next, urlState) : memoryListHref(urlState));
-                }}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center p-6">
-                <Text role="body-sm" tone="muted">Select a memory to see it here.</Text>
-              </div>
-            )}
-          </div>
-        </div>
-        {overlays}
-      </PageShell>
-    );
-  }
-
   return (
-    <PageShell
-      width={viewport === 'tablet' ? 'content' : 'full'}
-      rhythm="banded"
+    <ResourceContainer
       title="Memory"
-      breadcrumbs={listCrumbs()}
       description="Durable facts, habits and skills your agents carry between sessions. An empty scope applies to all."
+      breadcrumbs={listCrumbs()}
       actions={
-        <ActionButton
-          icon="plus"
-          label="New memory"
+        <Button
           variant="primary"
-          showIconOnDesktop
           data-debug-id="memory-new-btn"
+          leading={<Icon name="plus" size="sm" />}
           onClick={() => navigateTo(memoryNewHref())}
-        />
+        >
+          New memory
+        </Button>
+      }
+      selectedId={selectedId}
+      detailTitle="Memory Details"
+      listDebugId="memory-list-column"
+      detailDebugId="memory-detail-pane"
+      emptyDetailText="Select a memory to see it here."
+      list={listColumn}
+      detail={
+        selectedId ? (
+          <MemoryDetailPane
+            memoryId={selectedId}
+            onAfterVerb={() => {
+              const next = advanceFrom(selectedId);
+              // Auto-advance to the next proposal; if this was the last one,
+              // close the pane rather than leaving a stale record open.
+              navigateTo(next ? memoryViewHref(next, urlState) : memoryListHref(urlState));
+            }}
+          />
+        ) : null
       }
     >
-      {listColumn}
       {overlays}
-    </PageShell>
+    </ResourceContainer>
   );
 }
 
@@ -1122,15 +1043,11 @@ function MemoryDetailPane({ memoryId, onAfterVerb }: { memoryId: string; onAfter
 
   return (
     <div ref={paneRef} className="flex min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden" data-debug-id="memory-pane">
-      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-heading text-primary" data-debug-id="memory-pane-title">{memoryTitle(record)}</h2>
-          <div className="mt-1"><MemoryDetailMeta record={record} /></div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <MemoryDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
-        </div>
-      </div>
+      <MemoryDetailHeader
+        record={record}
+        busy={busy}
+        onVerb={(verb) => void runVerb(verb)}
+      />
       <div className="flex-1 min-h-0 overflow-y-auto">
         <MemoryDetailBody record={record} actionError={actionError} wide={wide} />
       </div>

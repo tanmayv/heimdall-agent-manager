@@ -81,9 +81,6 @@ export default {
         // `pill` is a new, non-colliding alias (`rounded-full` also = 9999px).
         pill: 'var(--radius-pill)',
       },
-      borderWidth: {
-        strong: 'var(--border-width-strong)',
-      },
       boxShadow: {
         panel: 'var(--shadow-panel)',
         overlay: 'var(--shadow-overlay)',
