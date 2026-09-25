@@ -21,20 +21,34 @@ test_ctl_read_vault_key_resolution :: proc(t: ^testing.T) {
 	testing.expect(t, ok_flag, "vault key from --vault-key flag must resolve")
 	testing.expect_value(t, key_flag, TEST_ISSUE_VAULT_KEY)
 
-	// Invalid hex flag must be rejected
+	// Invalid hex flag must be rejected without falling through
 	args_invalid := [?]string{"ham-ctl", "issue", "list", "--vault-key", "invalid_short_hex"}
 	_, ok_invalid := ctl_read_vault_key(args_invalid[:], context.temp_allocator)
-	testing.expect(t, !ok_invalid, "invalid vault-key flag must be rejected")
+	testing.expect(t, !ok_invalid, "invalid short vault-key flag must be rejected")
+
+	args_invalid_chars := [?]string{"ham-ctl", "issue", "list", "--vault-key", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}
+	_, ok_invalid_chars := ctl_read_vault_key(args_invalid_chars[:], context.temp_allocator)
+	testing.expect(t, !ok_invalid_chars, "invalid chars vault-key flag must be rejected")
 
 	// 2. Environment variable HEIMDALL_VAULT_KEY
 	_ = os.set_env("HEIMDALL_VAULT_KEY", TEST_ISSUE_VAULT_KEY)
-	defer os.unset_env("HEIMDALL_VAULT_KEY")
-
 	key_env, ok_env := ctl_read_vault_key(nil, context.temp_allocator)
 	testing.expect(t, ok_env, "vault key from HEIMDALL_VAULT_KEY env must resolve")
 	testing.expect_value(t, key_env, TEST_ISSUE_VAULT_KEY)
+	os.unset_env("HEIMDALL_VAULT_KEY")
+
+	// Invalid HEIMDALL_VAULT_KEY env var must be rejected without falling through
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "bad_short_key")
+	_, ok_bad_env := ctl_read_vault_key(nil, context.temp_allocator)
+	testing.expect(t, !ok_bad_env, "invalid short HEIMDALL_VAULT_KEY env must be rejected")
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+	_, ok_bad_chars_env := ctl_read_vault_key(nil, context.temp_allocator)
+	testing.expect(t, !ok_bad_chars_env, "invalid chars HEIMDALL_VAULT_KEY env must be rejected")
+	os.unset_env("HEIMDALL_VAULT_KEY")
 
 	// 3. Flag takes precedence over Environment variable
+	_ = os.set_env("HEIMDALL_VAULT_KEY", TEST_ISSUE_VAULT_KEY)
+	defer os.unset_env("HEIMDALL_VAULT_KEY")
 	args_override := [?]string{"ham-ctl", "issue", "list", "--vault-key", ALT_ISSUE_VAULT_KEY}
 	key_override, ok_override := ctl_read_vault_key(args_override[:], context.temp_allocator)
 	testing.expect(t, ok_override, "vault key flag override must resolve")

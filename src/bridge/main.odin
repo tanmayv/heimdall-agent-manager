@@ -843,18 +843,22 @@ bridge_now_unix_ms :: proc() -> i64 {
 bridge_read_vault_key :: proc() -> (string, bool) {
 	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEY", context.temp_allocator); found {
 		trimmed := strings.trim_space(env_val)
-		if len(trimmed) == 64 {
-			valid := true
-			for i in 0 ..< len(trimmed) {
-				ch := trimmed[i]
-				switch ch {
-				case '0'..='9', 'a'..='f', 'A'..='F':
-				case:
-					valid = false
+		if trimmed != "" {
+			if len(trimmed) == 64 {
+				valid := true
+				for i in 0 ..< len(trimmed) {
+					ch := trimmed[i]
+					switch ch {
+					case '0'..='9', 'a'..='f', 'A'..='F':
+					case:
+						valid = false
+					}
+					if !valid do break
 				}
-				if !valid do break
+				if valid do return strings.clone(trimmed), true
 			}
-			if valid do return strings.clone(trimmed), true
+			// Explicit env var set but invalid: do not fall through to file
+			return "", false
 		}
 	}
 
