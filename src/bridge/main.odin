@@ -780,6 +780,23 @@ bridge_now_unix_ms :: proc() -> i64 {
 }
 
 bridge_read_vault_key :: proc() -> (string, bool) {
+	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEY", context.temp_allocator); found {
+		trimmed := strings.trim_space(env_val)
+		if len(trimmed) == 64 {
+			valid := true
+			for i in 0 ..< len(trimmed) {
+				ch := trimmed[i]
+				switch ch {
+				case '0'..='9', 'a'..='f', 'A'..='F':
+				case:
+					valid = false
+				}
+				if !valid do break
+			}
+			if valid do return strings.clone(trimmed), true
+		}
+	}
+
 	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
 	defer delete(path)
 	c_path := strings.clone_to_cstring(path)

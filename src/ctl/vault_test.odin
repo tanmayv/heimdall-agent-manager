@@ -1,5 +1,6 @@
 package main
 
+import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -41,6 +42,11 @@ test_vault_storage_and_lifecycle :: proc(t: ^testing.T) {
 	perms_valid := (st.st_mode & all_perms) == posix.mode_t{.IRUSR, .IWUSR}
 	testing.expect(t, perms_valid, "vault_key file mode must be strictly 0600")
 
+	// Verify ctl_read_vault_key reads configured 0600 file correctly
+	key_read, read_ok := ctl_read_vault_key(nil, context.temp_allocator)
+	testing.expect(t, read_ok, "ctl_read_vault_key must read configured 0600 file")
+	testing.expect_value(t, key_read, test_key)
+
 	// 3. Clear key
 	clear_cmd := [?]string{"vault", "clear"}
 	args_clear := [?]string{"ham-ctl", "vault", "clear"}
@@ -49,4 +55,9 @@ test_vault_storage_and_lifecycle :: proc(t: ^testing.T) {
 	// 4. Verify file is removed
 	stat_after_clear := posix.stat(c_path, &st)
 	testing.expect(t, stat_after_clear != .OK, "vault_key file must be removed after clear")
+
+	// Verify ctl_read_vault_key returns false after clear
+	_, after_clear_ok := ctl_read_vault_key(nil, context.temp_allocator)
+	testing.expect(t, !after_clear_ok, "ctl_read_vault_key must return false after clear")
 }
+

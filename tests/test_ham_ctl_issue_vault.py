@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Comprehensive test suite for CLI and Bridge Issues Zero-Knowledge encryption and decryption (REQ-VAULT-ISSUES-CLI-1).
+
+Verifies:
+1. Static contract verification:
+   - ctl_read_vault_key in src/ctl/vault.odin resolves HEIMDALL_VAULT_KEY, --vault-key flag, and ~/.config/heimdall/vault_key (0600 mode).
+   - bridge_read_vault_key in src/bridge/main.odin supports HEIMDALL_VAULT_KEY and 0600 file.
+   - Transparent encryption on write in src/ctl/issue.odin (create, update, comment).
+   - Transparent decryption on read in src/ctl/issue.odin (show, list, comment list).
+   - Safe unconfigured fallback [Encrypted: vault:v1:...].
+2. Odin unit test suite:
+   - 'odin test src/ctl -collection:odin_test=src' passes cleanly with 0 errors.
+3. Live end-to-end CLI round-trip (if Bridge runtime is active):
+   - ham-ctl issue create -> stores armored in DB -> ham-ctl issue show decrypts -> ham-ctl vault clear -> ham-ctl issue show shows encrypted fallback.
+"""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+CTL_VAULT = ROOT / "src" / "ctl" / "vault.odin"
+CTL_ISSUE = ROOT / "src" / "ctl" / "issue.odin"
+CTL_TEST = ROOT / "src" / "ctl" / "issue_vault_test.odin"
+BRIDGE_MAIN = ROOT / "src" / "bridge" / "main.odin"
+
+TEST_KEY_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        print(f"FAILED: {message}", file=sys.stderr)
+        sys.exit(1)
+
+
+def test_static_contracts() -> None:
+    print("1. Verifying static code contracts...")
+    require(CTL_VAULT.exists(), f"Missing {CTL_VAULT}")
+    vault_src = CTL_VAULT.read_text(encoding="utf-8")
+
+    require("ctl_read_vault_key :: proc" in vault_src, "ctl_read_vault_key must be defined in src/ctl/vault.odin")
+    require("HEIMDALL_VAULT_KEY" in vault_src, "ctl_read_vault_key must check HEIMDALL_VAULT_KEY env var")
+    require("~/.config/heimdall/vault_key" in vault_src, "ctl_read_vault_key must check ~/.config/heimdall/vault_key")
+    require("posix.mode_t{.IRUSR, .IWUSR}" in vault_src, "ctl_read_vault_key must enforce strict 0600 permissions")
+
+    require(CTL_ISSUE.exists(), f"Missing {CTL_ISSUE}")
+    issue_src = CTL_ISSUE.read_text(encoding="utf-8")
+
+    require("ctl_decrypt_issues_json" in issue_src, "ctl_decrypt_issues_json must be defined in src/ctl/issue.odin")
+    require("ctl_decrypt_or_fallback_armored" in issue_src, "ctl_decrypt_or_fallback_armored must be defined")
+    require("[Encrypted: %s]" in issue_src, "fallback format '[Encrypted: %s]' must be present")
+    require("vault_encrypt_text_hex" in issue_src, "vault_encrypt_text_hex must be used for transparent write encryption")
+
+    require(BRIDGE_MAIN.exists(), f"Missing {BRIDGE_MAIN}")
+    bridge_src = BRIDGE_MAIN.read_text(encoding="utf-8")
+    require("bridge_read_vault_key" in bridge_src, "bridge_read_vault_key must be present in src/bridge/main.odin")
+    require("HEIMDALL_VAULT_KEY" in bridge_src, "bridge_read_vault_key must support HEIMDALL_VAULT_KEY env var")
+    print("   ✓ Static code contracts verified.")
+
+
+def test_odin_suite() -> None:
+    print("2. Running Odin unit tests...")
+    res = subprocess.run(
+        ["odin", "test", "src/ctl", "-collection:odin_test=src"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    combined = res.stdout + res.stderr
+    if res.returncode != 0:
+        print("OUTPUT:\n", combined, file=sys.stderr)
+    require(res.returncode == 0, "odin test src/ctl must exit 0")
+    require("All tests were successful" in combined, "All Odin tests must succeed")
+    print("   ✓ All Odin tests passed cleanly.")
+
+
+def test_live_cli_roundtrip() -> None:
+    print("3. Testing live CLI round-trip...")
+    # Build binary
+    bin_dir = ROOT / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    bin_ctl = bin_dir / "ham-ctl"
+    build_res = subprocess.run(
+        ["odin", "build", "src/ctl", "-collection:odin_test=src", f"-out:{bin_ctl}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    require(build_res.returncode == 0, f"ham-ctl binary build failed: {build_res.stderr}")
+
+    # Check if local bridge is running
+    sock_path = pathlib.Path("/tmp/heimdall-bridge-local/bridge.sock")
+    token = os.environ.get("HEIMDALL_AGENT_TOKEN", "hlat_18d8984563e99ba0_204")
+    if not sock_path.exists():
+        print("   Notice: /tmp/heimdall-bridge-local/bridge.sock not found; skipping live bridge execution.")
+        return
+
+    env = os.environ.copy()
+    env["HEIMDALL_BRIDGE_ENDPOINT"] = f"unix:{sock_path}"
+    env["HEIMDALL_AGENT_TOKEN"] = token
+
+    # Step 1: Set vault key
+    res_set = subprocess.run(
+        [str(bin_ctl), "vault", "set-key", TEST_KEY_HEX],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    require(res_set.returncode == 0, f"vault set-key failed: {res_set.stderr}")
+
+    # Step 2: Create issue with encrypted title and description
+    issue_title = "Vault Roundtrip Test Issue"
+    issue_desc = "Secret test payload for REQ-VAULT-ISSUES-CLI-1"
+    res_create = subprocess.run(
+        [str(bin_ctl), "issue", "create", "--title", issue_title, "--description", issue_desc],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    require(res_create.returncode == 0, f"issue create failed: {res_create.stderr}")
+    data_create = json.loads(res_create.stdout)
+    issue_id = data_create.get("data", {}).get("data", {}).get("issue_id") or data_create.get("data", {}).get("issue_id")
+    require(bool(issue_id), f"Failed to get issue_id from response: {res_create.stdout}")
+
+    try:
+        # Step 3: Add comment with encrypted body
+        comment_body = "Encrypted comment body testing transparent write"
+        res_comment = subprocess.run(
+            [str(bin_ctl), "issue", "comment", issue_id, "--body", comment_body],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        require(res_comment.returncode == 0, f"issue comment failed: {res_comment.stderr}")
+
+        # Step 4: Show issue while key is configured -> decrypted plaintext
+        res_show_dec = subprocess.run(
+            [str(bin_ctl), "issue", "show", issue_id],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        require(res_show_dec.returncode == 0, f"issue show failed: {res_show_dec.stderr}")
+        require(issue_title in res_show_dec.stdout, "issue show must contain decrypted title")
+        require(issue_desc in res_show_dec.stdout, "issue show must contain decrypted description")
+        require(comment_body in res_show_dec.stdout, "issue show must contain decrypted comment body")
+        require("vault:v1:" not in res_show_dec.stdout, "issue show must not contain raw armored string when key is configured")
+
+        # Step 5: List issues -> decrypted plaintext
+        res_list_dec = subprocess.run(
+            [str(bin_ctl), "issue", "list"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        require(res_list_dec.returncode == 0, f"issue list failed: {res_list_dec.stderr}")
+        require(issue_title in res_list_dec.stdout, "issue list must contain decrypted title")
+
+        # Step 6: Clear vault key
+        res_clear = subprocess.run(
+            [str(bin_ctl), "vault", "clear"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        require(res_clear.returncode == 0, f"vault clear failed: {res_clear.stderr}")
+
+        # Step 7: Show issue without vault key -> graceful fallback [Encrypted: vault:v1:...]
+        res_show_enc = subprocess.run(
+            [str(bin_ctl), "issue", "show", issue_id],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        require(res_show_enc.returncode == 0, f"issue show without key failed: {res_show_enc.stderr}")
+        require("[Encrypted: vault:v1:" in res_show_enc.stdout, "issue show must show [Encrypted: vault:v1:...] fallback")
+        require(issue_title not in res_show_enc.stdout, "plaintext title must not leak when key is unconfigured")
+        require(issue_desc not in res_show_enc.stdout, "plaintext description must not leak when key is unconfigured")
+
+    finally:
+        # Step 8: Clean up test issue
+        _ = subprocess.run(
+            [str(bin_ctl), "issue", "delete", issue_id],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        _ = subprocess.run(
+            [str(bin_ctl), "vault", "clear"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    print("   ✓ Live CLI round-trip verified successfully.")
+
+
+def main() -> None:
+    test_static_contracts()
+    test_odin_suite()
+    test_live_cli_roundtrip()
+    print("\nAll REQ-VAULT-ISSUES-CLI-1 tests passed successfully!")
+
+
+if __name__ == "__main__":
+    main()

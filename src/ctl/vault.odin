@@ -34,6 +34,51 @@ is_valid_hex_key :: proc(key: string) -> bool {
 	return true
 }
 
+// Reads local vault key either from --vault-key CLI flag, HEIMDALL_VAULT_KEY env var,
+// or ~/.config/heimdall/vault_key (strict 0600).
+ctl_read_vault_key :: proc(args: []string = nil, allocator := context.allocator) -> (key_hex: string, ok: bool) {
+	// 1. Check --vault-key command line flag if args passed
+	if args != nil {
+		if flag_val := option_value(args, "--vault-key", ""); flag_val != "" {
+			trimmed := strings.trim_space(flag_val)
+			if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
+				return strings.clone(trimmed, allocator), true
+			}
+		}
+	}
+
+	// 2. Check environment variable HEIMDALL_VAULT_KEY
+	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEY", context.temp_allocator); found {
+		trimmed := strings.trim_space(env_val)
+		if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
+			return strings.clone(trimmed, allocator), true
+		}
+	}
+
+	// 3. Check ~/.config/heimdall/vault_key with strict 0600 permissions
+	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
+	defer delete(path)
+
+	c_path := strings.clone_to_cstring(path)
+	defer delete(c_path)
+
+	st: posix.stat_t
+	if posix.stat(c_path, &st) != .OK do return "", false
+
+	all_perms := posix.mode_t{.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IWGRP, .IXGRP, .IROTH, .IWOTH, .IXOTH}
+	permissions_valid := (st.st_mode & all_perms) == posix.mode_t{.IRUSR, .IWUSR}
+	if !permissions_valid do return "", false
+
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return "", false
+	defer delete(data)
+
+	trimmed := strings.trim_space(string(data))
+	if len(trimmed) != 64 || !is_valid_hex_key(trimmed) do return "", false
+
+	return strings.clone(trimmed, allocator), true
+}
+
 ctl_vault_command :: proc(cmd: []string, args: []string) {
 	idx := 0
 	if len(cmd) > 0 && cmd[0] == "vault" do idx = 1
