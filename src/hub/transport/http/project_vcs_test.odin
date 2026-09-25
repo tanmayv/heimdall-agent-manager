@@ -12,6 +12,20 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+vcs_command_timeout_ms_network_commands :: proc(t: ^testing.T) {
+	for command_type in ([]string{"vcs_upload", "vcs_push", "vcs_sync", "vcs_pull"}) {
+		testing.expectf(t, vcs_command_timeout_ms(command_type) == 120_000, "%s has 120-second timeout", command_type)
+	}
+}
+
+@(test)
+vcs_command_timeout_ms_default_commands :: proc(t: ^testing.T) {
+	for command_type in ([]string{"vcs_status", "vcs_commit", "vcs_workspaces"}) {
+		testing.expectf(t, vcs_command_timeout_ms(command_type) == 10_000, "%s retains 10-second timeout", command_type)
+	}
+}
+
+@(test)
 project_vcs_command_json_commit_diff_contract :: proc(t: ^testing.T) {
 	cmd := Project_Vcs_Command{
 		command_type = "vcs_commit_diff",

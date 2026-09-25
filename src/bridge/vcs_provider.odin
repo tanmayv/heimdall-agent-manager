@@ -126,9 +126,12 @@ VCS_Provider :: struct {
 	// and callers must treat it as "not_supported" before dispatch.
 	commit:          proc(path, message: string, amend: bool) -> (ok: bool),
 	// Write command. Uploads the current branch/chain of commits to Critique/remote.
-	upload:          proc(path: string) -> (ok: bool, msg: string),
-	// Write command. Syncs/rebases current branch against head.
-	sync:            proc(path: string) -> (ok: bool, msg: string),
+	// code is the short machine code (e.g. "push_failed"); detail is an optional
+	// human-readable excerpt of the tool's stderr, appended to the failure message.
+	upload:          proc(path: string) -> (ok: bool, code: string, detail: string),
+	// Write command. Syncs/rebases current branch against head. Same (code, detail)
+	// convention as upload (code e.g. "sync_failed").
+	sync:            proc(path: string) -> (ok: bool, code: string, detail: string),
 	// read-only. returns (workspaces, ok)
 	list_workspaces: proc(path: string) -> (workspaces: []VCS_Workspace, ok: bool),
 }
@@ -158,18 +161,46 @@ vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
 
 // --- shared helpers ------------------------------------------------------
 
-// vcs_run executes an argv (no shell) and returns its stdout plus whether the
-// process ran and exited 0. Used by both adapters to shell out to git/jj. stderr
-// is discarded. The returned string is owned by context.allocator.
-vcs_run :: proc(args: []string) -> (out: string, ok: bool) {
-	if len(args) == 0 do return "", false
+// vcs_run_capture executes an argv (no shell) and returns its stdout, stderr,
+// and whether the process ran and exited 0. Used by both adapters to shell out
+// to git/jj; callers that need the failure detail (vcs_git_push/vcs_git_sync)
+// use this so git stderr is preserved for the error response. The returned
+// strings are owned by context.allocator; the caller must delete them.
+vcs_run_capture :: proc(args: []string) -> (out: string, err_out: string, ok: bool) {
+	if len(args) == 0 do return "", "", false
 	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
-	if len(stderr) > 0 do delete(stderr, context.allocator)
 	if err != nil {
 		if len(stdout) > 0 do delete(stdout, context.allocator)
-		return "", false
+		if len(stderr) > 0 do delete(stderr, context.allocator)
+		return "", "", false
 	}
-	return string(stdout), state.success
+	return string(stdout), string(stderr), state.success
+}
+
+// vcs_run executes an argv (no shell) and returns its stdout plus whether the
+// process ran and exited 0; stderr is discarded. Thin wrapper over
+// vcs_run_capture so all existing callers stay untouched. The returned string
+// is owned by context.allocator.
+vcs_run :: proc(args: []string) -> (out: string, ok: bool) {
+	result, err_out, rok := vcs_run_capture(args)
+	if len(err_out) > 0 do delete(err_out)
+	return result, rok
+}
+
+VCS_ERROR_DETAIL_MAX :: 400
+
+// vcs_error_detail reduces a command's stderr to a short human-readable excerpt
+// for failure responses: surrounding whitespace is trimmed and the LAST
+// VCS_ERROR_DETAIL_MAX bytes are kept — the tail is where the actual error is,
+// and the cap keeps WS frames small. Returns "" for empty/whitespace-only input.
+// The result is a fresh context.allocator clone; the caller owns it.
+vcs_error_detail :: proc(stderr: string) -> string {
+	trimmed := strings.trim_space(stderr)
+	if trimmed == "" do return ""
+	if len(trimmed) > VCS_ERROR_DETAIL_MAX {
+		trimmed = trimmed[len(trimmed) - VCS_ERROR_DETAIL_MAX:]
+	}
+	return strings.clone(trimmed, context.allocator)
 }
 
 // vcs_write_file_impl writes `content` to <root>/<file>, creating/truncating it.

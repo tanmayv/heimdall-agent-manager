@@ -724,12 +724,20 @@ project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Co
 	return project_vcs_send(h, bridge.bridge_id, cmd, root_path)
 }
 
+vcs_command_timeout_ms :: proc(command_type: string) -> int {
+	switch command_type {
+	case "vcs_upload", "vcs_push", "vcs_sync", "vcs_pull":
+		return 120_000
+	}
+	return 10_000
+}
+
 // project_vcs_send builds the vcs_* WS command carrying root_path and relays it to
 // the bridge, returning the bridge result JSON verbatim.
 project_vcs_send :: proc(h: ^Bridge_Handlers, bridge_id: string, cmd: Project_Vcs_Command, root_path: string) -> (string, bool, domain.Domain_Error) {
 	command_id := fmt.tprintf("cmd_pvcs_%d", time.to_unix_nanoseconds(time.now()))
 	cmd_body := project_vcs_command_json(cmd, command_id, root_path)
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = command_id, body_json = cmd_body}, vcs_command_timeout_ms(cmd.command_type))
 	if !reply_ok do return "", false, reply_err
 	return reply, true, domain.Domain_Error{}
 }
