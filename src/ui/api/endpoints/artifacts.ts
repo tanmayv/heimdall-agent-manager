@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react';
+import { useSelector } from 'react-redux';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import {
+  isVaultArmored,
+  encryptVaultText,
+  decryptVaultText,
+  base64ToBytes,
+  bytesToBase64,
+} from '../../utils/vaultContent';
 
 type ArtifactAuthArgs = {
   daemonUrl?: string;
@@ -48,6 +57,7 @@ type ArtifactCreateArgs = ArtifactAuthArgs & {
   originKind?: string;
   originRef?: string;
   contentBase64?: string;
+  content?: string;
 };
 
 type ArtifactUpdateArgs = ArtifactAuthArgs & {
@@ -442,26 +452,34 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       providesTags: (_result, _error, { artifactId }) => [{ type: 'ArtifactVersions' as const, id: artifactId }],
     }),
     fetchArtifactTextContent: build.query<any, ArtifactTextContentArgs>({
-      queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session }) => {
+      queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session, state }) => {
         if (!artifactId) return { artifactId, versionNo, text: '' };
         const response = await fetch(artifactContentUrl(session, artifactId, versionNo), artifactFetchInit(session));
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
         const body = await response.text();
         const responseContentType = response.headers.get('content-type') || '';
+        let text = body;
         if (/\bjson\b/i.test(responseContentType)) {
           try {
             const parsed = JSON.parse(body);
-            const text = typeof parsed?.content === 'string'
+            const extracted = typeof parsed?.content === 'string'
               ? parsed.content
               : typeof parsed?.data?.content === 'string'
                 ? parsed.data.content
                 : typeof parsed?.text === 'string'
                   ? parsed.text
                   : '';
-            if (text) return { artifactId, versionNo, text };
+            if (extracted) text = extracted;
           } catch {}
         }
-        return { artifactId, versionNo, text: body };
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        if (isUnlocked && rawKeyHex && isVaultArmored(text)) {
+          try {
+            text = await decryptVaultText(text, rawKeyHex);
+          } catch {}
+        }
+        return { artifactId, versionNo, text };
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'ArtifactContent' as const, id: artifactId }],
       keepUnusedDataFor: 0,
@@ -482,8 +500,64 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       ],
     }),
     createArtifact: build.mutation<any, ArtifactCreateArgs>({
-      queryFn: withSessionQuery(async (args, { session }) => {
-        const data = await daemonApi.createArtifact({ ...withoutArtifactAuthArgs(args), ...auth(session) });
+      queryFn: withSessionQuery(async (args, { session, state }) => {
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        let effectiveArgs = args;
+        if (isUnlocked && rawKeyHex) {
+          let file = args.file;
+          let contentBase64 = args.contentBase64;
+          let content = (args as any).content;
+          let name = args.name;
+          let description = args.description;
+
+          if (name && !isVaultArmored(name)) {
+            name = await encryptVaultText(name, rawKeyHex);
+          }
+          if (description && !isVaultArmored(description)) {
+            description = await encryptVaultText(description, rawKeyHex);
+          }
+
+          if (content && typeof content === 'string' && !isVaultArmored(content)) {
+            const encContent = await encryptVaultText(content, rawKeyHex);
+            contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
+            content = encContent;
+          } else if (contentBase64 && typeof contentBase64 === 'string') {
+            try {
+              const decoded = new TextDecoder('utf-8', { fatal: true }).decode(base64ToBytes(contentBase64));
+              if (decoded && !isVaultArmored(decoded)) {
+                const encContent = await encryptVaultText(decoded, rawKeyHex);
+                contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
+                content = encContent;
+              }
+            } catch {}
+          } else if (file instanceof Blob) {
+            const mime = String(args.mime || (file as any).type || '').toLowerCase();
+            const ext = inferExt(args.name, args.ext);
+            const isText = mime.startsWith('text/') || mime === 'application/json' || ['.md', '.markdown', '.txt', '.json', '.diff', '.patch', '.csv'].includes(ext);
+            if (isText) {
+              try {
+                const text = await file.text();
+                if (text && !isVaultArmored(text)) {
+                  const encContent = await encryptVaultText(text, rawKeyHex);
+                  contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
+                  content = encContent;
+                  file = null;
+                }
+              } catch {}
+            }
+          }
+
+          effectiveArgs = {
+            ...args,
+            name,
+            description,
+            file,
+            contentBase64,
+            ...(content !== undefined ? { content } : {}),
+          };
+        }
+        const data = await daemonApi.createArtifact({ ...withoutArtifactAuthArgs(effectiveArgs), ...auth(session) });
         const artifact = normalizeArtifact(data?.artifact || data?.data || data);
         return { ...data, artifact, link: artifact?.link || (artifact?.artifact_id ? `artifact://${artifact.artifact_id}` : '') };
       }),
@@ -504,7 +578,28 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       },
     }),
     updateArtifact: build.mutation<any, ArtifactUpdateArgs>({
-      queryFn: withSessionQuery(async (args, { session }) => daemonApi.updateArtifact({ ...withoutArtifactAuthArgs(args), ...auth(session) })),
+      queryFn: withSessionQuery(async (args, { session, state }) => {
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        let name = args.name;
+        let description = args.description;
+        if (isUnlocked && rawKeyHex) {
+          if (name && !isVaultArmored(name)) {
+            name = await encryptVaultText(name, rawKeyHex);
+          }
+          if (description && !isVaultArmored(description)) {
+            description = await encryptVaultText(description, rawKeyHex);
+          }
+        }
+        return daemonApi.updateArtifact({
+          ...withoutArtifactAuthArgs({
+            ...args,
+            ...(name !== undefined ? { name } : {}),
+            ...(description !== undefined ? { description } : {}),
+          }),
+          ...auth(session),
+        });
+      }),
       invalidatesTags: (result, _error, { artifactId, projectId = '', originRef = '' }) => {
         const updated = result?.artifact || {};
         return [
@@ -581,6 +676,8 @@ export function normalizeArtifacts(data: any) {
 }
 
 export function useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const [state, setState] = useState<{ url: string; loading: boolean; error: string }>({ url: '', loading: false, error: '' });
   useEffect(() => {
     const token = String(clientToken || '');
@@ -599,8 +696,18 @@ export function useArtifactContentState({ daemonUrl, clientToken, artifactId, ve
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
         return response.blob();
       })
-      .then((blob) => {
-        nextUrl = URL.createObjectURL(blob);
+      .then(async (blob) => {
+        let finalBlob = blob;
+        if (isUnlocked && rawKeyHex) {
+          try {
+            const rawText = await blob.text();
+            if (isVaultArmored(rawText)) {
+              const decrypted = await decryptVaultText(rawText, rawKeyHex);
+              finalBlob = new Blob([decrypted], { type: blob.type || 'text/plain' });
+            }
+          } catch {}
+        }
+        nextUrl = URL.createObjectURL(finalBlob);
         if (cancelled) URL.revokeObjectURL(nextUrl);
         else setState({ url: nextUrl, loading: false, error: '' });
       })
@@ -611,7 +718,7 @@ export function useArtifactContentState({ daemonUrl, clientToken, artifactId, ve
       cancelled = true;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
-  }, [daemonUrl, clientToken, artifactId, versionNo]);
+  }, [daemonUrl, clientToken, artifactId, versionNo, isUnlocked, rawKeyHex]);
   return state;
 }
 

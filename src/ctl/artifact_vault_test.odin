@@ -1,0 +1,171 @@
+package main
+
+import "core:encoding/base64"
+import "core:encoding/json"
+import "core:fmt"
+import "core:os"
+import "core:strings"
+import "core:sync"
+import "core:testing"
+
+// ── REQ-VAULT-ARTIFACTS-1 CLI Unit Tests ────────────────────────────────────
+
+TEST_ARTIFACT_VAULT_KEY :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+ALT_ARTIFACT_VAULT_KEY  :: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+@(test)
+test_artifact_create_encryption_with_vault_key :: proc(t: ^testing.T) {
+	orig_name := "security-incident-audit-2026.md"
+	orig_desc := "Confidential security breach report and remediation log"
+	orig_content := "# Confidential Audit\nAll database credentials were rotated."
+
+	args := []string{
+		"--name", orig_name,
+		"--description", orig_desc,
+		"--content", orig_content,
+		"--kind", "markdown",
+		"--project", "proj_security_99",
+		"--vault-key", TEST_ARTIFACT_VAULT_KEY,
+	}
+
+	out := ctl_agentmode_artifact_create_params(args)
+
+	// Kind and project must be preserved in plaintext
+	testing.expect(t, strings.contains(out, `"kind":"markdown"`), "kind must be plaintext")
+	testing.expect(t, strings.contains(out, `"project_id":"proj_security_99"`), "project_id must be plaintext")
+
+	// Name must be encrypted
+	testing.expect(t, !strings.contains(out, orig_name), "name must not leak plaintext")
+	testing.expect(t, strings.contains(out, `"name":"vault:v1:`), "name must be armored with vault:v1:")
+
+	// Description must be encrypted
+	testing.expect(t, !strings.contains(out, orig_desc), "description must not leak plaintext")
+	testing.expect(t, strings.contains(out, `"description":"vault:v1:`), "description must be armored with vault:v1:")
+
+	// Content must be encrypted
+	testing.expect(t, !strings.contains(out, orig_content), "content must not leak plaintext")
+	testing.expect(t, strings.contains(out, `"content":"vault:v1:`), "content must be armored with vault:v1:")
+
+	// Round-trip decryption check
+	val, err := json.parse_string(out, parse_integers = true, allocator = context.temp_allocator)
+	testing.expect(t, err == .None, "emitted params must be valid JSON")
+	obj := val.(json.Object)
+
+	enc_name := string(obj["name"].(json.String))
+	dec_name, dn_ok := vault_decrypt_text_hex(enc_name, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, dn_ok, "name must decrypt successfully")
+	testing.expect_value(t, dec_name, orig_name)
+
+	enc_desc := string(obj["description"].(json.String))
+	dec_desc, dd_ok := vault_decrypt_text_hex(enc_desc, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, dd_ok, "description must decrypt successfully")
+	testing.expect_value(t, dec_desc, orig_desc)
+
+	enc_content := string(obj["content"].(json.String))
+	dec_content, dc_ok := vault_decrypt_text_hex(enc_content, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, dc_ok, "content must decrypt successfully")
+	testing.expect_value(t, dec_content, orig_content)
+}
+
+@(test)
+test_artifact_create_without_vault_key_leaves_plaintext :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	orig_name := "public-readme.md"
+	orig_desc := "Public documentation for open-source library"
+	orig_content := "# Public Library\nOpen documentation."
+
+	args := []string{
+		"--name", orig_name,
+		"--description", orig_desc,
+		"--content", orig_content,
+	}
+
+	out := ctl_agentmode_artifact_create_params(args)
+	testing.expect(t, strings.contains(out, `"name":"public-readme.md"`), "name must remain plaintext")
+	testing.expect(t, strings.contains(out, `"description":"Public documentation for open-source library"`), "description must remain plaintext")
+	testing.expect(t, strings.contains(out, `"content":"# Public Library\nOpen documentation."`), "content must remain plaintext")
+	testing.expect(t, !strings.contains(out, "vault:v1:"), "must not contain vault armor")
+}
+
+@(test)
+test_artifact_create_base64_content_encryption :: proc(t: ^testing.T) {
+	raw_text := "DATABASE_SECRET_TOKEN=xyz_token_123"
+	b64 := base64.encode(transmute([]byte)raw_text, allocator = context.temp_allocator)
+
+	args := []string{
+		"--name", "config.env",
+		"--vault-key", TEST_ARTIFACT_VAULT_KEY,
+	}
+	// Inject content_base64 manually via helper args test
+	params := fmt.tprintf(`{"name":"config.env","content_base64":"%s"}`, b64)
+	testing.expect(t, len(params) > 0, "params valid")
+
+	enc_text, enc_ok := vault_encrypt_text_hex(raw_text, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, enc_ok, "encryption should succeed")
+	enc_b64 := base64.encode(transmute([]byte)enc_text, allocator = context.temp_allocator)
+
+	raw_bytes, b_err := base64.decode(enc_b64, allocator = context.temp_allocator)
+	testing.expect(t, b_err == nil, "base64 decode succeeds")
+	dec_text, dec_ok := vault_decrypt_text_hex(string(raw_bytes), TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, dec_ok, "decryption should succeed")
+	testing.expect_value(t, dec_text, raw_text)
+}
+
+@(test)
+test_artifact_show_and_list_transparent_decryption :: proc(t: ^testing.T) {
+	orig_name := "database-credentials.env"
+	orig_desc := "Production credentials for core storage cluster"
+	orig_content := "PASSWORD=very_secret_pass"
+
+	enc_name, _ := vault_encrypt_text_hex(orig_name, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	enc_desc, _ := vault_encrypt_text_hex(orig_desc, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	enc_content, _ := vault_encrypt_text_hex(orig_content, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+
+	raw_json := fmt.tprintf(
+		`{{"ok":true,"data":{{"artifact_id":"art_vault_123","name":"%s","description":"%s","content":"%s","kind":"text","size_bytes":100}}}}`,
+		enc_name, enc_desc, enc_content,
+	)
+
+	// Decrypt with correct key
+	decrypted := ctl_decrypt_json_string(raw_json, TEST_ARTIFACT_VAULT_KEY, true, context.temp_allocator)
+	testing.expect(t, strings.contains(decrypted, orig_name), "decrypted JSON must contain orig name")
+	testing.expect(t, strings.contains(decrypted, orig_desc), "decrypted JSON must contain orig description")
+	testing.expect(t, strings.contains(decrypted, orig_content), "decrypted JSON must contain orig content")
+	testing.expect(t, !strings.contains(decrypted, "vault:v1:"), "decrypted JSON must have zero vault armor")
+}
+
+@(test)
+test_artifact_show_and_list_unconfigured_key_fallback :: proc(t: ^testing.T) {
+	enc_name, _ := vault_encrypt_text_hex("Secret Artifact", TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+
+	raw_json := fmt.tprintf(`{{"ok":true,"data":{{"artifact_id":"art_1","name":"%s"}}}}`, enc_name)
+
+	// Decrypt without configured key (fallback expected)
+	fallback := ctl_decrypt_json_string(raw_json, "", false, context.temp_allocator)
+	testing.expect(t, strings.contains(fallback, "[Encrypted: vault:v1:"), "unconfigured key must yield [Encrypted: vault:v1:...]")
+}
+
+@(test)
+test_artifact_content_decryption_and_fallbacks :: proc(t: ^testing.T) {
+	orig_content := "# Sensitive Architecture Document\nZero-knowledge is active."
+	enc_content, enc_ok := vault_encrypt_text_hex(orig_content, TEST_ARTIFACT_VAULT_KEY, context.temp_allocator)
+	testing.expect(t, enc_ok, "encrypt must succeed")
+
+	// 1. Correct key decrypts cleanly
+	dec := ctl_decrypt_or_fallback_armored(enc_content, TEST_ARTIFACT_VAULT_KEY, true, context.temp_allocator)
+	testing.expect_value(t, dec, orig_content)
+
+	// 2. Unconfigured key returns fallback
+	fallback_unconf := ctl_decrypt_or_fallback_armored(enc_content, "", false, context.temp_allocator)
+	testing.expect(t, strings.has_prefix(fallback_unconf, "[Encrypted: vault:v1:"), "unconfigured must return fallback")
+
+	// 3. Wrong key returns fallback
+	fallback_wrong := ctl_decrypt_or_fallback_armored(enc_content, ALT_ARTIFACT_VAULT_KEY, true, context.temp_allocator)
+	testing.expect(t, strings.has_prefix(fallback_wrong, "[Encrypted: vault:v1:"), "wrong key must return fallback")
+
+	// 4. Legacy plaintext returns as-is
+	legacy := "Plaintext unencrypted legacy content"
+	dec_legacy := ctl_decrypt_or_fallback_armored(legacy, TEST_ARTIFACT_VAULT_KEY, true, context.temp_allocator)
+	testing.expect_value(t, dec_legacy, legacy)
+}

@@ -1,5 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { apiUrl, cookieJsonFetch } from '../cookieFetch';
+import { decryptProjectList } from '../../utils/vaultProjects';
 
 // UI-14: cookie-authenticated sidebar data for the live shell. The shell serves
 // the rewrite behind the trusted proxy, so these use `credentials: 'include'`
@@ -228,11 +229,18 @@ export const sidebarApi = heimdallApi.injectEndpoints({
       ],
     }),
     listSidebarProjects: build.query<SidebarProject[], { limit?: number } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 100;
           const rows = await fetchCookieList(`/projects?limit=${limit}`, ['projects']);
-          return { data: rows.map(normalizeSidebarProject) };
+          const rawProjects = rows.map(normalizeSidebarProject);
+          const state: any = api?.getState?.();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const projects = (isUnlocked && rawKeyHex)
+            ? await decryptProjectList(rawProjects, rawKeyHex)
+            : rawProjects;
+          return { data: projects };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
         }

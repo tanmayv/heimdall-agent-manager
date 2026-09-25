@@ -47,6 +47,10 @@ import {
   useViewport,
 } from '@ui';
 import MarkdownBody from '../MarkdownBody';
+import { useSelector } from 'react-redux';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import {
   projectErrorText,
   useArchiveProjectMutation,
@@ -258,7 +262,7 @@ export function ProjectDetailHeader({
           data-debug-id="project-pane-title"
           className="rounded-[var(--radius-sm)] hover:underline focus-visible:shadow-focus focus-visible:outline-none"
         >
-          {title}
+          <VaultText value={record.name || title} fallback={record.projectId} />
         </a>
       }
       id={record.projectId}
@@ -538,12 +542,39 @@ export function ProjectDetailBody({
   wide: boolean;
 }) {
   const description = record.description;
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decryptedDescription, setDecryptedDescription] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let active = true;
+    if (description && isVaultArmored(description) && isVaultUnlocked && rawKeyHex) {
+      decryptVaultText(description, rawKeyHex)
+        .then((text) => {
+          if (active) setDecryptedDescription(text);
+        })
+        .catch(() => {
+          if (active) setDecryptedDescription(description);
+        });
+    } else {
+      setDecryptedDescription(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [description, isVaultUnlocked, rawKeyHex]);
 
   const main = (
     <>
       <Card title="Description" debugId="project-view-description-card">
         {description ? (
-          <MarkdownBody source={description} copyAll={false} data-debug-id="project-view-description" />
+          isVaultArmored(description) && !isVaultUnlocked ? (
+            <div data-debug-id="project-view-description">
+              <VaultText value={description} as="div" />
+            </div>
+          ) : (
+            <MarkdownBody source={decryptedDescription || description} copyAll={false} data-debug-id="project-view-description" />
+          )
         ) : (
           <Text as="div" role="body-sm" tone="muted" data-debug-id="project-view-description-empty">
             No description yet.

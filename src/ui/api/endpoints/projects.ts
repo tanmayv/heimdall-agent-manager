@@ -1,5 +1,7 @@
 import { heimdallApi } from '../heimdallApi';
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
+import { isVaultArmored, encryptVaultText, decryptVaultText } from '../../utils/vaultContent';
+import { encryptProjectFields, decryptProjectRecord, decryptProjectList } from '../../utils/vaultProjects';
 
 export type ProjectBridgePath = {
   bridge_id: string;
@@ -32,10 +34,16 @@ function projectTagId(project: any, fallback = '') {
 export const projectsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listProjects: build.query<any, { scope?: string } | void>({
-      queryFn: async () => {
+      queryFn: async (_arg, api) => {
         try {
           const data = await cookieJsonFetch('/projects');
-          const projects = Array.isArray(data) ? data : (data?.projects || []);
+          const rawProjects = Array.isArray(data) ? data : (data?.projects || []);
+          const state: any = api?.getState?.();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const projects = (isUnlocked && rawKeyHex)
+            ? await decryptProjectList(rawProjects, rawKeyHex)
+            : rawProjects;
           return { data: { projects } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -48,12 +56,18 @@ export const projectsApi = heimdallApi.injectEndpoints({
       ],
     }),
     fetchProject: build.query<any, { projectId: string; scope?: string }>({
-      queryFn: async ({ projectId }) => {
+      queryFn: async ({ projectId }, api) => {
         if (!projectId) return { data: { project: null, bridge_paths: [] } };
         try {
           const data = await cookieJsonFetch(`/projects/${encodeURIComponent(projectId)}`);
-          const project = data?.project || data;
+          let project = data?.project || data;
           const bridge_paths = project?.bridge_paths || data?.bridge_paths || [];
+          const state: any = api?.getState?.();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          if (project && isUnlocked && rawKeyHex) {
+            project = await decryptProjectRecord(project, rawKeyHex);
+          }
           return { data: { project: { ...project, bridge_paths }, bridge_paths } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -71,9 +85,29 @@ export const projectsApi = heimdallApi.injectEndpoints({
       workspace_name?: string;
       relative_path?: string;
     }>({
-      queryFn: async (payload) => {
+      queryFn: async (payload, api) => {
         try {
-          const data = await cookieMutation('/projects', 'POST', payload);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          let name = payload.name;
+          let description = payload.description;
+
+          if (isUnlocked && rawKeyHex) {
+            if (name && !isVaultArmored(name)) {
+              name = await encryptVaultText(name, rawKeyHex);
+            }
+            if (description && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+          }
+
+          const body = {
+            ...payload,
+            name,
+            ...(description !== undefined ? { description } : {}),
+          };
+          const data = await cookieMutation('/projects', 'POST', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -95,9 +129,28 @@ export const projectsApi = heimdallApi.injectEndpoints({
       workspace_name?: string;
       relative_path?: string;
     }>({
-      queryFn: async ({ projectId, ...payload }) => {
+      queryFn: async ({ projectId, ...payload }, api) => {
         try {
-          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'PATCH', payload);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          let name = payload.name;
+          let description = payload.description;
+
+          if (isUnlocked && rawKeyHex) {
+            if (name !== undefined && !isVaultArmored(name)) {
+              name = await encryptVaultText(name, rawKeyHex);
+            }
+            if (description !== undefined && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+          }
+
+          const body: any = { ...payload };
+          if (name !== undefined) body.name = name;
+          if (description !== undefined) body.description = description;
+
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'PATCH', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -353,3 +406,5 @@ export async function searchProjectPage(
 export function projectErrorText(err: unknown, fallback = 'Something went wrong'): string {
   return apiErrorText(err, fallback);
 }
+
+export { encryptProjectFields, decryptProjectRecord, decryptProjectList } from '../../utils/vaultProjects';

@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
+import { isVaultArmored } from '../../utils/vaultContent';
 import {
   Avatar,
   Badge,
@@ -1046,8 +1047,8 @@ export default function ChainOverviewPanel({
                   >
                     <div className="flex items-center gap-2 min-w-0">
                       <Icon name={iconName} size={14} className="text-accent shrink-0" />
-                      <span className="text-xs font-medium text-primary truncate" title={name}>
-                        {name}
+                      <span className="text-xs font-medium text-primary truncate" title={typeof name === 'string' && !isVaultArmored(name) ? name : undefined}>
+                        <VaultText value={name} fallback={artId} />
                       </span>
                     </div>
                     <div className="flex items-center gap-2 text-[10px] text-muted shrink-0">

@@ -18,6 +18,7 @@ import {
 } from "../../api/endpoints/bridgeFig";
 import BridgeDirectoryPicker from "../BridgeDirectoryPicker";
 import FigDirectoryPicker from "../FigDirectoryPicker";
+import { VaultText } from "../vault/VaultText";
 import { Badge, Button, FormField, Icon, Input, Modal, PageShell, Panel, SectionHeader, Select, StatusDot, Tabs, Text } from "@ui";
 
 export default function ProjectsPanel() {
@@ -718,7 +719,7 @@ export default function ProjectsPanel() {
               <div className="rounded-2xl border border-subtle bg-surface-raised/30 p-4 space-y-4">
                 <SectionHeader
                   level="h3"
-                  title={selectedProject.name}
+                  title={<VaultText value={selectedProject.name} fallback="Untitled project" />}
                   actions={
                     selectedProject.is_default_conversations ? (
                       <Badge tone="info">Default Project</Badge>
@@ -956,7 +957,7 @@ export default function ProjectsPanel() {
                       <div><strong className="text-muted">VCS / Repo:</strong> {selectedProject.vcs_kind || (selectedProject.project_type === "fig" ? "piper" : "git")} · {selectedProject.repo_url || "no repo"}</div>
                     </div>
                     {selectedProject.description ? (
-                      <p className="text-xs text-muted mt-1">{selectedProject.description}</p>
+                      <p className="text-xs text-muted mt-1"><VaultText value={selectedProject.description} /></p>
                     ) : null}
                   </div>
                 )}
@@ -1132,7 +1133,7 @@ export default function ProjectsPanel() {
                   >
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-semibold text-primary truncate">{project.name}</span>
+                        <span className="font-semibold text-primary truncate"><VaultText value={project.name} fallback="Untitled project" /></span>
                         {project.project_type === "fig" ? (
                           <Badge tone="warning" emphasis="soft" className="flex items-center gap-1">
                             <Icon name="folder" size={10} className="text-warning" />

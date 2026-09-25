@@ -33,7 +33,7 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 		ctl_task_chains_command(cmd[idx:], args)
 		return
 	}
-	if resource == "projects" { ctl_hub_projects(base, user_token, action, args); return }
+	if resource == "projects" || resource == "project" { ctl_hub_projects(base, user_token, action, args); return }
 	if resource == "artifacts" || resource == "artifact" { ctl_hub_artifacts(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "cards" || resource == "card" { ctl_hub_cards(base, user_token, cmd[idx + 1:], args); return }
@@ -326,27 +326,77 @@ ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
 }
 
 ctl_hub_projects :: proc(base, token, action: string, args: []string) {
-	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/projects", ""); return }
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+
+	if action == "" || action == "list" {
+		resp, ok := ctl_hub_request_string(base, token, "GET", "/api/v1/projects", "")
+		if !ok do return
+		dec := ctl_decrypt_vault_json(resp, key_hex, key_ok)
+		defer delete(dec)
+		fmt.println(dec)
+		return
+	}
 	if action == "create" {
 		name := option_value(args, "--name", "")
 		if name == "" { fmt.println("usage: ham-ctl hub projects create --name <name> [--slug <slug>] [--description <text>] [--repo-url <url>] [--vcs-kind <git|jj|none>] [--default-path <path>]"); return }
+		desc := option_value(args, "--description", option_value(args, "--desc", ""))
+		if key_ok {
+			if !is_vault_armored(name) {
+				if enc_name, ok := vault_encrypt_text_hex(name, key_hex, context.temp_allocator); ok do name = enc_name
+			}
+			if desc != "" && !is_vault_armored(desc) {
+				if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok do desc = enc_desc
+			}
+		}
 		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name)); append(&fields, json_kv("slug", option_value(args, "--slug", ""))); append(&fields, json_kv("description", option_value(args, "--description", ""))); append(&fields, json_kv("repo_url", option_value(args, "--repo-url", option_value(args, "--repo", "")))); append(&fields, json_kv("vcs_kind", option_value(args, "--vcs-kind", ""))); append(&fields, json_kv("default_path", option_value(args, "--default-path", option_value(args, "--path", ""))))
-		ctl_hub_request(base, token, "POST", "/api/v1/projects", json_object_from_slice(fields[:]))
+		defer delete(fields)
+		append(&fields, json_kv("name", name))
+		append(&fields, json_kv("slug", option_value(args, "--slug", "")))
+		if desc != "" do append(&fields, json_kv("description", desc))
+		append(&fields, json_kv("repo_url", option_value(args, "--repo-url", option_value(args, "--repo", ""))))
+		append(&fields, json_kv("vcs_kind", option_value(args, "--vcs-kind", "")))
+		append(&fields, json_kv("default_path", option_value(args, "--default-path", option_value(args, "--path", ""))))
+		resp, ok := ctl_hub_request_string(base, token, "POST", "/api/v1/projects", json_object_from_slice(fields[:]))
+		if !ok do return
+		dec := ctl_decrypt_vault_json(resp, key_hex, key_ok)
+		defer delete(dec)
+		fmt.println(dec)
 		return
 	}
 	project_id := option_value(args, "--project-id", option_value(args, "--project", ""))
 	if project_id == "" { fmt.println("usage: ham-ctl hub projects <show|update> --project-id <id>"); return }
-	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/projects/%s", safe_path_part(project_id)), ""); return }
+	if action == "show" {
+		resp, ok := ctl_hub_request_string(base, token, "GET", fmt.tprintf("/api/v1/projects/%s", safe_path_part(project_id)), "")
+		if !ok do return
+		dec := ctl_decrypt_vault_json(resp, key_hex, key_ok)
+		defer delete(dec)
+		fmt.println(dec)
+		return
+	}
 	if action == "update" {
 		fields := make([dynamic]string)
-		if name := option_value(args, "--name", ""); name != "" do append(&fields, json_kv("name", name))
+		defer delete(fields)
+		if name := option_value(args, "--name", ""); name != "" {
+			if key_ok && !is_vault_armored(name) {
+				if enc_name, ok := vault_encrypt_text_hex(name, key_hex, context.temp_allocator); ok do name = enc_name
+			}
+			append(&fields, json_kv("name", name))
+		}
 		if slug := option_value(args, "--slug", ""); slug != "" do append(&fields, json_kv("slug", slug))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if desc := option_value(args, "--description", option_value(args, "--desc", "")); desc != "" {
+			if key_ok && !is_vault_armored(desc) {
+				if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok do desc = enc_desc
+			}
+			append(&fields, json_kv("description", desc))
+		}
 		if repo := option_value(args, "--repo-url", option_value(args, "--repo", "")); repo != "" do append(&fields, json_kv("repo_url", repo))
 		if vcs := option_value(args, "--vcs-kind", ""); vcs != "" do append(&fields, json_kv("vcs_kind", vcs))
 		if path := option_value(args, "--default-path", option_value(args, "--path", "")); path != "" do append(&fields, json_kv("default_path", path))
-		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/projects/%s", safe_path_part(project_id)), json_object_from_slice(fields[:]))
+		resp, ok := ctl_hub_request_string(base, token, "PATCH", fmt.tprintf("/api/v1/projects/%s", safe_path_part(project_id)), json_object_from_slice(fields[:]))
+		if !ok do return
+		dec := ctl_decrypt_vault_json(resp, key_hex, key_ok)
+		defer delete(dec)
+		fmt.println(dec)
 		return
 	}
 	fmt.println("usage: ham-ctl hub projects <list|create|show|update>")
@@ -635,16 +685,22 @@ hub_user_mode_token :: proc(args: []string) -> string {
 	return ""
 }
 
+ctl_hub_request_string :: proc(base, user_token, method, path, body: string) -> (string, bool) {
+	full_path := hub_url_path_prefix_join(base, path)
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", user_token})}}
+	response, ok := http.request_with_headers_timeout(method, base, full_path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return "", false }
+	return response.body, true
+}
+
 ctl_hub_request :: proc(base, user_token, method, path, body: string) {
 	// Preserve any path prefix present in the hub base URL (e.g. when the Hub is
 	// served behind a reverse proxy under /heimdall). The HTTP client drops the
 	// path from the base URL, so we prepend the prefix to the request path.
 	// This makes `ham-ctl hub ... --hub-url http://host/prefix` match `curl`.
-	full_path := hub_url_path_prefix_join(base, path)
-	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", user_token})}}
-	response, ok := http.request_with_headers_timeout(method, base, full_path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
-	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
-	fmt.println(response.body)
+	resp, ok := ctl_hub_request_string(base, user_token, method, path, body)
+	if !ok do return
+	fmt.println(resp)
 }
 
 ctl_hub_request_raw :: proc(base, user_token, method, path, body: string) {

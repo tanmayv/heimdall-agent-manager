@@ -8,6 +8,8 @@ import {
 } from '../api/endpoints/artifacts';
 import { copyTextToClipboard } from '../utils/artifactAnnotations';
 import MarkdownBody from './MarkdownBody';
+import { VaultText } from './vault/VaultText';
+import { isVaultArmored } from '../utils/vaultContent';
 
 type ArtifactViewerProps = {
   artifactId: string;
@@ -241,6 +243,13 @@ function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientTok
 
   if (textQuery.isFetching) return <div className="text-sm text-muted">Loading preview…</div>;
   if (textQuery.error) return <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">Failed to load artifact content.</div>;
+  if (isVaultArmored(raw)) {
+    return (
+      <div className="rounded-xl border border-subtle bg-surface-raised p-6 text-center">
+        <VaultText value={raw} />
+      </div>
+    );
+  }
   return (
     <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
       <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg border border-subtle bg-surface/80 px-2 py-1 text-caption text-primary hover:bg-neutral-soft">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
@@ -351,13 +360,13 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
         <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-subtle bg-surface-raised/80 px-4 py-2 sm:px-5 sm:py-2.5 text-[12px] text-faint">
           <span className="text-muted">Artifact</span>
           <span className="text-faint">/</span>
-          <span className="truncate text-primary">{title}</span>
+          <span className="truncate text-primary"><VaultText value={title} fallback={artifactId} /></span>
         </div>
         <div className="flex flex-col gap-2.5 sm:gap-3 border-b border-subtle px-4 py-3 sm:px-5 sm:py-3.5">
           {/* Row 1: Title (full width on mobile, truncate, never squashed) and 3 action buttons */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 min-w-0 w-full">
-            <div className="min-w-0 w-full sm:flex-1 truncate text-lg sm:text-xl font-semibold tracking-[-0.01em] text-primary" title={title}>
-              {title}
+            <div className="min-w-0 w-full sm:flex-1 truncate text-lg sm:text-xl font-semibold tracking-[-0.01em] text-primary" title={typeof title === 'string' && !isVaultArmored(title) ? title : undefined}>
+              <VaultText value={title} fallback={artifactId} />
             </div>
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               <Button
@@ -430,7 +439,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             {!loading && !error && selectedArtifactMeta && (
               <div className="space-y-4">
                 {selectedArtifactMeta.description && (
-                  <div className="text-sm text-secondary">{selectedArtifactMeta.description}</div>
+                  <div className="text-sm text-secondary"><VaultText value={selectedArtifactMeta.description} /></div>
                 )}
                 {loadingContent ? (
                   <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-subtle bg-surface-raised px-6 py-10 text-center">
@@ -447,6 +456,10 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                 ) : previewKind === 'markdown' ? (
                   loadingText ? (
                     <div className="text-sm text-muted">Loading preview…</div>
+                  ) : isVaultArmored(textContent) ? (
+                    <div className="rounded-xl border border-subtle bg-surface-raised p-6 text-center">
+                      <VaultText value={textContent} />
+                    </div>
                   ) : (
                     <MarkdownBody
                       data-debug-id="artifact-viewer-markdown-preview"

@@ -41,6 +41,7 @@ import {
   useViewport,
   type ResourceMenuAction,
 } from '@ui';
+import { VaultText } from '../vault/VaultText';
 import type { ProjectRecord } from '../../api/endpoints/projects';
 import {
   VERB_LABEL,
@@ -110,7 +111,7 @@ export function ProjectRow({
       timeDebugId={`project-row-time-${projectId}`}
       title={
         <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate">{title}</span>
+          <span className="min-w-0 truncate"><VaultText value={row.name || title} fallback={projectId} as="span" /></span>
           {isFig ? (
             <Badge tone="warning" data-debug-id={`project-row-fig-badge-${projectId}`}>
               Fig (CitC)
@@ -136,7 +137,13 @@ export function ProjectRow({
           </span>
         ) : null
       }
-      snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
+      snippet={
+        snippet && snippet.trim() ? (
+          <VaultText value={snippet} as="span" />
+        ) : (
+          <span className="italic text-faint select-none">&lt;empty&gt;</span>
+        )
+      }
       badges={
         <>
           {vcs ? <Badge data-debug-id={`project-row-vcs-${projectId}`}>{vcsLabel(vcs)}</Badge> : null}

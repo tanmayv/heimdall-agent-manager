@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
+import { VaultText } from './vault/VaultText';
 
 export type ArtifactPreviewMeta = {
   artifact_id?: string;
@@ -204,7 +205,7 @@ export function ArtifactAttachmentPreview({
         </div>
         <div className="flex items-center gap-2 px-2.5 py-1.5 text-caption text-muted">
           <span className="text-accent">🖼</span>
-          <span className="min-w-0 flex-1 truncate">{label}</span>
+          <span className="min-w-0 flex-1 truncate"><VaultText value={label} fallback={id} /></span>
           <span className="text-faint group-hover:text-accent">Open</span>
         </div>
       </a>
@@ -214,7 +215,7 @@ export function ArtifactAttachmentPreview({
   return (
     <a data-debug-id={`${debugId}-link`} href={target} className="flex min-w-0 max-w-full items-center gap-1 rounded bg-info-soft px-2 py-1 text-caption text-accent hover:bg-neutral-soft">
       <span className="opacity-70">▣</span>
-      <span className="truncate">{preview.loadingMeta ? id : label}</span>
+      <span className="truncate">{preview.loadingMeta ? id : <VaultText value={label} fallback={id} />}</span>
     </a>
   );
 }
