@@ -402,3 +402,258 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	is_member := is_instance_member_or_coordinator(&svc, chain, spawned_id)
 	testing.expect(t, is_member, "spawned instance must be enrolled as chain member")
 }
+
+@(test)
+test_stopped_warm_instance_reuse_and_auto_start :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_stopped_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, _ := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	defer sqlite.close(&conn)
+
+	mig_ok, _ := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for c in captured_cmds {
+			delete(c.body_json)
+		}
+		delete(captured_cmds)
+	}
+
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			list := (^[dynamic]project_service.Runtime_Command)(ctx)
+			c_copy := cmd
+			c_copy.body_json = strings.clone(cmd.body_json)
+			append(list, c_copy)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+
+	owner := domain.User_ID("user_stopped_test")
+	chain_id := domain.Task_Chain_ID("chain_stopped_test")
+
+	// Set up Bridge in repo
+	bridge := domain.Bridge{
+		bridge_id         = "brg_stopped_test",
+		owner_user_id     = owner,
+		machine_hostname  = "localhost",
+		status            = .Online,
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, bridge)
+
+	// Set up Agents in repo
+	worker_agent := domain.Agent{
+		agent_id         = "agt_w",
+		owner_user_id    = owner,
+		name             = "Worker Agent",
+		slug             = "worker-agent",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, worker_agent)
+
+	reviewer_agent := domain.Agent{
+		agent_id         = "agt_r",
+		owner_user_id    = owner,
+		name             = "Reviewer Agent",
+		slug             = "reviewer-agent",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, reviewer_agent)
+
+	// Create chain
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Stopped Warm Pool Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_test",
+		created_at                    = "2026-09-23T10:00:00Z",
+		updated_at                    = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord_test",
+		owner_user_id     = owner,
+		agent_id          = "agt_coordinator",
+		bridge_id         = "brg_stopped_test",
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	// Pre-create a STOPPED warm instance for agt_w
+	w_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_w_stopped",
+		owner_user_id     = owner,
+		agent_id          = "agt_w",
+		bridge_id         = "brg_stopped_test",
+		display_name      = "stopped worker",
+		runtime_status    = "stopped",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, w_inst)
+	w_member := domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_w_stopped",
+		agent_id          = "agt_w",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_member(&tc_repo, w_member)
+
+	// Pre-create a STOPPED warm instance for agt_r
+	r_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_r_stopped",
+		owner_user_id     = owner,
+		agent_id          = "agt_r",
+		bridge_id         = "brg_stopped_test",
+		display_name      = "stopped reviewer",
+		runtime_status    = "stopped",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, r_inst)
+	r_member := domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_r_stopped",
+		agent_id          = "agt_r",
+		owner_user_id     = owner,
+		role              = "reviewer",
+		created_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_member(&tc_repo, r_member)
+
+	// Fleet capacity = 1 for agt_w and agt_r
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, domain.Task_Chain_Fleet{
+		task_chain_id = chain_id,
+		agent_id      = "agt_w",
+		capacity      = 1,
+	})
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, domain.Task_Chain_Fleet{
+		task_chain_id = chain_id,
+		agent_id      = "agt_r",
+		capacity      = 1,
+	})
+
+	// Task 1: work task targeting agt_w
+	task1 := domain.Task{
+		task_id            = "task_work_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Work Task 1",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_w"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-09-23T10:01:00Z",
+		updated_at         = "2026-09-23T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task1)
+
+	// Task 2: review task in In_Validation targeting agt_r
+	task2 := domain.Task{
+		task_id            = "task_rev_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Review Task 1",
+		publish_state      = .Published,
+		status             = .In_Validation,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_other"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_r"}]`,
+		created_at         = "2026-09-23T10:01:00Z",
+		updated_at         = "2026-09-23T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task2)
+
+	// Reconcile
+	promoted := reconcile_chain(&svc, chain)
+	testing.expect_value(t, promoted, 1)
+
+	// 1. Verify Task 1 bound to inst_w_stopped (reused warm stopped instance, NOT new instance)
+	saved_t1, _, _ := iface.taskchain_get_task(&tc_repo, "task_work_1")
+	testing.expect_value(t, saved_t1.status, domain.Task_Status.In_Progress)
+	testing.expect(t, strings.contains(saved_t1.assignee_ref_json, "inst_w_stopped"), "task_work_1 must be bound to inst_w_stopped")
+
+	// 2. Verify Task 2 bound to inst_r_stopped (reused warm stopped instance)
+	saved_t2, _, _ := iface.taskchain_get_task(&tc_repo, "task_rev_1")
+	testing.expect(t, strings.contains(saved_t2.reviewer_refs_json, "inst_r_stopped"), "task_rev_1 must be bound to inst_r_stopped")
+
+	// 3. Verify wake commands emitted for both stopped instances and NO stops
+	wake_w_found := false
+	wake_r_found := false
+	stop_w_found := false
+	stop_r_found := false
+
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"type":"wake_agent"`) {
+			if strings.contains(cmd.body_json, "inst_w_stopped") && strings.contains(cmd.body_json, "task_work_1") {
+				wake_w_found = true
+			}
+			if strings.contains(cmd.body_json, "inst_r_stopped") && strings.contains(cmd.body_json, "task_rev_1") {
+				wake_r_found = true
+			}
+			if strings.contains(cmd.body_json, `"stops":[`) {
+				if strings.contains(cmd.body_json, `"inst_w_stopped"`) {
+					stop_w_found = true
+				}
+				if strings.contains(cmd.body_json, `"inst_r_stopped"`) {
+					stop_r_found = true
+				}
+			}
+		}
+	}
+
+	testing.expect(t, wake_w_found, "wake_agent must be emitted for stopped worker instance inst_w_stopped")
+	testing.expect(t, wake_r_found, "wake_agent must be emitted for stopped reviewer instance inst_r_stopped")
+	testing.expect(t, !stop_w_found, "inst_w_stopped must NEVER appear in stops")
+	testing.expect(t, !stop_r_found, "inst_r_stopped must NEVER appear in stops")
+
+	// 4. Verify instances have focus updated in repo
+	saved_w_inst, _, _ := iface.agent_get_instance(&ag_repo, "inst_w_stopped")
+	testing.expect_value(t, saved_w_inst.current_task_id, "task_work_1")
+	testing.expect_value(t, saved_w_inst.current_task_role, domain.Current_Task_Role.Work)
+
+	saved_r_inst, _, _ := iface.agent_get_instance(&ag_repo, "inst_r_stopped")
+	testing.expect_value(t, saved_r_inst.current_task_id, "task_rev_1")
+	testing.expect_value(t, saved_r_inst.current_task_role, domain.Current_Task_Role.Review)
+}

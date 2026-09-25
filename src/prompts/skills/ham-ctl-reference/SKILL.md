@@ -161,10 +161,10 @@ globally unique — you rarely need `--chain`).
 - `task show <task-id> [--chain <id>]` — a task + its `comment_summary` + votes (no bodies).
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
 - `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]` — create a task.
-  `--assignee` and `--reviewer` accept both live instance IDs (`inst_...`) and durable agent IDs (`agt_...`). When an `agt_...` ID is provided, it is automatically serialized as an actor reference `{"type":"agent_id","agent_id":"<id>"}` for fleet dispatch.
+  `--assignee` and `--reviewer` accept both live instance IDs (`inst_...`) and durable agent IDs (`agt_...`). Coordinators should exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`, relying on automatic actor reference serialization (`{"type":"agent_id","agent_id":"<id>"}`) and fleet JIT dispatch.
   `--reviewer` and `--depends-on` accept comma-separated lists.
 - `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>] [--reviewer <id,id,...>] [--depends-on <id,id>]` — edit an
-  existing task (coordinator only). Only the fields you pass change; `--assignee` and `--reviewer` support both `inst_...` and `agt_...` IDs; `--reviewer` and
+  existing task (coordinator only). Only the fields you pass change; coordinators should exclusively specify durable agent IDs (`agt_...`) for `--assignee` and `--reviewer`; `--reviewer` and
   `--depends-on` REPLACE the whole list (pass `""` to clear).
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment
   (the only way to comment).

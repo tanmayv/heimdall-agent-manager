@@ -236,10 +236,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   // Edit Assignee Modal State
   const [editingAssigneeTask, setEditingAssigneeTask] = useState<any | null>(null);
-  const [editAssigneeMode, setEditAssigneeMode] = useState<'member' | 'existing' | 'user' | 'unassigned'>('member');
-  const [editAssigneeMemberInstanceId, setEditAssigneeMemberInstanceId] = useState('');
+  const [editAssigneeMode, setEditAssigneeMode] = useState<'role' | 'user' | 'unassigned'>('role');
   const [editAssigneeAgentId, setEditAssigneeAgentId] = useState('');
-  const [editAssigneeInstanceId, setEditAssigneeInstanceId] = useState('');
   const [editAssigneeUserId, setEditAssigneeUserId] = useState('');
   const [savingAssignee, setSavingAssignee] = useState(false);
   const [assigneeError, setAssigneeError] = useState('');
@@ -322,9 +320,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const selectedAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === editAssigneeAgentId);
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addReviewerAgentId);
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
@@ -340,12 +335,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   );
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const existingInstances: any[] = existingInstancesQuery.data?.instances || [];
-  const assigneeInstancesQuery = useListAgentInstancesQuery(
-    { agentId: editAssigneeAgentId },
-    { skip: !editAssigneeAgentId || editAssigneeMode !== 'existing' },
-  );
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const assigneeExistingInstances: any[] = assigneeInstancesQuery.data?.instances || [];
   const reviewerInstancesQuery = useListAgentInstancesQuery(
     { agentId: addReviewerAgentId },
     { skip: !addReviewerAgentId || addReviewerMode !== 'existing' },
@@ -564,24 +553,54 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const openEditAssigneeModal = (task: any) => {
     setEditingAssigneeTask(task);
     setAssigneeError('');
-    if (task.assigneeRef?.agent_instance_id) {
-      const instId = task.assigneeRef.agent_instance_id;
-      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-      const isMember = members.some((m: any) => (m.agentInstanceId || m.agent_instance_id) === instId);
-      if (isMember) {
-        setEditAssigneeMode('member');
-        setEditAssigneeMemberInstanceId(instId);
-      } else {
-        setEditAssigneeMode('existing');
-        setEditAssigneeInstanceId(instId);
+    const ref = task.assigneeRef || task.assignee_ref;
+    if (ref?.agent_id) {
+      setEditAssigneeMode('role');
+      setEditAssigneeAgentId(ref.agent_id);
+      setEditAssigneeUserId('');
+    } else if (ref?.agent_instance_id) {
+      const instId = ref.agent_instance_id;
+      let resolvedAgentId = ref.agent_id || '';
+      if (!resolvedAgentId) {
+        const chainInst = (chain?.chain_instances || []).find(
+          (ci: any) => (ci.agent_instance_id || ci.agentInstanceId) === instId
+        );
+        if (chainInst?.agent_id || chainInst?.agentId) {
+          resolvedAgentId = chainInst.agent_id || chainInst.agentId;
+        }
       }
-    } else if (task.assigneeRef?.user_id) {
+      if (!resolvedAgentId) {
+        const member = members.find(
+          (m: any) => (m.agentInstanceId || m.agent_instance_id) === instId
+        );
+        if (member?.agent_id || member?.agentId) {
+          resolvedAgentId = member.agent_id || member.agentId;
+        }
+      }
+      if (!resolvedAgentId) {
+        const inst = allInstances.find(
+          (i: any) => (i.agent_instance_id || i.agentInstanceId || i.id) === instId
+        );
+        if (inst?.agent_id || inst?.agentId) {
+          resolvedAgentId = inst.agent_id || inst.agentId;
+        }
+      }
+      if (!resolvedAgentId) {
+        const firstAgent = agentIdentities[0];
+        resolvedAgentId = String(firstAgent?.agent_id || firstAgent?.agentId || firstAgent?.id || '');
+      }
+      setEditAssigneeMode('role');
+      setEditAssigneeAgentId(resolvedAgentId);
+      setEditAssigneeUserId('');
+    } else if (ref?.user_id) {
       setEditAssigneeMode('user');
-      setEditAssigneeUserId(task.assigneeRef.user_id);
+      setEditAssigneeUserId(ref.user_id);
+      setEditAssigneeAgentId('');
     } else {
-      setEditAssigneeMode(members.length > 0 ? 'member' : 'unassigned');
-      setEditAssigneeMemberInstanceId(members[0]?.agentInstanceId || members[0]?.agent_instance_id || '');
+      setEditAssigneeMode('role');
+      const firstAgent = agentIdentities[0];
+      setEditAssigneeAgentId(String(firstAgent?.agent_id || firstAgent?.agentId || firstAgent?.id || ''));
+      setEditAssigneeUserId('');
     }
   };
 
@@ -592,12 +611,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     setAssigneeError('');
     try {
       let assigneeRef: any = null;
-      if (editAssigneeMode === 'member') {
-        if (!editAssigneeMemberInstanceId) throw new Error('Please select a chain member.');
-        assigneeRef = { type: 'agent_instance', agent_instance_id: editAssigneeMemberInstanceId };
-      } else if (editAssigneeMode === 'existing') {
-        if (!editAssigneeInstanceId) throw new Error('Please select an agent instance.');
-        assigneeRef = { type: 'agent_instance', agent_instance_id: editAssigneeInstanceId };
+      if (editAssigneeMode === 'role') {
+        if (!editAssigneeAgentId) throw new Error('Please select an agent role.');
+        assigneeRef = { type: 'agent_id', agent_id: editAssigneeAgentId };
       } else if (editAssigneeMode === 'user') {
         if (!editAssigneeUserId.trim()) throw new Error('Please enter a user ID.');
         assigneeRef = { type: 'user', user_id: editAssigneeUserId.trim() };
@@ -2104,19 +2120,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <div className="mt-3 flex gap-2 border-b border-subtle pb-2 text-xs">
               <button
                 type="button"
-                data-debug-id="taskchain-edit-assignee-mode-member"
-                onClick={() => setEditAssigneeMode('member')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
+                data-debug-id="taskchain-edit-assignee-mode-role"
+                onClick={() => setEditAssigneeMode('role')}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'role' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
-                Chain member
-              </button>
-              <button
-                type="button"
-                data-debug-id="taskchain-edit-assignee-mode-existing"
-                onClick={() => setEditAssigneeMode('existing')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
-              >
-                Other instance
+                Agent Role
               </button>
               <button
                 type="button"
@@ -2137,71 +2145,24 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             </div>
 
             <div className="mt-4 space-y-3 text-xs">
-              {editAssigneeMode === 'member' && (
+              {editAssigneeMode === 'role' && (
                 <div>
-                  <label className="block text-muted">Choose chain member</label>
+                  <label className="block text-muted">Choose agent role</label>
                   <Select
-                    data-debug-id="taskchain-edit-assignee-member-select"
+                    data-debug-id="taskchain-edit-assignee-role-select"
                     className="mt-1"
                     width="full"
-                    value={editAssigneeMemberInstanceId}
-                    onChange={setEditAssigneeMemberInstanceId}
-                    options={[
-                      { value: '', label: 'Select member…' },
-                      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                      ...members.map((m: any) => {
-                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                        return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
-                      }),
-                    ]}
+                    value={editAssigneeAgentId}
+                    onChange={setEditAssigneeAgentId}
+                    options={agentIdentities.map((a: any) => {
+                      const id = String(a.agent_id || a.agentId || a.id || '');
+                      return { value: id, label: a.name || a.display_name || id };
+                    })}
                   />
-                  {members.length === 0 && (
-                    <p className="mt-1 text-caption text-warning">No members in this task chain.</p>
-                  )}
+                  <p className="mt-1 text-caption text-muted">
+                    The fleet mechanism will convert this role into an actual instance JIT.
+                  </p>
                 </div>
-              )}
-
-              {editAssigneeMode === 'existing' && (
-                <>
-                  <div>
-                    <label className="block text-muted">Agent identity</label>
-                    <Select
-                      data-debug-id="taskchain-edit-assignee-agentid-select"
-                      className="mt-1"
-                      width="full"
-                      value={editAssigneeAgentId}
-                      onChange={(v) => { setEditAssigneeAgentId(v); setEditAssigneeInstanceId(''); }}
-                    >
-                      <option value="">Choose agent…</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {agentIdentities.map((a: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const id = String(a.agent_id || a.agentId || a.id || '');
-                        return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
-                      })}
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="block text-muted">Existing instance</label>
-                    <Select
-                      data-debug-id="taskchain-edit-assignee-existing-instance-select"
-                      className="mt-1"
-                      width="full"
-                      value={editAssigneeInstanceId}
-                      onChange={setEditAssigneeInstanceId}
-                      disabled={!editAssigneeAgentId || assigneeInstancesQuery.isFetching}
-                      options={[
-                        { value: '', label: !editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
-                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-                        ...assigneeExistingInstances.map((inst: any) => {
-                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                          const name = selectedAssigneeAgent?.name || selectedAssigneeAgent?.display_name || selectedAssigneeAgent?.agent_id || '';
-                          return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
-                        }),
-                      ]}
-                    />
-                  </div>
-                </>
               )}
 
               {editAssigneeMode === 'user' && (
