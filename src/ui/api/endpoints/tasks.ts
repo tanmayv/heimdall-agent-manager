@@ -340,6 +340,9 @@ export type ChainListItem = {
   projectId: string;
   projectName: string;
   taskCount: number;
+  completedTaskCount: number;
+  userValidationCount: number;
+  hasUserValidation: boolean;
   isPinned: boolean;
   pinnedAt: string;
 };
@@ -352,6 +355,7 @@ export type ChainProjectGroup = {
   nextCursor: string;
 };
 function normalizeChainListItem(c: any): ChainListItem {
+  const userValidationCount = Number(c?.user_validation_count ?? c?.userValidationCount ?? 0);
   return {
     chainId: String(c?.chain_id ?? c?.chainId ?? ''),
     title: String(c?.title ?? ''),
@@ -361,6 +365,9 @@ function normalizeChainListItem(c: any): ChainListItem {
     projectId: String(c?.project_id ?? c?.projectId ?? ''),
     projectName: String(c?.project_name ?? c?.projectName ?? ''),
     taskCount: Number(c?.task_count ?? c?.taskCount ?? 0),
+    completedTaskCount: Number(c?.completed_task_count ?? c?.completedTaskCount ?? 0),
+    userValidationCount,
+    hasUserValidation: Boolean((c?.user_validation_count ?? c?.userValidationCount ?? 0) > 0),
     isPinned: Boolean(c?.is_pinned ?? c?.isPinned ?? false),
     pinnedAt: String(c?.pinned_at ?? c?.pinnedAt ?? ''),
   };
@@ -402,14 +409,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TC-PAGE: single-project page with cursor pagination (Load more + project
     // filter). cursor is the composite (updated_at|chain_id) from TC-API.
-    fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean }>({
-      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false }) => {
+    fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean; includeArchived?: boolean }>({
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }) => {
         try {
           const params = new URLSearchParams();
           params.set('project_id', projectId);
           params.set('limit', String(limit));
           if (cursor) params.set('cursor', cursor);
           if (hasTasks) params.set('has_tasks', '1');
+          if (includeArchived) params.set('include_archived', '1');
           const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
           return { data: normalizeChainProjectGroup(raw) };
         } catch (error: any) {
@@ -418,14 +426,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
     }),
-    listTaskChains: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean }>({
-      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false }) => {
+    listTaskChains: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean; includeArchived?: boolean }>({
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }) => {
         try {
           const params = new URLSearchParams();
           params.set('project_id', projectId);
           params.set('limit', String(limit));
           if (cursor) params.set('cursor', cursor);
           if (hasTasks) params.set('has_tasks', '1');
+          if (includeArchived) params.set('include_archived', '1');
           const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
           return { data: normalizeChainProjectGroup(raw) };
         } catch (error: any) {
@@ -619,7 +628,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList', { type: 'Chain' as const, id: 'GROUPED_LIST' }, { type: 'Chain' as const, id: 'PINNED_LIST' }],
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList', { type: 'Chain' as const }, { type: 'Chain' as const, id: 'GROUPED_LIST' }, { type: 'Chain' as const, id: 'PINNED_LIST' }],
     }),
     togglePinTaskChain: build.mutation<any, { chainId: string; pinned?: boolean }>({
       queryFn: async ({ chainId, pinned }) => {

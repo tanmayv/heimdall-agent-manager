@@ -152,19 +152,25 @@ task_comment_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, o
 	return out[:], domain.Domain_Error{}
 }
 
-// task_counts_by_chain_sqlite rolls up every chain's task count for one owner in a
-// single grouped query, backed by idx_tasks_chain_owner (migration 025). Chains
-// with no tasks are simply absent from the map; callers read a missing key as 0.
-task_counts_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> (map[string]int, domain.Domain_Error) {
+// task_counts_by_chain_sqlite rolls up every chain's task counts (total,
+// completed, and user validation) for one owner in a single grouped query,
+// backed by idx_tasks_chain_owner (migration 025). Chains with no tasks are
+// simply absent from the map; callers read a missing key as 0.
+task_counts_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> (map[string]iface.Chain_Task_Rollup, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	out := make(map[string]int)
+	out := make(map[string]iface.Chain_Task_Rollup)
 	stmt: sqlite3_stmt = nil
-	q := "SELECT chain_id, COUNT(*) FROM tasks WHERE owner_user_id = ? GROUP BY chain_id;"
+	q := "SELECT chain_id, COUNT(*), SUM(CASE WHEN status IN ('completed', 'validated_good') THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'in_validation' AND (reviewer_refs_json LIKE '%\"type\":\"user\"%' OR reviewer_refs_json = '[]' OR reviewer_refs_json LIKE '%user%') THEN 1 ELSE 0 END) FROM tasks WHERE owner_user_id = ? GROUP BY chain_id;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out, domain.domain_error(.Internal_Error, "failed to prepare task count rollup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
 	for sqlite3_step(stmt) == SQLITE_ROW {
-		out[strings.clone(column_text(stmt, 0))] = int_v(column_text(stmt, 1))
+		cid := strings.clone(column_text(stmt, 0))
+		out[cid] = iface.Chain_Task_Rollup{
+			total_count = int_v(column_text(stmt, 1)),
+			completed_count = int_v(column_text(stmt, 2)),
+			user_validation_count = int_v(column_text(stmt, 3)),
+		}
 	}
 	return out, domain.Domain_Error{}
 }
@@ -563,8 +569,8 @@ vote_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Vote {
 
 publish_state_string :: proc(state: domain.Publish_State) -> string { if state == .Published do return "published"; return "draft" }
 publish_state_from_string :: proc(state: string) -> domain.Publish_State { if state == "published" do return .Published; return .Draft }
-chain_status_string :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
-chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status { if status == "completed" do return .Completed; if status == "cancelled" do return .Cancelled; return .Active }
+chain_status_string :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; if status == .Archived do return "archived"; return "active" }
+chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status { if status == "completed" do return .Completed; if status == "cancelled" do return .Cancelled; if status == "archived" do return .Archived; return .Active }
 task_status_string :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .Queued: return "queued"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
 task_status_from_string :: proc(status: string) -> domain.Task_Status { if status == "queued" do return .Queued; if status == "in_progress" do return .In_Progress; if status == "in_validation" do return .In_Validation; if status == "validated_good" do return .Validated_Good; if status == "validated_not_good" do return .Validated_Not_Good; if status == "paused" do return .Paused; if status == "completed" do return .Completed; if status == "cancelled" do return .Cancelled; return .Assigned }
 json_or_empty_array :: proc(value: string) -> string { if value == "" do return "[]"; return value }

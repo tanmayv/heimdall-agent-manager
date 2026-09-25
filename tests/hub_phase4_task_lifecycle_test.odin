@@ -92,15 +92,27 @@ main :: proc() {
 	// valid_chain_transition unit coverage.
 	check(taskchain_service.valid_chain_transition(.Active, .Completed), "active -> completed must be valid")
 	check(taskchain_service.valid_chain_transition(.Active, .Cancelled), "active -> cancelled must be valid")
+	check(taskchain_service.valid_chain_transition(.Active, .Archived), "active -> archived must be valid")
+	check(taskchain_service.valid_chain_transition(.Completed, .Archived), "completed -> archived must be valid")
+	check(taskchain_service.valid_chain_transition(.Cancelled, .Archived), "cancelled -> archived must be valid")
 	check(taskchain_service.valid_chain_transition(.Completed, .Active), "completed -> active (reopen) must be valid")
+	check(taskchain_service.valid_chain_transition(.Archived, .Active), "archived -> active (restore) must be valid")
 	check(!taskchain_service.valid_chain_transition(.Cancelled, .Active), "cancelled -> active must stay invalid")
 	check(!taskchain_service.valid_chain_transition(.Completed, .Cancelled), "completed -> cancelled must be invalid")
+	check(!taskchain_service.valid_chain_transition(.Archived, .Completed), "archived -> completed must stay invalid")
+	check(!taskchain_service.valid_chain_transition(.Archived, .Cancelled), "archived -> cancelled must stay invalid")
 
 	// End-to-end: complete the chain, then reopen it back to active.
 	chain, ok, err = taskchain_service.change_chain_status(&service, auth, chain.chain_id, .Completed)
 	check(ok && chain.status == .Completed && chain.completed_at != "", "chain must complete and stamp completed_at")
 	chain, ok, err = taskchain_service.update_chain(&service, auth, chain.chain_id, taskchain_service.Update_Chain_Input{status = "active"})
 	check(ok && chain.status == .Active && chain.completed_at == "", "reopen must return chain to active and clear completed_at")
+
+	// End-to-end: archive the chain, then unarchive it back to active.
+	chain, ok, err = taskchain_service.change_chain_status(&service, auth, chain.chain_id, .Archived)
+	check(ok && chain.status == .Archived, "chain must archive")
+	chain, ok, err = taskchain_service.update_chain(&service, auth, chain.chain_id, taskchain_service.Update_Chain_Input{status = "active"})
+	check(ok && chain.status == .Active, "unarchive must return chain to active")
 
 	fmt.println("PASS: hub phase4 task lifecycle")
 }

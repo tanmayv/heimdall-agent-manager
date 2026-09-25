@@ -153,7 +153,7 @@ main :: proc() {
 		coordinator_agent_instance_id = "inst_x", project_id = "p1", project_name = "Alpha",
 	})
 	got := strings.to_string(b)
-	want_json := `{"chain_id":"c1","title":"t1","status":"active","updated_at":"2026-09-06T10:00:06Z","coordinator_agent_instance_id":"inst_x","project_id":"p1","project_name":"Alpha","task_count":0}`
+	want_json := `{"chain_id":"c1","title":"t1","status":"active","updated_at":"2026-09-06T10:00:06Z","coordinator_agent_instance_id":"inst_x","project_id":"p1","project_name":"Alpha","task_count":0,"completed_task_count":0,"user_validation_count":0,"is_pinned":false,"pinned_at":""}`
 	check(got == want_json, fmt.tprintf("S1: serializer mismatch\n got: %s\nwant: %s", got, want_json))
 
 	fmt.println("PASS: TC-API task-chain grouping + per-project pagination")

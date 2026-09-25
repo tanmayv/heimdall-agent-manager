@@ -214,11 +214,21 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 	if action == "complete" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/complete", safe_path_part(chain_id)), "{}"); return }
 	if action == "set-status" || action == "status" {
 		status := option_value(args, "--status", "")
-		if status == "" || chain_id == "" { fmt.println("usage: ham-ctl hub task-chains set-status --chain-id <id> --status <active|completed>"); return }
+		if status == "" || chain_id == "" { fmt.println("usage: ham-ctl hub task-chains set-status --chain-id <id> --status <active|completed|archived>"); return }
 		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", status)))
 		return
 	}
-	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|directory|add-agent|publish|complete|set-status|pin|unpin>")
+	if action == "archive" {
+		if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains archive --chain-id <id>"); return }
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "archived")))
+		return
+	}
+	if action == "unarchive" {
+		if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains unarchive --chain-id <id>"); return }
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "active")))
+		return
+	}
+	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|directory|add-agent|publish|complete|set-status|archive|unarchive|pin|unpin>")
 }
 
 ctl_hub_tasks :: proc(base, token, action: string, args: []string) {

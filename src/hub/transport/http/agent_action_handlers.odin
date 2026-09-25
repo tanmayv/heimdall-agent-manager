@@ -193,8 +193,8 @@ agent_action_chain_set_status_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
 	status_str := strings.trim_space(json_string(params, "status"))
 	if status_str == "" do return respond_error(domain.domain_error(.Validation_Failed, "status is required"), req.request_id)
-	if status_str != "active" && status_str != "completed" && status_str != "cancelled" {
-		return respond_error(domain.domain_error(.Validation_Failed, "invalid chain status; must be active, completed, or cancelled"), req.request_id)
+	if status_str != "active" && status_str != "completed" && status_str != "cancelled" && status_str != "archived" {
+		return respond_error(domain.domain_error(.Validation_Failed, "invalid chain status; must be active, completed, cancelled, or archived"), req.request_id)
 	}
 	status := taskchain_service.chain_status_from_string(status_str)
 	chain, saved, err := taskchain_service.change_chain_status(h.taskchains, auth, domain.Task_Chain_ID(chain_id), status)

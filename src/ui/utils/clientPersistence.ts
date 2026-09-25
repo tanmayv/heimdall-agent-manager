@@ -216,3 +216,101 @@ export function removePinnedMonitorAgent(id: string): void {
   writePinnedMonitorAgents(readPinnedMonitorAgents().filter((x) => x !== id));
 }
 
+// --- Bottom Dock persistence (REQ-DOCK-1) -----------------------------------
+export const BOTTOM_DOCK_OPEN_KEY = 'heimdall.bottomDock.open';
+export const BOTTOM_DOCK_HEIGHT_KEY = 'heimdall.bottomDock.height';
+export const BOTTOM_DOCK_DEFAULT_HEIGHT = 260;
+export const BOTTOM_DOCK_MIN_HEIGHT = 140;
+
+export function readBottomDockOpen(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(BOTTOM_DOCK_OPEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function writeBottomDockOpen(open: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(BOTTOM_DOCK_OPEN_KEY, open ? 'true' : 'false');
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readBottomDockHeight(): number {
+  if (typeof window === 'undefined') return BOTTOM_DOCK_DEFAULT_HEIGHT;
+  try {
+    const raw = window.localStorage.getItem(BOTTOM_DOCK_HEIGHT_KEY);
+    if (!raw) return BOTTOM_DOCK_DEFAULT_HEIGHT;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= BOTTOM_DOCK_MIN_HEIGHT) {
+      return parsed;
+    }
+    return BOTTOM_DOCK_DEFAULT_HEIGHT;
+  } catch {
+    return BOTTOM_DOCK_DEFAULT_HEIGHT;
+  }
+}
+
+export function writeBottomDockHeight(height: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(BOTTOM_DOCK_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    /* ignore */
+  }
+}
+
+// --- Sidebar Chain Filter (REQ-CHAIN-UI-SIDEBAR-1) --------------------------
+export const SIDEBAR_CHAIN_FILTER_KEY = 'heimdall:sidebar-chain-filter';
+export type SidebarChainFilter = 'all' | 'active';
+
+export function isSidebarChainFilter(val: unknown): val is SidebarChainFilter {
+  return val === 'all' || val === 'active';
+}
+
+export function readSidebarChainFilter(): SidebarChainFilter {
+  if (typeof window === 'undefined') return 'all';
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_CHAIN_FILTER_KEY);
+    if (raw === 'active' || raw === 'active-only') return 'active';
+    return 'all';
+  } catch {
+    return 'all';
+  }
+}
+
+export function writeSidebarChainFilter(filter: SidebarChainFilter): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SIDEBAR_CHAIN_FILTER_KEY, filter);
+  } catch {
+    /* ignore */
+  }
+}
+
+export type ChainStatusLike = {
+  chainId?: string;
+  status?: string;
+  archived?: boolean;
+  projectId?: string;
+};
+
+export function filterSidebarChains<T extends ChainStatusLike>(
+  chains: T[],
+  filter: SidebarChainFilter,
+  archivedProjectIds?: Set<string>,
+): T[] {
+  return chains.filter((c) => {
+    if (c.status === 'archived' || Boolean(c.archived)) return false;
+    if (c.projectId && archivedProjectIds && archivedProjectIds.has(c.projectId)) return false;
+    if (filter === 'active' && c.status !== 'active') return false;
+    return true;
+  });
+}
+
+
+

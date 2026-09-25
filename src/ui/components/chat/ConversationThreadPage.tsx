@@ -1,8 +1,6 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
-import { ShellsPanel } from '../shells/ShellsPanel';
-import { ShellsTabBadge } from '../shells/ShellsTabBadge';
 import ProjectVcsPanel from './ProjectVcsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
@@ -1491,16 +1489,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId || chainId || agentInstanceId);
     const hasVcs = Boolean(projectId);
-    // T11-UI-1: Shells needs the same context —
-    // a bridge to start sessions on comes from the instance behind this conversation.
-    const hasShells = Boolean(agentInstanceId);
     // The file-explorer tab is labeled with a folder icon + the resource name.
     const filesLabel = projectName || 'Files';
     const active: RightSidebarTab =
       rightPanel === 'chain' && hasChain ? 'chain'
       : rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'vcs' && hasVcs ? 'vcs'
-      : rightPanel === 'shells' && hasShells ? 'shells'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
@@ -1537,12 +1531,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {hasVcs ? (
               <button type="button" title="VCS" aria-label="VCS" data-debug-id="conversation-right-panel-tab-vcs" onClick={() => selectRightPanelTab('vcs')} aria-pressed={active === 'vcs' ? 'true' : 'false'} className={`${tabBase} ${active === 'vcs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="git-branch" size={20} />
-              </button>
-            ) : null}
-            {hasShells ? (
-              <button type="button" title="Shells" aria-label="Shells" data-debug-id="conversation-right-panel-tab-shells" onClick={() => selectRightPanelTab('shells')} aria-pressed={active === 'shells' ? 'true' : 'false'} className={`${tabBase} ${active === 'shells' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-                <Icon name="device" size={20} />
-                <ShellsTabBadge chainId={chainId} />
               </button>
             ) : null}
           </div>
@@ -1624,13 +1612,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onOpenDirectory={() => selectRightPanelTab('files')}
               openFilePath={vcsFileToOpen}
               onFileOpened={() => setVcsFileToOpen(null)}
-            />
-          ) : active === 'shells' && hasShells ? (
-            <ShellsPanel
-              chainId={chainId}
-              bridgeId={instanceBridgeId}
-              standalone
-              isMobile={isMobilePanel}
             />
           ) : active === 'tasks' ? (
             chainId ? (

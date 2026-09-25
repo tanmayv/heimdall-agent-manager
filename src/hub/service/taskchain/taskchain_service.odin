@@ -302,9 +302,9 @@ list_tasks :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, ch
 // task_counts_by_chain returns chain_id -> task count for the authenticated owner
 // in one query. The task-chains list uses it to show per-chain totals and to drop
 // empty chains without reading every chain's tasks. Caller owns the map.
-task_counts_by_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> (map[string]int, domain.Domain_Error) {
+task_counts_by_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> (map[string]iface.Chain_Task_Rollup, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
-	if !ok do return make(map[string]int), err
+	if !ok do return make(map[string]iface.Chain_Task_Rollup), err
 	return iface.taskchain_task_counts_by_chain(service.repo, owner)
 }
 
@@ -377,6 +377,8 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		// MEM-6 #9: notify the newly-designated coordinator.
 		if input.coordinator_agent_instance_id != "" do notify_coordinator_assigned(service, auth, chain, input.coordinator_agent_instance_id)
 	}
+	status_closed := false
+	closed_status: domain.Task_Chain_Status
 	if input.status != "" {
 		st := chain_status_from_string(input.status)
 		if st != chain.status {
@@ -387,6 +389,10 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 			} else if st == .Active {
 				// Reopening clears the terminal completion timestamp.
 				chain.completed_at = ""
+			}
+			if st == .Completed || st == .Cancelled || st == .Archived {
+				status_closed = true
+				closed_status = st
 			}
 		}
 	}
@@ -404,7 +410,11 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		}
 	}
 	chain.updated_at = platform.clock_now(service.clock)
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	if save_ok && status_closed {
+		broadcast_chain_closed(service, auth, saved, closed_status)
+	}
+	return saved, save_ok, save_err
 }
 
 pin_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, pinned: bool) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -507,7 +517,7 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
 	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
 	// long-running loops/tasks halt.
-	if save_ok && (next == .Completed || next == .Cancelled) {
+	if save_ok && (next == .Completed || next == .Cancelled || next == .Archived) {
 		broadcast_chain_closed(service, auth, saved, next)
 	}
 	return saved, save_ok, save_err
@@ -522,7 +532,7 @@ broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 	members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if merr.code != .None do return
 
-	verb := "completed" if next == .Completed else "cancelled"
+	verb := "completed" if next == .Completed else ("cancelled" if next == .Cancelled else "archived")
 	actor_display := resolve_actor_display(service, actor)
 	defer delete(actor_display)
 	title := strings.trim_space(chain.title)
@@ -565,12 +575,13 @@ broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool {
 	if current == next do return true
 	switch current {
-	case .Active: return next == .Completed || next == .Cancelled
+	case .Active: return next == .Completed || next == .Cancelled || next == .Archived
 	// Recovery path: a completed chain can be reopened to Active by its
 	// coordinator so an accidental completion is not permanently terminal.
-	// Cancelled remains terminal.
-	case .Completed: return next == .Active
-	case .Cancelled: return false
+	// Cancelled remains terminal, except it can be archived.
+	case .Completed: return next == .Active || next == .Archived
+	case .Cancelled: return next == .Archived
+	case .Archived: return next == .Active
 	}
 	return false
 }
@@ -2470,6 +2481,7 @@ json_string_value_after :: proc(body: string, key_idx: int) -> string {
 chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status {
 	if status == "completed" do return .Completed
 	if status == "cancelled" do return .Cancelled
+	if status == "archived" do return .Archived
 	return .Active
 }
 

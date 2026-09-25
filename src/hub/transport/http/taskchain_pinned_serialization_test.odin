@@ -18,6 +18,8 @@ test_write_chain_list_item_json_pinned :: proc(t: ^testing.T) {
 		task_count                    = 5,
 		is_pinned                     = true,
 		pinned_at                     = "2026-09-21T10:05:00Z",
+		completed_task_count          = 3,
+		user_validation_count         = 1,
 	}
 	b := strings.builder_make()
 	defer strings.builder_destroy(&b)
@@ -25,6 +27,8 @@ test_write_chain_list_item_json_pinned :: proc(t: ^testing.T) {
 	out := strings.to_string(b)
 	testing.expect(t, strings.contains(out, `"is_pinned":true`), "must serialize is_pinned true")
 	testing.expect(t, strings.contains(out, `"pinned_at":"2026-09-21T10:05:00Z"`), "must serialize pinned_at")
+	testing.expect(t, strings.contains(out, `"completed_task_count":3`), "must serialize completed_task_count")
+	testing.expect(t, strings.contains(out, `"user_validation_count":1`), "must serialize user_validation_count")
 }
 
 @(test)

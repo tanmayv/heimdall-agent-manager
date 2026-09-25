@@ -295,6 +295,20 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("status", status))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
+	case "archive":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv("status", "archived"))
+		if cid != "" do append(&fields, json_kv("chain_id", cid))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
+	case "unarchive":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv("status", "active"))
+		if cid != "" do append(&fields, json_kv("chain_id", cid))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
 	case "reconcile":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -1652,7 +1666,9 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
-	fmt.println("  set-status <active|completed> [--chain <id>]    Change chain status (coordinator only).")
+	fmt.println("  set-status <active|completed|archived> [--chain <id>] Change chain status (coordinator only).")
+	fmt.println("  archive [<chain-id>]                Archive a task chain (coordinator only).")
+	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (coordinator only).")
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
 	fmt.println("                                      published to its tasks — until then nothing in the")
 	fmt.println("                                      chain promotes or can be nudged.")
