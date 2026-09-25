@@ -72,17 +72,29 @@ vcs_fig_revert_file :: proc(path, file: string) -> (ok: bool, msg: string) {
 }
 
 // vcs_fig_upload exports the local commits / chain of CLs to Critique via `hg upload chain`.
-vcs_fig_upload :: proc(path: string) -> (ok: bool, msg: string) {
-	_, rok := vcs_run([]string{"hg", "--cwd", path, "upload", "chain"})
-	if !rok do return false, "upload_failed"
-	return true, ""
+vcs_fig_upload :: proc(path: string) -> (ok: bool, code: string, detail: string) {
+	out, stderr, rok := vcs_run_capture([]string{"hg", "--cwd", path, "upload", "chain"})
+	if len(out) > 0 do delete(out)
+	if !rok {
+		d := vcs_error_detail(stderr)
+		if len(stderr) > 0 do delete(stderr)
+		return false, "upload_failed", d
+	}
+	if len(stderr) > 0 do delete(stderr)
+	return true, "", ""
 }
 
 // vcs_fig_sync synchronizes local commits with Piper Head via `hg sync`.
-vcs_fig_sync :: proc(path: string) -> (ok: bool, msg: string) {
-	_, rok := vcs_run([]string{"hg", "--cwd", path, "sync"})
-	if !rok do return false, "sync_failed"
-	return true, ""
+vcs_fig_sync :: proc(path: string) -> (ok: bool, code: string, detail: string) {
+	out, stderr, rok := vcs_run_capture([]string{"hg", "--cwd", path, "sync"})
+	if len(out) > 0 do delete(out)
+	if !rok {
+		d := vcs_error_detail(stderr)
+		if len(stderr) > 0 do delete(stderr)
+		return false, "sync_failed", d
+	}
+	if len(stderr) > 0 do delete(stderr)
+	return true, "", ""
 }
 
 // vcs_fig_provider returns the fig proc-table.
