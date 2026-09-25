@@ -537,7 +537,7 @@ function buildProjectConversationTree(conversations: ConversationSummary[], live
   // API order: project -> chain-group -> agent. Mark the first row of each group
   // (after the first) so the renderer inserts a separator between groups.
   liveProjects.forEach((project) => {
-    const id = ensureBucket(project.projectId, project.name, project.projectType, project.workspaceName);
+    const id = ensureBucket(project.projectId, project.name, (project as any).projectType, (project as any).workspaceName);
     const rows = rowsByBucket.get(id)!;
     project.chains.forEach((chain) => {
       let firstInGroup = true;
@@ -1065,7 +1065,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
 
   const isDesktopTwoPaneRoute =
     viewport === 'desktop' &&
-    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory'].some(
+    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory', '/issues'].some(
       (prefix) => path === prefix || path.startsWith(`${prefix}/`)
     ) &&
     !path.endsWith('/new') &&
@@ -1093,8 +1093,8 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       <section
         className={
           isDesktopTwoPaneRoute
-            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
-            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
+            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
+            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
         }
       >
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
