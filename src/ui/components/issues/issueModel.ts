@@ -64,6 +64,7 @@ export function issueSnippet(issue: any): string {
     ''
   ).trim();
   if (!desc) return '';
+  if (desc.startsWith('vault:v1:')) return desc;
   // Strip markdown headers/newlines for preview snippet
   return desc.replace(/[#*`_~[\]()]/g, ' ').replace(/\s+/g, ' ').trim();
 }

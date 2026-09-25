@@ -81,6 +81,7 @@ export interface VaultState {
   isConfigured: boolean;
   isUnlocked: boolean;
   rawVaultKeyHex: string | null;
+  isUnlockModalOpen?: boolean;
 }
 
 export function loadInitialVaultState(): VaultState {
@@ -90,12 +91,14 @@ export function loadInitialVaultState(): VaultState {
       isConfigured: true,
       isUnlocked: true,
       rawVaultKeyHex: savedKey,
+      isUnlockModalOpen: false,
     };
   }
   return {
     isConfigured: false,
     isUnlocked: false,
     rawVaultKeyHex: null,
+    isUnlockModalOpen: false,
   };
 }
 
@@ -110,8 +113,18 @@ export const vaultSlice = createSlice({
       if (!action.payload) {
         state.isUnlocked = false;
         state.rawVaultKeyHex = null;
+        state.isUnlockModalOpen = false;
         clearSessionVaultKey();
       }
+    },
+    openUnlockModal(state) {
+      state.isUnlockModalOpen = true;
+    },
+    closeUnlockModal(state) {
+      state.isUnlockModalOpen = false;
+    },
+    setUnlockModalOpen(state, action: PayloadAction<boolean>) {
+      state.isUnlockModalOpen = action.payload;
     },
     setVaultUnlocked: {
       reducer(
@@ -122,6 +135,7 @@ export const vaultSlice = createSlice({
         state.isConfigured = true;
         state.isUnlocked = true;
         state.rawVaultKeyHex = cleanKey;
+        state.isUnlockModalOpen = false;
         if (action.payload.rememberSession === true) {
           writeSessionVaultKey(cleanKey);
         } else if (action.payload.rememberSession === false) {
@@ -157,6 +171,7 @@ export const vaultSlice = createSlice({
         state.isConfigured = true;
         state.isUnlocked = true;
         state.rawVaultKeyHex = cleanKey;
+        state.isUnlockModalOpen = false;
         if (action.payload.rememberSession) {
           writeSessionVaultKey(cleanKey);
         } else {
@@ -194,6 +209,7 @@ export const vaultSlice = createSlice({
     lockVault(state) {
       state.isUnlocked = false;
       state.rawVaultKeyHex = null;
+      state.isUnlockModalOpen = false;
       clearSessionVaultKey();
     },
   },
@@ -205,11 +221,15 @@ export const {
   importLocalKey,
   hydrateVaultFromSession,
   lockVault,
+  openUnlockModal,
+  closeUnlockModal,
+  setUnlockModalOpen,
 } = vaultSlice.actions;
 
 export const selectVaultState = (state: { vault: VaultState }) => state.vault;
 export const selectIsVaultConfigured = (state: { vault: VaultState }) => state.vault.isConfigured;
 export const selectIsVaultUnlocked = (state: { vault: VaultState }) => state.vault.isUnlocked;
 export const selectRawVaultKeyHex = (state: { vault: VaultState }) => state.vault.rawVaultKeyHex;
+export const selectIsUnlockModalOpen = (state: { vault: VaultState }) => Boolean(state.vault.isUnlockModalOpen);
 
 export default vaultSlice.reducer;

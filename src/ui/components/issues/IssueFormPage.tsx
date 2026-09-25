@@ -15,6 +15,9 @@ import {
   useGetIssueQuery,
   useUpdateIssueMutation,
 } from '../../api/endpoints/issues';
+import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   editCrumbs,
   issueEditHref,
@@ -51,17 +54,49 @@ export function IssueFormPage({ issueId }: IssueFormPageProps) {
   const [errorMsg, setErrorMsg] = useState('');
   const [isDirty, setIsDirty] = useState(false);
 
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+
   useEffect(() => {
+    let active = true;
     if (existingIssue && isEdit) {
-      setTitle(existingIssue.title || '');
-      setDescription(existingIssue.description || '');
       setScopeType(existingIssue.scope_type || existingIssue.scopeType || 'global');
       setTargetId(existingIssue.target_id || existingIssue.targetId || '');
       setChainId(existingIssue.chain_id || existingIssue.chainId || '');
       setStatus(issueStatus(existingIssue));
       setIsDirty(false);
+
+      const populate = async () => {
+        let t = existingIssue.title || '';
+        let d = existingIssue.description || '';
+        if (isVaultUnlocked && rawKeyHex) {
+          if (isVaultArmored(t)) {
+            try {
+              t = await decryptVaultText(t, rawKeyHex);
+            } catch (err) {
+              console.error('Failed to decrypt issue title for edit:', err);
+            }
+          }
+          if (isVaultArmored(d)) {
+            try {
+              d = await decryptVaultText(d, rawKeyHex);
+            } catch (err) {
+              console.error('Failed to decrypt issue description for edit:', err);
+            }
+          }
+        }
+        if (active) {
+          setTitle(t);
+          setDescription(d);
+        }
+      };
+
+      populate();
     }
-  }, [existingIssue, isEdit]);
+    return () => {
+      active = false;
+    };
+  }, [existingIssue, isEdit, isVaultUnlocked, rawKeyHex]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

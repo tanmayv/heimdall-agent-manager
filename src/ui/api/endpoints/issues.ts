@@ -1,5 +1,6 @@
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 import { heimdallApi } from '../heimdallApi';
+import { encryptVaultText, decryptVaultText, isVaultArmored } from '../../utils/vaultContent';
 
 export type IssueStatus = 'new' | 'fixed' | 'obsolete';
 export type IssueScopeType = 'global' | 'project' | 'agent' | 'bridge' | 'agent_id' | 'bridge_id';
@@ -306,11 +307,27 @@ export const issuesApi = heimdallApi.injectEndpoints({
     }),
 
     createIssue: build.mutation<Issue, CreateIssueInput>({
-      queryFn: async (payload) => {
+      queryFn: async (payload, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let title = payload.title;
+          let description = payload.description || '';
+
+          if (isUnlocked && rawKeyHex) {
+            if (!isVaultArmored(title)) {
+              title = await encryptVaultText(title, rawKeyHex);
+            }
+            if (description && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+          }
+
           const body = {
-            title: payload.title,
-            description: payload.description || '',
+            title,
+            description,
             created_by: payload.created_by || payload.createdBy,
             scope_type: payload.scope_type || payload.scopeType || 'global',
             target_id: payload.target_id || payload.targetId || '',
@@ -326,11 +343,25 @@ export const issuesApi = heimdallApi.injectEndpoints({
     }),
 
     updateIssue: build.mutation<Issue, UpdateIssueInput>({
-      queryFn: async ({ issueId, ...payload }) => {
+      queryFn: async ({ issueId, ...payload }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
           const body: Record<string, any> = {};
-          if (payload.title !== undefined) body.title = payload.title;
-          if (payload.description !== undefined) body.description = payload.description;
+          if (payload.title !== undefined) {
+            body.title =
+              isUnlocked && rawKeyHex && !isVaultArmored(payload.title)
+                ? await encryptVaultText(payload.title, rawKeyHex)
+                : payload.title;
+          }
+          if (payload.description !== undefined) {
+            body.description =
+              isUnlocked && rawKeyHex && payload.description && !isVaultArmored(payload.description)
+                ? await encryptVaultText(payload.description, rawKeyHex)
+                : payload.description;
+          }
           if (payload.status !== undefined) body.status = payload.status;
           const scope = payload.scope_type || payload.scopeType;
           if (scope !== undefined) body.scope_type = scope;
@@ -391,10 +422,19 @@ export const issuesApi = heimdallApi.injectEndpoints({
     }),
 
     addIssueComment: build.mutation<IssueComment, CreateIssueCommentInput>({
-      queryFn: async ({ issueId, ...payload }) => {
+      queryFn: async ({ issueId, ...payload }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let bodyText = payload.body;
+          if (isUnlocked && rawKeyHex && bodyText && !isVaultArmored(bodyText)) {
+            bodyText = await encryptVaultText(bodyText, rawKeyHex);
+          }
+
           const body = {
-            body: payload.body,
+            body: bodyText,
             author_id: payload.author_id || payload.authorId,
             author_name: payload.author_name || payload.authorName,
           };
@@ -507,3 +547,105 @@ export const {
   useVoteIssueMutation,
   useUnvoteIssueMutation,
 } = issuesApi;
+
+/**
+ * Encrypt issue fields (title, description) if vault is unlocked using rawKeyHex.
+ */
+export async function encryptIssueFields<T extends { title?: string; description?: string }>(
+  payload: T,
+  rawKeyHex?: string | null,
+): Promise<T> {
+  if (!rawKeyHex) return { ...payload };
+  const res = { ...payload };
+  if (res.title && !isVaultArmored(res.title)) {
+    res.title = await encryptVaultText(res.title, rawKeyHex);
+  }
+  if (res.description && !isVaultArmored(res.description)) {
+    res.description = await encryptVaultText(res.description, rawKeyHex);
+  }
+  return res;
+}
+
+/**
+ * Encrypt comment body if vault is unlocked using rawKeyHex.
+ */
+export async function encryptCommentFields<T extends { body: string }>(
+  payload: T,
+  rawKeyHex?: string | null,
+): Promise<T> {
+  if (!rawKeyHex || !payload.body) return { ...payload };
+  const res = { ...payload };
+  if (!isVaultArmored(res.body)) {
+    res.body = await encryptVaultText(res.body, rawKeyHex);
+  }
+  return res;
+}
+
+/**
+ * Decrypt issue fields (title, description, description_preview, comments) using rawKeyHex.
+ */
+export async function decryptIssueRecord(
+  issue: Issue,
+  rawKeyHex?: string | null,
+): Promise<Issue> {
+  if (!rawKeyHex) return issue;
+  let title = issue.title;
+  let description = issue.description;
+  let descriptionPreview = issue.descriptionPreview || issue.description_preview;
+
+  if (isVaultArmored(title)) {
+    try {
+      title = await decryptVaultText(title, rawKeyHex);
+    } catch {}
+  }
+  if (isVaultArmored(description)) {
+    try {
+      description = await decryptVaultText(description, rawKeyHex);
+    } catch {}
+  }
+  if (descriptionPreview && isVaultArmored(descriptionPreview)) {
+    try {
+      descriptionPreview = await decryptVaultText(descriptionPreview, rawKeyHex);
+    } catch {}
+  }
+
+  let comments = issue.comments;
+  if (Array.isArray(comments)) {
+    comments = await Promise.all(
+      comments.map(async (c) => {
+        if (isVaultArmored(c.body)) {
+          try {
+            return { ...c, body: await decryptVaultText(c.body, rawKeyHex) };
+          } catch {
+            return c;
+          }
+        }
+        return c;
+      }),
+    );
+  }
+
+  return {
+    ...issue,
+    title,
+    description,
+    descriptionPreview,
+    description_preview: descriptionPreview,
+    comments,
+  };
+}
+
+/**
+ * Decrypt comment record body using rawKeyHex.
+ */
+export async function decryptCommentRecord(
+  comment: IssueComment,
+  rawKeyHex?: string | null,
+): Promise<IssueComment> {
+  if (!rawKeyHex || !isVaultArmored(comment.body)) return comment;
+  return {
+    ...comment,
+    body: await decryptVaultText(comment.body, rawKeyHex),
+  };
+}
+

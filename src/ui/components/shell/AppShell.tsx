@@ -56,6 +56,8 @@ import VaultOnboardingModal from '../settings/VaultOnboardingModal';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
+  selectIsUnlockModalOpen,
+  setUnlockModalOpen,
   readOnboardingDismissed,
 } from '../../store/vaultSlice';
 import LspPanel from '../settings/LspPanel';
@@ -1239,9 +1241,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
+  const dispatch = useDispatch();
+
   // Vault state & onboarding modal
   const isVaultConfigured = useSelector(selectIsVaultConfigured);
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
 
   // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not dismissed
@@ -1251,6 +1256,20 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       setIsOnboardingModalOpen(true);
     }
   }, [isVaultUnlocked]);
+
+  // Open onboarding modal when isUnlockModalOpen is triggered from vault placeholders
+  useEffect(() => {
+    if (isUnlockModalOpen) {
+      setIsOnboardingModalOpen(true);
+    }
+  }, [isUnlockModalOpen]);
+
+  // When onboarding modal closes, sync back to redux isUnlockModalOpen
+  useEffect(() => {
+    if (!isOnboardingModalOpen && isUnlockModalOpen) {
+      dispatch(setUnlockModalOpen(false));
+    }
+  }, [isOnboardingModalOpen, isUnlockModalOpen, dispatch]);
 
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
   // component-local state. The single user-WS connection invalidates the
@@ -1366,8 +1385,6 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const handlePaletteNavigate = (route: string) => {
     window.location.hash = buildRouteHash(route, '');
   };
-
-  const dispatch = useDispatch();
 
   const handlePaletteAction = (actionId: string) => {
     switch (actionId) {
