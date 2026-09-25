@@ -36,7 +36,8 @@ import {
   Modal,
   ModalBody,
   ModalFooter,
-  Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   StatusPill,
   Text,
 } from '@ui';
@@ -48,6 +49,7 @@ import {
   type ShellSession,
 } from '../../api/endpoints/shells';
 import { ShellLogViewer } from './ShellLogViewer';
+import { ShellTerminalPane } from './ShellTerminalPane';
 import { SetShellPortDialog } from './SetShellPortDialog';
 import { openTab } from '../../store/previewTabsSlice';
 import { useDispatch } from 'react-redux';
@@ -79,6 +81,7 @@ import {
   shellErrorText,
   shellTimeLabel,
   shellTitle,
+  shellViewHref,
   statusLabel,
   statusTone,
   verbsForSession,
@@ -345,6 +348,61 @@ export function ShellDetailMeta({ record }: { record: ShellSession }) {
   );
 }
 
+export function ShellDetailHeader({
+  record,
+  busy,
+  onVerb,
+  onBack,
+  alert,
+}: {
+  record: ShellSession;
+  busy: ShellVerb | '';
+  onVerb: (verb: ShellVerb) => void;
+  onBack?: () => void;
+  alert?: React.ReactNode;
+}) {
+  const title = shellTitle(record);
+  const time = shellTimeLabel(record);
+  const exit = exitLabel(record);
+
+  return (
+    <ResourceDetailHeader
+      dataDebugId="shell-pane-header"
+      title={
+        <a
+          href={shellViewHref(record.session_id)}
+          data-debug-id="shell-pane-title"
+          className="rounded-[var(--radius-sm)] hover:underline focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          {title}
+        </a>
+      }
+      id={record.session_id}
+      status={
+        <StatusPill tone={statusTone(record.status)} data-debug-id="shell-view-status">
+          {statusLabel(record.status)}
+        </StatusPill>
+      }
+      badges={
+        <>
+          <Badge data-debug-id="shell-view-kind">{kindLabel(record.kind)}</Badge>
+          {record.server_port > 0 ? (
+            <Badge data-debug-id="shell-view-port">:{record.server_port}</Badge>
+          ) : null}
+          {exit ? (
+            <StatusPill tone={exitTone(record)} data-debug-id="shell-view-exit">{exit}</StatusPill>
+          ) : null}
+        </>
+      }
+      timestamp={time.text}
+      timestampTooltip={time.title || undefined}
+      alert={alert}
+      onBack={onBack}
+      actions={<ShellDetailActions record={record} busy={busy} onVerb={onVerb} />}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Cards
  * ------------------------------------------------------------------ */
@@ -363,16 +421,14 @@ function Card({
   debugId: string;
 }) {
   return (
-    <Panel data-debug-id={debugId} className="p-4">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title">{title}</Text>
-          {helper ? <Text as="div" role="body-sm" tone="muted" className="ui-measure">{helper}</Text> : null}
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
+    <ResourceSectionCard
+      title={title}
+      subtitle={helper}
+      action={action}
+      dataDebugId={debugId}
+    >
       {children}
-    </Panel>
+    </ResourceSectionCard>
   );
 }
 
@@ -556,16 +612,72 @@ export function ShellDetailBody({
   wide: boolean;
   onVerb: (verb: ShellVerb) => void;
 }) {
+  const isInteractiveCapable = record.kind === 'interactive' || record.kind === 'agent';
+  const isRunning = record.status === 'running' || record.status === 'starting';
+
+  const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(
+    isInteractiveCapable && isRunning ? 'terminal' : 'log',
+  );
+
+  React.useEffect(() => {
+    setViewMode(isInteractiveCapable && isRunning ? 'terminal' : 'log');
+  }, [record.session_id, isInteractiveCapable, isRunning]);
+
+  const outputAction = (
+    <div
+      className="flex items-center gap-1 bg-neutral-soft p-0.5 rounded-[var(--radius-sm)] border border-subtle"
+      data-debug-id="shell-view-output-tabs"
+    >
+      <button
+        type="button"
+        onClick={() => setViewMode('log')}
+        data-debug-id="shell-output-tab-log"
+        className={[
+          'px-2 py-0.5 text-xs font-medium rounded transition-colors',
+          viewMode === 'log'
+            ? 'bg-surface text-primary shadow-sm'
+            : 'text-muted hover:text-primary',
+        ].join(' ')}
+      >
+        Log Viewer
+      </button>
+      <button
+        type="button"
+        onClick={() => setViewMode('terminal')}
+        data-debug-id="shell-output-tab-terminal"
+        className={[
+          'px-2 py-0.5 text-xs font-medium rounded transition-colors',
+          viewMode === 'terminal'
+            ? 'bg-surface text-primary shadow-sm'
+            : 'text-muted hover:text-primary',
+        ].join(' ')}
+      >
+        Interactive Terminal
+      </button>
+    </div>
+  );
+
   const main = (
     <>
       <Card
-        title="Output"
-        helper="Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
+        title={viewMode === 'terminal' ? 'Terminal' : 'Output'}
+        helper={
+          viewMode === 'terminal'
+            ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support.'
+            : "Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
+        }
+        action={outputAction}
         debugId="shell-view-output-card"
       >
-        {/* `showSessionVerbs={false}`: this page's header already carries Restart and
-            Kill, with the confirm policy the viewer's inline buttons do not have. */}
-        <ShellLogViewer session={record} showSessionVerbs={false} />
+        {viewMode === 'terminal' ? (
+          <div data-debug-id="shell-view-terminal" className="mt-1">
+            <ShellTerminalPane session={record} />
+          </div>
+        ) : (
+          /* showSessionVerbs={false}: this page's header already carries Restart and
+             Kill, with the confirm policy the viewer's inline buttons do not have. */
+          <ShellLogViewer session={record} showSessionVerbs={false} />
+        )}
       </Card>
 
       <PreviewCard record={record} onVerb={onVerb} />
@@ -781,4 +893,4 @@ export function ShellDetailPaneSkeleton() {
   );
 }
 
-export { shellTitle };
+export { shellTitle, Card as ShellDetailCard };
