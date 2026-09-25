@@ -209,6 +209,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
   }, [list]);
 
   /* ---------------- Selection ---------------- */
+  const [selectionMode, setSelectionMode] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   React.useEffect(() => {
     setSelectedIds([]);
@@ -495,6 +496,20 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     [urlState],
   );
 
+  /** Auto-select the first agent in two-pane mode if none is selected */
+  React.useEffect(() => {
+    if (twoPane && !selectedId && visibleRows.length > 0 && tab !== 'live') {
+      openAgent(visibleRows[0].agentId);
+    }
+  }, [twoPane, selectedId, visibleRows, tab, openAgent]);
+
+  /** Auto-select the first live instance in two-pane mode if none is selected */
+  React.useEffect(() => {
+    if (twoPane && tab === 'live' && !activeInstanceId && filteredLiveInstances.length > 0) {
+      handleSelectInstance(filteredLiveInstances[0].instance_id);
+    }
+  }, [twoPane, tab, activeInstanceId, filteredLiveInstances, handleSelectInstance]);
+
   const selectable = !searching && tab === 'active';
 
   const listBody = (
@@ -586,7 +601,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
               row={row}
               href={agentViewHref(row.agentId, urlState)}
               selectable={selectable}
-              showCheckbox={selectable}
+              showCheckbox={selectionMode && selectable}
               selected={selectedIds.includes(row.agentId)}
               active={row.agentId === selectedId}
               busy={busyRow === row.agentId}
@@ -825,6 +840,11 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
           searchRef={searchRef}
           activeTab={searching && tab !== 'live' ? '' : tab}
           onTabChange={(next) => applyUrlState({ ...urlState, tab: next as AgentTab })}
+          selectionMode={selectionMode}
+          onToggleSelection={tab !== 'live' ? () => {
+            setSelectionMode((prev) => !prev);
+            if (selectionMode) setSelectedIds([]);
+          } : undefined}
           tabs={AGENT_TABS.map((entry) => ({
             value: entry.value,
             label: entry.label,
