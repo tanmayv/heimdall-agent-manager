@@ -129,6 +129,9 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
     }
   };
 
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
   // List column rendered inside ResourceContainer
   const listColumn = (
     <div
@@ -143,6 +146,11 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
         searchDebugId="issues-search-input"
         activeTab={statusFilter}
         onTabChange={setStatusFilter}
+        selectionMode={selectionMode}
+        onToggleSelection={() => {
+          setSelectionMode((prev) => !prev);
+          if (selectionMode) setSelectedIds([]);
+        }}
         tabs={STATUS_FILTERS.map((tab) => ({
           value: tab.value,
           label: tab.label,
@@ -208,6 +216,13 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
                   issue={issue}
                   href={issueViewHref(id)}
                   active={selectedId === id}
+                  selected={selectedIds.includes(id)}
+                  showCheckbox={selectionMode}
+                  onSelectedChange={(checked) =>
+                    setSelectedIds((prev) =>
+                      checked ? [...prev, id] : prev.filter((item) => item !== id),
+                    )
+                  }
                   onOpen={handleOpen}
                   onVoteToggle={handleVoteToggle}
                   onEdit={handleEdit}

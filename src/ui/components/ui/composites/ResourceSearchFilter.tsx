@@ -108,6 +108,13 @@ export interface ResourceSearchFilterProps extends RootClassNameProps {
   showFooterCounter?: boolean;
   /** Data debug ID for the footer counter. */
   counterDebugId?: string;
+
+  /** Whether bulk selection mode is active. */
+  selectionMode?: boolean;
+  /** Callback fired when selection mode toggle button is clicked. */
+  onToggleSelection?: () => void;
+  /** Data debug ID for selection toggle button. Defaults to 'resource-toggle-selection-btn'. */
+  selectionToggleDebugId?: string;
 }
 
 export function ResourceSearchFilter({
@@ -128,10 +135,14 @@ export function ResourceSearchFilter({
   itemsLabelPlural,
   showFooterCounter = false,
   counterDebugId,
+  selectionMode,
+  onToggleSelection,
+  selectionToggleDebugId = 'resource-toggle-selection-btn',
   className,
 }: ResourceSearchFilterProps) {
   const hasTabs = Boolean(tabs && tabs.length > 0 && onTabChange);
   const hasFilters = Boolean((filters && filters.length > 0) || children);
+  const hasControls = hasFilters || Boolean(onToggleSelection);
 
   return (
     <div className={['flex flex-col shrink-0', className].filter(Boolean).join(' ')}>
@@ -164,8 +175,8 @@ export function ResourceSearchFilter({
         </div>
       ) : null}
 
-      {/* Filter Row: Tabs & Select dropdowns */}
-      {hasTabs || hasFilters ? (
+      {/* Filter Row: Tabs & Select dropdowns & Selection toggle */}
+      {hasTabs || hasControls ? (
         <div className="flex items-center justify-between border-b border-subtle shrink-0 min-w-0">
           {hasTabs ? (
             <Tabs value={activeTab ?? ''} onChange={onTabChange!}>
@@ -186,7 +197,7 @@ export function ResourceSearchFilter({
             <div />
           )}
 
-          {hasFilters ? (
+          {hasControls ? (
             <div className="flex items-center gap-2 shrink-0 py-1 pr-2">
               {filters?.map((f, idx) => (
                 <div key={idx} className={f.widthClassName || 'w-32'}>
@@ -202,6 +213,23 @@ export function ResourceSearchFilter({
                 </div>
               ))}
               {children}
+              {onToggleSelection ? (
+                <button
+                  type="button"
+                  onClick={onToggleSelection}
+                  title={selectionMode ? 'Exit selection mode' : 'Select multiple'}
+                  aria-label="Toggle selection"
+                  data-debug-id={selectionToggleDebugId}
+                  className={[
+                    'inline-flex items-center justify-center h-8 w-8 rounded-[var(--radius-sm)] border transition-colors',
+                    selectionMode
+                      ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/25'
+                      : 'bg-surface text-muted border-subtle hover:text-primary hover:border-strong',
+                  ].join(' ')}
+                >
+                  <Icon name="check" size={14} />
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

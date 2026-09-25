@@ -245,6 +245,7 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
   }, [list]);
 
   /* ---------------- Selection ---------------- */
+  const [selectionMode, setSelectionMode] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   // Selection is scoped to what is on screen: changing tab, filter or query means
   // the selected rows may not even be visible any more.
@@ -452,6 +453,13 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
     [urlState],
   );
 
+  /** Auto-select the first project in two-pane mode if none is selected */
+  React.useEffect(() => {
+    if (twoPane && !selectedId && visibleRows.length > 0) {
+      openProject(visibleRows[0].projectId);
+    }
+  }, [twoPane, selectedId, visibleRows, openProject]);
+
   // Checkboxes exist only where a bulk verb does. On Archived there is nothing to
   // do with a selection, so there is no selection.
   const selectable = !searching && tab === 'active';
@@ -552,7 +560,7 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
               row={row}
               href={projectViewHref(row.projectId, urlState)}
               selectable={selectable}
-              showCheckbox={selectable}
+              showCheckbox={selectionMode && selectable}
               selected={selectedIds.includes(row.projectId)}
               active={row.projectId === selectedId}
               busy={busyRow === row.projectId}
@@ -656,6 +664,11 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
           searchRef={searchRef}
           activeTab={searching ? '' : tab}
           onTabChange={(next) => applyUrlState({ ...urlState, tab: next as ProjectTab })}
+          selectionMode={selectionMode}
+          onToggleSelection={() => {
+            setSelectionMode((prev) => !prev);
+            if (selectionMode) setSelectedIds([]);
+          }}
           tabs={PROJECT_TABS.map((entry) => ({
             value: entry.value,
             label: entry.label,

@@ -243,6 +243,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   }, [allRows.length, listQuery.isLoading]);
 
   /* ---------------- Selection ---------------- */
+  const [selectionMode, setSelectionMode] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   React.useEffect(() => {
     setSelectedIds([]);
@@ -422,6 +423,13 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
     [urlState],
   );
 
+  /** Auto-select the first action in two-pane mode if none is selected */
+  React.useEffect(() => {
+    if (twoPane && !selectedId && visibleRows.length > 0) {
+      openAction(visibleRows[0].id);
+    }
+  }, [twoPane, selectedId, visibleRows, openAction]);
+
   const selectable = !searching;
 
   const listBody = (
@@ -461,7 +469,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
               catalog={catalog}
               href={actionViewHref(row.id, urlState)}
               selectable={selectable}
-              showCheckbox={selectable}
+              showCheckbox={selectionMode && selectable}
               selected={selectedIds.includes(row.id)}
               active={row.id === selectedId}
               busy={busyRow === row.id}
@@ -533,6 +541,11 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
         searchRef={searchRef}
         activeTab={searching ? '' : tab}
         onTabChange={(next) => applyUrlState({ ...urlState, tab: next as ActionTab })}
+        selectionMode={selectionMode}
+        onToggleSelection={() => {
+          setSelectionMode((prev) => !prev);
+          if (selectionMode) setSelectedIds([]);
+        }}
         tabs={ACTION_TABS.map((entry) => ({
           value: entry.value,
           label: entry.label,

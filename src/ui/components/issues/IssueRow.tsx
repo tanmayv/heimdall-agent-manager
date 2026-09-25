@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Badge,
+  Checkbox,
   Icon,
   ResourceEntryCard,
   StatusPill,
@@ -23,6 +24,9 @@ export interface IssueRowProps {
   issue: Issue | any;
   href: string;
   active?: boolean;
+  selected?: boolean;
+  showCheckbox?: boolean;
+  onSelectedChange?: (selected: boolean) => void;
   onOpen: (issue: any) => void;
   onVoteToggle?: (issue: any) => void;
   onEdit?: (issue: any) => void;
@@ -34,6 +38,9 @@ export function IssueRow({
   issue,
   href,
   active = false,
+  selected = false,
+  showCheckbox = false,
+  onSelectedChange,
   onOpen,
   onVoteToggle,
   onEdit,
@@ -89,6 +96,20 @@ export function IssueRow({
       href={href}
       active={active}
       onSelect={() => onOpen(issue)}
+      leading={
+        showCheckbox ? (
+          <span
+            data-row-control
+            className="flex shrink-0 items-center pt-0.5"
+          >
+            <Checkbox
+              checked={selected}
+              onChange={onSelectedChange || (() => undefined)}
+              aria-label={`Select ${title}`}
+            />
+          </span>
+        ) : null
+      }
       snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;no description&gt;</span>}
       status={<StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>}
       badges={

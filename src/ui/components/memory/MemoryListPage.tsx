@@ -255,6 +255,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
   }, [list]);
 
   /* ---------------- Selection (§6, REQ-UI-19) ---------------- */
+  const [selectionMode, setSelectionMode] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   // Selection is scoped to what is on screen: changing tab, filters or query means
   // the selected rows may no longer even be loaded.
@@ -668,6 +669,16 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
     [urlState],
   );
 
+  /** Auto-select the first memory in two-pane mode if none is selected */
+  React.useEffect(() => {
+    if (twoPane && !selectedId && rows.length > 0) {
+      const firstId = String(rows[0].memoryId || rows[0].id || '');
+      if (firstId) {
+        navigateTo(memoryViewHref(firstId, urlState));
+      }
+    }
+  }, [twoPane, selectedId, rows, urlState]);
+
   const listBody = (
     <>
       {active.status === 'error' ? (
@@ -710,7 +721,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
                 // A search hit carries no reliable status, so it is a navigation
                 // target only: no selection, and no verbs that need a status.
                 selectable={!searching}
-                showCheckbox={!searching}
+                showCheckbox={selectionMode && !searching}
                 selected={selectedIds.includes(memoryId)}
                 active={memoryId === selectedId}
                 busy={busyRow === memoryId}
@@ -842,6 +853,11 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
       searchClearDebugId="memory-search-clear"
       activeTab={searching ? '' : tab}
       onTabChange={(next) => applyUrlState({ ...urlState, tab: next as MemoryTab })}
+      selectionMode={selectionMode}
+      onToggleSelection={() => {
+        setSelectionMode((prev) => !prev);
+        if (selectionMode) setSelectedIds([]);
+      }}
       tabsLabel="Memory status"
       tabs={MEMORY_TABS.map((entry) => ({
         value: entry.value,
