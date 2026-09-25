@@ -6,6 +6,7 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import content_service "odin_test:hub/service/content"
@@ -118,7 +119,7 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		strings.write_byte(&cb, ']')
 		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 	}
-	include_archived := query_bool(req.query, "include_archived", false) || (has_query_key(req.query, "project_id") && query_value(req.query, "project_id") != "")
+	include_archived := query_bool(req.query, "include_archived", false) || (has_query_key(req.query, "project_id") && query_value(req.query, "project_id") != "") || (has_query_key(req.query, "status") && query_value(req.query, "status") == "archived")
 	if query_bool(req.query, "pinned", false) || query_value(req.query, "pinned") == "1" {
 		pinned_chains, pinned_err := taskchain_service.list_pinned_chains(h.taskchains, auth_ctx)
 		if pinned_err.code != .None do return respond_error(pinned_err, req.request_id)
@@ -193,6 +194,8 @@ Chain_List_Item :: struct {
 	project_id:                    string,
 	project_name:                  string,
 	task_count:                    int,
+	completed_task_count:          int,
+	user_validation_count:         int,
 	is_pinned:                     bool,
 	pinned_at:                     string,
 }
@@ -213,8 +216,9 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	// chain with an unknown (0) count rather than filtering them all away.
 	counts_ok := counts_err.code == .None
 	for c in chains {
-		count := task_counts[string(c.chain_id)] or_else 0
-		if only_with_tasks && counts_ok && count == 0 do continue
+		if !include_archived && c.status == .Archived do continue
+		rollup := task_counts[string(c.chain_id)] or_else iface.Chain_Task_Rollup{}
+		if only_with_tasks && counts_ok && rollup.total_count == 0 do continue
 		coord_id := c.coordinator_agent_instance_id
 		if coord_id == "" do coord_id = proj_idx.coord_by_chain[string(c.chain_id)] or_else ""
 		project_id := proj_idx.by_instance[c.coordinator_agent_instance_id] or_else ""
@@ -232,7 +236,9 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			coordinator_agent_instance_id = coord_id,
 			project_id = project_id,
 			project_name = meta.name,
-			task_count = count,
+			task_count = rollup.total_count,
+			completed_task_count = rollup.completed_count,
+			user_validation_count = rollup.user_validation_count,
 			is_pinned = c.is_pinned,
 			pinned_at = c.pinned_at,
 		})
@@ -491,6 +497,8 @@ write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, it.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, it.project_name)
 	strings.write_string(b, "\",\"task_count\":"); strings.write_int(b, it.task_count)
+	strings.write_string(b, ",\"completed_task_count\":"); strings.write_int(b, it.completed_task_count)
+	strings.write_string(b, ",\"user_validation_count\":"); strings.write_int(b, it.user_validation_count)
 	strings.write_string(b, ",\"is_pinned\":"); strings.write_string(b, "true" if it.is_pinned else "false")
 	strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, it.pinned_at)
 	strings.write_string(b, "\"}")
@@ -1887,7 +1895,7 @@ path_part :: proc(path: string, index: int) -> string {
 }
 
 publish_state_http :: proc(state: domain.Publish_State) -> string { if state == .Published do return "published"; return "draft" }
-chain_status_http :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
+chain_status_http :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; if status == .Archived do return "archived"; return "active" }
 task_status_http :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .Queued: return "queued"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
 task_status_from_http :: proc(status: string) -> (domain.Task_Status, bool) { if status == "assigned" do return .Assigned, true; if status == "queued" do return .Queued, true; if status == "in_progress" do return .In_Progress, true; if status == "in_validation" do return .In_Validation, true; if status == "validated_good" do return .Validated_Good, true; if status == "validated_not_good" do return .Validated_Not_Good, true; if status == "paused" do return .Paused, true; if status == "completed" do return .Completed, true; if status == "cancelled" do return .Cancelled, true; return .Assigned, false }
 

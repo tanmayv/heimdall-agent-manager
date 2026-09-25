@@ -59,8 +59,12 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
   }, [bridgesQuery.data]);
 
   // Default to the caller's bridge when it is still a valid choice, else the first
-  // online bridge. Runs only while nothing is selected, so it never fights the user.
+  // online bridge. Synchronizes when caller passes an explicit bridgeId.
   useEffect(() => {
+    if (bridgeId && bridges.some((bridge) => bridgeIdOf(bridge) === bridgeId)) {
+      setSelectedBridgeId(bridgeId);
+      return;
+    }
     if (selectedBridgeId || bridges.length === 0) return;
     const preferred = bridgeId && bridges.some((bridge) => bridgeIdOf(bridge) === bridgeId)
       ? bridgeId

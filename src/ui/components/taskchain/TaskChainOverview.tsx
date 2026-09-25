@@ -39,6 +39,7 @@ import {
   useAddChainMemberMutation,
   useRemoveChainMemberMutation,
   useReconcileTaskChainMutation,
+  useUpdateTaskChainMutation,
 } from '../../api/endpoints/tasks';
 import { useDispatch, useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
@@ -207,6 +208,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [removeMember] = useRemoveChainMemberMutation();
   const [createInstanceInChain, { isLoading: addingAgent }] = useCreateAgentInstanceInChainMutation();
   const [reconcileChain, reconcileState] = useReconcileTaskChainMutation();
+  const [updateTaskChain, { isLoading: isUpdatingChain }] = useUpdateTaskChainMutation();
   const [reconcileMsg, setReconcileMsg] = useState('');
 
   const handleReconcile = async () => {
@@ -330,6 +332,98 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       active = false;
     };
   }, [chain?.description, isVaultUnlocked, rawKey]);
+
+  const [decryptedTitle, setDecryptedTitle] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    const chainTitle = chain?.title;
+    if (!chainTitle || !isVaultArmored(chainTitle)) {
+      setDecryptedTitle(chainTitle || '');
+      return;
+    }
+    if (!isVaultUnlocked || !rawKey) {
+      setDecryptedTitle('');
+      return;
+    }
+    decryptVaultText(chainTitle, rawKey)
+      .then((t) => {
+        if (active) setDecryptedTitle(t);
+      })
+      .catch(() => {
+        if (active) setDecryptedTitle(chainTitle);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chain?.title, isVaultUnlocked, rawKey]);
+
+  // Inline title editing state
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState('');
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  const startEditingTitle = async () => {
+    let currentTitle = decryptedTitle || chain?.title || '';
+    if (chain?.title && isVaultArmored(chain.title) && (!decryptedTitle || isVaultArmored(decryptedTitle))) {
+      if (isVaultUnlocked && rawKey) {
+        try {
+          currentTitle = await decryptVaultText(chain.title, rawKey);
+        } catch (e) {
+          console.error('Failed to decrypt chain title for editing:', e);
+        }
+      }
+    }
+    setEditTitleValue(currentTitle);
+    setIsEditingTitle(true);
+  };
+
+  useEffect(() => {
+    if (isEditingTitle) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    }
+  }, [isEditingTitle]);
+
+  const handleSaveTitle = async () => {
+    const trimmed = editTitleValue.trim();
+    if (!trimmed || !chainId) return;
+    setIsSavingTitle(true);
+    try {
+      await updateTaskChain({ chainId, title: trimmed }).unwrap();
+      setIsEditingTitle(false);
+    } catch (err: any) {
+      console.error('Failed to update task chain title:', err);
+    } finally {
+      setIsSavingTitle(false);
+    }
+  };
+
+  const handleCancelEditTitle = () => {
+    setIsEditingTitle(false);
+    setEditTitleValue('');
+  };
+
+  const handleTitleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void handleSaveTitle();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancelEditTitle();
+    }
+  };
+
+  const handleChainStatusChange = async (newStatus: string) => {
+    if (!chainId || newStatus === chain?.status) return;
+    try {
+      await updateTaskChain({ chainId, status: newStatus }).unwrap();
+    } catch (err: any) {
+      console.error('Failed to update task chain status:', err);
+    }
+  };
 
   // Separate active, completed, and cancelled tasks.
   // Completed/cancelled tasks are sorted chronologically by completion time (updated_at / created_at).
@@ -1474,9 +1568,58 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       <PageShell
         width="full"
         title={
-          <span data-debug-id="taskchain-overview-title">
-            <VaultText value={chain.title} fallback="Untitled Chain" />
-          </span>
+          isEditingTitle ? (
+            <div data-debug-id="taskchain-overview-title-edit" className="flex flex-wrap items-center gap-2 max-w-xl">
+              <input
+                ref={titleInputRef}
+                type="text"
+                data-debug-id="taskchain-overview-title-input"
+                value={editTitleValue}
+                onChange={(e) => setEditTitleValue(e.target.value)}
+                onKeyDown={handleTitleKeyDown}
+                disabled={isSavingTitle}
+                className="flex-1 min-w-[200px] rounded-lg border border-accent bg-surface px-2.5 py-1 text-base font-normal text-primary outline-none focus:ring-1 focus:ring-accent"
+                placeholder="Task chain title"
+                autoFocus
+              />
+              <button
+                type="button"
+                data-debug-id="taskchain-overview-title-save-btn"
+                onClick={() => void handleSaveTitle()}
+                disabled={isSavingTitle || !editTitleValue.trim()}
+                title="Save title (Enter)"
+                className="inline-flex items-center justify-center rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs font-semibold text-primary hover:bg-surface-raised disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                data-debug-id="taskchain-overview-title-cancel-btn"
+                onClick={handleCancelEditTitle}
+                disabled={isSavingTitle}
+                title="Cancel (Esc)"
+                className="inline-flex items-center justify-center rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs text-muted hover:bg-surface-raised"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <span className="inline-flex items-center gap-2 max-w-full">
+              <span data-debug-id="taskchain-overview-title">
+                <VaultText value={chain.title} fallback="Untitled Chain" />
+              </span>
+              <button
+                type="button"
+                data-debug-id="taskchain-overview-title-edit-btn"
+                onClick={() => void startEditingTitle()}
+                title="Edit chain title"
+                aria-label="Edit chain title"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-muted transition-colors hover:border-subtle hover:bg-surface-raised hover:text-primary"
+              >
+                <Icon name="pencil" size={14} />
+              </button>
+            </span>
+          )
         }
         actions={
           <div className="flex flex-wrap items-center gap-2 max-w-full">
@@ -1484,18 +1627,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               chainId={chainId}
               onOpenDrawer={() => setIsFleetDrawerOpen(true)}
             />
-            <span
-              data-debug-id="taskchain-overview-status"
-              className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider shrink-0 ${
-                chain.status === 'completed'
-                  ? 'bg-success-soft text-success'
-                  : chain.status === 'cancelled'
-                  ? 'bg-danger-soft text-danger'
-                  : 'bg-accent/20 text-accent'
-              }`}
-            >
-              {chain.status}
-            </span>
+            <div data-debug-id="taskchain-overview-status" className="shrink-0">
+              <Select
+                data-debug-id="taskchain-overview-status-select"
+                size="sm"
+                value={chain.status || 'active'}
+                onChange={(val) => void handleChainStatusChange(val)}
+                disabled={isUpdatingChain}
+                options={[
+                  { value: 'active', label: 'Active' },
+                  { value: 'completed', label: 'Completed' },
+                  { value: 'archived', label: 'Archived' },
+                  ...(chain.status === 'cancelled' ? [{ value: 'cancelled', label: 'Cancelled' }] : []),
+                ]}
+              />
+            </div>
           </div>
         }
       >
@@ -1504,6 +1650,27 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           isOpen={isFleetDrawerOpen}
           onClose={() => setIsFleetDrawerOpen(false)}
         />
+        {/* Prominent amber banner when chain is archived */}
+        {chain.status === 'archived' && (
+          <div
+            data-debug-id="taskchain-overview-archived-banner"
+            className="flex flex-wrap items-center justify-between gap-3 border-b border-warning/40 bg-warning-soft px-4 py-3 text-warning sm:px-6"
+          >
+            <div className="flex items-center gap-2.5 text-sm font-medium">
+              <Icon name="alert" size={16} />
+              <span>This task chain is archived. It is hidden from active workflows.</span>
+            </div>
+            <button
+              type="button"
+              data-debug-id="taskchain-overview-restore-btn"
+              onClick={() => void handleChainStatusChange('active')}
+              disabled={isUpdatingChain}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-warning/50 bg-surface px-3 py-1 text-xs font-semibold text-primary transition-colors hover:bg-surface-raised disabled:opacity-50"
+            >
+              Restore to Active
+            </button>
+          </div>
+        )}
         {/* Chain meta band (description, progress, members) — unchanged markup,
             regrouped directly under the PageShell header. */}
         <div className="border-b border-subtle px-4 pb-4 sm:px-6 sm:pb-6">

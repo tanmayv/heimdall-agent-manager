@@ -10,10 +10,16 @@ Task_Chain_Save_Proc :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (domain.T
 Task_Save_Proc :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, domain.Domain_Error)
 Task_Get_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error)
 Task_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task, domain.Domain_Error)
+Chain_Task_Rollup :: struct {
+	total_count:           int,
+	completed_count:       int,
+	user_validation_count: int,
+}
+
 // Per-chain task counts for one owner, in a single grouped pass. The task-chains
 // list needs a count for every chain; asking per chain would reintroduce the N+1
 // that made GET /api/v1/task-chains time out. Caller owns the returned map.
-Task_Count_By_Chain_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> (map[string]int, domain.Domain_Error)
+Task_Count_By_Chain_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> (map[string]Chain_Task_Rollup, domain.Domain_Error)
 Task_Comment_Save_Proc :: proc(ctx: rawptr, comment: domain.Task_Comment) -> (domain.Task_Comment, bool, domain.Domain_Error)
 Task_Comment_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Comment, domain.Domain_Error)
 // Cheap comment rollup for a task (COUNT + newest row), so list/show/context can
@@ -119,8 +125,8 @@ taskchain_get_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID)
 
 // Returns an empty map (not an error) when the repository does not implement the
 // rollup, so callers degrade to "unknown count" rather than failing the request.
-taskchain_task_counts_by_chain :: proc(repo: ^Taskchain_Repository, owner_user_id: domain.User_ID) -> (map[string]int, domain.Domain_Error) {
-	if repo == nil || repo.task_counts_by_chain == nil do return make(map[string]int), domain.Domain_Error{}
+taskchain_task_counts_by_chain :: proc(repo: ^Taskchain_Repository, owner_user_id: domain.User_ID) -> (map[string]Chain_Task_Rollup, domain.Domain_Error) {
+	if repo == nil || repo.task_counts_by_chain == nil do return make(map[string]Chain_Task_Rollup), domain.Domain_Error{}
 	return repo.task_counts_by_chain(repo.ctx, owner_user_id)
 }
 

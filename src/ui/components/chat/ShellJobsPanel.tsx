@@ -13,10 +13,12 @@ import { useSelector } from 'react-redux';
 
 import { StatusPill } from '@ui';
 import { useListShellJobsQuery, useFetchShellJobOutputQuery, type ShellJob, type ShellJobStatus } from '../../api/endpoints/shellJobs';
+import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import { selectAgentLastActionAt } from '../../store/agentActivitySlice';
 
 export type ShellJobsPanelProps = {
-  agentInstanceId: string;
+  agentInstanceId?: string;
+  bridgeId?: string;
   rootLabel?: string;
   onClose?: () => void;
   isMobile?: boolean;
@@ -63,7 +65,8 @@ function JobOutputSection({ agentInstanceId, execId }: { agentInstanceId: string
 }
 
 export default function ShellJobsPanel({
-  agentInstanceId,
+  agentInstanceId: propAgentInstanceId,
+  bridgeId,
   rootLabel,
   onClose,
   isMobile = false,
@@ -71,6 +74,23 @@ export default function ShellJobsPanel({
 }: ShellJobsPanelProps) {
   void isMobile; // accepted for parity with the sibling panels; layout is responsive via CSS.
   void onClose;
+  void bridgeId;
+
+  const agentsLiveQuery = useGetAgentsLiveQuery(undefined, { skip: Boolean(propAgentInstanceId) });
+  const liveAgentId = useMemo(() => {
+    if (propAgentInstanceId) return propAgentInstanceId;
+    if (!agentsLiveQuery.data) return '';
+    for (const project of agentsLiveQuery.data) {
+      for (const chain of project.chains || []) {
+        for (const agent of chain.liveAgents || []) {
+          if (agent.agentInstanceId) return agent.agentInstanceId;
+        }
+      }
+    }
+    return '';
+  }, [propAgentInstanceId, agentsLiveQuery.data]);
+
+  const agentInstanceId = propAgentInstanceId || liveAgentId;
 
   const [cursor, setCursor] = useState<string>('');
   const [accJobs, setAccJobs] = useState<ShellJob[]>([]);

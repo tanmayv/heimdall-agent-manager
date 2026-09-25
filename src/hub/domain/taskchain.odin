@@ -9,6 +9,7 @@ Task_Chain_Status :: enum {
 	Active,
 	Completed,
 	Cancelled,
+	Archived,
 }
 
 Task_Status :: enum {

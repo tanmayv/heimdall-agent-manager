@@ -155,7 +155,7 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|directory|add-agent|publish|complete|reopen|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 	fmt.println("  fleet <list|set>                        manage chain fleet capacities")
 }
@@ -216,7 +216,7 @@ ctl_task_chains_fleet_command :: proc(transport: Ctl_Transport, tokens: []string
 // explicit --chain/--chain-id. Non-destructive verbs (show/list) keep the
 // convenience default via resolve_chain_id.
 is_destructive_chain_verb :: proc(action: string) -> bool {
-	return action == "complete" || action == "publish" || action == "reopen"
+	return action == "complete" || action == "publish" || action == "reopen" || action == "archive" || action == "unarchive"
 }
 
 print_tasks_help :: proc(action: string) {
@@ -307,6 +307,9 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	// Guard destructive verbs: require an explicit --chain, never the caller default.
 	if is_destructive_chain_verb(action) {
 		explicit := option_value(args, "--chain-id", option_value(args, "--chain", ""))
+		if explicit == "" && idx + 1 < len(cmd) && !strings.has_prefix(cmd[idx + 1], "--") {
+			explicit = cmd[idx + 1]
+		}
 		if explicit == "" {
 			msg := strings.concatenate({"ham-ctl task-chains ", action, " requires an explicit --chain <id>; refusing to act on the auto-resolved caller chain"})
 			fmt.println(json_object(json_kv_raw("ok", "false"), json_kv("message", msg)))
@@ -315,8 +318,11 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	}
 
 	chain_id := resolve_chain_id(transport, args)
+	if chain_id == "" && idx + 1 < len(cmd) && !strings.has_prefix(cmd[idx + 1], "--") {
+		chain_id = cmd[idx + 1]
+	}
 	if chain_id == "" {
-		fmt.println("usage: ham-ctl task-chains <show|update|members|directory|add-agent|publish|complete|reopen> --chain <id>")
+		fmt.println("usage: ham-ctl task-chains <show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive> --chain <id>")
 		return
 	}
 
@@ -490,7 +496,17 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|pin|unpin>")
+	if action == "archive" {
+		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "archived")))
+		return
+	}
+
+	if action == "unarchive" {
+		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "active")))
+		return
+	}
+
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {

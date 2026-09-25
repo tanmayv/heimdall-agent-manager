@@ -167,6 +167,7 @@ chain_status_str :: proc(st: domain.Task_Chain_Status) -> string {
 	case .Active: return "active"
 	case .Completed: return "completed"
 	case .Cancelled: return "cancelled"
+	case .Archived: return "archived"
 	}
 	return "active"
 }

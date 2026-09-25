@@ -7,6 +7,7 @@ import {
   useFetchTaskChainGroupsQuery,
   useFetchTaskChainProjectPageQuery,
   useLazyFetchTaskChainProjectPageQuery,
+  useUpdateTaskChainMutation,
   type ChainListItem,
   type ChainProjectGroup,
 } from '../../api/endpoints/tasks';
@@ -40,6 +41,8 @@ function statusBadgeClass(status: string): string {
       return 'bg-accent/10 text-accent border-accent/20';
     case 'completed':
       return 'bg-success-soft text-success border-success/20';
+    case 'archived':
+      return 'bg-warning-soft text-warning border-warning/30';
     case 'cancelled':
       return 'bg-neutral-soft text-muted border-subtle';
     default:
@@ -57,9 +60,19 @@ function formatUpdatedAt(value: string): string {
 // One chain row: status badge + title + updated_at, linking to the coordinator's
 // conversation (instance-id route from TC-ROUTING; the id is already in the row,
 // so no extra fetch). Rows without a coordinator render as non-clickable.
-function ChainRow({ chain }: { chain: ChainListItem }) {
+function ChainRow({
+  chain,
+  onArchive,
+  onRestore,
+}: {
+  chain: ChainListItem;
+  onArchive?: (chainId: string) => void;
+  onRestore?: (chainId: string) => void;
+}) {
   const coordinator = chain.coordinatorAgentInstanceId;
   const isMobile = useIsMobile();
+  const isArchived = chain.status === 'archived';
+
   const inner = (
     <>
       <span
@@ -85,31 +98,70 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
   );
   const className =
     'flex items-center gap-3 rounded-xl border border-subtle bg-surface px-3 py-2.5 transition-colors';
-  if (!coordinator) {
-    return (
-      <div data-debug-id={`task-chains-row-${chain.chainId}`} className={`${className} opacity-70`} title="No coordinator instance to open">
-        {inner}
-      </div>
-    );
-  }
+
   const href = isMobile
     ? shellHash(`/conversations/${encodeURIComponent(coordinator)}`)
     : shellHash(`/conversations/${encodeURIComponent(coordinator)}?panel=tasks`);
+
   return (
-    <a
+    <div
       data-debug-id={`task-chains-row-${chain.chainId}`}
-      href={href}
-      title={`Open coordinator conversation (${coordinator})`}
-      onClick={() => {
-        if (isMobile) {
-          writeRightSidebarOpen(false);
-          window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
-        }
-      }}
-      className={`${className} hover:bg-surface-raised`}
+      className={`${className} justify-between hover:bg-surface-raised`}
     >
-      {inner}
-    </a>
+      {coordinator ? (
+        <a
+          href={href}
+          title={`Open coordinator conversation (${coordinator})`}
+          onClick={() => {
+            if (isMobile) {
+              writeRightSidebarOpen(false);
+              window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
+            }
+          }}
+          className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden"
+        >
+          {inner}
+        </a>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center gap-3 opacity-70" title="No coordinator instance to open">
+          {inner}
+        </div>
+      )}
+
+      <div className="flex shrink-0 items-center gap-2 pl-2" data-debug-id={`task-chains-row-actions-${chain.chainId}`}>
+        {isArchived ? (
+          <button
+            type="button"
+            data-debug-id={`task-chains-restore-btn-${chain.chainId}`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onRestore?.(chain.chainId);
+            }}
+            title="Restore chain to active"
+            aria-label="Restore chain to active"
+            className="rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs font-semibold text-primary transition-colors hover:border-strong hover:bg-surface-raised"
+          >
+            Restore
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-debug-id={`task-chains-archive-btn-${chain.chainId}`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onArchive?.(chain.chainId);
+            }}
+            title="Archive chain"
+            aria-label="Archive chain"
+            className="rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-warning/40 hover:bg-warning-soft hover:text-warning"
+          >
+            Archive chain
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -125,9 +177,12 @@ function ChainGroupCard({
   initialNextCursor,
   totalCount,
   onlyWithTasks,
+  filterStatus,
   collapsed,
   onToggle,
   onLaunchProject,
+  onArchiveChain,
+  onRestoreChain,
 }: {
   projectId: string;
   projectName: string;
@@ -136,9 +191,12 @@ function ChainGroupCard({
   initialNextCursor: string;
   totalCount: number;
   onlyWithTasks: boolean;
+  filterStatus: 'active' | 'completed' | 'archived' | 'all';
   collapsed: boolean;
   onToggle: () => void;
   onLaunchProject?: (project: { projectId: string; name: string }) => void;
+  onArchiveChain?: (chainId: string) => void;
+  onRestoreChain?: (chainId: string) => void;
 }) {
   const [extra, setExtra] = useState<ChainListItem[]>([]);
   const [cursor, setCursor] = useState<string>(initialNextCursor);
@@ -153,11 +211,26 @@ function ChainGroupCard({
     setHasMore(initialHasMore);
   }, [projectId, initialNextCursor, initialHasMore]);
 
-  const chains = useMemo(() => [...initialChains, ...extra], [initialChains, extra]);
+  const rawChains = useMemo(() => [...initialChains, ...extra], [initialChains, extra]);
+
+  const chains = useMemo(() => {
+    return rawChains.filter((c) => {
+      if (filterStatus === 'active') return c.status === 'active';
+      if (filterStatus === 'completed') return c.status === 'completed';
+      if (filterStatus === 'archived') return c.status === 'archived';
+      return true;
+    });
+  }, [rawChains, filterStatus]);
 
   const onLoadMore = async () => {
     try {
-      const res = await loadMorePage({ projectId, limit: PAGE_SIZE, cursor, hasTasks: onlyWithTasks }).unwrap();
+      const res = await loadMorePage({
+        projectId,
+        limit: PAGE_SIZE,
+        cursor,
+        hasTasks: onlyWithTasks,
+        includeArchived: filterStatus === 'archived' || filterStatus === 'all',
+      }).unwrap();
       setExtra((prev) => [...prev, ...(res.chains || [])]);
       setCursor(res.nextCursor || '');
       setHasMore(Boolean(res.hasMore));
@@ -221,7 +294,14 @@ function ChainGroupCard({
           {chains.length === 0 ? (
             <p className="py-2 text-xs italic text-faint">No task chains in this project.</p>
           ) : (
-            chains.map((chain) => <ChainRow key={chain.chainId} chain={chain} />)
+            chains.map((chain) => (
+              <ChainRow
+                key={chain.chainId}
+                chain={chain}
+                onArchive={onArchiveChain}
+                onRestore={onRestoreChain}
+              />
+            ))
           )}
           {hasMore && (
             <button
@@ -243,6 +323,7 @@ function ChainGroupCard({
 export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, isMobile }) => {
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
   // Roughly half of real chains carry no tasks yet and have nothing to show, so
   // the list hides them by default; the toggle brings them back.
   const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
@@ -257,16 +338,36 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   // KEEP the chain-detail branch (deep link / row click into a specific chain).
   const showList = !selectedChainId;
 
+  const shouldIncludeArchived = showArchivedProjects || filterStatus === 'archived' || filterStatus === 'all';
+
   const groupsQuery = useFetchTaskChainGroupsQuery(
-    { hasTasks: onlyWithTasks, includeArchived: showArchivedProjects },
+    { hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
     { skip: !showList || Boolean(filterProjectId) },
   );
   const projectPageQuery = useFetchTaskChainProjectPageQuery(
-    { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks },
+    { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
     { skip: !showList || !filterProjectId },
   );
   const projectsQuery = useListProjectsQuery();
   const archivedProjectIds = useArchivedProjectIds();
+
+  const [updateTaskChain] = useUpdateTaskChainMutation();
+
+  const handleArchiveChain = async (chainId: string) => {
+    try {
+      await updateTaskChain({ chainId, status: 'archived' }).unwrap();
+    } catch (err: any) {
+      console.error('Failed to archive task chain:', err);
+    }
+  };
+
+  const handleRestoreChain = async (chainId: string) => {
+    try {
+      await updateTaskChain({ chainId, status: 'active' }).unwrap();
+    } catch (err: any) {
+      console.error('Failed to restore task chain:', err);
+    }
+  };
 
   const projects: Project[] = useMemo(() => {
     const list: Project[] = projectsQuery.data?.projects || [];
@@ -274,15 +375,33 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     return list.filter((p) => !archivedProjectIds.has(p.project_id));
   }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
 
-  const groups: ChainProjectGroup[] = useMemo(() => {
-    const rawGroups = filterProjectId
+  const rawGroups: ChainProjectGroup[] = useMemo(() => {
+    const raw = filterProjectId
       ? (projectPageQuery.data ? [projectPageQuery.data] : [])
       : (groupsQuery.data?.groups || []);
     if (!showArchivedProjects) {
-      return rawGroups.filter((g) => !g.projectId || !archivedProjectIds.has(g.projectId));
+      return raw.filter((g) => !g.projectId || !archivedProjectIds.has(g.projectId));
     }
-    return rawGroups;
+    return raw;
   }, [filterProjectId, projectPageQuery.data, groupsQuery.data, showArchivedProjects, archivedProjectIds]);
+
+  const groups: ChainProjectGroup[] = useMemo(() => {
+    return rawGroups
+      .map((g) => {
+        const matching = g.chains.filter((c) => {
+          if (filterStatus === 'active') return c.status === 'active';
+          if (filterStatus === 'completed') return c.status === 'completed';
+          if (filterStatus === 'archived') return c.status === 'archived';
+          return true;
+        });
+        return {
+          ...g,
+          chains: matching,
+          chainTotal: matching.length,
+        };
+      })
+      .filter((g) => Boolean(filterProjectId) || g.chains.length > 0);
+  }, [rawGroups, filterStatus, filterProjectId]);
 
   const totalChains = useMemo(() => groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups]);
   const isLoading = filterProjectId ? projectPageQuery.isLoading : groupsQuery.isLoading;
@@ -314,8 +433,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       description="Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews."
     >
       <div data-debug-id="task-chains-page" className="text-left">
-      {/* Project filter */}
-      <div className="mb-5 flex items-center gap-2">
+      {/* Project and status filters */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
         <label htmlFor="task-chains-project-filter" className="text-xs text-muted">
           Project
         </label>
@@ -332,6 +451,22 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
               {p.name || p.project_id}
             </option>
           ))}
+        </Select>
+
+        <label htmlFor="task-chains-status-filter" className="ml-1 text-xs text-muted">
+          Status
+        </label>
+        <Select
+          id="task-chains-status-filter"
+          data-debug-id="task-chains-status-filter"
+          size="sm"
+          value={filterStatus}
+          onChange={(val) => setFilterStatus(val as any)}
+        >
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+          <option value="archived">Archived</option>
+          <option value="all">All</option>
         </Select>
 
         <label
@@ -388,7 +523,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           <h3 className="text-base font-semibold text-primary">No Task Chains</h3>
           <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
             {filterProjectId
-              ? 'This project has no task chains yet.'
+              ? 'This project has no task chains matching filter.'
               : 'Task chains appear here once a coordinator starts a multi-agent workflow.'}
           </p>
         </div>
@@ -408,9 +543,12 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
                 initialNextCursor={group.nextCursor}
                 totalCount={group.chainTotal || group.chains.length}
                 onlyWithTasks={onlyWithTasks}
+                filterStatus={filterStatus}
                 collapsed={Boolean(collapsed[key])}
                 onToggle={() => toggleCollapse(group.projectId)}
                 onLaunchProject={setLaunchModalProject}
+                onArchiveChain={handleArchiveChain}
+                onRestoreChain={handleRestoreChain}
               />
             );
           })}

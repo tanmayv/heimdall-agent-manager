@@ -1,6 +1,6 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
 import ProjectChainTree, { CollapsedPinnedChains } from '../chains/ProjectChainTree';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
@@ -19,7 +19,14 @@ import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/age
 import { useFetchTaskChainGroupsQuery } from '../../api/endpoints/tasks';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
-import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
+import {
+  readBottomDockOpen,
+  readLastSeenUserId,
+  removeAppOwnedClientStorage,
+  writeBottomDockOpen,
+  writeLastSeenUserId,
+} from '../../utils/clientPersistence';
+import BottomDock from './BottomDock';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
@@ -1252,6 +1259,22 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
 
+  // Persistent Bottom Dock for Shells (REQ-DOCK-1)
+  const [isBottomDockOpen, setIsBottomDockOpen] = useState(() => readBottomDockOpen());
+
+  const handleToggleBottomDock = useCallback(() => {
+    setIsBottomDockOpen((prev) => {
+      const next = !prev;
+      writeBottomDockOpen(next);
+      return next;
+    });
+  }, []);
+
+  const handleCloseBottomDock = useCallback(() => {
+    setIsBottomDockOpen(false);
+    writeBottomDockOpen(false);
+  }, []);
+
   // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not dismissed
   useEffect(() => {
     const dismissed = readOnboardingDismissed();
@@ -1373,16 +1396,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   // UI-12: Cmd/Ctrl-K opens the command palette (desktop). Also the sidebar
   // Search button and the mobile bottom-tab center button open the same surface.
+  // Ctrl+` toggles the persistent bottom dock (REQ-DOCK-1).
   useEffect(() => {
     function handler(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
         event.preventDefault();
         setPaletteOpen((open) => !open);
       }
+      if ((event.ctrlKey || event.metaKey) && event.key === '`') {
+        event.preventDefault();
+        handleToggleBottomDock();
+      }
     }
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [handleToggleBottomDock]);
 
   // Palette navigation: convert a logical route into a hash location.
   const handlePaletteNavigate = (route: string) => {
@@ -1581,6 +1609,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <div className="flex items-center gap-2">
             <button
               type="button"
+              data-debug-id="shell-bottom-dock-toggle-btn"
+              onClick={handleToggleBottomDock}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition border ${
+                isBottomDockOpen
+                  ? 'border-accent/40 bg-accent/15 text-accent hover:bg-accent/25'
+                  : 'border-subtle bg-neutral-soft text-muted hover:text-primary hover:bg-surface-raised'
+              }`}
+              title="Toggle Shell Dock (Ctrl+`)"
+              aria-label="Toggle Shell Dock"
+            >
+              <Icon name="terminal" size={12} />
+              <span>Terminal</span>
+            </button>
+            <button
+              type="button"
               data-debug-id="vault-header-status-badge"
               onClick={() => setIsOnboardingModalOpen(true)}
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition border ${
@@ -1598,6 +1641,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           </div>
         </header>
         <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
+        {isBottomDockOpen && (
+          <BottomDock
+            isOpen={isBottomDockOpen}
+            onClose={handleCloseBottomDock}
+          />
+        )}
       </div>
 
       {/* T11-UI-5: shell previews live in their own right-hand column, outside the

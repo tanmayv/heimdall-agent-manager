@@ -9,8 +9,17 @@ import type { ChainListItem } from '../../api/endpoints/tasks';
 import { showToast } from '../../store/toastSlice';
 import { useArchivedProjectIds } from '../projects/projectModel';
 import CreateChainModal from './CreateChainModal';
-import { StatusDot, Icon } from '@ui';
+import { StatusDot, Icon, Menu } from '@ui';
 import { VaultText } from '../vault/VaultText';
+import {
+  readSidebarChainFilter,
+  writeSidebarChainFilter,
+  filterSidebarChains,
+  type SidebarChainFilter,
+} from '../../utils/clientPersistence';
+
+export { filterSidebarChains };
+export type { SidebarChainFilter };
 
 type Props = {
   projects: Array<{ projectId: string; projectName: string }>;
@@ -61,9 +70,18 @@ function ChainRow({
     ? `/conversations/${encodeURIComponent(chain.coordinatorAgentInstanceId)}`
     : `/chains/${encodeURIComponent(chain.chainId)}`;
   const active = currentPath === path;
-  const title = chain.title || 'Untitled chain';
   const tone = chainStatusTone(chain.status);
   const timestamp = relativeTime(chain.updatedAt);
+  const isCompleted = chain.status === 'completed';
+  const isActive = chain.status === 'active';
+  const hasTasks = chain.taskCount > 0;
+  const hasUserValidation = Boolean(chain.userValidationCount > 0 || chain.hasUserValidation);
+
+  const radius = 5.25;
+  const circumference = 2 * Math.PI * radius;
+  const ratio = hasTasks ? Math.min(1, Math.max(0, chain.completedTaskCount / chain.taskCount)) : 0;
+  const strokeDashoffset = circumference * (1 - ratio);
+  const pct = Math.round(ratio * 100);
 
   return (
     <a
@@ -75,13 +93,78 @@ function ChainRow({
           : 'text-muted hover:bg-neutral-soft hover:text-primary'
       }`}
     >
-      <StatusDot
-        tone={tone}
-        pulse={chain.status === 'active'}
-        label={chain.status}
-        size="sm"
-      />
+      {isCompleted ? (
+        <span
+          data-debug-id="chain-completed-icon"
+          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-neutral-soft text-muted"
+          title="Completed"
+          aria-label="Completed"
+        >
+          <Icon name="check" size={10} />
+        </span>
+      ) : isActive && hasTasks ? (
+        <div
+          data-debug-id="chain-progress-ring"
+          className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+          title={`${pct}% completed (${chain.completedTaskCount}/${chain.taskCount} tasks)`}
+          aria-label={`${pct}% completed`}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            className="absolute inset-0 -rotate-90 pointer-events-none"
+            aria-hidden="true"
+          >
+            <circle
+              cx="7"
+              cy="7"
+              r={radius}
+              fill="none"
+              stroke="currentColor"
+              className="text-neutral-subtle opacity-25"
+              strokeWidth="1.5"
+            />
+            <circle
+              cx="7"
+              cy="7"
+              r={radius}
+              fill="none"
+              stroke="currentColor"
+              className="text-success transition-all duration-300"
+              strokeWidth="1.5"
+              strokeDasharray={circumference}
+              strokeDashoffset={strokeDashoffset}
+              strokeLinecap="round"
+            />
+          </svg>
+          <StatusDot
+            tone="success"
+            pulse
+            label={chain.status}
+            size="sm"
+          />
+        </div>
+      ) : (
+        <StatusDot
+          tone={tone}
+          pulse={isActive}
+          label={chain.status}
+          size="sm"
+        />
+      )}
       <span className="min-w-0 flex-1 truncate"><VaultText value={chain.title} fallback="Untitled chain" /></span>
+      {hasUserValidation ? (
+        <span
+          data-debug-id="chain-user-validation-badge"
+          title="Awaiting user validation"
+          aria-label="Awaiting user validation"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-warning"
+        >
+          <Icon name="alert" size={11} className="shrink-0 text-warning" />
+          <span className="leading-none">Needs review</span>
+        </span>
+      ) : null}
       {timestamp ? (
         <span className={`shrink-0 text-[10px] leading-none text-faint ${chain.isPinned ? 'hidden' : 'group-hover:hidden'}`}>
           {timestamp}
@@ -110,6 +193,7 @@ function ProjectChainGroup({
   projectId,
   projectName,
   currentPath,
+  chainFilter,
   onNavigate,
   onOpenModal,
   onTogglePin,
@@ -117,6 +201,7 @@ function ProjectChainGroup({
   projectId: string;
   projectName: string;
   currentPath: string;
+  chainFilter: SidebarChainFilter;
   onNavigate: (path: string) => void;
   onOpenModal: (projectId: string) => void;
   onTogglePin: (chain: ChainListItem, e: React.MouseEvent) => void;
@@ -125,7 +210,11 @@ function ProjectChainGroup({
   const [cursor, setCursor] = useState('');
   const { data, isFetching } = useListTaskChainsQuery({ projectId, limit: 20, cursor });
 
-  const chains = data?.chains ?? [];
+  const rawChains = data?.chains ?? [];
+  const chains = useMemo(() => {
+    return filterSidebarChains(rawChains, chainFilter);
+  }, [rawChains, chainFilter]);
+
   const hasMore = data?.hasMore ?? false;
   const nextCursor = data?.nextCursor ?? '';
 
@@ -167,7 +256,9 @@ function ProjectChainGroup({
             />
           ))}
           {!isFetching && chains.length === 0 ? (
-            <div className="px-2.5 py-1.5 text-[11.5px] text-faint">No chains yet.</div>
+            <div className="px-2.5 py-1.5 text-[11.5px] text-faint">
+              {chainFilter === 'active' ? 'No active chains.' : 'No chains yet.'}
+            </div>
           ) : null}
           {hasMore && nextCursor ? (
             <button
@@ -186,14 +277,22 @@ function ProjectChainGroup({
 
 export default function ProjectChainTree({ projects, currentPath, onNavigate }: Props) {
   const [modalProjectId, setModalProjectId] = useState<string | null>(null);
+  const [chainFilter, setChainFilter] = useState<SidebarChainFilter>(() => readSidebarChainFilter());
   const dispatch = useDispatch();
   const { data: pinnedData } = useListPinnedTaskChainsQuery();
   const [togglePin] = useTogglePinTaskChainMutation();
   const archivedProjectIds = useArchivedProjectIds();
+
+  const handleFilterChange = (nextFilter: SidebarChainFilter) => {
+    setChainFilter(nextFilter);
+    writeSidebarChainFilter(nextFilter);
+  };
+
   const pinnedChains = useMemo(() => {
     const list = pinnedData?.chains ?? [];
-    return list.filter((c) => !c.projectId || !archivedProjectIds.has(c.projectId));
-  }, [pinnedData, archivedProjectIds]);
+    return filterSidebarChains(list, chainFilter, archivedProjectIds);
+  }, [pinnedData, archivedProjectIds, chainFilter]);
+
   const visibleProjects = useMemo(() => {
     return projects.filter((p) => !archivedProjectIds.has(p.projectId));
   }, [projects, archivedProjectIds]);
@@ -228,8 +327,70 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
 
   return (
     <section data-debug-id="sidebar-project-chain-tree" className="mt-4">
-      <div className="mb-1.5 px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-faint">
-        Chains
+      {/* Header with Chains title, filter badge, and filter menu button */}
+      <div className="mb-1.5 flex items-center justify-between px-2.5">
+        <div className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-faint">
+          <span>Chains</span>
+          {chainFilter !== 'all' && (
+            <button
+              type="button"
+              data-debug-id="sidebar-chain-filter-badge"
+              onClick={() => handleFilterChange('all')}
+              title="Filtering by active chains. Click to show all."
+              className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold normal-case tracking-normal text-accent hover:bg-accent/25 transition"
+            >
+              <span>Active only</span>
+              <Icon name="close" size={9} />
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <Menu
+            align="end"
+            trigger={
+              <button
+                type="button"
+                data-debug-id="sidebar-chain-filter-btn"
+                aria-label={`Filter chains: currently ${chainFilter === 'active' ? 'Active only' : 'All'}`}
+                title={chainFilter === 'active' ? 'Filter: Active only (click to change)' : 'Filter chains'}
+                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition ${
+                  chainFilter !== 'all'
+                    ? 'bg-accent/15 text-accent hover:bg-accent/25'
+                    : 'text-faint hover:bg-neutral-soft hover:text-primary'
+                }`}
+              >
+                <Icon name="filter" size={12} />
+              </button>
+            }
+          >
+            <div className="py-0.5" data-debug-id="sidebar-chain-filter-menu">
+              <Menu.Item
+                data-debug-id="sidebar-chain-filter-option-all"
+                onClick={() => handleFilterChange('all')}
+                className={chainFilter === 'all' ? 'font-semibold text-accent' : ''}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="flex h-3.5 w-3.5 items-center justify-center text-accent">
+                    {chainFilter === 'all' ? <Icon name="check" size={12} /> : null}
+                  </span>
+                  <span>All (Active &amp; Completed)</span>
+                </span>
+              </Menu.Item>
+              <Menu.Item
+                data-debug-id="sidebar-chain-filter-option-active"
+                onClick={() => handleFilterChange('active')}
+                className={chainFilter === 'active' ? 'font-semibold text-accent' : ''}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="flex h-3.5 w-3.5 items-center justify-center text-accent">
+                    {chainFilter === 'active' ? <Icon name="check" size={12} /> : null}
+                  </span>
+                  <span>Active only</span>
+                </span>
+              </Menu.Item>
+            </div>
+          </Menu>
+        </div>
       </div>
 
       {/* Pinned chains at top of Chains section */}
@@ -264,6 +425,7 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
             projectId={p.projectId}
             projectName={p.projectName}
             currentPath={currentPath}
+            chainFilter={chainFilter}
             onNavigate={onNavigate}
             onOpenModal={setModalProjectId}
             onTogglePin={handleTogglePin}
@@ -345,7 +507,11 @@ export function CollapsedPinnedChains({
   const archivedProjectIds = useArchivedProjectIds();
   const pinnedChains = useMemo(() => {
     const list = pinnedData?.chains ?? [];
-    return list.filter((c) => !c.projectId || !archivedProjectIds.has(c.projectId));
+    return list.filter((c) => {
+      if (c.status === 'archived' || (c as any).archived) return false;
+      if (c.projectId && archivedProjectIds.has(c.projectId)) return false;
+      return true;
+    });
   }, [pinnedData, archivedProjectIds]);
 
   if (pinnedChains.length === 0) {
@@ -385,14 +551,29 @@ export function CollapsedPinnedChains({
             }`}
           >
             <span>{initials}</span>
-            <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
-              <StatusDot
-                tone={tone}
-                pulse={chain.status === 'active'}
-                label={chain.status}
-                size="sm"
-              />
-            </span>
+            {chain.status === 'completed' ? (
+              <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-neutral-soft text-muted pointer-events-none">
+                <Icon name="check" size={8} />
+              </span>
+            ) : (
+              <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
+                <StatusDot
+                  tone={tone}
+                  pulse={chain.status === 'active'}
+                  label={chain.status}
+                  size="sm"
+                />
+              </span>
+            )}
+            {(chain.userValidationCount > 0 || chain.hasUserValidation) && (
+              <span
+                data-debug-id={`collapsed-chain-validation-${chain.chainId}`}
+                className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning text-[8px] text-surface font-bold pointer-events-none"
+                title="Awaiting user validation"
+              >
+                !
+              </span>
+            )}
           </a>
         );
       })}
