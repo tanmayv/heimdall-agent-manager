@@ -114,6 +114,29 @@ bridge_prespawn_ctl_bin_path_is_run_dir_relative :: proc(t: ^testing.T) {
 	testing.expect_value(t, p2, "/tmp/run/inst_abc/.heimdall/bin/ham-ctl")
 }
 
+@(test)
+bridge_prespawn_env_with_vault_key :: proc(t: ^testing.T) {
+	env := bridge_prespawn_env(
+		"/tmp/run/inst_abc",
+		"unix:/tmp/bridge.sock",
+		"hlat_tok_1",
+		"inst_abc",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
+	defer { for e in env do delete(e); delete(env) }
+
+	testing.expect_value(t, len(env), 5)
+	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_BRIDGE_ENDPOINT=unix:/tmp/bridge.sock"), "endpoint entry")
+	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_TOKEN=hlat_tok_1"), "token entry")
+	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_INSTANCE_ID=inst_abc"), "instance entry")
+	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_CTL_BIN=/tmp/run/inst_abc/.heimdall/bin/ham-ctl"), "ctl bin entry")
+	testing.expect(
+		t,
+		bridge_prespawn_test_env_has(env, "HEIMDALL_VAULT_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+		"vault key entry",
+	)
+}
+
 // bridge_prespawn_test_env_has reports whether want is present in env.
 bridge_prespawn_test_env_has :: proc(env: []string, want: string) -> bool {
 	for e in env do if e == want do return true

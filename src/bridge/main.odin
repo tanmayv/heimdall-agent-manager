@@ -778,3 +778,70 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 bridge_now_unix_ms :: proc() -> i64 {
 	return time.to_unix_nanoseconds(time.now()) / 1_000_000
 }
+
+bridge_read_vault_key :: proc() -> (string, bool) {
+	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
+	defer delete(path)
+	c_path := strings.clone_to_cstring(path)
+	defer delete(c_path)
+
+	st: posix.stat_t
+	if posix.stat(c_path, &st) != .OK do return "", false
+
+	all_perms := posix.mode_t{.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IWGRP, .IXGRP, .IROTH, .IWOTH, .IXOTH}
+	valid_perms := (st.st_mode & all_perms) == posix.mode_t{.IRUSR, .IWUSR}
+	if !valid_perms do return "", false
+
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return "", false
+	defer delete(data)
+
+	trimmed := strings.trim_space(string(data))
+	if len(trimmed) != 64 do return "", false
+	for i in 0 ..< len(trimmed) {
+		ch := trimmed[i]
+		switch ch {
+		case '0'..='9', 'a'..='f', 'A'..='F':
+		case:
+			return "", false
+		}
+	}
+	return strings.clone(trimmed), true
+}
+
+bridge_vault_key_status :: proc() -> (configured: bool, permissions_valid: bool, key_length: int) {
+	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
+	defer delete(path)
+	c_path := strings.clone_to_cstring(path)
+	defer delete(c_path)
+
+	st: posix.stat_t
+	if posix.stat(c_path, &st) != .OK {
+		return false, false, 0
+	}
+
+	all_perms := posix.mode_t{.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IWGRP, .IXGRP, .IROTH, .IWOTH, .IXOTH}
+	permissions_valid = (st.st_mode & all_perms) == posix.mode_t{.IRUSR, .IWUSR}
+
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil {
+		return false, permissions_valid, 0
+	}
+	defer delete(data)
+
+	trimmed := strings.trim_space(string(data))
+	key_length = len(trimmed)
+	configured = key_length == 64
+	if configured {
+		for i in 0 ..< len(trimmed) {
+			ch := trimmed[i]
+			switch ch {
+			case '0'..='9', 'a'..='f', 'A'..='F':
+			case:
+				configured = false
+				break
+			}
+		}
+	}
+	return configured, permissions_valid, key_length
+}

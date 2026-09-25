@@ -196,7 +196,11 @@ MIGRATION_045_LSP_SERVER_PATTERNS :: #load("migrations/045_lsp_server_patterns.s
 // agent instance pooling (REQ-FLEET-SCHEMA-1).
 MIGRATION_046_TASK_CHAIN_FLEETS :: #load("migrations/046_task_chain_fleets.sql", string)
 
-migration_order :: [48]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql"}
+// MIGRATION_047_USER_VAULTS creates user_vaults table for Zero-Knowledge
+// dual-wrapped vault key envelopes and KDF parameters (REQ-VAULT-DB-SCHEMA-1).
+MIGRATION_047_USER_VAULTS :: #load("migrations/047_user_vaults.sql", string)
+
+migration_order :: [49]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -318,6 +322,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "047_user_vaults.sql" && sqlite_object_exists(conn, "user_vaults") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -348,6 +356,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_pinned_task_chains_schema(conn) do return false, domain.domain_error(.Internal_Error, "pinned task chains schema upgrade failed")
 	if !upgrade_task_chain_directories_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chain_directories schema upgrade failed")
 	if !upgrade_task_chain_fleets_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chain_fleets schema upgrade failed")
+	if !upgrade_user_vaults_schema(conn) do return false, domain.domain_error(.Internal_Error, "user vaults schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -407,6 +416,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "044_lsp_servers.sql" do return strings.clone(MIGRATION_044_LSP_SERVERS)
 	if name == "045_lsp_server_patterns.sql" || name == "046_lsp_server_patterns.sql" do return strings.clone(MIGRATION_045_LSP_SERVER_PATTERNS)
 	if name == "046_task_chain_fleets.sql" || name == "044_task_chain_fleets.sql" do return strings.clone(MIGRATION_046_TASK_CHAIN_FLEETS)
+	if name == "047_user_vaults.sql" do return strings.clone(MIGRATION_047_USER_VAULTS)
 	return ""
 }
 
@@ -418,6 +428,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
 	if version == "046_task_chain_fleets.sql" {
 		return migration_applied(conn, "044_task_chain_fleets.sql")
+	}
+	if version == "047_user_vaults.sql" {
+		return sqlite_object_exists(conn, "user_vaults")
 	}
 	return false
 }
@@ -750,6 +763,26 @@ upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "task_chain_fleets", "tier") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN tier TEXT NOT NULL DEFAULT '';") do return false
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_task_chain_fleets_chain ON task_chain_fleets(task_chain_id);") do return false
 	return true
+}
+
+// upgrade_user_vaults_schema idempotently ensures the user_vaults
+// table exists (REQ-VAULT-DB-SCHEMA-1).
+upgrade_user_vaults_schema :: proc(conn: ^Conn) -> bool {
+	return exec(conn, `CREATE TABLE IF NOT EXISTS user_vaults (
+  user_id                      TEXT PRIMARY KEY,
+  encrypted_vault_key          TEXT NOT NULL,
+  vault_key_nonce              TEXT NOT NULL,
+  vault_key_tag                TEXT NOT NULL,
+  kdf_algorithm                TEXT NOT NULL,
+  kdf_salt                     TEXT NOT NULL,
+  kdf_iterations               INTEGER NOT NULL,
+  recovery_encrypted_vault_key TEXT NOT NULL,
+  recovery_nonce               TEXT NOT NULL,
+  recovery_tag                 TEXT NOT NULL,
+  recovery_salt                TEXT NOT NULL,
+  created_at                   TEXT NOT NULL,
+  updated_at                   TEXT NOT NULL
+);`)
 }
 
 

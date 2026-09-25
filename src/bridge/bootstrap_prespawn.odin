@@ -47,9 +47,11 @@ bridge_prespawn_materialize :: proc(hub_url, bridge_token, instance_id, run_dir,
 	if !bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, instance_id, clean, bridge_endpoint, agent_token, provider) {
 		return Bridge_Prespawn_Result{}, false
 	}
+	vault_key, _ := bridge_read_vault_key()
+	defer if vault_key != "" do delete(vault_key)
 	return Bridge_Prespawn_Result{
 		run_dir = strings.clone(clean),
-		env = bridge_prespawn_env(clean, bridge_endpoint, agent_token, instance_id),
+		env = bridge_prespawn_env(clean, bridge_endpoint, agent_token, instance_id, vault_key),
 	}, true
 }
 
@@ -92,8 +94,9 @@ bridge_prespawn_rmdir_all :: proc(dir: string) {
 //   HEIMDALL_AGENT_TOKEN       — this instance's agent token
 //   HEIMDALL_AGENT_INSTANCE_ID — the agent instance id
 //   HEIMDALL_CTL_BIN           — absolute path to the materialized ham-ctl shim
+//   HEIMDALL_VAULT_KEY         — local 256-bit AES-GCM Vault Key (if configured)
 // The caller owns the returned slice and each string.
-bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string) -> []string {
+bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string, vault_key: string = "") -> []string {
 	ctl_bin := bridge_prespawn_ctl_bin_path(run_dir)
 	defer delete(ctl_bin)
 	out := make([dynamic]string)
@@ -101,6 +104,9 @@ bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: 
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_TOKEN=", agent_token}))
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_INSTANCE_ID=", instance_id}))
 	append(&out, strings.concatenate({"HEIMDALL_CTL_BIN=", ctl_bin}))
+	if vault_key != "" {
+		append(&out, strings.concatenate({"HEIMDALL_VAULT_KEY=", vault_key}))
+	}
 	return out[:]
 }
 

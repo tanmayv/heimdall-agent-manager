@@ -27,6 +27,8 @@ ctl_help :: proc(cmd: []string) {
 		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
 		     "memory", "context", "start-success", "issue", "issues":
 			print_agent_help(cmd[1:]); return
+		case "vault":
+			print_vault_help(); return
 		}
 	}
 	print_usage(cfg_lib.config_path_from_args(os.args), "")

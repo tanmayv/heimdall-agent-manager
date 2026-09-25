@@ -1,7 +1,7 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
 import ProjectChainTree, { CollapsedPinnedChains } from '../chains/ProjectChainTree';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
@@ -51,6 +51,13 @@ import IssueFormPage from '../issues/IssueFormPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import ExperimentalPanel from '../settings/ExperimentalPanel';
+import VaultPanel from '../settings/VaultPanel';
+import VaultOnboardingModal from '../settings/VaultOnboardingModal';
+import {
+  selectIsVaultConfigured,
+  selectIsVaultUnlocked,
+  readOnboardingDismissed,
+} from '../../store/vaultSlice';
 import LspPanel from '../settings/LspPanel';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import LibraryPage from '../LibraryPage';
@@ -231,6 +238,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/settings/providers')) return 'Provider settings';
   if (path.startsWith('/settings/templates')) return 'Templates';
   if (path.startsWith('/settings/notifications')) return 'Notification settings';
+  if (path.startsWith('/settings/vault')) return 'User Vault';
   if (path.startsWith('/settings')) return 'Settings';
   if (path.startsWith('/agents')) return 'Agents';
   if (path.startsWith('/chains')) return 'Task Chains';
@@ -255,6 +263,7 @@ function routeDescription(path: string): string {
   if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
   if (path.startsWith('/shells/')) return "One shell session: its live output, its details, and the preview when it declares a port.";
   if (path.startsWith('/shells')) return 'Every shell session your bridges are running.';
+  if (path.startsWith('/settings/vault')) return 'Zero-Knowledge User Vault management, recovery words, and unlock keys.';
   if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, Appearance, User tokens, Projects, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
 }
@@ -264,6 +273,7 @@ const SETTINGS_NAV = [
   { path: '/settings/providers', label: 'Providers' },
   { path: '/settings/appearance', label: 'Appearance' },
   { path: '/settings/user-tokens', label: 'User tokens' },
+  { path: '/settings/vault', label: 'User Vault' },
   { path: '/settings/projects', label: 'Projects' },
   { path: '/settings/templates', label: 'Templates' },
   { path: '/settings/notifications', label: 'Notifications' },
@@ -1135,6 +1145,8 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <ProvidersPanel />
         ) : path === '/settings/user-tokens' ? (
           <UserTokensPanel />
+        ) : path === '/settings/vault' ? (
+          <VaultPanel />
         ) : path === '/settings/providers/new' ? (
           <ProviderEditorPage />
         ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
@@ -1227,6 +1239,19 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
+
+  // Vault state & onboarding modal
+  const isVaultConfigured = useSelector(selectIsVaultConfigured);
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
+
+  // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not dismissed
+  useEffect(() => {
+    const dismissed = readOnboardingDismissed();
+    if (!isVaultUnlocked && !dismissed) {
+      setIsOnboardingModalOpen(true);
+    }
+  }, [isVaultUnlocked]);
 
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
   // component-local state. The single user-WS connection invalidates the
@@ -1514,6 +1539,45 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
+        <header
+          data-debug-id="shell-top-header"
+          className="flex h-10 shrink-0 items-center justify-between border-b border-subtle bg-surface/50 px-4 text-xs backdrop-blur-sm z-10"
+        >
+          <div className="flex items-center gap-2">
+            {isMobile && (
+              <button
+                type="button"
+                data-debug-id="shell-header-drawer-toggle"
+                onClick={() => setDrawerOpen(true)}
+                className="grid h-8 w-8 place-items-center rounded-lg text-primary hover:bg-neutral-soft"
+                aria-label="Open navigation"
+              >
+                <Icon name="menu" size={16} />
+              </button>
+            )}
+            <span className="font-semibold text-muted text-[11px] uppercase tracking-wider hidden sm:inline">
+              {routeTitle(path)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-debug-id="vault-header-status-badge"
+              onClick={() => setIsOnboardingModalOpen(true)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition border ${
+                isVaultUnlocked
+                  ? 'border-success/30 bg-success/10 text-success hover:bg-success/20'
+                  : !isVaultConfigured
+                    ? 'border-warning/30 bg-warning/10 text-warning hover:bg-warning/20'
+                    : 'border-subtle bg-neutral-soft text-muted hover:text-primary hover:bg-surface-raised'
+              }`}
+              title={`User Vault: ${isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'} (Click to manage)`}
+            >
+              <Icon name="lock" size={12} />
+              <span>Vault: {isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'}</span>
+            </button>
+          </div>
+        </header>
         <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
@@ -1544,6 +1608,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           setLaunchModalProject(null);
           window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
         }}
+      />
+      <VaultOnboardingModal
+        open={isOnboardingModalOpen}
+        onOpenChange={setIsOnboardingModalOpen}
       />
     </div>
   );

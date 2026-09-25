@@ -201,6 +201,11 @@ bridge_bootstrap_render_ham_ctl_shim :: proc(bridge_endpoint, agent_token, insta
 	strings.write_string(&b, "export HEIMDALL_BRIDGE_ENDPOINT="); bridge_bootstrap_shell_quote(&b, bridge_endpoint); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_TOKEN="); bridge_bootstrap_shell_quote(&b, agent_token); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_INSTANCE_ID="); bridge_bootstrap_shell_quote(&b, instance_id); strings.write_byte(&b, '\n')
+	vault_key, _ := bridge_read_vault_key()
+	defer if vault_key != "" do delete(vault_key)
+	if vault_key != "" {
+		strings.write_string(&b, "export HEIMDALL_VAULT_KEY="); bridge_bootstrap_shell_quote(&b, vault_key); strings.write_byte(&b, '\n')
+	}
 	strings.write_string(&b, "exec "); bridge_bootstrap_shell_quote(&b, ctl); strings.write_string(&b, " \"$@\"\n")
 	return strings.to_string(b), true
 }
@@ -220,6 +225,11 @@ bridge_bootstrap_write_ham_ctl_wrapper :: proc(run_dir, bridge_endpoint, agent_t
 	strings.write_string(&b, "export HEIMDALL_BRIDGE_ENDPOINT="); bridge_bootstrap_shell_quote(&b, bridge_endpoint); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_TOKEN="); bridge_bootstrap_shell_quote(&b, agent_token); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_INSTANCE_ID="); bridge_bootstrap_shell_quote(&b, instance_id); strings.write_byte(&b, '\n')
+	vault_key, _ := bridge_read_vault_key()
+	defer if vault_key != "" do delete(vault_key)
+	if vault_key != "" {
+		strings.write_string(&b, "export HEIMDALL_VAULT_KEY="); bridge_bootstrap_shell_quote(&b, vault_key); strings.write_byte(&b, '\n')
+	}
 	strings.write_string(&b, "exec "); bridge_bootstrap_shell_quote(&b, ctl); strings.write_string(&b, " \"$@\"\n")
 	if os.write_entire_file(wrapper_path, strings.to_string(b)) != nil do return false
 	_ = posix.chmod(cstring(raw_data(wrapper_path)), posix.mode_t{.IRUSR, .IWUSR, .IXUSR})

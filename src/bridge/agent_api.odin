@@ -228,6 +228,12 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.exec"}
 	case "agent.shell_cmd.read":
 		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.read"}
+
+	// ---- vault commands (bridge-local vault key inspection) --------------------
+	case "agent.vault.status":
+		return Bridge_Agent_Route{kind = .Local, local_op = "vault.status"}
+	case "agent.vault.get":
+		return Bridge_Agent_Route{kind = .Local, local_op = "vault.get"}
 	}
 	return Bridge_Agent_Route{kind = .Unknown}
 }
@@ -268,7 +274,9 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
 	     "agent.cards.discard", "agent.cards.accept",
 	     // shell commands (bridge-local)
-	     "agent.shell_cmd.exec", "agent.shell_cmd.read":
+	     "agent.shell_cmd.exec", "agent.shell_cmd.read",
+	     // vault commands (bridge-local)
+	     "agent.vault.status", "agent.vault.get":
 		return true
 	}
 	return false
@@ -364,6 +372,32 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 	}
 	if op == "shell_cmd.exec" do return bridge_shell_cmd_exec(request_id, params, rec)
 	if op == "shell_cmd.read" do return bridge_shell_cmd_read(request_id, params, rec)
+	if op == "vault.status" {
+		configured, permissions_valid, key_length := bridge_vault_key_status()
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"configured\":")
+		strings.write_string(&b, "true" if configured else "false")
+		strings.write_string(&b, ",\"permissions_valid\":")
+		strings.write_string(&b, "true" if permissions_valid else "false")
+		strings.write_string(&b, ",\"key_length\":")
+		strings.write_string(&b, bridge_agent_itoa(key_length))
+		strings.write_byte(&b, '}')
+		return bridge_local_response_data(request_id, strings.to_string(b))
+	}
+	if op == "vault.get" {
+		key, ok := bridge_read_vault_key()
+		if !ok {
+			return bridge_local_response_error(request_id, "not_found", "vault key not configured or permissions invalid")
+		}
+		defer delete(key)
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"key\":\"")
+		bridge_local_write_json_string(&b, key)
+		strings.write_string(&b, "\",\"key_length\":")
+		strings.write_string(&b, bridge_agent_itoa(len(key)))
+		strings.write_byte(&b, '}')
+		return bridge_local_response_data(request_id, strings.to_string(b))
+	}
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown local op: ", op}))
 }
 
