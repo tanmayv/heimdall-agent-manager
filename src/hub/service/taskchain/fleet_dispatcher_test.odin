@@ -352,13 +352,17 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	}
 	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
 
-	// Set fleet capacity = 2 for agt_jit_worker
+	// Set fleet capacity = 2 for agt_jit_worker with a per-role provider/tier
+	// (tier "cheap" differs from the agent default "normal" so the assertions
+	// below prove the fleet selection wins).
 	fleet := domain.Task_Chain_Fleet{
 		task_chain_id    = chain_id,
 		agent_id         = "agt_jit_worker",
 		capacity         = 2,
 		min_warm         = 0,
 		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "cheap",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -398,9 +402,122 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	testing.expect_value(t, spawned_inst.current_task_id, "task_jit_1")
 	testing.expect_value(t, spawned_inst.current_task_role, domain.Current_Task_Role.Work)
 
+	// REQ-FLEET-PT-2: the fleet row's provider/tier must reach the JIT-provisioned
+	// instance (worker call site).
+	testing.expect_value(t, spawned_inst.provider, "jetski")
+	testing.expect_value(t, spawned_inst.tier, "cheap")
+
 	// Check instance is enrolled as chain member
 	is_member := is_instance_member_or_coordinator(&svc, chain, spawned_id)
 	testing.expect(t, is_member, "spawned instance must be enrolled as chain member")
+
+	// Fleet provider/tier cleared back to "" -> inherit. The next JIT instance must
+	// fall back to the standard resolution order (agent default jetski/normal).
+	cleared := fleet
+	cleared.provider = ""
+	cleared.tier = ""
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, cleared)
+
+	task2 := domain.Task{
+		task_id            = "task_jit_2",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "JIT Task 2",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_jit_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-09-23T10:02:00Z",
+		updated_at         = "2026-09-23T10:02:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task2)
+
+	promoted2 := reconcile_chain(&svc, chain)
+	testing.expect_value(t, promoted2, 1)
+
+	saved_t2, t2_ok, _ := iface.taskchain_get_task(&tc_repo, "task_jit_2")
+	testing.expect(t, t2_ok, "get task 2 ok")
+	testing.expect_value(t, saved_t2.status, domain.Task_Status.In_Progress)
+	spawned2_id := primary_assignee_instance(saved_t2.assignee_ref_json)
+	defer delete(spawned2_id)
+	testing.expect(t, spawned2_id != spawned_id, "second JIT spawn must be a distinct instance")
+
+	inherited_inst, inherited_ok, _ := iface.agent_get_instance(&ag_repo, spawned2_id)
+	testing.expect(t, inherited_ok, "second spawned instance must exist in repository")
+	testing.expect_value(t, inherited_inst.provider, "jetski")
+	testing.expect_value(t, inherited_inst.tier, "normal")
+
+	// Reviewer call site: a fleet row for the reviewer agent must reach the
+	// reviewer JIT provision in the REVIEWER DISPATCH PASS (tier "smart" differs
+	// from the reviewer agent's default "normal").
+	reviewer_agent := domain.Agent{
+		agent_id         = "agt_jit_reviewer",
+		owner_user_id    = owner,
+		name             = "JIT Reviewer",
+		slug             = "jit-reviewer",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, reviewer_agent)
+
+	reviewer_support := domain.Agent_Bridge_Support{
+		agent_id      = "agt_jit_reviewer",
+		bridge_id     = "brg_jit",
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, reviewer_support)
+
+	reviewer_fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_jit_reviewer",
+		capacity         = 1,
+		min_warm         = 0,
+		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "smart",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, reviewer_fleet)
+
+	review_task := domain.Task{
+		task_id            = "task_jit_review",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "JIT Review Task",
+		publish_state      = .Published,
+		status             = .In_Validation,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_jit_worker"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_jit_reviewer"}]`,
+		created_at         = "2026-09-23T10:03:00Z",
+		updated_at         = "2026-09-23T10:03:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, review_task)
+
+	_ = reconcile_chain(&svc, chain)
+
+	saved_rev_task, rev_task_ok, _ := iface.taskchain_get_task(&tc_repo, "task_jit_review")
+	testing.expect(t, rev_task_ok, "review task must exist")
+	// extract_instances_from_ref_blob returns interior subslices of the blob —
+	// only the array itself is deletable.
+	rev_instances := extract_instances_from_ref_blob(saved_rev_task.reviewer_refs_json)
+	defer delete(rev_instances)
+	testing.expect_value(t, len(rev_instances), 1)
+	if len(rev_instances) == 1 {
+		testing.expect(t, rev_instances[0] != spawned_id, "reviewer instance must differ from the worker instance")
+		rev_inst, rev_ok, _ := iface.agent_get_instance(&ag_repo, rev_instances[0])
+		testing.expect(t, rev_ok, "reviewer JIT instance must exist in repository")
+		testing.expect_value(t, rev_inst.agent_id, "agt_jit_reviewer")
+		testing.expect_value(t, rev_inst.provider, "jetski")
+		testing.expect_value(t, rev_inst.tier, "smart")
+		testing.expect_value(t, rev_inst.current_task_id, "task_jit_review")
+		testing.expect_value(t, rev_inst.current_task_role, domain.Current_Task_Role.Review)
+	}
 }
 
 @(test)

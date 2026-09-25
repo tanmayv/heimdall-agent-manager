@@ -335,3 +335,93 @@ vcs_api_sync_jj_not_supported :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj sync -> not_supported")
 }
 
+// --- REQ-VCS-2: push/pull failure responses carry git stderr detail -------
+
+// vcs_error_detail: short stderr is trimmed and passes through untruncated.
+@(test)
+vcs_error_detail_short :: proc(t: ^testing.T) {
+	d := vcs_error_detail("fatal: boom\n")
+	defer delete(d)
+	testing.expect(t, d == "fatal: boom", "short stderr trimmed, not truncated")
+}
+
+// vcs_error_detail: whitespace-only stderr yields no excerpt at all.
+@(test)
+vcs_error_detail_whitespace_only :: proc(t: ^testing.T) {
+	d := vcs_error_detail("  \n\t \n")
+	testing.expect(t, d == "", "whitespace-only stderr yields empty detail")
+}
+
+// vcs_error_detail: >400 bytes keeps the TAIL (where the actual error is),
+// dropping the head.
+@(test)
+vcs_error_detail_caps_tail :: proc(t: ^testing.T) {
+	head := strings.repeat("A", 100, context.allocator)
+	tail := strings.repeat("B", 500, context.allocator)
+	defer delete(head)
+	defer delete(tail)
+	input := strings.concatenate([]string{head, tail}, context.allocator)
+	defer delete(input)
+	d := vcs_error_detail(input)
+	defer delete(d)
+	want := strings.repeat("B", 400, context.allocator)
+	defer delete(want)
+	testing.expect(t, len(d) == 400, "detail capped at 400 bytes")
+	testing.expect(t, !strings.contains(d, "A"), "head of long stderr dropped")
+	testing.expect(t, d == want, "tail bytes kept exactly")
+}
+
+// Upload against a repo with NO remote: git exits non-zero fast; the response
+// keeps code "push_failed" and the message embeds the real git stderr (the
+// 404-byte stderr survives the 400-byte tail cap with this fragment intact).
+@(test)
+vcs_api_upload_no_remote_captures_stderr :: proc(t: ^testing.T) {
+	repo, ok := vcs_test_git_repo("upload-noremote")
+	defer vcs_test_rm(repo)
+	if !ok do return
+	if !vcs_test_git("git", "-C", repo, "commit", "--allow-empty", "-m", "init") do return
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "no-remote upload ok:false")
+	testing.expect(t, strings.contains(out, `"code":"push_failed"`), "no-remote upload code push_failed")
+	testing.expect(t, strings.contains(out, "No configured push destination"), "failure message embeds real git stderr")
+}
+
+// Sync against a repo with no upstream: git pull --rebase exits non-zero; the
+// response keeps code "sync_failed" and embeds the real git stderr.
+@(test)
+vcs_api_sync_no_remote_captures_stderr :: proc(t: ^testing.T) {
+	repo, ok := vcs_test_git_repo("sync-noremote")
+	defer vcs_test_rm(repo)
+	if !ok do return
+	if !vcs_test_git("git", "-C", repo, "commit", "--allow-empty", "-m", "init") do return
+	out := bridge_vcs_sync_json("s", fmt.tprintf(`{"command_id":"s","root":"%s"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "no-upstream sync ok:false")
+	testing.expect(t, strings.contains(out, `"code":"sync_failed"`), "no-upstream sync code sync_failed")
+	testing.expect(t, strings.contains(out, "no tracking information"), "failure message embeds real git stderr")
+}
+
+// Escaping contract: git stderr containing a double quote and newlines must be
+// emitted as valid escaped JSON in the frame (\" and \n via json_write_string).
+// The upstream remote is a nonexistent local path containing a quote, so git
+// echoes both in its fatal line — fully local, no network.
+@(test)
+vcs_api_upload_failure_escapes_stderr :: proc(t: ^testing.T) {
+	repo, ok := vcs_test_git_repo("upload-escape")
+	defer vcs_test_rm(repo)
+	if !ok do return
+	if !vcs_test_git("git", "-C", repo, "commit", "--allow-empty", "-m", "init") do return
+	bad_remote := strings.concatenate([]string{repo, "/no\"pe"}, context.allocator)
+	defer delete(bad_remote)
+	if !vcs_test_git("git", "-C", repo, "remote", "add", "origin", bad_remote) do return
+	if !vcs_test_git("git", "-C", repo, "config", "branch.main.remote", "origin") do return
+	if !vcs_test_git("git", "-C", repo, "config", "branch.main.merge", "refs/heads/main") do return
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "quote-remote upload ok:false")
+	testing.expect(t, strings.contains(out, `\"`), "quote in stderr escaped in the frame")
+	testing.expect(t, strings.contains(out, `\n`), "newline in stderr escaped in the frame")
+}
+
+

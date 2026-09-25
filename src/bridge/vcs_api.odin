@@ -510,16 +510,20 @@ bridge_vcs_upload_json :: proc(command_id, text: string) -> string {
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
 	}
-	aok, msg := provider.upload(path)
+	aok, code, detail := provider.upload(path)
 	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
 	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
 	strings.write_string(&b, "\"")
 	if aok {
 		vcs_write_error(&b, "", "")
 	} else {
-		code := msg
 		if code == "" do code = "upload_failed"
-		vcs_write_error(&b, code, vcs_action_error_message(code))
+		message := vcs_action_error_message(code)
+		if detail != "" {
+			message = fmt.tprintf("%s — %s", message, detail)
+			delete(detail)
+		}
+		vcs_write_error(&b, code, message)
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
@@ -546,16 +550,20 @@ bridge_vcs_sync_json :: proc(command_id, text: string) -> string {
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
 	}
-	aok, msg := provider.sync(path)
+	aok, code, detail := provider.sync(path)
 	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
 	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
 	strings.write_string(&b, "\"")
 	if aok {
 		vcs_write_error(&b, "", "")
 	} else {
-		code := msg
 		if code == "" do code = "sync_failed"
-		vcs_write_error(&b, code, vcs_action_error_message(code))
+		message := vcs_action_error_message(code)
+		if detail != "" {
+			message = fmt.tprintf("%s — %s", message, detail)
+			delete(detail)
+		}
+		vcs_write_error(&b, code, message)
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)

@@ -1,4 +1,5 @@
 // REQ-FLEET-UI-ACTIONS-1: executable unit tests for role-assigned fleet task action buttons.
+// REQ-FLEET-PT-3: provider/tier selection logic for the Fleet Management drawer.
 //
 // RUN: node --test tests/ui_fleet_actions_test.ts
 
@@ -11,6 +12,22 @@ import {
   hasLiveNudgeTarget,
   getUnpauseStatus,
 } from '../src/ui/components/tasks/TaskCard.ts';
+import {
+  activeTasksByRole,
+  changedFleetEntries,
+  fleetApplyRequests,
+  fleetProviderCapabilities,
+  getOriginalFleetCapacity,
+  getOriginalProviderTier,
+  isLiveFleetMember,
+  liveInstancesByRole,
+  nextTierOnProviderChange,
+  providerTierModified,
+  restartAffectedEntries,
+  seedProviderTierDrafts,
+  summarizeFleetRestartResults,
+  tierOptionsForProvider,
+} from '../src/ui/components/tasks/fleetSelection.ts';
 
 // -----------------------------------------------------------------------------
 // isRoleAssignedWithoutLiveInstance
@@ -188,4 +205,400 @@ test('getUnpauseStatus returns in_progress for task with live bound instance', (
     { agent_instance_id: 'inst_live_4', runtime_status: 'running' },
   ];
   assert.equal(getUnpauseStatus(task, instances), 'in_progress');
+});
+
+// -----------------------------------------------------------------------------
+// REQ-FLEET-PT-3: provider/tier drafts (Fleet Management drawer)
+// -----------------------------------------------------------------------------
+
+const CAPABILITIES = [
+  { provider: 'qoder', tiers: ['smart', 'max'] },
+  { provider: 'claude', tiers: ['opus', 'sonnet'] },
+];
+
+test('seedProviderTierDrafts maps provider/tier from fleet JSON, defaulting missing values to ""', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'max' },
+    { agent_id: 'agt_reviewer', capacity: 1 },
+    { agentId: 'agt_custom', capacity: 1, provider: '', tier: '' },
+  ];
+  assert.deepEqual(seedProviderTierDrafts(rawFleets), {
+    agt_worker: { provider: 'qoder', tier: 'max' },
+    agt_reviewer: { provider: '', tier: '' },
+    agt_custom: { provider: '', tier: '' },
+  });
+  assert.deepEqual(seedProviderTierDrafts([]), {});
+});
+
+test('getOriginalProviderTier returns server values for persisted roles and "" for unpersisted roles', () => {
+  const rawFleets = [{ agent_id: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'smart' }];
+  assert.deepEqual(getOriginalProviderTier(rawFleets, 'agt_worker'), { provider: 'qoder', tier: 'smart' });
+  assert.deepEqual(getOriginalProviderTier(rawFleets, 'agt_reviewer'), { provider: '', tier: '' });
+});
+
+test('getOriginalFleetCapacity keeps the capacity rule: persisted row, standard role default, null otherwise', () => {
+  const rawFleets = [{ agent_id: 'agt_worker', capacity: 3 }];
+  assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_worker'), 3);
+  assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_reviewer'), 1);
+  assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_other'), null);
+});
+
+test('tierOptionsForProvider returns the selected provider tiers and none for "" (Auto)', () => {
+  assert.deepEqual(tierOptionsForProvider(CAPABILITIES, 'qoder'), ['smart', 'max']);
+  assert.deepEqual(tierOptionsForProvider(CAPABILITIES, 'claude'), ['opus', 'sonnet']);
+  assert.deepEqual(tierOptionsForProvider(CAPABILITIES, ''), []);
+  assert.deepEqual(tierOptionsForProvider(CAPABILITIES, 'unknown'), []);
+});
+
+test('fleetProviderCapabilities maps the live bridge providers payload (name + models) to tiers', () => {
+  // Shape GET /bridges/:id/providers actually returns (src/bridge/provider_store.odin
+  // bridge_provider_profiles_report_json): provider names under "name", tiers implied
+  // by non-empty model slots.
+  const payload = {
+    bridge_id: 'brg_x',
+    default_provider: 'claude',
+    default_tier: 'normal',
+    providers: [
+      { name: 'claude', enabled: true, models: { flag: '--model', cheap: '', normal: 'claude-sonnet', smart: 'claude-opus' } },
+      { name: 'codex', enabled: true, models: { flag: '', cheap: '', normal: '', smart: '' } },
+      { name: 'disabled-one', enabled: false, models: { normal: 'x' } },
+    ],
+  };
+  assert.deepEqual(fleetProviderCapabilities(payload), [
+    { provider: 'claude', tiers: ['normal', 'smart'], defaultTier: undefined },
+    { provider: 'codex', tiers: [], defaultTier: undefined },
+  ]);
+});
+
+test('fleetProviderCapabilities maps the explicit tiers payload shape unchanged', () => {
+  // Capability-report / mock shape: {provider, tiers, default_tier}.
+  const payload = {
+    bridge_id: 'brg_x',
+    default_provider: 'qoder',
+    default_tier: 'smart',
+    providers: [{ provider: 'qoder', tiers: ['smart', 'max'], default_tier: 'smart' }],
+  };
+  assert.deepEqual(fleetProviderCapabilities(payload), [
+    { provider: 'qoder', tiers: ['smart', 'max'], defaultTier: 'smart' },
+  ]);
+  assert.deepEqual(fleetProviderCapabilities({ providers: [] }), []);
+  assert.deepEqual(fleetProviderCapabilities(undefined), []);
+});
+
+test('nextTierOnProviderChange keeps a tier the new provider offers, otherwise resets to ""', () => {
+  assert.equal(nextTierOnProviderChange('smart', 'qoder', CAPABILITIES), 'smart');
+  assert.equal(nextTierOnProviderChange('smart', 'claude', CAPABILITIES), '');
+  assert.equal(nextTierOnProviderChange('opus', 'claude', CAPABILITIES), 'opus');
+  assert.equal(nextTierOnProviderChange('opus', '', CAPABILITIES), '');
+});
+
+test('changedFleetEntries includes Apply payload provider/tier for a provider-only change', () => {
+  const rawFleets = [{ agent_id: 'agt_worker', capacity: 2, provider: '', tier: '' }];
+  const fleets = [...rawFleets, { agent_id: 'agt_reviewer', capacity: 1, active_count: 0 }];
+  const entries = changedFleetEntries(
+    fleets,
+    { agt_worker: 2, agt_reviewer: 1 },
+    { agt_worker: { provider: 'qoder', tier: '' }, agt_reviewer: { provider: '', tier: '' } },
+    rawFleets,
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: '' },
+  ]);
+});
+
+test('changedFleetEntries includes a tier-only change and a capacity+provider change', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'smart' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const entries = changedFleetEntries(
+    rawFleets,
+    { agt_worker: 2, agt_reviewer: 4 },
+    { agt_worker: { provider: 'qoder', tier: 'max' }, agt_reviewer: { provider: 'claude', tier: '' } },
+    rawFleets,
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'max' },
+    { agentId: 'agt_reviewer', capacity: 4, provider: 'claude', tier: '' },
+  ]);
+});
+
+test('changedFleetEntries detects provider/tier staged on a not-yet-persisted standard role', () => {
+  const fleets = [{ agent_id: 'agt_worker', capacity: 1, active_count: 0 }];
+  const entries = changedFleetEntries(
+    fleets,
+    { agt_worker: 1 },
+    { agt_worker: { provider: 'qoder', tier: 'max' } },
+    [],
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 1, provider: 'qoder', tier: 'max' },
+  ]);
+});
+
+test('changedFleetEntries detects a provider/tier-only change on a role with NO capacity draft (unpersisted standard role)', () => {
+  // Live-found case: server fleets empty, user picks Provider/Tier on the seeded
+  // standard Worker card without ever touching capacity. No capacity draft exists,
+  // so the entry must still reach Apply — the upsert creates the fleet row.
+  const fleets = [{ agent_id: 'agt_worker', capacity: 1, active_count: 0 }];
+  const entries = changedFleetEntries(
+    fleets,
+    {},
+    { agt_worker: { provider: 'claude', tier: 'smart' } },
+    [],
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 1, provider: 'claude', tier: 'smart' },
+  ]);
+  // Untouched standard roles with neither draft stay out.
+  const untouched = changedFleetEntries(fleets, {}, {}, []);
+  assert.deepEqual(untouched, []);
+});
+
+test('changedFleetEntries skips roles whose drafts match the server state', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'smart' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const entries = changedFleetEntries(
+    rawFleets,
+    { agt_worker: 2, agt_reviewer: 1 },
+    { agt_worker: { provider: 'qoder', tier: 'smart' }, agt_reviewer: { provider: '', tier: '' } },
+    rawFleets,
+  );
+  assert.deepEqual(entries, []);
+});
+
+test('changedFleetEntries ignores provider/tier diffs when no draft entry exists (capacity-only flow preserved)', () => {
+  const rawFleets = [{ agent_id: 'agt_worker', capacity: 2, provider: 'qoder', tier: 'smart' }];
+  const entries = changedFleetEntries(
+    rawFleets,
+    { agt_worker: 5 },
+    {},
+    rawFleets,
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 5, provider: 'qoder', tier: 'smart' },
+  ]);
+});
+
+// -----------------------------------------------------------------------------
+// REQ-RS-3 / REQ-RS-4: confirm-before-restart — affected roles, PUT bodies, summary
+//
+// The drawer asks before any PUT when a provider/tier edit would leave live
+// instances on the old values; "Apply to New Instances Only" is exactly the
+// pre-restart request shape. All of that decision logic is pure and covered here.
+// -----------------------------------------------------------------------------
+
+const ROLE_MEMBERS = [
+  { agent_id: 'agt_worker', agent_instance_id: 'inst_live_1', runtime_status: 'running' },
+  { agent_id: 'agt_worker', agent_instance_id: 'inst_live_2', runtimeStatus: 'launching' },
+  { agent_id: 'agt_worker', agent_instance_id: 'inst_dead_1', runtime_status: 'stopped' },
+  { agent_id: 'agt_reviewer', agent_instance_id: 'inst_live_3', runtime_status: 'idle' },
+  { agent_id: 'agt_reviewer', agent_instance_id: 'inst_dead_2', runtime_status: 'failed' },
+  { agent_id: 'agt_reviewer', agent_instance_id: 'inst_dead_3', runtime_status: 'terminated' },
+];
+
+test('isLiveFleetMember treats every non-terminal runtime status as live', () => {
+  for (const status of ['running', 'ready', 'idle', 'launching', '']) {
+    assert.equal(isLiveFleetMember({ runtime_status: status }), true);
+  }
+  for (const status of ['stopped', 'failed', 'terminated', 'Stopped']) {
+    assert.equal(isLiveFleetMember({ runtime_status: status }), false);
+  }
+  // camelCase field and a missing status behave like the drawer's inline predicate always did.
+  assert.equal(isLiveFleetMember({ runtimeStatus: 'failed' }), false);
+  assert.equal(isLiveFleetMember({}), true);
+});
+
+test('liveInstancesByRole groups live members per role and drops terminal/role-less rows', () => {
+  const grouped = liveInstancesByRole([
+    ...ROLE_MEMBERS,
+    { agent_instance_id: 'inst_orphan', runtime_status: 'running' },
+  ]);
+  assert.deepEqual(Object.keys(grouped).sort(), ['agt_reviewer', 'agt_worker']);
+  assert.deepEqual(grouped.agt_worker.map((m) => m.agent_instance_id), ['inst_live_1', 'inst_live_2']);
+  assert.deepEqual(grouped.agt_reviewer.map((m) => m.agent_instance_id), ['inst_live_3']);
+  assert.deepEqual(liveInstancesByRole([]), {});
+});
+
+test('activeTasksByRole counts active tasks per role via assignee ref and bound instance', () => {
+  const tasks = [
+    { status: 'in_progress', assigneeRef: { agent_id: 'agt_worker' } },
+    { status: 'queued', assigneeRef: { agent_id: 'agt_worker' } },
+    { status: 'in_validation', assigneeRef: { agent_id: 'agt_reviewer' } },
+    { status: 'completed', assigneeRef: { agent_id: 'agt_worker' } },
+    { status: 'cancelled', assigneeRef: { agent_id: 'agt_reviewer' } },
+    { status: 'in_progress', assigneeRef: null, assigneeAgentInstanceId: 'inst_live_3' },
+  ];
+  const grouped = activeTasksByRole(tasks, ROLE_MEMBERS);
+  assert.equal((grouped.agt_worker || []).length, 2);
+  assert.equal((grouped.agt_reviewer || []).length, 2);
+});
+
+test('activeTasksByRole counts a task for both its assignee role and its bound instance role', () => {
+  const task = {
+    status: 'in_progress',
+    assigneeRef: { agent_id: 'agt_worker' },
+    assigneeAgentInstanceId: 'inst_live_3',
+  };
+  const grouped = activeTasksByRole([task], ROLE_MEMBERS);
+  assert.deepEqual(grouped.agt_worker, [task]);
+  assert.deepEqual(grouped.agt_reviewer, [task]);
+  assert.deepEqual(activeTasksByRole([], ROLE_MEMBERS), {});
+});
+
+test('providerTierModified compares drafts against the persisted row ("" included)', () => {
+  const rawFleets = [{ agent_id: 'agt_worker', capacity: 1, provider: 'qoder', tier: 'smart' }];
+  assert.equal(providerTierModified(rawFleets, 'agt_worker', { agt_worker: { provider: 'qoder', tier: 'max' } }), true);
+  assert.equal(providerTierModified(rawFleets, 'agt_worker', { agt_worker: { provider: 'claude', tier: 'smart' } }), true);
+  assert.equal(providerTierModified(rawFleets, 'agt_worker', { agt_worker: { provider: 'qoder', tier: 'smart' } }), false);
+  // Clearing back to Auto is still a change: live instances carry the old values.
+  assert.equal(providerTierModified(rawFleets, 'agt_worker', { agt_worker: { provider: '', tier: '' } }), true);
+  // Untouched roles have no draft at all.
+  assert.equal(providerTierModified(rawFleets, 'agt_reviewer', {}), false);
+  // A not-yet-persisted role inherits ''/'' as its original.
+  assert.equal(providerTierModified([], 'agt_worker', { agt_worker: { provider: 'qoder', tier: '' } }), true);
+  assert.equal(providerTierModified([], 'agt_worker', { agt_worker: { provider: '', tier: '' } }), false);
+});
+
+test('restartAffectedEntries: provider/tier change + live instance prompts; capacity-only or zero live does not', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: '', tier: '' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const liveCounts = { agt_worker: 2, agt_reviewer: 0 };
+
+  // Provider change on a role with live instances -> the one role to confirm.
+  const providerDrafts = { agt_worker: { provider: 'qoder', tier: '' } };
+  const providerEntries = changedFleetEntries(rawFleets, { agt_worker: 2, agt_reviewer: 1 }, providerDrafts, rawFleets);
+  assert.deepEqual(restartAffectedEntries(providerEntries, rawFleets, providerDrafts, liveCounts), [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: '' },
+  ]);
+
+  // Same change, zero live instances -> nothing to confirm, direct apply.
+  assert.deepEqual(restartAffectedEntries(providerEntries, rawFleets, providerDrafts, { agt_worker: 0 }), []);
+
+  // Capacity-only change on a role WITH live instances -> never a restart prompt.
+  const capacityEntries = changedFleetEntries(rawFleets, { agt_worker: 5, agt_reviewer: 1 }, {}, rawFleets);
+  assert.deepEqual(capacityEntries, [
+    { agentId: 'agt_worker', capacity: 5, provider: '', tier: '' },
+  ]);
+  assert.deepEqual(restartAffectedEntries(capacityEntries, rawFleets, {}, liveCounts), []);
+
+  // Tier-only change on a live role -> prompt.
+  const tierDrafts = { agt_worker: { provider: '', tier: 'smart' } };
+  const tierEntries = changedFleetEntries(rawFleets, { agt_worker: 2, agt_reviewer: 1 }, tierDrafts, rawFleets);
+  assert.deepEqual(restartAffectedEntries(tierEntries, rawFleets, tierDrafts, liveCounts), [
+    { agentId: 'agt_worker', capacity: 2, provider: '', tier: 'smart' },
+  ]);
+});
+
+test('fleetApplyRequests flags affected roles only; unaffected bodies keep the pre-restart shape', () => {
+  const entries = [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: '' },
+    { agentId: 'agt_reviewer', capacity: 3, provider: 'claude', tier: 'smart' },
+  ];
+  const restartNow = fleetApplyRequests(entries, [entries[0]]);
+  assert.deepEqual(restartNow, [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: '', restartLiveInstances: true },
+    { agentId: 'agt_reviewer', capacity: 3, provider: 'claude', tier: 'smart' },
+  ]);
+  assert.equal('restartLiveInstances' in restartNow[1], false);
+
+  // "Apply to New Instances Only" (no affected roles) -> no flag key anywhere,
+  // i.e. the request objects equal today's payloads.
+  const newInstancesOnly = fleetApplyRequests(entries, []);
+  assert.deepEqual(newInstancesOnly, [
+    { agentId: 'agt_worker', capacity: 2, provider: 'qoder', tier: '' },
+    { agentId: 'agt_reviewer', capacity: 3, provider: 'claude', tier: 'smart' },
+  ]);
+  assert.equal(JSON.stringify(newInstancesOnly).includes('restart'), false);
+  assert.deepEqual(fleetApplyRequests([], []), []);
+});
+
+test('summarizeFleetRestartResults maps per-role restart counts and flattens failures', () => {
+  const summary = summarizeFleetRestartResults([
+    { agentId: 'agt_worker', restarted_instance_ids: ['inst_a', 'inst_b'], restart_failures: [] },
+    {
+      agentId: 'agt_reviewer',
+      restarted_instance_ids: [],
+      restart_failures: [{ instance_id: 'inst_c', message: 'launch failed: model missing' }],
+    },
+  ]);
+  assert.deepEqual(summary.restartedByRole, [
+    { agentId: 'agt_worker', count: 2 },
+    { agentId: 'agt_reviewer', count: 0 },
+  ]);
+  assert.deepEqual(summary.failures, [
+    { instance_id: 'inst_c', message: 'launch failed: model missing' },
+  ]);
+});
+
+test('summarizeFleetRestartResults tolerates flag-less responses and missing fields', () => {
+  const summary = summarizeFleetRestartResults([
+    { agentId: 'agt_worker' },
+    { agentId: 'agt_reviewer', restarted_instance_ids: ['inst_z'] },
+  ]);
+  assert.deepEqual(summary.restartedByRole, [{ agentId: 'agt_reviewer', count: 1 }]);
+  assert.deepEqual(summary.failures, []);
+  assert.deepEqual(summarizeFleetRestartResults([]), {
+    restartedByRole: [],
+    failures: [],
+  });
+});
+
+test('drawer decision end-to-end: only the role with a live instance gets the restart flag', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 1, provider: '', tier: '' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const drafts = {
+    agt_worker: { provider: 'claude', tier: 'smart' },
+    agt_reviewer: { provider: 'claude', tier: 'smart' },
+  };
+  const members = [
+    { agent_id: 'agt_worker', agent_instance_id: 'inst_live_1', runtime_status: 'running' },
+    { agent_id: 'agt_reviewer', agent_instance_id: 'inst_dead_1', runtime_status: 'stopped' },
+  ];
+  const liveByRole = liveInstancesByRole(members);
+  const liveCounts: Record<string, number> = {};
+  for (const [agentId, list] of Object.entries(liveByRole)) liveCounts[agentId] = list.length;
+
+  const entries = changedFleetEntries(
+    rawFleets,
+    { agt_worker: 1, agt_reviewer: 1 },
+    drafts,
+    rawFleets,
+  );
+  const affected = restartAffectedEntries(entries, rawFleets, drafts, liveCounts);
+  assert.deepEqual(affected.map((e) => e.agentId), ['agt_worker']);
+
+  const requests = fleetApplyRequests(entries, affected);
+  assert.deepEqual(
+    requests.map((r) => [r.agentId, r.restartLiveInstances === true]),
+    [
+      ['agt_worker', true],
+      ['agt_reviewer', false],
+    ],
+  );
+});
+
+test('tier options derived from a live bridge payload drive tier selection end-to-end', () => {
+  const livePayload = {
+    bridge_id: 'brg_x',
+    default_provider: 'claude',
+    default_tier: 'normal',
+    providers: [
+      { name: 'claude', enabled: true, models: { flag: '--model', cheap: '', normal: 'claude-sonnet', smart: 'claude-opus' } },
+      { name: 'codex', enabled: true, models: { flag: '', cheap: '', normal: 'gpt-5-codex', smart: '' } },
+    ],
+  };
+  const caps = fleetProviderCapabilities(livePayload);
+  // Provider selected from the live names; tiers follow the selected provider.
+  assert.deepEqual(tierOptionsForProvider(caps, 'claude'), ['normal', 'smart']);
+  assert.deepEqual(tierOptionsForProvider(caps, 'codex'), ['normal']);
+  // A tier from one provider is reset when switching to a provider without it.
+  assert.equal(nextTierOnProviderChange('smart', 'codex', caps), '');
+  assert.equal(nextTierOnProviderChange('normal', 'codex', caps), 'normal');
 });

@@ -166,8 +166,12 @@ Task_Chain_Fleet :: struct {
 	capacity:         int,
 	min_warm:         int,
 	idle_ttl_seconds: int,
-	created_at:       string,
-	updated_at:       string,
+	// provider/tier are the per-role provider selection for JIT-provisioned
+	// instances. "" means inherit the standard resolution order.
+	provider:   string,
+	tier:       string,
+	created_at: string,
+	updated_at: string,
 }
 
 task_status_unblocks_dependents :: proc(status: Task_Status) -> bool {

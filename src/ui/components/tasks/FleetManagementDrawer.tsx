@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
+  Button,
   Icon,
   IconButton,
+  Modal,
+  ModalBody,
+  ModalFooter,
   Select,
-  Spinner,
   StatusDot,
+  Text,
 } from '@ui';
 import {
   useGetTaskChainFleetsQuery,
@@ -13,6 +17,24 @@ import {
   type TaskChainFleet,
 } from '../../api/endpoints/taskChains';
 import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
+import { useListBridgeProvidersQuery } from '../../api/endpoints/bridgeSupport';
+import {
+  activeTasksByRole,
+  changedFleetEntries,
+  fleetApplyRequests,
+  fleetProviderCapabilities,
+  getOriginalFleetCapacity,
+  getOriginalProviderTier,
+  liveInstancesByRole,
+  nextTierOnProviderChange,
+  restartAffectedEntries,
+  seedProviderTierDrafts,
+  summarizeFleetRestartResults,
+  tierOptionsForProvider,
+  type ChangedFleetEntry,
+  type FleetProviderTier,
+  type FleetRestartSummary,
+} from './fleetSelection';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 
 export function formatFleetRoleName(agentId?: string, identities?: any[]): string {
@@ -164,6 +186,14 @@ export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
   );
 };
 
+/** One row of the restart-confirmation modal: the affected role + what to warn about. */
+interface PendingRestartRole extends ChangedFleetEntry {
+  liveCount: number;
+  activeTaskCount: number;
+  originalProvider: string;
+  originalTier: string;
+}
+
 export interface FleetManagementDrawerProps {
   chainId: string;
   isOpen: boolean;
@@ -187,6 +217,18 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
   const members = (chainDetailQuery.data?.chain?.members || []) as any[];
   const tasks = (chainDetailQuery.data?.chain?.tasks || []) as any[];
+  const liveInstancesByRoleMap = useMemo(() => liveInstancesByRole(members), [members]);
+  const activeTasksByRoleMap = useMemo(() => activeTasksByRole(tasks, members), [tasks, members]);
+
+  // Provider/tier options come from the chain's first bridge directory; chains
+  // without a bridge keep the capacity-only drawer.
+  const directories = (chainDetailQuery.data?.chain?.directories || []) as any[];
+  const bridgeId = directories.length > 0 ? String(directories[0]?.bridgeId || '') : '';
+  const providersQuery = useListBridgeProvidersQuery({ bridgeId }, { skip: !bridgeId });
+  const bridgeCapabilities = useMemo(
+    () => fleetProviderCapabilities(providersQuery.data),
+    [providersQuery.data]
+  );
 
   const [updateFleet, { isLoading: isUpdating }] = useUpdateTaskChainFleetMutation();
   const [selectedNewAgentId, setSelectedNewAgentId] = useState('');
@@ -194,22 +236,39 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [isApplying, setIsApplying] = useState(false);
   const [draftCapacities, setDraftCapacities] = useState<Record<string, number>>({});
+  const [draftProviderTiers, setDraftProviderTiers] = useState<Record<string, FleetProviderTier>>({});
+  const [pendingRestart, setPendingRestart] = useState<PendingRestartRole[] | null>(null);
+  const [restartSummary, setRestartSummary] = useState<FleetRestartSummary | null>(null);
 
   const prevIsOpenRef = useRef(false);
+  // True when the current press started on the drawer backdrop itself (see the
+  // backdrop's handlers): a press inside the panel — or on the restart modal's
+  // portal overlay, whose mouseup lands on the backdrop once the modal unmounts —
+  // must not dismiss the drawer.
+  const backdropPressStartedRef = useRef(false);
 
-  // Sync draftCapacities when drawer opens
+  const seedDrafts = useCallback(() => {
+    const init: Record<string, number> = {};
+    for (const f of rawFleets) {
+      init[f.agent_id] = f.capacity ?? 1;
+    }
+    setDraftCapacities(init);
+    setDraftProviderTiers(seedProviderTierDrafts(rawFleets));
+  }, [rawFleets]);
+
+  // Sync drafts when drawer opens
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
-      const init: Record<string, number> = {};
-      for (const f of rawFleets) {
-        init[f.agent_id] = f.capacity ?? 1;
-      }
-      setDraftCapacities(init);
+      seedDrafts();
       setErrorMsg('');
       setSuccessMsg('');
+      setRestartSummary(null);
+      setPendingRestart(null);
+    } else if (!isOpen && prevIsOpenRef.current) {
+      setPendingRestart(null);
     }
     prevIsOpenRef.current = isOpen;
-  }, [isOpen, rawFleets]);
+  }, [isOpen, seedDrafts]);
 
   // Merge configured fleets with standard roles and draft-staged roles
   const fleets = useMemo(() => {
@@ -251,12 +310,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   }, [rawFleets, members, chainId, draftCapacities]);
 
   const getOriginalCapacity = useCallback(
-    (agentId: string) => {
-      const found = rawFleets.find((f) => f.agent_id === agentId);
-      if (found) return found.capacity ?? 1;
-      if (agentId === 'agt_worker' || agentId === 'agt_reviewer') return 1;
-      return null;
-    },
+    (agentId: string) => getOriginalFleetCapacity(rawFleets, agentId),
     [rawFleets]
   );
 
@@ -268,6 +322,33 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     }));
     setErrorMsg('');
     setSuccessMsg('');
+    setRestartSummary(null);
+  }, []);
+
+  const handleDraftProviderChange = useCallback((agentId: string, provider: string) => {
+    setDraftProviderTiers((prev) => {
+      const currentTier = prev[agentId]?.tier ?? '';
+      return {
+        ...prev,
+        [agentId]: {
+          provider,
+          tier: nextTierOnProviderChange(currentTier, provider, bridgeCapabilities),
+        },
+      };
+    });
+    setErrorMsg('');
+    setSuccessMsg('');
+    setRestartSummary(null);
+  }, [bridgeCapabilities]);
+
+  const handleDraftTierChange = useCallback((agentId: string, tier: string) => {
+    setDraftProviderTiers((prev) => ({
+      ...prev,
+      [agentId]: { provider: prev[agentId]?.provider ?? '', tier },
+    }));
+    setErrorMsg('');
+    setSuccessMsg('');
+    setRestartSummary(null);
   }, []);
 
   const handleAddFleet = useCallback((agentId: string) => {
@@ -276,76 +357,134 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       ...prev,
       [agentId]: prev[agentId] ?? 1,
     }));
+    setDraftProviderTiers((prev) => ({
+      ...prev,
+      [agentId]: prev[agentId] ?? { provider: '', tier: '' },
+    }));
     setSelectedNewAgentId('');
     setErrorMsg('');
     setSuccessMsg('');
+    setRestartSummary(null);
   }, []);
 
-  const changedFleets = useMemo(() => {
-    const list: { agentId: string; capacity: number }[] = [];
-    for (const fleet of fleets) {
-      const aid = fleet.agent_id;
-      const draft = draftCapacities[aid];
-      if (draft === undefined) continue;
-      const orig = getOriginalCapacity(aid);
-      if (orig === null || draft !== orig) {
-        list.push({ agentId: aid, capacity: draft });
-      }
-    }
-    return list;
-  }, [fleets, draftCapacities, getOriginalCapacity]);
+  const changedFleets = useMemo(
+    () => changedFleetEntries(fleets, draftCapacities, draftProviderTiers, rawFleets),
+    [fleets, draftCapacities, draftProviderTiers, rawFleets]
+  );
 
   const hasPendingChanges = changedFleets.length > 0;
 
   const handleReset = useCallback(() => {
-    const init: Record<string, number> = {};
-    for (const f of rawFleets) {
-      init[f.agent_id] = f.capacity ?? 1;
-    }
-    setDraftCapacities(init);
+    seedDrafts();
     setErrorMsg('');
     setSuccessMsg('');
-  }, [rawFleets]);
+  }, [seedDrafts]);
 
-  const handleApply = useCallback(async () => {
+  /** PUT every changed role; `restartAffected` roles additionally get the restart flag. */
+  const applyFleetChanges = useCallback(
+    async (restartAffected: ChangedFleetEntry[]) => {
+      if (isUpdating || isApplying) return;
+      setErrorMsg('');
+      setSuccessMsg('');
+      setRestartSummary(null);
+      setIsApplying(true);
+      try {
+        const requests = fleetApplyRequests(changedFleets, restartAffected);
+        const results = await Promise.all(
+          requests.map(async (cf) => {
+            const response = await updateFleet({
+              chainId,
+              agentId: cf.agentId,
+              capacity: cf.capacity,
+              provider: cf.provider,
+              tier: cf.tier,
+              restartLiveInstances: cf.restartLiveInstances,
+            }).unwrap();
+            return {
+              agentId: cf.agentId,
+              restarted_instance_ids: response?.restarted_instance_ids,
+              restart_failures: response?.restart_failures,
+            };
+          })
+        );
+        await refetch();
+        await chainDetailQuery.refetch();
+        setSuccessMsg(
+          `Applied fleet updates for ${changedFleets.length} ${
+            changedFleets.length === 1 ? 'role' : 'roles'
+          }`
+        );
+        const flaggedIds = new Set(restartAffected.map((entry) => entry.agentId));
+        const flaggedResults = results.filter((result) => flaggedIds.has(result.agentId));
+        if (flaggedResults.length > 0) {
+          setRestartSummary(summarizeFleetRestartResults(flaggedResults));
+        }
+      } catch (err: any) {
+        setErrorMsg(
+          String(err?.data?.error?.message || err?.message || 'Failed to update fleet settings')
+        );
+      } finally {
+        setIsApplying(false);
+      }
+    },
+    [isUpdating, isApplying, changedFleets, updateFleet, chainId, refetch, chainDetailQuery]
+  );
+
+  const handleApply = useCallback(() => {
     if (!hasPendingChanges || isUpdating || isApplying) return;
-    setErrorMsg('');
-    setSuccessMsg('');
-    setIsApplying(true);
-    try {
-      await Promise.all(
-        changedFleets.map((cf) =>
-          updateFleet({
-            chainId,
-            agentId: cf.agentId,
-            capacity: cf.capacity,
-          }).unwrap()
-        )
-      );
-      await refetch();
-      await chainDetailQuery.refetch();
-      setSuccessMsg(
-        `Applied capacity updates for ${changedFleets.length} ${
-          changedFleets.length === 1 ? 'role' : 'roles'
-        }`
-      );
-    } catch (err: any) {
-      setErrorMsg(
-        String(err?.data?.error?.message || err?.message || 'Failed to update capacity')
-      );
-    } finally {
-      setIsApplying(false);
+    const liveCounts: Record<string, number> = {};
+    for (const [agentId, list] of Object.entries(liveInstancesByRoleMap)) {
+      liveCounts[agentId] = list.length;
     }
+    const affected = restartAffectedEntries(
+      changedFleets,
+      rawFleets,
+      draftProviderTiers,
+      liveCounts
+    );
+    // No provider/tier change on a role with live instances -> today's silent apply.
+    if (affected.length === 0) {
+      void applyFleetChanges([]);
+      return;
+    }
+    setPendingRestart(
+      affected.map((entry) => {
+        const original = getOriginalProviderTier(rawFleets, entry.agentId);
+        return {
+          ...entry,
+          liveCount: liveCounts[entry.agentId] ?? 0,
+          activeTaskCount: (activeTasksByRoleMap[entry.agentId] || []).length,
+          originalProvider: original.provider,
+          originalTier: original.tier,
+        };
+      })
+    );
   }, [
     hasPendingChanges,
     isUpdating,
     isApplying,
     changedFleets,
-    updateFleet,
-    chainId,
-    refetch,
-    chainDetailQuery,
+    rawFleets,
+    draftProviderTiers,
+    liveInstancesByRoleMap,
+    activeTasksByRoleMap,
+    applyFleetChanges,
   ]);
+
+  const handleConfirmRestartNow = useCallback(() => {
+    const affected = pendingRestart || [];
+    setPendingRestart(null);
+    void applyFleetChanges(affected);
+  }, [pendingRestart, applyFleetChanges]);
+
+  const handleApplyNewInstancesOnly = useCallback(() => {
+    setPendingRestart(null);
+    void applyFleetChanges([]);
+  }, [applyFleetChanges]);
+
+  const handleCancelRestart = useCallback(() => {
+    setPendingRestart(null);
+  }, []);
 
   // Available agent identities not yet in fleets
   const availableIdentitiesToAdd = useMemo(() => {
@@ -361,7 +500,12 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     <div
       data-debug-id="fleet-management-drawer-backdrop"
       className="fixed inset-0 z-50 flex justify-end bg-surface-overlay/80 backdrop-blur-sm transition-opacity"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        backdropPressStartedRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (backdropPressStartedRef.current && e.target === e.currentTarget) onClose();
+      }}
     >
       <div
         data-debug-id="fleet-management-drawer"
@@ -394,7 +538,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
         {/* Drawer Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div className="text-xs text-muted">
-            Configure concurrency limits per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
+            Configure concurrency limits and provider/tier overrides per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
           </div>
 
           <div className="space-y-3">
@@ -403,29 +547,31 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               const roleName = formatFleetRoleName(agentId, agentIdentities);
               const effectiveCapacity = draftCapacities[agentId] ?? fleet.capacity ?? 1;
               const origCapacity = getOriginalCapacity(agentId);
-              const isModified = origCapacity === null || effectiveCapacity !== origCapacity;
               const activeCount = fleet.active_count ?? fleet.activeCount ?? 0;
               const isSaturated = activeCount >= effectiveCapacity;
 
-              // Find live instances for this agentId
-              const liveInstances = members.filter((m) => {
-                const aid = String(m.agent_id || m.agentId || '');
-                const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
-                return aid === agentId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
-              });
+              const origProviderTier = getOriginalProviderTier(rawFleets, agentId);
+              const effectiveProvider = draftProviderTiers[agentId]?.provider ?? fleet.provider ?? '';
+              const effectiveTier = draftProviderTiers[agentId]?.tier ?? fleet.tier ?? '';
+              const capacityModified = origCapacity === null || effectiveCapacity !== origCapacity;
+              const providerModified = effectiveProvider !== origProviderTier.provider;
+              const tierModified = effectiveTier !== origProviderTier.tier;
+              const isModified = capacityModified || providerModified || tierModified;
+              const tierOptions = tierOptionsForProvider(bridgeCapabilities, effectiveProvider);
 
-              // Find active tasks for this agentId
-              const activeTasks = tasks.filter((t) => {
-                const s = String(t.status || '').toLowerCase();
-                if (s !== 'in_progress' && s !== 'in_validation' && s !== 'queued') return false;
-                const assigneeAid = t.assigneeRef?.agent_id || t.assigneeRef?.agentId;
-                if (assigneeAid === agentId) return true;
-                if (t.assigneeAgentInstanceId) {
-                  const m = members.find((mem) => (mem.agentInstanceId || mem.agent_instance_id) === t.assigneeAgentInstanceId);
-                  if (m && (m.agent_id === agentId || m.agentId === agentId)) return true;
-                }
-                return false;
-              });
+              const pendingParts: string[] = [];
+              if (capacityModified) {
+                pendingParts.push(`${origCapacity ?? 0} → ${effectiveCapacity}`);
+              }
+              if (providerModified) {
+                pendingParts.push(`provider ${origProviderTier.provider || 'auto'} → ${effectiveProvider || 'auto'}`);
+              }
+              if (tierModified) {
+                pendingParts.push(`tier ${origProviderTier.tier || 'auto'} → ${effectiveTier || 'auto'}`);
+              }
+
+              const liveInstances = liveInstancesByRoleMap[agentId] || [];
+              const activeTasks = activeTasksByRoleMap[agentId] || [];
 
               return (
                 <div
@@ -455,7 +601,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                               data-debug-id={`fleet-staged-indicator-${agentId}`}
                               className="ml-1.5 rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning"
                             >
-                              Pending: {origCapacity ?? 0} → {effectiveCapacity}
+                              Pending: {pendingParts.join(' · ')}
                             </span>
                           )}
                         </div>
@@ -519,6 +665,53 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                       <span>10 slots</span>
                     </div>
                   </div>
+
+                  {/* Provider & Tier overrides (chains with a bridge directory only) */}
+                  {Boolean(bridgeId) && (
+                    <div
+                      data-debug-id={`fleet-provider-tier-row-${agentId}`}
+                      className="rounded-lg border border-subtle bg-surface p-2.5 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-primary">Provider &amp; Tier</span>
+                        <span className="text-[10px] text-muted">Auto inherits the bridge defaults</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Provider</span>
+                          <Select
+                            data-debug-id={`fleet-provider-select-${agentId}`}
+                            value={effectiveProvider}
+                            onChange={(v) => handleDraftProviderChange(agentId, v)}
+                            disabled={isUpdating || isApplying}
+                            size="sm"
+                            width="full"
+                            aria-label={`Provider for ${roleName}`}
+                            options={[
+                              { value: '', label: 'Auto (inherit)' },
+                              ...bridgeCapabilities.map((cap) => ({ value: cap.provider, label: cap.provider })),
+                            ]}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Tier</span>
+                          <Select
+                            data-debug-id={`fleet-tier-select-${agentId}`}
+                            value={effectiveTier}
+                            onChange={(v) => handleDraftTierChange(agentId, v)}
+                            disabled={effectiveProvider === '' || isUpdating || isApplying}
+                            size="sm"
+                            width="full"
+                            aria-label={`Model tier for ${roleName}`}
+                            options={[
+                              { value: '', label: 'Auto (inherit)' },
+                              ...tierOptions.map((tier) => ({ value: tier, label: tier })),
+                            ]}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Live Instances */}
                   <div className="space-y-1">
@@ -585,6 +778,33 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
 
         {/* Drawer Footer with Batch Apply / Reset */}
         <div className="border-t border-subtle p-3 flex flex-wrap items-center justify-between gap-2.5 bg-canvas/90">
+          {restartSummary &&
+            (restartSummary.restartedByRole.length > 0 || restartSummary.failures.length > 0) && (
+              <div
+                data-debug-id="fleet-restart-summary"
+                role="status"
+                className="w-full space-y-1 rounded-lg border border-subtle bg-surface-secondary/40 px-3 py-2"
+              >
+                {restartSummary.restartedByRole.map((role) => (
+                  <div key={role.agentId} className="flex items-center gap-1.5 text-xs text-success">
+                    <span>✓</span>
+                    <span>
+                      {formatFleetRoleName(role.agentId, agentIdentities)}: restarted {role.count}{' '}
+                      {role.count === 1 ? 'instance' : 'instances'}
+                    </span>
+                  </div>
+                ))}
+                {restartSummary.failures.map((failure, index) => (
+                  <div
+                    key={`${failure.instance_id}-${index}`}
+                    data-debug-id="fleet-restart-failure"
+                    className="text-xs text-warning"
+                  >
+                    {failure.instance_id}: {failure.message}
+                  </div>
+                ))}
+              </div>
+            )}
           <div className="text-xs text-muted">
             {hasPendingChanges ? (
               <span
@@ -640,6 +860,81 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Confirm-before-restart. Opens from Apply (before any PUT) only when a
+            provider/tier edit would leave live instances on the old values. Mounted
+            inside the panel so the drawer's backdrop click handler sees none of the
+            portal's bubbled events; @ui Modal owns Esc / backdrop / focus return
+            (the Apply button is the focus trigger). */}
+        {pendingRestart && (
+          <Modal
+            open
+            onOpenChange={(next) => {
+              if (!next) setPendingRestart(null);
+            }}
+            title="Restart live instances?"
+            size="md"
+            data-debug-id="fleet-restart-confirm-modal"
+          >
+            <ModalBody>
+              <Text role="body">
+                Provider/tier changes only take effect for instances started after the change. These
+                roles currently have live instances running with the old values:
+              </Text>
+              <ul className="mt-3 space-y-2">
+                {pendingRestart.map((role) => {
+                  const roleName = formatFleetRoleName(role.agentId, agentIdentities);
+                  return (
+                    <li
+                      key={role.agentId}
+                      data-debug-id={`fleet-restart-role-${role.agentId}`}
+                      className="space-y-1 rounded-lg border border-subtle bg-surface-secondary/40 p-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-primary">{roleName}</span>
+                        <span className="font-mono text-[11px] text-muted">
+                          {role.liveCount} live {role.liveCount === 1 ? 'instance' : 'instances'} ·{' '}
+                          {role.activeTaskCount} active {role.activeTaskCount === 1 ? 'task' : 'tasks'}
+                        </span>
+                      </div>
+                      <div className="font-mono text-[11px] text-muted">
+                        provider {role.originalProvider || 'auto'} → {role.provider || 'auto'} · tier{' '}
+                        {role.originalTier || 'auto'} → {role.tier || 'auto'}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              <Text role="body-sm" tone="warning" className="mt-3 block">
+                Restarting interrupts in-progress agent runs — the active task count above is the
+                interruption cost. "Apply to New Instances Only" leaves live instances untouched.
+              </Text>
+            </ModalBody>
+            <ModalFooter>
+              <Button
+                variant="secondary"
+                data-debug-id="fleet-restart-cancel-btn"
+                onClick={handleCancelRestart}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                data-debug-id="fleet-restart-new-only-btn"
+                onClick={handleApplyNewInstancesOnly}
+              >
+                Apply to New Instances Only
+              </Button>
+              <Button
+                variant="primary"
+                data-debug-id="fleet-restart-now-btn"
+                onClick={handleConfirmRestartNow}
+              >
+                Apply &amp; Restart Now
+              </Button>
+            </ModalFooter>
+          </Modal>
+        )}
       </div>
     </div>
   );

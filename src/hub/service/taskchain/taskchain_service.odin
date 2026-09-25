@@ -2541,6 +2541,8 @@ Upsert_Fleet_Input :: struct {
 	capacity:         int,
 	min_warm:         int,
 	idle_ttl_seconds: int,
+	provider:         string,
+	tier:             string,
 }
 
 list_fleets :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
@@ -2571,6 +2573,8 @@ upsert_fleet :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		capacity         = capacity,
 		min_warm         = min_warm,
 		idle_ttl_seconds = idle_ttl,
+		provider         = input.provider,
+		tier             = input.tier,
 		created_at       = now,
 		updated_at       = now,
 	}
