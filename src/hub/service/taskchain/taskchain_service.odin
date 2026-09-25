@@ -627,6 +627,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 			return domain.Task{}, false, dep_err
 		}
 	}
+	if ensure_err := ensure_durable_actor_fleets(service, saved_task); ensure_err.code != .None do return domain.Task{}, false, ensure_err
 
 	// NO auto-reconcile on create (setup-phase rule): the coordinator stages the
 	// whole plan, then triggers `reconcile` explicitly. A newly-created task does
@@ -698,6 +699,7 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 			}
 		}
 	}
+	if ensure_err := ensure_durable_actor_fleets(service, saved); ensure_err.code != .None do return domain.Task{}, false, ensure_err
 
 	// NO auto-reconcile on update (assignee/reviewer/priority/dependency edits are
 	// setup-phase changes): the coordinator triggers `reconcile` when the new plan
@@ -2279,6 +2281,50 @@ primary_assignee_agent_id :: proc(assignee_ref_json: string) -> string {
 		search = after_quote
 	}
 	return ""
+}
+
+collect_durable_actor_ids :: proc(ids: ^[dynamic]string, seen: ^map[string]bool, blob: string) {
+	search := 0
+	for search < len(blob) {
+		rel := strings.index(blob[search:], "\"type\"")
+		if rel < 0 do break
+		type_idx := search + rel
+		object_start := type_idx
+		for object_start >= 0 && blob[object_start] != '{' do object_start -= 1
+		object_end_rel := strings.index_byte(blob[type_idx:], '}')
+		if json_string_value_after(blob, type_idx) == "agent_id" && object_start >= 0 && object_end_rel >= 0 {
+			object := blob[object_start : type_idx + object_end_rel + 1]
+			id_idx := strings.index(object, "\"agent_id\"")
+			if id_idx >= 0 {
+				id := json_string_value_after(object, id_idx)
+				if id != "" && !seen[id] {
+					seen[id] = true
+					append(ids, strings.clone(id))
+				}
+			}
+		}
+		search = type_idx + len("\"type\"")
+	}
+}
+
+durable_actor_ids :: proc(task: domain.Task) -> [dynamic]string {
+	ids := make([dynamic]string)
+	seen := make(map[string]bool)
+	defer delete(seen)
+	collect_durable_actor_ids(&ids, &seen, task.assignee_ref_json)
+	collect_durable_actor_ids(&ids, &seen, task.reviewer_refs_json)
+	return ids
+}
+
+ensure_durable_actor_fleets :: proc(service: ^Taskchain_Service, task: domain.Task) -> domain.Domain_Error {
+	ids := durable_actor_ids(task)
+	defer { for id in ids do delete(id); delete(ids) }
+	now := platform.clock_now(service.clock)
+	for agent_id in ids {
+		fleet := domain.Task_Chain_Fleet{task_chain_id = task.chain_id, agent_id = agent_id, capacity = 1, min_warm = 0, idle_ttl_seconds = 600, created_at = now, updated_at = now}
+		if err := iface.taskchain_ensure_fleet(service.repo, fleet); err.code != .None do return err
+	}
+	return domain.Domain_Error{}
 }
 
 extract_agent_ids_from_ref_blob :: proc(blob: string) -> [dynamic]string {

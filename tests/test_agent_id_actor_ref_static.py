@@ -93,4 +93,39 @@ require('Fleet-based task delegation & capacity management' in SKILL_COORD, 'coo
 require('task-chain fleet set' in SKILL_COORD, 'coordinator-task-management must document fleet set command')
 require('task-chain fleet list' in SKILL_COORD, 'coordinator-task-management must document fleet list command')
 
+# --- UI (REQ-AUTO-1 / REQ-AUTO-4): no synthetic Fleet cards, no literal actor defaults ---
+UI_DRAWER = (ROOT / 'src/ui/components/tasks/FleetManagementDrawer.tsx').read_text(encoding='utf-8')
+UI_FLEETSEL = (ROOT / 'src/ui/components/tasks/fleetSelection.ts').read_text(encoding='utf-8')
+UI_CREATE = (ROOT / 'src/ui/components/tasks/CreateTaskModal.tsx').read_text(encoding='utf-8')
+UI_OVERVIEW = (ROOT / 'src/ui/components/taskchain/TaskChainOverview.tsx').read_text(encoding='utf-8')
+
+# The Fleet must render exactly the persisted rows: no synthesized standard
+# Worker/Reviewer cards and no capacity-1 fallback for the old literal IDs.
+require('standardRoles' not in UI_DRAWER, 'Fleet drawer must not synthesize standard worker/reviewer cards')
+require('agt_worker' not in UI_DRAWER and 'agt_reviewer' not in UI_DRAWER,
+        'Fleet drawer must not reference literal agt_worker/agt_reviewer IDs')
+require("if (agentId === 'agt_worker'" not in UI_FLEETSEL,
+        'fleetSelection must not hardcode a capacity-1 fallback for agt_worker/agt_reviewer')
+
+# Task forms must never default to (or fall back to) the literal placeholder
+# role IDs; actors come from the durable identity catalog or stay unassigned.
+for literal in [
+    "useState('agt_worker')",
+    "useState('agt_reviewer')",
+    "setAssigneeAgentId('agt_worker')",
+    "setReviewerAgentId('agt_reviewer')",
+    "setNewTaskAssigneeAgentId('agt_worker')",
+    "setNewTaskAddReviewerAgentId('agt_reviewer')",
+    "{ value: 'agt_worker', label: 'Worker' }",
+    "{ value: 'agt_reviewer', label: 'Reviewer' }",
+]:
+    require(literal not in UI_CREATE, f'CreateTaskModal must not contain {literal}')
+    require(literal not in UI_OVERVIEW, f'TaskChainOverview must not contain {literal}')
+
+# Task create/update must invalidate the Fleet query so an open drawer shows
+# the hub-created capacity-1 row for durable actors without a reload.
+UI_TASKS_API = (ROOT / 'src/ui/api/endpoints/tasks.ts').read_text(encoding='utf-8')
+require(UI_TASKS_API.count('TaskChainFleets') >= 2,
+        'tasks API must invalidate the TaskChainFleets tag on task create and update')
+
 print('AGENT_ID ACTOR REF STATIC TEST PASSED')

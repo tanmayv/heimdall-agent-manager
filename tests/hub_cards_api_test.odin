@@ -29,6 +29,11 @@ extract_json_string :: proc(body, key: string) -> string {
 	return tail[:end_idx]
 }
 
+fleet_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: string) -> (domain.Task_Chain_Fleet, bool) {
+	for fleet in fleets do if fleet.agent_id == agent_id do return fleet, true
+	return domain.Task_Chain_Fleet{}, false
+}
+
 // Create a task in the given chain and drive it to in_validation; returns task_id.
 create_in_validation_task :: proc(router: ^api_http.Router, chain_id, body: string, headers: []contracts.HTTP_Header, tag: string) -> string {
 	resp := api_http.router_dispatch(router, api_http.Request{
@@ -1233,6 +1238,133 @@ main :: proc() {
 	check(strings.contains(curator_tmpl.instructions, "Confidence Calculation Matrix"), "curator instructions must include confidence matrix")
 	check(content_service.template_available(&graph.content, "alice", domain.TEMPLATE_CURATOR_ID), "tmpl_curator must be template_available for alice")
 	check(agent_service.agent_template_available(&graph.agents, "alice", domain.TEMPLATE_CURATOR_ID), "tmpl_curator must be agent_template_available for alice")
+
+	// =========================================================================
+	// 24. REQ-AUTO-2/3: durable task actors ensure Fleet capacity without dispatch
+	// =========================================================================
+	fleet_chain_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/task-chains",
+		body = "{\"title\":\"Fleet Ensure API Chain\"}",
+		request_id = "req_fleet_ensure_chain",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(fleet_chain_resp.status == 201, fmt.tprintf("create Fleet ensure chain failed: %d %s", fleet_chain_resp.status, fleet_chain_resp.body))
+	fleet_chain_id := extract_json_string(fleet_chain_resp.body, "chain_id")
+	fleet_member_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/task-chains/%s/members", fleet_chain_id),
+		body = "{\"agent_instance_id\":\"inst_curator_1\",\"role\":\"worker\"}",
+		request_id = "req_fleet_ensure_member",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(fleet_member_resp.status == 201, fmt.tprintf("add Fleet ensure coordinator failed: %d %s", fleet_member_resp.status, fleet_member_resp.body))
+
+	cookie_task_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks", fleet_chain_id),
+		body = "{\"title\":\"Cookie durable actors\",\"assignee_ref\":{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_reviewer\"},{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},{\"type\":\"user\",\"user_id\":\"alice\"},{\"type\":\"agent_instance\",\"agent_instance_id\":\"inst_curator_1\"}]}",
+		request_id = "req_fleet_cookie_create",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(cookie_task_resp.status == 201, fmt.tprintf("cookie task create failed: %d %s", cookie_task_resp.status, cookie_task_resp.body))
+	cookie_task_id := extract_json_string(cookie_task_resp.body, "task_id")
+	cookie_task, cookie_task_ok, _ := iface.taskchain_get_task(&graph.repos.taskchains, domain.Task_ID(cookie_task_id))
+	check(cookie_task_ok, "cookie task must persist")
+	check(cookie_task.status == .Assigned, "Fleet ensure must not reconcile the created task")
+	check(strings.contains(cookie_task.assignee_ref_json, "agt_cookie_assignee"), "Fleet ensure must retain declarative durable refs")
+
+	cookie_fleets, cookie_fleets_err := iface.taskchain_list_fleets_by_chain(&graph.repos.taskchains, domain.Task_Chain_ID(fleet_chain_id), "alice")
+	check(cookie_fleets_err.code == domain.Error_Code.None, "list cookie Fleet rows failed")
+	check(len(cookie_fleets) == 2, "only the two durable cookie actors must create Fleet rows")
+	cookie_assignee_fleet, cookie_assignee_found := fleet_for_agent(cookie_fleets, "agt_cookie_assignee")
+	cookie_reviewer_fleet, cookie_reviewer_found := fleet_for_agent(cookie_fleets, "agt_cookie_reviewer")
+	check(cookie_assignee_found && cookie_reviewer_found, "cookie durable assignee and reviewer must each have Fleet rows")
+	check(cookie_assignee_fleet.capacity == 1 && cookie_assignee_fleet.min_warm == 0 && cookie_assignee_fleet.idle_ttl_seconds == 600, "ensured cookie assignee must use default Fleet capacity")
+	check(cookie_reviewer_fleet.provider == "" && cookie_reviewer_fleet.tier == "", "ensured cookie reviewer must inherit provider and tier")
+
+	_, configured_cookie_err := iface.taskchain_upsert_fleet(&graph.repos.taskchains, domain.Task_Chain_Fleet{
+		task_chain_id = domain.Task_Chain_ID(fleet_chain_id), agent_id = "agt_cookie_assignee", capacity = 7, min_warm = 3, idle_ttl_seconds = 901, provider = "codex", tier = "max", created_at = "2026-09-25T00:00:00Z", updated_at = "2026-09-25T00:00:00Z",
+	})
+	check(configured_cookie_err.code == domain.Error_Code.None, "preconfigure cookie Fleet row failed")
+	cookie_omit_patch := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", fleet_chain_id, cookie_task_id),
+		body = "{\"title\":\"Cookie durable actors renamed\"}",
+		request_id = "req_fleet_cookie_omit_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(cookie_omit_patch.status == 200, fmt.tprintf("cookie omitted-actor patch failed: %d %s", cookie_omit_patch.status, cookie_omit_patch.body))
+	preserved_cookie_fleets, preserved_cookie_err := iface.taskchain_list_fleets_by_chain(&graph.repos.taskchains, domain.Task_Chain_ID(fleet_chain_id), "alice")
+	check(preserved_cookie_err.code == domain.Error_Code.None, "list preserved cookie Fleet rows failed")
+	preserved_cookie_fleet, preserved_cookie_found := fleet_for_agent(preserved_cookie_fleets, "agt_cookie_assignee")
+	check(preserved_cookie_found, "preconfigured durable assignee Fleet row must remain")
+	check(preserved_cookie_fleet.capacity == 7 && preserved_cookie_fleet.min_warm == 3 && preserved_cookie_fleet.idle_ttl_seconds == 901 && preserved_cookie_fleet.provider == "codex" && preserved_cookie_fleet.tier == "max", "ensure must preserve every configured Fleet field")
+
+	cookie_replace_patch := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", fleet_chain_id, cookie_task_id),
+		body = "{\"assignee_ref\":{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_reassigned\"},\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_reviewer_replacement\"}]}",
+		request_id = "req_fleet_cookie_replace_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(cookie_replace_patch.status == 200, fmt.tprintf("cookie actor replacement failed: %d %s", cookie_replace_patch.status, cookie_replace_patch.body))
+	cookie_replaced_fleets, cookie_replaced_err := iface.taskchain_list_fleets_by_chain(&graph.repos.taskchains, domain.Task_Chain_ID(fleet_chain_id), "alice")
+	check(cookie_replaced_err.code == domain.Error_Code.None, "list replacement cookie Fleet rows failed")
+	check(len(cookie_replaced_fleets) == 4, "reassignment and reviewer replacement must add only new durable Fleet roles")
+	_, cookie_reassigned_found := fleet_for_agent(cookie_replaced_fleets, "agt_cookie_reassigned")
+	_, cookie_replacement_found := fleet_for_agent(cookie_replaced_fleets, "agt_cookie_reviewer_replacement")
+	check(cookie_reassigned_found && cookie_replacement_found, "replacement durable actors must get Fleet rows")
+
+	agent_create_body := strings.concatenate({`{"agent_instance_id":"inst_curator_1","params":{"chain_id":"`, fleet_chain_id, `","title":"Agent durable actors","assignee_ref":{"type":"agent_id","agent_id":"agt_agent_assignee"},"reviewer_refs":[{"type":"agent_id","agent_id":"agt_agent_reviewer"}]}}`})
+	defer delete(agent_create_body)
+	agent_task_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-actions/tasks/create",
+		body = agent_create_body,
+		request_id = "req_fleet_agent_create",
+		remote_addr = "127.0.0.1",
+		headers = agent_headers[:],
+	})
+	check(agent_task_resp.status == 201, fmt.tprintf("agent task create failed: %d %s", agent_task_resp.status, agent_task_resp.body))
+	agent_task_id := extract_json_string(agent_task_resp.body, "task_id")
+	agent_created_fleets, agent_created_err := iface.taskchain_list_fleets_by_chain(&graph.repos.taskchains, domain.Task_Chain_ID(fleet_chain_id), "alice")
+	check(agent_created_err.code == domain.Error_Code.None, "list agent-created Fleet rows failed")
+	_, agent_assignee_found := fleet_for_agent(agent_created_fleets, "agt_agent_assignee")
+	_, agent_reviewer_found := fleet_for_agent(agent_created_fleets, "agt_agent_reviewer")
+	check(agent_assignee_found && agent_reviewer_found, "agent create must persist the same default Fleet rows as cookie create")
+
+	agent_takeover_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", fleet_chain_id, agent_task_id),
+		body = "{\"assignee_ref\":{\"type\":\"agent_instance\",\"agent_instance_id\":\"inst_curator_1\"}}",
+		request_id = "req_fleet_agent_takeover",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(agent_takeover_resp.status == 200, fmt.tprintf("assign agent-action caller failed: %d %s", agent_takeover_resp.status, agent_takeover_resp.body))
+
+	agent_update_body := strings.concatenate({`{"agent_instance_id":"inst_curator_1","params":{"task_id":"`, agent_task_id, `","assignee_ref":{"type":"agent_id","agent_id":"agt_agent_reassigned"},"reviewer_refs":[{"type":"agent_id","agent_id":"agt_agent_reviewer_replacement"}]}}`})
+	defer delete(agent_update_body)
+	agent_update_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-actions/tasks/update",
+		body = agent_update_body,
+		request_id = "req_fleet_agent_update",
+		remote_addr = "127.0.0.1",
+		headers = agent_headers[:],
+	})
+	check(agent_update_resp.status == 200, fmt.tprintf("agent task update failed: %d %s", agent_update_resp.status, agent_update_resp.body))
+	agent_updated_fleets, agent_updated_err := iface.taskchain_list_fleets_by_chain(&graph.repos.taskchains, domain.Task_Chain_ID(fleet_chain_id), "alice")
+	check(agent_updated_err.code == domain.Error_Code.None, "list agent-updated Fleet rows failed")
+	_, agent_reassigned_found := fleet_for_agent(agent_updated_fleets, "agt_agent_reassigned")
+	_, agent_reviewer_replacement_found := fleet_for_agent(agent_updated_fleets, "agt_agent_reviewer_replacement")
+	check(agent_reassigned_found && agent_reviewer_replacement_found, "agent update must ensure replacement durable Fleet roles")
 
 	fmt.println("PASS: hub cards API test (REST + agent-actions)")
 }

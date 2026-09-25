@@ -166,7 +166,53 @@ test_taskchain_fleet_sqlite_lifecycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, f_err3.code, domain.Error_Code.None)
 	testing.expect_value(t, len(fleets3), 0)
 
-	// 7. Delete non-existent fleet returns false
+	// 7. Ensure inserts only a missing default Fleet row.
+	ensured := domain.Task_Chain_Fleet{
+		task_chain_id    = cid,
+		agent_id         = "agt_ensured",
+		capacity         = 1,
+		min_warm         = 0,
+		idle_ttl_seconds = 600,
+		created_at       = "2026-09-23T10:20:00Z",
+		updated_at       = "2026-09-23T10:20:00Z",
+	}
+	ensure_err := iface.taskchain_ensure_fleet(&repo, ensured)
+	testing.expect_value(t, ensure_err.code, domain.Error_Code.None)
+	ensured_rows, ensured_list_err := iface.taskchain_list_fleets_by_chain(&repo, cid, owner)
+	testing.expect_value(t, ensured_list_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(ensured_rows), 1)
+	if len(ensured_rows) == 1 {
+		testing.expect_value(t, ensured_rows[0].capacity, 1)
+		testing.expect_value(t, ensured_rows[0].min_warm, 0)
+		testing.expect_value(t, ensured_rows[0].idle_ttl_seconds, 600)
+		testing.expect_value(t, ensured_rows[0].provider, "")
+		testing.expect_value(t, ensured_rows[0].tier, "")
+	}
+
+	// 8. Ensure preserves an existing configured row, including provider and tier.
+	configured := ensured
+	configured.capacity = 7
+	configured.min_warm = 3
+	configured.idle_ttl_seconds = 901
+	configured.provider = "codex"
+	configured.tier = "max"
+	configured.updated_at = "2026-09-23T10:21:00Z"
+	_, configured_err := iface.taskchain_upsert_fleet(&repo, configured)
+	testing.expect_value(t, configured_err.code, domain.Error_Code.None)
+	reensure_err := iface.taskchain_ensure_fleet(&repo, ensured)
+	testing.expect_value(t, reensure_err.code, domain.Error_Code.None)
+	preserved_rows, preserved_list_err := iface.taskchain_list_fleets_by_chain(&repo, cid, owner)
+	testing.expect_value(t, preserved_list_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(preserved_rows), 1)
+	if len(preserved_rows) == 1 {
+		testing.expect_value(t, preserved_rows[0].capacity, 7)
+		testing.expect_value(t, preserved_rows[0].min_warm, 3)
+		testing.expect_value(t, preserved_rows[0].idle_ttl_seconds, 901)
+		testing.expect_value(t, preserved_rows[0].provider, "codex")
+		testing.expect_value(t, preserved_rows[0].tier, "max")
+	}
+
+	// 9. Delete non-existent fleet returns false
 	del_ok2, del_err2 := iface.taskchain_delete_fleet(&repo, cid, "agt_worker", owner)
 	testing.expect_value(t, del_err2.code, domain.Error_Code.None)
 	testing.expect(t, !del_ok2, "non-existent fleet returns false")

@@ -26,31 +26,30 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [assigneeMode, setAssigneeMode] = useState<'agent' | 'unassigned' | 'user'>('agent');
-  const [assigneeAgentId, setAssigneeAgentId] = useState('agt_worker');
+  // REQ-AUTO-4: no literal placeholder default — the user picks a real durable
+  // identity from the catalog, or the actor stays unassigned.
+  const [assigneeAgentId, setAssigneeAgentId] = useState('');
   const [assigneeUserId, setAssigneeUserId] = useState('');
 
   const [stagedReviewers, setStagedReviewers] = useState<any[]>([]);
   const [reviewerMode, setReviewerMode] = useState<'agent' | 'user'>('agent');
-  const [reviewerAgentId, setReviewerAgentId] = useState('agt_reviewer');
+  const [reviewerAgentId, setReviewerAgentId] = useState('');
   const [reviewerUserId, setReviewerUserId] = useState('');
 
   const [dependsOnIds, setDependsOnIds] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Agent identities options with clean display names (no raw IDs)
+  // Agent identities options with clean display names (no raw IDs). The empty
+  // placeholder is always first so no actor is ever pre-selected: with no
+  // catalog entries the only choice is to leave the field unassigned.
   const agentOptions = useMemo(() => {
-    if (agentIdentities.length > 0) {
-      return agentIdentities.map((a: any) => {
+    return [
+      { value: '', label: 'Select agent identity…' },
+      ...agentIdentities.map((a: any) => {
         const id = String(a.agent_id || a.agentId || a.id || '');
         const displayName = a.name || a.display_name || formatFleetRoleName(id, agentIdentities);
         return { value: id, label: displayName };
-      });
-    }
-    // Fallback standard identities if catalog query is loading or empty
-    return [
-      { value: 'agt_worker', label: 'Worker' },
-      { value: 'agt_reviewer', label: 'Reviewer' },
-      { value: 'agt_coordinator', label: 'Coordinator' },
+      }),
     ];
   }, [agentIdentities]);
 
@@ -129,7 +128,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       setTitle('');
       setDesc('');
       setAssigneeMode('agent');
-      setAssigneeAgentId('agt_worker');
+      setAssigneeAgentId('');
       setStagedReviewers([]);
       setDependsOnIds([]);
       onSuccess?.();

@@ -104,11 +104,10 @@ export function nextTierOnProviderChange(
   return tierOptionsForProvider(capabilities, nextProvider).includes(currentTier) ? currentTier : '';
 }
 
-/** Server/original capacity for a role; null = role not persisted and not a standard role. */
+/** Server/original capacity for a role; null = role not persisted. */
 export function getOriginalFleetCapacity(fleets: any[], agentId: string): number | null {
   const found = (fleets || []).find((f) => fleetAgentId(f) === agentId);
   if (found) return typeof found.capacity === 'number' ? found.capacity : 1;
-  if (agentId === 'agt_worker' || agentId === 'agt_reviewer') return 1;
   return null;
 }
 
@@ -130,8 +129,8 @@ export function changedFleetEntries(
     if (!aid) continue;
     const draftCapacity = draftCapacities[aid];
     const draftPT = draftProviderTiers[aid];
-    // Roles with neither draft are untouched (an unpersisted standard role has
-    // no seeded drafts, so it must stay out until the user stages something).
+    // Roles with neither draft are untouched (a role only appears here when it
+    // is persisted or staged via Add Role, so it always carries drafts).
     if (draftCapacity === undefined && draftPT === undefined) continue;
     const effectiveCapacity =
       draftCapacity !== undefined ? draftCapacity : (typeof fleet.capacity === 'number' ? fleet.capacity : 1);

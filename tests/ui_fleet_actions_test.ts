@@ -1,5 +1,7 @@
 // REQ-FLEET-UI-ACTIONS-1: executable unit tests for role-assigned fleet task action buttons.
 // REQ-FLEET-PT-3: provider/tier selection logic for the Fleet Management drawer.
+// REQ-AUTO-1: no synthetic standard-role Fleet cards or capacity-1 fallback —
+// a role is only a fleet entry when persisted or staged via Add Role.
 //
 // RUN: node --test tests/ui_fleet_actions_test.ts
 
@@ -236,10 +238,15 @@ test('getOriginalProviderTier returns server values for persisted roles and "" f
   assert.deepEqual(getOriginalProviderTier(rawFleets, 'agt_reviewer'), { provider: '', tier: '' });
 });
 
-test('getOriginalFleetCapacity keeps the capacity rule: persisted row, standard role default, null otherwise', () => {
+test('getOriginalFleetCapacity keeps the capacity rule: persisted row or null — no standard-role default', () => {
   const rawFleets = [{ agent_id: 'agt_worker', capacity: 3 }];
   assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_worker'), 3);
-  assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_reviewer'), 1);
+  // REQ-AUTO-1: agt_worker/agt_reviewer are no longer special-cased; an
+  // unpersisted role of any ID reports null so it only reaches Apply when the
+  // user stages it via Add Role.
+  assert.equal(getOriginalFleetCapacity([], 'agt_worker'), null);
+  assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_reviewer'), null);
+  assert.equal(getOriginalFleetCapacity([], 'agt_reviewer'), null);
   assert.equal(getOriginalFleetCapacity(rawFleets, 'agt_other'), null);
 });
 
@@ -293,8 +300,11 @@ test('nextTierOnProviderChange keeps a tier the new provider offers, otherwise r
 });
 
 test('changedFleetEntries includes Apply payload provider/tier for a provider-only change', () => {
-  const rawFleets = [{ agent_id: 'agt_worker', capacity: 2, provider: '', tier: '' }];
-  const fleets = [...rawFleets, { agent_id: 'agt_reviewer', capacity: 1, active_count: 0 }];
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: '', tier: '' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const fleets = [...rawFleets];
   const entries = changedFleetEntries(
     fleets,
     { agt_worker: 2, agt_reviewer: 1 },
@@ -323,34 +333,47 @@ test('changedFleetEntries includes a tier-only change and a capacity+provider ch
   ]);
 });
 
-test('changedFleetEntries detects provider/tier staged on a not-yet-persisted standard role', () => {
-  const fleets = [{ agent_id: 'agt_worker', capacity: 1, active_count: 0 }];
+test('changedFleetEntries detects provider/tier staged on a not-yet-persisted role (Add Role staging)', () => {
+  // A role staged through the drawer Add Role flow carries drafts but no
+  // persisted row: origCapacity is null, so any staged value reaches Apply.
+  const fleets = [{ agent_id: 'agt_custom_dev', capacity: 1, active_count: 0 }];
   const entries = changedFleetEntries(
     fleets,
+    { agt_custom_dev: 1 },
+    { agt_custom_dev: { provider: 'qoder', tier: 'max' } },
+    [],
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_custom_dev', capacity: 1, provider: 'qoder', tier: 'max' },
+  ]);
+  // The same holds for the former standard-role IDs — no special-casing.
+  const standardEntries = changedFleetEntries(
+    [{ agent_id: 'agt_worker', capacity: 1, active_count: 0 }],
     { agt_worker: 1 },
     { agt_worker: { provider: 'qoder', tier: 'max' } },
     [],
   );
-  assert.deepEqual(entries, [
+  assert.deepEqual(standardEntries, [
     { agentId: 'agt_worker', capacity: 1, provider: 'qoder', tier: 'max' },
   ]);
 });
 
-test('changedFleetEntries detects a provider/tier-only change on a role with NO capacity draft (unpersisted standard role)', () => {
-  // Live-found case: server fleets empty, user picks Provider/Tier on the seeded
-  // standard Worker card without ever touching capacity. No capacity draft exists,
-  // so the entry must still reach Apply — the upsert creates the fleet row.
-  const fleets = [{ agent_id: 'agt_worker', capacity: 1, active_count: 0 }];
+test('changedFleetEntries detects a provider/tier-only change on a role with NO capacity draft (staged role)', () => {
+  // Live-found case: the drawer no longer seeds synthetic standard-role cards,
+  // so a role only appears when persisted or Add-Role-staged. Staging always
+  // writes both drafts — but a provider/tier-only draft with no capacity draft
+  // must still reach Apply (the upsert creates the fleet row).
+  const fleets = [{ agent_id: 'agt_custom_dev', capacity: 1, active_count: 0 }];
   const entries = changedFleetEntries(
     fleets,
     {},
-    { agt_worker: { provider: 'claude', tier: 'smart' } },
+    { agt_custom_dev: { provider: 'claude', tier: 'smart' } },
     [],
   );
   assert.deepEqual(entries, [
-    { agentId: 'agt_worker', capacity: 1, provider: 'claude', tier: 'smart' },
+    { agentId: 'agt_custom_dev', capacity: 1, provider: 'claude', tier: 'smart' },
   ]);
-  // Untouched standard roles with neither draft stay out.
+  // Untouched roles with neither draft stay out.
   const untouched = changedFleetEntries(fleets, {}, {}, []);
   assert.deepEqual(untouched, []);
 });
