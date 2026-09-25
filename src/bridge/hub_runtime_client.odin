@@ -1057,7 +1057,9 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// Bootstrap files were already clean-slated + written to run_dir by
 	// bridge_bootstrap_launch_materialize_run_dir in the caller (the bridge is the
 	// sole materializer in the pty-host runtime). Here we only build the agent env.
-	env := bridge_prespawn_env(run_dir, endpoint, agent_token, instance_id)
+	vault_key, _ := bridge_read_vault_key()
+	defer if vault_key != "" do delete(vault_key)
+	env := bridge_prespawn_env(run_dir, endpoint, agent_token, instance_id, vault_key)
 	defer { for e in env do delete(e); delete(env) }
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()

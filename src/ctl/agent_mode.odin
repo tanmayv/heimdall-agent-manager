@@ -51,6 +51,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
 	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	case "issue", "issues": ctl_issues_command(cmd[idx:], args); return
+	case "vault":           ctl_vault_command(cmd[idx:], args); return
 	}
 	print_agent_help(cmd[idx:])
 }

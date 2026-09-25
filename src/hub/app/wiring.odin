@@ -21,6 +21,7 @@ import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
+import user_vault_service "odin_test:hub/service/user_vault"
 import card_service "odin_test:hub/service/card"
 import issue_service "odin_test:hub/service/issue"
 import http "odin_test:hub/transport/http"
@@ -49,10 +50,12 @@ App_Graph :: struct {
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
+	sqlite_user_vaults: sqlite.User_Vault_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
 	users: user_service.User_Service,
+	user_vaults: user_vault_service.User_Vault_Service,
 	bridges: bridge_service.Bridge_Service,
 	agents: agent_service.Agent_Service,
 	projects: project_service.Project_Service,
@@ -65,6 +68,7 @@ App_Graph :: struct {
 	device_auth: device_auth_service.Device_Auth_Service,
 	device_auth_handlers: http.Device_Auth_Handlers,
 	user_handlers: http.User_Handlers,
+	user_vault_handlers: http.User_Vault_Handlers,
 	bridge_handlers: http.Bridge_Handlers,
 	agent_handlers: http.Agent_Handlers,
 	project_handlers: http.Project_Handlers,
@@ -196,8 +200,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
+	graph.repos.user_vaults = sqlite.new_user_vault_repository(&graph.sqlite_user_vaults, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
+	graph.user_vaults = user_vault_service.new_user_vault_service(&graph.repos.user_vaults, &graph.clock)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.bridges = bridge_service.new_bridge_service_with_runtime(&graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	// CT-2 / CT-10: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
@@ -249,6 +255,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// owner and the grant holds the plaintext for the first poll.
 	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
+	graph.user_vault_handlers = http.User_Vault_Handlers{auth = &graph.auth, user_vault = &graph.user_vaults}
 	graph.shell_session_service = shell_session_svc.new_shell_session_service(
 		repo                = &graph.shell_session_repo,
 		bridge_command_sink = bridge_command_sink,
@@ -358,6 +365,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens/*/revoke", rawptr(&graph.user_handlers), http.revoke_my_token_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/experiments", rawptr(&graph.experiment_handlers), http.experiment_list_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/user/vault", rawptr(&graph.user_vault_handlers), http.get_user_vault_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/user/vault", rawptr(&graph.user_vault_handlers), http.set_user_vault_handler)
 	// LSP server config CRUD (REQ-LSP-CFG-1). The /resolve literal route must be
 	// registered before the /* wildcard so first-match-wins selects it correctly.
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/lsp-servers", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_create_handler)

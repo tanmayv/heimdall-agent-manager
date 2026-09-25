@@ -63,6 +63,11 @@ main :: proc() {
 		return
 	}
 
+	if cmd[0] == "vault" {
+		ctl_vault_command(cmd[:], os.args)
+		return
+	}
+
 	if cmd[0] == "setup" || cmd[0] == "doctor" {
 		ctl_setup_command(os.args)
 		return

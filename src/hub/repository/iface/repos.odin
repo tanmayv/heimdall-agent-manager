@@ -14,4 +14,5 @@ Repositories :: struct {
 	cards: Card_Repository,
 	shell_jobs: Shell_Job_Repository,
 	issues: Issue_Repository,
+	user_vaults: User_Vault_Repository,
 }
