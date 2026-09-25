@@ -38,20 +38,25 @@ is_valid_hex_key :: proc(key: string) -> bool {
 // or ~/.config/heimdall/vault_key (strict 0600).
 ctl_read_vault_key :: proc(args: []string = nil, allocator := context.allocator) -> (key_hex: string, ok: bool) {
 	// 1. Check --vault-key command line flag if args passed
-	if args != nil {
-		if flag_val := option_value(args, "--vault-key", ""); flag_val != "" {
-			trimmed := strings.trim_space(flag_val)
-			if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
-				return strings.clone(trimmed, allocator), true
-			}
+	if args != nil && has_flag(args, "--vault-key") {
+		flag_val := option_value(args, "--vault-key", "")
+		trimmed := strings.trim_space(flag_val)
+		if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
+			return strings.clone(trimmed, allocator), true
 		}
+		// Explicit flag provided but invalid hex key: reject immediately, do NOT fall through
+		return "", false
 	}
 
 	// 2. Check environment variable HEIMDALL_VAULT_KEY
 	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEY", context.temp_allocator); found {
 		trimmed := strings.trim_space(env_val)
-		if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
-			return strings.clone(trimmed, allocator), true
+		if trimmed != "" {
+			if len(trimmed) == 64 && is_valid_hex_key(trimmed) {
+				return strings.clone(trimmed, allocator), true
+			}
+			// Explicit env var set but invalid hex key: reject immediately, do NOT fall through
+			return "", false
 		}
 	}
 

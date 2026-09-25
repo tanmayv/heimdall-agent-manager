@@ -47,6 +47,17 @@ test_vault_storage_and_lifecycle :: proc(t: ^testing.T) {
 	testing.expect(t, read_ok, "ctl_read_vault_key must read configured 0600 file")
 	testing.expect_value(t, key_read, test_key)
 
+	// Verify invalid flag does not fall through to configured file
+	args_bad_flag := [?]string{"ham-ctl", "issue", "list", "--vault-key", "invalid_short_hex"}
+	_, bad_flag_ok := ctl_read_vault_key(args_bad_flag[:], context.temp_allocator)
+	testing.expect(t, !bad_flag_ok, "invalid --vault-key flag must not fall through to file")
+
+	// Verify invalid HEIMDALL_VAULT_KEY env does not fall through to configured file
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "invalid_short_hex")
+	_, bad_env_ok := ctl_read_vault_key(nil, context.temp_allocator)
+	testing.expect(t, !bad_env_ok, "invalid HEIMDALL_VAULT_KEY env must not fall through to file")
+	os.unset_env("HEIMDALL_VAULT_KEY")
+
 	// 3. Clear key
 	clear_cmd := [?]string{"vault", "clear"}
 	args_clear := [?]string{"ham-ctl", "vault", "clear"}
