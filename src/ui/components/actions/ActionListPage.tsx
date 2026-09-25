@@ -37,16 +37,12 @@ import {
   EmptyState,
   FilterBar,
   Icon,
-  Input,
   Modal,
   ModalBody,
   ModalFooter,
-  PageShell,
+  ResourceContainer,
+  ResourceSearchFilter,
   Select,
-  Tab,
-  Tabs,
-  TabsList,
-  TabsPanel,
   Text,
   Toast,
   TOUCH_TARGET_CLASS,
@@ -54,9 +50,8 @@ import {
 } from '@ui';
 import ActionRow from './ActionRow';
 import {
-  ActionDetailActions,
   ActionDetailBody,
-  ActionDetailMeta,
+  ActionDetailHeader,
   ActionDetailPaneSkeleton,
   useActionDetail,
   usePaneIsWide,
@@ -528,83 +523,76 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   ].filter(Boolean);
 
   const toolbar = (
-    <div className="flex items-center gap-2" data-debug-id="action-toolbar">
-      <Input
-        type="search"
-        value={queryInput}
-        onChange={setQueryInput}
-        width="full"
-        size={isMobile ? 'md' : 'sm'}
-        leading={<Icon name="search" size="sm" />}
-        placeholder="Search prompts, schedules and targets…"
-        aria-label="Search action prompts, schedules and targets"
-        data-debug-id="action-search-input"
-        ref={searchRef}
-        className={['min-w-0 flex-1', isMobile ? TOUCH_TARGET_CLASS : ''].filter(Boolean).join(' ')}
-      />
-      {urlState.q ? (
-        <ActionButton
-          icon="close"
-          label="Clear"
-          aria-label="Clear search"
-          data-debug-id="action-search-clear"
-          onClick={() => { setQueryInput(''); applyUrlState({ ...urlState, q: '' }); }}
-        />
-      ) : null}
-      <FilterBar
-        active={filtersActive}
-        activeCount={activeFilterCount(urlState)}
-        iconTrigger
-        disabled={searching}
-        disabledTitle="Filters don't apply while you're searching"
-        surface={isMobile ? 'sheet' : 'popover'}
-        note={
-          <>
-            Filters narrow the actions already loaded — this list is not paged, so what
-            you see is everything.
-            {catalogNotes.length ? ` ${catalogNotes.join(' ')}` : ''}
-          </>
-        }
+    <div data-debug-id="action-toolbar">
+      <ResourceSearchFilter
+        searchQuery={queryInput}
+        onSearchChange={setQueryInput}
+        searchPlaceholder="Search prompts, schedules and targets…"
+        searchDebugId="action-search-input"
+        searchClearDebugId="action-search-clear"
+        searchRef={searchRef}
+        activeTab={searching ? '' : tab}
+        onTabChange={(next) => applyUrlState({ ...urlState, tab: next as ActionTab })}
+        tabs={ACTION_TABS.map((entry) => ({
+          value: entry.value,
+          label: entry.label,
+          disabled: searching,
+          debugId: `action-tab-${entry.value}`,
+        }))}
+        tabsLabel="Action schedule"
       >
-        <Select
-          value={urlState.state}
-          onChange={(next) => applyUrlState({ ...urlState, state: next as ActionState | '' })}
-          size="sm"
-          aria-label="Action state"
-          data-debug-id="action-filter-state"
+        <FilterBar
+          active={filtersActive}
+          activeCount={activeFilterCount(urlState)}
+          iconTrigger
+          disabled={searching}
+          disabledTitle="Filters don't apply while you're searching"
+          surface={isMobile ? 'sheet' : 'popover'}
+          note={
+            <>
+              Filters narrow the actions already loaded — this list is not paged, so what
+              you see is everything.
+              {catalogNotes.length ? ` ${catalogNotes.join(' ')}` : ''}
+            </>
+          }
         >
-          <option value="">Any state</option>
-          {STATE_FILTER_OPTIONS.map((entry) => (
-            <option key={entry.value} value={entry.value}>{entry.label}</option>
-          ))}
-        </Select>
-        <Select
-          value={urlState.project}
-          onChange={(next) => applyUrlState({ ...urlState, project: next })}
-          size="sm"
-          aria-label="Project"
-          disabled={projectOptions.length === 0}
-          data-debug-id="action-filter-project"
-        >
-          <option value="">Any project</option>
-          {projectOptions.map((entry) => (
-            <option key={entry.id} value={entry.id}>{entry.label}</option>
-          ))}
-        </Select>
-        <Select
-          value={urlState.bridge}
-          onChange={(next) => applyUrlState({ ...urlState, bridge: next })}
-          size="sm"
-          aria-label="Bridge"
-          disabled={bridgeOptions.length === 0}
-          data-debug-id="action-filter-bridge"
-        >
-          <option value="">Any bridge</option>
-          {bridgeOptions.map((entry) => (
-            <option key={entry.id} value={entry.id}>{entry.label}</option>
-          ))}
-        </Select>
-      </FilterBar>
+          <Select
+            value={urlState.state}
+            onChange={(next) => applyUrlState({ ...urlState, state: next as ActionState | '' })}
+            size="sm"
+            aria-label="Action state"
+            data-debug-id="action-filter-state"
+            options={[
+              { value: '', label: 'Any state' },
+              ...STATE_FILTER_OPTIONS.map((entry) => ({ value: entry.value, label: entry.label })),
+            ]}
+          />
+          <Select
+            value={urlState.project}
+            onChange={(next) => applyUrlState({ ...urlState, project: next })}
+            size="sm"
+            aria-label="Project"
+            disabled={projectOptions.length === 0}
+            data-debug-id="action-filter-project"
+            options={[
+              { value: '', label: 'Any project' },
+              ...projectOptions.map((entry) => ({ value: entry.id, label: entry.label })),
+            ]}
+          />
+          <Select
+            value={urlState.bridge}
+            onChange={(next) => applyUrlState({ ...urlState, bridge: next })}
+            size="sm"
+            aria-label="Bridge"
+            disabled={bridgeOptions.length === 0}
+            data-debug-id="action-filter-bridge"
+            options={[
+              { value: '', label: 'Any bridge' },
+              ...bridgeOptions.map((entry) => ({ value: entry.id, label: entry.label })),
+            ]}
+          />
+        </FilterBar>
+      </ResourceSearchFilter>
     </div>
   );
 
@@ -658,34 +646,12 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
       </div>
     ) : null;
 
-  const tabsBlock = (
-    <Tabs
-      value={searching ? '' : tab}
-      onChange={(next) => applyUrlState({ ...urlState, tab: next as ActionTab })}
-      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
-    >
-      <TabsList label="Action schedule" className="shrink-0">
-        {ACTION_TABS.map((entry) => (
-          <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`action-tab-${entry.value}`}>
-            {entry.label}
-          </Tab>
-        ))}
-      </TabsList>
-      {searching ? null : (
-        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
-          {listSection}
-        </TabsPanel>
-      )}
-    </Tabs>
-  );
-
   const listColumn = (
-    <div data-debug-id="action-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+    <div className="flex w-full min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden">
       <div className="shrink-0">{toolbar}</div>
       {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
-      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
-        {tabsBlock}
-        {searching ? listSection : null}
+      <div className="flex min-w-0 flex-col gap-4 flex-1 min-h-0 overflow-hidden">
+        {listSection}
       </div>
     </div>
   );
@@ -758,72 +724,54 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   const headerDescription =
     'An action is a prompt Heimdall sends to an agent — on a cron schedule, or whenever you run it.';
 
-  /* ---------------- Two-pane ---------------- */
-  if (twoPane) {
-    return (
-      <PageShell
-        width="full"
-        rhythm="banded"
-        title="Actions"
-        breadcrumbs={listCrumbs()}
-        description={headerDescription}
-        className="h-full min-h-0 overflow-hidden"
-        actions={
-          <Button
-            variant="primary"
-            data-debug-id="action-new-btn"
-            leading={<Icon name="plus" size="sm" />}
-            onClick={() => navigateTo(actionNewHref())}
-          >
-            New action
-          </Button>
-        }
-      >
-        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="action-detail-pane">
-            {selectedId ? (
-              <ActionDetailPane actionId={selectedId} onAfterDelete={() => navigateTo(actionListHref(urlState))} />
-            ) : (
-              <div className="flex h-full items-center justify-center p-6">
-                <Text role="body-sm" tone="muted">Select an action to see it here.</Text>
-              </div>
-            )}
-          </div>
-        </div>
-        {overlays}
-      </PageShell>
-    );
-  }
-
   return (
-    <PageShell
-      width={viewport === 'tablet' ? 'content' : 'full'}
-      rhythm="banded"
+    <ResourceContainer
       title="Actions"
-      breadcrumbs={listCrumbs()}
       description={headerDescription}
+      breadcrumbs={listCrumbs()}
       actions={
-        <ActionButton
-          icon="plus"
-          label="New action"
+        <Button
           variant="primary"
-          showIconOnDesktop
           data-debug-id="action-new-btn"
+          leading={<Icon name="plus" size="sm" />}
           onClick={() => navigateTo(actionNewHref())}
-        />
+        >
+          New action
+        </Button>
+      }
+      selectedId={selectedId}
+      detailTitle="Action Details"
+      listDebugId="action-list-page"
+      detailDebugId="action-detail-pane"
+      emptyDetailText="Select an action to see it here."
+      list={listColumn}
+      detail={
+        selectedId ? (
+          <ActionDetailPane
+            actionId={selectedId}
+            onAfterDelete={() => navigateTo(actionListHref(urlState))}
+            onBack={() => navigateTo(actionListHref(urlState))}
+          />
+        ) : null
       }
     >
-      {listColumn}
       {overlays}
-    </PageShell>
+    </ResourceContainer>
   );
 }
 
 /**
  * The right-hand pane of the two-pane layout.
  */
-function ActionDetailPane({ actionId, onAfterDelete }: { actionId: string; onAfterDelete: () => void }) {
+function ActionDetailPane({
+  actionId,
+  onAfterDelete,
+  onBack,
+}: {
+  actionId: string;
+  onAfterDelete: () => void;
+  onBack?: () => void;
+}) {
   const { query, record, busy, actionError, runNotice, runVerb } = useActionDetail(actionId, (verb) => {
     if (verb === 'delete') onAfterDelete();
   });
@@ -843,24 +791,15 @@ function ActionDetailPane({ actionId, onAfterDelete }: { actionId: string; onAft
     );
   }
 
-  const title = actionTitle(record);
-
   return (
     <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
-      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <a
-            href={actionViewHref(record.id)}
-            data-debug-id="action-pane-title"
-            className="block truncate rounded-[var(--radius-sm)] text-page-title text-primary focus-visible:shadow-focus focus-visible:outline-none"
-          >
-            {title}
-          </a>
-          <ActionDetailMeta record={record} />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <ActionDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
-        </div>
+      <div className="mb-3 shrink-0">
+        <ActionDetailHeader
+          record={record}
+          busy={busy}
+          onVerb={(verb) => void runVerb(verb)}
+          onBack={onBack}
+        />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         <ActionDetailBody record={record} actionError={actionError} runNotice={runNotice} wide={wide} />

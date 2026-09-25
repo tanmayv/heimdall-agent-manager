@@ -32,7 +32,8 @@ import {
   IconButton,
   Menu,
   MenuItem,
-  Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   StatusPill,
   Text,
 } from '@ui';
@@ -53,6 +54,7 @@ import {
   actionErrorText,
   actionState,
   actionTitle,
+  actionViewHref,
   isScheduled,
   navigateTo,
   relativeTime,
@@ -235,6 +237,62 @@ export function ActionDetailMeta({ record }: { record: Action }) {
   );
 }
 
+export function ActionDetailHeader({
+  record,
+  busy,
+  onVerb,
+  onBack,
+  alert,
+}: {
+  record: Action;
+  busy: ActionVerb | '';
+  onVerb: (verb: ActionVerb) => void;
+  onBack?: () => void;
+  alert?: React.ReactNode;
+}) {
+  const state = actionState(record);
+  const scheduled = isScheduled(record);
+  const title = actionTitle(record);
+
+  return (
+    <ResourceDetailHeader
+      dataDebugId="action-pane-header"
+      title={
+        <a
+          href={actionViewHref(record.id)}
+          data-debug-id="action-pane-title"
+          className="rounded-[var(--radius-sm)] hover:underline focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          {title}
+        </a>
+      }
+      id={record.id}
+      status={
+        state !== 'active' ? (
+          <StatusPill tone={stateTone(state)} data-debug-id="action-view-state">
+            {stateLabel(state)}
+          </StatusPill>
+        ) : undefined
+      }
+      badges={<Badge data-debug-id="action-view-schedule-pill">{scheduleLabel(record)}</Badge>}
+      timestamp={
+        scheduled ? (
+          <Text as="span" role="body-sm" tone="muted" data-debug-id="action-view-next-run">
+            {record.target_run_at
+              ? `Next run ${absoluteRun(record.target_run_at, record.timezone)}`
+              : 'Next run not computed yet'}
+          </Text>
+        ) : (
+          <Text as="span" role="body-sm" tone="muted">Runs only when you run it</Text>
+        )
+      }
+      alert={alert}
+      onBack={onBack}
+      actions={<ActionDetailActions record={record} busy={busy} onVerb={onVerb} />}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Cards
  * ------------------------------------------------------------------ */
@@ -253,16 +311,14 @@ function Card({
   debugId: string;
 }) {
   return (
-    <Panel data-debug-id={debugId} className="p-4">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title">{title}</Text>
-          {helper ? <Text as="div" role="body-sm" tone="muted" className="ui-measure">{helper}</Text> : null}
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
+    <ResourceSectionCard
+      title={title}
+      subtitle={helper}
+      action={action}
+      dataDebugId={debugId}
+    >
       {children}
-    </Panel>
+    </ResourceSectionCard>
   );
 }
 
@@ -658,4 +714,4 @@ export function ActionDetailPaneSkeleton() {
   );
 }
 
-export { actionTitle };
+export { actionTitle, Card as ActionDetailCard };

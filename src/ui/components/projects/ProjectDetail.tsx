@@ -39,6 +39,8 @@ import {
   Menu,
   MenuItem,
   Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   Spinner,
   StatusPill,
   Text,
@@ -64,6 +66,7 @@ import {
   projectEditHref,
   projectState,
   projectTitle,
+  projectViewHref,
   relativeTime,
   stateLabel,
   stateTone,
@@ -216,6 +219,70 @@ export function ProjectDetailMeta({ record }: { record: ProjectRecord }) {
   );
 }
 
+export function ProjectDetailHeader({
+  record,
+  busy,
+  onVerb,
+  onBack,
+  alert,
+}: {
+  record: ProjectRecord;
+  busy: ProjectVerb | '';
+  onVerb: (verb: ProjectVerb) => void;
+  onBack?: () => void;
+  alert?: React.ReactNode;
+}) {
+  const project = record;
+  const state = projectState(record);
+  const isFig = project.project_type === 'fig';
+  const title = projectTitle(record);
+
+  return (
+    <ResourceDetailHeader
+      dataDebugId="project-pane-header"
+      title={
+        <a
+          href={projectViewHref(record.projectId)}
+          data-debug-id="project-pane-title"
+          className="rounded-[var(--radius-sm)] hover:underline focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          {title}
+        </a>
+      }
+      id={record.projectId}
+      status={
+        state === 'archived' ? (
+          <StatusPill tone={stateTone(state)} data-debug-id="project-view-state">
+            {stateLabel(state)}
+          </StatusPill>
+        ) : undefined
+      }
+      badges={
+        <>
+          {isFig ? (
+            <Badge tone="warning" data-debug-id="project-view-fig-badge">
+              Fig (CitC)
+            </Badge>
+          ) : null}
+          {isFig && project.workspace_name ? (
+            <Text as="span" role="caption" tone="warning" className="font-mono text-warning" data-debug-id="project-view-meta-workspace">
+              {project.workspace_name}
+            </Text>
+          ) : null}
+          {record.vcsKind ? (
+            <Badge data-debug-id="project-view-vcs">{vcsLabel(record.vcsKind)}</Badge>
+          ) : null}
+        </>
+      }
+      timestamp={`Updated ${relativeTime(record.updatedAt)}`}
+      timestampTooltip={absoluteTime(record.updatedAt)}
+      alert={alert}
+      onBack={onBack}
+      actions={<ProjectDetailActions record={record} busy={busy} onVerb={onVerb} />}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Cards
  * ------------------------------------------------------------------ */
@@ -234,18 +301,14 @@ function Card({
   debugId: string;
 }) {
   return (
-    <Panel data-debug-id={debugId} className="p-4">
-      {/* The card's affordance sits INLINE with its label — a separate row costs
-          24px to say nothing. */}
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="title">{title}</Text>
-          {helper ? <Text as="div" role="body-sm" tone="muted" className="ui-measure">{helper}</Text> : null}
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
+    <ResourceSectionCard
+      title={title}
+      subtitle={helper}
+      action={action}
+      dataDebugId={debugId}
+    >
       {children}
-    </Panel>
+    </ResourceSectionCard>
   );
 }
 

@@ -5,10 +5,11 @@ import {
   Badge,
   Button,
   Icon,
-  IconButton,
   Menu,
   MenuItem,
   Panel,
+  ResourceDetailHeader,
+  ResourceSectionCard,
   Select,
   StatusPill,
   Text,
@@ -46,28 +47,6 @@ export interface IssueDetailProps {
   onBack?: () => void;
   onEdit?: (issue: Issue) => void;
   onDelete?: (issue: Issue) => void;
-}
-
-function SectionCard({
-  title,
-  action,
-  children,
-  debugId,
-}: {
-  title: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  debugId: string;
-}) {
-  return (
-    <Panel data-debug-id={debugId} className="p-4 rounded-xl border border-subtle bg-surface">
-      <div className="flex items-center justify-between gap-3 mb-3 border-b border-subtle pb-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted">{title}</h3>
-        {action ? <div>{action}</div> : null}
-      </div>
-      {children}
-    </Panel>
-  );
 }
 
 export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailProps) {
@@ -196,104 +175,93 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
 
   return (
     <div className="flex flex-col h-full overflow-y-auto p-4 sm:p-6 space-y-6" data-debug-id={`issue-detail-${issueId}`}>
-      {/* Mobile back trigger */}
-      {isMobile && onBack ? (
-        <div>
-          <Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5 -ml-2">
-            <Icon name="chevron-left" size={16} />
-            <span>All issues</span>
-          </Button>
-        </div>
-      ) : null}
-
-      {actionError ? (
-        <Alert tone="danger" title="Action Error">
-          {actionError}
-        </Alert>
-      ) : null}
-
       {/* Header section: Title, badges, and primary action controls */}
-      <div className="flex flex-col gap-4 border-b border-subtle pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 mb-2">
-            <StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>
-            <Badge tone={scopeTone(scopeType)}>
-              {scopeLabel(scopeType)}{targetId ? `: ${targetId}` : ''}
-            </Badge>
-            <Text as="span" role="caption" tone="muted" title={absoluteTime(createdAt)}>
-              Reported {relativeTime(createdAt)} {createdBy ? `by ${createdBy}` : ''}
-            </Text>
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-primary break-words">
-            {title}
-          </h1>
-          <p className="text-xs text-muted mt-1 font-mono">{issueId}</p>
-        </div>
-
-        {/* Action cluster: Vote toggle, status dropdown, edit, more actions */}
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
-          {/* Vote Toggle Button */}
-          <Button
-            variant={hasVoted ? 'primary' : 'secondary'}
-            size="sm"
-            onClick={handleVoteToggle}
-            disabled={isVoting || isUnvoting}
-            title={hasVoted ? 'Click to unvote' : 'Click to upvote'}
-            data-debug-id="issue-detail-vote-button"
-            className="gap-2"
-          >
-            <Icon name="arrow-up" size={14} className={hasVoted ? 'text-white' : 'text-accent'} />
-            <span>{hasVoted ? 'Upvoted' : 'Upvote'}</span>
-            <span className="rounded-full bg-neutral-soft px-1.5 py-0.2 text-xs font-mono font-bold">
-              {voteCount}
-            </span>
-          </Button>
-
-          {/* Status Select dropdown */}
-          <div className="w-32">
-            <Select
-              value={status}
-              disabled={isUpdatingStatus}
-              onChange={handleStatusChange}
+      <ResourceDetailHeader
+        dataDebugId={`issue-detail-header-${issueId}`}
+        onBack={isMobile && onBack ? onBack : undefined}
+        backLabel="All issues"
+        alert={
+          actionError ? (
+            <Alert tone="danger" title="Action Error">
+              {actionError}
+            </Alert>
+          ) : null
+        }
+        title={title}
+        id={issueId}
+        status={<StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>}
+        badges={
+          <Badge tone={scopeTone(scopeType)}>
+            {scopeLabel(scopeType)}{targetId ? `: ${targetId}` : ''}
+          </Badge>
+        }
+        timestamp={`Reported ${relativeTime(createdAt)} ${createdBy ? `by ${createdBy}` : ''}`}
+        timestampTooltip={absoluteTime(createdAt)}
+        actions={
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {/* Vote Toggle Button */}
+            <Button
+              variant={hasVoted ? 'primary' : 'secondary'}
               size="sm"
-              aria-label="Change issue status"
-              options={[
-                { value: 'new', label: 'New' },
-                { value: 'fixed', label: 'Fixed' },
-                { value: 'obsolete', label: 'Obsolete' },
-              ]}
-            />
-          </div>
-
-          <Button variant="secondary" size="sm" onClick={handleEdit} data-debug-id="issue-detail-edit-button">
-            <Icon name="pencil" size={14} className="mr-1.5" />
-            <span>Edit</span>
-          </Button>
-
-          <Menu
-            label="More options"
-            align="end"
-            trigger={
-              <ActionButton
-                icon="more-horizontal"
-                label="More"
-                iconOnly
-                aria-label="More options"
-                data-debug-id="issue-detail-more-menu"
-              />
-            }
-          >
-            <MenuItem
-              danger
-              data-debug-id="issue-detail-delete-item"
-              onClick={handleDelete}
-              disabled={isDeleting}
+              onClick={handleVoteToggle}
+              disabled={isVoting || isUnvoting}
+              title={hasVoted ? 'Click to unvote' : 'Click to upvote'}
+              data-debug-id="issue-detail-vote-button"
+              className="gap-2"
             >
-              Delete Issue
-            </MenuItem>
-          </Menu>
-        </div>
-      </div>
+              <Icon name="arrow-up" size={14} className={hasVoted ? 'text-white' : 'text-accent'} />
+              <span>{hasVoted ? 'Upvoted' : 'Upvote'}</span>
+              <span className="rounded-full bg-neutral-soft px-1.5 py-0.2 text-xs font-mono font-bold">
+                {voteCount}
+              </span>
+            </Button>
+
+            {/* Status Select dropdown */}
+            <div className="w-32">
+              <Select
+                value={status}
+                disabled={isUpdatingStatus}
+                onChange={handleStatusChange}
+                size="sm"
+                aria-label="Change issue status"
+                options={[
+                  { value: 'new', label: 'New' },
+                  { value: 'fixed', label: 'Fixed' },
+                  { value: 'obsolete', label: 'Obsolete' },
+                ]}
+              />
+            </div>
+
+            <Button variant="secondary" size="sm" onClick={handleEdit} data-debug-id="issue-detail-edit-button">
+              <Icon name="pencil" size={14} className="mr-1.5" />
+              <span>Edit</span>
+            </Button>
+
+            <Menu
+              label="More options"
+              align="end"
+              trigger={
+                <ActionButton
+                  icon="more-horizontal"
+                  label="More"
+                  iconOnly
+                  aria-label="More options"
+                  data-debug-id="issue-detail-more-menu"
+                />
+              }
+            >
+              <MenuItem
+                danger
+                data-debug-id="issue-detail-delete-item"
+                onClick={handleDelete}
+                disabled={isDeleting}
+              >
+                Delete Issue
+              </MenuItem>
+            </Menu>
+          </div>
+        }
+      />
 
       {/* Task chain context link card (if chain_id is set) */}
       {chainId ? (
@@ -332,7 +300,7 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
       ) : null}
 
       {/* Description Section */}
-      <SectionCard title="Description" debugId="issue-description-card">
+      <ResourceSectionCard title="Description" dataDebugId="issue-description-card">
         {issue.description ? (
           <div className="prose prose-invert max-w-none text-sm text-primary">
             <MarkdownBody source={issue.description} />
@@ -340,10 +308,10 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
         ) : (
           <p className="italic text-muted text-sm">No description provided.</p>
         )}
-      </SectionCard>
+      </ResourceSectionCard>
 
       {/* Metadata / Scope Details */}
-      <SectionCard title="Details & Scope" debugId="issue-metadata-card">
+      <ResourceSectionCard title="Details & Scope" dataDebugId="issue-metadata-card">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
           <div>
             <span className="text-muted block mb-0.5">Scope</span>
@@ -370,12 +338,12 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
             </div>
           ) : null}
         </div>
-      </SectionCard>
+      </ResourceSectionCard>
 
       {/* Threaded Comments Section */}
-      <SectionCard
+      <ResourceSectionCard
         title={`Discussion (${comments.length})`}
-        debugId="issue-comments-section"
+        dataDebugId="issue-comments-section"
       >
         <div className="space-y-4">
           {commentsLoading ? (
@@ -451,7 +419,7 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
             </div>
           </form>
         </div>
-      </SectionCard>
+      </ResourceSectionCard>
     </div>
   );
 }

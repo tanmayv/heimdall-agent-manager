@@ -64,3 +64,25 @@ export type { FilterBarProps } from './FilterBar';
 
 export { Breadcrumbs } from './Breadcrumbs';
 export type { BreadcrumbsProps, Crumb } from './Breadcrumbs';
+
+export { ResourceContainer } from './ResourceContainer';
+export type { ResourceContainerProps } from './ResourceContainer';
+
+export { ResourceSearchFilter, ResourceCounter } from './ResourceSearchFilter';
+export type {
+  ResourceSearchFilterProps,
+  ResourceCounterProps,
+  ResourceFilterSelect,
+  ResourceFilterSelectOption,
+  ResourceTabOption,
+} from './ResourceSearchFilter';
+
+export { ResourceEntryCard } from './ResourceEntryCard';
+export type { ResourceEntryCardProps, ResourceMenuAction } from './ResourceEntryCard';
+
+export { ResourceDetailHeader } from './ResourceDetailHeader';
+export type { ResourceDetailHeaderProps } from './ResourceDetailHeader';
+
+export { ResourceSectionCard } from './ResourceSectionCard';
+export type { ResourceSectionCardProps } from './ResourceSectionCard';
+

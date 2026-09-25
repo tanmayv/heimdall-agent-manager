@@ -18,7 +18,15 @@
  *    and belongs on the view page header only.
  */
 import React from 'react';
-import { ActionButton, Badge, Checkbox, Menu, MenuItem, StatusPill, Text, TOUCH_TARGET_CLASS, useViewport } from '@ui';
+import {
+  Badge,
+  Checkbox,
+  ResourceEntryCard,
+  StatusPill,
+  TOUCH_TARGET_CLASS,
+  useViewport,
+  type ResourceMenuAction,
+} from '@ui';
 import type { AgentRecord } from '../../api/endpoints/agents';
 import {
   VERB_LABEL,
@@ -32,8 +40,6 @@ import {
   verbsForState,
   type AgentVerb,
 } from './agentModel';
-
-const BODY_TWO_LINES = 'calc(2 * var(--text-body-sm-size) * var(--text-body-sm-leading))';
 
 export interface AgentRowProps {
   row: AgentRecord;
@@ -68,127 +74,64 @@ export function AgentRow({
   const title = agentTitle(row);
   const snippet = agentSnippet(row);
 
-  function handleRowClick(e: React.MouseEvent) {
-    if (e.defaultPrevented || e.button !== 0) return;
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    if ((e.target as HTMLElement).closest('[data-row-control]')) return;
-    e.preventDefault();
-    onOpen(row);
-  }
+  const menuActions: ResourceMenuAction[] = menuVerbs.map((verb) => ({
+    label: VERB_LABEL[verb],
+    danger: verb === 'archive',
+    debugId: `agent-row-${verb}-menu-${agentId}`,
+    onClick: () => onVerb(row, verb),
+  }));
 
   return (
-    <li
+    <ResourceEntryCard
+      id={agentId}
       data-agent-row={agentId}
-      data-debug-id={`agent-row-${agentId}`}
-      data-active={active || undefined}
-      className={[
-        'relative flex min-h-[72px] items-start gap-3 border-b border-subtle px-3 py-3 transition-colors duration-fast',
-        active ? 'bg-surface-raised' : 'hover:bg-surface',
-      ].join(' ')}
-      onClick={handleRowClick}
-    >
-      {showCheckbox ? (
-        <span
-          data-row-control
-          className={`flex shrink-0 items-center ${isMobile ? TOUCH_TARGET_CLASS : ''}`}
-        >
-          <Checkbox
-            checked={selected}
-            disabled={!selectable}
-            onChange={onSelectedChange}
-            aria-label={`Select ${title}`}
-          />
-        </span>
-      ) : null}
-
-      <div className="min-w-0 flex-1">
-        {/* ---- row 1: name and overflow trigger ---- */}
-        <div className="flex items-start gap-2">
-          <a
-            href={href}
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-              e.preventDefault();
-              onOpen(row);
-            }}
-            className="min-w-0 flex-1 truncate rounded-[var(--radius-sm)] text-title text-primary focus-visible:shadow-focus focus-visible:outline-none"
+      dataDebugId={`agent-row-${agentId}`}
+      bodyDebugId={`agent-row-body-${agentId}`}
+      timeDebugId={`agent-row-time-${agentId}`}
+      title={title}
+      href={href}
+      active={active}
+      onSelect={() => onOpen(row)}
+      leading={
+        showCheckbox ? (
+          <span
+            data-row-control
+            className={`flex shrink-0 items-center ${isMobile ? TOUCH_TARGET_CLASS : ''}`}
           >
-            {title}
-          </a>
-
-          {menuVerbs.length ? (
-            <span data-row-control className="shrink-0">
-              <Menu
-                label={`Actions for ${title}`}
-                align="end"
-                trigger={
-                  <ActionButton
-                    icon="more-horizontal"
-                    label="More"
-                    iconOnly
-                    aria-label={`Actions for ${title}`}
-                    loading={busy}
-                    data-debug-id={`agent-row-menu-${agentId}`}
-                  />
-                }
-              >
-                {menuVerbs.map((verb) => (
-                  <MenuItem
-                    key={verb}
-                    danger={verb === 'archive'}
-                    data-debug-id={`agent-row-${verb}-menu-${agentId}`}
-                    onClick={() => onVerb(row, verb)}
-                  >
-                    {VERB_LABEL[verb]}
-                  </MenuItem>
-                ))}
-              </Menu>
-            </span>
+            <Checkbox
+              checked={selected}
+              disabled={!selectable}
+              onChange={onSelectedChange}
+              aria-label={`Select ${title}`}
+            />
+          </span>
+        ) : null
+      }
+      snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
+      badges={
+        <>
+          {row.defaultProvider ? (
+            <Badge data-debug-id={`agent-row-provider-${agentId}`}>{row.defaultProvider}</Badge>
           ) : null}
-        </div>
-
-        {/* ---- rows 2-3: instructions, two lines then ellipsis ---- */}
-        <p
-          className="mt-0.5 overflow-hidden text-body-sm text-muted [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
-          style={{ minHeight: BODY_TWO_LINES }}
-          data-debug-id={`agent-row-body-${agentId}`}
-        >
-          {snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
-        </p>
-
-        {/* ---- row 4: pills left, relative time hard right ---- */}
-        <div className="mt-1.5 flex items-end justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            {row.defaultProvider ? (
-              <Badge data-debug-id={`agent-row-provider-${agentId}`}>{row.defaultProvider}</Badge>
-            ) : null}
-            {row.defaultTier ? (
-              <Badge data-debug-id={`agent-row-tier-${agentId}`}>{row.defaultTier}</Badge>
-            ) : null}
-            {row.activeInstanceCount > 0 ? (
-              <StatusPill tone="success" data-debug-id={`agent-row-instances-${agentId}`}>
-                {row.activeInstanceCount} running
-              </StatusPill>
-            ) : null}
-            {state === 'archived' ? (
-              <StatusPill tone={stateTone(state)} data-debug-id={`agent-row-state-${agentId}`}>
-                {stateLabel(state)}
-              </StatusPill>
-            ) : null}
-          </div>
-          <Text
-            as="span"
-            role="caption"
-            tone="muted"
-            className="shrink-0 whitespace-nowrap"
-            title={absoluteTime(row.updatedAt)}
-            data-debug-id={`agent-row-time-${agentId}`}
-          >
-            {relativeTime(row.updatedAt)}
-          </Text>
-        </div>
-      </div>
-    </li>
+          {row.defaultTier ? (
+            <Badge data-debug-id={`agent-row-tier-${agentId}`}>{row.defaultTier}</Badge>
+          ) : null}
+          {row.activeInstanceCount > 0 ? (
+            <StatusPill tone="success" data-debug-id={`agent-row-instances-${agentId}`}>
+              {row.activeInstanceCount} running
+            </StatusPill>
+          ) : null}
+          {state === 'archived' ? (
+            <StatusPill tone={stateTone(state)} data-debug-id={`agent-row-state-${agentId}`}>
+              {stateLabel(state)}
+            </StatusPill>
+          ) : null}
+        </>
+      }
+      timestamp={relativeTime(row.updatedAt)}
+      timestampTooltip={absoluteTime(row.updatedAt)}
+      menuActions={menuActions.length > 0 ? menuActions : undefined}
+    />
   );
 }
 

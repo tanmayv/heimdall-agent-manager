@@ -182,6 +182,12 @@ export type ProjectRecord = {
   defaultPath: string;
   /** `active` | `archived` (`domain.project_state_string`). */
   state: string;
+  project_type?: 'local' | 'fig' | string;
+  workspace_name?: string;
+  relative_path?: string;
+  projectType?: string;
+  workspaceName?: string;
+  relativePath?: string;
   updatedAt: string;
   /** Detail-only: the list endpoint never sends these. */
   bridgePaths: ProjectBridgePath[];
@@ -198,6 +204,9 @@ export type ProjectRecord = {
 export function normalizeProject(raw: any): ProjectRecord {
   const src = raw?.project || raw || {};
   const paths = Array.isArray(src.bridge_paths) ? src.bridge_paths : Array.isArray(raw?.bridge_paths) ? raw.bridge_paths : [];
+  const projectType = String(src.project_type || src.projectType || 'local');
+  const workspaceName = String(src.workspace_name || src.workspaceName || '');
+  const relativePath = String(src.relative_path || src.relativePath || '');
   return {
     projectId: String(src.project_id || src.projectId || ''),
     name: String(src.name || ''),
@@ -207,6 +216,12 @@ export function normalizeProject(raw: any): ProjectRecord {
     vcsKind: String(src.vcs_kind || src.vcsKind || ''),
     defaultPath: String(src.default_path || src.defaultPath || ''),
     state: String(src.state || 'active'),
+    project_type: projectType,
+    workspace_name: workspaceName,
+    relative_path: relativePath,
+    projectType,
+    workspaceName,
+    relativePath,
     updatedAt: String(src.updated_at || src.updatedAt || ''),
     bridgePaths: paths.map((entry: any) => ({
       bridge_id: String(entry?.bridge_id || entry?.bridgeId || ''),

@@ -213,30 +213,32 @@ def test_issue_list_page() -> None:
     src = list_path.read_text(encoding="utf-8")
 
     # Split-pane layout
-    require("twoPane" in src, "IssueListPage must implement twoPane layout")
+    require("twoPane" in src or "ResourceContainer" in src, "IssueListPage must implement twoPane layout or adopt ResourceContainer")
     require("issues-list-column" in src, "IssueListPage must have list column debug id")
     require("issues-detail-pane" in src, "IssueListPage must have detail pane debug id")
 
     # Unboxed list and vertical divider parity with Memory UI
-    require("border-l border-subtle pl-4" in src, "IssueListPage must use border-l border-subtle pl-4 vertical divider for detail pane")
+    require("border-l border-subtle pl-4" in src or "ResourceContainer" in src, "IssueListPage must use border-l border-subtle pl-4 vertical divider for detail pane")
     require("bg-surface rounded-xl border border-subtle" not in src, "IssueListPage must remove card boxes from listColumn and detail pane")
     require("Select an issue to see it here." in src, "IssueListPage must render placeholder text 'Select an issue to see it here.'")
 
     # Filters, tabs, and search
     require("STATUS_FILTERS" in src, "IssueListPage must have STATUS_FILTERS")
     require("issues-filter-status-" in src, "IssueListPage must render status filter buttons")
-    require("<Tabs" in src and "<TabsList" in src and "<Tab" in src, "IssueListPage must use Tabs, TabsList, and Tab for status filter")
+    require(("<Tabs" in src and "<TabsList" in src and "<Tab" in src) or "ResourceSearchFilter" in src, "IssueListPage must use Tabs, TabsList, and Tab or ResourceSearchFilter for status filter")
     require("issues-scope-filter" in src, "IssueListPage must have scope filter Select")
     require("issues-search-input" in src, "IssueListPage must have search input")
-    require('leading={<Icon name="search"' in src, "Search input must have leading search icon")
+    require('leading={<Icon name="search"' in src or "ResourceSearchFilter" in src, "Search input must have leading search icon")
     require("Search issues…" in src or "Search issues..." in src, "Search input must have issues search placeholder")
-    require('width="full"' in src, "Search input must have width='full'")
+    require('width="full"' in src or "ResourceSearchFilter" in src, "Search input must have width='full'")
     require("issues-header-new-btn" in src, "IssueListPage must have header New Issue button")
     require("issues-new-btn" not in src, "IssueListPage must remove duplicate toolbar New Issue button")
 
-    # Uses IssueRow and IssueDetail
+    # Uses IssueRow, IssueDetail, ResourceContainer, and ResourceSearchFilter
     require("IssueRow" in src, "IssueListPage must use IssueRow")
     require("IssueDetail" in src, "IssueListPage must use IssueDetail")
+    require("ResourceContainer" in src, "IssueListPage must adopt ResourceContainer")
+    require("ResourceSearchFilter" in src, "IssueListPage must adopt ResourceSearchFilter")
 
     print("  -> IssueListPage component verified.")
 

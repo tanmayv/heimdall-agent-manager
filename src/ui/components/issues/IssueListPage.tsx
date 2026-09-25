@@ -2,15 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
-  EmptyState,
   Icon,
-  Input,
-  PageShell,
-  Select,
-  Tab,
-  Tabs,
-  TabsList,
-  Text,
+  ResourceContainer,
+  ResourceSearchFilter,
   useViewport,
 } from '@ui';
 import type { Issue } from '../../api/endpoints/issues';
@@ -27,7 +21,6 @@ import {
   issueEditHref,
   issueNewHref,
   issuesListHref,
-  issueStatus,
   issueTitle,
   issueViewHref,
   listCrumbs,
@@ -74,7 +67,7 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
   // Fetch list of issues with reactive filters
-  const { data, isLoading, error, refetch } = useListIssuesQuery({
+  const { data, isLoading, error } = useListIssuesQuery({
     status: statusFilter || undefined,
     scope: scopeFilter || undefined,
     q: searchQuery.trim() || undefined,
@@ -136,59 +129,41 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
     }
   };
 
-  // List column rendered inside split pane or as standalone list
+  // List column rendered inside ResourceContainer
   const listColumn = (
     <div
       data-debug-id="issues-list-column"
       className="flex flex-col h-full min-w-0 overflow-hidden"
     >
-      {/* Search Bar */}
-      <div className="p-2 border-b border-subtle flex items-center gap-2 shrink-0">
-        <Input
-          value={searchQuery}
-          onChange={setSearchQuery}
-          width="full"
-          leading={<Icon name="search" size="sm" />}
-          placeholder="Search issues…"
-          size="sm"
-          data-debug-id="issues-search-input"
-        />
-      </div>
-
-      {/* Filter Row: Status Tabs & Scope Selector */}
-      <div className="flex items-center justify-between border-b border-subtle shrink-0">
-        <Tabs value={statusFilter} onChange={(val) => setStatusFilter(val)}>
-          <TabsList label="Issue status" className="border-b-0">
-            {STATUS_FILTERS.map((tab) => (
-              <Tab
-                key={tab.value}
-                value={tab.value}
-                data-debug-id={`issues-filter-status-${tab.value || 'all'}`}
-              >
-                {tab.label}
-              </Tab>
-            ))}
-          </TabsList>
-        </Tabs>
-
-        {/* Scope selector */}
-        <div className="w-32 shrink-0 py-1 pr-2">
-          <Select
-            value={scopeFilter}
-            onChange={setScopeFilter}
-            size="sm"
-            aria-label="Filter by scope"
-            data-debug-id="issues-scope-filter"
-            options={[
+      {/* Search and Filters via ResourceSearchFilter */}
+      <ResourceSearchFilter
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search issues…"
+        searchDebugId="issues-search-input"
+        activeTab={statusFilter}
+        onTabChange={setStatusFilter}
+        tabs={STATUS_FILTERS.map((tab) => ({
+          value: tab.value,
+          label: tab.label,
+          debugId: `issues-filter-status-${tab.value || 'all'}`,
+        }))}
+        filters={[
+          {
+            value: scopeFilter,
+            onChange: setScopeFilter,
+            options: [
               { value: '', label: 'All Scopes' },
               { value: 'global', label: 'Global' },
               { value: 'project', label: 'Project' },
               { value: 'agent_id', label: 'Agent' },
               { value: 'bridge_id', label: 'Bridge' },
-            ]}
-          />
-        </div>
-      </div>
+            ],
+            ariaLabel: 'Filter by scope',
+            debugId: 'issues-scope-filter',
+          },
+        ]}
+      />
 
       {/* List items */}
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -251,67 +226,11 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
     </div>
   );
 
-  // Single pane layout (Mobile / Tablet)
-  if (!twoPane) {
-    if (selectedId) {
-      return (
-        <PageShell
-          width="full"
-          breadcrumbs={listCrumbs()}
-          title="Issue Details"
-          className="h-full min-h-0 overflow-hidden"
-        >
-          <div className="h-full min-h-0 overflow-hidden">
-            <IssueDetail
-              issueId={selectedId}
-              onBack={() => {
-                setSelectedId('');
-                navigateTo(issuesListHref());
-              }}
-              onEdit={handleEdit}
-              onDelete={() => {
-                setSelectedId('');
-                navigateTo(issuesListHref());
-              }}
-            />
-          </div>
-        </PageShell>
-      );
-    }
-
-    return (
-      <PageShell
-        width="full"
-        rhythm="banded"
-        breadcrumbs={listCrumbs()}
-        title="Issues"
-        description="Track, vote, and comment on blockers and bugs reported across task chains and environments."
-        className="h-full min-h-0 overflow-hidden"
-        actions={
-          <Button
-            variant="primary"
-            data-debug-id="issues-header-new-btn"
-            leading={<Icon name="plus" size="sm" />}
-            onClick={() => navigateTo(issueNewHref())}
-          >
-            New issue
-          </Button>
-        }
-      >
-        <div className="h-full min-h-0 overflow-hidden">{listColumn}</div>
-      </PageShell>
-    );
-  }
-
-  // Two-pane split view (Desktop / Wide)
   return (
-    <PageShell
-      width="full"
-      rhythm="banded"
-      breadcrumbs={listCrumbs()}
+    <ResourceContainer
       title="Issues"
       description="Track, vote, and comment on blockers and bugs reported across task chains and environments."
-      className="h-full min-h-0 overflow-hidden"
+      breadcrumbs={listCrumbs()}
       actions={
         <Button
           variant="primary"
@@ -322,34 +241,31 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
           New issue
         </Button>
       }
-    >
-      <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
-        {/* Left column: List and filters */}
-        <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">
-          {listColumn}
-        </div>
-
-        {/* Right column: Issue detail pane */}
-        <div
-          data-debug-id="issues-detail-pane"
-          className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden"
-        >
-          {selectedId ? (
-            <IssueDetail
-              issueId={selectedId}
-              onEdit={handleEdit}
-              onDelete={() => {
-                setSelectedId('');
-              }}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center p-6">
-              <Text role="body-sm" tone="muted">Select an issue to see it here.</Text>
-            </div>
-          )}
-        </div>
-      </div>
-    </PageShell>
+      selectedId={selectedId}
+      detailTitle="Issue Details"
+      listDebugId="issues-list-column"
+      detailDebugId="issues-detail-pane"
+      emptyDetailText="Select an issue to see it here."
+      list={listColumn}
+      detail={
+        selectedId ? (
+          <IssueDetail
+            issueId={selectedId}
+            onBack={() => {
+              setSelectedId('');
+              navigateTo(issuesListHref());
+            }}
+            onEdit={handleEdit}
+            onDelete={() => {
+              setSelectedId('');
+              if (!twoPane) {
+                navigateTo(issuesListHref());
+              }
+            }}
+          />
+        ) : null
+      }
+    />
   );
 }
 
