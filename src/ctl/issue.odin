@@ -1,33 +1,128 @@
 package main
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import http "odin_test:lib/http_client"
 
-ctl_issue_request :: proc(transport: Ctl_Transport, method, path, body_json: string) {
+ctl_issue_request_local :: proc(transport: Ctl_Transport, method, path, body_json: string) -> (string, bool) {
 	if transport.kind == .User {
 		if transport.user_base_url == "" || transport.user_token == "" {
-			fmt.println(`{"ok":false,"message":"user transport requires --hub-url and --user-token (or HAM_HUB_URL/HEIMDALL_HUB_URL and HAM_HUB_USER_TOKEN/HEIMDALL_USER_TOKEN)"}`)
-			return
+			return `{"ok":false,"message":"user transport requires --hub-url and --user-token (or HAM_HUB_URL/HEIMDALL_HUB_URL and HAM_HUB_USER_TOKEN/HEIMDALL_USER_TOKEN)"}`, false
 		}
-		ctl_hub_request(transport.user_base_url, transport.user_token, method, path, body_json)
-		return
+		full_path := hub_url_path_prefix_join(transport.user_base_url, path)
+		headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", transport.user_token})}}
+		response, ok := http.request_with_headers_timeout(method, transport.user_base_url, full_path, body_json, headers[:], http.DEFAULT_TIMEOUT_MS)
+		if !ok do return `{"ok":false,"message":"Hub request failed"}`, false
+		return response.body, true
 	}
 
 	if transport.kind == .Agent {
 		if transport.agent_endpoint == "" || transport.agent_token == "" {
-			fmt.println(`{"ok":false,"message":"agent transport requires HEIMDALL_BRIDGE_ENDPOINT and HEIMDALL_AGENT_TOKEN (or --bridge-endpoint/--agent-token)"}`)
-			return
+			return `{"ok":false,"message":"agent transport requires HEIMDALL_BRIDGE_ENDPOINT and HEIMDALL_AGENT_TOKEN (or --bridge-endpoint/--agent-token)"}`, false
 		}
 		params := json_object(
 			json_kv("http_method", method),
 			json_kv("path", path),
 			json_kv("body", body_json),
 		)
-		ctl_agent_call(transport.agent_endpoint, transport.agent_token, "agent.rest.request", params)
-		return
+		return ctl_agent_local_call(transport.agent_endpoint, transport.agent_token, "agent.rest.request", params)
+	}
+	return "", false
+}
+
+// Decrypt an armored field if key is configured, or return fallback formatted string:
+// '[Encrypted: vault:v1:...]' if key is unconfigured or decryption fails.
+ctl_decrypt_or_fallback_armored :: proc(val: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	if !is_vault_armored(val) {
+		return strings.clone(val, allocator)
+	}
+	if key_configured {
+		decrypted, ok := vault_decrypt_text_hex(val, key_hex, allocator)
+		if ok {
+			return decrypted
+		}
+	}
+	// Missing key or decryption failure (e.g. truncated preview or tampered): graceful fallback
+	return fmt.aprintf("[Encrypted: %s]", val, allocator = allocator)
+}
+
+Json_Field_Update :: struct {
+	k: string,
+	v: json.Value,
+}
+
+ctl_decrypt_json_value :: proc(v: ^json.Value, key_hex: string, key_configured: bool, allocator := context.allocator) {
+	if v == nil do return
+	#partial switch &val in v^ {
+	case json.Object:
+		updates: [dynamic]Json_Field_Update
+		defer delete(updates)
+		for k, sub_v in val {
+			switch k {
+			case "title", "description", "description_preview", "body":
+				if s, is_str := sub_v.(json.String); is_str {
+					str_val := string(s)
+					if is_vault_armored(str_val) {
+						new_str := ctl_decrypt_or_fallback_armored(str_val, key_hex, key_configured, allocator)
+						append(&updates, Json_Field_Update{k = k, v = json.String(new_str)})
+					}
+				}
+			case:
+				#partial switch _ in sub_v {
+				case json.Object, json.Array:
+					var := sub_v
+					ctl_decrypt_json_value(&var, key_hex, key_configured, allocator)
+					append(&updates, Json_Field_Update{k = k, v = var})
+				}
+			}
+		}
+		for u in updates {
+			val[u.k] = u.v
+		}
+	case json.Array:
+		for i in 0 ..< len(val) {
+			ctl_decrypt_json_value(&val[i], key_hex, key_configured, allocator)
+		}
 	}
 }
+
+ctl_decrypt_issues_json :: proc(raw_json: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	val, err := json.parse_string(raw_json, parse_integers = true, allocator = context.temp_allocator)
+	if err != .None {
+		return strings.clone(raw_json, allocator)
+	}
+
+	ctl_decrypt_json_value(&val, key_hex, key_configured, context.temp_allocator)
+
+	marshaled, marshal_err := json.marshal(val, allocator = allocator)
+	if marshal_err != nil {
+		return strings.clone(raw_json, allocator)
+	}
+
+	return string(marshaled)
+}
+
+ctl_issue_request_and_decrypt :: proc(transport: Ctl_Transport, method, path, body_json: string, args: []string = nil) {
+	resp_str, ok := ctl_issue_request_local(transport, method, path, body_json)
+	if !ok {
+		if resp_str != "" {
+			fmt.println(resp_str)
+		}
+		return
+	}
+
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_issues_json(resp_str, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
+}
+
+ctl_issue_request :: proc(transport: Ctl_Transport, method, path, body_json: string) {
+	ctl_issue_request_and_decrypt(transport, method, path, body_json, nil)
+}
+
 
 print_issues_help :: proc() {
 	fmt.println("ham-ctl issue — manage issues, bugs, and blockers")
@@ -77,7 +172,7 @@ ctl_issues_command :: proc(cmd: []string, args: []string) {
 		if len(query) > 0 {
 			path = fmt.tprintf("/api/v1/issues?%s", strings.join(query[:], "&"))
 		}
-		ctl_issue_request(transport, "GET", path, "")
+		ctl_issue_request_and_decrypt(transport, "GET", path, "", args)
 		return
 	}
 
@@ -92,7 +187,7 @@ ctl_issues_command :: proc(cmd: []string, args: []string) {
 		if vid := option_value(args, "--voter-id", option_value(args, "--voter", "")); vid != "" {
 			path = fmt.tprintf("/api/v1/issues/%s?voter_id=%s", safe_path_part(issue_id), vid)
 		}
-		ctl_issue_request(transport, "GET", path, "")
+		ctl_issue_request_and_decrypt(transport, "GET", path, "", args)
 		return
 	}
 
@@ -102,15 +197,29 @@ ctl_issues_command :: proc(cmd: []string, args: []string) {
 			fmt.println(`{"ok":false,"message":"usage: ham-ctl issue create --title <title> [--description <desc>] [--scope <scope>] [--target-id <id>] [--chain <id>] [--created-by <id>]"}`)
 			return
 		}
+		desc := option_value(args, "--description", option_value(args, "--desc", ""))
+
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if enc_title, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+				title = enc_title
+			}
+			if desc != "" {
+				if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+					desc = enc_desc
+				}
+			}
+		}
+
 		fields := make([dynamic]string)
 		defer delete(fields)
 		append(&fields, json_kv("title", title))
-		if desc := option_value(args, "--description", option_value(args, "--desc", "")); desc != "" do append(&fields, json_kv("description", desc))
+		if desc != "" do append(&fields, json_kv("description", desc))
 		if sc := option_value(args, "--scope", option_value(args, "--scope-type", "")); sc != "" do append(&fields, json_kv("scope_type", sc))
 		if t := option_value(args, "--target-id", option_value(args, "--target", "")); t != "" do append(&fields, json_kv("target_id", t))
 		if cid := option_value(args, "--chain-id", option_value(args, "--chain", "")); cid != "" do append(&fields, json_kv("chain_id", cid))
 		if cb := option_value(args, "--created-by", ""); cb != "" do append(&fields, json_kv("created_by", cb))
-		ctl_issue_request(transport, "POST", "/api/v1/issues", json_object_from_slice(fields[:]))
+		ctl_issue_request_and_decrypt(transport, "POST", "/api/v1/issues", json_object_from_slice(fields[:]), args)
 		return
 	}
 
@@ -121,15 +230,32 @@ ctl_issues_command :: proc(cmd: []string, args: []string) {
 			fmt.println(`{"ok":false,"message":"usage: ham-ctl issue update <issue-id> [--title <title>] [--description <desc>] [--status <new|fixed|obsolete>] [--scope <scope>] [--target-id <id>] [--chain <id>]"}`)
 			return
 		}
+		t := option_value(args, "--title", "")
+		desc := option_value(args, "--description", option_value(args, "--desc", ""))
+
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if t != "" {
+				if enc_t, ok := vault_encrypt_text_hex(t, key_hex, context.temp_allocator); ok {
+					t = enc_t
+				}
+			}
+			if desc != "" {
+				if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+					desc = enc_desc
+				}
+			}
+		}
+
 		fields := make([dynamic]string)
 		defer delete(fields)
-		if t := option_value(args, "--title", ""); t != "" do append(&fields, json_kv("title", t))
-		if desc := option_value(args, "--description", option_value(args, "--desc", "")); desc != "" do append(&fields, json_kv("description", desc))
+		if t != "" do append(&fields, json_kv("title", t))
+		if desc != "" do append(&fields, json_kv("description", desc))
 		if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
 		if sc := option_value(args, "--scope", option_value(args, "--scope-type", "")); sc != "" do append(&fields, json_kv("scope_type", sc))
 		if tid := option_value(args, "--target-id", option_value(args, "--target", "")); tid != "" do append(&fields, json_kv("target_id", tid))
 		if cid := option_value(args, "--chain-id", option_value(args, "--chain", "")); cid != "" do append(&fields, json_kv("chain_id", cid))
-		ctl_issue_request(transport, "PATCH", fmt.tprintf("/api/v1/issues/%s", safe_path_part(issue_id)), json_object_from_slice(fields[:]))
+		ctl_issue_request_and_decrypt(transport, "PATCH", fmt.tprintf("/api/v1/issues/%s", safe_path_part(issue_id)), json_object_from_slice(fields[:]), args)
 		return
 	}
 
@@ -146,19 +272,27 @@ ctl_issues_command :: proc(cmd: []string, args: []string) {
 			if err == nil do body = string(data)
 		}
 		if body == "" && (action == "comments" || pos(cmd, idx + 2) == "list") {
-			ctl_issue_request(transport, "GET", fmt.tprintf("/api/v1/issues/%s/comments", safe_path_part(issue_id)), "")
+			ctl_issue_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/issues/%s/comments", safe_path_part(issue_id)), "", args)
 			return
 		}
 		if body == "" {
 			fmt.println(`{"ok":false,"message":"usage: ham-ctl issue comment <issue-id> --body <body> [--author-id <id>] [--author-name <name>]"}`)
 			return
 		}
+
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if enc_body, ok := vault_encrypt_text_hex(body, key_hex, context.temp_allocator); ok {
+				body = enc_body
+			}
+		}
+
 		fields := make([dynamic]string)
 		defer delete(fields)
 		append(&fields, json_kv("body", body))
 		if aid := option_value(args, "--author-id", option_value(args, "--author", "")); aid != "" do append(&fields, json_kv("author_id", aid))
 		if aname := option_value(args, "--author-name", ""); aname != "" do append(&fields, json_kv("author_name", aname))
-		ctl_issue_request(transport, "POST", fmt.tprintf("/api/v1/issues/%s/comments", safe_path_part(issue_id)), json_object_from_slice(fields[:]))
+		ctl_issue_request_and_decrypt(transport, "POST", fmt.tprintf("/api/v1/issues/%s/comments", safe_path_part(issue_id)), json_object_from_slice(fields[:]), args)
 		return
 	}
 
