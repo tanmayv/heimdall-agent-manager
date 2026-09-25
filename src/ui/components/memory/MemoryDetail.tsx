@@ -41,6 +41,10 @@ import {
 } from '@ui';
 import { ScopeChips, SCOPE_DIMS, targetingFromRecord, useMemoryScopeCatalog } from '@ui';
 import type { ScopeCatalog, ScopeDimKey } from '@ui';
+import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { VaultText } from '../vault/VaultText';
 import MarkdownBody from '../MarkdownBody';
 import {
   memoryErrorText,
@@ -250,7 +254,7 @@ export function MemoryDetailHeader({
   return (
     <ResourceDetailHeader
       dataDebugId="memory-pane-header"
-      title={<span data-debug-id="memory-pane-title">{memoryTitle(record)}</span>}
+      title={<span data-debug-id="memory-pane-title"><VaultText value={record.title || memoryTitle(record)} as="span" /></span>}
       id={String(record.memoryId || '')}
       status={<StatusPill tone={statusTone(status)} data-debug-id="memory-view-status">{statusLabel(status)}</StatusPill>}
       badges={<Badge data-debug-id="memory-view-type">{String(record.type || 'fact')}</Badge>}
@@ -360,9 +364,59 @@ export function MemoryDetailBody({
   wide: boolean;
 }) {
   const catalog = useMemoryScopeCatalog();
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKey = useSelector(selectRawVaultKeyHex);
+
   const memoryId = String(record.memoryId || '');
   const body = String(record.body || '');
   const evidence = String(record.evidence || '');
+
+  const [decryptedBody, setDecryptedBody] = React.useState<string>(body);
+  const [decryptedEvidence, setDecryptedEvidence] = React.useState<string>(evidence);
+
+  React.useEffect(() => {
+    let active = true;
+    if (!body || !isVaultArmored(body)) {
+      setDecryptedBody(body);
+      return;
+    }
+    if (!isVaultUnlocked || !rawKey) {
+      setDecryptedBody('');
+      return;
+    }
+    decryptVaultText(body, rawKey)
+      .then((t) => {
+        if (active) setDecryptedBody(t);
+      })
+      .catch(() => {
+        if (active) setDecryptedBody(body);
+      });
+    return () => {
+      active = false;
+    };
+  }, [body, isVaultUnlocked, rawKey]);
+
+  React.useEffect(() => {
+    let active = true;
+    if (!evidence || !isVaultArmored(evidence)) {
+      setDecryptedEvidence(evidence);
+      return;
+    }
+    if (!isVaultUnlocked || !rawKey) {
+      setDecryptedEvidence('');
+      return;
+    }
+    decryptVaultText(evidence, rawKey)
+      .then((t) => {
+        if (active) setDecryptedEvidence(t);
+      })
+      .catch(() => {
+        if (active) setDecryptedEvidence(evidence);
+      });
+    return () => {
+      active = false;
+    };
+  }, [evidence, isVaultUnlocked, rawKey]);
 
   const main = (
     <>
@@ -370,11 +424,15 @@ export function MemoryDetailBody({
         title="Body"
         helper="The text your agents receive."
         debugId="memory-view-body-card"
-        action={<CopyButton value={body} label="Copy body" debugId="memory-view-copy-body" />}
+        action={<CopyButton value={decryptedBody || body} label="Copy body" debugId="memory-view-copy-body" />}
       >
-        {/* `copyAll={false}`: the card's own copy button sits inline with the label
-            (spec), and two copy affordances on one card is one too many. */}
-        <MarkdownBody source={body} copyAll={false} data-debug-id="memory-view-body" />
+        {isVaultArmored(body) && !isVaultUnlocked ? (
+          <div className="py-2">
+            <VaultText value={body} as="div" />
+          </div>
+        ) : (
+          <MarkdownBody source={decryptedBody || body} copyAll={false} data-debug-id="memory-view-body" />
+        )}
       </Card>
 
       {/* Hidden entirely when empty — an empty bordered card says nothing a reader
@@ -383,18 +441,23 @@ export function MemoryDetailBody({
         <Card
           title="Evidence"
           debugId="memory-view-evidence-card"
-          action={<CopyButton value={evidence} label="Copy evidence" debugId="memory-view-copy-evidence" />}
+          action={<CopyButton value={decryptedEvidence || evidence} label="Copy evidence" debugId="memory-view-copy-evidence" />}
         >
-          {/* Monospace rows, NOT links: `file:line` refs in free text can only be
-              matched heuristically, and a link that goes somewhere wrong is worse
-              than text that is honest about being text (ruling 5). */}
-          <div data-debug-id="memory-view-evidence" className="flex flex-col gap-1 font-mono text-[length:var(--text-code-size)] leading-[var(--text-code-leading)]">
-            {evidence.split('\n').map((line, i) =>
-              line.trim() ? (
-                <div key={i} className="overflow-x-auto whitespace-pre text-primary">{line}</div>
-              ) : null,
-            )}
-          </div>
+          {isVaultArmored(evidence) && !isVaultUnlocked ? (
+            <div className="py-2">
+              <VaultText value={evidence} as="div" />
+            </div>
+          ) : (
+            <div data-debug-id="memory-view-evidence" className="flex flex-col gap-1 font-mono text-[length:var(--text-code-size)] leading-[var(--text-code-leading)]">
+              {(decryptedEvidence || evidence).split('\n').map((line, i) =>
+                line.trim() ? (
+                  <div key={i} className="overflow-x-auto whitespace-pre text-primary">
+                    <VaultText value={line} as="span" />
+                  </div>
+                ) : null,
+              )}
+            </div>
+          )}
         </Card>
       ) : null}
     </>

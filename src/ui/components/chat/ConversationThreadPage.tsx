@@ -32,8 +32,12 @@ import {
   useListBridgesQuery,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
+import { useSelector } from 'react-redux';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
@@ -244,6 +248,40 @@ function PaneCaptureOutput({ body, messageId }: { body: string; messageId: strin
   }, [body, messageId]);
 
   return <pre ref={preRef} data-debug-id={`conversation-pane-capture-pre-${messageId}`} className="chat-scrollbar max-h-[420px] max-w-full overflow-auto whitespace-pre-wrap rounded-xl border border-subtle bg-surface p-3 font-mono text-xs leading-5 text-primary">{body}</pre>;
+}
+
+function ThreadMessageBody({ body }: { body: string }) {
+  const isArmored = isVaultArmored(body);
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decrypted, setDecrypted] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!isArmored) {
+      setDecrypted(body);
+      return;
+    }
+    if (!isUnlocked || !rawKeyHex) {
+      setDecrypted(null);
+      return;
+    }
+    decryptVaultText(body, rawKeyHex)
+      .then((res) => {
+        if (mounted) setDecrypted(res);
+      })
+      .catch(() => {
+        if (mounted) setDecrypted(body);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [body, isArmored, isUnlocked, rawKeyHex]);
+
+  if (isArmored && !isUnlocked) {
+    return <VaultText value={body} as="div" />;
+  }
+  return <Markdown source={decrypted !== null ? decrypted : body} compact copyAll={false} />;
 }
 
 function parseMessageMetadata(message: Message): any {
@@ -1293,7 +1331,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             System
           </div>
           <div className="text-sm text-primary">
-            <Markdown source={message.body} compact copyAll={false} />
+            <ThreadMessageBody body={message.body} />
           </div>
         </div>
       );
@@ -1316,7 +1354,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {triggeredAt ? (
             <div className="mb-2 text-caption text-faint">Ran on schedule: {triggeredAt}</div>
           ) : null}
-          <Markdown source={message.body} compact copyAll={false} />
+          <ThreadMessageBody body={message.body} />
           {message.artifactIds && message.artifactIds.length > 0 && (
             <div className="mt-2 flex max-w-full flex-wrap gap-2">
               {message.artifactIds.map((id) => (
@@ -1329,7 +1367,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     }
     return (
       <div className="flex flex-col gap-1">
-        <Markdown source={message.body} compact copyAll={false} />
+        <ThreadMessageBody body={message.body} />
         {message.artifactIds && message.artifactIds.length > 0 && (
           <div className="mt-2 flex max-w-full flex-wrap gap-2">
             {message.artifactIds.map((id) => (
@@ -2011,7 +2049,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                 <span data-debug-id="conversation-breadcrumb-project" className="truncate text-muted">{projectName || 'Project'}</span>
                 <span className="shrink-0 text-faint">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-primary">{chainTitle || title}</h2>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-primary">
+                  <VaultText value={chainTitle || title} as="span" />
+                </h2>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-danger">{titleError}</div> : null}

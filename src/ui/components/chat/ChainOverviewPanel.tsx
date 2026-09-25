@@ -38,6 +38,7 @@ import {
 import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
+import { VaultText } from '../vault/VaultText';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   readChainOverviewCollapsedState,
@@ -858,7 +859,7 @@ export default function ChainOverviewPanel({
                           </span>
                         </div>
                         <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-2">
-                          {task.title}
+                          <VaultText value={task.title} as="span" />
                         </h4>
                         <div className="mt-1 flex items-center justify-between text-[11px] text-muted">
                           <span className="truncate max-w-[140px]">
@@ -974,7 +975,7 @@ export default function ChainOverviewPanel({
                     </div>
 
                     <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-1">
-                      {task.title}
+                      <VaultText value={task.title} as="span" />
                     </h4>
 
                     <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted">

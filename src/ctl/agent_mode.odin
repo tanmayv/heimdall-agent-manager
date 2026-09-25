@@ -389,14 +389,14 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 	case "", "list":
 		fields := make([dynamic]string)
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		ctl_agent_call(endpoint, token, "agent.task.list", json_object_from_slice(fields[:]))
+		ctl_agent_call_task(endpoint, token, "agent.task.list", json_object_from_slice(fields[:]), args)
 	case "show":
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		fields := make([dynamic]string)
 		append(&fields, json_kv("task_id", tid))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		ctl_agent_call(endpoint, token, "agent.task.show", json_object_from_slice(fields[:]))
+		ctl_agent_call_task(endpoint, token, "agent.task.show", json_object_from_slice(fields[:]), args)
 	case "comments":
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
@@ -404,14 +404,10 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("task_id", tid))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		if v := option_value(args, "--last", ""); v != "" do append(&fields, json_kv("last", v))
-		ctl_agent_call(endpoint, token, "agent.task.comments", json_object_from_slice(fields[:]))
+		ctl_agent_call_task(endpoint, token, "agent.task.comments", json_object_from_slice(fields[:]), args)
 	case "create":
 		title := option_value(args, "--title", "")
 		if title == "" { print_agent_help([]string{"task"}); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("title", title))
-		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
-		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		// REQ-CLI-2: --priority was advertised on create, accepted, and never sent.
 		// Reject a bad value here rather than forwarding it — silently seating an
 		// unrecognised priority at p2 is the defect this fixes, not the fix.
@@ -420,23 +416,16 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 				fmt.printfln("usage: --priority must be one of p0, p1, p2 (got %q)", v)
 				return
 			}
-			append(&fields, json_kv("priority", v))
 		}
-		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
-		// --reviewer accepts a comma-separated list for multiple reviewers.
-		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
-		if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
-		ctl_agent_call(endpoint, token, "agent.task.create", json_object_from_slice(fields[:]))
+		params := ctl_agentmode_task_create_params(args)
+		ctl_agent_call(endpoint, token, "agent.task.create", params)
 	case "comment":
 		tid := pos(tokens, 1)
 		body := option_value(args, "--body", "")
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
 		if tid == "" || body == "" { print_agent_help([]string{"task"}); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("task_id", tid))
-		append(&fields, json_kv("body", body))
-		if notify := option_value(args, "--notify", ""); notify != "" do append(&fields, ctl_v2_json_string_array("notify", notify))
-		ctl_agent_call(endpoint, token, "agent.task.comment", json_object_from_slice(fields[:]))
+		params := ctl_agentmode_task_comment_params(tid, body, args)
+		ctl_agent_call(endpoint, token, "agent.task.comment", params)
 	case "status":
 		tid := pos(tokens, 1)
 		status := option_value(args, "--status", "")
@@ -467,18 +456,8 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		// REPLACE the whole list (pass one value to set a single reviewer/dep).
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("task_id", tid))
-		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
-		if v := option_value(args, "--title", ""); v != "" do append(&fields, json_kv("title", v))
-		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
-		if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
-		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
-		// Presence-checked (not value-checked) so `--reviewer ""` / `--depends-on ""`
-		// can explicitly CLEAR the list; omitting the flag leaves it unchanged.
-		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
-		if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
-		ctl_agent_call(endpoint, token, "agent.task.update", json_object_from_slice(fields[:]))
+		params := ctl_agentmode_task_update_params(tid, args)
+		ctl_agent_call(endpoint, token, "agent.task.update", params)
 	case:
 		print_agent_help([]string{"task"})
 	}
@@ -496,13 +475,15 @@ ctl_v2_chat :: proc(endpoint, token: string, tokens, args: []string) {
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
 		if to == "" || body == "" { print_agent_help([]string{"chat"}); return }
 		// to == "user" or an agent-instance-id; the bridge routes accordingly.
-		ctl_agent_call(endpoint, token, "agent.chat.send", json_object(json_kv("to", to), json_kv("body", body)))
+		params := ctl_agentmode_chat_send_params(to, body, args)
+		ctl_agent_call_task(endpoint, token, "agent.chat.send", params, args)
 	case "set-title":
 		// Rename the agent's OWN bound conversation (the chat thread shown in the
 		// UI top bar). Distinct from `task-chain set-title`, which renames the chain.
 		title := option_value(args, "--title", pos(tokens, 1))
 		if title == "" { print_agent_help([]string{"chat"}); return }
-		ctl_agent_call(endpoint, token, "agent.conversation.set_title", json_object(json_kv("title", title)))
+		params := ctl_agentmode_chat_set_title_params(title, args)
+		ctl_agent_call_task(endpoint, token, "agent.conversation.set_title", params, args)
 	case:
 		print_agent_help([]string{"chat"})
 	}
@@ -651,7 +632,7 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	target := option_value(args, "--agent-instance-id", "")
 	if target != "" do append(&fields, json_kv("target_instance_id", target))
 
-	ctl_agent_call(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]))
+	ctl_agent_call_task(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]), args)
 }
 
 // ctl_agentmode_artifacts_v2 is the v2 artifact dispatch: positional <artifact-id>
@@ -757,17 +738,17 @@ ctl_v2_memory :: proc(endpoint, token: string, tokens, args: []string) {
 	verb := pos(tokens, 0)
 	switch verb {
 	case "", "list":
-		ctl_agent_call(endpoint, token, "agent.memory.list", ctl_agentmode_memory_list_params(args))
+		ctl_agent_memory_call_and_decrypt(endpoint, token, "agent.memory.list", ctl_agentmode_memory_list_params(args), args)
 	case "show":
 		memory_id := pos(tokens, 1)
 		if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
 		if memory_id == "" { print_agent_help([]string{"memory"}); return }
-		ctl_agent_call(endpoint, token, "agent.memory.show", json_object(json_kv("memory_id", memory_id)))
+		ctl_agent_memory_call_and_decrypt(endpoint, token, "agent.memory.show", json_object(json_kv("memory_id", memory_id)), args)
 	case "content", "get", "read":
 		memory_id := pos(tokens, 1)
 		if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
 		if memory_id == "" { print_agent_help([]string{"memory"}); return }
-		ctl_agent_memory_content(endpoint, token, memory_id)
+		ctl_agent_memory_content(endpoint, token, memory_id, args)
 	case "propose", "create":
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
@@ -987,7 +968,24 @@ ctl_agentmode_memory :: proc(endpoint, token: string, tokens, args: []string) {
 	ctl_v2_memory(endpoint, token, tokens, args)
 }
 
-ctl_agent_memory_content :: proc(endpoint, token, memory_id: string) {
+ctl_decrypt_memory_json :: proc(raw_json: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	return ctl_decrypt_issues_json(raw_json, key_hex, key_configured, allocator)
+}
+
+ctl_agent_memory_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(response, `"ok":true`) {
+		fmt.println(response)
+		return
+	}
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_memory_json(response, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
+}
+
+ctl_agent_memory_content :: proc(endpoint, token, memory_id: string, args: []string = nil) {
 	response, ok := ctl_agent_local_call(endpoint, token, "agent.memory.content", json_object(json_kv("memory_id", memory_id)))
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(response, `"ok":true`) {
@@ -995,7 +993,9 @@ ctl_agent_memory_content :: proc(endpoint, token, memory_id: string) {
 		return
 	}
 	content := extract_json_string_unescaped(response, "content", "")
-	fmt.print(content)
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted := ctl_decrypt_or_fallback_armored(content, key_hex, key_ok, context.temp_allocator)
+	fmt.print(decrypted)
 }
 
 ctl_agentmode_memory_list_params :: proc(args: []string) -> string {
@@ -1030,11 +1030,41 @@ ctl_agentmode_memory_list_params :: proc(args: []string) -> string {
 // comma-separated values, plus singular and plural spellings.
 ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	fields := make([dynamic]string)
-	append(&fields, json_kv("type", option_value(args, "--type", "")))
-	append(&fields, json_kv("title", option_value(args, "--title", "")))
-	if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-	append(&fields, json_kv("body", option_value(args, "--body", "")))
-	if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
+	mem_type := option_value(args, "--type", "")
+	title := option_value(args, "--title", "")
+	desc := option_value(args, "--description", "")
+	body := option_value(args, "--body", "")
+	ev := option_value(args, "--evidence", "")
+
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if !is_vault_armored(title) {
+			if enc_title, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+				title = enc_title
+			}
+		}
+		if desc != "" && !is_vault_armored(desc) {
+			if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+				desc = enc_desc
+			}
+		}
+		if body != "" && !is_vault_armored(body) {
+			if enc_body, ok := vault_encrypt_text_hex(body, key_hex, context.temp_allocator); ok {
+				body = enc_body
+			}
+		}
+		if ev != "" && !is_vault_armored(ev) {
+			if enc_ev, ok := vault_encrypt_text_hex(ev, key_hex, context.temp_allocator); ok {
+				ev = enc_ev
+			}
+		}
+	}
+
+	append(&fields, json_kv("type", mem_type))
+	append(&fields, json_kv("title", title))
+	if desc != "" do append(&fields, json_kv("description", desc))
+	append(&fields, json_kv("body", body))
+	if ev != "" do append(&fields, json_kv("evidence", ev))
 
 	agent_ids := collect_multi_values(args, "--agent-id", "--agent-ids", "--agent", "--agents"); defer delete(agent_ids)
 	if len(agent_ids) > 0 do append(&fields, json_string_array_field("agent_ids", agent_ids[:]))
@@ -1048,10 +1078,120 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	return json_object_from_slice(fields[:])
 }
 
+ctl_agentmode_task_create_params :: proc(args: []string) -> string {
+	title := option_value(args, "--title", "")
+	desc := option_value(args, "--description", "")
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if title != "" && !is_vault_armored(title) {
+			if enc, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+				title = enc
+			}
+		}
+		if desc != "" && !is_vault_armored(desc) {
+			if enc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+				desc = enc
+			}
+		}
+	}
+	fields := make([dynamic]string)
+	append(&fields, json_kv("title", title))
+	if desc != "" do append(&fields, json_kv("description", desc))
+	if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+	if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
+	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
+	if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
+	if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_task_comment_params :: proc(tid: string, body: string, args: []string) -> string {
+	comment_body := body
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if comment_body != "" && !is_vault_armored(comment_body) {
+			if enc, ok := vault_encrypt_text_hex(comment_body, key_hex, context.temp_allocator); ok {
+				comment_body = enc
+			}
+		}
+	}
+	fields := make([dynamic]string)
+	append(&fields, json_kv("task_id", tid))
+	append(&fields, json_kv("body", comment_body))
+	if notify := option_value(args, "--notify", ""); notify != "" do append(&fields, ctl_v2_json_string_array("notify", notify))
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string {
+	title := option_value(args, "--title", "")
+	desc := option_value(args, "--description", "")
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if title != "" && !is_vault_armored(title) {
+			if enc, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+				title = enc
+			}
+		}
+		if desc != "" && !is_vault_armored(desc) {
+			if enc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+				desc = enc
+			}
+		}
+	}
+	fields := make([dynamic]string)
+	append(&fields, json_kv("task_id", tid))
+	if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+	if title != "" do append(&fields, json_kv("title", title))
+	if desc != "" do append(&fields, json_kv("description", desc))
+	if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
+	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
+	if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+	if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string) -> string {
+	chat_body := body
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if chat_body != "" && !is_vault_armored(chat_body) {
+			if enc, ok := vault_encrypt_text_hex(chat_body, key_hex, context.temp_allocator); ok {
+				chat_body = enc
+			}
+		}
+	}
+	return json_object(json_kv("to", to), json_kv("body", chat_body))
+}
+
+ctl_agentmode_chat_set_title_params :: proc(title: string, args: []string) -> string {
+	chat_title := title
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if chat_title != "" && !is_vault_armored(chat_title) {
+			if enc, ok := vault_encrypt_text_hex(chat_title, key_hex, context.temp_allocator); ok {
+				chat_title = enc
+			}
+		}
+	}
+	return json_object(json_kv("title", chat_title))
+}
+
 ctl_agent_call :: proc(endpoint, token, method, params_json: string) {
 	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	fmt.println(response)
+}
+
+ctl_agent_call_task :: proc(endpoint, token, method, params_json: string, args: []string = nil) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok {
+		fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`)
+		os.exit(1)
+	}
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_json_string(response, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
 }
 
 // JSONL v1 local endpoint client. Sends one request line, reads one response

@@ -1,4 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSelector } from 'react-redux';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import Markdown from '../Markdown';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { useFetchChainTaskCommentsQuery } from '../../api/endpoints/tasks';
@@ -15,7 +19,7 @@ function artifactIdsFromText(text: string): string[] {
   return Array.from(ids);
 }
 
-interface CommentSummary {
+export interface CommentSummary {
   count: number;
   lastCommentAt: string;
   lastCommentAuthorAgentInstanceId: string;
@@ -68,6 +72,64 @@ const CommentAuthor: React.FC<{ instanceId: string; displayName: string; userId:
   );
 };
 
+export const TaskCommentBody: React.FC<{ body: string; debugId: string }> = ({ body, debugId }) => {
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const isArmored = isVaultArmored(body);
+
+  const [decryptedText, setDecryptedText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!isArmored || !isUnlocked || !rawKeyHex) {
+      setDecryptedText(null);
+      return;
+    }
+    decryptVaultText(body, rawKeyHex)
+      .then((decrypted) => {
+        if (mounted) setDecryptedText(decrypted);
+      })
+      .catch((err) => {
+        if (mounted) {
+          console.error('Failed to decrypt comment body:', err);
+          setDecryptedText(body);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [body, isArmored, isUnlocked, rawKeyHex]);
+
+  if (isArmored && !isUnlocked) {
+    return (
+      <div className="py-1">
+        <VaultText value={body} as="div" />
+      </div>
+    );
+  }
+
+  const displayText = decryptedText ?? body;
+  const artifactIds = artifactIdsFromText(displayText || '');
+
+  return (
+    <>
+      <Markdown source={displayText || ''} compact copyAll={false} data-debug-id={debugId} />
+      {artifactIds.length > 0 ? (
+        <div data-debug-id={`${debugId}-artifacts`} className="mt-2 flex flex-wrap gap-2">
+          {artifactIds.map((artifactId) => (
+            <ArtifactAttachmentPreview
+              key={artifactId}
+              artifactId={artifactId}
+              session={{ daemonUrl: '', clientToken: '' }}
+              debugId={`${debugId}-artifact-${artifactId}`}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+};
+
 /**
  * TaskCommentsThread renders a task's comment thread. The chain/task list ships
  * only a `comment_summary` (count + last comment) to keep payloads small, so the
@@ -100,7 +162,7 @@ export const TaskCommentsThread: React.FC<{
           {isFetching ? 'Loading comments…' : (
             <>
               <span className="font-semibold text-primary">{summary?.lastCommentAuthorAgentInstanceId || 'user'}</span>
-              {summary?.lastCommentPreview ? <>: {summary.lastCommentPreview}</> : null}
+              {summary?.lastCommentPreview ? <>: <VaultText value={summary.lastCommentPreview} as="span" /></> : null}
               {summary?.lastCommentAt ? <span className="ml-1 text-faint">· {summary.lastCommentAt}</span> : null}
             </>
           )}
@@ -126,19 +188,7 @@ export const TaskCommentsThread: React.FC<{
             />:
           </div>
           <div className="mt-1 text-primary">
-            <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
-            {artifactIdsFromText(comment.body || '').length > 0 ? (
-              <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">
-                {artifactIdsFromText(comment.body || '').map((artifactId) => (
-                  <ArtifactAttachmentPreview
-                    key={artifactId}
-                    artifactId={artifactId}
-                    session={{ daemonUrl: '', clientToken: '' }}
-                    debugId={`taskchain-task-comment-artifact-${taskId}-${idx}-${artifactId}`}
-                  />
-                ))}
-              </div>
-            ) : null}
+            <TaskCommentBody body={comment.body || ''} debugId={`taskchain-task-comment-body-${taskId}-${idx}`} />
           </div>
         </div>
       ))}

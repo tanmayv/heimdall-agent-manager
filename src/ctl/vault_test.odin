@@ -5,7 +5,10 @@ import "core:os"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
+import "core:sync"
 import cfg_lib "odin_test:lib/config"
+
+vault_test_mutex: sync.Mutex
 
 @(test)
 test_vault_hex_validation :: proc(t: ^testing.T) {
@@ -19,6 +22,8 @@ test_vault_hex_validation :: proc(t: ^testing.T) {
 
 @(test)
 test_vault_storage_and_lifecycle :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
 	defer delete(path)
