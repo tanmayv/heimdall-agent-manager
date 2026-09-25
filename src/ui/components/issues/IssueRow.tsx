@@ -19,6 +19,7 @@ import {
   statusLabel,
   statusTone,
 } from './issueModel';
+import { VaultText } from '../vault/VaultText';
 
 export interface IssueRowProps {
   issue: Issue | any;
@@ -92,7 +93,7 @@ export function IssueRow({
       dataDebugId={`issue-row-${issueId}`}
       bodyDebugId={`issue-row-body-${issueId}`}
       timeDebugId={`issue-row-time-${issueId}`}
-      title={title}
+      title={<VaultText value={title} as="span" />}
       href={href}
       active={active}
       onSelect={() => onOpen(issue)}
@@ -110,7 +111,13 @@ export function IssueRow({
           </span>
         ) : null
       }
-      snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;no description&gt;</span>}
+      snippet={
+        snippet && snippet.trim() ? (
+          <VaultText value={snippet} as="span" />
+        ) : (
+          <span className="italic text-faint select-none">&lt;no description&gt;</span>
+        )
+      }
       status={<StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>}
       badges={
         <>
