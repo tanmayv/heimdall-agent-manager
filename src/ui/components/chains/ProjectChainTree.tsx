@@ -139,7 +139,7 @@ function ProjectChainGroup({
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[10.5px] font-bold uppercase tracking-[0.14em] text-faint hover:text-primary transition"
         >
           <span className={`shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`}>▾</span>
-          <span className="min-w-0 truncate">{projectName || 'Unnamed project'}</span>
+          <span className="min-w-0 truncate"><VaultText value={projectName} fallback="Unnamed project" /></span>
           {isFetching ? <span className="ml-1 text-[9px] font-normal normal-case tracking-normal">…</span> : null}
         </button>
         <button

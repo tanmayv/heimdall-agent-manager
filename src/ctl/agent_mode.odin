@@ -52,6 +52,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	case "issue", "issues": ctl_issues_command(cmd[idx:], args); return
 	case "vault":           ctl_vault_command(cmd[idx:], args); return
+	case "project", "projects": ctl_projects_command(cmd[idx:], args); return
 	}
 	print_agent_help(cmd[idx:])
 }
@@ -650,45 +651,113 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	ctl_agent_call_task(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]), args)
 }
 
+ctl_agent_artifact_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(response, `"ok":true`) {
+		fmt.println(response)
+		return
+	}
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_json_string(response, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
+}
+
+ctl_agentmode_artifact_create_params :: proc(args: []string) -> string {
+	name := option_value(args, "--name", "")
+	kind := option_value(args, "--kind", "markdown")
+	content := option_value(args, "--content", "")
+	content_base64 := ""
+	if file_path := option_value(args, "--file", ""); file_path != "" {
+		data, err := os.read_entire_file(file_path, context.allocator)
+		if err == nil do content_base64 = base64.encode(data)
+	}
+	if has_flag(args, "--stdin") {
+		data, err := os.read_entire_file("/dev/stdin", context.allocator)
+		if err == nil do content_base64 = base64.encode(data)
+	}
+	desc := option_value(args, "--description", "")
+
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if !is_vault_armored(name) {
+			if enc_name, ok := vault_encrypt_text_hex(name, key_hex, context.temp_allocator); ok {
+				name = enc_name
+			}
+		}
+		if desc != "" && !is_vault_armored(desc) {
+			if enc_desc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+				desc = enc_desc
+			}
+		}
+		if content != "" && !is_vault_armored(content) {
+			if enc_content, ok := vault_encrypt_text_hex(content, key_hex, context.temp_allocator); ok {
+				content = enc_content
+			}
+		} else if content_base64 != "" {
+			raw_bytes, b_err := base64.decode(content_base64, allocator = context.temp_allocator)
+			if b_err == nil {
+				raw_text := string(raw_bytes)
+				if !is_vault_armored(raw_text) {
+					if enc_content, ok := vault_encrypt_text_hex(raw_text, key_hex, context.temp_allocator); ok {
+						content_base64 = base64.encode(transmute([]byte)enc_content, allocator = context.temp_allocator)
+					}
+				}
+			}
+		}
+	}
+
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("name", name))
+	append(&fields, json_kv("kind", kind))
+	if content_base64 != "" {
+		append(&fields, json_kv("content_base64", content_base64))
+	} else {
+		append(&fields, json_kv("content", content))
+	}
+	if ct := option_value(args, "--content-type", ""); ct != "" do append(&fields, json_kv("content_type", ct))
+	if desc != "" do append(&fields, json_kv("description", desc))
+	if p := option_value(args, "--project", option_value(args, "--project-id", "")); p != "" do append(&fields, json_kv("project_id", p))
+	if ai := option_value(args, "--agent-instance", option_value(args, "--agent-instance-id", "")); ai != "" do append(&fields, json_kv("agent_instance_id", ai))
+	if a := option_value(args, "--agent", option_value(args, "--agent-id", "")); a != "" do append(&fields, json_kv("agent_id", a))
+	if t := option_value(args, "--task", option_value(args, "--task-id", "")); t != "" do append(&fields, json_kv("task_id", t))
+	if c := option_value(args, "--chain", option_value(args, "--chain-id", "")); c != "" do append(&fields, json_kv("chain_id", c))
+	return json_object_from_slice(fields[:])
+}
+
 // ctl_agentmode_artifacts_v2 is the v2 artifact dispatch: positional <artifact-id>
 // and the singular `agent.artifact.*` methods.
 ctl_agentmode_artifacts_v2 :: proc(endpoint, token, verb: string, tokens, args: []string) {
 	switch verb {
 	case "", "list":
-		ctl_agent_call(endpoint, token, "agent.artifact.list", ctl_agentmode_artifact_list_params(args))
+		ctl_agent_artifact_call_and_decrypt(endpoint, token, "agent.artifact.list", ctl_agentmode_artifact_list_params(args), args)
 	case "create":
 		name := option_value(args, "--name", "")
-		kind := option_value(args, "--kind", "markdown")
 		if name == "" { print_agent_help([]string{"artifact"}); return }
-		content := option_value(args, "--content", "")
-		content_base64 := ""
-		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content_base64 = base64.encode(data) }
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content_base64 = base64.encode(data) }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", kind))
-		if content_base64 != "" { append(&fields, json_kv("content_base64", content_base64)) } else { append(&fields, json_kv("content", content)) }
-		if ct := option_value(args, "--content-type", ""); ct != "" do append(&fields, json_kv("content_type", ct))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		ctl_agent_call(endpoint, token, "agent.artifact.create", json_object_from_slice(fields[:]))
+		params := ctl_agentmode_artifact_create_params(args)
+		ctl_agent_call(endpoint, token, "agent.artifact.create", params)
 	case "show":
 		artifact_id := pos(tokens, 1)
 		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
 		fields := make([dynamic]string)
+		defer delete(fields)
 		append(&fields, json_kv("artifact_id", artifact_id))
 		if has_flag(args, "--with-content") do append(&fields, json_kv_raw("with_content", "true"))
-		ctl_agent_call(endpoint, token, "agent.artifact.show", json_object_from_slice(fields[:]))
+		ctl_agent_artifact_call_and_decrypt(endpoint, token, "agent.artifact.show", json_object_from_slice(fields[:]), args)
 	case "content", "get", "read":
 		artifact_id := pos(tokens, 1)
 		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
-		ctl_agent_artifact_content(endpoint, token, artifact_id)
+		ctl_agent_artifact_content(endpoint, token, artifact_id, args)
 	case "download":
 		artifact_id := pos(tokens, 1)
 		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		dir := option_value(args, "--dir", option_value(args, "--out", ""))
 		if artifact_id == "" || dir == "" { print_agent_help([]string{"artifact"}); return }
-		ctl_agent_artifact_download(endpoint, token, artifact_id, dir)
+		ctl_agent_artifact_download(endpoint, token, artifact_id, dir, args)
 	case:
 		print_agent_help([]string{"artifact"})
 	}
@@ -713,7 +782,7 @@ ctl_agentmode_artifact_list_params :: proc(args: []string) -> string {
 	return json_object_from_slice(fields[:])
 }
 
-ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
+ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string, args: []string = nil) {
 	response, ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(response, `"ok":true`) {
@@ -721,10 +790,12 @@ ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
 		return
 	}
 	content := extract_json_string_unescaped(response, "content", "")
-	fmt.print(content)
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted := ctl_decrypt_or_fallback_armored(content, key_hex, key_ok, context.temp_allocator)
+	fmt.print(decrypted)
 }
 
-ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
+ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string, args: []string = nil) {
 	meta_response, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.show", json_object(json_kv("artifact_id", artifact_id)))
 	if !meta_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(meta_response, `"ok":true`) { fmt.println(meta_response); return }
@@ -740,6 +811,12 @@ ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
 	filename := artifact_download_random_filename(ext)
 	path := path_join_agent(dir, filename)
 	content := extract_json_string_unescaped(content_response, "content", "")
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if is_vault_armored(content) && key_ok {
+		if decrypted, dec_ok := vault_decrypt_text_hex(content, key_hex, context.temp_allocator); dec_ok {
+			content = decrypted
+		}
+	}
 	if os.write_entire_file(path, transmute([]byte)content) != nil { fmt.println(`{"ok":false,"message":"artifact could not be written"}`); os.exit(1) }
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"filename":"`); json_write_string(&b, filename)
@@ -1448,6 +1525,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "shell-cmd": print_help_shell_cmd(); return
 	case "shell":     print_help_shell(); return
 	case "issue", "issues": print_issues_help(); return
+	case "project", "projects": print_projects_help(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1474,6 +1552,7 @@ print_help_overview :: proc() {
 	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
 	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
+	fmt.println("  projects    Manage projects (list, show, create, update)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")

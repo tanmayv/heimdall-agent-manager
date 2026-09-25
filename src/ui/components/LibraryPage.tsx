@@ -7,6 +7,7 @@ import {
 import { useListAgentsQuery } from '../api/endpoints/agents';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
+import { VaultText } from './vault/VaultText';
 
 import { Button, Icon, Input, Select } from '@ui';
 export type LibraryPageProps = {
@@ -239,13 +240,13 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                         </span>
                       )}
                     </div>
-                    <div className="truncate text-sm font-medium text-primary">{a?.name || id}</div>
+                    <div className="truncate text-sm font-medium text-primary"><VaultText value={a?.name} fallback={id} /></div>
                     <div className="mt-0.5 flex items-center gap-2 text-caption text-muted">
                       <span className="rounded-full border border-subtle bg-surface-raised px-1.5 py-0.5 uppercase tracking-wide">{kindLabel(a)}</span>
                       <span>{formatBytes(Number(a?.size_bytes) || 0)}</span>
                       <span className="ml-auto">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
                     </div>
-                    {a?.description ? <div className="mt-1 line-clamp-2 text-[11.5px] leading-4 text-muted">{a.description}</div> : null}
+                    {a?.description ? <div className="mt-1 line-clamp-2 text-[11.5px] leading-4 text-muted"><VaultText value={a.description} /></div> : null}
                   </button>
                   {/* per-card rename / delete menu */}
                   <div className="mt-2 flex justify-end gap-1 opacity-0 transition group-hover:opacity-100">
@@ -294,7 +295,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                         <Icon name="file" size={16} />
                       </span>
                     )}
-                    <span className="min-w-0 flex-1 truncate text-primary">{a?.name || id}</span>
+                    <span className="min-w-0 flex-1 truncate text-primary"><VaultText value={a?.name} fallback={id} /></span>
                   </button>
                   <span className="truncate text-[11.5px] text-muted">{kindLabel(a)}</span>
                   <span className="truncate text-[11.5px] text-muted">{formatBytes(Number(a?.size_bytes) || 0)}</span>
