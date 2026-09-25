@@ -57,6 +57,21 @@ test_declarative_actor_refs_normalize :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_durable_actor_ids_filter_and_deduplicate :: proc(t: ^testing.T) {
+	task := domain.Task{
+		assignee_ref_json = `{"type":"agent_id","agent_id":"agt_assignee"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_reviewer"},{"type":"agent_id","agent_id":"agt_assignee"},{"type":"user","agent_id":"agt_user"},{"type":"agent_instance","agent_id":"agt_instance"},{"type":"agent_id","agent_id":""}]`,
+	}
+	ids := durable_actor_ids(task)
+	defer { for id in ids do delete(id); delete(ids) }
+	testing.expect_value(t, len(ids), 2)
+	if len(ids) == 2 {
+		testing.expect_value(t, ids[0], "agt_assignee")
+		testing.expect_value(t, ids[1], "agt_reviewer")
+	}
+}
+
+@(test)
 test_dynamic_fleet_scheduling_and_queuing_lifecycle :: proc(t: ^testing.T) {
 	db_path := fmt.tprintf("/tmp/test_fleet_dispatch_%d.db", os.get_pid())
 	os.remove(db_path)

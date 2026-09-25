@@ -41,6 +41,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_directories_by_chain = taskchain_list_directories_by_chain_sqlite,
 		remove_directory = taskchain_remove_directory_sqlite,
 		upsert_fleet = taskchain_upsert_fleet_sqlite,
+		ensure_fleet = taskchain_ensure_fleet_sqlite,
 		list_fleets_by_chain = taskchain_list_fleets_by_chain_sqlite,
 		delete_fleet = taskchain_delete_fleet_sqlite,
 	}
@@ -440,6 +441,25 @@ taskchain_upsert_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Flee
 	bind_text(stmt, 9, fleet.updated_at)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Chain_Fleet{}, domain.domain_error(.Conflict, "fleet could not be saved")
 	return fleet, domain.Domain_Error{}
+}
+
+taskchain_ensure_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet) -> domain.Domain_Error {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle_ttl_seconds, provider, tier, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_chain_id, agent_id) DO NOTHING;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.domain_error(.Internal_Error, "failed to prepare fleet ensure")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(fleet.task_chain_id))
+	bind_text(stmt, 2, fleet.agent_id)
+	sqlite3_bind_int(stmt, 3, c.int(fleet.capacity))
+	sqlite3_bind_int(stmt, 4, c.int(fleet.min_warm))
+	sqlite3_bind_int(stmt, 5, c.int(fleet.idle_ttl_seconds))
+	bind_text(stmt, 6, fleet.provider)
+	bind_text(stmt, 7, fleet.tier)
+	bind_text(stmt, 8, fleet.created_at)
+	bind_text(stmt, 9, fleet.updated_at)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Conflict, "fleet could not be ensured")
+	return domain.Domain_Error{}
 }
 
 taskchain_list_fleets_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
