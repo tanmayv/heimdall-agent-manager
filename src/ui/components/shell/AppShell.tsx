@@ -157,8 +157,12 @@ const NAV_ROUTES: ShellRoute[] = [
 ];
 
 function routeFromLocation(): string {
-  const path = getRoutePathname();
-  if (!path || path === '/' || path === '/index.html' || path === '/cards') return '/home';
+  let path = getRoutePathname();
+  if (path.length > 1 && path.endsWith('/')) {
+    path = path.slice(0, -1);
+  }
+  if (!path || path === '/' || path === '/index.html' || path === '/cards' || path.includes('/preview/') || path.includes('/proxy/')) return '/home';
+  if (path.startsWith('/c/')) return `/conversations/${path.slice('/c/'.length)}`;
   return path;
 }
 
@@ -1058,11 +1062,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isKnownRoute = isMappedRoute && !(isLspRoute && !lspEnabled);
 
   if (isConversationThreadRoute) {
-    const agentInstanceId = path.startsWith('/c/')
-      ? decodeSegment(path.slice('/c/'.length))
-      : decodeSegment(path.slice('/conversations/'.length));
+    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
     return (
-      <main data-debug-id="shell-main-route-outlet" className="h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas">
+      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous
@@ -1147,7 +1149,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <ProvidersPanel />
         ) : path === '/settings/user-tokens' ? (
           <UserTokensPanel />
-        ) : path === '/settings/vault' ? (
+        ) : path === '/settings/vault' || path.startsWith('/settings/vault/') ? (
           <VaultPanel />
         ) : path === '/settings/providers/new' ? (
           <ProviderEditorPage />
