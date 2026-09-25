@@ -224,6 +224,21 @@ print_tasks_help :: proc(action: string) {
 	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge>")
 }
 
+ctl_task_chain_request_and_decrypt :: proc(transport: Ctl_Transport, method, path, body_json: string, args: []string = nil) {
+	resp_str, ok := ctl_tasks_request_local(transport, method, path, body_json)
+	if !ok {
+		if resp_str != "" {
+			fmt.println(resp_str)
+		}
+		return
+	}
+
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_vault_json(resp_str, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
+}
+
 ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	idx := 0
 	if len(cmd) > 0 && (cmd[0] == "task-chains" || cmd[0] == "task-chain" || cmd[0] == "chains" || cmd[0] == "chain") do idx = 1
@@ -243,11 +258,8 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	}
 
 	if action == "" || action == "list" {
-		if has_flag(args, "--pinned") {
-			ctl_tasks_request(transport, "GET", "/api/v1/task-chains?pinned=1", "")
-			return
-		}
-		ctl_tasks_request(transport, "GET", "/api/v1/task-chains", "")
+		path := "/api/v1/task-chains?pinned=1" if has_flag(args, "--pinned") else "/api/v1/task-chains"
+		ctl_task_chain_request_and_decrypt(transport, "GET", path, "", args)
 		return
 	}
 
@@ -256,7 +268,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	// an agent can fetch "chains I coordinate" with only its agent token.
 	if action == "coordinated" {
 		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
-		ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains?coordinated_by=%s", safe_path_part(agent_id)), "")
+		ctl_task_chain_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains?coordinated_by=%s", safe_path_part(agent_id)), "", args)
 		return
 	}
 
@@ -266,9 +278,24 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 			fmt.println("usage: ham-ctl task-chains create --title <title> [--description <text>] [--kind <kind>] [--coordinator <id>] [--bridge <id>] [--project <id>]")
 			return
 		}
+		desc := option_value(args, "--description", "")
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if !is_vault_armored(title) {
+				if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
+					title = enc
+				}
+			}
+			if desc != "" && !is_vault_armored(desc) {
+				if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {
+					desc = enc
+				}
+			}
+		}
 		fields := make([dynamic]string)
+		defer delete(fields)
 		append(&fields, json_kv("title", title))
-		append(&fields, json_kv("description", option_value(args, "--description", "")))
+		append(&fields, json_kv("description", desc))
 		append(&fields, json_kv("kind", option_value(args, "--kind", "team_work")))
 		append(&fields, json_kv("coordinator_agent_id", option_value(args, "--coordinator-agent-id", option_value(args, "--coordinator", ""))))
 		append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", option_value(args, "--bridge", ""))))
@@ -294,14 +321,30 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	}
 
 	if action == "show" {
-		ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), "")
+		ctl_task_chain_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), "", args)
 		return
 	}
 
 	if action == "update" {
 		fields := make([dynamic]string)
-		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		defer delete(fields)
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if title := option_value(args, "--title", ""); title != "" {
+			if key_ok && !is_vault_armored(title) {
+				if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
+					title = enc
+				}
+			}
+			append(&fields, json_kv("title", title))
+		}
+		if desc := option_value(args, "--description", ""); desc != "" {
+			if key_ok && !is_vault_armored(desc) {
+				if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {
+					desc = enc
+				}
+			}
+			append(&fields, json_kv("description", desc))
+		}
 		if status := option_value(args, "--status", ""); status != "" do append(&fields, json_kv("status", status))
 		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
 		return

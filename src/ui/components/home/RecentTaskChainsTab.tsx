@@ -3,6 +3,7 @@ import { Badge, EmptyState, Icon, Input, Spinner, Text } from '@ui';
 import { useIsMobile } from '../shell/responsive';
 import { useFetchTaskChainGroupsQuery, type ChainListItem } from '../../api/endpoints/tasks';
 import { buildRouteHash } from '../../utils/appLocation';
+import { VaultText } from '../vault/VaultText';
 import { useArchivedProjectIds } from '../projects/projectModel';
 
 function shellHash(path: string): string {
@@ -254,7 +255,7 @@ export function RecentTaskChainsTab() {
                         data-debug-id={`home-chain-title-${chain.chainId}`}
                         className="text-base font-semibold text-primary"
                       >
-                        {chain.title || chain.chainId}
+                        <VaultText value={chain.title} fallback={chain.chainId} />
                       </h3>
                       <p className="text-caption font-mono text-muted">{chain.chainId}</p>
                     </div>

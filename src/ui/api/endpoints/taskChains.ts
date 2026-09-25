@@ -1,10 +1,30 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { encryptVaultText, isVaultArmored } from '../../utils/vaultContent';
 
 export interface FleetRestartFailure {
   instance_id: string;
   message: string;
 }
+
+export type CreateTaskChainInput = {
+  title: string;
+  description?: string;
+  kind?: string;
+  coordinatorAgentId?: string;
+  bridgeId?: string;
+  provider?: string;
+  tier?: string;
+  projectId?: string;
+};
+
+export type UpdateTaskChainInput = {
+  chainId: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  coordinatorAgentInstanceId?: string;
+};
 
 export interface TaskChainFleet {
   task_chain_id?: string;
@@ -108,6 +128,122 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         { type: 'Chain' as const, id: chainId },
       ],
     }),
+
+    getTaskChain: build.query<any, { chainId: string } | string>({
+      queryFn: async (arg) => {
+        const chainId = typeof arg === 'string' ? arg : arg?.chainId;
+        if (!chainId) return { data: null };
+        try {
+          const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}`);
+          const data = raw?.data ?? raw;
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, arg) => {
+        const chainId = typeof arg === 'string' ? arg : arg?.chainId;
+        return [{ type: 'Chain' as const, id: chainId }];
+      },
+    }),
+
+    getTaskChains: build.query<any, { projectId?: string; hasTasks?: boolean; includeArchived?: boolean; pinned?: boolean } | void>({
+      queryFn: async (arg) => {
+        try {
+          const options = typeof arg === 'object' && arg !== null ? arg : undefined;
+          const params = new URLSearchParams();
+          if (options?.projectId) params.set('project_id', options.projectId);
+          if (options?.hasTasks) params.set('has_tasks', '1');
+          if (options?.includeArchived) params.set('include_archived', '1');
+          if (options?.pinned) params.set('pinned', '1');
+          const qs = params.toString();
+          const raw = await cookieJsonFetch(`/task-chains${qs ? `?${qs}` : ''}`);
+          const data = raw?.data ?? raw;
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Chain' as const, id: 'LIST' }],
+    }),
+
+    createTaskChain: build.mutation<any, CreateTaskChainInput>({
+      queryFn: async (payload, api) => {
+        try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let title = payload.title;
+          let description = payload.description || '';
+
+          if (isUnlocked && rawKeyHex) {
+            if (!isVaultArmored(title)) {
+              title = await encryptVaultText(title, rawKeyHex);
+            }
+            if (description && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+          }
+
+          const body: any = {
+            title,
+            description,
+            kind: payload.kind || 'team_work',
+          };
+          if (payload.coordinatorAgentId) body.coordinator_agent_id = payload.coordinatorAgentId;
+          if (payload.bridgeId) body.bridge_id = payload.bridgeId;
+          if (payload.provider) body.provider = payload.provider;
+          if (payload.tier) body.tier = payload.tier;
+          if (payload.projectId) body.project_id = payload.projectId;
+
+          const data = await cookieMutation('/task-chains', 'POST', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: ['ChainList', { type: 'Chain' as const }],
+    }),
+
+    updateTaskChain: build.mutation<any, UpdateTaskChainInput>({
+      queryFn: async ({ chainId, title, description, status, coordinatorAgentInstanceId }, api) => {
+        try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          const body: any = {};
+          if (title !== undefined) {
+            body.title =
+              isUnlocked && rawKeyHex && !isVaultArmored(title)
+                ? await encryptVaultText(title, rawKeyHex)
+                : title;
+          }
+          if (description !== undefined) {
+            body.description =
+              isUnlocked && rawKeyHex && description && !isVaultArmored(description)
+                ? await encryptVaultText(description, rawKeyHex)
+                : description;
+          }
+          if (status !== undefined) body.status = status;
+          if (coordinatorAgentInstanceId !== undefined) {
+            body.coordinator_agent_instance_id = coordinatorAgentInstanceId;
+          }
+
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}`, 'PATCH', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => [
+        { type: 'Chain', id: chainId },
+        'ChainList',
+        { type: 'Chain' as const, id: 'GROUPED_LIST' },
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+      ],
+    }),
   }),
 });
 
@@ -115,4 +251,6 @@ export const {
   useGetTaskChainFleetsQuery,
   useLazyGetTaskChainFleetsQuery,
   useUpdateTaskChainFleetMutation,
+  useGetTaskChainQuery,
+  useGetTaskChainsQuery,
 } = taskChainsApi;

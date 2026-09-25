@@ -304,6 +304,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
 
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKey = useSelector(selectRawVaultKeyHex);
+  const [decryptedDescription, setDecryptedDescription] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    const chainDesc = chain?.description;
+    if (!chainDesc || !isVaultArmored(chainDesc)) {
+      setDecryptedDescription(chainDesc || '');
+      return;
+    }
+    if (!isVaultUnlocked || !rawKey) {
+      setDecryptedDescription('');
+      return;
+    }
+    decryptVaultText(chainDesc, rawKey)
+      .then((t) => {
+        if (active) setDecryptedDescription(t);
+      })
+      .catch(() => {
+        if (active) setDecryptedDescription(chainDesc);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chain?.description, isVaultUnlocked, rawKey]);
+
   // Separate active, completed, and cancelled tasks.
   // Completed/cancelled tasks are sorted chronologically by completion time (updated_at / created_at).
   const isTaskCompleted = (t: any) => t.status === 'completed' || t.status === 'validated_good';
@@ -1449,7 +1476,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         width="full"
         title={
           <span data-debug-id="taskchain-overview-title">
-            {chain.title || 'Untitled Chain'}
+            <VaultText value={chain.title} fallback="Untitled Chain" />
           </span>
         }
         actions={
@@ -1498,7 +1525,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id="taskchain-overview-description"
                 className="mt-1 text-sm text-primary"
               >
-                <Markdown source={chain.description} compact copyAll={false} />
+                {isVaultArmored(chain.description) && !isVaultUnlocked ? (
+                  <div className="py-1">
+                    <VaultText value={chain.description} as="div" />
+                  </div>
+                ) : (
+                  <Markdown source={decryptedDescription || chain.description} compact copyAll={false} />
+                )}
               </div>
             )}
           </div>

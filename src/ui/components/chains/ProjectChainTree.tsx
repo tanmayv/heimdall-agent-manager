@@ -10,6 +10,7 @@ import { showToast } from '../../store/toastSlice';
 import { useArchivedProjectIds } from '../projects/projectModel';
 import CreateChainModal from './CreateChainModal';
 import { StatusDot, Icon } from '@ui';
+import { VaultText } from '../vault/VaultText';
 
 type Props = {
   projects: Array<{ projectId: string; projectName: string }>;
@@ -80,7 +81,7 @@ function ChainRow({
         label={chain.status}
         size="sm"
       />
-      <span className="min-w-0 flex-1 truncate">{title}</span>
+      <span className="min-w-0 flex-1 truncate"><VaultText value={chain.title} fallback="Untitled chain" /></span>
       {timestamp ? (
         <span className={`shrink-0 text-[10px] leading-none text-faint ${chain.isPinned ? 'hidden' : 'group-hover:hidden'}`}>
           {timestamp}
