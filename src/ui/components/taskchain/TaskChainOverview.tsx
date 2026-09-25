@@ -5,10 +5,6 @@ import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
-import { useSelector } from 'react-redux';
-import { VaultText } from '../vault/VaultText';
-import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 
 import { Checkbox, Icon, PageShell, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
@@ -44,7 +40,10 @@ import {
   useRemoveChainMemberMutation,
   useReconcileTaskChainMutation,
 } from '../../api/endpoints/tasks';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import {
   upsertAgentInCaches,
   useCreateAgentInstanceInChainMutation,
@@ -111,18 +110,56 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
     { chainId, taskId },
     { skip: !chainId || !taskId },
   );
-  const description = String(data?.task?.description ?? fallback ?? '').trim();
-  if (isFetching && !description) {
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const rawDescription = String(data?.task?.description ?? fallback ?? '').trim();
+  const isArmored = isVaultArmored(rawDescription);
+
+  const [decryptedText, setDecryptedText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!isArmored || !isUnlocked || !rawKeyHex) {
+      setDecryptedText(null);
+      return;
+    }
+    decryptVaultText(rawDescription, rawKeyHex)
+      .then((decrypted) => {
+        if (mounted) setDecryptedText(decrypted);
+      })
+      .catch((err) => {
+        if (mounted) {
+          console.error('Failed to decrypt task description:', err);
+          setDecryptedText(rawDescription);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [rawDescription, isArmored, isUnlocked, rawKeyHex]);
+
+  if (isFetching && !rawDescription) {
     return (
       <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-caption text-muted">
         <Icon name="refresh" size={12} className="animate-spin" /> Loading description…
       </div>
     );
   }
-  if (!description) return null;
+  if (!rawDescription) return null;
+
+  if (isArmored && !isUnlocked) {
+    return (
+      <div data-debug-id={`taskchain-task-description-${taskId}`} className="py-1">
+        <VaultText value={rawDescription} as="div" />
+      </div>
+    );
+  }
+
+  const displayText = decryptedText ?? rawDescription;
+
   return (
     <div data-debug-id={`taskchain-task-description-${taskId}`} className="text-[11.5px] leading-5 text-primary">
-      <Markdown source={description} compact copyAll={false} />
+      <Markdown source={displayText} compact copyAll={false} />
     </div>
   );
 };
@@ -915,7 +952,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               data-debug-id={`taskchain-task-title-${taskId}`}
               className="min-w-0 flex-1 truncate font-semibold text-primary cursor-pointer select-none"
             >
-              {task.title}
+              <VaultText value={task.title} as="span" />
             </div>
           </div>
 

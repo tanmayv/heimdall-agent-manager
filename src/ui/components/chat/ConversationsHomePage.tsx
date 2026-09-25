@@ -3,6 +3,8 @@ import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type 
 import { buildRouteHash } from '../../utils/appLocation';
 
 import { Button, Icon, Text } from '@ui';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored } from '../../utils/vaultContent';
 const PAGE_SIZE = 40;
 
 function looksLikeInternalId(value: string): boolean {
@@ -117,14 +119,19 @@ export default function ConversationsHomePage() {
               href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`, '')}
               className="group flex min-h-[76px] w-full touch-manipulation items-center gap-3 px-3 py-3 text-left transition hover:bg-neutral-soft active:bg-neutral-soft/80 sm:min-h-[84px] sm:px-4"
             >
-              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-accent/10 text-base font-bold text-accent ring-1 ring-accent/20 sm:h-14 sm:w-14">{title.slice(0, 1).toUpperCase() || 'C'}</div>
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-accent/10 text-base font-bold text-accent ring-1 ring-accent/20 sm:h-14 sm:w-14">
+                {isVaultArmored(title) ? '🔒' : (title.slice(0, 1).toUpperCase() || 'C')}
+              </div>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-2">
-                  <h2 data-debug-id={`conversation-inbox-title-${conversation.conversationId}`} className="truncate text-[15px] font-semibold text-primary sm:text-base">{title}</h2>
+                  <h2 data-debug-id={`conversation-inbox-title-${conversation.conversationId}`} className="truncate text-[15px] font-semibold text-primary sm:text-base">
+                    <VaultText value={title} as="span" />
+                  </h2>
                   {conversation.unreadCount > 0 ? <span data-debug-id={`conversation-inbox-unread-${conversation.conversationId}`} className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-fg">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
                 </div>
                 <p data-debug-id={`conversation-inbox-last-message-${conversation.conversationId}`} className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted group-hover:text-primary">
-                  <span data-debug-id={`conversation-inbox-last-message-label-${conversation.conversationId}`} className="font-semibold text-primary">{last.prefix}: </span>{last.preview}
+                  <span data-debug-id={`conversation-inbox-last-message-label-${conversation.conversationId}`} className="font-semibold text-primary">{last.prefix}: </span>
+                  <VaultText value={last.preview} as="span" />
                 </p>
               </div>
               <div className="flex h-full shrink-0 flex-col items-end justify-start gap-2 pt-1">

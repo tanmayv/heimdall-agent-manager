@@ -2,7 +2,7 @@ import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
-import { encryptVaultText, isVaultArmored } from '../../utils/vaultContent';
+import { isVaultArmored, encryptVaultText } from '../../utils/vaultContent';
 
 // The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
 // legacy per-client token session. Task-chain reads/writes below must use
@@ -656,12 +656,27 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
-      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
+      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let encTitle = title;
+          let encDesc = description;
+          if (isUnlocked && rawKeyHex) {
+            if (encTitle !== undefined && !isVaultArmored(encTitle)) {
+              encTitle = await encryptVaultText(encTitle, rawKeyHex);
+            }
+            if (encDesc !== undefined && !isVaultArmored(encDesc)) {
+              encDesc = await encryptVaultText(encDesc, rawKeyHex);
+            }
+          }
+
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
-          if (title !== undefined) body.title = title;
-          if (description !== undefined) body.description = description;
+          if (encTitle !== undefined) body.title = encTitle;
+          if (encDesc !== undefined) body.description = encDesc;
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
           if (dependsOn !== undefined) body.depends_on = dependsOn;
@@ -982,10 +997,25 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
-      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
+      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let encTitle = title;
+          let encDesc = description || '';
+          if (isUnlocked && rawKeyHex) {
+            if (encTitle && !isVaultArmored(encTitle)) {
+              encTitle = await encryptVaultText(encTitle, rawKeyHex);
+            }
+            if (encDesc && !isVaultArmored(encDesc)) {
+              encDesc = await encryptVaultText(encDesc, rawKeyHex);
+            }
+          }
+
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const body: any = { title, description: description || '' };
+          const body: any = { title: encTitle, description: encDesc };
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
           if (dependsOn !== undefined) body.depends_on = dependsOn;
@@ -1011,9 +1041,18 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     addTaskComment: build.mutation<any, { taskId: string; chainId: string; body: string; agentToken?: string; resolveImmediately?: boolean }>({
-      queryFn: async ({ taskId, chainId, body }) => {
+      queryFn: async ({ taskId, chainId, body }, api) => {
         try {
-          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/comments`, 'POST', { body });
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let commentBody = body;
+          if (isUnlocked && rawKeyHex && commentBody && !isVaultArmored(commentBody)) {
+            commentBody = await encryptVaultText(commentBody, rawKeyHex);
+          }
+
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/comments`, 'POST', { body: commentBody });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -1048,14 +1087,28 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTask: build.mutation<any, { taskId: string; chainId: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, title, description, acceptanceCriteria, dependsOn, agentToken }, { session }) => {
+      queryFn: withSessionQuery(async ({ taskId, chainId, title, description, acceptanceCriteria, dependsOn, agentToken }, { session, state }) => {
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+        let encTitle = title;
+        let encDesc = description;
+        if (isUnlocked && rawKeyHex) {
+          if (encTitle !== undefined && !isVaultArmored(encTitle)) {
+            encTitle = await encryptVaultText(encTitle, rawKeyHex);
+          }
+          if (encDesc !== undefined && !isVaultArmored(encDesc)) {
+            encDesc = await encryptVaultText(encDesc, rawKeyHex);
+          }
+        }
+
         return daemonApi.updateTask({
           daemonUrl: session.daemonUrl,
           ...taskMutationAuth(session, agentToken),
           taskId,
           chainId,
-          title,
-          description,
+          title: encTitle,
+          description: encDesc,
           acceptanceCriteria,
           dependsOn,
         });

@@ -39,6 +39,9 @@ import {
   useMemoryScopeCatalog,
   type Targeting,
 } from '@ui';
+import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   memoryErrorText,
   useApproveMemoryMutation,
@@ -186,21 +189,54 @@ export default function MemoryFormPage({ memoryId }: { memoryId?: string }) {
   const [updateMemory] = useUpdateMemoryMutation();
   const [approveMemory] = useApproveMemoryMutation();
 
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+
   // Seed from the record once it arrives. Keyed on identity, never on the whole
   // record: re-seeding on a cache refresh would clobber edits in progress.
   React.useEffect(() => {
+    let active = true;
     if (!record) return;
-    setForm({
-      title: String(record.title || ''),
-      type: String(record.type || 'fact'),
-      description: String(record.description || ''),
-      body: String(record.body || ''),
-      evidence: String(record.evidence || ''),
-      targeting: targetingFromRecord(record),
-    });
-    setDirty(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record?.memoryId]);
+
+    const populate = async () => {
+      let title = String(record.title || '');
+      let description = String(record.description || '');
+      let body = String(record.body || '');
+      let evidence = String(record.evidence || '');
+
+      if (isVaultUnlocked && rawKeyHex) {
+        if (isVaultArmored(title)) {
+          try { title = await decryptVaultText(title, rawKeyHex); } catch {}
+        }
+        if (isVaultArmored(description)) {
+          try { description = await decryptVaultText(description, rawKeyHex); } catch {}
+        }
+        if (isVaultArmored(body)) {
+          try { body = await decryptVaultText(body, rawKeyHex); } catch {}
+        }
+        if (isVaultArmored(evidence)) {
+          try { evidence = await decryptVaultText(evidence, rawKeyHex); } catch {}
+        }
+      }
+
+      if (active) {
+        setForm({
+          title,
+          type: String(record.type || 'fact'),
+          description,
+          body,
+          evidence,
+          targeting: targetingFromRecord(record),
+        });
+        setDirty(false);
+      }
+    };
+
+    populate();
+    return () => {
+      active = false;
+    };
+  }, [record?.memoryId, isVaultUnlocked, rawKeyHex]);
 
   const guard = useUnsavedChangesGuard(dirty && !gated);
 

@@ -33,6 +33,7 @@ import {
   type MemoryVerb,
 } from './memoryModel';
 import { targetingFromRecord } from '@ui';
+import { VaultText } from '../vault/VaultText';
 
 export interface MemoryRowProps {
   row: any;
@@ -84,7 +85,7 @@ export function MemoryRow({
       dataDebugId={`memory-row-${memoryId}`}
       bodyDebugId={`memory-row-body-${memoryId}`}
       timeDebugId={`memory-row-time-${memoryId}`}
-      title={title}
+      title={<VaultText value={title} as="span" />}
       href={href}
       active={active}
       onSelect={() => onOpen(row)}
@@ -103,7 +104,13 @@ export function MemoryRow({
           </span>
         ) : null
       }
-      snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
+      snippet={
+        snippet && snippet.trim() ? (
+          <VaultText value={snippet} as="span" />
+        ) : (
+          <span className="italic text-faint select-none">&lt;empty&gt;</span>
+        )
+      }
       status={<StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>}
       badges={
         <>

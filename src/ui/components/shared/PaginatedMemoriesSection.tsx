@@ -11,6 +11,7 @@ import React from 'react';
 import { Alert, Button, Link, Panel, Spinner, Text, useInfiniteList } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import { fetchMemoryPage } from '../../api/endpoints/memory';
+import { VaultText } from '../vault/VaultText';
 
 const PAGE_SIZE = 25;
 
@@ -96,7 +97,7 @@ export default function PaginatedMemoriesSection({
                   data-debug-id={`${debugPrefix}-item-${id}`}
                   className="flex min-w-0 flex-col rounded-[var(--radius-sm)] focus-visible:shadow-focus focus-visible:outline-none"
                 >
-                  <Text as="span" role="body-sm" className="truncate">{label}</Text>
+                  <Text as="span" role="body-sm" className="truncate"><VaultText value={label} as="span" /></Text>
                   {sub ? <Text as="span" role="caption" tone="muted" className="truncate">{sub}</Text> : null}
                 </a>
               </li>

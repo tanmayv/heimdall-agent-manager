@@ -1,6 +1,8 @@
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from "../cookieFetch";
 import { heimdallApi } from "../heimdallApi";
 import { normalizeMemory } from "../memoryCatalog";
+import { encryptVaultText, decryptVaultText, isVaultArmored } from "../../utils/vaultContent";
+import { encryptMemoryFields, decryptMemoryRecord } from "../../utils/vaultMemories";
 
 // Memory targeting is a LIST per dimension (T1 contract): agent_ids/project_ids/
 // bridge_ids/template_ids as JSON string arrays where empty = applies to all.
@@ -243,10 +245,84 @@ export const memoryApi = heimdallApi.injectEndpoints({
       ],
     }),
     createMemory: build.mutation<any, CreateMemoryInput>({
-      queryFn: async (payload) => {
+      queryFn: async (payload, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let title = payload.title;
+          let description = payload.description;
+          let body = payload.body;
+          let evidence = payload.evidence;
+
+          if (isUnlocked && rawKeyHex) {
+            if (title && !isVaultArmored(title)) {
+              title = await encryptVaultText(title, rawKeyHex);
+            }
+            if (description && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+            if (body && !isVaultArmored(body)) {
+              body = await encryptVaultText(body, rawKeyHex);
+            }
+            if (evidence && !isVaultArmored(evidence)) {
+              evidence = await encryptVaultText(evidence, rawKeyHex);
+            }
+          }
+
           const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
-          const data = await cookieMutation("/memories", "POST", { ...rest, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) });
+          const data = await cookieMutation("/memories", "POST", {
+            ...rest,
+            ...(title !== undefined ? { title } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(body !== undefined ? { body } : {}),
+            ...(evidence !== undefined ? { evidence } : {}),
+            ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }),
+          });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: "Memory" as const, id: "ALL" }],
+    }),
+    proposeMemory: build.mutation<any, CreateMemoryInput>({
+      queryFn: async (payload, api) => {
+        try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let title = payload.title;
+          let description = payload.description;
+          let body = payload.body;
+          let evidence = payload.evidence;
+
+          if (isUnlocked && rawKeyHex) {
+            if (title && !isVaultArmored(title)) {
+              title = await encryptVaultText(title, rawKeyHex);
+            }
+            if (description && !isVaultArmored(description)) {
+              description = await encryptVaultText(description, rawKeyHex);
+            }
+            if (body && !isVaultArmored(body)) {
+              body = await encryptVaultText(body, rawKeyHex);
+            }
+            if (evidence && !isVaultArmored(evidence)) {
+              evidence = await encryptVaultText(evidence, rawKeyHex);
+            }
+          }
+
+          const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
+          const data = await cookieMutation("/memories", "POST", {
+            ...rest,
+            ...(title !== undefined ? { title } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(body !== undefined ? { body } : {}),
+            ...(evidence !== undefined ? { evidence } : {}),
+            ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }),
+          });
           return { data };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -255,10 +331,40 @@ export const memoryApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: "Memory" as const, id: "ALL" }],
     }),
     updateMemory: build.mutation<any, UpdateMemoryInput>({
-      queryFn: async ({ memoryId, ...payload }) => {
+      queryFn: async ({ memoryId, ...payload }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
           const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
-          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}`, "PATCH", { ...rest, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) });
+          const body: Record<string, any> = { ...rest };
+          if (payload.title !== undefined) {
+            body.title =
+              isUnlocked && rawKeyHex && payload.title && !isVaultArmored(payload.title)
+                ? await encryptVaultText(payload.title, rawKeyHex)
+                : payload.title;
+          }
+          if (payload.description !== undefined) {
+            body.description =
+              isUnlocked && rawKeyHex && payload.description && !isVaultArmored(payload.description)
+                ? await encryptVaultText(payload.description, rawKeyHex)
+                : payload.description;
+          }
+          if (payload.body !== undefined) {
+            body.body =
+              isUnlocked && rawKeyHex && payload.body && !isVaultArmored(payload.body)
+                ? await encryptVaultText(payload.body, rawKeyHex)
+                : payload.body;
+          }
+          if (payload.evidence !== undefined) {
+            body.evidence =
+              isUnlocked && rawKeyHex && payload.evidence && !isVaultArmored(payload.evidence)
+                ? await encryptVaultText(payload.evidence, rawKeyHex)
+                : payload.evidence;
+          }
+
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}`, "PATCH", { ...body, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) });
           return { data };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -270,16 +376,46 @@ export const memoryApi = heimdallApi.injectEndpoints({
       ],
     }),
     approveMemory: build.mutation<any, ApproveMemoryInput>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const memoryId = arg.memoryId || arg.proposalId || "";
           if (arg.decision === "reject") {
             const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/reject`, "POST", { reason: arg.reason });
             return { data };
           }
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
           const { memoryId: _m, proposalId: _p, decision: _d, agentIds, projectIds, bridgeIds, templateIds, ...edits } = arg;
-          const body = { ...edits, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) };
-          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/approve`, "POST", body);
+          const body: Record<string, any> = { ...edits };
+          if (edits.title !== undefined) {
+            body.title =
+              isUnlocked && rawKeyHex && edits.title && !isVaultArmored(edits.title)
+                ? await encryptVaultText(edits.title, rawKeyHex)
+                : edits.title;
+          }
+          if (edits.description !== undefined) {
+            body.description =
+              isUnlocked && rawKeyHex && edits.description && !isVaultArmored(edits.description)
+                ? await encryptVaultText(edits.description, rawKeyHex)
+                : edits.description;
+          }
+          if (edits.body !== undefined) {
+            body.body =
+              isUnlocked && rawKeyHex && edits.body && !isVaultArmored(edits.body)
+                ? await encryptVaultText(edits.body, rawKeyHex)
+                : edits.body;
+          }
+          if (edits.evidence !== undefined) {
+            body.evidence =
+              isUnlocked && rawKeyHex && edits.evidence && !isVaultArmored(edits.evidence)
+                ? await encryptVaultText(edits.evidence, rawKeyHex)
+                : edits.evidence;
+          }
+
+          const postBody = { ...body, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) };
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/approve`, "POST", postBody);
           return { data };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -334,8 +470,12 @@ export const {
   useListMemoriesQuery,
   useGetMemoryQuery,
   useCreateMemoryMutation,
+  useProposeMemoryMutation,
   useUpdateMemoryMutation,
   useApproveMemoryMutation,
   useRejectMemoryMutation,
   useArchiveMemoryMutation,
 } = memoryApi;
+
+export { encryptMemoryFields, decryptMemoryRecord } from "../../utils/vaultMemories";
+

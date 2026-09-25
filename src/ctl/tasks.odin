@@ -111,6 +111,21 @@ ctl_tasks_request_local :: proc(transport: Ctl_Transport, method, path, body_jso
 	return "", false
 }
 
+ctl_tasks_request_and_decrypt :: proc(transport: Ctl_Transport, method, path, body_json: string, args: []string = nil) {
+	resp_str, ok := ctl_tasks_request_local(transport, method, path, body_json)
+	if !ok {
+		if resp_str != "" {
+			fmt.println(resp_str)
+		}
+		return
+	}
+
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted_json := ctl_decrypt_json_string(resp_str, key_hex, key_ok)
+	defer delete(decrypted_json)
+	fmt.println(decrypted_json)
+}
+
 resolve_chain_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 	cid := option_value(args, "--chain-id", option_value(args, "--chain", ""))
 	if cid != "" do return cid
@@ -509,7 +524,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			fmt.println("usage: ham-ctl tasks list --chain <id>")
 			return
 		}
-		ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), "")
+		ctl_tasks_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), "", args)
 		return
 	}
 
@@ -519,9 +534,23 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <id,id,...>] [--depends-on <id,id>]")
 			return
 		}
+		desc := option_value(args, "--description", "")
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if !is_vault_armored(title) {
+				if enc, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+					title = enc
+				}
+			}
+			if desc != "" && !is_vault_armored(desc) {
+				if enc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+					desc = enc
+				}
+			}
+		}
 		fields := make([dynamic]string)
 		append(&fields, json_kv("title", title))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if desc != "" do append(&fields, json_kv("description", desc))
 		if prio := option_value(args, "--priority", ""); prio != "" {
 			// REQ-CLI-2: this field was already being sent and silently discarded by
 			// the Hub; now that create honours it, a bad value must not slide to p2.
@@ -601,10 +630,30 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	if action == "show" {
+		ctl_tasks_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", safe_path_part(chain_id), safe_path_part(task_id)), "", args)
+		return
+	}
+
 	if action == "update" {
+		title := option_value(args, "--title", "")
+		desc := option_value(args, "--description", "")
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if title != "" && !is_vault_armored(title) {
+				if enc, ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); ok {
+					title = enc
+				}
+			}
+			if desc != "" && !is_vault_armored(desc) {
+				if enc, ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); ok {
+					desc = enc
+				}
+			}
+		}
 		fields := make([dynamic]string)
-		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if title != "" do append(&fields, json_kv("title", title))
+		if desc != "" do append(&fields, json_kv("description", desc))
 		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
 			append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(assignee)}))
@@ -660,6 +709,14 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			fmt.println("usage: ham-ctl tasks comment --chain <id> --task <id> --body <text> [--notify <id,id...>]")
 			return
 		}
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok {
+			if !is_vault_armored(body) {
+				if enc, ok := vault_encrypt_text_hex(body, key_hex, context.temp_allocator); ok {
+					body = enc
+				}
+			}
+		}
 		fields := make([dynamic]string)
 		append(&fields, json_kv("body", body))
 		if notify := option_value(args, "--notify", ""); notify != "" {
@@ -684,7 +741,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		sub := option_value(args, "--action", "")
 		if idx + 1 < len(cmd) && (cmd[idx + 1] == "add" || cmd[idx + 1] == "list") do sub = cmd[idx + 1]
 		if sub == "" || sub == "list" {
-			ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), "")
+			ctl_tasks_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), "", args)
 			return
 		}
 		if sub == "add" {
@@ -696,6 +753,14 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			if body == "" {
 				fmt.println("usage: ham-ctl tasks comments --chain <id> --task <id> add --body <text> [--notify <id,id...>]")
 				return
+			}
+			key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+			if key_ok {
+				if !is_vault_armored(body) {
+					if enc, ok := vault_encrypt_text_hex(body, key_hex, context.temp_allocator); ok {
+						body = enc
+					}
+				}
 			}
 			fields := make([dynamic]string)
 			append(&fields, json_kv("body", body))

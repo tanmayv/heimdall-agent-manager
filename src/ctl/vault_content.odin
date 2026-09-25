@@ -4,6 +4,8 @@ import "core:crypto"
 import "core:crypto/aes"
 import "core:encoding/base64"
 import "core:encoding/hex"
+import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 
 // ── Reusable Content Cryptography Library (REQ-VAULT-CONTENT-LIB-1) ──────────
@@ -115,3 +117,76 @@ vault_decrypt_text_hex :: proc(armored: string, key_hex: string, allocator := co
 	if !hex_ok || len(raw_key) != VAULT_KEY_BYTES do return "", false
 	return vault_decrypt_text(armored, raw_key, allocator)
 }
+
+// Decrypt an armored field if key is configured, or return fallback formatted string:
+// '[Encrypted: vault:v1:...]' if key is unconfigured or decryption fails.
+ctl_decrypt_or_fallback_armored :: proc(val: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	if !is_vault_armored(val) {
+		return strings.clone(val, allocator)
+	}
+	if key_configured {
+		decrypted, ok := vault_decrypt_text_hex(val, key_hex, allocator)
+		if ok {
+			return decrypted
+		}
+	}
+	// Missing key or decryption failure (e.g. truncated preview or tampered): graceful fallback
+	return fmt.aprintf("[Encrypted: %s]", val, allocator = allocator)
+}
+
+Json_Field_Update :: struct {
+	k: string,
+	v: json.Value,
+}
+
+ctl_decrypt_json_value :: proc(v: ^json.Value, key_hex: string, key_configured: bool, allocator := context.allocator) {
+	if v == nil do return
+	#partial switch &val in v^ {
+	case json.Object:
+		updates: [dynamic]Json_Field_Update
+		defer delete(updates)
+		for k, sub_v in val {
+			switch k {
+			case "title", "description", "description_preview", "body", "evidence", "last_comment_preview", "last_message_preview":
+				if s, is_str := sub_v.(json.String); is_str {
+					str_val := string(s)
+					if is_vault_armored(str_val) {
+						new_str := ctl_decrypt_or_fallback_armored(str_val, key_hex, key_configured, allocator)
+						append(&updates, Json_Field_Update{k = k, v = json.String(new_str)})
+					}
+				}
+			case:
+				#partial switch _ in sub_v {
+				case json.Object, json.Array:
+					var := sub_v
+					ctl_decrypt_json_value(&var, key_hex, key_configured, allocator)
+					append(&updates, Json_Field_Update{k = k, v = var})
+				}
+			}
+		}
+		for u in updates {
+			val[u.k] = u.v
+		}
+	case json.Array:
+		for i in 0 ..< len(val) {
+			ctl_decrypt_json_value(&val[i], key_hex, key_configured, allocator)
+		}
+	}
+}
+
+ctl_decrypt_json_string :: proc(raw_json: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	val, err := json.parse_string(raw_json, parse_integers = true, allocator = context.temp_allocator)
+	if err != .None {
+		return strings.clone(raw_json, allocator)
+	}
+
+	ctl_decrypt_json_value(&val, key_hex, key_configured, context.temp_allocator)
+
+	marshaled, marshal_err := json.marshal(val, allocator = allocator)
+	if marshal_err != nil {
+		return strings.clone(raw_json, allocator)
+	}
+
+	return string(marshaled)
+}
+

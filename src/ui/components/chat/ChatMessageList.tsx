@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, UIEvent } from 'react';
+import { useSelector } from 'react-redux';
 import Markdown from '../Markdown';
 import ChatHoverCopyButton from '../ChatHoverCopyButton';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 const EMPTY_TIMESTAMP: ChatTimestamp = { label: '', iso: '' };
@@ -28,6 +32,40 @@ function prefersReducedMotion(): boolean {
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
   );
+}
+
+function DefaultMessageBody({ body }: { body: string }) {
+  const isArmored = isVaultArmored(body);
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decrypted, setDecrypted] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!isArmored) {
+      setDecrypted(body);
+      return;
+    }
+    if (!isUnlocked || !rawKeyHex) {
+      setDecrypted(null);
+      return;
+    }
+    decryptVaultText(body, rawKeyHex)
+      .then((res) => {
+        if (mounted) setDecrypted(res);
+      })
+      .catch(() => {
+        if (mounted) setDecrypted(body);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [body, isArmored, isUnlocked, rawKeyHex]);
+
+  if (isArmored && !isUnlocked) {
+    return <VaultText value={body} as="div" />;
+  }
+  return <Markdown source={decrypted !== null ? decrypted : body} compact copyAll={false} />;
 }
 
 export default function ChatMessageList({
@@ -224,7 +262,7 @@ export default function ChatMessageList({
                 <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                   {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                   <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'text-primary'}`}>
-                    {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <Markdown source={message.body} compact copyAll={false} />}
+                    {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <DefaultMessageBody body={message.body} />}
                   </div>
                   <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
                     <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />

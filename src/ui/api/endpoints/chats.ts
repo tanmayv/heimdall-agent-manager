@@ -1,6 +1,7 @@
 import * as daemonApi from '../daemonApi';
 import { apiUrl, cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { isVaultArmored, encryptVaultText } from '../../utils/vaultContent';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
 
@@ -207,9 +208,16 @@ function guideChatArgs() {
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; provider?: string; tier?: string; body: string; artifactIds?: string[] }>({
-      queryFn: async ({ agentId, projectId, bridgeId, provider, tier, body, artifactIds = [] }) => {
+      queryFn: async ({ agentId, projectId, bridgeId, provider, tier, body, artifactIds = [] }, api) => {
         try {
-          const payload: any = { agent_id: agentId, initial_message: { body }, artifact_ids: artifactIds };
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          let encBody = body;
+          if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
+            encBody = await encryptVaultText(encBody, rawKeyHex);
+          }
+          const payload: any = { agent_id: agentId, initial_message: { body: encBody }, artifact_ids: artifactIds };
           if (projectId) payload.project_id = projectId;
           if (bridgeId) payload.bridge_id = bridgeId;
           if (provider) payload.provider = provider;
@@ -296,10 +304,17 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 300,
     }),
     updateConversationTitle: build.mutation<any, { conversationId: string; title: string }>({
-      queryFn: async ({ conversationId, title }) => {
+      queryFn: async ({ conversationId, title }, api) => {
         if (!conversationId || !title.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or title' } as any };
         try {
-          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}`, 'PATCH', { title: title.trim() });
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          let encTitle = title.trim();
+          if (isUnlocked && rawKeyHex && encTitle && !isVaultArmored(encTitle)) {
+            encTitle = await encryptVaultText(encTitle, rawKeyHex);
+          }
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}`, 'PATCH', { title: encTitle });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -327,10 +342,17 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       ],
     }),
     sendConversationMessage: build.mutation<any, { conversationId: string; body: string; artifactIds?: string[] }>({
-      queryFn: async ({ conversationId, body, artifactIds = [] }) => {
+      queryFn: async ({ conversationId, body, artifactIds = [] }, api) => {
         if (!conversationId || !body.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or body' } as any };
         try {
-          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body, artifact_ids: artifactIds });
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          let encBody = body;
+          if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
+            encBody = await encryptVaultText(encBody, rawKeyHex);
+          }
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body: encBody, artifact_ids: artifactIds });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -627,13 +649,19 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       },
     }),
     sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean; artifactIds?: string[] }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt, artifactIds }, { session }) => {
+      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt, artifactIds }, { session, state }) => {
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        let encBody = body;
+        if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
+          encBody = await encryptVaultText(encBody, rawKeyHex);
+        }
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
           clientToken: session.clientToken,
           agentInstanceId,
-          body,
+          body: encBody,
           interrupt,
           artifactIds,
         });
@@ -665,13 +693,19 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       },
     }),
     sendGuideMessage: build.mutation<any, { body: string; tempId: string; interrupt?: boolean }>({
-      queryFn: withSessionQuery(async ({ body, interrupt }, { session }) => {
+      queryFn: withSessionQuery(async ({ body, interrupt }, { session, state }) => {
+        const isUnlocked = Boolean(state?.vault?.isUnlocked);
+        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        let encBody = body;
+        if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
+          encBody = await encryptVaultText(encBody, rawKeyHex);
+        }
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
           clientToken: session.clientToken,
           agentInstanceId: GUIDE_AGENT_ID,
-          body,
+          body: encBody,
           interrupt,
         });
         return { messageId: String(res.message_id || '') };
@@ -725,3 +759,12 @@ export const {
   useSendAgentMessageMutation,
   useSendGuideMessageMutation,
 } = chatEndpoints;
+
+export {
+  encryptChatFields,
+  decryptChatMessage,
+  decryptChatMessages,
+  encryptConversationFields,
+  decryptConversationRecord,
+  decryptConversationList,
+} from '../../utils/vaultChats';

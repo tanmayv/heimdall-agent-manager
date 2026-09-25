@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
 import { Button, Select, StatusPill, Text, type Tone } from '@ui';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored } from '../../utils/vaultContent';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -70,7 +72,7 @@ function roleActionTone(role: string): Tone {
 // Derive the first 1-2 acceptance criteria from the chain description / task description.
 function acceptanceSummary(task: TaskLike): string {
   const raw = String(task.description || '').trim();
-  if (!raw) return '';
+  if (!raw || isVaultArmored(raw)) return '';
   // Pull lines that look like acceptance criteria (## Acceptance, - bullet).
   const lines = raw.split('\n');
   const crit: string[] = [];
@@ -117,7 +119,7 @@ export default function CurrentTaskStrip({
   if (collapsedLocal) {
     return (
       <div data-debug-id={`${debugPrefix}-current-task-strip`} data-current-task-status={status} className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-subtle bg-surface px-3 py-2 text-[11.5px] text-muted">
-        <span className="truncate">Current task: <span className="text-primary">{title}</span></span>
+        <span className="truncate">Current task: <span className="text-primary"><VaultText value={title} as="span" /></span></span>
         <button type="button" data-debug-id={`${debugPrefix}-current-task-expand`} onClick={() => setCollapsedLocal(false)} className="rounded-full border border-subtle px-2 py-0.5 text-muted hover:bg-neutral-soft hover:text-primary">expand</button>
       </div>
     );
@@ -152,10 +154,10 @@ export default function CurrentTaskStrip({
                 className="truncate font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-accent"
                 title={title}
               >
-                {title}
+                <VaultText value={title} as="span" />
               </a>
             ) : (
-              <span className="truncate font-medium text-primary">{title}</span>
+              <span className="truncate font-medium text-primary"><VaultText value={title} as="span" /></span>
             )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-muted">
