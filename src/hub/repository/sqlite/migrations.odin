@@ -730,9 +730,10 @@ CREATE TRIGGER IF NOT EXISTS task_chain_directories_owner_immutable BEFORE UPDAT
 }
 
 // upgrade_task_chain_fleets_schema idempotently ensures the task_chain_fleets
-// table and index exist (REQ-FLEET-SCHEMA-1).
+// table, provider/tier columns, and index exist (REQ-FLEET-SCHEMA-1,
+// REQ-FLEET-PT-1).
 upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS task_chain_fleets (
+	if !exec(conn, `CREATE TABLE IF NOT EXISTS task_chain_fleets (
   task_chain_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   capacity INTEGER NOT NULL DEFAULT 1,
@@ -742,8 +743,13 @@ upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
   updated_at TEXT NOT NULL,
   PRIMARY KEY (task_chain_id, agent_id),
   FOREIGN KEY (task_chain_id) REFERENCES task_chains(chain_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_task_chain_fleets_chain ON task_chain_fleets(task_chain_id);`)
+);`) {
+		return false
+	}
+	if !table_column_exists(conn, "task_chain_fleets", "provider") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN provider TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "task_chain_fleets", "tier") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN tier TEXT NOT NULL DEFAULT '';") do return false
+	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_task_chain_fleets_chain ON task_chain_fleets(task_chain_id);") do return false
+	return true
 }
 
 

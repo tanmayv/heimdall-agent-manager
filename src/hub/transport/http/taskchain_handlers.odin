@@ -1139,6 +1139,10 @@ write_fleet_json :: proc(b: ^strings.Builder, f: domain.Task_Chain_Fleet, active
 	write_handler_json_string(b, f.created_at)
 	strings.write_string(b, "\",\"updated_at\":\"")
 	write_handler_json_string(b, f.updated_at)
+	strings.write_string(b, "\",\"provider\":\"")
+	write_handler_json_string(b, f.provider)
+	strings.write_string(b, "\",\"tier\":\"")
+	write_handler_json_string(b, f.tier)
 	strings.write_string(b, "\"}")
 }
 
@@ -1208,12 +1212,16 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	capacity := json_int_field(req.body, "capacity", 1)
 	min_warm := json_int_field(req.body, "min_warm", 0)
 	idle_ttl_seconds := json_int_field(req.body, "idle_ttl_seconds", 600)
+	provider := json_string(req.body, "provider")
+	tier := json_string(req.body, "tier")
 	fleet, err := taskchain_service.upsert_fleet(h.taskchains, auth_ctx, taskchain_service.Upsert_Fleet_Input{
 		chain_id         = chain_id,
 		agent_id         = agent_id,
 		capacity         = capacity,
 		min_warm         = min_warm,
 		idle_ttl_seconds = idle_ttl_seconds,
+		provider         = provider,
+		tier             = tier,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")

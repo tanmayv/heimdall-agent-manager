@@ -12,6 +12,8 @@ test_write_fleet_json :: proc(t: ^testing.T) {
 		capacity         = 4,
 		min_warm         = 2,
 		idle_ttl_seconds = 600,
+		provider         = "claude",
+		tier             = "smart",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:05:00Z",
 	}
@@ -29,6 +31,46 @@ test_write_fleet_json :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"idle_ttl_seconds":600`), "must contain idle_ttl_seconds 600")
 	testing.expect(t, strings.contains(out, `"created_at":"2026-09-23T10:00:00Z"`), "must contain created_at")
 	testing.expect(t, strings.contains(out, `"updated_at":"2026-09-23T10:05:00Z"`), "must contain updated_at")
+	testing.expect(t, strings.contains(out, `"provider":"claude"`), "must contain provider claude")
+	testing.expect(t, strings.contains(out, `"tier":"smart"`), "must contain tier smart")
+}
+
+// write_fleet_json is shared by the PUT response and the GET list, so this pins
+// the payload contract REQ-FLEET-PT-2 relies on for both verbs.
+@(test)
+test_write_fleet_json_omitted_provider_tier_empty :: proc(t: ^testing.T) {
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = domain.Task_Chain_ID("chain_fleet_empty"),
+		agent_id         = "agt_worker",
+		capacity         = 1,
+		min_warm         = 0,
+		idle_ttl_seconds = 600,
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:05:00Z",
+	}
+
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	write_fleet_json(&b, fleet)
+	out := strings.to_string(b)
+
+	testing.expect(t, strings.contains(out, `"provider":""`), "omitted provider must serialize as empty string (inherit)")
+	testing.expect(t, strings.contains(out, `"tier":""`), "omitted tier must serialize as empty string (inherit)")
+}
+
+@(test)
+test_fleet_provider_tier_parse :: proc(t: ^testing.T) {
+	body := `{"capacity":2,"provider":"claude","tier":"smart"}`
+	testing.expect_value(t, json_string(body, "provider"), "claude")
+	testing.expect_value(t, json_string(body, "tier"), "smart")
+
+	spaced := `{"provider": "claude", "tier": "smart"}`
+	testing.expect_value(t, json_string(spaced, "provider"), "claude")
+	testing.expect_value(t, json_string(spaced, "tier"), "smart")
+
+	omitted := `{"capacity":2}`
+	testing.expect_value(t, json_string(omitted, "provider"), "")
+	testing.expect_value(t, json_string(omitted, "tier"), "")
 }
 
 @(test)

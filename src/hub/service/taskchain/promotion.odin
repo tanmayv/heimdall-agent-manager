@@ -178,9 +178,18 @@ fleet_capacity_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: st
 	return 1
 }
 
+// fleet_provider_tier_for_agent queries the configured provider/tier for
+// (chain_id, agent_id); "" means inherit the standard resolution order.
+fleet_provider_tier_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: string) -> (string, string) {
+	for f in fleets {
+		if f.agent_id == agent_id do return f.provider, f.tier
+	}
+	return "", ""
+}
+
 // jit_provision_agent_instance launches a new instance of agent_id for the chain
 // using agent_service.create_instance, inheriting the chain's bridge and project context.
-jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, chain_instances: []domain.Agent_Instance, agent_id: string, role: string) -> string {
+jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, chain_instances: []domain.Agent_Instance, agent_id: string, role: string, provider: string, tier: string) -> string {
 	if service == nil || service.agent_service == nil do return ""
 
 	bridge_id := ""
@@ -223,6 +232,8 @@ jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.
 	input := agent.Create_Instance_Input{
 		agent_id   = agent_id,
 		bridge_id  = bridge_id,
+		provider   = provider,
+		tier       = tier,
 		chain_id   = string(chain.chain_id),
 		project_id = project_id,
 	}
@@ -411,7 +422,8 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				}
 			}
 		} else if live_count < capacity {
-			new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], target_agent_id, "worker")
+			fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
+			new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], target_agent_id, "worker", fleet_provider, fleet_tier)
 			if new_instance_id != "" {
 				defer delete(new_instance_id)
 				ensure_chain_member(service, chain, new_instance_id, target_agent_id)
@@ -531,7 +543,8 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 					}
 				}
 			} else if live_count < capacity {
-				new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], rev_agent_id, "reviewer")
+				fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, rev_agent_id)
+				new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], rev_agent_id, "reviewer", fleet_provider, fleet_tier)
 				if new_instance_id != "" {
 					defer delete(new_instance_id)
 					ensure_chain_member(service, chain, new_instance_id, rev_agent_id)

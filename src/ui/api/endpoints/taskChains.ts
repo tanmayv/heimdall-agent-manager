@@ -13,6 +13,8 @@ export interface TaskChainFleet {
   minWarm?: number;
   idle_ttl_seconds?: number;
   idleTtlSeconds?: number;
+  provider?: string;
+  tier?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -30,6 +32,8 @@ function normalizeFleet(f: any): TaskChainFleet {
     minWarm: typeof f.minWarm === 'number' ? f.minWarm : (typeof f.min_warm === 'number' ? f.min_warm : 0),
     idle_ttl_seconds: typeof f.idle_ttl_seconds === 'number' ? f.idle_ttl_seconds : (typeof f.idleTtlSeconds === 'number' ? f.idleTtlSeconds : 600),
     idleTtlSeconds: typeof f.idleTtlSeconds === 'number' ? f.idleTtlSeconds : (typeof f.idle_ttl_seconds === 'number' ? f.idle_ttl_seconds : 600),
+    provider: f.provider || '',
+    tier: f.tier || '',
     created_at: f.created_at || '',
     updated_at: f.updated_at || '',
   };
@@ -57,10 +61,12 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       capacity: number;
       minWarm?: number;
       idleTtlSeconds?: number;
+      provider?: string;
+      tier?: string;
     }>({
-      queryFn: async ({ chainId, agentId, capacity, minWarm, idleTtlSeconds }) => {
+      queryFn: async ({ chainId, agentId, capacity, minWarm, idleTtlSeconds, provider, tier }) => {
         try {
-          const body: any = { capacity };
+          const body: any = { capacity, provider: provider ?? '', tier: tier ?? '' };
           if (minWarm !== undefined) body.min_warm = minWarm;
           if (idleTtlSeconds !== undefined) body.idle_ttl_seconds = idleTtlSeconds;
           const raw = await cookieMutation(

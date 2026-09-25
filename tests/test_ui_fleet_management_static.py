@@ -8,6 +8,12 @@ Static verification test for REQ-FLEET-UI-1:
 - ChainHeader and ChainOverviewPanel integrations
 - TaskChainOverview fleet slots and queue badges
 - CreateTaskModal role selector and elimination of instance ID assignment
+
+Static verification test for REQ-FLEET-PT-3 (provider & tier selection per role):
+- taskChains.ts: TaskChainFleet carries provider/tier, normalizeFleet maps both,
+  updateTaskChainFleet always includes them in the PUT body
+- FleetManagementDrawer.tsx: provider/tier selects per role card (debug ids),
+  drafts seeded from server fleets, bridge provider query, Apply sends provider/tier
 """
 
 import sys
@@ -53,6 +59,16 @@ def main() -> int:
         "useUpdateTaskChainFleetMutation",
     ]))
 
+    # 1b. REQ-FLEET-PT-3: provider/tier on the fleet API contract
+    errors.extend(check_file_contains(endpoints_file, [
+        "provider?: string",
+        "tier?: string",
+        "provider: f.provider || ''",
+        "tier: f.tier || ''",
+        "provider: provider ?? ''",
+        "tier: tier ?? ''",
+    ]))
+
     heimdall_api_file = REPO_ROOT / "src/ui/api/heimdallApi.ts"
     errors.extend(check_file_contains(heimdall_api_file, [
         "'TaskChainFleets'",
@@ -85,6 +101,20 @@ def main() -> int:
         'draftCapacities',
         'handleApply',
         'handleReset',
+    ]))
+
+    # 2b. REQ-FLEET-PT-3: provider & tier selection per role
+    errors.extend(check_file_contains(drawer_file, [
+        'data-debug-id={`fleet-provider-select-${agentId}`}',
+        'data-debug-id={`fleet-tier-select-${agentId}`}',
+        'draftProviderTiers',
+        'seedProviderTierDrafts',
+        'useListBridgeProvidersQuery',
+        'fleetProviderCapabilities',
+        'Auto (inherit)',
+        'provider: cf.provider',
+        'tier: cf.tier',
+        'effectiveProvider === \'\'',
     ]))
 
     # 3. ChainHeader component
