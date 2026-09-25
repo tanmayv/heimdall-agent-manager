@@ -246,13 +246,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [newTaskDesc, setNewTaskDesc] = useState('');
   const [newTaskAssigneeMode, setNewTaskAssigneeMode] = useState<'agent' | 'unassigned' | 'user'>('agent');
   const [newTaskAssigneeMemberInstanceId, setNewTaskAssigneeMemberInstanceId] = useState('');
-  const [newTaskAssigneeAgentId, setNewTaskAssigneeAgentId] = useState('agt_worker');
+  const [newTaskAssigneeAgentId, setNewTaskAssigneeAgentId] = useState('');
   const [newTaskAssigneeInstanceId, setNewTaskAssigneeInstanceId] = useState('');
   const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
   const [newTaskStagedReviewerRefs, setNewTaskStagedReviewerRefs] = useState<any[]>([]);
   const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'agent' | 'user'>('agent');
   const [newTaskAddReviewerMemberInstanceId, setNewTaskAddReviewerMemberInstanceId] = useState('');
-  const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('agt_reviewer');
+  const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('');
   const [newTaskAddReviewerInstanceId, setNewTaskAddReviewerInstanceId] = useState('');
   const [newTaskAddReviewerUserId, setNewTaskAddReviewerUserId] = useState('');
   const [newTaskDependsOnIds, setNewTaskDependsOnIds] = useState<string[]>([]);
@@ -457,13 +457,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     setNewTaskDesc('');
     setNewTaskAssigneeMode('agent');
     setNewTaskAssigneeMemberInstanceId('');
-    setNewTaskAssigneeAgentId('agt_worker');
+    setNewTaskAssigneeAgentId('');
     setNewTaskAssigneeInstanceId('');
     setNewTaskAssigneeUserId('');
     setNewTaskStagedReviewerRefs([]);
     setNewTaskAddReviewerMode('agent');
     setNewTaskAddReviewerMemberInstanceId('');
-    setNewTaskAddReviewerAgentId('agt_reviewer');
+    setNewTaskAddReviewerAgentId('');
     setNewTaskAddReviewerInstanceId('');
     setNewTaskAddReviewerUserId('');
     setNewTaskDependsOnIds([]);
@@ -653,10 +653,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           resolvedAgentId = inst.agent_id || inst.agentId;
         }
       }
-      if (!resolvedAgentId) {
-        const firstAgent = agentIdentities[0];
-        resolvedAgentId = String(firstAgent?.agent_id || firstAgent?.agentId || firstAgent?.id || '');
-      }
+      // REQ-AUTO-4: no first-identity guess — when the instance's durable agent
+      // cannot be resolved, the user picks a real identity explicitly.
       setEditAssigneeMode('role');
       setEditAssigneeAgentId(resolvedAgentId);
       setEditAssigneeUserId('');
@@ -665,9 +663,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       setEditAssigneeUserId(ref.user_id);
       setEditAssigneeAgentId('');
     } else {
-      setEditAssigneeMode('role');
-      const firstAgent = agentIdentities[0];
-      setEditAssigneeAgentId(String(firstAgent?.agent_id || firstAgent?.agentId || firstAgent?.id || ''));
+      // No assignee: open unassigned rather than pre-selecting an identity the
+      // user never chose.
+      setEditAssigneeMode('unassigned');
+      setEditAssigneeAgentId('');
       setEditAssigneeUserId('');
     }
   };
@@ -2228,10 +2227,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     width="full"
                     value={editAssigneeAgentId}
                     onChange={setEditAssigneeAgentId}
-                    options={agentIdentities.map((a: any) => {
-                      const id = String(a.agent_id || a.agentId || a.id || '');
-                      return { value: id, label: a.name || a.display_name || id };
-                    })}
+                    options={[
+                      { value: '', label: 'Select agent role…' },
+                      ...agentIdentities.map((a: any) => {
+                        const id = String(a.agent_id || a.agentId || a.id || '');
+                        return { value: id, label: a.name || a.display_name || id };
+                      }),
+                    ]}
                   />
                   <p className="mt-1 text-caption text-muted">
                     The fleet mechanism will convert this role into an actual instance JIT.

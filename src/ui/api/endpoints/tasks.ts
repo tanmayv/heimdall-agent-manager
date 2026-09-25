@@ -686,7 +686,12 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+      invalidatesTags: (_result, _error, { chainId, taskId }) => [
+        ...preciseTaskTags(taskId, chainId),
+        // REQ-AUTO-4: durable actor assignment may create a hub-side capacity-1
+        // Fleet row — refetch so an open drawer shows it without a reload.
+        { type: 'TaskChainFleets' as const, id: chainId },
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     cancelTaskDetail: build.mutation<any, { chainId: string; taskId: string }>({
@@ -1025,7 +1030,13 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId }) => chainId ? [{ type: 'Chain' as const, id: chainId }, { type: 'ChainTasks' as const, id: chainId }] : [],
+      invalidatesTags: (_result, _error, { chainId }) => chainId ? [
+        { type: 'Chain' as const, id: chainId },
+        { type: 'ChainTasks' as const, id: chainId },
+        // REQ-AUTO-4: the hub persists a capacity-1 Fleet row for durable task
+        // actors — invalidate so the drawer picks the new row up immediately.
+        { type: 'TaskChainFleets' as const, id: chainId },
+      ] : [],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     deleteTask: build.mutation<any, { taskId: string; chainId: string; agentToken?: string }>({

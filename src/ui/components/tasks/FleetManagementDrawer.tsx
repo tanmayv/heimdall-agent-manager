@@ -102,38 +102,12 @@ export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
     { chainId },
     { skip: !chainId, pollingInterval: 5000 }
   );
-  const chainDetailQuery = useFetchTaskChainDetailQuery(
-    { chainId },
-    { skip: !chainId }
-  );
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
-  const members = (chainDetailQuery.data?.chain?.members || []) as any[];
 
-  // Merge server-returned fleets with default standard roles (worker, reviewer) if not yet configured
-  const fleets = useMemo(() => {
-    const list: TaskChainFleet[] = [...rawFleets];
-    const seen = new Set(list.map((f) => f.agent_id));
-
-    // Default roles to always surface
-    const standardRoles = ['agt_worker', 'agt_reviewer'];
-    for (const roleId of standardRoles) {
-      if (!seen.has(roleId)) {
-        const activeCount = members.filter((m) => {
-          const aid = String(m.agent_id || m.agentId || '');
-          const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
-          return aid === roleId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
-        }).length;
-        list.push({
-          task_chain_id: chainId,
-          agent_id: roleId,
-          capacity: 1,
-          active_count: activeCount,
-        });
-      }
-    }
-    return list;
-  }, [rawFleets, members, chainId]);
+  // REQ-AUTO-1: the Fleet renders exactly the persisted rows — no synthetic
+  // standard-role cards. An empty Fleet is empty.
+  const fleets = rawFleets;
 
   if (!chainId) return null;
 
@@ -270,30 +244,13 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     prevIsOpenRef.current = isOpen;
   }, [isOpen, seedDrafts]);
 
-  // Merge configured fleets with standard roles and draft-staged roles
+  // REQ-AUTO-1: render exactly the persisted rows plus any roles staged via
+  // Add Role — no synthetic standard-role cards. An empty Fleet renders empty.
   const fleets = useMemo(() => {
     const list: TaskChainFleet[] = [...rawFleets];
     const seen = new Set(list.map((f) => f.agent_id));
 
-    const standardRoles = ['agt_worker', 'agt_reviewer'];
-    for (const roleId of standardRoles) {
-      if (!seen.has(roleId)) {
-        const activeCount = members.filter((m) => {
-          const aid = String(m.agent_id || m.agentId || '');
-          const status = String(m.runtimeStatus || m.runtime_status || '').toLowerCase();
-          return aid === roleId && status !== 'stopped' && status !== 'failed' && status !== 'terminated';
-        }).length;
-        list.push({
-          task_chain_id: chainId,
-          agent_id: roleId,
-          capacity: 1,
-          active_count: activeCount,
-        });
-        seen.add(roleId);
-      }
-    }
-
-    // Also include any newly added agent roles staged in draftCapacities
+    // Include any newly added agent roles staged in draftCapacities
     for (const [aid, cap] of Object.entries(draftCapacities)) {
       if (!seen.has(aid)) {
         list.push({
@@ -307,7 +264,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     }
 
     return list;
-  }, [rawFleets, members, chainId, draftCapacities]);
+  }, [rawFleets, chainId, draftCapacities]);
 
   const getOriginalCapacity = useCallback(
     (agentId: string) => getOriginalFleetCapacity(rawFleets, agentId),
@@ -535,8 +492,10 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
           </div>
         )}
 
-        {/* Drawer Content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Drawer Content. min-h-0 lets this region shrink below its intrinsic
+            height so long role-card content scrolls instead of pushing the
+            footer out of the viewport. */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
           <div className="text-xs text-muted">
             Configure concurrency limits and provider/tier overrides per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
           </div>
@@ -776,8 +735,11 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
           )}
         </div>
 
-        {/* Drawer Footer with Batch Apply / Reset */}
-        <div className="border-t border-subtle p-3 flex flex-wrap items-center justify-between gap-2.5 bg-canvas/90">
+        {/* Drawer Footer with Batch Apply / Reset. shrink-0 keeps the controls
+            pinned in view; the bottom padding lifts them above the persistent
+            mobile tab bar / home-indicator safe area, and resolves to the plain
+            0.75rem once --ui-bottom-chrome and the safe-area inset are 0. */}
+        <div className="border-t border-subtle p-3 pb-[max(0.75rem,max(var(--ui-bottom-chrome,0px),env(safe-area-inset-bottom,0px)))] flex flex-wrap items-center justify-between gap-2.5 bg-canvas/90 shrink-0">
           {restartSummary &&
             (restartSummary.restartedByRole.length > 0 || restartSummary.failures.length > 0) && (
               <div
