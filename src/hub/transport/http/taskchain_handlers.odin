@@ -1130,7 +1130,26 @@ get_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
-write_fleet_json :: proc(b: ^strings.Builder, f: domain.Task_Chain_Fleet, active_count: int = 0) {
+// Fleet_Restart_Failure is one per-instance relaunch failure reported by the fleet
+// upsert when the caller asked to restart live instances. Per-instance failures
+// never fail the upsert; they are reported next to the successful restarts.
+Fleet_Restart_Failure :: struct {
+	instance_id: string,
+	message:     string,
+}
+
+// The two restart_live_instances bookkeeping params are pointer-optional on purpose:
+// the GET list (and any flag-less PUT) passes nil for both, so its payload stays
+// byte-identical to the pre-restart contract; the upsert handler passes non-nil
+// (possibly empty) values whenever the request carried the flag, and each field is
+// emitted only when its pointer is non-nil.
+write_fleet_json :: proc(
+	b: ^strings.Builder,
+	f: domain.Task_Chain_Fleet,
+	active_count: int = 0,
+	restarted_instance_ids: ^[]string = nil,
+	restart_failures: ^[]Fleet_Restart_Failure = nil,
+) {
 	strings.write_string(b, "{\"task_chain_id\":\"")
 	write_handler_json_string(b, string(f.task_chain_id))
 	strings.write_string(b, "\",\"agent_id\":\"")
@@ -1143,7 +1162,30 @@ write_fleet_json :: proc(b: ^strings.Builder, f: domain.Task_Chain_Fleet, active
 	write_handler_json_string(b, f.provider)
 	strings.write_string(b, "\",\"tier\":\"")
 	write_handler_json_string(b, f.tier)
-	strings.write_string(b, "\"}")
+	strings.write_string(b, "\"")
+	if restarted_instance_ids != nil {
+		strings.write_string(b, ",\"restarted_instance_ids\":[")
+		for instance_id, i in restarted_instance_ids^ {
+			if i > 0 do strings.write_byte(b, ',')
+			strings.write_byte(b, '"')
+			write_handler_json_string(b, instance_id)
+			strings.write_byte(b, '"')
+		}
+		strings.write_byte(b, ']')
+	}
+	if restart_failures != nil {
+		strings.write_string(b, ",\"restart_failures\":[")
+		for failure, i in restart_failures^ {
+			if i > 0 do strings.write_byte(b, ',')
+			strings.write_string(b, "{\"instance_id\":\"")
+			write_handler_json_string(b, failure.instance_id)
+			strings.write_string(b, "\",\"message\":\"")
+			write_handler_json_string(b, failure.message)
+			strings.write_string(b, "\"}")
+		}
+		strings.write_byte(b, ']')
+	}
+	strings.write_byte(b, '}')
 }
 
 json_int_field :: proc(body, key: string, default_value: int) -> int {
@@ -1170,6 +1212,20 @@ json_int_field :: proc(body, key: string, default_value: int) -> int {
 	return default_value
 }
 
+// fleet_provider_tier_changed reports whether a fleet upsert actually changes the
+// role's provider or tier relative to the prior row. Capacity/min_warm/TTL edits
+// alone never restart live instances, and a missing prior row has nothing to
+// compare against, so both cases report false.
+fleet_provider_tier_changed :: proc(prior_provider, prior_tier, provider, tier: string) -> bool {
+	return prior_provider != provider || prior_tier != tier
+}
+
+// fleet_restart_instance_live mirrors the active_count predicate of the fleet list
+// handler: an instance counts as live unless its runtime_status is terminal.
+fleet_restart_instance_live :: proc(runtime_status: string) -> bool {
+	return runtime_status != "stopped" && runtime_status != "failed" && runtime_status != "terminated"
+}
+
 list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -1177,6 +1233,7 @@ list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	fleets, err := taskchain_service.list_fleets(h.taskchains, auth_ctx, chain_id)
 	if err.code != .None do return respond_error(err, req.request_id)
+	defer delete(fleets)
 	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
 	defer delete(members)
 	b := strings.builder_make()
@@ -1214,6 +1271,23 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	idle_ttl_seconds := json_int_field(req.body, "idle_ttl_seconds", 600)
 	provider := json_string(req.body, "provider")
 	tier := json_string(req.body, "tier")
+	// Optional user-confirmed restart of the role's live instances when this PUT
+	// actually changes the role's provider/tier. Absent or malformed values keep the
+	// historical flag-less behavior (persist only), so only a well-formed JSON
+	// boolean counts as "carried the flag".
+	restart_live_instances, restart_flag_ok := json_bool_literal(req.body, "restart_live_instances")
+	restart_role_instances := false
+	if restart_flag_ok && restart_live_instances {
+		role := strings.trim_space(agent_id)
+		prior_fleets, prior_err := taskchain_service.list_fleets(h.taskchains, auth_ctx, chain_id)
+		defer if prior_err.code == .None do delete(prior_fleets)
+		for prior in prior_fleets {
+			if prior.agent_id == role {
+				restart_role_instances = fleet_provider_tier_changed(prior.provider, prior.tier, provider, tier)
+				break
+			}
+		}
+	}
 	fleet, err := taskchain_service.upsert_fleet(h.taskchains, auth_ctx, taskchain_service.Upsert_Fleet_Input{
 		chain_id         = chain_id,
 		agent_id         = agent_id,
@@ -1224,9 +1298,47 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		tier             = tier,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
+	restarted_ids := make([dynamic]string)
+	defer delete(restarted_ids)
+	restart_failures := make([dynamic]Fleet_Restart_Failure)
+	defer delete(restart_failures)
+	defer {
+		for failure in restart_failures do delete(failure.message)
+	}
+	if restart_role_instances && h.agents != nil {
+		members, members_err := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
+		defer delete(members)
+		role := strings.trim_space(agent_id)
+		if members_err.code == .None {
+			for m in members {
+				if m.agent_id != role do continue
+				// Unresolvable members (get_instance miss) are skipped silently, and the
+				// liveness check matches the fleet list's active_count predicate.
+				inst, inst_ok, _ := agent_service.get_instance(h.agents, auth_ctx, m.agent_instance_id)
+				if !inst_ok || !fleet_restart_instance_live(inst.runtime_status) do continue
+				// relaunch_instance is the primitive that persists the NEW provider/tier
+				// verbatim on the same instance id ("" resolves through the standard
+				// inheritance order) and re-sends the launch command.
+				if _, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, provider, tier); relaunched {
+					append(&restarted_ids, inst.agent_instance_id)
+				} else {
+					// Clone: relaunch path messages can come from fmt.tprintf (temp memory).
+					append(&restart_failures, Fleet_Restart_Failure{instance_id = inst.agent_instance_id, message = strings.clone(relaunch_err.message)})
+				}
+			}
+		}
+	}
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
 	b := strings.builder_make()
-	write_fleet_json(&b, fleet)
+	restarted_out := restarted_ids[:]
+	failures_out := restart_failures[:]
+	restarted_ptr: ^[]string
+	failures_ptr: ^[]Fleet_Restart_Failure
+	if restart_flag_ok {
+		restarted_ptr = &restarted_out
+		failures_ptr = &failures_out
+	}
+	write_fleet_json(&b, fleet, 0, restarted_ptr, failures_ptr)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
