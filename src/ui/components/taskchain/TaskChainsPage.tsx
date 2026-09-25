@@ -15,6 +15,7 @@ import { useArchivedProjectIds } from '../projects/projectModel';
 import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
+import { VaultText } from '../vault/VaultText';
 
 interface TaskChainsPageProps {
   chainId?: string;
@@ -67,7 +68,9 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
       >
         {chain.status || 'unknown'}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-primary">{chain.title || chain.chainId}</span>
+      <span className="min-w-0 flex-1 truncate text-sm text-primary">
+        <VaultText value={chain.title} fallback={chain.chainId} />
+      </span>
       <span
         data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
         className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"

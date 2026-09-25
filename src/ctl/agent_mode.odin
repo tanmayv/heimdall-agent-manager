@@ -248,18 +248,26 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	switch verb {
 	case "", "list":
 		fields := make([dynamic]string)
+		defer delete(fields)
 		if has_flag(args, "--mine") do append(&fields, json_kv_raw("coordinated_by_me", "true"))
 		if has_flag(args, "--pinned") do append(&fields, json_kv_raw("pinned", "true"))
 		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
-		ctl_agent_call(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]))
+		ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]), args)
 	case "show":
 		cid := option_value(args, "--chain", pos(tokens, 1))
-		if cid != "" { ctl_agent_call(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid))) }
-		else { ctl_agent_call(endpoint, token, "agent.task_chain.show", "{}") }
+		if cid != "" { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid)), args) }
+		else { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", "{}", args) }
 	case "set-title":
 		title := option_value(args, "--title", pos(tokens, 1))
 		if title == "" { print_agent_help([]string{"task-chain"}); return }
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok && !is_vault_armored(title) {
+			if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
+				title = enc
+			}
+		}
 		fields := make([dynamic]string)
+		defer delete(fields)
 		append(&fields, json_kv("title", title))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
@@ -267,7 +275,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		// coordinator-only; pass "" to clear. --chain defaults to your chain.
 		desc := option_value(args, "--description", pos(tokens, 1))
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
+		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+		if key_ok && desc != "" && !is_vault_armored(desc) {
+			if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {
+				desc = enc
+			}
+		}
 		fields := make([dynamic]string)
+		defer delete(fields)
 		append(&fields, json_kv("description", desc))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
@@ -1052,6 +1067,15 @@ ctl_agent_call :: proc(endpoint, token, method, params_json: string) {
 	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	fmt.println(response)
+}
+
+ctl_agent_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string = nil) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	decrypted := ctl_decrypt_vault_json(response, key_hex, key_ok)
+	defer delete(decrypted)
+	fmt.println(decrypted)
 }
 
 // JSONL v1 local endpoint client. Sends one request line, reads one response

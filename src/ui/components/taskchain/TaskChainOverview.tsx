@@ -5,6 +5,10 @@ import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
+import { useSelector } from 'react-redux';
+import { VaultText } from '../vault/VaultText';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 
 import { Checkbox, Icon, PageShell, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
@@ -262,6 +266,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
+
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKey = useSelector(selectRawVaultKeyHex);
+  const [decryptedDescription, setDecryptedDescription] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    const chainDesc = chain?.description;
+    if (!chainDesc || !isVaultArmored(chainDesc)) {
+      setDecryptedDescription(chainDesc || '');
+      return;
+    }
+    if (!isVaultUnlocked || !rawKey) {
+      setDecryptedDescription('');
+      return;
+    }
+    decryptVaultText(chainDesc, rawKey)
+      .then((t) => {
+        if (active) setDecryptedDescription(t);
+      })
+      .catch(() => {
+        if (active) setDecryptedDescription(chainDesc);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chain?.description, isVaultUnlocked, rawKey]);
 
   // Separate active, completed, and cancelled tasks.
   // Completed/cancelled tasks are sorted chronologically by completion time (updated_at / created_at).
@@ -1408,7 +1439,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         width="full"
         title={
           <span data-debug-id="taskchain-overview-title">
-            {chain.title || 'Untitled Chain'}
+            <VaultText value={chain.title} fallback="Untitled Chain" />
           </span>
         }
         actions={
@@ -1457,7 +1488,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id="taskchain-overview-description"
                 className="mt-1 text-sm text-primary"
               >
-                <Markdown source={chain.description} compact copyAll={false} />
+                {isVaultArmored(chain.description) && !isVaultUnlocked ? (
+                  <div className="py-1">
+                    <VaultText value={chain.description} as="div" />
+                  </div>
+                ) : (
+                  <Markdown source={decryptedDescription || chain.description} compact copyAll={false} />
+                )}
               </div>
             )}
           </div>

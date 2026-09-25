@@ -104,6 +104,10 @@ ctl_decrypt_issues_json :: proc(raw_json: string, key_hex: string, key_configure
 	return string(marshaled)
 }
 
+ctl_decrypt_vault_json :: proc(raw_json: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
+	return ctl_decrypt_issues_json(raw_json, key_hex, key_configured, allocator)
+}
+
 ctl_issue_request_and_decrypt :: proc(transport: Ctl_Transport, method, path, body_json: string, args: []string = nil) {
 	resp_str, ok := ctl_issue_request_local(transport, method, path, body_json)
 	if !ok {

@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
+import { VaultText } from '../vault/VaultText';
 import {
   Avatar,
   Badge,
@@ -586,7 +587,7 @@ export default function ChainOverviewPanel({
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
             <h2 className="text-xs font-bold text-primary truncate">
-              {chain?.title || 'Task Chain Overview'}
+              <VaultText value={chain?.title} fallback="Task Chain Overview" />
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="font-mono text-[10px] text-muted">{chainId}</span>

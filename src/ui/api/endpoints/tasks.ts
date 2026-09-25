@@ -2,6 +2,7 @@ import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { encryptVaultText, isVaultArmored } from '../../utils/vaultContent';
 
 // The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
 // legacy per-client token session. Task-chain reads/writes below must use
@@ -552,11 +553,27 @@ export const tasksApi = heimdallApi.injectEndpoints({
       tier?: string;
       projectId?: string;
     }>({
-      queryFn: async ({ title, description, kind, coordinatorAgentId, bridgeId, provider, tier, projectId }) => {
+      queryFn: async ({ title, description, kind, coordinatorAgentId, bridgeId, provider, tier, projectId }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+          let encTitle = title;
+          let encDesc = description || '';
+
+          if (isUnlocked && rawKeyHex) {
+            if (!isVaultArmored(encTitle)) {
+              encTitle = await encryptVaultText(encTitle, rawKeyHex);
+            }
+            if (encDesc && !isVaultArmored(encDesc)) {
+              encDesc = await encryptVaultText(encDesc, rawKeyHex);
+            }
+          }
+
           const body: any = {
-            title,
-            description: description || '',
+            title: encTitle,
+            description: encDesc,
             kind: kind || 'team_work',
           };
           if (coordinatorAgentId) body.coordinator_agent_id = coordinatorAgentId;
@@ -574,12 +591,26 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string; coordinatorAgentInstanceId?: string }>({
-      queryFn: async ({ chainId, title, description, status, coordinatorAgentInstanceId }) => {
+      queryFn: async ({ chainId, title, description, status, coordinatorAgentInstanceId }, api) => {
         try {
+          const state: any = api.getState();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
-          if (title !== undefined) body.title = title;
-          if (description !== undefined) body.description = description;
+          if (title !== undefined) {
+            body.title =
+              isUnlocked && rawKeyHex && !isVaultArmored(title)
+                ? await encryptVaultText(title, rawKeyHex)
+                : title;
+          }
+          if (description !== undefined) {
+            body.description =
+              isUnlocked && rawKeyHex && description && !isVaultArmored(description)
+                ? await encryptVaultText(description, rawKeyHex)
+                : description;
+          }
           if (status !== undefined) body.status = status;
           if (coordinatorAgentInstanceId !== undefined) body.coordinator_agent_instance_id = coordinatorAgentInstanceId;
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}`, 'PATCH', body);
