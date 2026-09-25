@@ -23,7 +23,13 @@ function rawHash(): string {
 export function getRoutePathname(): string {
   if (typeof window === 'undefined') return '/';
   const raw = rawHash();
-  if (!raw) return window.location.pathname || '/';
+  if (!raw) {
+    const docPath = window.location.pathname || '/';
+    if (docPath.includes('/preview/') || docPath.includes('/proxy/') || docPath.startsWith('/api/')) {
+      return '/';
+    }
+    return docPath;
+  }
   const qIndex = raw.indexOf('?');
   const path = qIndex >= 0 ? raw.slice(0, qIndex) : raw;
   return path || '/';
