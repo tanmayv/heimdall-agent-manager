@@ -91,15 +91,24 @@ def test_live_cli_roundtrip() -> None:
     require(build_res.returncode == 0, f"ham-ctl binary build failed: {build_res.stderr}")
 
     # Check if local bridge is running
-    sock_path = pathlib.Path("/tmp/heimdall-bridge-local/bridge.sock")
+    endpoint = os.environ.get("HEIMDALL_BRIDGE_ENDPOINT", "")
+    if endpoint.startswith("unix:"):
+        sock_path = pathlib.Path(endpoint[len("unix:"):])
+        if not sock_path.exists():
+            endpoint = ""
+    if not endpoint:
+        sock_path = pathlib.Path("/tmp/heimdall-bridge-local/bridge.sock")
+        if sock_path.exists():
+            endpoint = f"unix:{sock_path}"
+        else:
+            endpoint = "tcp:127.0.0.1:49324"
     token = os.environ.get("HEIMDALL_AGENT_TOKEN", "hlat_18d8984563e99ba0_204")
-    if not sock_path.exists():
-        print("   Notice: /tmp/heimdall-bridge-local/bridge.sock not found; skipping live bridge execution.")
-        return
+    inst_id = os.environ.get("HEIMDALL_AGENT_INSTANCE_ID", "inst_18d892f10fff400b")
 
     env = os.environ.copy()
-    env["HEIMDALL_BRIDGE_ENDPOINT"] = f"unix:{sock_path}"
+    env["HEIMDALL_BRIDGE_ENDPOINT"] = endpoint
     env["HEIMDALL_AGENT_TOKEN"] = token
+    env["HEIMDALL_AGENT_INSTANCE_ID"] = inst_id
 
     # Step 1: Set vault key
     res_set = subprocess.run(
