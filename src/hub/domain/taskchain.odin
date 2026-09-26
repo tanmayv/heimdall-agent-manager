@@ -90,6 +90,10 @@ Task :: struct {
 	priority:           Task_Priority,
 	assignee_ref_json:  string,
 	reviewer_refs_json: string,
+	// bridge_id pins which bridge instantiates this task's agent-id actors
+	// (REQ-TB-1). Empty = inherit: resolved later at promotion time from the
+	// chain instances / directories / owner's bridges, in that order.
+	bridge_id:          string,
 	created_at:         string,
 	updated_at:         string,
 	published_at:       string,

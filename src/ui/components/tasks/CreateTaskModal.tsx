@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { Checkbox, Icon, IconButton, Select, Spinner } from '@ui';
 import { useCreateTaskMutation } from '../../api/endpoints/tasks';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { taskBridgeOptions } from '../../utils/taskBridgePin';
 import { formatFleetRoleName } from './FleetManagementDrawer';
 
 export interface CreateTaskModalProps {
@@ -22,10 +24,19 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   const [createTask, { isLoading: isCreating }] = useCreateTaskMutation();
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
+  // REQ-TB-5: the owner's bridges for the optional per-task bridge pin. Skipped
+  // while the modal is closed (same pattern as CreateChainModal).
+  const bridgesQuery = useListBridgesQuery(undefined, { skip: !isOpen });
+  const bridgeOptions = useMemo(
+    () => taskBridgeOptions(bridgesQuery.data?.bridges || []),
+    [bridgesQuery.data],
+  );
 
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [assigneeMode, setAssigneeMode] = useState<'agent' | 'unassigned' | 'user'>('agent');
+  // REQ-TB-5: '' = Inherit (coordinator bridge) — the default create pins nothing.
+  const [bridgeId, setBridgeId] = useState('');
   // REQ-AUTO-4: no literal placeholder default — the user picks a real durable
   // identity from the catalog, or the actor stays unassigned.
   const [assigneeAgentId, setAssigneeAgentId] = useState('');
@@ -112,6 +123,8 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
         chainId,
         title: trimmedTitle,
         description: desc.trim(),
+        // '' is dropped by the createTask serialization (absent = inherit).
+        bridgeId,
       };
       if (assigneeRef !== undefined) {
         payload.assigneeRef = assigneeRef;
@@ -129,6 +142,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       setDesc('');
       setAssigneeMode('agent');
       setAssigneeAgentId('');
+      setBridgeId('');
       setStagedReviewers([]);
       setDependsOnIds([]);
       onSuccess?.();
@@ -187,6 +201,21 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
               placeholder="Specify requirements, files, and acceptance criteria..."
               className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
             />
+          </div>
+
+          {/* Bridge (REQ-TB-5) */}
+          <div>
+            <label className="block font-semibold text-primary mb-1">Bridge</label>
+            <Select
+              data-debug-id="create-task-bridge-select"
+              width="full"
+              value={bridgeId}
+              onChange={setBridgeId}
+              options={bridgeOptions}
+            />
+            <p className="text-[11px] text-muted mt-1">
+              Pin this task to a specific bridge, or leave it on the coordinator&apos;s bridge.
+            </p>
           </div>
 
           {/* Assignee Section */}

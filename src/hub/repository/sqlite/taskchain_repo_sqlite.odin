@@ -84,7 +84,7 @@ taskchain_save_chain_sqlite :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (d
 task_save_sqlite :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO tasks (task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET title=excluded.title, description=excluded.description, publish_state=excluded.publish_state, status=excluded.status, priority=excluded.priority, assignee_ref_json=excluded.assignee_ref_json, reviewer_refs_json=excluded.reviewer_refs_json, updated_at=excluded.updated_at, published_at=excluded.published_at, started_at=excluded.started_at, completed_at=excluded.completed_at;"
+	query := "INSERT INTO tasks (task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at, bridge_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET title=excluded.title, description=excluded.description, publish_state=excluded.publish_state, status=excluded.status, priority=excluded.priority, assignee_ref_json=excluded.assignee_ref_json, reviewer_refs_json=excluded.reviewer_refs_json, updated_at=excluded.updated_at, published_at=excluded.published_at, started_at=excluded.started_at, completed_at=excluded.completed_at, bridge_id=excluded.bridge_id;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task{}, false, domain.domain_error(.Internal_Error, "failed to prepare task save")
 	defer sqlite3_finalize(stmt)
 	bind_task(stmt, task)
@@ -103,7 +103,7 @@ task_save_sqlite :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, 
 task_get_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at FROM tasks WHERE task_id = ?;"
+	query := "SELECT task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at, bridge_id FROM tasks WHERE task_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task{}, false, domain.domain_error(.Internal_Error, "failed to prepare task lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(task_id))
@@ -114,7 +114,7 @@ task_get_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID) -> (domain.Task, b
 task_list_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at FROM tasks WHERE chain_id = ? AND owner_user_id = ? ORDER BY created_at ASC;"
+	query := "SELECT task_id, chain_id, owner_user_id, title, description, publish_state, status, priority, assignee_ref_json, reviewer_refs_json, created_at, updated_at, published_at, started_at, completed_at, bridge_id FROM tasks WHERE chain_id = ? AND owner_user_id = ? ORDER BY created_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare task list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(chain_id)); bind_text(stmt, 2, string(owner_user_id))
@@ -513,7 +513,7 @@ directory_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Chain_Directory {
 }
 
 bind_task :: proc(stmt: sqlite3_stmt, task: domain.Task) {
-	bind_text(stmt, 1, string(task.task_id)); bind_text(stmt, 2, string(task.chain_id)); bind_text(stmt, 3, string(task.owner_user_id)); bind_text(stmt, 4, task.title); bind_text(stmt, 5, task.description); bind_text(stmt, 6, publish_state_string(task.publish_state)); bind_text(stmt, 7, task_status_string(task.status)); bind_text(stmt, 8, domain.task_priority_string(task.priority)); bind_text(stmt, 9, json_or_empty_object(task.assignee_ref_json)); bind_text(stmt, 10, json_or_empty_array(task.reviewer_refs_json)); bind_text(stmt, 11, task.created_at); bind_text(stmt, 12, task.updated_at); bind_text(stmt, 13, task.published_at); bind_text(stmt, 14, task.started_at); bind_text(stmt, 15, task.completed_at)
+	bind_text(stmt, 1, string(task.task_id)); bind_text(stmt, 2, string(task.chain_id)); bind_text(stmt, 3, string(task.owner_user_id)); bind_text(stmt, 4, task.title); bind_text(stmt, 5, task.description); bind_text(stmt, 6, publish_state_string(task.publish_state)); bind_text(stmt, 7, task_status_string(task.status)); bind_text(stmt, 8, domain.task_priority_string(task.priority)); bind_text(stmt, 9, json_or_empty_object(task.assignee_ref_json)); bind_text(stmt, 10, json_or_empty_array(task.reviewer_refs_json)); bind_text(stmt, 11, task.created_at); bind_text(stmt, 12, task.updated_at); bind_text(stmt, 13, task.published_at); bind_text(stmt, 14, task.started_at); bind_text(stmt, 15, task.completed_at); bind_text(stmt, 16, task.bridge_id)
 }
 
 bind_comment :: proc(stmt: sqlite3_stmt, comment: domain.Task_Comment) {
@@ -548,7 +548,7 @@ taskchain_list_pinned_chains_sqlite :: proc(ctx: rawptr, owner_user_id: domain.U
 }
 
 task_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task {
-	return domain.Task{task_id = domain.Task_ID(column_text(stmt, 0)), chain_id = domain.Task_Chain_ID(column_text(stmt, 1)), owner_user_id = domain.User_ID(column_text(stmt, 2)), title = column_text(stmt, 3), description = column_text(stmt, 4), publish_state = publish_state_from_string(column_text(stmt, 5)), status = task_status_from_string(column_text(stmt, 6)), priority = domain.task_priority_from_string(column_text(stmt, 7)), assignee_ref_json = column_text(stmt, 8), reviewer_refs_json = column_text(stmt, 9), created_at = column_text(stmt, 10), updated_at = column_text(stmt, 11), published_at = column_text(stmt, 12), started_at = column_text(stmt, 13), completed_at = column_text(stmt, 14)}
+	return domain.Task{task_id = domain.Task_ID(column_text(stmt, 0)), chain_id = domain.Task_Chain_ID(column_text(stmt, 1)), owner_user_id = domain.User_ID(column_text(stmt, 2)), title = column_text(stmt, 3), description = column_text(stmt, 4), publish_state = publish_state_from_string(column_text(stmt, 5)), status = task_status_from_string(column_text(stmt, 6)), priority = domain.task_priority_from_string(column_text(stmt, 7)), assignee_ref_json = column_text(stmt, 8), reviewer_refs_json = column_text(stmt, 9), created_at = column_text(stmt, 10), updated_at = column_text(stmt, 11), published_at = column_text(stmt, 12), started_at = column_text(stmt, 13), completed_at = column_text(stmt, 14), bridge_id = column_text(stmt, 15)}
 }
 
 task_comment_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Comment {

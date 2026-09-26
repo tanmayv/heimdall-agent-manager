@@ -287,7 +287,6 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 
 	clock := platform.real_clock()
 	ids := platform.real_id_generator()
-	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
 
 	owner := domain.User_ID("user_jit")
 	chain_id := domain.Task_Chain_ID("chain_jit_test")
@@ -303,6 +302,40 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		updated_at        = "2026-09-23T10:00:00Z",
 	}
 	_, _, _ = iface.bridge_save_bridge(&br_repo, bridge)
+	override_bridge := bridge
+	override_bridge.bridge_id = "brg_jit_task_override"
+	_, _, _ = iface.bridge_save_bridge(&br_repo, override_bridge)
+
+	// REQ-TB-3 regression fixture: a project with distinct per-bridge paths so a
+	// task-level bridge pin keeps the inherited project context (from the
+	// coordinator instance) while resolving project_path on the pinned bridge.
+	jit_project := domain.Project{
+		project_id    = domain.Project_ID("prj_jit"),
+		owner_user_id = owner,
+		name          = "JIT Project",
+		slug          = "jit-project",
+		default_path  = "/srv/jit/default",
+		state         = .Active,
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.project_save(&pr_repo, jit_project)
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = jit_project.project_id,
+		bridge_id     = "brg_jit",
+		owner_user_id = owner,
+		path          = "/srv/jit/primary",
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	})
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = jit_project.project_id,
+		bridge_id     = override_bridge.bridge_id,
+		owner_user_id = owner,
+		path          = "/srv/jit/override",
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	})
 
 	// Set up Agent in repo
 	worker_agent := domain.Agent{
@@ -325,18 +358,32 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		enabled       = true,
 	}
 	_, _, _ = iface.agent_save_support(&ag_repo, support)
+	override_support := support
+	override_support.bridge_id = override_bridge.bridge_id
+	_, _, _ = iface.agent_save_support(&ag_repo, override_support)
 
 	// Set up bridge runtime registry and agent service
 	registry := project_service.Bridge_Runtime_Registry{}
 	project_service.bridge_runtime_registry_mark_live(&registry, "brg_jit", false, "")
+	project_service.bridge_runtime_registry_mark_live(&registry, override_bridge.bridge_id, false, "")
 
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
 	sink := project_service.Bridge_Command_Sink{
-		ctx = rawptr(&conn),
+		ctx = rawptr(&captured_cmds),
 		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
 			return true, domain.Domain_Error{}
 		},
 	}
 
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
 	ag_service := agent_service.new_agent_service_with_runtime(&ag_repo, &br_repo, &pr_repo, &co_repo, &tc_repo, sink, &registry, &clock, &ids)
 	svc.agent_service = &ag_service
 
@@ -359,6 +406,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		owner_user_id     = owner,
 		agent_id          = "agt_coordinator",
 		bridge_id         = "brg_jit",
+		project_id        = domain.Project_ID("prj_jit"),
 		display_name      = "coordinator #1",
 		runtime_status    = "running",
 		chain_id          = string(chain_id),
@@ -394,6 +442,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		priority           = .P1,
 		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_jit_worker"}`,
 		reviewer_refs_json = "[]",
+		bridge_id          = override_bridge.bridge_id,
 		created_at         = "2026-09-23T10:01:00Z",
 		updated_at         = "2026-09-23T10:01:00Z",
 	}
@@ -416,6 +465,11 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	testing.expect_value(t, spawned_inst.chain_id, string(chain_id))
 	testing.expect_value(t, spawned_inst.current_task_id, "task_jit_1")
 	testing.expect_value(t, spawned_inst.current_task_role, domain.Current_Task_Role.Work)
+	testing.expect_value(t, spawned_inst.bridge_id, override_bridge.bridge_id)
+	// REQ-TB-3: the pinned bridge overrides only the bridge; the coordinator's
+	// project context is inherited and project_path resolves on the pinned bridge.
+	testing.expect_value(t, string(spawned_inst.project_id), "prj_jit")
+	testing.expect_value(t, spawned_inst.project_path, "/srv/jit/override")
 
 	// REQ-FLEET-PT-2: the fleet row's provider/tier must reach the JIT-provisioned
 	// instance (worker call site).
@@ -460,8 +514,13 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 
 	inherited_inst, inherited_ok, _ := iface.agent_get_instance(&ag_repo, spawned2_id)
 	testing.expect(t, inherited_ok, "second spawned instance must exist in repository")
+	testing.expect_value(t, inherited_inst.bridge_id, "brg_jit")
 	testing.expect_value(t, inherited_inst.provider, "jetski")
 	testing.expect_value(t, inherited_inst.tier, "normal")
+	// REQ-TB-3: with no task pin the same inherited project context resolves its
+	// path on the fallback bridge (coordinator bridge), not the override bridge.
+	testing.expect_value(t, string(inherited_inst.project_id), "prj_jit")
+	testing.expect_value(t, inherited_inst.project_path, "/srv/jit/primary")
 
 	// Reviewer call site: a fleet row for the reviewer agent must reach the
 	// reviewer JIT provision in the REVIEWER DISPATCH PASS (tier "smart" differs
@@ -485,6 +544,9 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		enabled       = true,
 	}
 	_, _, _ = iface.agent_save_support(&ag_repo, reviewer_support)
+	reviewer_override_support := reviewer_support
+	reviewer_override_support.bridge_id = override_bridge.bridge_id
+	_, _, _ = iface.agent_save_support(&ag_repo, reviewer_override_support)
 
 	reviewer_fleet := domain.Task_Chain_Fleet{
 		task_chain_id    = chain_id,
@@ -509,6 +571,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		priority           = .P1,
 		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_jit_worker"}`,
 		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_jit_reviewer"}]`,
+		bridge_id          = override_bridge.bridge_id,
 		created_at         = "2026-09-23T10:03:00Z",
 		updated_at         = "2026-09-23T10:03:00Z",
 	}
@@ -528,11 +591,98 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		rev_inst, rev_ok, _ := iface.agent_get_instance(&ag_repo, rev_instances[0])
 		testing.expect(t, rev_ok, "reviewer JIT instance must exist in repository")
 		testing.expect_value(t, rev_inst.agent_id, "agt_jit_reviewer")
+		testing.expect_value(t, rev_inst.bridge_id, override_bridge.bridge_id)
 		testing.expect_value(t, rev_inst.provider, "jetski")
 		testing.expect_value(t, rev_inst.tier, "smart")
 		testing.expect_value(t, rev_inst.current_task_id, "task_jit_review")
 		testing.expect_value(t, rev_inst.current_task_role, domain.Current_Task_Role.Review)
+		// REQ-TB-3: reviewer JIT spawn keeps the inherited project context and
+		// resolves its path on the task-pinned bridge, same as the worker spawn.
+		testing.expect_value(t, string(rev_inst.project_id), "prj_jit")
+		testing.expect_value(t, rev_inst.project_path, "/srv/jit/override")
 	}
+
+	saved_t1.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, saved_t1)
+	saved_t2.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, saved_t2)
+	saved_rev_task.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, saved_rev_task)
+	_ = reconcile_chain(&svc, chain)
+
+	offline_bridge := bridge
+	offline_bridge.bridge_id = "brg_jit_offline"
+	offline_bridge.status = .Offline
+	_, _, _ = iface.bridge_save_bridge(&br_repo, offline_bridge)
+	offline_agent := domain.Agent{
+		agent_id         = "agt_jit_offline",
+		owner_user_id    = owner,
+		name             = "Offline JIT Worker",
+		slug             = "offline-jit-worker",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, offline_agent)
+	offline_support := domain.Agent_Bridge_Support{
+		agent_id      = offline_agent.agent_id,
+		bridge_id     = offline_bridge.bridge_id,
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, offline_support)
+	offline_fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = offline_agent.agent_id,
+		capacity         = 1,
+		min_warm         = 0,
+		idle_ttl_seconds = 300,
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, offline_fleet)
+	offline_task := domain.Task{
+		task_id            = "task_jit_offline",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Offline JIT Task",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_jit_offline"}`,
+		reviewer_refs_json = "[]",
+		bridge_id          = offline_bridge.bridge_id,
+		created_at         = "2026-09-23T10:04:00Z",
+		updated_at         = "2026-09-23T10:04:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, offline_task)
+
+	commands_before_hold := len(captured_cmds)
+	promoted_while_offline := reconcile_chain(&svc, chain)
+	testing.expect_value(t, promoted_while_offline, 0)
+	held_task, held_ok, _ := iface.taskchain_get_task(&tc_repo, offline_task.task_id)
+	testing.expect(t, held_ok, "offline task must exist")
+	testing.expect_value(t, held_task.status, domain.Task_Status.Assigned)
+	testing.expect_value(t, held_task.updated_at, offline_task.updated_at)
+	held_assignee := primary_assignee_instance(held_task.assignee_ref_json)
+	testing.expect_value(t, held_assignee, "")
+	testing.expect_value(t, len(captured_cmds), commands_before_hold)
+
+	offline_bridge.status = .Online
+	_, _, _ = iface.bridge_save_bridge(&br_repo, offline_bridge)
+	project_service.bridge_runtime_registry_mark_live(&registry, offline_bridge.bridge_id, false, "")
+	promoted_after_resume := reconcile_chain(&svc, chain)
+	testing.expect_value(t, promoted_after_resume, 1)
+	resumed_task, resumed_ok, _ := iface.taskchain_get_task(&tc_repo, offline_task.task_id)
+	testing.expect(t, resumed_ok, "resumed task must exist")
+	testing.expect_value(t, resumed_task.status, domain.Task_Status.In_Progress)
+	resumed_assignee := primary_assignee_instance(resumed_task.assignee_ref_json)
+	defer delete(resumed_assignee)
+	resumed_inst, resumed_inst_ok, _ := iface.agent_get_instance(&ag_repo, resumed_assignee)
+	testing.expect(t, resumed_inst_ok, "offline task must JIT provision once its bridge returns")
+	testing.expect_value(t, resumed_inst.bridge_id, offline_bridge.bridge_id)
+	testing.expect(t, len(captured_cmds) > commands_before_hold, "resumed task must enqueue a wake command")
 }
 
 @(test)
