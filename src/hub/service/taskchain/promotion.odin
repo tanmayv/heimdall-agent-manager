@@ -133,9 +133,10 @@ work_task_eligible :: proc(tasks: []domain.Task, deps: []domain.Task_Dependency,
 // instance_has_pending_validation reports whether the given instance has any task
 // currently in_validation (i.e. submitted for review but not yet resolved). Used
 // as a promotion gate: an assignee should not pick up new work while review is pending.
-instance_has_pending_validation :: proc(tasks: []domain.Task, instance_id: string) -> bool {
+instance_has_pending_validation :: proc(tasks: []domain.Task, instance_id: string, offline_task_ids: map[domain.Task_ID]bool) -> bool {
 	for t in tasks {
 		if t.status != .In_Validation do continue
+		if offline_task_ids[t.task_id] do continue
 		a := primary_assignee_instance(t.assignee_ref_json)
 		is_mine := a == instance_id
 		delete(a)
@@ -187,10 +188,8 @@ fleet_provider_tier_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_i
 	return "", ""
 }
 
-// jit_provision_agent_instance launches a new instance of agent_id for the chain
-// using agent_service.create_instance, inheriting the chain's bridge and project context.
-jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, chain_instances: []domain.Agent_Instance, agent_id: string, role: string, provider: string, tier: string) -> string {
-	if service == nil || service.agent_service == nil do return ""
+task_effective_bridge :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task) -> (string, domain.Project_ID) {
+	if service == nil do return task.bridge_id, domain.Project_ID("")
 
 	bridge_id := ""
 	project_id := domain.Project_ID("")
@@ -201,27 +200,62 @@ jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.
 			project_id = coord.project_id
 		}
 	}
-	if bridge_id == "" {
-		for ci in chain_instances {
-			if ci.bridge_id != "" {
-				bridge_id = ci.bridge_id
-				project_id = ci.project_id
-				break
+	if bridge_id == "" && service.agents != nil && service.repo != nil {
+		if members, m_err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); m_err.code == .None {
+			defer delete(members)
+			for member in members {
+				if inst, inst_ok, _ := iface.agent_get_instance(service.agents, member.agent_instance_id); inst_ok && inst.bridge_id != "" {
+					bridge_id = inst.bridge_id
+					project_id = inst.project_id
+					break
+				}
+			}
+		}
+	}
+	if bridge_id == "" && service.agents != nil {
+		if instances, i_err := iface.agent_list_instances_by_owner(service.agents, chain.owner_user_id, 1000, ""); i_err.code == .None {
+			defer delete(instances)
+			for inst in instances {
+				if inst.chain_id == string(chain.chain_id) && inst.bridge_id != "" {
+					bridge_id = inst.bridge_id
+					project_id = inst.project_id
+					break
+				}
 			}
 		}
 	}
 	if bridge_id == "" && service.repo != nil {
-		if dirs, derr := iface.taskchain_list_directories_by_chain(service.repo, chain.chain_id, chain.owner_user_id); derr.code == .None {
+		if dirs, d_err := iface.taskchain_list_directories_by_chain(service.repo, chain.chain_id, chain.owner_user_id); d_err.code == .None {
+			defer delete(dirs)
 			if len(dirs) > 0 do bridge_id = dirs[0].bridge_id
-			delete(dirs)
 		}
 	}
-	if bridge_id == "" && service.agent_service.bridges != nil {
+	if bridge_id == "" && service.agent_service != nil && service.agent_service.bridges != nil {
 		if bridges, b_err := iface.bridge_list_by_owner(service.agent_service.bridges, chain.owner_user_id); b_err.code == .None {
+			defer delete(bridges)
 			if len(bridges) > 0 do bridge_id = bridges[0].bridge_id
-			delete(bridges)
 		}
 	}
+	// REQ-TB-3: a non-empty task bridge pin overrides only the effective bridge; the
+	// project context resolved above is preserved so JIT instances keep the inherited
+	// project_id and receive a per-bridge project_path on the pinned bridge.
+	if task.bridge_id != "" do bridge_id = task.bridge_id
+	return bridge_id, project_id
+}
+
+task_effective_bridge_is_online :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task) -> (bool, string) {
+	bridge_id, _ := task_effective_bridge(service, chain, task)
+	if service == nil || service.agent_service == nil || service.agent_service.bridges == nil do return true, bridge_id
+	bridge, bridge_ok, _ := iface.bridge_get_bridge(service.agent_service.bridges, bridge_id)
+	return bridge_ok && bridge.status == .Online, bridge_id
+}
+
+// jit_provision_agent_instance launches a new instance of agent_id for the chain
+// using agent_service.create_instance and the task's effective bridge.
+jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task, agent_id: string, role: string, provider: string, tier: string) -> string {
+	if service == nil || service.agent_service == nil do return ""
+
+	bridge_id, project_id := task_effective_bridge(service, chain, task)
 	if bridge_id == "" do return ""
 
 	auth := contracts.Auth_Context{
@@ -248,7 +282,7 @@ jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.
 // dynamic_fleet_schedule acts as a dynamic scheduler for tasks with declarative agent_id refs.
 // Actionable tasks targeting agent_id are assigned to idle warm pool instances or JIT-provisioned
 // up to the chain's fleet capacity. Saturated tasks remain queued in FIFO/priority order.
-dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, tasks: []domain.Task, deps: []domain.Task_Dependency) -> bool {
+dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, tasks: []domain.Task, deps: []domain.Task_Dependency, offline_task_ids: map[domain.Task_ID]bool) -> bool {
 	if service == nil || service.repo == nil do return false
 
 	fleets, ferr := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
@@ -307,7 +341,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 	}
 
 	for t in tasks {
-		if t.status == .In_Progress {
+		if t.status == .In_Progress && !offline_task_ids[t.task_id] {
 			a := primary_assignee_instance(t.assignee_ref_json)
 			if a != "" {
 				mark_busy(&busy_instances, &busy_keys, a)
@@ -316,12 +350,13 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 		}
 	}
 	for inst in chain_instances {
-		if instance_has_pending_validation(tasks, inst.agent_instance_id) {
+		if instance_has_pending_validation(tasks, inst.agent_instance_id, offline_task_ids) {
 			mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
 		}
 	}
 	for t in tasks {
 		if t.status != .In_Validation do continue
+		if offline_task_ids[t.task_id] do continue
 		for inst in chain_instances {
 			if instance_reviews_task(t, chain, inst.agent_instance_id) {
 				mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
@@ -339,6 +374,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 	for t in tasks {
 		if t.publish_state != .Published do continue
 		if t.status != .Assigned && t.status != .Queued do continue
+		if offline_task_ids[t.task_id] do continue
 		if !deps_satisfied_for_task(tasks, deps, t.task_id) do continue
 
 		inst_id := primary_assignee_instance(t.assignee_ref_json)
@@ -423,7 +459,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			}
 		} else if live_count < capacity {
 			fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
-			new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], target_agent_id, "worker", fleet_provider, fleet_tier)
+			new_instance_id := jit_provision_agent_instance(service, chain, cand, target_agent_id, "worker", fleet_provider, fleet_tier)
 			if new_instance_id != "" {
 				defer delete(new_instance_id)
 				ensure_chain_member(service, chain, new_instance_id, target_agent_id)
@@ -469,6 +505,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 	for t in tasks {
 		if t.publish_state != .Published do continue
 		if t.status != .In_Validation do continue
+		if offline_task_ids[t.task_id] do continue
 
 		assignee_id := primary_assignee_instance(t.assignee_ref_json)
 		defer delete(assignee_id)
@@ -544,7 +581,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				}
 			} else if live_count < capacity {
 				fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, rev_agent_id)
-				new_instance_id := jit_provision_agent_instance(service, chain, chain_instances[:], rev_agent_id, "reviewer", fleet_provider, fleet_tier)
+				new_instance_id := jit_provision_agent_instance(service, chain, t, rev_agent_id, "reviewer", fleet_provider, fleet_tier)
 				if new_instance_id != "" {
 					defer delete(new_instance_id)
 					ensure_chain_member(service, chain, new_instance_id, rev_agent_id)
@@ -599,13 +636,31 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	if deps_err.code != .None do return 0
 	defer delete(deps)
 
+	dispatch_offline_task_ids := make(map[domain.Task_ID]bool)
+	defer delete(dispatch_offline_task_ids)
+	for task in tasks {
+		if task.status != .Assigned && task.status != .Queued && task.status != .In_Validation do continue
+		bridge_online, _ := task_effective_bridge_is_online(service, chain, task)
+		if !bridge_online do dispatch_offline_task_ids[task.task_id] = true
+	}
+
 	// REQ-FLEET-DISPATCHER-1: Dynamic fleet scheduler and JIT agent provisioning pass.
 	// For actionable tasks with declarative agent_id targets, allocate idle instances
 	// from the chain's warm pool or JIT-provision new instances up to fleet capacity.
-	if dynamic_fleet_schedule(service, chain, tasks[:], deps[:]) {
+	if dynamic_fleet_schedule(service, chain, tasks[:], deps[:], dispatch_offline_task_ids) {
 		delete(tasks)
 		tasks, tasks_err = iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 		if tasks_err.code != .None do return 0
+	}
+
+	offline_task_ids := make(map[domain.Task_ID]bool)
+	defer delete(offline_task_ids)
+	for task in tasks {
+		if task.status != .Assigned && task.status != .Queued && task.status != .In_Progress && task.status != .Validated_Not_Good && task.status != .In_Validation do continue
+		bridge_online, bridge_id := task_effective_bridge_is_online(service, chain, task)
+		if bridge_online do continue
+		offline_task_ids[task.task_id] = true
+		fmt.eprintfln("[reconcile] task %s effective bridge %s offline; holding", task.task_id, bridge_id)
 	}
 
 	// Collect the TOTAL set of instances that could hold a pointer in this chain:
@@ -645,6 +700,26 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
+	held_instance_ids := make(map[string]bool)
+	defer delete(held_instance_ids)
+	if service.agents != nil {
+		for instance_id in instance_ids {
+			if inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id); inst_ok && offline_task_ids[domain.Task_ID(inst.current_task_id)] {
+				held_instance_ids[instance_id] = true
+			}
+		}
+	}
+	for task in tasks {
+		if !offline_task_ids[task.task_id] do continue
+		assignee_id := primary_assignee_instance(task.assignee_ref_json)
+		if assignee_id != "" do held_instance_ids[assignee_id] = true
+		delete(assignee_id)
+		reviewer_ids := extract_instances_from_ref_blob(task.reviewer_refs_json)
+		for reviewer_id in reviewer_ids do if instance_reviews_task(task, chain, reviewer_id) do held_instance_ids[reviewer_id] = true
+		delete(reviewer_ids)
+		for reviewer_id in def_reviewers do if instance_reviews_task(task, chain, reviewer_id) do held_instance_ids[reviewer_id] = true
+	}
+
 	// Load votes for all in_validation tasks so the review pool can exclude tasks
 	// an instance has already voted on (stopping reviewers after they vote).
 	votes_by_task := make(map[domain.Task_ID][]string) // task_id -> []voter_instance_ids
@@ -678,19 +753,21 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	defer delete(queue)
 
 	for instance_id in instance_ids {
+		if held_instance_ids[instance_id] do continue
 		// REVIEW pool: tasks in validation this instance reviews. Review wins over
 		// work (R7), so if any review candidate exists it takes the focus.
 		best_review: domain.Task
 		have_review := false
 		for t in tasks {
 			if t.status != .In_Validation do continue
+			if offline_task_ids[t.task_id] do continue
 			if !instance_reviews_task(t, chain, instance_id) do continue
 			if instance_has_voted(votes_by_task, t.task_id, instance_id) do continue
 			if !have_review || task_prefers(t, best_review) { best_review = t; have_review = true }
 		}
 
 		// Block new work promotion while this instance has a task pending review.
-		if !have_review && instance_has_pending_validation(tasks[:], instance_id) {
+		if !have_review && instance_has_pending_validation(tasks[:], instance_id, offline_task_ids) {
 			// BUG-50 Fix (Bug 1): keep the assignee alive on their pending-review task
 			// instead of clearing focus to {"", .None}. Clearing produced a Focus_Change
 			// (pointer was {task_id, .Work} while In_Progress) -> stop[] -> the bridge
@@ -703,6 +780,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			// focus is restored -> no change -> the running agent just receives a nudge.
 			for t in tasks {
 				if t.status != .In_Validation do continue
+				if offline_task_ids[t.task_id] do continue
 				a := primary_assignee_instance(t.assignee_ref_json)
 				is_mine := a == instance_id
 				delete(a)
@@ -715,6 +793,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			// while awaiting review so the instance has 0 active in_progress tasks.
 			for t in tasks {
 				if t.status != .In_Progress && t.status != .Assigned do continue
+				if offline_task_ids[t.task_id] do continue
 				a := primary_assignee_instance(t.assignee_ref_json)
 				is_mine := a == instance_id
 				delete(a)
@@ -729,6 +808,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		best_work: domain.Task
 		have_work := false
 		for t in tasks {
+			if offline_task_ids[t.task_id] do continue
 			a := primary_assignee_instance(t.assignee_ref_json)
 			is_mine := a == instance_id
 			delete(a)
@@ -761,6 +841,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		// work tasks assigned to that instance are placed in queue map to be demoted to Queued.
 		for t in tasks {
 			if t.task_id == chosen_work_id do continue
+			if offline_task_ids[t.task_id] do continue
 			a := primary_assignee_instance(t.assignee_ref_json)
 			is_mine := a == instance_id
 			delete(a)
@@ -777,6 +858,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	// This ensures that adding a blocking dependency to an active task pauses/queues
 	// it immediately until its dependencies resolve.
 	for t in tasks {
+		if offline_task_ids[t.task_id] do continue
 		if t.status == .In_Progress && !deps_satisfied_for_task(tasks[:], deps[:], t.task_id) {
 			queue[t.task_id] = true
 		}
@@ -814,7 +896,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
-	changed_focus := apply_instance_focus_total(service, instance_ids[:], focus)
+	changed_focus := apply_instance_focus_total(service, instance_ids[:], focus, held_instance_ids)
 	defer delete(changed_focus)
 
 	// Re-read tasks so notifications reflect just-applied status changes.
@@ -839,6 +921,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		delete(runs); delete(stops); delete(bridge_order); delete(seen_bridge)
 	}
 	for cf in changed_focus {
+		if cf.new_task_id != "" && offline_task_ids[domain.Task_ID(cf.new_task_id)] do continue
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
 		if !inst_ok {
 			// BUG-49 diagnostic: no agent record => no bridge_id/provider/etc, so no
@@ -921,24 +1004,25 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	// focus, ensure reconciliation starts them and removes them from all stops.
 	eval_tasks := fresh_tasks if ft_err.code == .None else tasks[:]
 	for t in eval_tasks {
+		if offline_task_ids[t.task_id] do continue
 		if t.status == .In_Progress {
 			assignee_id := primary_assignee_instance(t.assignee_ref_json)
 			if assignee_id != "" {
-				ensure_actionable_agent_started(service, chain, t, assignee_id, .Work, &runs, &stops, &bridge_order, &seen_bridge)
+				ensure_actionable_agent_started(service, chain, t, assignee_id, .Work, &runs, &stops, &bridge_order, &seen_bridge, offline_task_ids)
 				delete(assignee_id)
 			}
 		} else if t.status == .In_Validation {
 			reviewers := extract_instances_from_ref_blob(t.reviewer_refs_json)
 			for rev_id in reviewers {
 				if instance_reviews_task(t, chain, rev_id) && !instance_has_voted(votes_by_task, t.task_id, rev_id) {
-					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge)
+					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge, offline_task_ids)
 				}
 			}
 			delete(reviewers)
 			def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
 			for rev_id in def_reviewers {
 				if instance_reviews_task(t, chain, rev_id) && !instance_has_voted(votes_by_task, t.task_id, rev_id) {
-					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge)
+					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge, offline_task_ids)
 				}
 			}
 			delete(def_reviewers)
@@ -950,7 +1034,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			task, task_ok := lookup_task(eval_tasks, f.task_id)
 			if !task_ok do task, task_ok = lookup_task(tasks[:], f.task_id)
 			if task_ok {
-				ensure_actionable_agent_started(service, chain, task, inst_id, f.role, &runs, &stops, &bridge_order, &seen_bridge)
+				ensure_actionable_agent_started(service, chain, task, inst_id, f.role, &runs, &stops, &bridge_order, &seen_bridge, offline_task_ids)
 			}
 		}
 	}
@@ -1028,7 +1112,9 @@ ensure_actionable_agent_started :: proc(
 	stops: ^map[string][dynamic]string,
 	bridge_order: ^[dynamic]string,
 	seen_bridge: ^map[string]bool,
+	offline_task_ids: map[domain.Task_ID]bool,
 ) {
+	if offline_task_ids[task.task_id] do return
 	if instance_id == "" || instance_id == chain.coordinator_agent_instance_id do return
 	if service == nil || service.agents == nil do return
 
@@ -1106,10 +1192,11 @@ Focus_Change :: struct {
 // apply_instance_focus_total writes EVERY candidate instance's pointer: to its
 // resolved focus, or cleared when it has none. Change-gated. Returns the set of
 // instances whose pointer actually changed (with the new focus).
-apply_instance_focus_total :: proc(service: ^Taskchain_Service, instance_ids: []string, focus: map[string]Instance_Focus) -> []Focus_Change {
+apply_instance_focus_total :: proc(service: ^Taskchain_Service, instance_ids: []string, focus: map[string]Instance_Focus, held_instance_ids: map[string]bool) -> []Focus_Change {
 	changed := make([dynamic]Focus_Change)
 	if service == nil || service.agents == nil do return changed[:]
 	for instance_id in instance_ids {
+		if held_instance_ids[instance_id] do continue
 		f := focus[instance_id] // zero value = {"", .None} when absent => clear
 		inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
 		if !ok {

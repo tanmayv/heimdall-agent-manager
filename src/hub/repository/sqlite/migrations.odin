@@ -369,6 +369,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_task_chain_directories_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chain_directories schema upgrade failed")
 	if !upgrade_lsp_servers_schema(conn) do return false, domain.domain_error(.Internal_Error, "lsp server configs schema upgrade failed")
 	if !upgrade_task_chain_fleets_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chain_fleets schema upgrade failed")
+	if !upgrade_task_bridge_schema(conn) do return false, domain.domain_error(.Internal_Error, "task bridge_id schema upgrade failed")
 	if !upgrade_user_vaults_schema(conn) do return false, domain.domain_error(.Internal_Error, "user vaults schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
@@ -809,6 +810,14 @@ upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "task_chain_fleets", "provider") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN provider TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "task_chain_fleets", "tier") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN tier TEXT NOT NULL DEFAULT '';") do return false
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_task_chain_fleets_chain ON task_chain_fleets(task_chain_id);") do return false
+	return true
+}
+
+// upgrade_task_bridge_schema idempotently adds tasks.bridge_id (REQ-TB-1): the
+// per-task bridge pin deciding which bridge instantiates the task's agent-id
+// actors. Empty default = inherit (resolved at promotion time); no backfill.
+upgrade_task_bridge_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "tasks", "bridge_id") && !exec(conn, "ALTER TABLE tasks ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';") do return false
 	return true
 }
 

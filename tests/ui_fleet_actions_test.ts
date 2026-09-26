@@ -625,3 +625,87 @@ test('tier options derived from a live bridge payload drive tier selection end-t
   assert.equal(nextTierOnProviderChange('smart', 'codex', caps), '');
   assert.equal(nextTierOnProviderChange('normal', 'codex', caps), 'normal');
 });
+
+// -----------------------------------------------------------------------------
+// REQ-TB-5: per-task bridge pin — select default, create submit, change/clear
+// -----------------------------------------------------------------------------
+
+import {
+  TASK_BRIDGE_INHERIT_LABEL,
+  taskBridgeOptions,
+  taskCreateBridgeFields,
+  taskPatchBridgeFields,
+  taskBridgeDisplay,
+} from '../src/ui/utils/taskBridgePin.ts';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const readRepo = (rel: string) => readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+
+const PIN_BRIDGES = [
+  { bridge_id: 'brg_alpha', label: 'alpha host', status: 'online' },
+  { bridge_id: 'brg_beta', machine_hostname: 'beta.example', status: 'online' },
+  { bridge_id: 'brg_gone', label: 'retired host', status: 'revoked' },
+];
+
+test('taskBridgeOptions defaults to Inherit and lists the owner bridges (revoked excluded)', () => {
+  const options = taskBridgeOptions(PIN_BRIDGES);
+  assert.deepEqual(options, [
+    { value: '', label: TASK_BRIDGE_INHERIT_LABEL },
+    { value: 'brg_alpha', label: 'alpha host' },
+    { value: 'brg_beta', label: 'beta.example' },
+  ]);
+  // An empty bridge list still offers the inherit default — the modal never pins.
+  assert.deepEqual(taskBridgeOptions([]), [{ value: '', label: TASK_BRIDGE_INHERIT_LABEL }]);
+});
+
+test('create submit: default create sends no bridge_id, an override pins the chosen bridge', () => {
+  // Default (inherit) create — the hub treats absent and '' alike, so the key is
+  // simply omitted.
+  assert.deepEqual(taskCreateBridgeFields(''), {});
+  assert.deepEqual(taskCreateBridgeFields(undefined), {});
+  // A concrete bridge is forwarded verbatim.
+  assert.deepEqual(taskCreateBridgeFields('brg_alpha'), { bridge_id: 'brg_alpha' });
+});
+
+test('change/clear submit: the presence-checked PATCH always carries bridge_id', () => {
+  // Change: repin to a concrete bridge.
+  assert.deepEqual(taskPatchBridgeFields('brg_beta'), { bridge_id: 'brg_beta' });
+  // Clear: '' is the explicit clear-to-inherit signal (must NOT be dropped).
+  assert.deepEqual(taskPatchBridgeFields(''), { bridge_id: '' });
+});
+
+test('taskBridgeDisplay resolves the pin name and marks inherit', () => {
+  // Pinned: name resolved from the /bridges list.
+  assert.deepEqual(taskBridgeDisplay('brg_alpha', PIN_BRIDGES), { label: 'alpha host', inherited: false });
+  // Unknown id (e.g. revoked/foreign pin): falls back to the raw id, never blank.
+  assert.deepEqual(taskBridgeDisplay('brg_other', PIN_BRIDGES), { label: 'brg_other', inherited: false });
+  // No pin: inherited.
+  assert.deepEqual(taskBridgeDisplay('', PIN_BRIDGES), { label: '', inherited: true });
+  assert.deepEqual(taskBridgeDisplay(undefined, PIN_BRIDGES), { label: '', inherited: true });
+});
+
+test('REQ-TB-5 wiring: create modals, task detail, and the tasks API all carry the bridge pin', () => {
+  const createModal = readRepo('src/ui/components/tasks/CreateTaskModal.tsx');
+  const overview = readRepo('src/ui/components/taskchain/TaskChainOverview.tsx');
+  const tasksApi = readRepo('src/ui/api/endpoints/tasks.ts');
+
+  // Both create paths submit the selected bridge through the RTK arg.
+  assert.match(createModal, /create-task-bridge-select/);
+  assert.match(createModal, /bridgeId,/);
+  assert.match(overview, /taskchain-new-task-bridge-select/);
+  assert.match(overview, /bridgeId: newTaskBridgeId/);
+
+  // Task detail shows the pin and PATCHes changes through updateTaskDetail.
+  assert.match(overview, /taskchain-task-bridge-\$\{taskId\}/);
+  assert.match(overview, /taskchain-edit-bridge-select/);
+  assert.match(overview, /bridgeId: editBridgeId/);
+
+  // The API layer serializes via the presence-aware helpers and normalizes the
+  // pin onto the task shape.
+  assert.match(tasksApi, /taskCreateBridgeFields\(bridgeId\)/);
+  assert.match(tasksApi, /taskPatchBridgeFields\(bridgeId\)/);
+  assert.match(tasksApi, /bridgeId: String\(task\.bridge_id/);
+});

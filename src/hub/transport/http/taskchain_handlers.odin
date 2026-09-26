@@ -744,6 +744,18 @@ create_priority_from_body :: proc(body: string) -> (priority: domain.Task_Priori
 	return .P2, false, false, domain.domain_error(.Validation_Failed, "priority must be one of p0, p1, p2")
 }
 
+// task_bridge_id_from_body reads the optional "bridge_id" pin for a task CREATE or
+// PATCH. Both the cookie API and the agent-action API call it so the two transports
+// cannot diverge (same rationale as the shared depends_on parse). `present` is true
+// when the key was sent AT ALL — an explicitly empty string is a deliberate clear
+// back to inherit on PATCH, while an absent key means inherit on create and "leave
+// the pin untouched" on PATCH. The service applies that distinction through
+// Create_Task_Input.bridge_id (plain) and the presence-checked
+// Update_Task_Input.bridge_id (nil = absent).
+task_bridge_id_from_body :: proc(body: string) -> (value: string, present: bool) {
+	return json_string(body, "bridge_id"), strings.contains(body, "\"bridge_id\"")
+}
+
 create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -752,7 +764,8 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	deps := json_array_of_strings(req.body, "depends_on")
 	priority, has_priority, prio_ok, prio_err := create_priority_from_body(req.body)
 	if !prio_ok do return respond_error(prio_err, req.request_id)
-	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps})
+	bridge_id, _ := task_bridge_id_from_body(req.body)
+	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, bridge_id = bridge_id})
 	if !created do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
@@ -773,7 +786,12 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	deps := json_array_of_strings(req.body, "depends_on")
 	has_priority := strings.contains(req.body, "\"priority\"")
 	priority := domain.task_priority_from_string(json_string(req.body, "priority"))
-	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps})
+	// bridge_id is presence-checked, not defaulted: absent leaves the pin untouched
+	// (nil), present "" clears it back to inherit, and present non-empty repins.
+	bridge_id, has_bridge := task_bridge_id_from_body(req.body)
+	bridge_pin: ^string
+	if has_bridge do bridge_pin = &bridge_id
+	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps, bridge_id = bridge_pin})
 	if !updated do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
@@ -1372,7 +1390,7 @@ write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
 // parameter so no existing call site changes, and an additive JSON field so no existing
 // consumer breaks. It reports what happened; it never predicts what will happen.
 write_task_json :: proc(b: ^strings.Builder, t: domain.Task, requested_status := "") {
-	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"")
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, t.bridge_id); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"")
 	if requested_status != "" && requested_status != task_status_http(t.status) {
 		strings.write_string(b, ",\"requested_status\":\""); write_handler_json_string(b, requested_status); strings.write_string(b, "\"")
 	}
@@ -1407,6 +1425,7 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 	strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state))
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status))
 	strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority))
+	strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, t.bridge_id)
 	strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json))
 	strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json))
 	strings.write_string(b, ",\"blocked\":"); strings.write_string(b, "true" if is_blocked else "false")

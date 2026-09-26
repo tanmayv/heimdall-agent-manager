@@ -653,6 +653,10 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	// malformed id is REJECTED, not dropped: create_task runs each one through
 	// add_task_dependency, which fails the whole call.
 	deps := json_array_of_strings(params, "depends_on")
+	// Same shared parse as the cookie create (REQ-TB-2): optional bridge_id, absent
+	// means inherit. The service applies the identical owner-bridge validation, so an
+	// agent gains no privilege by setting it.
+	bridge_id, _ := task_bridge_id_from_body(params)
 	task, created, err := taskchain_service.create_task(h.taskchains, auth, taskchain_service.Create_Task_Input{
 		chain_id = domain.Task_Chain_ID(chain_id),
 		title = json_string(params, "title"),
@@ -662,6 +666,7 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		priority = priority,
 		has_priority = has_priority,
 		depends_on = deps,
+		bridge_id = bridge_id,
 	})
 	if !created do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_create", fmt.tprintf("created task \"%s\"", task.title))
@@ -698,6 +703,11 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	deps := json_array_of_strings(params, "depends_on")
 	has_priority := strings.contains(params, "\"priority\"")
 	priority := domain.task_priority_from_string(json_string(params, "priority"))
+	// Presence-checked exactly like the cookie PATCH: absent leaves the pin, "" clears
+	// it back to inherit, a value repins.
+	bridge_id, has_bridge := task_bridge_id_from_body(params)
+	bridge_pin: ^string
+	if has_bridge do bridge_pin = &bridge_id
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth, task_id, taskchain_service.Update_Task_Input{
 		title = json_string(params, "title"),
 		description = json_string(params, "description"),
@@ -707,6 +717,7 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		has_priority = has_priority,
 		depends_on = deps,
 		has_depends_on = has_deps,
+		bridge_id = bridge_pin,
 	})
 	if !updated do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_update", "updated a task")

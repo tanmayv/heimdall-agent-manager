@@ -29,6 +29,7 @@ hub.db-wal
 /bridge
 /ctl
 /wrapper
+/taskchain
 
 # Python bytecode and caches
 __pycache__/

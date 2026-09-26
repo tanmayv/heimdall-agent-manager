@@ -3,6 +3,7 @@ import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { isVaultArmored, encryptVaultText } from '../../utils/vaultContent';
+import { taskCreateBridgeFields, taskPatchBridgeFields } from '../../utils/taskBridgePin';
 
 // The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
 // legacy per-client token session. Task-chain reads/writes below must use
@@ -114,6 +115,8 @@ function normalizeTask(task: any) {
     description: task.description || '',
     priority: task.priority || 'p2',
     status: task.status || 'pending',
+    // REQ-TB-5: the per-task bridge pin ('' = inherit the coordinator's bridge).
+    bridgeId: String(task.bridge_id || task.bridgeId || ''),
     assigneeAgentInstanceId,
     reviewerAgentInstanceId,
     coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
@@ -664,8 +667,8 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, { type: 'ChainTasks', id: chainId }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
-      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }, api) => {
+    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[]; bridgeId?: string }>({
+      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn, bridgeId }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -689,6 +692,9 @@ export const tasksApi = heimdallApi.injectEndpoints({
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
           if (dependsOn !== undefined) body.depends_on = dependsOn;
+          // REQ-TB-5: presence-checked like the hub PATCH — an undefined bridgeId
+          // leaves the pin untouched; a defined one (including '') sets or clears it.
+          if (bridgeId !== undefined) Object.assign(body, taskPatchBridgeFields(bridgeId));
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body);
           return { data };
         } catch (error: any) {
@@ -1010,8 +1016,8 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
-      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn }, api) => {
+    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[]; bridgeId?: string }>({
+      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn, bridgeId }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -1029,7 +1035,9 @@ export const tasksApi = heimdallApi.injectEndpoints({
           }
 
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const body: any = { title: encTitle, description: encDesc };
+          // REQ-TB-5: bridge_id is only sent when a concrete bridge is chosen —
+          // absent and '' both mean inherit on the hub create endpoint.
+          const body: any = { title: encTitle, description: encDesc, ...taskCreateBridgeFields(bridgeId) };
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
           if (dependsOn !== undefined) body.depends_on = dependsOn;

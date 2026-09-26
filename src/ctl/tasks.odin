@@ -547,7 +547,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if chain_id == "" || title == "" {
-			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <id,id,...>] [--depends-on <id,id>]")
+			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]")
 			return
 		}
 		desc := option_value(args, "--description", "")
@@ -595,6 +595,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			strings.write_byte(&buf, ']')
 			append(&fields, strings.to_string(buf))
 		}
+		if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
 		resp_str, ok := ctl_tasks_request_local(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
 		if !ok {
 			fmt.println(resp_str)
@@ -634,9 +635,17 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		
 		blocked_str := "false"
 		if strings.contains(resp_str, "\"blocked\":true") { blocked_str = "\x1b[31mtrue\x1b[0m" } // also highlight blocked
-		
+
+		// REQ-TB-4: bridge pin for the task's agent-id instantiation; empty/absent
+		// means the task inherits the coordinator bridge.
+		bridge_str := "inherited"
+		if bidx := strings.index(resp_str, "\"bridge_id\":"); bidx >= 0 {
+			if bid := extract_json_string_unescaped(resp_str[bidx:], "bridge_id", ""); bid != "" do bridge_str = bid
+		}
+
 		fmt.printf("Task created successfully (ID: %s)\n", t_id)
 		fmt.printf("Status: %s | Assignee: %s | Reviewers: %s | Depends on: %s | Blocked: %s\n", t_status, assignee, reviewers, deps_str, blocked_str)
+		fmt.printf("Bridge: %s\n", bridge_str)
 		return
 	}
 
@@ -677,6 +686,8 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		// --reviewer is comma-separated for MULTIPLE reviewers; presence-checked so
 		// `--reviewer ""` clears the list.
 		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+		// --bridge is presence-checked so `--bridge ""` clears the pin back to inherit.
+		if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
 		if has_flag(args, "--depends-on") || has_flag(args, "--on") {
 			deps := option_value(args, "--depends-on", option_value(args, "--on", ""))
 			append(&fields, ctl_v2_json_string_array("depends_on", deps))

@@ -97,6 +97,10 @@ Create_Task_Input :: struct {
 	priority: domain.Task_Priority,
 	has_priority: bool,
 	depends_on: []domain.Task_ID,
+	// bridge_id pins the task to a specific bridge for instantiating its
+	// agent-id actors (REQ-TB-1). Empty = inherit (resolved at promotion time).
+	// A non-empty value must reference a bridge owned by the chain owner.
+	bridge_id: string,
 }
 
 Update_Task_Input :: struct {
@@ -111,6 +115,11 @@ Update_Task_Input :: struct {
 	has_priority: bool,
 	depends_on: []domain.Task_ID,
 	has_depends_on: bool,
+	// bridge_id repins the task's bridge (REQ-TB-1). nil = field absent: leave the
+	// current pin untouched. A non-nil pointer is the new value — pointing at ""
+	// clears the pin back to inherit (resolved at promotion time). A non-empty
+	// value must reference a bridge owned by the chain owner.
+	bridge_id: ^string,
 }
 
 Task_Comment_Input :: struct {
@@ -586,6 +595,20 @@ valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool 
 	return false
 }
 
+// validate_task_bridge (REQ-TB-1): a non-empty per-task bridge pin must reference
+// an existing bridge owned by the chain owner; empty is always valid (inherit,
+// resolved at promotion time). Unknown and foreign bridges both surface as
+// Not_Found so another owner's bridge existence is never leaked (same idiom as
+// agent_service.validate_support_input).
+validate_task_bridge :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string) -> domain.Domain_Error {
+	if bridge_id == "" do return domain.Domain_Error{}
+	if service.agent_service == nil || service.agent_service.bridges == nil do return domain.domain_error(.Internal_Error, "bridge store unavailable; cannot validate task bridge_id")
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.agent_service.bridges, bridge_id)
+	if !bridge_ok do return bridge_err
+	if bridge.owner_user_id != owner do return domain.domain_error(.Not_Found, "bridge not found")
+	return domain.Domain_Error{}
+}
+
 create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Create_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
 	// WRITE. REQ-SEC-3 (close the create_task hole): fetch owner-scoped, then
 	// enforce membership EXPLICITLY here. create_task previously relied entirely on
@@ -602,6 +625,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	if requested_owner == "" do requested_owner = chain.owner_user_id
 	if same_ok, same_err := ownership.require_same_owner(chain.owner_user_id, requested_owner); !same_ok do return domain.Task{}, false, same_err
 	if input.title == "" do return domain.Task{}, false, domain.domain_error(.Validation_Failed, "task title is required")
+	if br_err := validate_task_bridge(service, chain.owner_user_id, input.bridge_id); br_err.code != .None do return domain.Task{}, false, br_err
 	assignee_ref := input.assignee_ref_json
 	if assignee_ref == "" && chain.coordinator_agent_instance_id != "" do assignee_ref = agent_instance_ref_json(chain.coordinator_agent_instance_id)
 	if assignee_ref == "" do assignee_ref = user_ref_json(string(chain.owner_user_id))
@@ -627,6 +651,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		priority = input.has_priority ? input.priority : .P2,
 		assignee_ref_json = assignee_ref,
 		reviewer_refs_json = reviewer_refs,
+		bridge_id = input.bridge_id,
 		created_at = now,
 		updated_at = now,
 	}
@@ -683,6 +708,12 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if input.assignee_ref_json != "" do task.assignee_ref_json = input.assignee_ref_json
 	if input.reviewer_refs_json != "" do task.reviewer_refs_json = input.reviewer_refs_json
 	if input.has_priority do task.priority = input.priority
+	// bridge_id is presence-checked via the pointer: nil leaves the pin untouched,
+	// a non-nil pointer (including "") repins — "" clears back to inherit.
+	if input.bridge_id != nil {
+		if br_err := validate_task_bridge(service, chain.owner_user_id, input.bridge_id^); br_err.code != .None do return domain.Task{}, false, br_err
+		task.bridge_id = input.bridge_id^
+	}
 
 	// Resolve durable agent_id refs into concrete agent_instance refs before validation.
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.assignee_ref_json); norm_ok { task.assignee_ref_json = norm } else { return domain.Task{}, false, norm_err }

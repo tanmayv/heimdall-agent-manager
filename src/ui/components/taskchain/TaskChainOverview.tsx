@@ -61,6 +61,7 @@ import {
   launchTiersFor,
   launchableBridgeRows,
 } from '../../utils/bridgeLaunchOptions';
+import { taskBridgeDisplay, taskBridgeOptions } from '../../utils/taskBridgePin';
 import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 
@@ -258,6 +259,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [newTaskAddReviewerInstanceId, setNewTaskAddReviewerInstanceId] = useState('');
   const [newTaskAddReviewerUserId, setNewTaskAddReviewerUserId] = useState('');
   const [newTaskDependsOnIds, setNewTaskDependsOnIds] = useState<string[]>([]);
+  // REQ-TB-5: '' = Inherit (coordinator bridge) — the default create pins nothing.
+  const [newTaskBridgeId, setNewTaskBridgeId] = useState('');
   const [newTaskError, setNewTaskError] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
   const [isFleetDrawerOpen, setIsFleetDrawerOpen] = useState(false);
@@ -301,6 +304,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [stagedDependsOnIds, setStagedDependsOnIds] = useState<string[]>([]);
   const [savingDependencies, setSavingDependencies] = useState(false);
   const [dependenciesError, setDependenciesError] = useState('');
+
+  // Edit Bridge Modal State (REQ-TB-5)
+  const [editingBridgeTask, setEditingBridgeTask] = useState<any | null>(null);
+  const [editBridgeId, setEditBridgeId] = useState('');
+  const [savingBridge, setSavingBridge] = useState(false);
+  const [bridgeError, setBridgeError] = useState('');
 
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
@@ -476,6 +485,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agentIdentities: any[] = agentIdentitiesQuery.data?.agents || [];
   const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
+  // REQ-TB-5: options + name resolution for the per-task bridge pin (create-task
+  // select, task-detail chip, and the change-bridge modal share this list).
+  const bridgePinOptions = React.useMemo(
+    () => taskBridgeOptions(bridgesQuery.data?.bridges || []),
+    [bridgesQuery.data],
+  );
   const selectedAddBridge = addBridgeRows.find((row) => row.bridgeId === addBridgeId)?.bridge;
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
@@ -561,6 +576,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     setNewTaskAddReviewerInstanceId('');
     setNewTaskAddReviewerUserId('');
     setNewTaskDependsOnIds([]);
+    setNewTaskBridgeId('');
     setNewTaskError('');
     setCreatingTask(false);
   };
@@ -596,6 +612,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         chainId,
         title: newTaskTitle.trim(),
         description: newTaskDesc.trim(),
+        // '' is dropped by the createTask serialization (absent = inherit).
+        bridgeId: newTaskBridgeId,
       };
       if (assigneeRef !== undefined) {
         payload.assigneeRef = assigneeRef;
@@ -894,6 +912,35 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  // REQ-TB-5: change or clear a task's bridge pin. The PATCH is presence-checked
+  // hub-side, so the modal always sends bridgeId — '' is the explicit clear back
+  // to inheriting the coordinator's bridge.
+  const openEditBridgeModal = (task: any) => {
+    setEditingBridgeTask(task);
+    setEditBridgeId(String(task?.bridgeId || ''));
+    setBridgeError('');
+  };
+
+  const handleSaveBridge = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBridgeTask) return;
+    setSavingBridge(true);
+    setBridgeError('');
+    try {
+      await updateTask({
+        chainId,
+        taskId: editingBridgeTask.taskId,
+        bridgeId: editBridgeId,
+      }).unwrap();
+      setEditingBridgeTask(null);
+      await refetch();
+    } catch (err: any) {
+      setBridgeError(String(err?.data?.error?.message || err?.message || 'Failed to update bridge'));
+    } finally {
+      setSavingBridge(false);
+    }
+  };
+
   const updateCommentAttachments = (taskId: string, updater: (items: CommentAttachment[]) => CommentAttachment[]) => {
     setCommentAttachments((prev) => ({
       ...prev,
@@ -1004,6 +1051,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const taskId = task.taskId || task.id;
     const isExpanded = Boolean(expandedTaskIds[taskId]);
+    // REQ-TB-5: the task's bridge pin — name resolved from the owner's bridges,
+    // '(inherited)' when the task carries no pin.
+    const taskBridge = taskBridgeDisplay(task.bridgeId, bridgesQuery.data?.bridges || []);
     const taskCommentAttachments = commentAttachments[taskId] || [];
     const taskCommentUploading = taskCommentAttachments.some((item) => item.status === 'uploading');
     const taskCommentFailed = taskCommentAttachments.some((item) => item.status === 'error');
@@ -1117,6 +1167,24 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   data-debug-id={`taskchain-task-edit-dependencies-btn-${taskId}`}
                   title="Edit dependencies"
                   onClick={(e) => { e.stopPropagation(); openEditDependenciesModal(task); }}
+                  className="ml-0.5 text-muted hover:text-primary"
+                >
+                  <Icon name="pencil" size={11} />
+                </button>
+              </span>
+
+              <span data-debug-id={`taskchain-task-bridge-${taskId}`} className="inline-flex items-center gap-1">
+                bridge:{' '}
+                {taskBridge.inherited ? (
+                  <span className="text-faint">(inherited)</span>
+                ) : (
+                  <span className="font-semibold text-primary">{taskBridge.label}</span>
+                )}
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-task-edit-bridge-btn-${taskId}`}
+                  title="Change bridge"
+                  onClick={(e) => { e.stopPropagation(); openEditBridgeModal(task); }}
                   className="ml-0.5 text-muted hover:text-primary"
                 >
                   <Icon name="pencil" size={11} />
@@ -1920,6 +1988,22 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   placeholder="Task description (optional)..."
                   rows={2}
                 />
+              </div>
+
+              {/* Bridge (REQ-TB-5) */}
+              <div>
+                <label className="block text-muted">Bridge</label>
+                <Select
+                  data-debug-id="taskchain-new-task-bridge-select"
+                  className="mt-1"
+                  width="full"
+                  value={newTaskBridgeId}
+                  onChange={setNewTaskBridgeId}
+                  options={bridgePinOptions}
+                />
+                <p className="mt-1 text-caption text-muted">
+                  Pin this task to a specific bridge, or leave it on the coordinator&apos;s bridge.
+                </p>
               </div>
 
               {/* Assignee Section */}
@@ -2739,6 +2823,73 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {savingDependencies ? 'Saving…' : 'Save Dependencies'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Bridge Modal (REQ-TB-5) */}
+      {editingBridgeTask && (
+        <div
+          data-debug-id="taskchain-edit-bridge-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+        >
+          <form
+            onSubmit={handleSaveBridge}
+            data-debug-id="taskchain-edit-bridge-form"
+            className="w-full max-w-md rounded-xl border border-subtle bg-surface p-5 text-primary shadow-panel"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-primary">Change Bridge</h3>
+              <button
+                type="button"
+                onClick={() => setEditingBridgeTask(null)}
+                className="text-muted hover:text-primary"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-muted">
+              Task: <span className="text-primary">{editingBridgeTask.title}</span>
+            </p>
+
+            <div className="mt-4 text-xs">
+              <label className="block text-muted">Bridge</label>
+              <Select
+                data-debug-id="taskchain-edit-bridge-select"
+                className="mt-1"
+                width="full"
+                value={editBridgeId}
+                onChange={setEditBridgeId}
+                options={
+                  editBridgeId && !bridgePinOptions.some((o) => o.value === editBridgeId)
+                    ? [...bridgePinOptions, { value: editBridgeId, label: `${editBridgeId} (unavailable)` }]
+                    : bridgePinOptions
+                }
+              />
+              <p className="mt-1 text-caption text-muted">
+                Pin this task to a specific bridge, or inherit the coordinator&apos;s bridge.
+              </p>
+
+              {bridgeError && <p data-debug-id="taskchain-edit-bridge-error" className="mt-2 text-caption text-danger">{bridgeError}</p>}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setEditingBridgeTask(null)}
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="taskchain-edit-bridge-submit"
+                type="submit"
+                disabled={savingBridge}
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
+              >
+                {savingBridge ? 'Saving…' : 'Save Bridge'}
               </button>
             </div>
           </form>
