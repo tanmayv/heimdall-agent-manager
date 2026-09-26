@@ -1224,6 +1224,10 @@ comment_notify_message :: proc(task: domain.Task, action: string) -> string {
 }
 
 comment_preview_safe :: proc(body: string) -> string {
+	trimmed := strings.trim_space(body)
+	if strings.has_prefix(trimmed, "vault:v1:") {
+		return strings.clone(trimmed)
+	}
 	b := strings.builder_make()
 	count := 0
 	truncated := false
@@ -1255,9 +1259,14 @@ NOTICE_TITLE_MAX_RUNES :: 20
 NOTICE_EXCERPT_MAX_RUNES :: 20
 
 // truncate_runes clamps s to max runes, appending an ellipsis when it had to cut.
+// If s is an encrypted vault token (starts with "vault:v1:"), rune truncation
+// is bypassed so complete ciphertext is preserved for downstream client decryption.
 // Caller owns the returned string.
 truncate_runes :: proc(s: string, max: int) -> string {
 	trimmed := strings.trim_space(s)
+	if strings.has_prefix(trimmed, "vault:v1:") {
+		return strings.clone(trimmed)
+	}
 	b := strings.builder_make()
 	count := 0
 	truncated := false
@@ -1745,9 +1754,17 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	notified := make([dynamic]string)
 	if service.bridge_command_sink.send_runtime_command != nil && service.agents != nil {
 		author := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else (auth.user_id if auth.user_id != "" else "user")
+		author_name := author
+		if auth.kind == .Instance_Token && auth.agent_instance_id != "" {
+			if inst, ok, _ := iface.agent_get_instance(service.agents, auth.agent_instance_id); ok {
+				if dn := strings.trim_space(inst.display_name); dn != "" {
+					author_name = dn
+				}
+			}
+		}
 		preview := comment_preview_safe(input.body)
 		defer delete(preview)
-		legacy_message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
+		legacy_message := fmt.tprintf("Comment from %s on task %s: %s", author_name, string(task.task_id), preview)
 		// Actor is the authoring instance ("" => "@User" for a user-authored comment).
 		author_instance := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else ""
 		is_user_author := auth.kind != .Instance_Token

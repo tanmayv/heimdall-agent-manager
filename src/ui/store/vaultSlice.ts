@@ -226,10 +226,10 @@ export const {
   setUnlockModalOpen,
 } = vaultSlice.actions;
 
-export const selectVaultState = (state: { vault: VaultState }) => state.vault;
-export const selectIsVaultConfigured = (state: { vault: VaultState }) => state.vault.isConfigured;
-export const selectIsVaultUnlocked = (state: { vault: VaultState }) => state.vault.isUnlocked;
-export const selectRawVaultKeyHex = (state: { vault: VaultState }) => state.vault.rawVaultKeyHex;
-export const selectIsUnlockModalOpen = (state: { vault: VaultState }) => Boolean(state.vault.isUnlockModalOpen);
+export const selectVaultState = (state: { vault?: VaultState }) => state?.vault;
+export const selectIsVaultConfigured = (state: { vault?: VaultState }) => Boolean(state?.vault?.isConfigured);
+export const selectIsVaultUnlocked = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlocked);
+export const selectRawVaultKeyHex = (state: { vault?: VaultState }) => state?.vault?.rawVaultKeyHex ?? null;
+export const selectIsUnlockModalOpen = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlockModalOpen);
 
 export default vaultSlice.reducer;

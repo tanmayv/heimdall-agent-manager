@@ -4,7 +4,12 @@ import { useSelector } from 'react-redux';
 import Markdown from '../Markdown';
 import ChatHoverCopyButton from '../ChatHoverCopyButton';
 import { VaultText } from '../vault/VaultText';
-import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from '../../utils/vaultContent';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
@@ -36,13 +41,15 @@ function prefersReducedMotion(): boolean {
 
 function DefaultMessageBody({ body }: { body: string }) {
   const isArmored = isVaultArmored(body);
+  const containsArmored = containsVaultArmored(body);
+  const hasVault = isArmored || containsArmored;
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const [decrypted, setDecrypted] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored) {
+    if (!hasVault) {
       setDecrypted(body);
       return;
     }
@@ -50,7 +57,10 @@ function DefaultMessageBody({ body }: { body: string }) {
       setDecrypted(null);
       return;
     }
-    decryptVaultText(body, rawKeyHex)
+    const decryptPromise = isArmored
+      ? decryptVaultText(body, rawKeyHex)
+      : decryptEmbeddedVaultTokens(body, rawKeyHex);
+    decryptPromise
       .then((res) => {
         if (mounted) setDecrypted(res);
       })
@@ -60,10 +70,14 @@ function DefaultMessageBody({ body }: { body: string }) {
     return () => {
       mounted = false;
     };
-  }, [body, isArmored, isUnlocked, rawKeyHex]);
+  }, [body, hasVault, isArmored, isUnlocked, rawKeyHex]);
 
   if (isArmored && !isUnlocked) {
     return <VaultText value={body} as="div" />;
+  }
+  if (containsArmored && !isUnlocked) {
+    const sanitized = body.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]');
+    return <Markdown source={sanitized} compact copyAll={false} />;
   }
   return <Markdown source={decrypted !== null ? decrypted : body} compact copyAll={false} />;
 }

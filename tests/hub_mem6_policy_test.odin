@@ -62,6 +62,14 @@ main :: proc() {
 	check(strings.contains(tnotice, "\"This Task Title Is W…\""), fmt.tprintf("title must truncate at 20 runes + ellipsis: %s", tnotice))
 	check(!strings.contains(tnotice, "Too Long"), "title must not exceed 20 runes")
 
+	// 1c) Vault ciphertext (starts with "vault:v1:") must bypass truncation completely.
+	vault_cipher := "vault:v1:FQ+uOa5fKWwM4Tvj8GjZH4Y3dkNDoXqhh14W8xh0xp5eAVDfMXifD0LVN3/6eGuUryDtHRnJ1hrFmrPikHJWMMd9DyFL"
+	vault_title_task := domain.Task{task_id = "task_vault", title = vault_cipher, status = .In_Progress}
+	vnotice := taskchain_service.build_human_readable_task_notice(&service, vault_title_task, "inst_coord", "Work Started", "started work on", vault_cipher)
+	defer delete(vnotice)
+	check(strings.contains(vnotice, vault_cipher), fmt.tprintf("vault ciphertext in title must not be truncated: %s", vnotice))
+	check(strings.contains(vnotice, fmt.tprintf(": \"%s\"", vault_cipher)), fmt.tprintf("vault ciphertext in excerpt must not be truncated: %s", vnotice))
+
 	// 2) Paused -> assignee + coordinator, [Task Paused], actor @User (user auth).
 	captured.count = 0
 	taskchain_service.notify_status_policy(&service, user_auth, task, chain)

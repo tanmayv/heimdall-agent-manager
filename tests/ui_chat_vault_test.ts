@@ -296,3 +296,114 @@ test('legacy plaintext chat messages and threads render transparently without re
   assert.equal(decConvLocked.title, legacyTitle);
   assert.equal(decConvLocked.last_message_preview, legacyPreview);
 });
+
+// -----------------------------------------------------------------------------
+// Test 6: Embedded ciphertext tokens in messages, action notices, and sender-prefixed previews (REQ-INDIRECT-DECRYPT-UI-1)
+// -----------------------------------------------------------------------------
+
+test('embedded ciphertext tokens in message bodies and sender-prefixed previews decrypt cleanly', async () => {
+  const secretBody = 'I deployed the auth module successfully.';
+  const armoredSecret = await encryptVaultText(secretBody, TEST_KEY_HEX);
+
+  // Embedded token in message body
+  const embeddedMsg = {
+    id: 'msg_embedded',
+    body: `Execution report: ${armoredSecret} (verified).`,
+  };
+  const decryptedMsg = await decryptChatMessage(embeddedMsg, TEST_KEY_HEX);
+  assert.equal(decryptedMsg.body, `Execution report: ${secretBody} (verified).`);
+
+  // Sender-prefixed preview: "You: vault:v1:..."
+  const convWithPrefix = {
+    conversationId: 'chat_prefix',
+    title: 'Deployment Chat',
+    lastMessagePreview: `You: ${armoredSecret}`,
+    last_message_preview: `You: ${armoredSecret}`,
+  };
+  const decryptedConv = await decryptConversationRecord(convWithPrefix, TEST_KEY_HEX);
+  assert.equal(decryptedConv.lastMessagePreview, `You: ${secretBody}`);
+  assert.equal(decryptedConv.last_message_preview, `You: ${secretBody}`);
+
+  // Action receipt with embedded token
+  const actionReceiptMsg = {
+    id: 'msg_action_receipt',
+    body: `Action receipt for approval ${armoredSecret}`,
+  };
+  const decryptedActionMsg = await decryptChatMessage(actionReceiptMsg, TEST_KEY_HEX);
+  assert.equal(decryptedActionMsg.body, `Action receipt for approval ${secretBody}`);
+});
+
+// -----------------------------------------------------------------------------
+// Test 7: Static UI surface checks for Batches 1-4 contracts
+// -----------------------------------------------------------------------------
+
+test('UI Batches 1-4 contracts and integration adhere to specifications', () => {
+  const convThreadFile = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationThreadPage.tsx');
+  const convThreadSrc = fs.readFileSync(convThreadFile, 'utf8');
+
+  // Breadcrumb projectName wrapped with VaultText
+  assert.ok(
+    convThreadSrc.includes('<VaultText value={projectName} fallback="Project" />'),
+    'ConversationThreadPage.tsx must wrap breadcrumb projectName in VaultText',
+  );
+
+  // Composer chip wrapped with VaultText
+  assert.ok(
+    convThreadSrc.includes('conversation-composer-project-chip'),
+    'ConversationThreadPage.tsx must have conversation-composer-project-chip',
+  );
+
+  // Overflow details menu resolves IDs to friendly names/titles
+  assert.ok(
+    convThreadSrc.includes('conversation-thread-overflow-details'),
+    'ConversationThreadPage.tsx must render conversation-thread-overflow-details',
+  );
+  assert.ok(
+    convThreadSrc.includes('agentDisplayName'),
+    'ConversationThreadPage.tsx must resolve agent display name in details menu',
+  );
+  assert.ok(
+    convThreadSrc.includes('chainTitle'),
+    'ConversationThreadPage.tsx must resolve chain title in details menu',
+  );
+
+  // CurrentTaskStrip human display names and criteria unsuppression
+  const currentTaskStripFile = path.join(REPO_ROOT, 'src/ui/components/chat/CurrentTaskStrip.tsx');
+  const currentTaskStripSrc = fs.readFileSync(currentTaskStripFile, 'utf8');
+  assert.ok(
+    currentTaskStripSrc.includes('assigneeDisplayName'),
+    'CurrentTaskStrip.tsx must compute assigneeDisplayName',
+  );
+  assert.ok(
+    currentTaskStripSrc.includes('reviewerDisplayName'),
+    'CurrentTaskStrip.tsx must compute reviewerDisplayName',
+  );
+  assert.ok(
+    !currentTaskStripSrc.includes('if (!raw || isVaultArmored(raw)) return \'\';'),
+    'CurrentTaskStrip.tsx must not suppress criteria for armored tasks',
+  );
+
+  // chainTaskInference.ts support for reviewer agent_id
+  const chainInferenceFile = path.join(REPO_ROOT, 'src/ui/components/chat/chainTaskInference.ts');
+  const chainInferenceSrc = fs.readFileSync(chainInferenceFile, 'utf8');
+  assert.ok(
+    chainInferenceSrc.includes('agentId') || chainInferenceSrc.includes('agent_id'),
+    'chainTaskInference.ts must check agent_id for task reviewer',
+  );
+
+  // AgentActivityBubbles decrypts embedded tokens
+  const bubblesFile = path.join(REPO_ROOT, 'src/ui/components/chat/AgentActivityBubbles.tsx');
+  const bubblesSrc = fs.readFileSync(bubblesFile, 'utf8');
+  assert.ok(
+    bubblesSrc.includes('decryptEmbeddedVaultTokens') || bubblesSrc.includes('containsVaultArmored'),
+    'AgentActivityBubbles.tsx must handle embedded vault tokens',
+  );
+
+  // ConversationsHomePage consumes decrypted records
+  const homePageFile = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationsHomePage.tsx');
+  const homePageSrc = fs.readFileSync(homePageFile, 'utf8');
+  assert.ok(
+    homePageSrc.includes('decryptConversationList'),
+    'ConversationsHomePage.tsx must consume decrypted records via decryptConversationList',
+  );
+});

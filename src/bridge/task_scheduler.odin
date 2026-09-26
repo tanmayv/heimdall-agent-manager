@@ -133,6 +133,7 @@ bridge_task_scheduler_tick :: proc() -> int {
 		task_id := bridge_provider_json_extract_string(obj, "task_id", "")
 		status := bridge_provider_json_extract_string(obj, "status", "")
 		target := bridge_provider_json_extract_string(obj, "target_instance_id", "")
+		title := bridge_provider_json_extract_string(obj, "title", "")
 		deps_ok := strings.contains(obj, "\"deps_satisfied\":true")
 		if task_id == "" || target == "" do continue
 		seen[task_id] = true
@@ -165,7 +166,7 @@ bridge_task_scheduler_tick :: proc() -> int {
 		// every tick, bypassing the cooldown entirely. Marking on attempt guarantees
 		// the per-(task,target) cooldown always applies.
 		bridge_task_mark_nudged(task_id, target, now)
-		delivered := bridge_task_deliver_nudge(task_id, status, target, now)
+		delivered := bridge_task_deliver_nudge(task_id, status, target, now, title)
 		actions += 1
 		fmt.printfln("SCHED_NUDGE ts=%d task=%s status=%s target=%s stale_ms=%d delivered=%t", now, task_id, status, target, now - first_seen, delivered)
 	}
@@ -355,25 +356,43 @@ bridge_scheduler_fetch_enriched_launch_json :: proc(instance_id, command_id: str
 	role           := extract_json_string(inst_obj, "role", "")
 	chain_id       := extract_json_string(inst_obj, "chain_id", "")
 	chain_title    := extract_json_string(inst_obj, "chain_title", "")
-	coordinator_id := extract_json_string(inst_obj, "coordinator_agent_instance_id", "")
-	project_id     := extract_json_string(inst_obj, "project_id", "")
-	project_path   := extract_json_string(inst_obj, "project_path", "")
+	coordinator_id           := extract_json_string(inst_obj, "coordinator_agent_instance_id", "")
+	coordinator_display_name := extract_json_string(inst_obj, "coordinator_display_name", "")
+	project_id               := extract_json_string(inst_obj, "project_id", "")
+	project_path             := extract_json_string(inst_obj, "project_path", "")
 	// task_id/provider/tier are unknown to the scheduler wake (the agent resolves its
 	// current task after boot via reconcile; provider/tier fall back to bridge/instance
 	// defaults in bridge_runtime_launch_agent). agent_id is the load-bearing field.
-	return bridge_wake_launch_command_json(command_id, instance_id, "", role, "", "", agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path), true
+	return bridge_wake_launch_command_json(command_id, instance_id, "", role, "", "", agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name), true
 }
 
 // bridge_task_deliver_nudge pushes a nudge to the local wrapper if live. If the
 // wrapper is not connected, it wakes the agent (coalesced) so it can pick up the
 // task on boot; the durable state already lives in the Hub.
-bridge_task_deliver_nudge :: proc(task_id, status, target: string, now: i64) -> bool {
-	payload := strings.concatenate({
-		"{\"type\":\"notify_task_nudge\",\"origin\":\"scheduled\",\"task_id\":\"", task_id,
-		"\",\"target_instance_id\":\"", target,
-		"\",\"task_status\":\"", status,
-		"\",\"message\":\"Task ", task_id, " needs attention (", status, ")\"}",
-	})
+bridge_task_deliver_nudge :: proc(task_id, status, target: string, now: i64, task_title: string = "") -> bool {
+	trimmed_title := strings.trim_space(task_title)
+	msg: string
+	if trimmed_title != "" {
+		msg = fmt.tprintf("Task \"%s\" (%s) needs attention (%s)", trimmed_title, task_id, status)
+	} else {
+		msg = fmt.tprintf("Task %s needs attention (%s)", task_id, status)
+	}
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, "{\"type\":\"notify_task_nudge\",\"origin\":\"scheduled\",\"task_id\":\"")
+	bridge_runtime_write_json_string(&b, task_id)
+	strings.write_string(&b, "\",\"target_instance_id\":\"")
+	bridge_runtime_write_json_string(&b, target)
+	strings.write_string(&b, "\",\"task_status\":\"")
+	bridge_runtime_write_json_string(&b, status)
+	if trimmed_title != "" {
+		strings.write_string(&b, "\",\"title\":\"")
+		bridge_runtime_write_json_string(&b, trimmed_title)
+	}
+	strings.write_string(&b, "\",\"message\":\"")
+	bridge_runtime_write_json_string(&b, msg)
+	strings.write_string(&b, "\"}")
+	payload := strings.to_string(b)
 	if bridge_wrapper_push_task_nudge(target, payload) do return true
 	// Wrapper not live: ensure the agent is running so it sees the work on boot.
 	return bridge_task_wake_if_needed(target, now)

@@ -1,7 +1,13 @@
 // Zero-Knowledge Vault Transformers for Chat Messages and Conversations
 // REQ-VAULT-CHAT-1
 
-import { isVaultArmored, encryptVaultText, decryptVaultText } from './vaultContent.ts';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  encryptVaultText,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from './vaultContent.ts';
 
 export interface ChatMessagePayload {
   body?: string;
@@ -48,17 +54,23 @@ export async function encryptConversationFields<T extends ConversationPayload>(
 
 /**
  * Decrypt chat message body using rawKeyHex.
+ * Supports both fully armored strings and strings with embedded vault:v1: tokens.
  * Gracefully preserves unarmored plaintext or returns original text if locked/failed.
  */
 export async function decryptChatMessage<T extends ChatMessagePayload>(
   message: T,
   rawKeyHex?: string | null,
 ): Promise<T> {
-  if (!rawKeyHex || !message.body || !isVaultArmored(message.body)) return message;
+  if (!rawKeyHex || !message.body || (!isVaultArmored(message.body) && !containsVaultArmored(message.body))) {
+    return message;
+  }
   try {
+    const decryptedBody = isVaultArmored(message.body)
+      ? await decryptVaultText(message.body, rawKeyHex)
+      : await decryptEmbeddedVaultTokens(message.body, rawKeyHex);
     return {
       ...message,
-      body: await decryptVaultText(message.body, rawKeyHex),
+      body: decryptedBody,
     };
   } catch {
     return message;
@@ -77,7 +89,8 @@ export async function decryptChatMessages<T extends ChatMessagePayload>(
 }
 
 /**
- * Decrypt conversation fields (title, last_message_preview, lastMessagePreview, bodyPreview) using rawKeyHex.
+ * Decrypt conversation fields (title, last_message_preview, lastMessagePreview, bodyPreview, lastMessage) using rawKeyHex.
+ * Handles both fully armored strings and embedded ciphertext tokens (e.g. sender-prefixed previews).
  */
 export async function decryptConversationRecord<T extends ConversationPayload>(
   conv: T,
@@ -86,22 +99,44 @@ export async function decryptConversationRecord<T extends ConversationPayload>(
   if (!rawKeyHex) return conv;
   let title = conv.title;
   let lastMessagePreview = conv.last_message_preview ?? conv.lastMessagePreview;
-  let bodyPreview = conv.bodyPreview;
+  let bodyPreview = conv.bodyPreview ?? (conv as any).body_preview;
+  let lastMessage = conv.lastMessage;
 
-  if (title && isVaultArmored(title)) {
+  if (title && (isVaultArmored(title) || containsVaultArmored(title))) {
     try {
-      title = await decryptVaultText(title, rawKeyHex);
+      title = isVaultArmored(title)
+        ? await decryptVaultText(title, rawKeyHex)
+        : await decryptEmbeddedVaultTokens(title, rawKeyHex);
     } catch {}
   }
-  if (lastMessagePreview && isVaultArmored(lastMessagePreview)) {
+  if (lastMessagePreview && (isVaultArmored(lastMessagePreview) || containsVaultArmored(lastMessagePreview))) {
     try {
-      lastMessagePreview = await decryptVaultText(lastMessagePreview, rawKeyHex);
+      lastMessagePreview = isVaultArmored(lastMessagePreview)
+        ? await decryptVaultText(lastMessagePreview, rawKeyHex)
+        : await decryptEmbeddedVaultTokens(lastMessagePreview, rawKeyHex);
     } catch {}
   }
-  if (bodyPreview && isVaultArmored(bodyPreview)) {
+  if (bodyPreview && (isVaultArmored(bodyPreview) || containsVaultArmored(bodyPreview))) {
     try {
-      bodyPreview = await decryptVaultText(bodyPreview, rawKeyHex);
+      bodyPreview = isVaultArmored(bodyPreview)
+        ? await decryptVaultText(bodyPreview, rawKeyHex)
+        : await decryptEmbeddedVaultTokens(bodyPreview, rawKeyHex);
     } catch {}
+  }
+  if (lastMessage && typeof lastMessage === 'object') {
+    const lBody = lastMessage.body || lastMessage.bodyPreview;
+    if (lBody && (isVaultArmored(lBody) || containsVaultArmored(lBody))) {
+      try {
+        const decryptedBody = isVaultArmored(lBody)
+          ? await decryptVaultText(lBody, rawKeyHex)
+          : await decryptEmbeddedVaultTokens(lBody, rawKeyHex);
+        lastMessage = {
+          ...lastMessage,
+          ...(lastMessage.body !== undefined ? { body: decryptedBody } : {}),
+          ...(lastMessage.bodyPreview !== undefined ? { bodyPreview: decryptedBody } : {}),
+        };
+      } catch {}
+    }
   }
 
   return {
@@ -110,7 +145,10 @@ export async function decryptConversationRecord<T extends ConversationPayload>(
     ...(lastMessagePreview !== undefined
       ? { last_message_preview: lastMessagePreview, lastMessagePreview }
       : {}),
-    ...(bodyPreview !== undefined ? { bodyPreview } : {}),
+    ...(bodyPreview !== undefined
+      ? { bodyPreview, ...((conv as any).body_preview !== undefined ? { body_preview: bodyPreview } : {}) }
+      : {}),
+    ...(lastMessage !== undefined ? { lastMessage } : {}),
   };
 }
 

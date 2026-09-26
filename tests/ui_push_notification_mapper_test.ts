@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // Push wire payload the Hub sends into the concrete plan the service worker
 // renders, and is TOTAL: a missing/garbage payload still yields a visible
 // Heimdall fallback (iOS revokes push permission on a silent push).
-const { planForPushPayload } = await import('../src/ui/api/pushNotificationMapper');
+const { planForPushPayload } = await import('../src/ui/api/pushNotificationMapper.ts');
 
 // --- Full payload round-trips faithfully ----------------------------------
 {

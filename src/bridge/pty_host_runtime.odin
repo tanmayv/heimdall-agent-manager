@@ -284,7 +284,9 @@ bridge_pty_host_backoff :: proc(attempt: int) {
 // mirroring tmux.send_text(pane, text, enter=true). Returns false if either the
 // input or the key send fails.
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
-	input := pty_host_encode_input(instance, transmute([]byte)text)
+	decrypted := bridge_decrypt_embedded_vault_tokens(text)
+	defer delete(decrypted)
+	input := pty_host_encode_input(instance, transmute([]byte)decrypted)
 	defer delete(input)
 	if !bridge_pty_host_send_oneway(socket, input) do return false
 	// Small settle delay before Enter, matching the wrapper's 300ms pane pause so a
@@ -399,19 +401,23 @@ bridge_pty_host_deliver_shell_resize :: proc{
 
 // bridge_pty_host_message_notice renders the agent_message notice text (pure, so
 // it is unit-testable). Mirrors the wrapper's wrapper_bridge_deliver_message_push.
-bridge_pty_host_message_notice :: proc(sender: string) -> string {
-	s := sender
+bridge_pty_host_message_notice :: proc(sender: string, sender_display_name: string = "") -> string {
+	s := sender_display_name if strings.trim_space(sender_display_name) != "" else sender
 	if strings.trim_space(s) == "" do s = "user"
 	return strings.concatenate({"New message from ", s, " \u2014 run './.heimdall/bin/ham-ctl agent chat read' to view."})
 }
 
 // bridge_pty_host_task_nudge_notice renders the task-nudge notice text (pure).
-bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string) -> string {
+bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string, task_title: string = "") -> string {
 	tid := task_id
 	if strings.trim_space(tid) == "" do tid = "unknown"
 	role := target_role
 	if strings.trim_space(role) == "" do role = "participant"
-	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run './.heimdall/bin/ham-ctl tasks list' and complete your assignment."})
+	title := strings.trim_space(task_title)
+	if title != "" {
+		return strings.concatenate({"Nudge: you have been nudged on \"", title, "\" (", tid, ") (", role, "). Run './.heimdall/bin/ham-ctl task list' and complete your assignment."})
+	}
+	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run './.heimdall/bin/ham-ctl task list' and complete your assignment."})
 }
 
 // bridge_pty_host_deliver_message renders the same notice the wrapper produced for
@@ -436,8 +442,8 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // the hub supplies a human_message it is delivered verbatim (context-rich line);
 // otherwise we fall back to the legacy generated notice for backwards compat with
 // older hubs that don't populate human_message.
-bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "") -> bool {
-	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message)
+bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
+	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
 }
@@ -446,9 +452,9 @@ bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_rol
 // hub's human_message verbatim when present, else the legacy generated notice
 // (backwards compat with hubs that don't populate human_message). Pure/testable.
 // Caller owns the returned string.
-bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: string) -> string {
+bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: string, task_title: string = "") -> string {
 	if strings.trim_space(human_message) != "" do return strings.clone(human_message)
-	return bridge_pty_host_task_nudge_notice(task_id, target_role)
+	return bridge_pty_host_task_nudge_notice(task_id, target_role, task_title)
 }
 
 // bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
@@ -461,14 +467,14 @@ bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool
 // in the wrapper-free path: it ensures the daemon is up, then renders+delivers the
 // notice for the given kind ("message" | "task_nudge"). Returns false if the daemon
 // is unavailable or the delivery fails.
-bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "") -> bool {
+bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if !ok do return false
 	switch kind {
 	case "message":
 		return bridge_pty_host_deliver_message(socket, instance, sender)
 	case "task_nudge":
-		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message)
+		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message, task_title)
 	}
 	return false
 }

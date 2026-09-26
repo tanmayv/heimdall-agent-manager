@@ -35,7 +35,12 @@ import { useSelector } from 'react-redux';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import { VaultText } from '../vault/VaultText';
-import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from '../../utils/vaultContent';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
@@ -251,13 +256,15 @@ function PaneCaptureOutput({ body, messageId }: { body: string; messageId: strin
 
 function ThreadMessageBody({ body }: { body: string }) {
   const isArmored = isVaultArmored(body);
+  const containsArmored = containsVaultArmored(body);
+  const hasVault = isArmored || containsArmored;
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const [decrypted, setDecrypted] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored) {
+    if (!hasVault) {
       setDecrypted(body);
       return;
     }
@@ -265,7 +272,10 @@ function ThreadMessageBody({ body }: { body: string }) {
       setDecrypted(null);
       return;
     }
-    decryptVaultText(body, rawKeyHex)
+    const decryptPromise = isArmored
+      ? decryptVaultText(body, rawKeyHex)
+      : decryptEmbeddedVaultTokens(body, rawKeyHex);
+    decryptPromise
       .then((res) => {
         if (mounted) setDecrypted(res);
       })
@@ -275,10 +285,14 @@ function ThreadMessageBody({ body }: { body: string }) {
     return () => {
       mounted = false;
     };
-  }, [body, isArmored, isUnlocked, rawKeyHex]);
+  }, [body, hasVault, isArmored, isUnlocked, rawKeyHex]);
 
   if (isArmored && !isUnlocked) {
     return <VaultText value={body} as="div" />;
+  }
+  if (containsArmored && !isUnlocked) {
+    const sanitized = body.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]');
+    return <Markdown source={sanitized} compact copyAll={false} />;
   }
   return <Markdown source={decrypted !== null ? decrypted : body} compact copyAll={false} />;
 }
@@ -1352,7 +1366,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <Icon name="clock" size={13} title="Scheduled action" />
               Scheduled action
             </span>
-            {summary ? <span className="normal-case tracking-normal text-muted">{summary}</span> : null}
+            {summary ? <span className="normal-case tracking-normal text-muted"><VaultText value={summary} as="span" /></span> : null}
           </div>
           {triggeredAt ? (
             <div className="mb-2 text-caption text-faint">Ran on schedule: {triggeredAt}</div>
@@ -1531,6 +1545,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {hasFiles ? (
               <button type="button" title={filesLabel} aria-label={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="folder" size={20} />
+                <span className="sr-only"><VaultText value={projectName} fallback="Project" /></span>
               </button>
             ) : null}
             {hasVcs ? (
@@ -1760,7 +1775,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <>
                 <span className="opacity-40">·</span>
                 <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-neutral-soft hover:text-primary">
-                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-muted">{projectName}</span>
+                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-muted"><VaultText value={projectName} fallback="Project" /></span>
                 </button>
               </>
             ) : null}
@@ -2033,7 +2048,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </div>
             ) : (
               <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
-                <span data-debug-id="conversation-breadcrumb-project" className="truncate text-muted">{projectName || 'Project'}</span>
+                <span data-debug-id="conversation-breadcrumb-project" className="truncate text-muted"><VaultText value={projectName} fallback="Project" /></span>
                 <span className="shrink-0 text-faint">/</span>
                 <button
                   type="button"
@@ -2099,12 +2114,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </Menu.Item>
               <Menu.Separator />
               <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1.5 text-caption leading-5 text-faint overflow-hidden">
-                <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+                <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentDisplayName || agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
                 <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
                 <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
-                {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
+                {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: <VaultText value={chainTitle || chainId} as="span" /></div> : null}
               </div>
             </Menu>
           </div>

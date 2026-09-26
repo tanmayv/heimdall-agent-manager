@@ -7,6 +7,13 @@ import {
   selectAgentShownIds,
   selectReplayableActions,
 } from '../../store/agentActivitySlice';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 
 // Push-only, ephemeral row of small "activity bubbles" rendered in a reserved,
 // fixed-height gutter just above the chat composer, for the CURRENTLY-VIEWED
@@ -49,6 +56,78 @@ function prefersReducedMotion(): boolean {
   );
 }
 
+function ActivityBubbleItem({
+  bubble,
+  isClickable,
+  sharedClassName,
+  onOpenJobs,
+}: {
+  bubble: VisibleBubble;
+  isClickable: boolean;
+  sharedClassName: string;
+  onOpenJobs?: () => void;
+}) {
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [summary, setSummary] = useState(bubble.summary);
+
+  useEffect(() => {
+    let active = true;
+    const raw = bubble.summary || '';
+    if (!containsVaultArmored(raw) && !isVaultArmored(raw)) {
+      setSummary(raw);
+      return;
+    }
+    if (!isUnlocked || !rawKeyHex) {
+      setSummary(raw.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]'));
+      return;
+    }
+    const p = isVaultArmored(raw)
+      ? decryptVaultText(raw, rawKeyHex)
+      : decryptEmbeddedVaultTokens(raw, rawKeyHex);
+    p.then((res) => {
+      if (active) setSummary(res);
+    }).catch(() => {
+      if (active) setSummary(raw);
+    });
+    return () => {
+      active = false;
+    };
+  }, [bubble.summary, isUnlocked, rawKeyHex]);
+
+  const inner = bubble.phase === 'dots' ? (
+    <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
+      <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '0ms' }} />
+      <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '150ms' }} />
+      <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '300ms' }} />
+    </span>
+  ) : (
+    <span className="truncate">{summary}</span>
+  );
+
+  return isClickable ? (
+    <button
+      key={bubble.id}
+      data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
+      title={summary}
+      role="button"
+      onClick={onOpenJobs}
+      className={`${sharedClassName} cursor-pointer`}
+    >
+      {inner}
+    </button>
+  ) : (
+    <span
+      key={bubble.id}
+      data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
+      title={summary}
+      className={sharedClassName}
+    >
+      {inner}
+    </span>
+  );
+}
+
 export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { instanceId: string; onOpenJobs?: () => void }) {
   const dispatch = useDispatch();
   const buffer = useSelector((state: any) => selectAgentActivityBuffer(state, instanceId));
@@ -57,6 +136,8 @@ export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { insta
   // re-open). Read here so replay/live effects can exclude already-seen ids.
   const shownIds = useSelector((state: any) => selectAgentShownIds(state, instanceId));
   const [visible, setVisible] = useState<VisibleBubble[]>([]);
+
+  // (rest of component hooks and effects)
 
   // Latest redux shown-id map, mirrored into a ref so the effects can read the
   // current value without re-subscribing / re-running on every change.
@@ -173,35 +254,14 @@ export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { insta
                 : 'agent-bubble-pill-in';
         const isClickable = bubble.action === 'shell_cmd_report' && !!onOpenJobs;
         const sharedClassName = `inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-subtle bg-surface px-2.5 py-1 text-caption leading-none text-muted ${animClass}`;
-        const inner = bubble.phase === 'dots' ? (
-          <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
-            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '0ms' }} />
-            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '150ms' }} />
-            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-muted" style={{ animationDelay: '300ms' }} />
-          </span>
-        ) : (
-          <span className="truncate">{bubble.summary}</span>
-        );
-        return isClickable ? (
-          <button
+        return (
+          <ActivityBubbleItem
             key={bubble.id}
-            data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
-            title={bubble.summary}
-            role="button"
-            onClick={onOpenJobs}
-            className={`${sharedClassName} cursor-pointer`}
-          >
-            {inner}
-          </button>
-        ) : (
-          <span
-            key={bubble.id}
-            data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
-            title={bubble.summary}
-            className={sharedClassName}
-          >
-            {inner}
-          </span>
+            bubble={bubble}
+            isClickable={isClickable}
+            sharedClassName={sharedClassName}
+            onOpenJobs={onOpenJobs}
+          />
         );
       })}
     </div>

@@ -13,6 +13,7 @@
 // (calling `registration.showNotification`) lives in the service worker.
 
 import type { NotificationCategory } from './notificationMapper';
+import { isVaultArmored, containsVaultArmored } from '../utils/vaultContent.ts';
 
 // The wire payload the Hub sends (see the design doc WIRE CONTRACT). Every field
 // is optional on the wire; the mapper fills sensible fallbacks so we always show
@@ -65,11 +66,19 @@ function normalizeCategory(value: unknown): NotificationCategory {
 // service worker can still call showNotification (iOS permission requirement).
 export function planForPushPayload(payload: PushPayload | null | undefined): PushNotificationPlan {
   const p = payload && typeof payload === 'object' ? payload : {};
-  const title = truncate(str(p.title)) || FALLBACK_TITLE;
-  const body = truncate(str(p.body)) || FALLBACK_BODY;
+  let title = truncate(str(p.title)) || FALLBACK_TITLE;
+  let body = truncate(str(p.body)) || FALLBACK_BODY;
   const tag = str(p.tag) || FALLBACK_TAG;
   const route = str(p.route) || FALLBACK_ROUTE;
   const href = str(p.href);
+
+  if (isVaultArmored(title) || containsVaultArmored(title)) {
+    title = '[🔒 Encrypted notification]';
+  }
+  if (isVaultArmored(body) || containsVaultArmored(body)) {
+    body = '[🔒 Encrypted notification]';
+  }
+
   return {
     title,
     body,

@@ -1,9 +1,18 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useSelector } from 'react-redux';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
 import { Button, Select, StatusPill, Text, type Tone } from '@ui';
 import { VaultText } from '../vault/VaultText';
-import { isVaultArmored } from '../../utils/vaultContent';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
+import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -70,18 +79,26 @@ function roleActionTone(role: string): Tone {
 }
 
 // Derive the first 1-2 acceptance criteria from the chain description / task description.
-function acceptanceSummary(task: TaskLike): string {
-  const raw = String(task.description || '').trim();
-  if (!raw || isVaultArmored(raw)) return '';
-  // Pull lines that look like acceptance criteria (## Acceptance, - bullet).
+function acceptanceSummary(rawText: string): string {
+  const raw = String(rawText || '').trim();
+  if (!raw) return '';
+  // Pull lines that look like acceptance criteria (## Acceptance, - bullet, [ ] checkbox).
   const lines = raw.split('\n');
   const crit: string[] = [];
   let inAcceptance = false;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (/^#{1,6}\s*accept/i.test(trimmed)) { inAcceptance = true; continue; }
-    if (inAcceptance && /^#{1,6}/.test(trimmed)) { inAcceptance = false; continue; }
-    if (inAcceptance && trimmed.startsWith('-')) crit.push(trimmed.replace(/^[-*]\s*/, '').slice(0, 80));
+    if (/^#{1,6}\s*accept/i.test(trimmed) || /acceptance criteria/i.test(trimmed)) {
+      inAcceptance = true;
+      continue;
+    }
+    if (inAcceptance && /^#{1,6}/.test(trimmed)) {
+      inAcceptance = false;
+      continue;
+    }
+    if (inAcceptance && (trimmed.startsWith('-') || trimmed.startsWith('*') || /^\[[ x]\]/i.test(trimmed))) {
+      crit.push(trimmed.replace(/^[-*]\s*(\[[ x]\]\s*)?/, '').slice(0, 80));
+    }
   }
   if (crit.length > 0) return crit.slice(0, 2).join(' · ');
   // Fallback: first non-empty line.
@@ -114,7 +131,77 @@ export default function CurrentTaskStrip({
   const title = String(task.title || taskId);
   const reviewer = taskReviewerOf(task);
   const userIsReviewer = isUserEffectiveReviewer(task);
-  const summary = acceptanceSummary(task);
+
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const rawDesc = String(task.description || '').trim();
+  const [decryptedDesc, setDecryptedDesc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!rawDesc || (!isVaultArmored(rawDesc) && !containsVaultArmored(rawDesc))) {
+      setDecryptedDesc(rawDesc);
+      return;
+    }
+    if (!isUnlocked || !rawKeyHex) {
+      setDecryptedDesc(null);
+      return;
+    }
+    const p = isVaultArmored(rawDesc)
+      ? decryptVaultText(rawDesc, rawKeyHex)
+      : decryptEmbeddedVaultTokens(rawDesc, rawKeyHex);
+    p.then((res) => {
+      if (active) setDecryptedDesc(res);
+    }).catch(() => {
+      if (active) setDecryptedDesc(rawDesc);
+    });
+    return () => {
+      active = false;
+    };
+  }, [rawDesc, isUnlocked, rawKeyHex]);
+
+  const effectiveDesc = decryptedDesc !== null ? decryptedDesc : (isVaultArmored(rawDesc) ? '' : rawDesc);
+  const summary = acceptanceSummary(effectiveDesc);
+
+  const { data: identitiesData } = useListAgentIdentitiesQuery();
+  const agentIdentities = identitiesData?.agents || (identitiesData as any)?.identities || [];
+
+  const memberNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    const members: any[] = (chain as any)?.members || [];
+    for (const m of members) {
+      const instId = m.agentInstanceId || m.agent_instance_id;
+      const agtId = m.agentId || m.agent_id;
+      const name = m.displayName || m.display_name || m.name;
+      if (instId && name) map.set(instId, name);
+      if (agtId && name) map.set(agtId, name);
+    }
+    return map;
+  }, [chain]);
+
+  function resolveDisplayName(id: string, fallbackRef?: any): string {
+    if (!id) return '';
+    if (id === 'user' || id.toLowerCase() === 'user' || id === 'user_proxy' || id === 'operator@local') return 'User';
+    if (fallbackRef?.displayName || fallbackRef?.display_name || fallbackRef?.name) {
+      return fallbackRef.displayName || fallbackRef.display_name || fallbackRef.name;
+    }
+    if (memberNameMap.has(id)) {
+      return memberNameMap.get(id)!;
+    }
+    if (id.startsWith('agt_')) {
+      return formatFleetRoleName(id, agentIdentities);
+    }
+    return id;
+  }
+
+  const assigneeRef = (task as any)?.assigneeRef || (task as any)?.assignee_ref;
+  const assigneeAgentId = assigneeRef?.agentId || assigneeRef?.agent_id;
+  const assigneeDisplayName =
+    resolveDisplayName(agentInstanceId, assigneeRef) ||
+    (assigneeAgentId ? formatFleetRoleName(assigneeAgentId, agentIdentities) : agentInstanceId);
+
+  const reviewerRef = (task as any)?.reviewerRefs?.[0] || (task as any)?.reviewer_refs?.[0];
+  const reviewerDisplayName = reviewer ? resolveDisplayName(reviewer, reviewerRef) : '';
 
   if (collapsedLocal) {
     return (
@@ -166,8 +253,8 @@ export default function CurrentTaskStrip({
             <StatusPill tone={statusTone(status)}>{status}</StatusPill>
             {/* CT-3: P0/P1/P2 priority indicator (hidden when unknown). */}
             {(() => { const pt = priorityTone(priority); return pt ? <StatusPill tone={pt} data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className="uppercase">{priority}</StatusPill> : null; })()}
-            <span>Assignee: <span className="text-primary">{agentInstanceId}</span></span>
-            {reviewer ? <span>Reviewer: <span className="text-primary">{reviewer}</span></span> : null}
+            <span>Assignee: <span className="text-primary">{assigneeDisplayName || agentInstanceId}</span></span>
+            {reviewer ? <span>Reviewer: <span className="text-primary">{reviewerDisplayName || reviewer}</span></span> : null}
           </div>
           {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-caption text-muted">Acceptance: {summary}</div> : null}
         </div>
