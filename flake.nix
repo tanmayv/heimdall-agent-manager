@@ -3,16 +3,24 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs-darwin-x86.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     # crane: hermetic Rust builds for the ham-pty-host spike (PTYH-4). Follows
     # our nixpkgs so the Rust toolchain comes from the same pinned set.
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, crane }:
+  outputs = { self, nixpkgs, nixpkgs-darwin-x86, crane }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-      pkgsFor = system: import nixpkgs { inherit system; };
+      pkgsFor = system:
+        if system == "x86_64-darwin" then
+          import nixpkgs-darwin-x86 {
+            inherit system;
+            config.allowDeprecatedx86_64Darwin = true;
+          }
+        else
+          import nixpkgs { inherit system; };
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
       appVersion = "0.1.0";
