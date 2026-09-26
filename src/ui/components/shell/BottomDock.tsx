@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Icon from '../Icon';
 import {
@@ -46,9 +46,17 @@ export default function BottomDock({
 
   // Active tab: sessionId
   const [activeTab, setActiveTab] = useState<string>('');
+  const activeTabRef = useRef<HTMLDivElement | null>(null);
   const [showNewShell, setShowNewShell] = useState<boolean>(false);
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessions, setPendingSessions] = useState<ShellSession[]>([]);
+
+  // Auto-scroll active tab into view in horizontal tab bar
+  useEffect(() => {
+    if (activeTab && activeTabRef.current) {
+      activeTabRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [activeTab]);
 
   // Active interactive shells across all bridges (REQ-BAR-2)
   const { data: shellsData } = useListShellsQuery(
@@ -251,8 +259,15 @@ export default function BottomDock({
             return (
               <div
                 key={session.session_id}
+                ref={isTabActive ? activeTabRef : undefined}
                 data-debug-id={`bottom-dock-tab-${session.session_id}`}
-                onClick={() => setActiveTab(session.session_id)}
+                onClick={() => {
+                  setActiveTab(session.session_id);
+                  if (isMinimized) {
+                    setIsMinimized(false);
+                    writeBottomDockOpen(true);
+                  }
+                }}
                 className={`group relative flex h-7 max-w-[190px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-0.5 text-xs transition-colors ${
                   isTabActive
                     ? 'border-subtle bg-surface-secondary font-medium text-primary'

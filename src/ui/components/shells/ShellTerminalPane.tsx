@@ -75,6 +75,7 @@ export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+    term.focus();
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -117,12 +118,16 @@ export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
           if (targetId) {
             sendShellResize({ sessionId: targetId, rows: term.rows, cols: term.cols }).catch(() => {});
           }
+          term.focus();
         }
       } catch { /* ignore */ }
     };
 
     dispatchResize();
-    const timer = setTimeout(() => dispatchResize(), 150);
+    const timer = setTimeout(() => {
+      dispatchResize();
+      term.focus();
+    }, 150);
 
     const resizeObserver = new ResizeObserver(() => {
       try {
