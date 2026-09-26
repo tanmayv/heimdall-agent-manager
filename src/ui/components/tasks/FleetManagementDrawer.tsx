@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import {
   Badge,
   Button,
@@ -11,27 +12,40 @@ import {
   StatusDot,
   Text,
 } from '@ui';
+import { heimdallApi } from '../../api/heimdallApi';
 import {
   useGetTaskChainFleetsQuery,
   useUpdateTaskChainFleetMutation,
   type TaskChainFleet,
 } from '../../api/endpoints/taskChains';
 import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
-import { useListBridgeProvidersQuery } from '../../api/endpoints/bridgeSupport';
+import {
+  normalizeBridgeCapabilities,
+  useListBridgesQuery,
+  useListBridgeProvidersQuery,
+  useListAgentBridgeSupportQuery,
+  usePatchAgentBridgeSupportMutation,
+} from '../../api/endpoints/bridgeSupport';
+import { isRevokedBridge } from '../../utils/taskBridgePin';
 import {
   activeTasksByRole,
   changedFleetEntries,
+  detectLiveInstanceRuntimeMismatch,
   fleetApplyRequests,
   fleetProviderCapabilities,
+  flattenProviderTierDrafts,
   getOriginalFleetCapacity,
   getOriginalProviderTier,
+  hasCustomRuntimeOverrides,
   liveInstancesByRole,
   nextTierOnProviderChange,
   restartAffectedEntries,
+  seedPerBridgeProviderTierDrafts,
   seedProviderTierDrafts,
   summarizeFleetRestartResults,
   tierOptionsForProvider,
   type ChangedFleetEntry,
+  type FleetProviderCapability,
   type FleetProviderTier,
   type FleetRestartSummary,
 } from './fleetSelection';
@@ -160,6 +174,108 @@ export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
   );
 };
 
+interface BridgeRuntimeRowProps {
+  agentId: string;
+  roleName: string;
+  bridge: any;
+  draftPT: FleetProviderTier;
+  onProviderChange: (provider: string, capabilities: FleetProviderCapability[]) => void;
+  onTierChange: (tier: string) => void;
+  disabled: boolean;
+}
+
+const BridgeRuntimeRow: React.FC<BridgeRuntimeRowProps> = ({
+  agentId,
+  roleName,
+  bridge,
+  draftPT,
+  onProviderChange,
+  onTierChange,
+  disabled,
+}) => {
+  const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
+  const providersQuery = useListBridgeProvidersQuery({ bridgeId: bId }, { skip: !bId });
+  const agentSupportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId });
+
+  const capabilities = useMemo<FleetProviderCapability[]>(() => {
+    const fromQuery = fleetProviderCapabilities(providersQuery.data);
+    if (fromQuery.length > 0) return fromQuery;
+    return normalizeBridgeCapabilities(bridge);
+  }, [providersQuery.data, bridge]);
+
+  const effectiveProvider = draftPT?.provider || '';
+  const effectiveTier = draftPT?.tier || '';
+  const tierOptions = tierOptionsForProvider(capabilities, effectiveProvider);
+
+  const status = String(bridge.status || bridge.runtime_status || '').toLowerCase();
+  const isOnline = status === 'online' || status === 'connected';
+  const label = bridge.label || bridge.machine_hostname || bridge.machineHostname || bridge.hostname || bId;
+  const host = bridge.machine_hostname || bridge.machineHostname || bridge.hostname || bridge.host || '—';
+
+  return (
+    <div
+      data-debug-id={`fleet-bridge-runtime-row-${agentId}-${bId}`}
+      className="rounded-lg border border-subtle bg-surface p-2.5 space-y-2"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <StatusDot
+            size="sm"
+            tone={isOnline ? 'success' : 'neutral'}
+            label={isOnline ? 'Online' : 'Offline'}
+          />
+          <span className="text-xs font-semibold text-primary truncate" title={label}>
+            {label}
+          </span>
+          <span className="text-[10px] text-muted font-mono truncate" title={host}>
+            ({host})
+          </span>
+        </div>
+        <span className="text-[10px] text-muted shrink-0">Auto inherits defaults</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">
+            Provider
+          </span>
+          <Select
+            data-debug-id={`fleet-provider-select-${agentId}`}
+            value={effectiveProvider}
+            onChange={(v) => onProviderChange(v, capabilities)}
+            disabled={disabled}
+            size="sm"
+            width="full"
+            aria-label={`Provider for ${roleName} on ${label}`}
+            options={[
+              { value: '', label: 'Auto (inherit)' },
+              ...capabilities.map((cap) => ({ value: cap.provider, label: cap.provider })),
+            ]}
+          />
+        </div>
+        <div className="space-y-1">
+          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">
+            Tier
+          </span>
+          <Select
+            data-debug-id={`fleet-tier-select-${agentId}`}
+            value={effectiveTier}
+            onChange={onTierChange}
+            disabled={effectiveProvider === '' || disabled}
+            size="sm"
+            width="full"
+            aria-label={`Model tier for ${roleName} on ${label}`}
+            options={[
+              { value: '', label: 'Auto (inherit)' },
+              ...tierOptions.map((tier) => ({ value: tier, label: tier })),
+            ]}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /** One row of the restart-confirmation modal: the affected role + what to warn about. */
 interface PendingRestartRole extends ChangedFleetEntry {
   liveCount: number;
@@ -198,19 +314,37 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   // without a bridge keep the capacity-only drawer.
   const directories = (chainDetailQuery.data?.chain?.directories || []) as any[];
   const bridgeId = directories.length > 0 ? String(directories[0]?.bridgeId || '') : '';
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
+  const activeBridges = useMemo(() => {
+    return (bridgesQuery.data?.bridges || []).filter((b: any) => !isRevokedBridge(b));
+  }, [bridgesQuery.data?.bridges]);
+
+  const bridgesToRender = useMemo(() => {
+    if (activeBridges.length > 0) return activeBridges;
+    if (bridgeId) {
+      return [{ bridge_id: bridgeId, label: 'Primary Bridge', machine_hostname: 'localhost', status: 'online' }];
+    }
+    return [];
+  }, [activeBridges, bridgeId]);
+
   const providersQuery = useListBridgeProvidersQuery({ bridgeId }, { skip: !bridgeId });
   const bridgeCapabilities = useMemo(
     () => fleetProviderCapabilities(providersQuery.data),
     [providersQuery.data]
   );
 
+  const dispatch = useDispatch();
+  const [patchAgentBridgeSupport] = usePatchAgentBridgeSupportMutation();
   const [updateFleet, { isLoading: isUpdating }] = useUpdateTaskChainFleetMutation();
   const [selectedNewAgentId, setSelectedNewAgentId] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [isApplying, setIsApplying] = useState(false);
   const [draftCapacities, setDraftCapacities] = useState<Record<string, number>>({});
-  const [draftProviderTiers, setDraftProviderTiers] = useState<Record<string, FleetProviderTier>>({});
+  const [draftProviderTiers, setDraftProviderTiers] = useState<
+    Record<string, Record<string, FleetProviderTier>>
+  >({});
+  const [expandedRuntimeRoles, setExpandedRuntimeRoles] = useState<Record<string, boolean>>({});
   const [pendingRestart, setPendingRestart] = useState<PendingRestartRole[] | null>(null);
   const [restartSummary, setRestartSummary] = useState<FleetRestartSummary | null>(null);
 
@@ -227,8 +361,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       init[f.agent_id] = f.capacity ?? 1;
     }
     setDraftCapacities(init);
-    setDraftProviderTiers(seedProviderTierDrafts(rawFleets));
-  }, [rawFleets]);
+    setDraftProviderTiers(seedPerBridgeProviderTierDrafts(rawFleets, bridgesToRender, bridgeId));
+  }, [rawFleets, bridgesToRender, bridgeId]);
 
   // Sync drafts when drawer opens
   useEffect(() => {
@@ -282,51 +416,99 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     setRestartSummary(null);
   }, []);
 
-  const handleDraftProviderChange = useCallback((agentId: string, provider: string) => {
-    setDraftProviderTiers((prev) => {
-      const currentTier = prev[agentId]?.tier ?? '';
-      return {
+  const handleDraftBridgeProviderChange = useCallback(
+    (agentId: string, bId: string, provider: string, capabilities: FleetProviderCapability[]) => {
+      setDraftProviderTiers((prev) => {
+        const roleDrafts = prev[agentId] || {};
+        const currentTier = roleDrafts[bId]?.tier ?? '';
+        return {
+          ...prev,
+          [agentId]: {
+            ...roleDrafts,
+            [bId]: {
+              provider,
+              tier: nextTierOnProviderChange(currentTier, provider, capabilities),
+            },
+          },
+        };
+      });
+      setErrorMsg('');
+      setSuccessMsg('');
+      setRestartSummary(null);
+    },
+    []
+  );
+
+  const handleDraftBridgeTierChange = useCallback(
+    (agentId: string, bId: string, tier: string) => {
+      setDraftProviderTiers((prev) => {
+        const roleDrafts = prev[agentId] || {};
+        return {
+          ...prev,
+          [agentId]: {
+            ...roleDrafts,
+            [bId]: {
+              provider: roleDrafts[bId]?.provider ?? '',
+              tier,
+            },
+          },
+        };
+      });
+      setErrorMsg('');
+      setSuccessMsg('');
+      setRestartSummary(null);
+    },
+    []
+  );
+
+  const handleDraftProviderChange = useCallback(
+    (agentId: string, provider: string) => {
+      const targetBridgeId = bridgeId || bridgesToRender[0]?.bridge_id || 'default';
+      handleDraftBridgeProviderChange(agentId, targetBridgeId, provider, bridgeCapabilities);
+    },
+    [bridgeId, bridgesToRender, bridgeCapabilities, handleDraftBridgeProviderChange]
+  );
+
+  const handleDraftTierChange = useCallback(
+    (agentId: string, tier: string) => {
+      const targetBridgeId = bridgeId || bridgesToRender[0]?.bridge_id || 'default';
+      handleDraftBridgeTierChange(agentId, targetBridgeId, tier);
+    },
+    [bridgeId, bridgesToRender, handleDraftBridgeTierChange]
+  );
+
+  const handleAddFleet = useCallback(
+    (agentId: string) => {
+      if (!agentId) return;
+      setDraftCapacities((prev) => ({
         ...prev,
-        [agentId]: {
-          provider,
-          tier: nextTierOnProviderChange(currentTier, provider, bridgeCapabilities),
-        },
-      };
-    });
-    setErrorMsg('');
-    setSuccessMsg('');
-    setRestartSummary(null);
-  }, [bridgeCapabilities]);
-
-  const handleDraftTierChange = useCallback((agentId: string, tier: string) => {
-    setDraftProviderTiers((prev) => ({
-      ...prev,
-      [agentId]: { provider: prev[agentId]?.provider ?? '', tier },
-    }));
-    setErrorMsg('');
-    setSuccessMsg('');
-    setRestartSummary(null);
-  }, []);
-
-  const handleAddFleet = useCallback((agentId: string) => {
-    if (!agentId) return;
-    setDraftCapacities((prev) => ({
-      ...prev,
-      [agentId]: prev[agentId] ?? 1,
-    }));
-    setDraftProviderTiers((prev) => ({
-      ...prev,
-      [agentId]: prev[agentId] ?? { provider: '', tier: '' },
-    }));
-    setSelectedNewAgentId('');
-    setErrorMsg('');
-    setSuccessMsg('');
-    setRestartSummary(null);
-  }, []);
+        [agentId]: prev[agentId] ?? 1,
+      }));
+      setDraftProviderTiers((prev) => {
+        const roleDrafts: Record<string, FleetProviderTier> = {};
+        for (const b of bridgesToRender) {
+          const bId = String(b.bridge_id || b.bridgeId || b.id || '');
+          if (bId) roleDrafts[bId] = { provider: '', tier: '' };
+        }
+        if (bridgeId && !roleDrafts[bridgeId]) {
+          roleDrafts[bridgeId] = { provider: '', tier: '' };
+        }
+        return {
+          ...prev,
+          [agentId]: prev[agentId] ?? roleDrafts,
+        };
+      });
+      setSelectedNewAgentId('');
+      setErrorMsg('');
+      setSuccessMsg('');
+      setRestartSummary(null);
+    },
+    [bridgesToRender, bridgeId]
+  );
 
   const changedFleets = useMemo(
-    () => changedFleetEntries(fleets, draftCapacities, draftProviderTiers, rawFleets),
-    [fleets, draftCapacities, draftProviderTiers, rawFleets]
+    () => changedFleetEntries(fleets, draftCapacities, draftProviderTiers, rawFleets, bridgeId),
+    [fleets, draftCapacities, draftProviderTiers, rawFleets, bridgeId]
   );
 
   const hasPendingChanges = changedFleets.length > 0;
@@ -346,6 +528,29 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       setRestartSummary(null);
       setIsApplying(true);
       try {
+        // Persist per-bridge overrides via usePatchAgentBridgeSupportMutation
+        const bridgePatchPromises: Promise<any>[] = [];
+        for (const cf of changedFleets) {
+          const roleDrafts = draftProviderTiers[cf.agentId];
+          if (roleDrafts && typeof roleDrafts === 'object' && !('provider' in roleDrafts)) {
+            for (const [bId, pt] of Object.entries(roleDrafts)) {
+              if (bId && bId !== 'default') {
+                bridgePatchPromises.push(
+                  patchAgentBridgeSupport({
+                    agentId: cf.agentId,
+                    bridgeId: bId,
+                    providerProfile: pt.provider || '',
+                    modelTier: pt.tier || '',
+                  }).unwrap().catch((err: any) => {
+                    console.warn(`Failed to patch bridge support for ${cf.agentId} on ${bId}:`, err);
+                  })
+                );
+              }
+            }
+          }
+        }
+        await Promise.all(bridgePatchPromises);
+
         const requests = fleetApplyRequests(changedFleets, restartAffected);
         const results = await Promise.all(
           requests.map(async (cf) => {
@@ -363,6 +568,13 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               restart_failures: response?.restart_failures,
             };
           })
+        );
+        dispatch(
+          heimdallApi.util.invalidateTags([
+            { type: 'BridgeSupport' as const },
+            { type: 'ChainFleets' as const },
+            { type: 'ChainMembers' as const },
+          ])
         );
         await refetch();
         await chainDetailQuery.refetch();
@@ -384,7 +596,18 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
         setIsApplying(false);
       }
     },
-    [isUpdating, isApplying, changedFleets, updateFleet, chainId, refetch, chainDetailQuery]
+    [
+      isUpdating,
+      isApplying,
+      changedFleets,
+      draftProviderTiers,
+      patchAgentBridgeSupport,
+      updateFleet,
+      chainId,
+      dispatch,
+      refetch,
+      chainDetailQuery,
+    ]
   );
 
   const handleApply = useCallback(() => {
@@ -397,9 +620,16 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       changedFleets,
       rawFleets,
       draftProviderTiers,
-      liveCounts
+      liveCounts,
+      bridgeId
     );
-    // No provider/tier change on a role with live instances -> today's silent apply.
+    const mismatches = detectLiveInstanceRuntimeMismatch(
+      members,
+      draftProviderTiers,
+      rawFleets,
+      bridgeId
+    );
+    // If no live instance has a runtime mismatch, save changes directly without prompting.
     if (affected.length === 0) {
       void applyFleetChanges([]);
       return;
@@ -424,8 +654,10 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     rawFleets,
     draftProviderTiers,
     liveInstancesByRoleMap,
+    members,
     activeTasksByRoleMap,
     applyFleetChanges,
+    bridgeId,
   ]);
 
   const handleConfirmRestartNow = useCallback(() => {
@@ -510,13 +742,18 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               const isSaturated = activeCount >= effectiveCapacity;
 
               const origProviderTier = getOriginalProviderTier(rawFleets, agentId);
-              const effectiveProvider = draftProviderTiers[agentId]?.provider ?? fleet.provider ?? '';
-              const effectiveTier = draftProviderTiers[agentId]?.tier ?? fleet.tier ?? '';
+              const roleDraftMap = draftProviderTiers[agentId] || {};
+              const flatDraftPT =
+                flattenProviderTierDrafts({ [agentId]: roleDraftMap }, bridgeId)[agentId] || {
+                  provider: '',
+                  tier: '',
+                };
+              const effectiveProvider = flatDraftPT.provider || fleet.provider || '';
+              const effectiveTier = flatDraftPT.tier || fleet.tier || '';
               const capacityModified = origCapacity === null || effectiveCapacity !== origCapacity;
               const providerModified = effectiveProvider !== origProviderTier.provider;
               const tierModified = effectiveTier !== origProviderTier.tier;
               const isModified = capacityModified || providerModified || tierModified;
-              const tierOptions = tierOptionsForProvider(bridgeCapabilities, effectiveProvider);
 
               const pendingParts: string[] = [];
               if (capacityModified) {
@@ -531,6 +768,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
 
               const liveInstances = liveInstancesByRoleMap[agentId] || [];
               const activeTasks = activeTasksByRoleMap[agentId] || [];
+              const isRuntimeExpanded = Boolean(expandedRuntimeRoles[agentId]);
+              const hasCustomOverrides = hasCustomRuntimeOverrides(roleDraftMap);
 
               return (
                 <div
@@ -625,52 +864,72 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                     </div>
                   </div>
 
-                  {/* Provider & Tier overrides (chains with a bridge directory only) */}
-                  {Boolean(bridgeId) && (
-                    <div
-                      data-debug-id={`fleet-provider-tier-row-${agentId}`}
-                      className="rounded-lg border border-subtle bg-surface p-2.5 space-y-2"
+                  {/* Expandable "Configure Runtime" Section (REQ-FLEET-UI-EXPANDABLE-1, REQ-FLEET-PER-BRIDGE-1) */}
+                  <div className="rounded-lg border border-subtle bg-surface overflow-hidden">
+                    <button
+                      type="button"
+                      data-debug-id={`fleet-runtime-expand-btn-${agentId}`}
+                      onClick={() =>
+                        setExpandedRuntimeRoles((prev) => ({
+                          ...prev,
+                          [agentId]: !prev[agentId],
+                        }))
+                      }
+                      aria-expanded={isRuntimeExpanded}
+                      aria-label={`Configure runtime for ${roleName}`}
+                      className="w-full flex items-center justify-between p-2.5 hover:bg-neutral-soft/40 transition-colors cursor-pointer text-left select-none"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-primary">Provider &amp; Tier</span>
-                        <span className="text-[10px] text-muted">Auto inherits the bridge defaults</span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <Icon
+                          name={isRuntimeExpanded ? 'chevron-down' : 'chevron-right'}
+                          size={14}
+                          className="text-muted shrink-0"
+                        />
+                        <span className="text-xs font-medium text-primary">Configure Runtime</span>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Provider</span>
-                          <Select
-                            data-debug-id={`fleet-provider-select-${agentId}`}
-                            value={effectiveProvider}
-                            onChange={(v) => handleDraftProviderChange(agentId, v)}
-                            disabled={isUpdating || isApplying}
-                            size="sm"
-                            width="full"
-                            aria-label={`Provider for ${roleName}`}
-                            options={[
-                              { value: '', label: 'Auto (inherit)' },
-                              ...bridgeCapabilities.map((cap) => ({ value: cap.provider, label: cap.provider })),
-                            ]}
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">Tier</span>
-                          <Select
-                            data-debug-id={`fleet-tier-select-${agentId}`}
-                            value={effectiveTier}
-                            onChange={(v) => handleDraftTierChange(agentId, v)}
-                            disabled={effectiveProvider === '' || isUpdating || isApplying}
-                            size="sm"
-                            width="full"
-                            aria-label={`Model tier for ${roleName}`}
-                            options={[
-                              { value: '', label: 'Auto (inherit)' },
-                              ...tierOptions.map((tier) => ({ value: tier, label: tier })),
-                            ]}
-                          />
-                        </div>
+                      <span
+                        data-debug-id={`fleet-runtime-summary-pill-${agentId}`}
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium border shrink-0 ${
+                          hasCustomOverrides
+                            ? 'border-accent/30 bg-accent-soft/30 text-accent font-semibold'
+                            : 'border-subtle bg-surface-raised text-muted'
+                        }`}
+                      >
+                        {hasCustomOverrides ? 'Custom Overrides' : 'Defaults'}
+                      </span>
+                    </button>
+
+                    {isRuntimeExpanded && (
+                      <div className="border-t border-subtle p-2.5 space-y-2.5 bg-canvas/40">
+                        {bridgesToRender.length === 0 ? (
+                          <div className="text-[11px] text-muted italic p-1">
+                            No active bridges connected.
+                          </div>
+                        ) : (
+                          bridgesToRender.map((bridge: any) => {
+                            const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
+                            const bridgeDraftPT = roleDraftMap[bId] ?? { provider: '', tier: '' };
+                            return (
+                              <BridgeRuntimeRow
+                                key={bId}
+                                agentId={agentId}
+                                roleName={roleName}
+                                bridge={bridge}
+                                draftPT={bridgeDraftPT}
+                                onProviderChange={(newProvider, caps) =>
+                                  handleDraftBridgeProviderChange(agentId, bId, newProvider, caps)
+                                }
+                                onTierChange={(newTier) =>
+                                  handleDraftBridgeTierChange(agentId, bId, newTier)
+                                }
+                                disabled={isUpdating || isApplying}
+                              />
+                            );
+                          })
+                        )}
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   {/* Live Instances */}
                   <div className="space-y-1">

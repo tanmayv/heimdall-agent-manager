@@ -87,3 +87,51 @@ test('tasks.ts endpoint supports includeArchived and cache invalidation', () => 
   assert.match(content, /includeArchived\?: boolean/, 'fetchTaskChainProjectPage must support includeArchived');
   assert.match(content, /updateTaskChain:/, 'tasks.ts must export updateTaskChain mutation');
 });
+
+test('TaskChainOverview.tsx wraps modal task titles and dependency chips/lists in VaultText (REQ-UI-VAULT-TITLE-1)', () => {
+  const overviewFile = path.join(REPO_ROOT, 'src/ui/components/taskchain/TaskChainOverview.tsx');
+  const content = fs.readFileSync(overviewFile, 'utf8');
+
+  // 1. Dependency list chips
+  assert.match(
+    content,
+    /\{depTask \? <VaultText value=\{depTask\.title\} as="span" \/> : depId\}/,
+    'Dependency list chips must render depTask.title using VaultText'
+  );
+
+  // 2. New task modal dependency candidate rows
+  assert.match(
+    content,
+    /<span className="truncate flex-1 font-medium"><VaultText value=\{t\.title\} as="span" \/><\/span>/,
+    'Task dependency list items must render t.title using VaultText'
+  );
+
+  // 3. Change Assignee modal task title
+  assert.match(
+    content,
+    /Task: <span className="text-primary"><VaultText value=\{editingAssigneeTask\.title\} as="span" \/><\/span>/,
+    'Change Assignee modal header must render task title using VaultText'
+  );
+
+  // 4. Change Reviewers modal task title
+  assert.match(
+    content,
+    /Task: <span className="text-primary"><VaultText value=\{editingReviewersTask\.title\} as="span" \/><\/span>/,
+    'Change Reviewers modal header must render task title using VaultText'
+  );
+
+  // 5. Change Dependencies modal task title
+  assert.match(
+    content,
+    /Task: <span className="text-primary"><VaultText value=\{editingDependenciesTask\.title\} as="span" \/><\/span>/,
+    'Change Dependencies modal header must render task title using VaultText'
+  );
+
+  // 6. Change Bridge modal task title
+  assert.match(
+    content,
+    /Task: <span className="text-primary"><VaultText value=\{editingBridgeTask\.title\} as="span" \/><\/span>/,
+    'Change Bridge modal header must render task title using VaultText'
+  );
+});
+

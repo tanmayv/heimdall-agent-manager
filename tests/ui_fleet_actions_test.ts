@@ -19,13 +19,16 @@ import {
   changedFleetEntries,
   fleetApplyRequests,
   fleetProviderCapabilities,
+  flattenProviderTierDrafts,
   getOriginalFleetCapacity,
   getOriginalProviderTier,
+  hasCustomRuntimeOverrides,
   isLiveFleetMember,
   liveInstancesByRole,
   nextTierOnProviderChange,
   providerTierModified,
   restartAffectedEntries,
+  seedPerBridgeProviderTierDrafts,
   seedProviderTierDrafts,
   summarizeFleetRestartResults,
   tierOptionsForProvider,
@@ -624,6 +627,92 @@ test('tier options derived from a live bridge payload drive tier selection end-t
   // A tier from one provider is reset when switching to a provider without it.
   assert.equal(nextTierOnProviderChange('smart', 'codex', caps), '');
   assert.equal(nextTierOnProviderChange('normal', 'codex', caps), 'normal');
+});
+
+// -----------------------------------------------------------------------------
+// REQ-FLEET-UI-EXPANDABLE-1 & REQ-FLEET-PER-BRIDGE-1: per-bridge runtime config
+// -----------------------------------------------------------------------------
+
+test('seedPerBridgeProviderTierDrafts maps per-bridge provider/tier for active bridges', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: 'claude', tier: 'smart' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: '', tier: '' },
+  ];
+  const bridges = [
+    { bridge_id: 'brg_alpha', label: 'alpha' },
+    { bridge_id: 'brg_beta', label: 'beta' },
+  ];
+  const drafts = seedPerBridgeProviderTierDrafts(rawFleets, bridges, 'brg_alpha');
+  assert.deepEqual(drafts, {
+    agt_worker: {
+      brg_alpha: { provider: 'claude', tier: 'smart' },
+      brg_beta: { provider: '', tier: '' },
+    },
+    agt_reviewer: {
+      brg_alpha: { provider: '', tier: '' },
+      brg_beta: { provider: '', tier: '' },
+    },
+  });
+});
+
+test('hasCustomRuntimeOverrides detects custom provider or tier overrides', () => {
+  assert.equal(hasCustomRuntimeOverrides({ brg_1: { provider: 'claude', tier: '' } }), true);
+  assert.equal(hasCustomRuntimeOverrides({ brg_1: { provider: '', tier: 'smart' } }), true);
+  assert.equal(hasCustomRuntimeOverrides({ brg_1: { provider: '', tier: '' } }), false);
+  assert.equal(hasCustomRuntimeOverrides(undefined), false);
+});
+
+test('flattenProviderTierDrafts prioritizes preferred bridge and detects overrides', () => {
+  const drafts = {
+    agt_worker: {
+      brg_1: { provider: 'qoder', tier: 'normal' },
+      brg_2: { provider: 'claude', tier: 'smart' },
+    },
+    agt_reviewer: {
+      brg_1: { provider: '', tier: '' },
+      brg_2: { provider: 'gemini', tier: 'pro' },
+    },
+  };
+  const flat = flattenProviderTierDrafts(drafts, 'brg_1');
+  assert.deepEqual(flat, {
+    agt_worker: { provider: 'qoder', tier: 'normal' },
+    agt_reviewer: { provider: 'gemini', tier: 'pro' },
+  });
+});
+
+test('changedFleetEntries detects changes from per-bridge drafts', () => {
+  const rawFleets = [
+    { agent_id: 'agt_worker', capacity: 2, provider: '', tier: '' },
+  ];
+  const perBridgeDrafts = {
+    agt_worker: {
+      brg_main: { provider: 'claude', tier: 'opus' },
+    },
+  };
+  const entries = changedFleetEntries(
+    rawFleets,
+    { agt_worker: 2 },
+    perBridgeDrafts,
+    rawFleets,
+    'brg_main',
+  );
+  assert.deepEqual(entries, [
+    { agentId: 'agt_worker', capacity: 2, provider: 'claude', tier: 'opus' },
+  ]);
+});
+
+test('REQ-FLEET-UI-EXPANDABLE-1 & REQ-FLEET-PER-BRIDGE-1: drawer markup contains accordion and bridge rows', () => {
+  const drawerSource = readRepo('src/ui/components/tasks/FleetManagementDrawer.tsx');
+  // Expandable trigger with required debug id
+  assert.match(drawerSource, /data-debug-id=\{`fleet-runtime-expand-btn-\$\{agentId\}`\}/);
+  // Bridge row panel with required debug id
+  assert.match(drawerSource, /data-debug-id=\{`fleet-bridge-runtime-row-\$\{agentId\}-\$\{bId\}`\}/);
+  // State for tracking expansion
+  assert.match(drawerSource, /expandedRuntimeRoles/);
+  // Configure Runtime text
+  assert.match(drawerSource, /Configure Runtime/);
+  // useListBridgesQuery usage
+  assert.match(drawerSource, /useListBridgesQuery/);
 });
 
 // -----------------------------------------------------------------------------

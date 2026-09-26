@@ -245,6 +245,7 @@ task_effective_bridge :: proc(service: ^Taskchain_Service, chain: domain.Task_Ch
 
 task_effective_bridge_is_online :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task) -> (bool, string) {
 	bridge_id, _ := task_effective_bridge(service, chain, task)
+	if bridge_id == "" do return true, ""
 	if service == nil || service.agent_service == nil || service.agent_service.bridges == nil do return true, bridge_id
 	bridge, bridge_ok, _ := iface.bridge_get_bridge(service.agent_service.bridges, bridge_id)
 	return bridge_ok && bridge.status == .Online, bridge_id
