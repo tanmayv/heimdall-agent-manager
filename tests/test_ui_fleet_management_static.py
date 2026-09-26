@@ -143,9 +143,11 @@ def main() -> int:
 
     # 5. ChainOverviewPanel component
     panel_file = REPO_ROOT / "src/ui/components/chat/ChainOverviewPanel.tsx"
-    errors.extend(check_file_contains(panel_file, [
+    errors.extend(check_file_not_contains(panel_file, [
         "<FleetSlotChips",
         "<FleetManagementDrawer",
+    ]))
+    errors.extend(check_file_contains(panel_file, [
         "Queued (Waiting for",
         "formatFleetRoleName",
     ]))

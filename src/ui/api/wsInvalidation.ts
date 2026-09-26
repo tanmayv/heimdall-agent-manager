@@ -14,6 +14,9 @@ import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '.
 import { taskEventReceived } from '../store/taskSlice';
 import { agentActionReceived } from '../store/agentActivitySlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
+import { upsertChainTitle, upsertConversationTitle } from '../store/searchTitleSlice';
+import { isVaultArmored, decryptVaultText } from '../utils/vaultContent';
+import { readSessionVaultKey } from '../store/vaultSlice';
 
 // Focus context read at WS-event time (populated by the shell from the live
 // route). Only focusedChainId is consumed — it lets a resource/chat/agent event
@@ -349,12 +352,72 @@ function handleTaskEvent(dispatch: any, payload: any) {
   }
 }
 
+function dispatchSearchTitleUpsert(
+  dispatch: any,
+  item: {
+    id: string;
+    type: 'chain' | 'conversation';
+    rawTitle: string;
+    decryptedTitle?: string;
+    projectId?: string;
+    status?: string;
+    updatedAt?: string;
+  },
+) {
+  if (!item.id || !item.rawTitle) return;
+  const isChain = item.type === 'chain';
+  const actionCreator = isChain ? upsertChainTitle : upsertConversationTitle;
+
+  const decryptedTitle = item.decryptedTitle ?? item.rawTitle;
+  dispatch(
+    actionCreator({
+      ...item,
+      decryptedTitle,
+    }),
+  );
+
+  if (isVaultArmored(item.rawTitle)) {
+    const rawKey = readSessionVaultKey();
+    if (rawKey) {
+      decryptVaultText(item.rawTitle, rawKey)
+        .then((decrypted) => {
+          if (decrypted && decrypted !== item.rawTitle) {
+            dispatch(
+              actionCreator({
+                ...item,
+                decryptedTitle: decrypted,
+              }),
+            );
+          }
+        })
+        .catch(() => {});
+    }
+  }
+}
+
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(chatEventReceived(payload));
   const agentId = String(payload.agent_instance_id || '');
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const conversationId = String(payload.conversation_id || payload.conversationId || '');
+  const chatTitle = String(
+    payload.title ||
+    payload.conversation_title ||
+    payload.conversationTitle ||
+    payload.summary?.title ||
+    payload.message?.conversation_title ||
+    ''
+  );
+  if (chatTitle && (conversationId || agentId)) {
+    dispatchSearchTitleUpsert(dispatch, {
+      id: conversationId || agentId,
+      type: 'conversation',
+      rawTitle: chatTitle,
+      projectId: payload.project_id || payload.projectId || undefined,
+      updatedAt: payload.updated_at || payload.updatedAt || undefined,
+    });
+  }
   const eventChainId = String(payload.chain_id || '');
   const focusedChainId = String(ctx.focusedChainId || '');
   const hasInlineMessage = Boolean(payload.message);
@@ -567,6 +630,50 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       dispatch(heimdallApi.util.invalidateTags(tags));
       if (chainId && ctx.focusedChainId === chainId) {
         dispatch(wsChainViewRefreshRequested(`resource_changed:task_chain:${chainId}`));
+      }
+      const rawTitle = String(
+        summary.title ||
+        payload.title ||
+        summary.raw_title ||
+        summary.rawTitle ||
+        payload.change?.title ||
+        ''
+      );
+      if (rawTitle && chainId) {
+        dispatchSearchTitleUpsert(dispatch, {
+          id: chainId,
+          type: 'chain',
+          rawTitle,
+          projectId: summary.project_id || payload.project_id || undefined,
+          status: summary.status || payload.status || undefined,
+          updatedAt: summary.updated_at || payload.updated_at || undefined,
+        });
+      }
+      return;
+    }
+    case 'conversation': {
+      dispatch(heimdallApi.util.invalidateTags([
+        { type: 'ConversationSummaries', id: resourceId },
+        { type: 'ConversationSummaries', id: 'ALL' },
+        { type: 'SidebarConversations', id: 'ALL' },
+        { type: 'Chat', id: resourceId },
+      ]));
+      const rawTitle = String(
+        summary.title ||
+        payload.title ||
+        summary.raw_title ||
+        summary.rawTitle ||
+        payload.change?.title ||
+        ''
+      );
+      if (rawTitle && resourceId) {
+        dispatchSearchTitleUpsert(dispatch, {
+          id: resourceId,
+          type: 'conversation',
+          rawTitle,
+          projectId: summary.project_id || payload.project_id || undefined,
+          updatedAt: summary.updated_at || payload.updated_at || undefined,
+        });
       }
       return;
     }

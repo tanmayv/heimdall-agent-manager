@@ -32,20 +32,28 @@
   background: var(--color-canvas, var(--fd-canvas));
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
-  min-width: 920px;
-  min-height: 620px;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  max-width: 100vw;
+  max-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
   background: var(--color-canvas, var(--fd-canvas));
   color: var(--color-text-primary, var(--fd-ink));
 }
 
-/* UI-13: responsive/mobile. Below the md breakpoint, drop the desktop min-width
-   floor so the app can render on phone-width viewports, and expose safe-area
+/* UI-13: responsive/mobile. Below the md breakpoint, expose safe-area
    inset utilities for keyboard/notch-aware layout (composer, bottom tab bar). */
 @media (max-width: 767px) {
-  body { min-width: 0; min-height: 100vh; }
-
   input:not([type='checkbox']):not([type='radio']),
   textarea,
   select {

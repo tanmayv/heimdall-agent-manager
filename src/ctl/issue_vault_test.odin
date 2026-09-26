@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:testing"
 import cfg_lib "odin_test:lib/config"
@@ -15,6 +16,9 @@ ALT_ISSUE_VAULT_KEY  :: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9
 
 @(test)
 test_ctl_read_vault_key_resolution :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+
 	// 1. CLI flag override (--vault-key)
 	args_flag := [?]string{"ham-ctl", "issue", "list", "--vault-key", TEST_ISSUE_VAULT_KEY}
 	key_flag, ok_flag := ctl_read_vault_key(args_flag[:], context.temp_allocator)

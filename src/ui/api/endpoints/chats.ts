@@ -735,6 +735,19 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         }
       },
     }),
+    listAllChatConversations: build.query<any, { limit?: number } | void>({
+      queryFn: async (arg) => {
+        try {
+          const limit = typeof arg === 'object' && arg !== null && typeof arg.limit === 'number' ? arg.limit : 200;
+          const raw = await cookieJsonFetch(`/chats?limit=${encodeURIComponent(limit)}`);
+          const data = raw?.data ?? raw;
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'ConversationSummaries' as const, id: 'ALL' }],
+    }),
   }),
   overrideExisting: false,
 });
@@ -758,6 +771,8 @@ export const {
   useLazyFetchChatMessageQuery,
   useSendAgentMessageMutation,
   useSendGuideMessageMutation,
+  useListAllChatConversationsQuery,
+  useLazyListAllChatConversationsQuery,
 } = chatEndpoints;
 
 export {

@@ -32,8 +32,6 @@ import {
   useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
 import {
-  FleetSlotChips,
-  FleetManagementDrawer,
   getQueuedWaitingSlotName,
   formatFleetRoleName,
 } from '../tasks/FleetManagementDrawer';
@@ -366,7 +364,6 @@ export default function ChainOverviewPanel({
   const [capturedTerminalIds, setCapturedTerminalIds] = useState<Record<string, boolean>>({});
   const [maximizedTerminalInstanceId, setMaximizedTerminalInstanceId] = useState<string | null>(null);
   const [pinnedAgentIds, setPinnedAgentIds] = useState<string[]>(() => readPinnedMonitorAgents());
-  const [isFleetDrawerOpen, setIsFleetDrawerOpen] = useState(false);
 
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
@@ -580,10 +577,10 @@ export default function ChainOverviewPanel({
         </div>
       )}
 
-      {/* Chain Header Toolbar with Fleet Slot Chips */}
+      {/* Chain Header Toolbar */}
       <div
         data-debug-id="chain-overview-header-toolbar"
-        className="rounded-xl border border-subtle bg-surface-secondary/40 p-3 space-y-2.5"
+        className="rounded-xl border border-subtle bg-surface-secondary/40 p-3"
       >
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -608,22 +605,7 @@ export default function ChainOverviewPanel({
             />
           )}
         </div>
-
-        {/* Fleet Slot Chips */}
-        <div className="pt-2 border-t border-subtle/60 flex items-center justify-between gap-2 flex-wrap">
-          <span className="text-[11px] font-semibold text-muted">Fleet Slots:</span>
-          <FleetSlotChips
-            chainId={chainId}
-            onOpenDrawer={() => setIsFleetDrawerOpen(true)}
-          />
-        </div>
       </div>
-
-      <FleetManagementDrawer
-        chainId={chainId}
-        isOpen={isFleetDrawerOpen}
-        onClose={() => setIsFleetDrawerOpen(false)}
-      />
 
       {/* SECTION 1: Chain Agents */}
       <section data-debug-id="chain-overview-section-agents" className="space-y-2.5">

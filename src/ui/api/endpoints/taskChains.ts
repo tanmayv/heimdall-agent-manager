@@ -244,6 +244,24 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         { type: 'Chain' as const, id: 'PINNED_LIST' },
       ],
     }),
+
+    listFlatTaskChains: build.query<any, { includeArchived?: boolean } | void>({
+      queryFn: async (arg) => {
+        try {
+          const options = typeof arg === 'object' && arg !== null ? arg : undefined;
+          const params = new URLSearchParams();
+          params.set('flat', '1');
+          if (options?.includeArchived) params.set('include_archived', '1');
+          const qs = params.toString();
+          const raw = await cookieJsonFetch(`/task-chains?${qs}`);
+          const data = raw?.data ?? raw;
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'ChainList' as const, id: 'FLAT' }, { type: 'Chain' as const, id: 'LIST' }],
+    }),
   }),
 });
 
@@ -253,4 +271,6 @@ export const {
   useUpdateTaskChainFleetMutation,
   useGetTaskChainQuery,
   useGetTaskChainsQuery,
+  useListFlatTaskChainsQuery,
+  useLazyListFlatTaskChainsQuery,
 } = taskChainsApi;

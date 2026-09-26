@@ -20,10 +20,8 @@ import { useFetchTaskChainGroupsQuery } from '../../api/endpoints/tasks';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import {
-  readBottomDockOpen,
   readLastSeenUserId,
   removeAppOwnedClientStorage,
-  writeBottomDockOpen,
   writeLastSeenUserId,
 } from '../../utils/clientPersistence';
 import BottomDock from './BottomDock';
@@ -1071,7 +1069,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   if (isConversationThreadRoute) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
     return (
-      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
+      <main data-debug-id="shell-main-route-outlet" className="min-w-0 min-h-0 flex-1 overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous
@@ -1098,7 +1096,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       className={
         isDesktopTwoPaneRoute
           ? 'h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas'
-          : 'min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
+          : 'min-w-0 min-h-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
       }
       // The scroll container clears the bottom chrome by MEASUREMENT rather than by a
       // guessed `pb-20` (spec › GLOBAL FIXES): `--ui-bottom-chrome` is the tab bar's
@@ -1254,25 +1252,13 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const dispatch = useDispatch();
 
   // Vault state & onboarding modal
-  const isVaultConfigured = useSelector(selectIsVaultConfigured);
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
   const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
 
-  // Persistent Bottom Dock for Shells (REQ-DOCK-1)
-  const [isBottomDockOpen, setIsBottomDockOpen] = useState(() => readBottomDockOpen());
-
+  // Persistent Bottom Dock for Shells (REQ-BAR-1)
   const handleToggleBottomDock = useCallback(() => {
-    setIsBottomDockOpen((prev) => {
-      const next = !prev;
-      writeBottomDockOpen(next);
-      return next;
-    });
-  }, []);
-
-  const handleCloseBottomDock = useCallback(() => {
-    setIsBottomDockOpen(false);
-    writeBottomDockOpen(false);
+    window.dispatchEvent(new CustomEvent('heimdall:toggle-bottom-dock'));
   }, []);
 
   // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not dismissed
@@ -1493,7 +1479,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   }
 
   return (
-    <div data-debug-id="app-shell" className="flex h-screen bg-canvas text-primary">
+    <div data-debug-id="app-shell" className="fixed inset-0 flex h-full w-full max-w-full overflow-hidden bg-canvas text-primary">
       {/* UI-13: mobile drawer scrim. Closes the off-canvas sidebar on tap. */}
       {isMobile && drawerOpen ? (
         <div
@@ -1586,67 +1572,8 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
-        <header
-          data-debug-id="shell-top-header"
-          className="flex h-10 shrink-0 items-center justify-between border-b border-subtle bg-surface/50 px-4 text-xs backdrop-blur-sm z-10"
-        >
-          <div className="flex items-center gap-2">
-            {isMobile && (
-              <button
-                type="button"
-                data-debug-id="shell-header-drawer-toggle"
-                onClick={() => setDrawerOpen(true)}
-                className="grid h-8 w-8 place-items-center rounded-lg text-primary hover:bg-neutral-soft"
-                aria-label="Open navigation"
-              >
-                <Icon name="menu" size={16} />
-              </button>
-            )}
-            <span className="font-semibold text-muted text-[11px] uppercase tracking-wider hidden sm:inline">
-              {routeTitle(path)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-debug-id="shell-bottom-dock-toggle-btn"
-              onClick={handleToggleBottomDock}
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition border ${
-                isBottomDockOpen
-                  ? 'border-accent/40 bg-accent/15 text-accent hover:bg-accent/25'
-                  : 'border-subtle bg-neutral-soft text-muted hover:text-primary hover:bg-surface-raised'
-              }`}
-              title="Toggle Shell Dock (Ctrl+`)"
-              aria-label="Toggle Shell Dock"
-            >
-              <Icon name="terminal" size={12} />
-              <span>Terminal</span>
-            </button>
-            <button
-              type="button"
-              data-debug-id="vault-header-status-badge"
-              onClick={() => setIsOnboardingModalOpen(true)}
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition border ${
-                isVaultUnlocked
-                  ? 'border-success/30 bg-success/10 text-success hover:bg-success/20'
-                  : !isVaultConfigured
-                    ? 'border-warning/30 bg-warning/10 text-warning hover:bg-warning/20'
-                    : 'border-subtle bg-neutral-soft text-muted hover:text-primary hover:bg-surface-raised'
-              }`}
-              title={`User Vault: ${isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'} (Click to manage)`}
-            >
-              <Icon name="lock" size={12} />
-              <span>Vault: {isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'}</span>
-            </button>
-          </div>
-        </header>
         <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
-        {isBottomDockOpen && (
-          <BottomDock
-            isOpen={isBottomDockOpen}
-            onClose={handleCloseBottomDock}
-          />
-        )}
+        <BottomDock />
       </div>
 
       {/* T11-UI-5: shell previews live in their own right-hand column, outside the

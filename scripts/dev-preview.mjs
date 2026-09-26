@@ -37,6 +37,7 @@ const PORT = Number(argValue('--port', process.env.HEIMDALL_PREVIEW_PORT || '517
 const VITE_PORT = Number(argValue('--vite-port', process.env.HEIMDALL_VITE_PORT || '5174'));
 let sessionId = argValue('--session-id', process.env.HEIMDALL_PREVIEW_SESSION_ID || '');
 const UPSTREAM = new URL(argValue('--upstream', process.env.HEIMDALL_PREVIEW_UPSTREAM || 'http://127.0.0.1:8080'));
+const isProd = process.argv.includes('--prod') || process.env.HEIMDALL_PREVIEW_PROD === '1';
 
 /** Forward `/api/v1/...` and `/_dev/...` to local ham-dev-proxy (127.0.0.1:8080). */
 function proxyApi(req, res, targetPath) {
@@ -141,8 +142,8 @@ function startVite(sid) {
     stdio: ['inherit', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      VITE_API_BASE: '.',
-      VITE_BASE_API: '.',
+      VITE_API_BASE: isProd ? '' : (process.env.VITE_API_BASE ?? '.'),
+      VITE_BASE_API: isProd ? '' : (process.env.VITE_BASE_API ?? '.'),
       FORCE_COLOR: '1',
     },
   });
