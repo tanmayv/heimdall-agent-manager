@@ -532,6 +532,16 @@ export function CollapsedPinnedChains({
         const tone = chainStatusTone(chain.status);
         const initials = chainAvatarInitials(chain.title);
 
+        const isCompleted = chain.status === 'completed';
+        const isActive = chain.status === 'active' || chain.status === 'in_progress';
+        const hasTasks = typeof chain.taskCount === 'number' && chain.taskCount > 0;
+        const radius = 5.25;
+        const circumference = 2 * Math.PI * radius;
+        const completedTaskCount = chain.completedTaskCount || 0;
+        const ratio = hasTasks ? Math.min(1, Math.max(0, completedTaskCount / chain.taskCount)) : 0;
+        const strokeDashoffset = circumference * (1 - ratio);
+        const pct = Math.round(ratio * 100);
+
         return (
           <a
             key={`collapsed-pinned-${chain.chainId}`}
@@ -551,10 +561,53 @@ export function CollapsedPinnedChains({
             }`}
           >
             <span>{initials}</span>
-            {chain.status === 'completed' ? (
+            {isCompleted ? (
               <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-neutral-soft text-muted pointer-events-none">
                 <Icon name="check" size={8} />
               </span>
+            ) : isActive && hasTasks ? (
+              <div
+                data-debug-id="chain-progress-ring"
+                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center pointer-events-none"
+                title={`${pct}% completed (${completedTaskCount}/${chain.taskCount} tasks)`}
+                aria-label={`${pct}% completed`}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 14 14"
+                  className="absolute inset-0 -rotate-90 pointer-events-none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r={radius}
+                    fill="none"
+                    stroke="currentColor"
+                    className="text-neutral-subtle opacity-25"
+                    strokeWidth="1.5"
+                  />
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r={radius}
+                    fill="none"
+                    stroke="currentColor"
+                    className="text-success transition-all duration-300"
+                    strokeWidth="1.5"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={strokeDashoffset}
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <StatusDot
+                  tone="success"
+                  pulse
+                  label={chain.status}
+                  size="sm"
+                />
+              </div>
             ) : (
               <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
                 <StatusDot

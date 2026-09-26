@@ -1,4 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
+import { TaskChainSelectorModal } from '../chains/TaskChainSelectorModal';
 import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import ProjectVcsPanel from './ProjectVcsPanel';
@@ -514,7 +515,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     // Prefer the cookie-auth chain detail (works in the live shell); fall back to
     // the legacy client-token fetchChainTasks. Without this the live shell always
     // read 0/0 because fetchChainTasks needs a client token the shell doesn't have.
-    const tasks: TaskLike[] = (chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || []) as TaskLike[];
+    const allTasks: TaskLike[] = (chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || []) as TaskLike[];
+    const tasks = allTasks.filter((t: TaskLike) => t.status !== 'cancelled');
     const total = tasks.length;
     const done = tasks.filter((t: TaskLike) => t.status === 'validated_good' || t.status === 'completed').length;
     return { total, done };
@@ -821,6 +823,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [chainSelectorOpen, setChainSelectorOpen] = useState(false);
   const searchOpen = paletteOpen;
   const setSearchOpen = setPaletteOpen;
 
@@ -2037,7 +2040,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                   data-debug-id="conversation-thread-title"
                   aria-label="Select task chain"
                   title="Click to search and select task chains"
-                  onClick={() => setPaletteOpen(true)}
+                  onClick={() => setChainSelectorOpen(true)}
                   className="group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left text-sm font-medium text-primary hover:bg-neutral-soft hover:text-accent transition-colors cursor-pointer"
                 >
                   <span className="truncate">
@@ -2055,7 +2058,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             data-debug-id="conversation-search-btn"
             aria-label="Search task chains"
             title="Search task chains"
-            onClick={() => setPaletteOpen(true)}
+            onClick={() => setChainSelectorOpen(true)}
             className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"
           >
             <UiIcon name="search" size={20} />
@@ -2231,6 +2234,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </button>
         </div>
       ) : null}
+
+      <TaskChainSelectorModal
+        open={chainSelectorOpen}
+        onClose={() => setChainSelectorOpen(false)}
+        currentChainId={chainId}
+        projectId={projectId}
+      />
 
       <CommandPalette
         open={paletteOpen}

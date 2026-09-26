@@ -44,7 +44,13 @@ import {
   DEFAULT_NAV,
   DEFAULT_ACTIONS,
   optionId,
+  matchesQuery,
 } from '../src/ui/components/ui/patterns/commandPaletteLogic.ts';
+import {
+  isVaultArmored,
+  encryptVaultText,
+} from '../src/ui/utils/vaultContent.ts';
+import { batchDecryptTitles } from '../src/ui/utils/vaultSearch.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -265,8 +271,8 @@ test('ConversationThreadPage header breadcrumb has interactive button with click
   // Interactive button verification
   assert.match(
     content,
-    /<button[^>]*data-debug-id="conversation-thread-title"[^>]*onClick=\{[^}]*setPaletteOpen\(true\)[^}]*\}/,
-    'conversation-thread-title must be a button triggering setPaletteOpen(true)',
+    /<button[^>]*data-debug-id="conversation-thread-title"[^>]*onClick=\{[^}]*(setChainSelectorOpen\(true\)|setPaletteOpen\(true\))[^}]*\}/,
+    'conversation-thread-title must be a button triggering setChainSelectorOpen(true) or setPaletteOpen(true)',
   );
 
   // Accessibility and hover state
@@ -274,11 +280,11 @@ test('ConversationThreadPage header breadcrumb has interactive button with click
   assert.match(content, /hover:bg-neutral-soft/, 'Must have hover background styling');
   assert.match(content, /cursor-pointer/, 'Must indicate clickability with cursor-pointer');
 
-  // Search button also opens palette
+  // Search button also opens selector / palette
   assert.match(
     content,
-    /<button[^>]*data-debug-id="conversation-search-btn"[^>]*onClick=\{[^}]*setPaletteOpen\(true\)[^}]*\}/,
-    'conversation-search-btn must open task chain search palette via setPaletteOpen(true)',
+    /<button[^>]*data-debug-id="conversation-search-btn"[^>]*onClick=\{[^}]*(setChainSelectorOpen\(true\)|setPaletteOpen\(true\))[^}]*\}/,
+    'conversation-search-btn must open task chain selector via setChainSelectorOpen(true) or setPaletteOpen(true)',
   );
 });
 
@@ -428,4 +434,136 @@ test('Query filtering separates quick navigation on empty from strict chain sear
   assert.equal(matches.length, 1);
   assert.equal(matches[0].chainId, 'c1');
   assert.equal(matches[0].title, 'User Vault Setup');
+});
+
+// -----------------------------------------------------------------------------
+// 11. Armor Shielding in Pure Logic: matchesQuery (REQ-SEARCH-ARMOR-SHIELD-1)
+// -----------------------------------------------------------------------------
+
+test('matchesQuery returns false for any isVaultArmored string regardless of query', () => {
+  const armoredSample = 'vault:v1:WUgAS1y82QZU5dYC/488DrhnJXBmKsJTwengYlT7uLDJLbV09m8d2Lq3W';
+
+  assert.ok(isVaultArmored(armoredSample), 'Sample string must be armored');
+
+  // Armor prefix queries must return false
+  assert.equal(matchesQuery(armoredSample, 'vault'), false, 'Must not match "vault" in armored string');
+  assert.equal(matchesQuery(armoredSample, 'Vault'), false, 'Must not match "Vault" (case insensitive) in armored string');
+  assert.equal(matchesQuery(armoredSample, 'v1'), false, 'Must not match "v1" in armored string');
+  assert.equal(matchesQuery(armoredSample, 'vault:v1:'), false, 'Must not match "vault:v1:" in armored string');
+
+  // Ciphertext substrings must return false
+  assert.equal(matchesQuery(armoredSample, 'WUgAS1y82Q'), false, 'Must not match base64 ciphertext substring');
+  assert.equal(matchesQuery(armoredSample, '82QZU5dYC'), false, 'Must not match base64 ciphertext substring');
+  assert.equal(matchesQuery(armoredSample, ''), false, 'Empty query on armored string must return false');
+
+  // Unarmored strings behave as standard substring search
+  assert.equal(matchesQuery('User Vault Setup', 'vault'), true, 'Matches unarmored title containing query');
+  assert.equal(matchesQuery('User Vault Setup', 'Vault'), true, 'Matches unarmored title case-insensitively');
+  assert.equal(matchesQuery('Billing Integration', 'vault'), false, 'Does not match unarmored title without query');
+});
+
+// -----------------------------------------------------------------------------
+// 12. Component Contracts: VaultText Row Rendering & Runtime Decryption (REQ-SEARCH-VAULT-TEXT-UI-1, REQ-SEARCH-DECRYPT-RUNTIME-1)
+// -----------------------------------------------------------------------------
+
+test('CommandPalette and AppShell maintain static contracts for VaultText row rendering and runtime decryption', () => {
+  const cpFile = path.join(REPO_ROOT, 'src/ui/components/ui/patterns/CommandPalette.tsx');
+  assert.ok(fs.existsSync(cpFile), 'CommandPalette.tsx must exist');
+  const cpContent = fs.readFileSync(cpFile, 'utf8');
+
+  // CommandPalette must import isVaultArmored and batchDecryptTitles
+  assert.ok(cpContent.includes('isVaultArmored'), 'CommandPalette.tsx must import isVaultArmored');
+  assert.ok(cpContent.includes('batchDecryptTitles'), 'CommandPalette.tsx must import batchDecryptTitles');
+
+  // CommandPalette must import vault selectors and searchTitleSlice dispatch
+  assert.ok(cpContent.includes('selectIsVaultUnlocked'), 'CommandPalette.tsx must import selectIsVaultUnlocked');
+  assert.ok(cpContent.includes('selectRawVaultKeyHex'), 'CommandPalette.tsx must import selectRawVaultKeyHex');
+  assert.ok(cpContent.includes('setBulkChainTitles'), 'CommandPalette.tsx must import setBulkChainTitles');
+
+  // CommandPalette must import VaultText and render labels through VaultText as="span"
+  assert.ok(cpContent.includes('VaultText'), 'CommandPalette.tsx must import VaultText');
+  assert.ok(
+    cpContent.includes('<VaultText value={label} as="span" />'),
+    'CommandPalette.tsx must render chain row labels using <VaultText value={label} as="span" />',
+  );
+
+  // CommandPalette matchingChains must guard against armored titles
+  assert.ok(
+    cpContent.includes('!isVaultArmored(ch.title)'),
+    'matchingChains in CommandPalette.tsx must guard against isVaultArmored(ch.title)',
+  );
+
+  // AppShell must have background pre-warm decryption
+  const appShellFile = path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx');
+  assert.ok(fs.existsSync(appShellFile), 'AppShell.tsx must exist');
+  const appShellContent = fs.readFileSync(appShellFile, 'utf8');
+
+  assert.ok(appShellContent.includes('batchDecryptTitles'), 'AppShell.tsx must import batchDecryptTitles');
+  assert.ok(appShellContent.includes('setBulkChainTitles'), 'AppShell.tsx must import setBulkChainTitles');
+  assert.ok(appShellContent.includes('isVaultArmored'), 'AppShell.tsx must import isVaultArmored');
+});
+
+// -----------------------------------------------------------------------------
+// 13. Decryption Lifecycle: Typing "Vault" Matches Only Genuine Decrypted Titles (REQ-SEARCH-DECRYPT-TEST-1)
+// -----------------------------------------------------------------------------
+
+test('Typing "Vault" matches only chains whose decrypted title genuinely contains "Vault", never raw ciphertext', async () => {
+  const TEST_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const realPlaintextTitle = 'User Vault: Master Password, Recovery Words & Settings';
+  const otherPlaintextTitle = 'Core Engine Architecture & RPC Gateway';
+
+  const armoredVaultTitle = await encryptVaultText(realPlaintextTitle, TEST_KEY);
+  const armoredOtherTitle = await encryptVaultText(otherPlaintextTitle, TEST_KEY);
+
+  assert.ok(isVaultArmored(armoredVaultTitle), 'Encrypted vault title must have vault armor');
+  assert.ok(isVaultArmored(armoredOtherTitle), 'Encrypted other title must have vault armor');
+
+  // 1. Raw armored chains before decryption
+  const rawChains = [
+    { chainId: 'chain_vault', title: armoredVaultTitle, projectName: 'Security' },
+    { chainId: 'chain_core', title: armoredOtherTitle, projectName: 'Engine' },
+  ];
+
+  // Searching 'Vault' before decryption: matches 0 items (ciphertext shielded)
+  const qVault = 'Vault';
+  const matchingBeforeVault = rawChains.filter(
+    (ch) => !isVaultArmored(ch.title) && matchesQuery(ch.title, qVault),
+  );
+  assert.equal(matchingBeforeVault.length, 0, 'Searching "Vault" must not match raw ciphertext before decryption');
+
+  // Searching 'v1' or 'vault:v1:' before decryption: matches 0 items
+  const matchingBeforeV1 = rawChains.filter(
+    (ch) => !isVaultArmored(ch.title) && matchesQuery(ch.title, 'v1'),
+  );
+  assert.equal(matchingBeforeV1.length, 0, 'Searching "v1" must not match raw armor prefix');
+
+  // 2. Perform batch decryption
+  const decryptedItems = await batchDecryptTitles(
+    [
+      { id: 'chain_vault', type: 'chain', rawTitle: armoredVaultTitle, title: armoredVaultTitle, projectId: 'Security' },
+      { id: 'chain_core', type: 'chain', rawTitle: armoredOtherTitle, title: armoredOtherTitle, projectId: 'Engine' },
+    ],
+    TEST_KEY,
+  );
+
+  assert.equal(decryptedItems.length, 2);
+  assert.equal(decryptedItems[0].decryptedTitle, realPlaintextTitle);
+  assert.equal(decryptedItems[1].decryptedTitle, otherPlaintextTitle);
+  assert.ok(!isVaultArmored(decryptedItems[0].decryptedTitle));
+  assert.ok(!isVaultArmored(decryptedItems[1].decryptedTitle));
+
+  // 3. Search after decryption
+  const matchingAfterVault = decryptedItems.filter(
+    (ch) => !isVaultArmored(ch.decryptedTitle) && matchesQuery(ch.decryptedTitle, qVault),
+  );
+  assert.equal(matchingAfterVault.length, 1, 'Searching "Vault" after decryption must match exactly the vault chain');
+  assert.equal(matchingAfterVault[0].id, 'chain_vault');
+  assert.equal(matchingAfterVault[0].decryptedTitle, realPlaintextTitle);
+
+  // Searching 'Engine' matches the other chain
+  const matchingAfterEngine = decryptedItems.filter(
+    (ch) => !isVaultArmored(ch.decryptedTitle) && matchesQuery(ch.decryptedTitle, 'Engine'),
+  );
+  assert.equal(matchingAfterEngine.length, 1);
+  assert.equal(matchingAfterEngine[0].id, 'chain_core');
 });
