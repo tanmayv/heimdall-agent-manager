@@ -72,6 +72,14 @@ def test_bottom_dock_exists_and_implements_requirements() -> None:
     require("Math.floor(window.innerHeight * 0.8)" in src or "window.innerHeight - 100" in src,
             "BottomDock.tsx resize handler must clamp to viewport bounds")
 
+    # 12. Expand collapsed dock on tab click and auto-scroll active tab into view
+    require("setIsMinimized(false)" in src and "writeBottomDockOpen(true)" in src,
+            "BottomDock.tsx tab click must expand minimized dock")
+    require("scrollIntoView" in src,
+            "BottomDock.tsx active tab must auto-scroll into view")
+    require("activeTabRef" in src,
+            "BottomDock.tsx must track activeTabRef for scrollIntoView")
+
 
 def test_shell_terminal_pane_full_parent() -> None:
     require(SHELL_TERMINAL_PANE.is_file(), f"ShellTerminalPane.tsx must exist at {SHELL_TERMINAL_PANE}")
@@ -98,6 +106,10 @@ def test_shell_terminal_pane_full_parent() -> None:
             "ShellTerminalPane.tsx must render shell-terminal-loading- indicator")
     require("Connecting to terminal" in src,
             "ShellTerminalPane.tsx must show Connecting to terminal text")
+
+    # 5. Terminal focus on init / resize
+    require("term.focus()" in src,
+            "ShellTerminalPane.tsx must call term.focus() for immediate keyboard focus")
 
 
 def test_app_shell_integration() -> None:
