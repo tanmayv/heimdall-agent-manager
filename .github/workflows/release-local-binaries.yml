@@ -95,7 +95,10 @@ jobs:
             .#ham-manager \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
-          mapfile -t paths < "$RUNNER_TEMP/nix-paths.txt"
+          paths=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && paths+=("$line")
+          done < "$RUNNER_TEMP/nix-paths.txt"
           if [ "${#paths[@]}" -ne 4 ]; then
             echo "expected four Nix output paths, got ${#paths[@]}" >&2
             exit 1
