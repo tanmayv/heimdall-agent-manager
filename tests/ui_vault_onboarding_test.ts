@@ -70,7 +70,7 @@ function setupMockSessionStorage(): Map<string, string> {
 // Test 1: Static verification of AppShell.tsx integration
 // -----------------------------------------------------------------------------
 
-test('AppShell.tsx mounts VaultOnboardingModal and displays vault-header-status-badge', () => {
+test('AppShell.tsx mounts VaultOnboardingModal and BottomDock displays vault-header-status-badge', () => {
   const appShellPath = path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx');
   assert.ok(fs.existsSync(appShellPath), 'AppShell.tsx must exist');
 
@@ -90,18 +90,22 @@ test('AppShell.tsx mounts VaultOnboardingModal and displays vault-header-status-
     'AppShell.tsx must import vault selectors from vaultSlice',
   );
 
-  // Verify header status badge
+  // Verify status badge in BottomDock.tsx (REQ-BOTTOMDOCK-VAULT-2)
+  const bottomDockPath = path.join(REPO_ROOT, 'src/ui/components/shell/BottomDock.tsx');
+  assert.ok(fs.existsSync(bottomDockPath), 'BottomDock.tsx must exist');
+  const bottomDockContent = fs.readFileSync(bottomDockPath, 'utf8');
+
   assert.match(
-    content,
+    bottomDockContent,
     /data-debug-id=['"]vault-header-status-badge['"]/,
-    'AppShell.tsx must render header status badge with data-debug-id="vault-header-status-badge"',
+    'BottomDock.tsx must render header status badge with data-debug-id="vault-header-status-badge"',
   );
 
   // Verify header displays locked/unlocked status
   assert.match(
-    content,
+    bottomDockContent,
     /Vault:\s*\{isVaultUnlocked\s*\?\s*['"]Unlocked['"]/,
-    'AppShell.tsx header status badge must display Locked/Unlocked/Unconfigured status',
+    'BottomDock.tsx header status badge must display Locked/Unlocked/Unconfigured status',
   );
 
   // Verify VaultOnboardingModal mounting

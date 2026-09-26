@@ -140,6 +140,13 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	items := enrich_chain_list_items(h, auth_ctx, chains, query_bool(req.query, "has_tasks", false), include_archived)
 	defer delete(items)
 
+	// ?flat=1 or ?all=1 returns a flat JSON array of all visible chains without project grouping or preview caps.
+	if query_bool(req.query, "flat", false) || query_bool(req.query, "all", false) {
+		b := strings.builder_make()
+		write_chain_list_items_json(&b, items[:])
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
+
 	// ?project_id=<id> (value may be empty for the Unassigned bucket) selects the
 	// single-project, cursor-paginated view. Its absence returns the grouped view.
 	if has_query_key(req.query, "project_id") {

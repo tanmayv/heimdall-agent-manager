@@ -9,15 +9,12 @@ const Terminal = (xtermObj.Terminal || xtermObj['default']?.Terminal || xtermObj
 const fitAddonObj = fitAddonModule as Record<string, any>;
 const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
 
-import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
+import { useTheme } from '../../store/themeSlice';
 import { useShellPaneSubscription } from '../../hooks/useShellPaneSubscription';
 import {
-  useKillShellMutation,
-  useRestartShellMutation,
   useSendShellInputMutation,
   useSendShellResizeMutation,
-  useSignalShellMutation,
 } from '../../api/endpoints/shells';
 import type { ShellSession } from '../../api/endpoints/shells';
 
@@ -26,23 +23,11 @@ interface ShellTerminalPaneProps {
   onClose?: () => void;
 }
 
-function relativeTime(iso: string): string {
-  if (!iso) return '';
-  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return `${diff}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  return `${Math.floor(diff / 3600)}h`;
-}
-
-export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) {
+export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
   const { theme } = useTheme();
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
-
-  const [killShell, killState] = useKillShellMutation();
-  const [restartShell, restartState] = useRestartShellMutation();
-  const [signalShell, signalState] = useSignalShellMutation();
 
   const isTerminal = session.kind === 'interactive' || session.kind === 'agent';
   const isRunning = session.status === 'running' || session.status === 'starting';
@@ -50,7 +35,7 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
   // Output arrives by polled capture with since_hash diffing — the model the agent pane
   // uses — not by a PTY output stream. See useShellPaneSubscription.
   const paneSessionId = isTerminal && isRunning ? session.session_id : null;
-  const { output, isFetching, lastUpdatedAt, polling, refetch } = useShellPaneSubscription({
+  const { output, isLoading, refetch } = useShellPaneSubscription({
     sessionId: paneSessionId,
     status: session.status,
   });
@@ -205,104 +190,20 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
     }
   }, [theme]);
 
-  const handleKill = () => {
-    killShell({ sessionId: session.session_id }).catch(() => {});
-  };
-
-  const handleRestart = () => {
-    restartShell({ sessionId: session.session_id }).catch(() => {});
-  };
-
-  const handleSigint = () => {
-    signalShell({ sessionId: session.session_id, signal: 2 }).catch(() => {});
-  };
-
-  const statusDotClass =
-    session.status === 'running'
-      ? 'bg-success animate-pulse'
-      : session.status === 'starting'
-      ? 'bg-warning animate-pulse'
-      : session.status === 'killed' || session.status === 'failed'
-      ? 'bg-danger'
-      : 'bg-faint';
-
   return (
     <div
       data-debug-id={`shell-terminal-pane-${session.session_id}`}
-      className="overflow-hidden rounded-xl border border-subtle bg-surface"
+      className="relative flex flex-col flex-1 h-full min-h-0 w-full overflow-hidden bg-canvas"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted">
-        <div className="flex items-center gap-2">
-          <span
-            className={`h-2 w-2 rounded-full ${statusDotClass}`}
-            title={session.status}
-          />
-          <span className="font-semibold text-primary truncate max-w-[180px]">
-            {session.label || session.cmd || session.session_id}
-          </span>
-          <span className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-mono text-muted">
-            {session.status}
-          </span>
-          {session.started_at && (
-            <span className="text-[10px] text-faint">
-              up {relativeTime(session.started_at)}
-            </span>
-          )}
-          {polling && lastUpdatedAt !== null ? (
-            <span className="text-[10px] text-success">● live</span>
-          ) : polling ? (
-            <span className="text-[10px] text-faint">○ connecting…</span>
-          ) : (
-            <span className="text-[10px] text-faint">○ paused</span>
-          )}
-          {isFetching && <span className="sr-only">refreshing</span>}
+      {!output && (session.status === 'starting' || isLoading) && (
+        <div
+          data-debug-id={`shell-terminal-loading-${session.session_id}`}
+          className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-canvas/90 text-xs text-muted pointer-events-none"
+        >
+          <Icon name="refresh" className="animate-spin text-accent" size={18} />
+          <span>Connecting to terminal…</span>
         </div>
-
-        <div className="flex items-center gap-1">
-          {isRunning && (
-            <>
-              <button
-                type="button"
-                title="Send SIGINT (Ctrl+C)"
-                onClick={handleSigint}
-                disabled={signalState.isLoading}
-                className="rounded px-2 py-0.5 text-[10px] font-semibold text-warning hover:bg-warning/10 disabled:opacity-40"
-              >
-                SIGINT
-              </button>
-              <button
-                type="button"
-                title="Restart shell"
-                onClick={handleRestart}
-                disabled={restartState.isLoading}
-                className="rounded px-2 py-0.5 text-[10px] font-semibold text-accent hover:bg-accent/10 disabled:opacity-40"
-              >
-                {restartState.isLoading ? '…' : '↺ Restart'}
-              </button>
-              <button
-                type="button"
-                title="Kill shell"
-                onClick={handleKill}
-                disabled={killState.isLoading}
-                className="rounded px-2 py-0.5 text-[10px] font-semibold text-danger hover:bg-danger/10 disabled:opacity-40"
-              >
-                {killState.isLoading ? '…' : '✕ Kill'}
-              </button>
-            </>
-          )}
-          {onClose && (
-            <button
-              type="button"
-              title="Close terminal"
-              onClick={onClose}
-              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
-            >
-              <Icon name="chevron-down" size={14} />
-            </button>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* xterm container */}
       <style>{`.xterm-cursor-layer, .xterm-cursor { display: none !important; }`}</style>
@@ -314,7 +215,7 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
         role="region"
         aria-label="Shell Terminal"
         style={{ backgroundColor: theme.terminal.background }}
-        className="relative h-[360px] w-full overflow-hidden p-2 font-mono text-xs cursor-text focus:outline-none"
+        className="relative flex-1 min-h-0 w-full overflow-hidden p-2 font-mono text-xs cursor-text focus:outline-none"
       />
     </div>
   );

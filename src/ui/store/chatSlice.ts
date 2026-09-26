@@ -384,7 +384,8 @@ function getAgentIdFromPayload(payload: any, selectedAgentId: string): string {
   return selectedAgentId;
 }
 
-const initialDaemonUrl = normalizeDaemonUrl((window as any).odinApi?.daemonUrl || getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL)) || DEFAULT_DAEMON_URL;
+const odinDaemonUrl = typeof window !== 'undefined' ? (window as any).odinApi?.daemonUrl : undefined;
+const initialDaemonUrl = normalizeDaemonUrl(odinDaemonUrl || getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL)) || DEFAULT_DAEMON_URL;
 
 const initialState = {
   daemonProfiles: loadDaemonProfiles(initialDaemonUrl),

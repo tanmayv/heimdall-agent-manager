@@ -820,7 +820,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const searchOpen = paletteOpen;
+  const setSearchOpen = setPaletteOpen;
 
   // The chain's agents, shaped as a single palette conversation group so the
   // scoped search modal (opened from the header) lists them even before typing.
@@ -2030,9 +2032,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                 <span data-debug-id="conversation-breadcrumb-project" className="truncate text-muted">{projectName || 'Project'}</span>
                 <span className="shrink-0 text-faint">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-primary">
-                  <VaultText value={chainTitle || title} as="span" />
-                </h2>
+                <button
+                  type="button"
+                  data-debug-id="conversation-thread-title"
+                  aria-label="Select task chain"
+                  title="Click to search and select task chains"
+                  onClick={() => setPaletteOpen(true)}
+                  className="group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left text-sm font-medium text-primary hover:bg-neutral-soft hover:text-accent transition-colors cursor-pointer"
+                >
+                  <span className="truncate">
+                    <VaultText value={chainTitle || title} as="span" />
+                  </span>
+                  <Icon name="chevron-down" size={13} className="shrink-0 text-muted group-hover:text-accent" />
+                </button>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-danger">{titleError}</div> : null}
@@ -2041,9 +2053,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           <button
             type="button"
             data-debug-id="conversation-search-btn"
-            aria-label="Search this conversation and its task chain"
-            title="Search this conversation & chain"
-            onClick={() => setSearchOpen(true)}
+            aria-label="Search task chains"
+            title="Search task chains"
+            onClick={() => setPaletteOpen(true)}
             className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"
           >
             <UiIcon name="search" size={20} />
@@ -2221,12 +2233,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       ) : null}
 
       <CommandPalette
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); setSearchOpen(false); }}
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); setPaletteOpen(false); }}
         actions={[]}
         conversationGroups={chainAgentGroups}
-        scope={{ chainId, conversationId, label: chainTitle || title }}
       />
 
       {projectId ? (

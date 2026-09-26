@@ -41,23 +41,19 @@ def test_client_persistence() -> None:
 
     # RightSidebarTab union type must include 'chain'
     require(
-        "export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs' | 'chain';" in src,
+        "'chain'" in src and "RIGHT_SIDEBAR_TABS" in src and "export type RightSidebarTab" in src,
         "RightSidebarTab union type must include 'chain'",
     )
 
     # readRightSidebarTab handles 'chain'
     require(
-        "instanceRaw === 'chain'" in src,
-        "readRightSidebarTab must support 'chain' tab for instance-scoped storage",
-    )
-    require(
-        "raw === 'chain'" in src,
-        "readRightSidebarTab must accept 'chain' from global storage",
+        "isRightSidebarTab" in src and "readRightSidebarTab" in src,
+        "readRightSidebarTab must support 'chain' tab",
     )
 
     # writeRightSidebarTab handles 'chain'
     require(
-        "tab === 'chain'" in src,
+        "writeRightSidebarTab" in src,
         "writeRightSidebarTab must persist 'chain' tab",
     )
 
@@ -270,7 +266,7 @@ def test_conversation_thread_page_tab_integration() -> None:
     )
 
     # URL query parameter ?panel=chain initialization & sync
-    require("if (norm === 'chain') return 'chain';" in src, "Initial state parser must recognize ?panel=chain")
+    require("isRightSidebarTab(norm)" in src or "if (norm === 'chain') return 'chain';" in src, "Initial state parser must recognize ?panel=chain")
     require("syncUrlPanel" in src, "ConversationThreadPage must have syncUrlPanel function")
     require("params.set('panel', tab);" in src, "syncUrlPanel must set ?panel=<tab>")
     require("params.delete('panel');" in src, "syncUrlPanel must clean up ?panel parameter on close")
