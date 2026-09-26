@@ -61,10 +61,18 @@ import VaultOnboardingModal from '../settings/VaultOnboardingModal';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
+  selectRawVaultKeyHex,
   selectIsUnlockModalOpen,
   setUnlockModalOpen,
   readOnboardingDismissed,
+  readSessionVaultKey,
 } from '../../store/vaultSlice';
+import {
+  setBulkChainTitles,
+  selectSearchChains,
+} from '../../store/searchTitleSlice';
+import { isVaultArmored } from '../../utils/vaultContent';
+import { batchDecryptTitles, type RawSearchItemInput } from '../../utils/vaultSearch';
 import LspPanel from '../settings/LspPanel';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import LibraryPage from '../LibraryPage';
@@ -1253,6 +1261,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   // Vault state & onboarding modal
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
+  const activeVaultKey = useMemo(() => {
+    if (isVaultUnlocked && rawVaultKeyHex) return rawVaultKeyHex;
+    return readSessionVaultKey();
+  }, [isVaultUnlocked, rawVaultKeyHex]);
   const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
 
@@ -1312,6 +1325,57 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   );
   const liveProjects = useMemo(() => agentsLiveQuery.data || [], [agentsLiveQuery.data]);
   const chainGroupsQuery = useFetchTaskChainGroupsQuery();
+  const searchChains = useSelector(selectSearchChains);
+
+  // Background pre-warm decryption of task chains when groups load or vault unlocks (REQ-SEARCH-DECRYPT-RUNTIME-1)
+  useEffect(() => {
+    if (!activeVaultKey) return;
+    const groups = chainGroupsQuery.data?.groups;
+    if (!groups || groups.length === 0) return;
+
+    const toDecrypt: RawSearchItemInput[] = [];
+    for (const g of groups) {
+      for (const ch of g.chains) {
+        const id = ch.chainId;
+        const rawTitle = ch.title || '';
+        const searchItem = searchChains[id];
+        const isArmored = isVaultArmored(rawTitle);
+        const needsDecryption =
+          isArmored &&
+          (!searchItem ||
+            !searchItem.decryptedTitle ||
+            isVaultArmored(searchItem.decryptedTitle));
+
+        if (needsDecryption) {
+          toDecrypt.push({
+            id,
+            type: 'chain',
+            rawTitle,
+            projectId: ch.projectId || g.projectId,
+            status: ch.status,
+            updatedAt: ch.updatedAt,
+          });
+        }
+      }
+    }
+
+    if (toDecrypt.length === 0) return;
+
+    let canceled = false;
+    batchDecryptTitles(toDecrypt, activeVaultKey)
+      .then((decryptedItems) => {
+        if (!canceled && decryptedItems.length > 0) {
+          dispatch(setBulkChainTitles(decryptedItems));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to pre-warm decrypt task chain titles in AppShell:', err);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [chainGroupsQuery.data?.groups, activeVaultKey, searchChains, dispatch]);
 
   // UI-14: the shell owns exactly one user WebSocket connection (cookie-auth
   // `/api/v1/user-ws`). Its events flow through the single `handleUserWsEvent`

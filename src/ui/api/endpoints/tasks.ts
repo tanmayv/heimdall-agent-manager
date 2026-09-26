@@ -412,7 +412,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: [{ type: 'Chain' as const, id: 'GROUPED_LIST' }],
+      providesTags: [
+        { type: 'Chain' as const, id: 'GROUPED_LIST' },
+        { type: 'ChainList' as const, id: 'ALL' },
+      ],
     }),
     // TC-PAGE: single-project page with cursor pagination (Load more + project
     // filter). cursor is the composite (updated_at|chain_id) from TC-API.
@@ -431,7 +434,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
+      providesTags: (_result, _error, { projectId }) => [
+        { type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` },
+        { type: 'ChainList' as const, id: 'ALL' },
+      ],
     }),
     listTaskChains: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean; includeArchived?: boolean }>({
       queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }) => {
@@ -448,7 +454,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
+      providesTags: (_result, _error, { projectId }) => [
+        { type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` },
+        { type: 'ChainList' as const, id: 'ALL' },
+      ],
     }),
     listPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
       queryFn: async () => {
@@ -461,7 +470,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: [{ type: 'Chain' as const, id: 'PINNED_LIST' }],
+      providesTags: [
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+        { type: 'ChainList' as const, id: 'ALL' },
+      ],
     }),
     fetchPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
       queryFn: async () => {
@@ -474,7 +486,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: [{ type: 'Chain' as const, id: 'PINNED_LIST' }],
+      providesTags: [
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+        { type: 'ChainList' as const, id: 'ALL' },
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
@@ -1115,7 +1130,13 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
+      invalidatesTags: (_result, _error, { taskId, chainId }) => [
+        ...preciseTaskTags(taskId, chainId),
+        { type: 'Chain' as const, id: chainId },
+        { type: 'ChainList' as const, id: 'ALL' },
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+        { type: 'Chain' as const, id: 'GROUPED_LIST' },
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTask: build.mutation<any, { taskId: string; chainId: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string; agentToken?: string }>({
@@ -1199,7 +1220,13 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
+      invalidatesTags: (_result, _error, { taskId, chainId }) => [
+        ...preciseTaskTags(taskId, chainId),
+        { type: 'Chain' as const, id: chainId },
+        { type: 'ChainList' as const, id: 'ALL' },
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+        { type: 'Chain' as const, id: 'GROUPED_LIST' },
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     nudgeTask: build.mutation<any, { taskId: string; chainId: string; body?: string; message?: string; interrupt?: boolean; agentToken?: string }>({

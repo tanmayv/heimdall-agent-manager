@@ -5,6 +5,7 @@
 import type { Tone } from '../types';
 import type { IconName } from '../primitives';
 import { THEMES } from '../../../theme/registry.ts';
+import { isVaultArmored } from '../../../utils/vaultContent.ts';
 
 export type PaletteConversation = {
   conversationId: string;
@@ -71,7 +72,9 @@ export function taskChainRoute(chain: { chainId: string; coordinatorAgentInstanc
 
 export const optionId = (i: number) => `command-palette-option-${i}`;
 
+
 export function matchesQuery(haystack: string, q: string): boolean {
+  if (isVaultArmored(haystack)) return false;
   return haystack.toLowerCase().includes(q.toLowerCase());
 }
 

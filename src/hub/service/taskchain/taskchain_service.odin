@@ -15,6 +15,7 @@ import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
 import agent "odin_test:hub/service/agent"
+import events "odin_test:hub/service/events"
 
 Nudge_Target :: enum {
 	None,
@@ -44,6 +45,7 @@ Taskchain_Service :: struct {
 	ids: ^platform.ID_Generator,
 	bridge_command_sink: project.Bridge_Command_Sink,
 	agent_service: ^agent.Agent_Service,
+	event_bus: ^events.User_Event_Bus,
 	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
 	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
 	// set on every connect. Guarded by replay_mutex.
@@ -150,6 +152,11 @@ new_taskchain_service_with_runtime :: proc(repo: ^iface.Taskchain_Repository, ag
 set_agent_service :: proc(service: ^Taskchain_Service, agent_svc: ^agent.Agent_Service) {
 	if service == nil do return
 	service.agent_service = agent_svc
+}
+
+set_event_bus :: proc(service: ^Taskchain_Service, bus: ^events.User_Event_Bus) {
+	if service == nil do return
+	service.event_bus = bus
 }
 
 // is_instance_member_or_coordinator: membership OR coordinator authority, read
@@ -609,6 +616,71 @@ validate_task_bridge :: proc(service: ^Taskchain_Service, owner: domain.User_ID,
 	return domain.Domain_Error{}
 }
 
+// sync_chain_status_from_tasks (REQ-CHAIN-AUTO-STATUS-1):
+// Synchronizes the parent task chain's status based on the lifecycle of its tasks:
+// - Transitions a Completed chain to Active when a task is created or moved to non-terminal status.
+// - Transitions an Active chain to Completed when all tasks reach completed or cancelled (with >=1 completed).
+sync_chain_status_from_tasks :: proc(service: ^Taskchain_Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	if service == nil do return domain.Task_Chain{}, false, domain.domain_error(.Internal_Error, "taskchain service is nil")
+	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, chain_id)
+	if !chain_ok do return domain.Task_Chain{}, false, chain_err
+
+	// Draft chains have no execution status; leave untouched
+	if chain.publish_state != .Published {
+		return chain, true, domain.Domain_Error{}
+	}
+
+	actual_owner := owner
+	if actual_owner == "" do actual_owner = chain.owner_user_id
+
+	tasks, tasks_err := iface.taskchain_list_tasks_by_chain(service.repo, chain_id, actual_owner)
+	if tasks_err.code != .None do return chain, false, tasks_err
+	defer delete(tasks)
+
+	non_terminal := 0
+	completed := 0
+	for t in tasks {
+		if t.status != .Completed && t.status != .Cancelled {
+			non_terminal += 1
+		}
+		if t.status == .Completed {
+			completed += 1
+		}
+	}
+
+	modified := false
+	now := platform.clock_now(service.clock)
+
+	if non_terminal > 0 {
+		if chain.status == .Completed {
+			chain.status = .Active
+			chain.completed_at = ""
+			modified = true
+		}
+	} else if non_terminal == 0 && len(tasks) > 0 && completed > 0 {
+		if chain.status == .Active {
+			chain.status = .Completed
+			chain.completed_at = now
+			modified = true
+		}
+	}
+
+	if modified {
+		chain.updated_at = now
+		saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+		if !save_ok do return chain, false, save_err
+		chain = saved
+
+		if service.event_bus != nil && chain.owner_user_id != "" {
+			summary := fmt.aprintf("{{\"chain_id\":\"%s\"}}", chain.chain_id)
+			defer delete(summary)
+			events.publish_resource_changed(service.event_bus, string(chain.owner_user_id), "task_chain", string(chain.chain_id), "updated", summary)
+		}
+	}
+
+	return chain, true, domain.Domain_Error{}
+}
+
 create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Create_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
 	// WRITE. REQ-SEC-3 (close the create_task hole): fetch owner-scoped, then
 	// enforce membership EXPLICITLY here. create_task previously relied entirely on
@@ -664,6 +736,10 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		}
 	}
 	if ensure_err := ensure_durable_actor_fleets(service, saved_task); ensure_err.code != .None do return domain.Task{}, false, ensure_err
+
+	if updated_chain, sync_ok, _ := sync_chain_status_from_tasks(service, chain.chain_id, chain.owner_user_id); sync_ok {
+		chain = updated_chain
+	}
 
 	// NO auto-reconcile on create (setup-phase rule): the coordinator stages the
 	// whole plan, then triggers `reconcile` explicitly. A newly-created task does
@@ -840,6 +916,9 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	}
 	task_ret, saved_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if saved_ok {
+		if updated_chain, sync_ok, _ := sync_chain_status_from_tasks(service, task.chain_id, task.owner_user_id); sync_ok {
+			chain = updated_chain
+		}
 		// Auto-promotion + auto-advance (CT-4/CT-5) runs FIRST so every instance's
 		// persisted current_task pointer is up to date before we notify: a terminal
 		// transition unblocks dependents, entering/leaving In_Progress frees or
@@ -2116,6 +2195,7 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 		// Guarding on updated_status != task.status keeps this a single recompute
 		// per real resolution and a no-op for idempotent/duplicate votes.
 		if ok && updated_status != task.status {
+			_, _, _ = sync_chain_status_from_tasks(service, saved.chain_id, saved.owner_user_id)
 			chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, saved.chain_id)
 			if chain_ok do _ = recompute_chain_promotions(service, chain)
 		}

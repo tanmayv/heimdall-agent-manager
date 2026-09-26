@@ -602,9 +602,13 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       }
 
       // Granular tag invalidation: invalidate Task, TaskLog, TaskComments for taskId,
-      // and ChainList ('ALL') for chain-level task count rollups.
-      // We deliberately omit Chain and ChainTasks tag invalidations here to prevent refetching the entire chain.
-      const tags: any[] = [{ type: 'ChainList', id: 'ALL' }];
+      // ChainList ('ALL') for chain-level task count rollups, and PINNED_LIST + GROUPED_LIST
+      // so sidebar chain attention badges and rollups clear dynamically without full refresh.
+      const tags: any[] = [
+        { type: 'ChainList', id: 'ALL' },
+        { type: 'Chain', id: 'PINNED_LIST' },
+        { type: 'Chain', id: 'GROUPED_LIST' },
+      ];
       if (taskId) {
         tags.push({ type: 'Task', id: taskId });
         tags.push({ type: 'TaskLog', id: taskId });

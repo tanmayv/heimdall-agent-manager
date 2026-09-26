@@ -21,9 +21,21 @@
  *     Enter activates it — the options are not tab stops.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import type { ChainProjectGroup } from '../../../api/endpoints/tasks';
-import { selectSearchChains, type SearchItem } from '../../../store/searchTitleSlice';
+import {
+  selectSearchChains,
+  setBulkChainTitles,
+  type SearchItem,
+} from '../../../store/searchTitleSlice';
+import {
+  selectIsVaultUnlocked,
+  selectRawVaultKeyHex,
+  readSessionVaultKey,
+} from '../../../store/vaultSlice';
+import { isVaultArmored } from '../../../utils/vaultContent';
+import { batchDecryptTitles, type RawSearchItemInput } from '../../../utils/vaultSearch';
+import { VaultText } from '../../vault/VaultText';
 import { Icon, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
@@ -105,6 +117,29 @@ export function CommandPalette({
   // Shared dialog contract: focus trap, Esc-to-close, body scroll-lock, and focus restore.
   useDialogA11y(open, onClose, panelRef);
 
+  const dispatch = useDispatch();
+
+  const isVaultUnlocked = useSelector((state: any) => {
+    try {
+      return selectIsVaultUnlocked(state);
+    } catch {
+      return Boolean(state?.vault?.isUnlocked);
+    }
+  });
+
+  const rawVaultKeyHex = useSelector((state: any) => {
+    try {
+      return selectRawVaultKeyHex(state);
+    } catch {
+      return state?.vault?.rawVaultKeyHex || null;
+    }
+  });
+
+  const activeVaultKey = useMemo(() => {
+    if (isVaultUnlocked && rawVaultKeyHex) return rawVaultKeyHex;
+    return readSessionVaultKey();
+  }, [isVaultUnlocked, rawVaultKeyHex]);
+
   // Retrieve client-side decrypted task chains from Redux title cache
   const searchChains = useSelector((state: any) => {
     try {
@@ -113,6 +148,53 @@ export function CommandPalette({
       return (state?.searchTitle?.chains as Record<string, SearchItem> | undefined) || {};
     }
   });
+
+  // Batch decrypt any armored task chain titles in chainGroups not yet decrypted in searchChains
+  useEffect(() => {
+    if (!activeVaultKey) return;
+    const toDecrypt: RawSearchItemInput[] = [];
+    for (const g of chainGroups) {
+      for (const ch of g.chains) {
+        const id = ch.chainId;
+        const rawTitle = ch.title || '';
+        const searchItem = searchChains[id];
+        const isArmored = isVaultArmored(rawTitle);
+        const needsDecryption =
+          isArmored &&
+          (!searchItem ||
+            !searchItem.decryptedTitle ||
+            isVaultArmored(searchItem.decryptedTitle));
+
+        if (needsDecryption) {
+          toDecrypt.push({
+            id,
+            type: 'chain',
+            rawTitle,
+            projectId: ch.projectId || g.projectId,
+            status: ch.status,
+            updatedAt: ch.updatedAt,
+          });
+        }
+      }
+    }
+
+    if (toDecrypt.length === 0) return;
+
+    let canceled = false;
+    batchDecryptTitles(toDecrypt, activeVaultKey)
+      .then((decryptedItems) => {
+        if (!canceled && decryptedItems.length > 0) {
+          dispatch(setBulkChainTitles(decryptedItems));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to batch decrypt task chain titles in CommandPalette:', err);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [chainGroups, searchChains, activeVaultKey, dispatch]);
 
   // Project names index lookup
   const projectNamesById = useMemo(() => {
@@ -272,7 +354,9 @@ export function CommandPalette({
       if (hasScope && scopeActive && scope?.chainId && ch.chainId !== scope.chainId) {
         return false;
       }
-      return matches(ch.title, q) || (ch.projectName ? matches(ch.projectName, q) : false);
+      const titleMatches = !isVaultArmored(ch.title) && matches(ch.title, q);
+      const projectMatches = ch.projectName && !isVaultArmored(ch.projectName) ? matches(ch.projectName, q) : false;
+      return titleMatches || projectMatches;
     });
 
     for (const ch of matchingChains) {
@@ -473,7 +557,7 @@ export function CommandPalette({
                       )}
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-warning' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>
-                          {label}
+                          <VaultText value={label} as="span" />
                         </span>
                         {isChain && result.hint ? (
                           <span className="truncate text-caption text-muted">{result.hint}</span>
