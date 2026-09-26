@@ -3,14 +3,19 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: package-local-binary-tarball.sh <target> <version> <out-dir> <ham-bridge-out> <ham-wrapper-out> <ham-ctl-out> [ham-pty-host-out]
+usage: package-local-binary-tarball.sh <target> <version> <out-dir> <ham-bridge-out> <ham-ctl-out> <heimdall-out> [ham-pty-host-out]
 
 Creates dist tarball: <out-dir>/heimdall-local-<target>.tar.gz
-Tarball root contains: bin/ham-bridge, bin/ham-wrapper, bin/ham-ctl, README.md, LICENSE, METADATA.json
+Tarball root contains: bin/ham-bridge, bin/ham-ctl, bin/heimdall, README.md, LICENSE, METADATA.json
 When the optional <ham-pty-host-out> is given, bin/ham-pty-host is also shipped
 (self-contained; PTYH-4).
 USAGE
 }
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
 
 if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
   usage
@@ -21,8 +26,8 @@ target="$1"
 version="$2"
 out_dir="$3"
 ham_bridge_out="$4"
-ham_wrapper_out="$5"
-ham_ctl_out="$6"
+ham_ctl_out="$5"
+heimdall_out="$6"
 ham_pty_host_out="${7:-}"
 
 case "$target" in
@@ -32,8 +37,8 @@ esac
 
 for spec in \
   "$ham_bridge_out/bin/ham-bridge" \
-  "$ham_wrapper_out/bin/ham-wrapper" \
   "$ham_ctl_out/bin/ham-ctl" \
+  "$heimdall_out/bin/heimdall" \
   "README.md" \
   "LICENSE"
 do
@@ -54,10 +59,10 @@ install -m 0755 "$ham_bridge_out/bin/ham-bridge" "$stage/bin/ham-bridge"
 if [ -f "$ham_bridge_out/bin/openssl" ]; then
   install -m 0755 "$ham_bridge_out/bin/openssl" "$stage/bin/openssl"
 fi
-install -m 0755 "$ham_wrapper_out/bin/ham-wrapper" "$stage/bin/ham-wrapper"
 install -m 0755 "$ham_ctl_out/bin/ham-ctl" "$stage/bin/ham-ctl"
+install -m 0755 "$heimdall_out/bin/heimdall" "$stage/bin/heimdall"
 # PTYH-4: ship the self-contained PTY host binary when its Nix output is
-# provided. Optional so existing 6-arg callers keep working unchanged.
+# provided. Optional so callers that do not ship a PTY host keep working.
 ham_pty_host_shipped=false
 if [ -n "$ham_pty_host_out" ]; then
   if [ ! -f "$ham_pty_host_out/bin/ham-pty-host" ]; then
@@ -78,9 +83,9 @@ else
   built_at_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 if [ "$ham_pty_host_shipped" = true ]; then
-  binaries_json='["ham-bridge", "ham-wrapper", "ham-ctl", "ham-pty-host"]'
+  binaries_json='["ham-bridge", "ham-ctl", "heimdall", "ham-pty-host"]'
 else
-  binaries_json='["ham-bridge", "ham-wrapper", "ham-ctl"]'
+  binaries_json='["ham-bridge", "ham-ctl", "heimdall"]'
 fi
 cat > "$stage/METADATA.json" <<META
 {
@@ -99,16 +104,19 @@ tar -C "$stage" -czf "$tarball" bin README.md LICENSE METADATA.json
 
 required_entries=(
   "bin/ham-bridge"
-  "bin/ham-wrapper"
   "bin/ham-ctl"
+  "bin/heimdall"
   "README.md"
   "LICENSE"
 )
 if [ "$ham_pty_host_shipped" = true ]; then
   required_entries+=("bin/ham-pty-host")
 fi
+# List once into a file: piping tar into `grep -q` races under pipefail
+# (grep exits on first match -> tar hits EPIPE -> false "missing entry").
+tar -tzf "$tarball" > "$work_dir/tarball-entries.txt"
 for entry in "${required_entries[@]}"; do
-  if ! tar -tzf "$tarball" | grep -Fxq "$entry"; then
+  if ! grep -Fxq "$entry" "$work_dir/tarball-entries.txt"; then
     echo "tarball missing required entry: $entry" >&2
     exit 1
   fi

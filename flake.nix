@@ -202,6 +202,10 @@
           # enable the disk half from outside the repo root.
           ham-migration-bootstrap-test = mkOdinPackageWithRuntime pkgs odin "ham-migration-bootstrap-test" "tests/migration_bootstrap_test" [ pkgs.sqlite ];
           ham-pty-host = mkPtyHost pkgs;
+          # REQ-DIST-1: user-facing `heimdall` management CLI (src/manager),
+          # shipped as bin/heimdall in the release tarballs. The flake attribute
+          # is `ham-manager` because `heimdall` below is the desktop UI package.
+          ham-manager = mkOdinPackage pkgs odin "heimdall" "src/manager";
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;
           bc-test-agent = self.packages.${system}.ham-test-agent;

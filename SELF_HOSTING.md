@@ -266,7 +266,94 @@ The bridge runs on every machine where AI agent processes execute — your lapto
 workstation, desktop, any server that spawns Claude Code / Codex sessions. It
 connects outbound to the hub and never needs to be publicly reachable itself.
 
-### 2.1 What the bridge needs
+> **Fast path:** section 2.1 installs prebuilt binaries with a single
+> `curl | bash` line and manages the node through the `heimdall` CLI. Sections
+> 2.2–2.10 cover the same ground manually (source builds, hand-written service
+> files, Nix/Home Manager) for advanced setups.
+
+### 2.1 Quick install (recommended)
+
+On any Linux (x86_64, arm64) or macOS (Intel, Apple Silicon) machine, install
+prebuilt binaries with the one-line installer — no Nix, no Odin, no Rust
+toolchain, no source checkout:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash
+```
+
+Variants:
+
+```bash
+# Pin a specific release tag
+curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh \
+  | bash -s -- --version v0.1.0
+
+# Download from a self-hosted hub mirror instead of GitHub Releases
+curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh \
+  | bash -s -- --hub https://hub.example.com
+```
+
+The installer:
+
+1. Detects your platform and fails cleanly on unsupported ones.
+2. Downloads the release tarball and its `SHA256SUMS`, and **verifies the
+   SHA-256 checksum before extracting anything**.
+3. Installs `heimdall`, `ham-bridge`, `ham-pty-host` and `ham-ctl` to
+   `~/.local/bin` (`/usr/local/bin` when run as root) — no sudo required.
+   A bundled `openssl` is installed too when the release ships one.
+4. Adds the install directory to `PATH` in `~/.bashrc` / `~/.zshrc`
+   (idempotent).
+5. Registers — but does not start — a user service
+   (`~/.config/systemd/user/heimdall-bridge.service` on Linux,
+   `~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist` on macOS).
+6. Prints the enrollment next steps (also shown below).
+
+Preview every planned action without writing anything:
+
+```bash
+bash scripts/install.sh --dry-run
+```
+
+`socat` (the default bridge → hub TLS transport) is not bundled; install it
+with your system package manager (`sudo apt install socat`,
+`brew install socat`) if it is not already on `PATH`.
+
+**Then enroll, configure vault encryption, and start the bridge with the `heimdall` CLI:**
+
+```bash
+# 1. On the hub machine: create a one-time enrollment token
+ham-ctl bridge enroll-token --new
+
+# 2. On this device: enroll (writes ~/.config/heimdall/bridge-token, mode 0600,
+#    and updates config.toml with the hub URL)
+heimdall enroll hbe_... --hub https://hub.example.com
+
+# 3. Configure vault encryption with the primary user command. Replace the
+#    placeholder with your 64-character hexadecimal vault key.
+heimdall vault set-key <64-hex>
+heimdall vault status
+
+# 4. Start the registered service
+systemctl --user enable --now heimdall-bridge        # Linux
+launchctl bootstrap gui/$(id -u) \
+  ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist   # macOS
+
+# 5. Verify: enrollment, service state, hub connection, binary versions
+heimdall status
+```
+
+Keeping the node current is one command as well:
+
+```bash
+heimdall update --check   # report current vs latest release, download nothing
+heimdall update           # verify checksums, swap binaries, restart the service
+```
+
+`heimdall logs [-f]` tails the service logs and `heimdall doctor` runs local
+diagnostics (ports, permissions, harnesses, service unit). Run
+`heimdall --help` for the full command list.
+
+### 2.2 What the bridge needs
 
 | Component | Purpose |
 |-----------|---------|
@@ -277,7 +364,7 @@ connects outbound to the hub and never needs to be publicly reachable itself.
 | `openssl` | Fallback TLS transport and socat's OpenSSL engine |
 | The agent CLI | `claude`, `codex`, or any other supported CLI |
 
-### 2.2 Build dependencies
+### 2.3 Build dependencies
 
 **Nix (recommended)**
 
@@ -293,7 +380,7 @@ Same Nix setup as the hub. The bridge and pty-host are built from the same flake
 | socat | ≥ 1.7 | Bridge → hub TLS tunnel |
 | openssl / libssl | ≥ 1.1 | TLS; socat OpenSSL engine |
 
-### 2.3 Building
+### 2.4 Building
 
 **With Nix**
 
@@ -306,6 +393,9 @@ nix build .#ham-pty-host
 
 # Build CLI
 nix build .#ham-ctl
+
+# Build the heimdall management CLI (enroll/status/service/update)
+nix build .#ham-manager
 
 # Or run the bridge directly (sets all required env vars automatically)
 nix run .#bridge -- --hub https://hub.example.com --bridge-token-file ~/.config/heimdall/bridge-token
@@ -320,12 +410,15 @@ odin build src/bridge -collection:odin_test=src -out:./bin/ham-bridge
 # CLI (Odin)
 odin build src/ctl -collection:odin_test=src -out:./bin/ham-ctl
 
+# Management CLI (Odin) — the `heimdall` command used by sections 2.1/2.5
+odin build src/manager -collection:odin_test=src -out:./bin/heimdall
+
 # pty-host (Rust — must be in tools/pty_host/)
 cd tools/pty_host && cargo build --release
 cp target/release/ham-pty-host ~/bin/ham-pty-host
 ```
 
-### 2.4 First-time enrollment
+### 2.5 First-time enrollment
 
 The hub uses a one-time enrollment token to issue a durable bridge token (`hbr_…`).
 **Enrollment must be completed before the bridge can connect** — the bridge will refuse
@@ -348,19 +441,34 @@ ham-ctl bridge enroll-token --new
 **Step 2 — Enroll the bridge on the device**
 
 ```bash
-# On the device that will run the bridge:
-mkdir -p ~/.config/heimdall
+# On the device that will run the bridge (the heimdall CLI ships with the
+# quick install in section 2.1 and the release bundle):
+heimdall enroll hbe_... --hub https://hub.example.com
+# → Contacts the hub, exchanges the enrollment token for a durable hbr_ token,
+#   writes it to ~/.config/heimdall/bridge-token (mode 0600), and records the
+#   hub URL and bridge id in ~/.config/heimdall/config.toml.
+#   The command exits when enrollment is complete.
 
+# Underlying engine (compatibility): the equivalent ham-bridge invocation.
+mkdir -p ~/.config/heimdall
 ham-bridge enroll \
   --hub https://hub.example.com \
   --enrollment-token hbe_... \
   --bridge-token-file ~/.config/heimdall/bridge-token
-# → Contacts the hub, exchanges the enrollment token for a durable hbr_ token,
-#   and writes it to ~/.config/heimdall/bridge-token (mode 0600).
-#   The command exits when enrollment is complete.
 ```
 
-**Step 3 — Start (or restart) the bridge normally**
+**Step 3 — Configure vault encryption**
+
+After enrollment, use the primary `heimdall` command to store the 64-character
+hexadecimal vault key. It writes `~/.config/heimdall/vault_key` with strict `0600`
+permissions; use `status` to confirm configuration without displaying the key.
+
+```bash
+heimdall vault set-key <64-hex>
+heimdall vault status
+```
+
+**Step 4 — Start (or restart) the bridge normally**
 
 After enrollment the bridge is started exactly the same way every time — just point it
 at the token file. No enrollment flags are needed again.
@@ -371,7 +479,7 @@ ham-bridge \
   --bridge-token-file ~/.config/heimdall/bridge-token \
   --port 49323
 
-# Or, if you set up the systemd/launchd service (sections 2.7–2.8):
+# Or, if you set up the systemd/launchd service (sections 2.8–2.9):
 systemctl --user restart heimdall-bridge   # Linux
 launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge  # macOS
 ```
@@ -380,7 +488,7 @@ The bridge reads the token file on every start and reconnects to the hub automat
 You never need to touch the hub again for this device unless you deliberately revoke
 the token.
 
-### 2.5 Bridge token file
+### 2.6 Bridge token file
 
 The token file is a plain text file containing a single `hbr_…` token:
 
@@ -394,7 +502,7 @@ hbr_18abc...
 - To revoke a bridge, delete the token record on the hub:
   `ham-ctl bridge revoke --bridge-id <id>`.
 
-### 2.6 Required environment variables
+### 2.7 Required environment variables
 
 The bridge needs these env vars set (or passed via `nix run .#bridge` which sets them
 automatically):
@@ -410,7 +518,7 @@ export HEIMDALL_BRIDGE_PTY_HOST=true
 export HEIMDALL_HAM_CTL_BIN=/usr/local/bin/ham-ctl
 ```
 
-### 2.7 Systemd user service (Linux bridge)
+### 2.8 Systemd user service (Linux bridge)
 
 Create `~/.config/systemd/user/heimdall-bridge.service`:
 
@@ -446,7 +554,7 @@ systemctl --user status heimdall-bridge
 journalctl --user -u heimdall-bridge -f
 ```
 
-### 2.8 launchd agent (macOS bridge)
+### 2.9 launchd agent (macOS bridge)
 
 Create `~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist`:
 
@@ -507,7 +615,7 @@ launchctl print gui/$(id -u)/works.earendil.heimdall-bridge
 tail -f /tmp/heimdall-logs/heimdall-bridge.err.log
 ```
 
-### 2.9 Home Manager module (NixOS / nix-darwin bridge)
+### 2.10 Home Manager module (NixOS / nix-darwin bridge)
 
 The flake ships a Home Manager module for declarative bridge setup:
 
@@ -553,13 +661,20 @@ named `heimdall-bridge` is created and started automatically.
 - [ ] Confirm the API is reachable: `curl https://hub.example.com/api/v1/health`
 
 ### Each bridge device (once per device)
+Recommended — the quick install (section 2.1) handles the first three items:
+- [ ] Run the one-line installer:
+      `curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash`
+- [ ] Generate an enrollment token on the hub: `ham-ctl bridge enroll-token --new`
+- [ ] Enroll: `heimdall enroll hbe_... --hub https://hub.example.com`
+- [ ] Start the bridge service (systemd user service or launchd agent)
+- [ ] Verify with `heimdall status`; confirm the bridge appears in the hub UI
+      or via `ham-ctl bridge list`
+
+Manual path (sections 2.2–2.10, for source/air-gapped setups):
 - [ ] Build or install `ham-bridge`, `ham-pty-host`, `ham-ctl`
 - [ ] Install runtime dependencies: `socat`, `openssl`
-- [ ] Generate an enrollment token on the hub: `ham-ctl bridge enroll-token --new`
 - [ ] Enroll: `ham-bridge enroll --hub … --enrollment-token … --bridge-token-file ~/.config/heimdall/bridge-token`
 - [ ] Set `HEIMDALL_HAM_PTY_HOST_BIN`, `HEIMDALL_BRIDGE_PTY_HOST=true`, `HEIMDALL_HAM_CTL_BIN`
-- [ ] Start the bridge service (systemd user service or launchd agent)
-- [ ] Confirm the bridge appears in the hub UI or via `ham-ctl bridge list`
 
 ### Subsequent runs
 The bridge reads `--bridge-token-file` on startup and reconnects automatically.
