@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Heimdall — Coordinate AI Coding Agents Across Your Devices</title>
+  <meta name="description" content="Bring your own AI coding agents across multiple devices. Heimdall orchestrates autonomous teams to work together with built-in editor, VCS, zero-knowledge encryption, and zero-config remote access without SSH or VPN.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #0a0c10;
+      --bg-subtle: #11141a;
+      --bg-surface: #151922;
+      --bg-surface-hover: #1a202c;
+      --bg-code: #0d1017;
+      
+      --border-subtle: #1e2430;
+      --border-default: #293242;
+      --border-focus: #3b82f6;
+      
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-faint: #64748b;
+      
+      --accent: #38bdf8;
+      --accent-bg: rgba(56, 189, 248, 0.08);
+      --accent-border: rgba(56, 189, 248, 0.25);
+      
+      --status-green: #10b981;
+      --status-green-bg: rgba(16, 185, 129, 0.1);
+      --status-amber: #f59e0b;
+      --status-amber-bg: rgba(245, 158, 11, 0.1);
+      
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    .bg-grid {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background-image: linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Top Sticky Nav */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(10, 12, 16, 0.9);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .nav-progress {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+
+    .nav-container {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 0.9rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--text-main);
+    }
+
+    .brand-logo {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--accent);
+      border-radius: 4px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-logo::after {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--status-green);
+      border-radius: 50%;
+    }
+
+    .brand-name {
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.02em;
+    }
+
+    .version-pill {
+      font-size: 0.72rem;
+      padding: 2px 7px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.75rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: color 0.15s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-main);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      border-radius: 6px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border-default);
+      color: var(--text-main);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--text-muted);
+      background: var(--bg-surface);
+    }
+
+    .btn-primary {
+      background: var(--text-main);
+      border: 1px solid var(--text-main);
+      color: #0a0c10;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      background: #ffffff;
+      transform: translateY(-1px);
+    }
+
+    .btn-discord {
+      background: #5865F2;
+      border: 1px solid #5865F2;
+      color: #fff;
+    }
+
+    .btn-discord:hover {
+      background: #4752c4;
+    }
+
+    .container {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      position: relative;
+      z-index: 10;
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 5rem 0 3rem;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .badge-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      justify-content: center;
+      margin-bottom: 2rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      text-decoration: none;
+    }
+
+    .badge-invite {
+      background: var(--status-green-bg);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--status-green);
+    }
+
+    .badge-release {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.live {
+      background: var(--status-green);
+    }
+
+    .hero-title {
+      font-size: clamp(2.2rem, 4.5vw, 3.8rem);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+      margin-bottom: 1.5rem;
+      max-width: 900px;
+      color: var(--text-main);
+    }
+
+    .hero-title .highlight {
+      color: var(--accent);
+    }
+
+    .hero-subhead {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 760px;
+      line-height: 1.6;
+      margin-bottom: 2.25rem;
+    }
+
+    .install-bar {
+      display: flex;
+      align-items: center;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      padding: 0.4rem 0.5rem 0.4rem 1.25rem;
+      max-width: 600px;
+      width: 100%;
+      margin-bottom: 2rem;
+      font-family: var(--font-mono);
+      transition: border-color 0.2s ease;
+    }
+
+    .install-bar:hover {
+      border-color: var(--text-muted);
+    }
+
+    .install-prompt {
+      color: var(--text-faint);
+      margin-right: 0.75rem;
+      user-select: none;
+    }
+
+    .install-cmd {
+      color: var(--text-main);
+      font-size: 0.88rem;
+      overflow-x: auto;
+      white-space: nowrap;
+      flex-grow: 1;
+      text-align: left;
+    }
+
+    .install-copy-btn {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-family: var(--font-sans);
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .install-copy-btn:hover {
+      color: var(--text-main);
+      background: var(--bg-surface-hover);
+      border-color: var(--border-default);
+    }
+
+    .hero-ctas {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      justify-content: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .byoa-label {
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+      font-weight: 600;
+    }
+
+    .byoa-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      justify-content: center;
+      max-width: 860px;
+    }
+
+    .byoa-item {
+      font-size: 0.76rem;
+      padding: 4px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+
+    .byoa-item span {
+      color: var(--status-green);
+    }
+
+    /* Hero GIF Placeholder Window */
+    .hero-media-section {
+      padding: 1rem 0 4.5rem;
+    }
+
+    .media-window {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+    }
+
+    .media-chrome {
+      background: var(--bg-base);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0.75rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .dot-red { background: #ef4444; }
+    .dot-yellow { background: #f59e0b; }
+    .dot-green { background: #10b981; }
+
+    .media-title {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .media-badge {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+    }
+
+    .media-badge span {
+      color: var(--status-green);
+    }
+
+    .gif-placeholder {
+      aspect-ratio: 16 / 9;
+      max-height: 600px;
+      width: 100%;
+      background: var(--bg-code);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2.5rem;
+      text-align: center;
+      position: relative;
+      border: 1px dashed var(--border-default);
+      margin: 1rem;
+      width: calc(100% - 2rem);
+      border-radius: 6px;
+    }
+
+    .gif-placeholder-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      color: var(--accent);
+    }
+
+    .gif-placeholder-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.5rem;
+      font-family: var(--font-mono);
+    }
+
+    .gif-placeholder-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 580px;
+      line-height: 1.6;
+      margin-bottom: 1.25rem;
+    }
+
+    .gif-specs {
+      display: inline-flex;
+      gap: 1rem;
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+      color: var(--text-faint);
+      background: var(--bg-surface);
+      padding: 0.4rem 1rem;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* Architecture Capabilities */
+    .caps-section {
+      padding: 4rem 0;
+      border-top: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .section-header {
+      text-align: center;
+      max-width: 680px;
+      margin: 0 auto 3rem;
+    }
+
+    .section-title {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.75rem;
+      color: var(--text-main);
+    }
+
+    .section-sub {
+      color: var(--text-muted);
+      font-size: 1rem;
+    }
+
+    .caps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .cap-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      text-align: left;
+    }
+
+    .cap-header {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .cap-tag {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      background: var(--accent-bg);
+      border: 1px solid var(--accent-border);
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+
+    .cap-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .cap-desc {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* The 5 Core Pillars */
+    .pillars-section {
+      padding: 5rem 0;
+    }
+
+    .pillars-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .pillar-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.15s ease;
+    }
+
+    .pillar-card:hover {
+      border-color: var(--border-default);
+    }
+
+    .pillar-num {
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .pillar-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.75rem;
+      line-height: 1.4;
+    }
+
+    .pillar-problem {
+      background: rgba(239, 68, 68, 0.04);
+      border-left: 2px solid #ef4444;
+      padding: 0.65rem 0.85rem;
+      border-radius: 0 4px 4px 0;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+
+    .pillar-solution {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      flex-grow: 1;
+    }
+
+    .pillar-features {
+      margin-top: 1.25rem;
+      list-style: none;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .pillar-features li {
+      position: relative;
+      padding-left: 1.2rem;
+      margin-bottom: 0.4rem;
+      font-size: 0.82rem;
+      color: var(--text-main);
+    }
+
+    .pillar-features li::before {
+      content: '✓';
+      position: absolute;
+      left: 0;
+      color: var(--status-green);
+      font-weight: bold;
+    }
+
+    /* Cheatsheet Section */
+    .cheatsheet-section {
+      padding: 5rem 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .code-box {
+      background: var(--bg-code);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      padding: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.7;
+      overflow-x: auto;
+      color: var(--text-muted);
+    }
+
+    .code-box .cmd {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .code-box .comment {
+      color: var(--text-faint);
+    }
+
+    /* FAQ Section */
+    .faq-section {
+      padding: 5rem 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .faq-list {
+      max-width: 820px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .faq-item {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+
+    .faq-item:hover {
+      border-color: var(--border-default);
+    }
+
+    .faq-question {
+      padding: 1.25rem 1.5rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text-main);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+
+    .faq-toggle {
+      color: var(--text-muted);
+      font-size: 1.2rem;
+      transition: transform 0.2s ease;
+    }
+
+    .faq-answer {
+      padding: 0 1.5rem 1.25rem;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      display: none;
+    }
+
+    .faq-item.open .faq-answer {
+      display: block;
+    }
+
+    .faq-item.open .faq-toggle {
+      transform: rotate(45deg);
+      color: var(--accent);
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      max-width: 460px;
+      width: 100%;
+      padding: 2rem;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      position: relative;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 1rem;
+      right: 1.25rem;
+      background: transparent;
+      border: none;
+      color: var(--text-faint);
+      font-size: 1.4rem;
+      cursor: pointer;
+    }
+
+    .modal-close:hover {
+      color: var(--text-main);
+    }
+
+    .modal-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+      color: var(--text-main);
+    }
+
+    .modal-sub {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .input-group {
+      margin-bottom: 1.25rem;
+    }
+
+    .input-label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+      color: var(--text-muted);
+    }
+
+    .text-input {
+      width: 100%;
+      background: var(--bg-base);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      padding: 0.65rem 0.85rem;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      outline: none;
+    }
+
+    .text-input:focus {
+      border-color: var(--border-focus);
+    }
+
+    /* Footer */
+    .footer {
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-base);
+      padding: 3rem 0;
+      font-size: 0.82rem;
+      color: var(--text-faint);
+    }
+
+    .footer-content {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+    }
+
+    .footer-links a:hover {
+      color: var(--text-main);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav-progress" id="scroll-progress"></div>
+    <div class="nav-container">
+      <a href="#" class="brand">
+        <div class="brand-logo"></div>
+        <span class="brand-name">heimdall</span>
+        <span class="version-pill">v0.3.0</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#demo">Overview</a></li>
+        <li><a href="#capabilities">Architecture</a></li>
+        <li><a href="#pillars">Pillars</a></li>
+        <li><a href="#cheatsheet">Quick Start</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+      <div class="nav-actions">
+        <a href="https://discord.gg/heimdall" target="_blank" class="btn btn-discord">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+          </svg>
+          Discord
+        </a>
+        <a href="https://github.com" target="_blank" class="btn btn-outline">
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="badge-strip">
+        <div class="badge badge-invite">
+          <span class="dot live"></span>
+          <span>Heimdall Cloud is invite-only · Self-host with 1 command →</span>
+        </div>
+        <a href="#changelog" class="badge badge-release">
+          <span>v0.3.0 released: native binary installer & vault CLI</span>
+        </a>
+      </div>
+      
+      <h1 class="hero-title">
+        Your multi-device AI agent fleet.<br>
+        <span class="highlight">Coordinated. Encrypted. Accessible anywhere.</span>
+      </h1>
+
+      <p class="hero-subhead">
+        Run Claude Code, Cursor, Antigravity, or custom agents across your laptop, desktop, and homelab. Heimdall lets you manage them in one place, coordinates them to work together, and protects all workspace data with client-side Zero-Knowledge encryption—with seamless remote access without SSH or VPNs.
+      </p>
+
+      <div class="install-bar">
+        <span class="install-prompt">$</span>
+        <span class="install-cmd" id="install-cmd">curl -fsSL https://get.heimdall.dev/install.sh | bash</span>
+        <button class="install-copy-btn" id="copy-btn" onclick="copyInstallCmd()">
+          <span id="copy-text">Copy</span>
+        </button>
+      </div>
+
+      <div class="hero-ctas">
+        <a href="#cheatsheet" class="btn btn-primary">Self-Host in 60s →</a>
+        <button class="btn btn-outline" onclick="openInviteModal()">Request Cloud Invite</button>
+        <a href="https://discord.gg/heimdall" target="_blank" class="btn btn-outline">Join Discord</a>
+      </div>
+
+      <div class="byoa-label">Bring Your Own Agent (Harness Agnostic)</div>
+      <div class="byoa-strip">
+        <div class="byoa-item"><span>●</span> Antigravity</div>
+        <div class="byoa-item"><span>●</span> Claude Code</div>
+        <div class="byoa-item"><span>●</span> Gemini CLI</div>
+        <div class="byoa-item"><span>●</span> Cursor Agent</div>
+        <div class="byoa-item"><span>●</span> OpenCode</div>
+        <div class="byoa-item"><span>●</span> Aider</div>
+        <div class="byoa-item"><span>●</span> OpenAI Codex</div>
+        <div class="byoa-item"><span>●</span> Goose</div>
+        <div class="byoa-item"><span>●</span> Custom Shell Script</div>
+      </div>
+    </section>
+
+    <!-- Hero Media / GIF Placeholder -->
+    <section class="hero-media-section" id="demo">
+      <div class="media-window">
+        <div class="media-chrome">
+          <div class="window-dots">
+            <span class="window-dot dot-red"></span>
+            <span class="window-dot dot-yellow"></span>
+            <span class="window-dot dot-green"></span>
+          </div>
+
+          <div class="media-title">
+            heimdall — multi-device coordination & review quorum demo
+          </div>
+
+          <div class="media-badge">
+            <span>●</span> Live Fleet Session
+          </div>
+        </div>
+
+        <div class="gif-placeholder">
+          <div class="gif-placeholder-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+          </div>
+          <div class="gif-placeholder-title">[ hero-demo.gif placeholder ]</div>
+          <p class="gif-placeholder-desc">
+            Product walk-through recording placeholder: showing coordinator task chain planning, worker parallel execution in isolated PTYs across multiple devices, and reviewer LGTM quorum verification.
+          </p>
+          <div class="gif-specs">
+            <span>Asset: ./assets/hero-demo.gif</span>
+            <span>Target: 1200 × 680 px</span>
+            <span>Loop: 6–8s</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Grounded Architectural Capabilities -->
+    <section class="caps-section" id="capabilities">
+      <div class="section-header">
+        <h2 class="section-title">Architectural Guarantees</h2>
+        <p class="section-sub">A native systems approach designed from the ground up for multi-device workflows.</p>
+      </div>
+
+      <div class="caps-grid">
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Systems</span>
+            <div class="cap-title">Native Odin Binary</div>
+          </div>
+          <div class="cap-desc">Compiled directly to native C-ABI machine code. Runs with zero external runtime dependencies—no Docker, Python, or Node daemons required on your host.</div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Footprint</span>
+            <div class="cap-title">~20MB Resident Memory</div>
+          </div>
+          <div class="cap-desc">Runs silently as a native systemd user service (Linux) or launchd agent (macOS) with minimal host CPU and memory overhead.</div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Networking</span>
+            <div class="cap-title">Outbound-Only Tunnels</div>
+          </div>
+          <div class="cap-desc">Bridges initiate outbound TLS WebSockets to the Hub. Traverses NAT and firewalls without opening inbound ports or running VPN clients.</div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Security</span>
+            <div class="cap-title">Client-Side 256-bit AES</div>
+          </div>
+          <div class="cap-desc">Zero-knowledge encryption for all egress data. Prompts, diffs, and workspace secrets leave your machine encrypted with locally held keys (strict 0600 mode).</div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Reliability</span>
+            <div class="cap-title">Enforced Review Gates</div>
+          </div>
+          <div class="cap-desc">Tasks follow a strict lifecycle. Autonomous workers cannot commit changes directly—independent reviewer agents must test and verify before merging.</div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-header">
+            <span class="cap-tag">Control</span>
+            <div class="cap-title">Work Alongside Fleet</div>
+          </div>
+          <div class="cap-desc">Built-in file editor, native Git diff inspector, and streaming PTY terminals allow you to inspect, edit, or steer agents at any moment.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- The 5 Core Feature Pillars -->
+    <section class="pillars-section" id="pillars">
+      <div class="section-header">
+        <h2 class="section-title">How Heimdall Works</h2>
+        <p class="section-sub">A disciplined workflow for running autonomous AI agents on real codebases.</p>
+      </div>
+
+      <div class="pillars-grid">
+        <div class="pillar-card">
+          <div class="pillar-num">01 / FLEET</div>
+          <h3 class="pillar-title">Bring Your Own Agents Across Devices</h3>
+          <div class="pillar-problem">
+            <strong>The Problem:</strong> Managing agents across your laptop, desktop, and cloud server requires juggling separate terminal windows, leading to context drift and lost changes.
+          </div>
+          <div class="pillar-solution">
+            Install the lightweight bridge on any machine with one command. Register and run any agent harness—Claude Code, Cursor, Antigravity, or custom scripts—under one unified dashboard.
+          </div>
+          <ul class="pillar-features">
+            <li>Single-command node enrollment (`heimdall enroll`)</li>
+            <li>Universal PTY bridge supports any CLI harness</li>
+            <li>Multi-machine status and health diagnostics</li>
+          </ul>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">02 / COORDINATION</div>
+          <h3 class="pillar-title">Multi-Agent Coordination & Review Gates</h3>
+          <div class="pillar-problem">
+            <strong>The Problem:</strong> Solo agents operating in isolation hallucinate requirements, make assumptions without checking, and break existing tests.
+          </div>
+          <div class="pillar-solution">
+            Coordinator agents break objectives into structured task DAGs. Workers execute in parallel, and dedicated reviewer agents must independently test and cast verifiable LGTMs before changes land.
+          </div>
+          <ul class="pillar-features">
+            <li>Living specification tracked inside task chain descriptions</li>
+            <li>Two-tier review protocol (QUICK vs COMPREHENSIVE)</li>
+            <li>Unanimous quorum auto-finalization engine</li>
+          </ul>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">03 / SECURITY</div>
+          <h3 class="pillar-title">Zero-Knowledge Security Architecture</h3>
+          <div class="pillar-problem">
+            <strong>The Problem:</strong> Centralized agent platforms store workspace credentials, repository code, and API keys in plaintext on remote cloud servers.
+          </div>
+          <div class="pillar-solution">
+            All data leaving your machine is wrapped in client-side 256-bit AES-GCM ciphertext (`vault:v1:...`). The central Hub coordinates tasks without ever seeing plaintext code or keys.
+          </div>
+          <ul class="pillar-features">
+            <li>PBKDF2-SHA256 client wrapping key derivation</li>
+            <li>Strict POSIX 0600 file permission enforcement</li>
+            <li>Hub stores zero-knowledge encrypted envelopes only</li>
+          </ul>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">04 / REMOTE</div>
+          <h3 class="pillar-title">Zero-Config Remote Access</h3>
+          <div class="pillar-problem">
+            <strong>The Problem:</strong> Accessing your development machine or homelab on the go requires brittle SSH tunnels, dynamic DNS, or punching holes in firewalls.
+          </div>
+          <div class="pillar-solution">
+            Engineered from day one for remote development. Heimdall bridges establish secure outbound TLS WebSocket tunnels to the Hub. Access your fleet and terminals anywhere without VPNs or port forwarding.
+          </div>
+          <ul class="pillar-features">
+            <li>100% outbound-only WebSocket architecture</li>
+            <li>No SSH keys, router port opening, or VPN clients</li>
+            <li>Pick up active coding sessions from any browser</li>
+          </ul>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">05 / PAIR PROGRAMMING</div>
+          <h3 class="pillar-title">Work Alongside Your Fleet</h3>
+          <div class="pillar-problem">
+            <strong>The Problem:</strong> Black-box AI tools hide behind chat windows, disconnecting developers from their repository state until something breaks.
+          </div>
+          <div class="pillar-solution">
+            Full human-in-the-loop pair programming. Built-in syntax-highlighted editor, native Git VCS diff viewer, and low-latency interactive PTY terminals allow you to step in and guide agents in real time.
+          </div>
+          <ul class="pillar-features">
+            <li>Native Git diff inspector with line-by-line review</li>
+            <li>Real-time terminal streaming via `ham-pty-host`</li>
+            <li>Interactive shell takeover and live signal delivery</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- CLI Cheatsheet -->
+    <section class="cheatsheet-section" id="cheatsheet">
+      <div class="section-header">
+        <h2 class="section-title">Quick Start</h2>
+        <p class="section-sub">Simple, predictable CLI for managing your local bridge and daemon lifecycle.</p>
+      </div>
+
+      <div class="code-box">
+<span class="comment"># 1. Install precompiled binaries (Linux / macOS)</span>
+<span class="cmd">curl</span> -fsSL https://get.heimdall.dev/install.sh | bash
+
+<span class="comment"># 2. Configure local 256-bit Zero-Knowledge Vault Key (strict 0600 mode)</span>
+<span class="cmd">heimdall</span> vault set-key &lt;64-character-hex-key&gt;
+
+<span class="comment"># 3. Enroll your host bridge with your central Hub</span>
+<span class="cmd">heimdall</span> enroll &lt;one-time-token&gt; --hub https://hub.yourdomain.com
+
+<span class="comment"># 4. Check fleet connectivity and daemon status</span>
+<span class="cmd">heimdall</span> status
+<span class="cmd">heimdall</span> doctor
+      </div>
+    </section>
+
+    <!-- Developer FAQ -->
+    <section class="faq-section" id="faq">
+      <div class="section-header">
+        <h2 class="section-title">Frequently Asked Questions</h2>
+        <p class="section-sub">Details on self-hosting, remote access, and zero-knowledge encryption.</p>
+      </div>
+
+      <div class="faq-list">
+        <div class="faq-item open">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does remote access work without SSH or VPNs?</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-answer">
+            Heimdall bridges initiate outbound TLS WebSocket connections to your Hub. Because all connections are outbound, you can access your workstation or homelab agent fleet from anywhere without configuring router port-forwarding, dynamic DNS, or VPN clients like Tailscale.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does Heimdall protect source code and secrets?</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-answer">
+            Heimdall uses a Zero-Knowledge Vault architecture. Your Master Password derives a 256-bit AES-GCM wrapping key entirely in your client browser/UI. All data that leaves your local device is encrypted ciphertext (`vault:v1:...`). The Hub never sees plaintext prompts, code, or API keys.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Can I bring my own existing coding agents?</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-answer">
+            Yes. Heimdall is completely harness-agnostic (Bring Your Own Agent). It seamlessly manages Antigravity, Claude Code, Gemini CLI, Cursor Agent, OpenCode, Aider, and custom agent runtimes through its universal PTY bridge (`ham-pty-host`).
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Can I work alongside my agents while they code?</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-answer">
+            Yes. Heimdall includes a built-in code editor, native Git VCS diff viewer, and interactive PTY terminal streaming. You can review intermediate diffs, make manual edits, or jump into an agent's shell at any time.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Does Heimdall require Docker or Kubernetes?</span>
+            <span class="faq-toggle">+</span>
+          </div>
+          <div class="faq-answer">
+            No. Heimdall compiles to static native binaries with zero external runtime dependencies and runs as a lightweight user systemd unit (Linux) or launchd service (macOS) using ~20MB of RAM.
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-overlay" id="invite-modal">
+    <div class="modal-card">
+      <button class="modal-close" onclick="closeInviteModal()">×</button>
+      <h3 class="modal-title">Request Cloud Invite</h3>
+      <p class="modal-sub">Heimdall Cloud is currently rolling out in batches. Join the early access queue to get your hosted hub.</p>
+      
+      <div class="input-group">
+        <label class="input-label">Work Email</label>
+        <input type="email" class="text-input" placeholder="developer@company.com" id="invite-email">
+      </div>
+
+      <div class="input-group">
+        <label class="input-label">Primary Agent Harness</label>
+        <input type="text" class="text-input" placeholder="Claude Code, Cursor, Antigravity..." id="invite-harness">
+      </div>
+
+      <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="submitInvite()">
+        Join Early Access Queue →
+      </button>
+      <div id="invite-msg" style="margin-top: 0.75rem; font-size: 0.78rem; text-align: center; color: var(--status-green); display: none;">
+        ✓ Request registered! We will reach out with your enrollment token.
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <div class="container footer-content">
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <span class="brand-name">heimdall</span>
+        <span>© 2026 Earendil Works. MIT Licensed.</span>
+      </div>
+
+      <div class="status-badge">
+        <span class="dot live"></span>
+        <span>Native Odin Daemon (Single Binary)</span>
+      </div>
+
+      <ul class="footer-links">
+        <li><a href="https://discord.gg/heimdall" target="_blank">Discord</a></li>
+        <li><a href="https://github.com" target="_blank">GitHub</a></li>
+        <li><a href="#capabilities">Architecture</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script>
+    window.addEventListener('scroll', () => {
+      const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
+      const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      const scrolled = (winScroll / height) * 100;
+      document.getElementById('scroll-progress').style.width = scrolled + '%';
+    });
+
+    function copyInstallCmd() {
+      const cmd = document.getElementById('install-cmd').innerText;
+      navigator.clipboard.writeText(cmd).then(() => {
+        const text = document.getElementById('copy-text');
+        text.innerText = 'Copied! ✓';
+        text.style.color = 'var(--status-green)';
+        setTimeout(() => {
+          text.innerText = 'Copy';
+          text.style.color = '';
+        }, 2000);
+      });
+    }
+
+    function toggleFaq(element) {
+      const item = element.parentElement;
+      item.classList.toggle('open');
+    }
+
+    function openInviteModal() {
+      document.getElementById('invite-modal').classList.add('active');
+    }
+
+    function closeInviteModal() {
+      document.getElementById('invite-modal').classList.remove('active');
+    }
+
+    function submitInvite() {
+      const email = document.getElementById('invite-email').value;
+      if (!email) return;
+      document.getElementById('invite-msg').style.display = 'block';
+      setTimeout(() => {
+        closeInviteModal();
+        document.getElementById('invite-msg').style.display = 'none';
+      }, 2500);
+    }
+  </script>
+</body>
+</html>

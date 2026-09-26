@@ -231,11 +231,34 @@ response_content_length :: proc(headers: string) -> int {
 	return -1
 }
 
+// header_contains_fold reports whether haystack contains needle,
+// ASCII-case-insensitively, without allocating (strings.to_lower would leak
+// on every response carrying the header).
+header_contains_fold :: proc(haystack, needle: string) -> bool {
+	if len(needle) == 0 do return true
+	if len(needle) > len(haystack) do return false
+	for i in 0..=(len(haystack) - len(needle)) {
+		match := true
+		for j in 0..<len(needle) {
+			a := haystack[i+j]
+			b := needle[j]
+			if a >= 'A' && a <= 'Z' do a += 32
+			if b >= 'A' && b <= 'Z' do b += 32
+			if a != b {
+				match = false
+				break
+			}
+		}
+		if match do return true
+	}
+	return false
+}
+
 response_transfer_chunked :: proc(headers: string) -> bool {
 	header_text := headers
 	for line in strings.split_lines_iterator(&header_text) {
 		if strings.has_prefix(line, "Transfer-Encoding:") || strings.has_prefix(line, "transfer-encoding:") {
-			return strings.contains(strings.to_lower(line), "chunked")
+			return header_contains_fold(line, "chunked")
 		}
 	}
 	return false
@@ -453,6 +476,411 @@ host_trim_brackets :: proc(host: string) -> string {
 		return host[1:len(host)-1]
 	}
 	return host
+}
+
+// ---- streaming download to file (REQ-DIST-4: heimdall update) ----
+//
+// download_to_file streams a GET of `url` into `dest_path` without buffering
+// the body in memory, following up to `max_redirects` 3xx redirects. Only a
+// final HTTP 200 body reaches `dest_path`, written to a sibling ".part" file
+// first and renamed over the destination on completion, so a failed or
+// truncated download never leaves a partial file at the final path. On any
+// failure (transport error, timeout, too many redirects, non-200 final
+// status) ok is false and callers should treat the destination as unchanged.
+
+DOWNLOAD_MAX_REDIRECTS :: 5
+DOWNLOAD_MAX_HEADER_BYTES :: 65536
+
+Download_Stream_Read :: proc(ctx: rawptr, out: []byte) -> (n: int, ok: bool) // (0, true) signals EOF
+
+Download_Stream :: struct {
+	read:   Download_Stream_Read,
+	ctx:    rawptr,
+	buf:    [65536]byte,
+	filled: int,
+	pos:    int,
+}
+
+Download_Tls_Ctx :: struct {
+	fd:        ^os.File,
+	process:   os.Process,
+	deadline:  i64, // unix nanoseconds
+}
+
+// ds_fill ensures at least one buffered byte is available; false at EOF or on
+// a transport error/timeout.
+ds_fill :: proc(s: ^Download_Stream) -> bool {
+	if s.pos < s.filled do return true
+	s.pos = 0
+	s.filled = 0
+	n, ok := s.read(s.ctx, s.buf[:])
+	if !ok || n <= 0 do return false
+	s.filled = n
+	return true
+}
+
+// ds_write_to_file copies exactly `n` stream bytes (buffered first) into f.
+ds_write_to_file :: proc(s: ^Download_Stream, f: ^os.File, n: int) -> bool {
+	remaining := n
+	for remaining > 0 {
+		if !ds_fill(s) do return false
+		avail := s.filled - s.pos
+		take := min(avail, remaining)
+		written, werr := os.write(f, s.buf[s.pos:s.pos+take])
+		if werr != nil || written != take do return false
+		s.pos += take
+		remaining -= take
+	}
+	return true
+}
+
+// ds_drain_to_file copies the stream into f until EOF (close-delimited body).
+ds_drain_to_file :: proc(s: ^Download_Stream, f: ^os.File) -> bool {
+	for {
+		if !ds_fill(s) do return false
+		chunk := s.buf[s.pos:s.filled]
+		written, werr := os.write(f, chunk)
+		if werr != nil || written != len(chunk) do return false
+		s.pos = s.filled
+	}
+}
+
+// ds_read_line reads through the next '\n' into a small caller buffer and
+// returns the line with trailing CR/LF stripped.
+ds_read_line :: proc(s: ^Download_Stream, line: []byte) -> (string, bool) {
+	length := 0
+	for {
+		if !ds_fill(s) do return "", false
+		b := s.buf[s.pos]
+		s.pos += 1
+		if b == '\n' {
+			text := string(line[:length])
+			return strings.trim_right(text, "\r"), true
+		}
+		if length >= len(line) do return "", false
+		line[length] = b
+		length += 1
+	}
+}
+
+// ds_read_headers accumulates the response header block (up to and including
+// the blank line) into a freshly allocated string. Bytes read past the header
+// terminator stay buffered in the stream (they belong to the body).
+ds_read_headers :: proc(s: ^Download_Stream) -> (string, bool) {
+	data := make([dynamic]byte, 0, 4096)
+	for {
+		if !ds_fill(s) {
+			delete(data)
+			return "", false
+		}
+		append(&data, ..s.buf[s.pos:s.filled])
+		overread := s.filled - s.pos
+		s.pos = s.filled
+		if len(data) > DOWNLOAD_MAX_HEADER_BYTES {
+			delete(data)
+			return "", false
+		}
+		raw := string(data[:])
+		if idx := strings.index(raw, "\r\n\r\n"); idx >= 0 {
+			consumed := idx + 4
+			// rewind: body bytes pulled in by the same read remain buffered
+			s.pos -= overread - consumed
+			result := strings.clone(raw[:consumed])
+			delete(data)
+			return result, true
+		}
+	}
+}
+
+download_socket_read :: proc(ctx: rawptr, out: []byte) -> (int, bool) {
+	socket := (cast(^net.TCP_Socket)ctx)^
+	n, err := net.recv_tcp(socket, out)
+	if err != nil do return 0, false
+	if n == 0 do return 0, true
+	return n, true
+}
+
+// download_tls_read mirrors the pipe/poll loop of request_tls_with_headers:
+// the TLS subprocess owns the socket; data arrives on its stdout pipe. EOF is
+// reported once the pipe drains (parent closed the write end at spawn).
+download_tls_read :: proc(ctx: rawptr, out: []byte) -> (int, bool) {
+	c := cast(^Download_Tls_Ctx)ctx
+	for time.to_unix_nanoseconds(time.now()) < c.deadline {
+		ready, perr := os.pipe_has_data(c.fd)
+		if perr != nil do return 0, false
+		if ready {
+			n, rerr := os.read(c.fd, out)
+			// os.read signals end-of-file as the .EOF error; deliver any data
+			// carried with it and report the EOF on the next call
+			if rerr == .EOF do return n, true
+			if rerr != nil do return 0, false
+			if n <= 0 do return 0, true
+			return n, true
+		}
+		if _, werr := os.process_wait(c.process, 0); werr == nil {
+			n, rerr := os.read(c.fd, out)
+			if rerr != nil || n <= 0 do return 0, true
+			return n, true
+		}
+		time.sleep(10 * time.Millisecond)
+	}
+	return 0, false
+}
+
+// split_url decomposes an absolute http(s) URL into authority + path parts.
+// Unlike parse_base_url it keeps the path (and query), which requests need.
+split_url :: proc(url: string) -> (host: string, port: u16, secure: bool, path: string, ok: bool) {
+	rest := url
+	default_port: u16 = 80
+	if strings.has_prefix(rest, "https://") {
+		rest = rest[len("https://"):]
+		secure = true
+		default_port = 443
+	} else if strings.has_prefix(rest, "http://") {
+		rest = rest[len("http://"):]
+	} else {
+		return "", 0, false, "", false
+	}
+	authority := rest
+	path = "/"
+	if slash := strings.index_byte(rest, '/'); slash >= 0 {
+		authority = rest[:slash]
+		path = rest[slash:]
+	}
+	host = host_trim_brackets(authority)
+	port = default_port
+	if colon := strings.last_index_byte(authority, ':'); colon >= 0 {
+		parsed, p_ok := strconv.parse_int(authority[colon+1:])
+		if !p_ok || parsed <= 0 || parsed > 65535 do return "", 0, false, "", false
+		host = host_trim_brackets(authority[:colon])
+		port = u16(parsed)
+	}
+	if strings.trim_space(host) == "" do return "", 0, false, "", false
+	return host, port, secure, path, true
+}
+
+// resolve_redirect_url resolves a 3xx Location against the request URL,
+// handling absolute, scheme-relative, root-relative and path-relative forms.
+resolve_redirect_url :: proc(current, location: string) -> (string, bool) {
+	loc := strings.trim_space(location)
+	if loc == "" do return "", false
+	if strings.has_prefix(loc, "http://") || strings.has_prefix(loc, "https://") {
+		return strings.clone(loc), true
+	}
+	scheme := "http"
+	rest := current
+	if strings.has_prefix(rest, "https://") {
+		scheme = "https"
+		rest = rest[len("https://"):]
+	} else if strings.has_prefix(rest, "http://") {
+		rest = rest[len("http://"):]
+	} else {
+		return "", false
+	}
+	slash := strings.index_byte(rest, '/')
+	authority := rest if slash < 0 else rest[:slash]
+	prefix := fmt.tprintf("%s://%s", scheme, authority)
+	if strings.has_prefix(loc, "//") {
+		return strings.concatenate({scheme, ":", loc}), true
+	}
+	if strings.has_prefix(loc, "/") {
+		return strings.concatenate({prefix, loc}), true
+	}
+	_, _, _, current_path, path_ok := split_url(current)
+	if !path_ok do return "", false
+	dir := "/"
+	if last := strings.last_index_byte(current_path, '/'); last > 0 do dir = current_path[:last]
+	return strings.concatenate({prefix, dir, "/", loc}), true
+}
+
+// response_header_value extracts one header value (case-insensitive name)
+// from a raw header block (status line + headers, no body).
+response_header_value :: proc(headers, name: string) -> string {
+	colon := strings.index(headers, "\r\n")
+	if colon < 0 do return ""
+	text := headers[colon+2:]
+	for line in strings.split_lines_iterator(&text) {
+		idx := strings.index_byte(line, ':')
+		if idx <= 0 do continue
+		if strings.equal_fold(strings.trim_space(line[:idx]), name) {
+			return strings.trim_space(line[idx+1:])
+		}
+	}
+	return ""
+}
+
+// response_status parses "HTTP/1.1 <code> ..." from a header block.
+response_status :: proc(headers: string) -> int {
+	if len(headers) >= 12 && (strings.has_prefix(headers, "HTTP/1.1 ") || strings.has_prefix(headers, "HTTP/1.0 ")) {
+		if parsed, ok := strconv.parse_int(headers[9:12]); ok do return int(parsed)
+	}
+	return 0
+}
+
+// download_to_file_once performs a single GET attempt. On a 3xx it returns
+// the status and the resolved Location without touching dest_path; on 200 it
+// streams the body to dest_path; on any other status it returns the status.
+download_to_file_once :: proc(url, dest_path: string, timeout_ms: int) -> (status: int, location: string, ok: bool) {
+	host, port, secure, path, split_ok := split_url(url)
+	if !split_ok do return 0, "", false
+
+	stream: Download_Stream
+	tls_ctx: Download_Tls_Ctx
+	socket: net.TCP_Socket
+	process: os.Process
+	stdin_r, stdin_w, stdout_r: ^os.File
+	have_socket := false
+	have_proc := false
+	have_pipe_fds := false
+	have_stdin_w := false
+
+	if secure {
+		r1, w1, e1 := os.pipe()
+		if e1 != nil do return 0, "", false
+		r2, w2, e2 := os.pipe()
+		if e2 != nil {
+			_ = os.close(r1)
+			_ = os.close(w1)
+			return 0, "", false
+		}
+		stdin_r, stdin_w, stdout_r = r1, w1, r2
+		have_pipe_fds = true
+		have_stdin_w = true
+		started, start_err := os.process_start(os.Process_Desc{command = tls_client_command(host, port), stdin = r1, stdout = w2})
+		_ = os.close(w2)
+		if start_err != nil {
+			_ = os.close(stdin_r)
+			_ = os.close(stdin_w)
+			_ = os.close(stdout_r)
+			have_pipe_fds = false
+			return 0, "", false
+		}
+		process = started
+		have_proc = true
+	} else {
+		dialed, dial_ok := dial_tcp_with_timeout(host, int(port), timeout_ms)
+		if !dial_ok do return 0, "", false
+		socket = dialed
+		have_socket = true
+	}
+
+	// Resource teardown is registered at procedure scope: Odin defers run at
+	// the end of the enclosing BLOCK, so branch-local defers would release the
+	// transport before the response body is read.
+	defer if have_socket do net.close(socket)
+	defer if have_pipe_fds {
+		_ = os.close(stdin_r)
+		if have_stdin_w do os.close(stdin_w)
+		_ = os.close(stdout_r)
+	}
+	defer if have_proc {
+		_ = os.process_terminate(process)
+		_, _ = os.process_wait(process, 250 * time.Millisecond)
+	}
+
+	req := build_http_request("GET", host, port, path, "", nil, true)
+	defer delete(req)
+	if secure {
+		_, write_err := os.write(stdin_w, transmute([]byte)req)
+		_ = os.close(stdin_w)
+		have_stdin_w = false
+		if write_err != nil do return 0, "", false
+		tls_ctx = Download_Tls_Ctx{
+			fd = stdout_r,
+			process = process,
+			deadline = time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms if timeout_ms > 0 else DEFAULT_TIMEOUT_MS) * time.Millisecond),
+		}
+		stream = Download_Stream{read = download_tls_read, ctx = &tls_ctx}
+	} else {
+		if timeout_ms > 0 {
+			timeout := time.Duration(timeout_ms) * time.Millisecond
+			if net.set_option(socket, .Send_Timeout, timeout) != nil do return 0, "", false
+			if net.set_option(socket, .Receive_Timeout, timeout) != nil do return 0, "", false
+		}
+		_, send_err := net.send_tcp(socket, transmute([]byte)req)
+		if send_err != nil do return 0, "", false
+		stream = Download_Stream{read = download_socket_read, ctx = &socket}
+	}
+
+	headers, headers_ok := ds_read_headers(&stream)
+	if !headers_ok do return 0, "", false
+	defer delete(headers)
+
+	status = response_status(headers)
+	if status >= 300 && status < 400 {
+		// clone: the caller owns `location` and may delete it after resolving
+		return status, strings.clone(response_header_value(headers, "Location")), true
+	}
+	if status != 200 do return status, "", true
+
+	part_path := strings.concatenate({dest_path, ".part"})
+	defer delete(part_path)
+	f, open_err := os.open(part_path, os.File_Flags{.Write, .Create, .Trunc})
+	if open_err != nil do return 0, "", false
+	success := false
+	if response_transfer_chunked(headers) {
+		size_line: [128]byte
+		for {
+			line, line_ok := ds_read_line(&stream, size_line[:])
+			if !line_ok do break
+			if semi := strings.index(line, ";"); semi >= 0 do line = line[:semi]
+			size, size_ok := parse_hex_size(line)
+			if !size_ok do break
+			if size == 0 {
+				success = true
+				break
+			}
+			if !ds_write_to_file(&stream, f, size) do break
+			// each chunk is followed by CRLF; consume exactly those two bytes
+			end: [2]byte
+			crlf_ok := true
+			for i := 0; i < 2; i += 1 {
+				if !ds_fill(&stream) {
+					crlf_ok = false
+					break
+				}
+				end[i] = stream.buf[stream.pos]
+				stream.pos += 1
+			}
+			if !crlf_ok || end[0] != '\r' || end[1] != '\n' do break
+		}
+	} else if length := response_content_length(headers); length >= 0 {
+		success = ds_write_to_file(&stream, f, length)
+	} else {
+		success = ds_drain_to_file(&stream, f)
+	}
+	_ = os.close(f)
+	if !success {
+		_ = os.remove(part_path)
+		return 0, "", false
+	}
+	if os.rename(part_path, dest_path) != nil {
+		_ = os.remove(part_path)
+		return 0, "", false
+	}
+	return 200, "", true
+}
+
+download_to_file :: proc(url, dest_path: string, timeout_ms: int, max_redirects := DOWNLOAD_MAX_REDIRECTS) -> (status: int, ok: bool) {
+	current := strings.clone(url)
+	defer delete(current)
+	for redirects := 0; ; redirects += 1 {
+		status, location, once_ok := download_to_file_once(current, dest_path, timeout_ms)
+		if !once_ok do return status, false
+		if status >= 300 && status < 400 {
+			if redirects >= max_redirects || strings.trim_space(location) == "" {
+				if location != "" do delete(location)
+				return status, false
+			}
+			next, resolved := resolve_redirect_url(current, location)
+			delete(location)
+			if !resolved do return status, false
+			delete(current)
+			current = next
+			continue
+		}
+		return status, status == 200
+	}
 }
 
 os_error_is_timeout :: proc(err: os.Error) -> bool {

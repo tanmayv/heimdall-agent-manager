@@ -90,9 +90,9 @@ jobs:
           fi
           nix build \
             .#ham-bridge \
-            .#ham-wrapper \
             .#ham-ctl \
             .#ham-pty-host \
+            .#ham-manager \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
           mapfile -t paths < "$RUNNER_TEMP/nix-paths.txt"
@@ -102,9 +102,9 @@ jobs:
           fi
           {
             echo "bridge=${paths[0]}"
-            echo "wrapper=${paths[1]}"
-            echo "ctl=${paths[2]}"
-            echo "pty_host=${paths[3]}"
+            echo "ctl=${paths[1]}"
+            echo "pty_host=${paths[2]}"
+            echo "manager=${paths[3]}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package heimdall-local tarball
@@ -116,8 +116,8 @@ jobs:
             "${{ steps.version.outputs.version }}" \
             dist \
             "${{ steps.nix-build.outputs.bridge }}" \
-            "${{ steps.nix-build.outputs.wrapper }}" \
             "${{ steps.nix-build.outputs.ctl }}" \
+            "${{ steps.nix-build.outputs.manager }}" \
             "${{ steps.nix-build.outputs.pty_host }}"
           tar -tzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" | sort | tee "dist/heimdall-local-${{ matrix.target }}.contents.txt"
           case "$(uname -s)" in
@@ -182,11 +182,15 @@ jobs:
           versioned=()
           for tarball in "${expected[@]}"; do
             test -f "$tarball"
-            tar -tzf "$tarball" | grep -Fxq bin/ham-bridge
-            tar -tzf "$tarball" | grep -Fxq bin/ham-wrapper
-            tar -tzf "$tarball" | grep -Fxq bin/ham-ctl
-            tar -tzf "$tarball" | grep -Fxq README.md
-            tar -tzf "$tarball" | grep -Fxq LICENSE
+            # List once; piping tar into `grep -q` races under pipefail
+            # (grep exits on first match -> tar hits EPIPE -> false failure).
+            tar -tzf "$tarball" > "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq bin/ham-bridge "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq bin/ham-ctl "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq bin/heimdall "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq bin/ham-pty-host "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq README.md "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq LICENSE "$RUNNER_TEMP/$tarball.entries"
             target="${tarball#heimdall-local-}"
             target="${target%.tar.gz}"
             asset="heimdall-local-${target}-${version}.tar.gz"
