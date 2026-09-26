@@ -20,10 +20,14 @@ import type { ShellSession } from '../../api/endpoints/shells';
 
 interface ShellTerminalPaneProps {
   session: ShellSession;
+  isBridgeUnreachable?: boolean;
   onClose?: () => void;
 }
 
-export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
+export function ShellTerminalPane({
+  session,
+  isBridgeUnreachable: propIsBridgeUnreachable,
+}: ShellTerminalPaneProps) {
   const { theme } = useTheme();
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<TerminalType | null>(null);
@@ -35,10 +39,17 @@ export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
   // Output arrives by polled capture with since_hash diffing — the model the agent pane
   // uses — not by a PTY output stream. See useShellPaneSubscription.
   const paneSessionId = isTerminal && isRunning ? session.session_id : null;
-  const { output, isLoading, refetch } = useShellPaneSubscription({
+  const {
+    output,
+    isLoading,
+    isBridgeUnreachable: subIsBridgeUnreachable,
+    refetch,
+  } = useShellPaneSubscription({
     sessionId: paneSessionId,
     status: session.status,
   });
+
+  const isBridgeUnreachable = Boolean(propIsBridgeUnreachable || subIsBridgeUnreachable);
 
   const [sendShellInput] = useSendShellInputMutation();
   const [sendShellResize] = useSendShellResizeMutation();
@@ -200,7 +211,52 @@ export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
       data-debug-id={`shell-terminal-pane-${session.session_id}`}
       className="relative flex flex-col flex-1 h-full min-h-0 w-full overflow-hidden bg-canvas"
     >
-      {!output && (session.status === 'starting' || isLoading) && (
+      {isBridgeUnreachable && output && (
+        <div
+          data-debug-id="shell-terminal-unreachable-banner"
+          className="z-10 flex shrink-0 items-center justify-between gap-2 border-b border-warning/30 bg-warning-soft px-3 py-1.5 text-xs text-warning"
+        >
+          <div className="flex items-center gap-1.5">
+            <Icon name="alert" size={14} className="shrink-0 text-warning" />
+            <span>Bridge Unreachable. Showing cached output.</span>
+          </div>
+          <button
+            type="button"
+            data-debug-id="shell-terminal-unreachable-banner-retry-btn"
+            onClick={() => refetch()}
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-warning hover:bg-warning/20 transition-colors cursor-pointer"
+          >
+            <Icon name="refresh" size={12} />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
+
+      {isBridgeUnreachable && !output ? (
+        <div
+          data-debug-id="shell-terminal-unreachable"
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-canvas/95 p-6 text-center text-xs"
+        >
+          <div className="grid h-10 w-10 place-items-center rounded-full bg-danger/10 text-danger">
+            <Icon name="alert" size={20} />
+          </div>
+          <div className="max-w-xs space-y-1">
+            <p className="font-semibold text-primary">Bridge Unreachable</p>
+            <p className="text-muted">
+              The bridge hosting this shell session is offline or unreachable. Terminal input and output are temporarily unavailable.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-debug-id="shell-terminal-unreachable-retry-btn"
+            onClick={() => refetch()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-surface-raised px-3 py-1.5 font-medium text-primary hover:bg-neutral-soft border border-subtle transition-colors cursor-pointer"
+          >
+            <Icon name="refresh" size={12} />
+            <span>Retry</span>
+          </button>
+        </div>
+      ) : !output && (session.status === 'starting' || isLoading) ? (
         <div
           data-debug-id={`shell-terminal-loading-${session.session_id}`}
           className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-canvas/90 text-xs text-muted pointer-events-none"
@@ -208,7 +264,7 @@ export function ShellTerminalPane({ session }: ShellTerminalPaneProps) {
           <Icon name="refresh" className="animate-spin text-accent" size={18} />
           <span>Connecting to terminal…</span>
         </div>
-      )}
+      ) : null}
 
       {/* xterm container */}
       <style>{`.xterm-cursor-layer, .xterm-cursor { display: none !important; }`}</style>
