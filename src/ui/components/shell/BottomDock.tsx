@@ -6,6 +6,7 @@ import {
   useKillShellMutation,
   type ShellSession,
 } from '../../api/endpoints/shells';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { NewShellDialog } from '../shells/NewShellDialog';
 import { ShellTerminalPane } from '../shells/ShellTerminalPane';
 import { openTab, selectPreviewTabs } from '../../store/previewTabsSlice';
@@ -62,6 +63,36 @@ export default function BottomDock({
   const { data: shellsData } = useListShellsQuery(
     { status: 'live' },
     { pollingInterval: 3000, refetchOnMountOrArgChange: true }
+  );
+
+  // Bridges reachability query (REQ-BRIDGE-STATUS-1, REQ-BRIDGE-STATUS-2)
+  const { data: bridgesData } = useListBridgesQuery(undefined, {
+    pollingInterval: 10000,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const bridgeReachabilityMap = useMemo(() => {
+    const map = new Map<string, boolean>();
+    const bridges = bridgesData?.bridges || [];
+    for (const b of bridges) {
+      const id = String(b?.bridge_id || b?.bridgeId || b?.id || '');
+      const status = String(b?.status || b?.runtime_status || '').toLowerCase();
+      const isReachable = status === 'online' || status === 'connected';
+      if (id) {
+        map.set(id, isReachable);
+      }
+    }
+    return map;
+  }, [bridgesData?.bridges]);
+
+  const isBridgeReachable = useCallback(
+    (bridgeId?: string): boolean => {
+      if (!bridgeId) return true;
+      if (!bridgesData?.bridges) return true;
+      if (!bridgeReachabilityMap.has(bridgeId)) return false;
+      return bridgeReachabilityMap.get(bridgeId) === true;
+    },
+    [bridgeReachabilityMap, bridgesData?.bridges]
   );
 
   const [killShell] = useKillShellMutation();
@@ -254,7 +285,9 @@ export default function BottomDock({
           {visibleSessions.map((session) => {
             const isTabActive = activeTab === session.session_id;
             const isRunning = session.status === 'running' || session.status === 'starting';
+            const isBridgeOffline = Boolean(session.bridge_id && !isBridgeReachable(session.bridge_id));
             const title = session.label || session.cmd || `Shell #${session.session_id.slice(-4)}`;
+            const tooltip = `${title} (${session.status})${isBridgeOffline ? ' (Bridge unreachable)' : ''}`;
 
             return (
               <div
@@ -273,17 +306,19 @@ export default function BottomDock({
                     ? 'border-subtle bg-surface-secondary font-medium text-primary'
                     : 'border-transparent text-muted hover:border-subtle hover:bg-neutral-soft hover:text-primary'
                 }`}
-                title={`${title} (${session.status})`}
+                title={tooltip}
               >
                 <span
                   className={`h-2 w-2 shrink-0 rounded-full ${
-                    session.status === 'running'
-                      ? 'bg-success animate-pulse'
-                      : session.status === 'starting'
-                        ? 'bg-warning animate-pulse'
-                        : session.status === 'killed' || session.status === 'failed'
-                          ? 'bg-danger'
-                          : 'bg-muted'
+                    isBridgeOffline
+                      ? 'bg-danger'
+                      : session.status === 'running'
+                        ? 'bg-success animate-pulse'
+                        : session.status === 'starting'
+                          ? 'bg-warning animate-pulse'
+                          : session.status === 'killed' || session.status === 'failed'
+                            ? 'bg-danger'
+                            : 'bg-muted'
                   }`}
                 />
                 <span className="truncate">{title}</span>
@@ -379,6 +414,7 @@ export default function BottomDock({
           {activeSession ? (
             <ShellTerminalPane
               session={activeSession}
+              isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
               onClose={() => handleKillSession(activeSession.session_id)}
             />
           ) : (

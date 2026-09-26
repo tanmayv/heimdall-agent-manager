@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Static verification for Persistent Bottom Dock for Shells.
-Requirements: REQ-BAR-1, REQ-BAR-2, REQ-BAR-3, REQ-BAR-4, REQ-BAR-5, REQ-BAR-6, REQ-BAR-7, REQ-BAR-8
+Requirements: REQ-BAR-1, REQ-BAR-2, REQ-BAR-3, REQ-BAR-4, REQ-BAR-5, REQ-BAR-6, REQ-BAR-7, REQ-BAR-8, REQ-BRIDGE-STATUS-1, REQ-BRIDGE-STATUS-2, REQ-BRIDGE-STATUS-3, REQ-BRIDGE-STATUS-4
 """
 from pathlib import Path
 import re
@@ -80,6 +80,11 @@ def test_bottom_dock_exists_and_implements_requirements() -> None:
     require("activeTabRef" in src,
             "BottomDock.tsx must track activeTabRef for scrollIntoView")
 
+    # 13. Bridge status query and unreachable feedback (REQ-BRIDGE-STATUS-1, REQ-BRIDGE-STATUS-2)
+    require("useListBridgesQuery" in src, "BottomDock.tsx must query useListBridgesQuery for bridge reachability")
+    require("isBridgeReachable" in src, "BottomDock.tsx must resolve bridge reachability for session bridges")
+    require("Bridge unreachable" in src, "BottomDock.tsx must include '(Bridge unreachable)' in tab tooltip when offline")
+
 
 def test_shell_terminal_pane_full_parent() -> None:
     require(SHELL_TERMINAL_PANE.is_file(), f"ShellTerminalPane.tsx must exist at {SHELL_TERMINAL_PANE}")
@@ -110,6 +115,16 @@ def test_shell_terminal_pane_full_parent() -> None:
     # 5. Terminal focus on init / resize
     require("term.focus()" in src,
             "ShellTerminalPane.tsx must call term.focus() for immediate keyboard focus")
+
+    # 6. Bridge unreachable overlay and non-destructive banner (REQ-BRIDGE-STATUS-3, REQ-BRIDGE-STATUS-4)
+    require("shell-terminal-unreachable" in src,
+            "ShellTerminalPane.tsx must render shell-terminal-unreachable feedback overlay")
+    require("Bridge Unreachable" in src,
+            "ShellTerminalPane.tsx must render 'Bridge Unreachable' text")
+    require("Retry" in src,
+            "ShellTerminalPane.tsx must include a Retry button in bridge unreachable feedback")
+    require("shell-terminal-unreachable-banner" in src,
+            "ShellTerminalPane.tsx must render shell-terminal-unreachable-banner when output exists")
 
 
 def test_app_shell_integration() -> None:

@@ -17,6 +17,8 @@ export interface UseShellPaneSubscriptionResult {
   isFetching: boolean;
   lastUpdatedAt: number | null;
   polling: boolean;
+  isBridgeUnreachable: boolean;
+  error?: any;
   refetch: () => void;
 }
 
@@ -83,6 +85,8 @@ export function useShellPaneSubscription({
   const [output, setOutput] = useState<string>('');
   const [hash, setHash] = useState<string>('');
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [isBridgeUnreachable, setIsBridgeUnreachable] = useState<boolean>(false);
+  const [error, setError] = useState<any>(null);
 
   const lastSeenHashRef = useRef<string>('');
   const activeRequestRef = useRef<{ abort?: () => void } | null>(null);
@@ -127,6 +131,8 @@ export function useShellPaneSubscription({
       setOutput('');
       setHash('');
       setLastUpdatedAt(null);
+      setIsBridgeUnreachable(false);
+      setError(null);
     }
   }, [sessionId]);
 
@@ -149,6 +155,8 @@ export function useShellPaneSubscription({
 
         const res = await request.unwrap();
         if (res) {
+          setIsBridgeUnreachable(false);
+          setError(null);
           if (res.hash) {
             lastSeenHashRef.current = res.hash;
             setHash(res.hash);
@@ -163,6 +171,13 @@ export function useShellPaneSubscription({
         if (err?.name === 'AbortError') {
           return;
         }
+        const is503 = err?.status === 503 || err?.originalStatus === 503;
+        const errMsg = String(err?.data?.error || err?.data?.message || err?.message || '').toLowerCase();
+        const unreachable = is503 || errMsg.includes('bridge') || errMsg.includes('unreachable') || errMsg.includes('offline');
+        if (unreachable) {
+          setIsBridgeUnreachable(true);
+        }
+        setError(err);
         // Polling errors do not overwrite the cached screen.
       } finally {
         activeRequestRef.current = null;
@@ -232,6 +247,18 @@ export function useShellPaneSubscription({
     result.isLoading ||
     (Boolean(sessionId) && interval > 0 && lastUpdatedAt === null && result.isFetching);
 
+  const queryError = result.error as any;
+  const isQuery503 = queryError?.status === 503 || queryError?.originalStatus === 503;
+  const queryErrMsg = String(queryError?.data?.error || queryError?.data?.message || queryError?.message || '').toLowerCase();
+  const queryUnreachable = Boolean(
+    isQuery503 ||
+    queryErrMsg.includes('bridge') ||
+    queryErrMsg.includes('unreachable') ||
+    queryErrMsg.includes('offline')
+  );
+
+  const effectiveIsBridgeUnreachable = isBridgeUnreachable || queryUnreachable;
+
   return {
     output: currentOutput,
     hash: currentHash,
@@ -239,6 +266,8 @@ export function useShellPaneSubscription({
     isFetching: result.isFetching,
     lastUpdatedAt,
     polling: interval > 0,
+    isBridgeUnreachable: effectiveIsBridgeUnreachable,
+    error: error || result.error,
     refetch,
   };
 }
