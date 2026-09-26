@@ -29,6 +29,8 @@ export const HEIMDALL_TAG_TYPES = [
   'MergeDecisions',
   'Attention',
   'BridgeSupport',
+  'ChainFleets',
+  'ChainMembers',
   'Bridges',
   'BridgeEnrollments',
   'BridgeProviders',

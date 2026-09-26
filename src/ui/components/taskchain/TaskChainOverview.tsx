@@ -1504,7 +1504,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="font-mono text-muted text-[10px]">{depId}</span>
                           <span className="truncate font-medium text-primary">
-                            {depTask ? depTask.title : depId}
+                            {depTask ? <VaultText value={depTask.title} as="span" /> : depId}
                           </span>
                         </div>
                         {depTask ? (
@@ -2215,7 +2215,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             }}
                           />
                           <span className="font-mono text-muted text-caption">{tid}</span>
-                          <span className="truncate flex-1 font-medium">{t.title}</span>
+                          <span className="truncate flex-1 font-medium"><VaultText value={t.title} as="span" /></span>
                           <span className="text-[10px] text-faint uppercase">{t.status}</span>
                         </label>
                       );
@@ -2438,7 +2438,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </button>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Task: <span className="text-primary">{editingAssigneeTask.title}</span>
+              Task: <span className="text-primary"><VaultText value={editingAssigneeTask.title} as="span" /></span>
             </p>
 
             <div className="mt-3 flex gap-2 border-b border-subtle pb-2 text-xs">
@@ -2556,7 +2556,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </button>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Task: <span className="text-primary">{editingReviewersTask.title}</span>
+              Task: <span className="text-primary"><VaultText value={editingReviewersTask.title} as="span" /></span>
             </p>
 
             {/* Current Reviewers List */}
@@ -2743,7 +2743,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </button>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Task: <span className="text-primary">{editingDependenciesTask.title}</span>
+              Task: <span className="text-primary"><VaultText value={editingDependenciesTask.title} as="span" /></span>
             </p>
 
             <div className="mt-4">
@@ -2793,7 +2793,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             }}
                           />
                           <span className="font-mono text-muted text-caption">{tid}</span>
-                          <span className="truncate flex-1 font-medium">{t.title}</span>
+                          <span className="truncate flex-1 font-medium"><VaultText value={t.title} as="span" /></span>
                           <span className="text-[10px] text-faint uppercase">{t.status}</span>
                         </label>
                       );
@@ -2851,7 +2851,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </button>
             </div>
             <p className="mt-1 text-xs text-muted">
-              Task: <span className="text-primary">{editingBridgeTask.title}</span>
+              Task: <span className="text-primary"><VaultText value={editingBridgeTask.title} as="span" /></span>
             </p>
 
             <div className="mt-4 text-xs">
