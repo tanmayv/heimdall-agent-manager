@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
 
 import { Button, Icon, Text } from '@ui';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored } from '../../utils/vaultContent';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { decryptConversationList } from '../../utils/vaultChats';
 const PAGE_SIZE = 40;
 
 function looksLikeInternalId(value: string): boolean {
@@ -60,6 +63,10 @@ export default function ConversationsHomePage() {
   const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState('');
 
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decryptedRows, setDecryptedRows] = useState<SidebarConversation[]>([]);
+
   useEffect(() => {
     if (!firstPage.data) return;
     setRows(firstPage.data.conversations || []);
@@ -67,7 +74,25 @@ export default function ConversationsHomePage() {
     setHasMore(Boolean(firstPage.data.hasMore));
   }, [firstPage.data]);
 
-  const conversations = useMemo(() => mergeConversations([], rows), [rows]);
+  useEffect(() => {
+    let mounted = true;
+    if (!isUnlocked || !rawKeyHex) {
+      setDecryptedRows(rows);
+      return;
+    }
+    decryptConversationList(rows, rawKeyHex)
+      .then((decrypted) => {
+        if (mounted) setDecryptedRows(decrypted);
+      })
+      .catch(() => {
+        if (mounted) setDecryptedRows(rows);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [rows, isUnlocked, rawKeyHex]);
+
+  const conversations = useMemo(() => mergeConversations([], decryptedRows), [decryptedRows]);
   const unreadTotal = conversations.reduce((sum, conversation) => sum + Number(conversation.unreadCount || 0), 0);
 
   async function loadMore() {

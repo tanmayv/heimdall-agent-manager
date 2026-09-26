@@ -362,7 +362,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		// Deliver the notice directly to the agent via the daemon (host.input+Enter).
-		sender := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
+		sender_dn := extract_json_string(text, "sender_display_name", "")
+		sender_id := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
+		sender := sender_dn if sender_dn != "" else sender_id
 		ok := bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
@@ -380,7 +382,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// MEM-6: prefer the hub's human_message (verbatim) when present.
 		target_role := extract_json_string(text, "target_role", "participant")
 		human_message := extract_json_string(text, "human_message", "")
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message)
+		task_title := extract_json_string(text, "title", extract_json_string(text, "task_title", ""))
+		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title)
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
@@ -835,9 +838,10 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			agent_name     := extract_json_string(entry, "agent_name", "")
 			chain_id       := extract_json_string(entry, "chain_id", "")
 			chain_title    := extract_json_string(entry, "chain_title", "")
-			coordinator_id := extract_json_string(entry, "coordinator_agent_instance_id", "")
-			project_id     := extract_json_string(entry, "project_id", "")
-			project_path   := extract_json_string(entry, "project_path", "")
+			coordinator_id           := extract_json_string(entry, "coordinator_agent_instance_id", "")
+			coordinator_display_name := extract_json_string(entry, "coordinator_display_name", "")
+			project_id               := extract_json_string(entry, "project_id", "")
+			project_path             := extract_json_string(entry, "project_path", "")
 
 			if _, has := bridge_runtime_get_launch(instance_id); has {
 				// A launch record exists, but restart via the pty-host's remembered
@@ -848,7 +852,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				// bridge_runtime_launch_agent_pty_host already closes any registered
 				// instance before re-spawning, so no separate is_registered check.
 				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
+				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name)
 				defer delete(command_json)
 				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
 				if ok {
@@ -900,7 +904,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 // the agent-keyed template bootstrap path rather than the header-only fallback
 // (REQ-37). Free-text fields (agent_name, chain_title) are JSON-escaped. Fields are
 // emitted unconditionally (empty is harmless) so the descriptor is deterministic.
-bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string) -> string {
+bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string, coordinator_display_name: string = "") -> string {
 	b := strings.builder_make()
 	write_field :: proc(b: ^strings.Builder, first: ^bool, key, val: string) {
 		if !first^ do strings.write_byte(b, ',')
@@ -923,6 +927,9 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	write_field(&b, &first, "chain_id", chain_id)
 	write_field(&b, &first, "chain_title", chain_title)
 	write_field(&b, &first, "coordinator_agent_instance_id", coordinator_id)
+	if coordinator_display_name != "" {
+		write_field(&b, &first, "coordinator_display_name", coordinator_display_name)
+	}
 	write_field(&b, &first, "project_id", project_id)
 	write_field(&b, &first, "project_path", project_path)
 	strings.write_string(&b, "}}")

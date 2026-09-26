@@ -300,18 +300,19 @@ bootstrap_global_cache: Bootstrap_Cache
 // bridge injects locally into the AGENTS.md header + ctl shim, so the bridge never
 // queries hub chains/agents tables for this.
 Bridge_Bootstrap_Descriptor :: struct {
-	instance_id:      string,
-	agent_id:         string,
-	agent_name:       string,
-	display_name:     string,
-	role:             string, // "coordinator" | "worker"
-	coordinator_id:   string,
-	chain_id:         string,
-	chain_title:      string,
-	project_id:       string,
-	project_path:     string,
-	conversation_id:  string,
-	provider:         string,
+	instance_id:              string,
+	agent_id:                 string,
+	agent_name:               string,
+	display_name:             string,
+	role:                     string, // "coordinator" | "worker"
+	coordinator_id:           string,
+	coordinator_display_name: string,
+	chain_id:                 string,
+	chain_title:              string,
+	project_id:               string,
+	project_path:             string,
+	conversation_id:          string,
+	provider:                 string,
 }
 
 // bridge_bootstrap_descriptor_from_launch parses the enriched launch_agent
@@ -320,18 +321,19 @@ Bridge_Bootstrap_Descriptor :: struct {
 bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_Bootstrap_Descriptor {
 	payload := bridge_provider_payload_object(command_json)
 	d := Bridge_Bootstrap_Descriptor{
-		instance_id     = bridge_provider_json_extract_string(payload, "agent_instance_id", ""),
-		agent_id        = bridge_provider_json_extract_string(payload, "agent_id", ""),
-		agent_name      = bridge_provider_json_extract_string(payload, "agent_name", ""),
-		display_name    = bridge_provider_json_extract_string(payload, "display_name", ""),
-		role            = bridge_provider_json_extract_string(payload, "role", ""),
-		coordinator_id  = bridge_provider_json_extract_string(payload, "coordinator_agent_instance_id", ""),
-		chain_id        = bridge_provider_json_extract_string(payload, "chain_id", ""),
-		chain_title     = bridge_provider_json_extract_string(payload, "chain_title", ""),
-		project_id      = bridge_provider_json_extract_string(payload, "project_id", ""),
-		project_path    = bridge_provider_json_extract_string(payload, "project_path", ""),
-		conversation_id = bridge_provider_json_extract_string(payload, "conversation_id", ""),
-		provider        = bridge_provider_json_extract_string(payload, "name", ""),
+		instance_id              = bridge_provider_json_extract_string(payload, "agent_instance_id", ""),
+		agent_id                 = bridge_provider_json_extract_string(payload, "agent_id", ""),
+		agent_name               = bridge_provider_json_extract_string(payload, "agent_name", ""),
+		display_name             = bridge_provider_json_extract_string(payload, "display_name", ""),
+		role                     = bridge_provider_json_extract_string(payload, "role", ""),
+		coordinator_id           = bridge_provider_json_extract_string(payload, "coordinator_agent_instance_id", ""),
+		coordinator_display_name = bridge_provider_json_extract_string(payload, "coordinator_display_name", ""),
+		chain_id                 = bridge_provider_json_extract_string(payload, "chain_id", ""),
+		chain_title              = bridge_provider_json_extract_string(payload, "chain_title", ""),
+		project_id               = bridge_provider_json_extract_string(payload, "project_id", ""),
+		project_path             = bridge_provider_json_extract_string(payload, "project_path", ""),
+		conversation_id          = bridge_provider_json_extract_string(payload, "conversation_id", ""),
+		provider                 = bridge_provider_json_extract_string(payload, "name", ""),
 	}
 	if strings.trim_space(d.role) == "" do d.role = "worker"
 	return d
@@ -526,7 +528,9 @@ bridge_bootstrap_render_header :: proc(d: Bridge_Bootstrap_Descriptor) -> string
 	is_coordinator := d.role == "coordinator"
 	if d.chain_title != "" || d.chain_id != "" {
 		strings.write_string(&b, "\nTask chain: ")
-		strings.write_string(&b, d.chain_title)
+		chain_title := bridge_decrypt_embedded_vault_tokens(d.chain_title)
+		defer delete(chain_title)
+		strings.write_string(&b, chain_title)
 		strings.write_string(&b, " (")
 		strings.write_string(&b, d.chain_id)
 		strings.write_string(&b, ")")
@@ -534,7 +538,14 @@ bridge_bootstrap_render_header :: proc(d: Bridge_Bootstrap_Descriptor) -> string
 			strings.write_string(&b, "\nCoordinator: you (coordinator)")
 		} else if d.coordinator_id != "" {
 			strings.write_string(&b, "\nCoordinator: ")
-			strings.write_string(&b, d.coordinator_id)
+			if strings.trim_space(d.coordinator_display_name) != "" && strings.trim_space(d.coordinator_display_name) != d.coordinator_id {
+				strings.write_string(&b, d.coordinator_display_name)
+				strings.write_string(&b, " (")
+				strings.write_string(&b, d.coordinator_id)
+				strings.write_string(&b, ")")
+			} else {
+				strings.write_string(&b, d.coordinator_id)
+			}
 		}
 	}
 	return strings.to_string(b)
@@ -648,13 +659,17 @@ bridge_bootstrap_render_template :: proc(tpl_obj, manifest_json: string, d: Brid
 			delete(n); if has_val do delete(val)
 		}
 	}
+	decrypted_chain_title := bridge_decrypt_embedded_vault_tokens(d.chain_title)
+	defer delete(decrypted_chain_title)
 	// Bridge-local header values (the agent-keyed manifest is instance-free, so the
 	// hub does not carry these; BT-1 §2/§5).
 	add_var(&names, &values, "agent_name", d.agent_name)
 	add_var(&names, &values, "instance_id", d.instance_id)
-	add_var(&names, &values, "chain_title", d.chain_title)
+	add_var(&names, &values, "chain_title", decrypted_chain_title)
 	add_var(&names, &values, "chain_id", d.chain_id)
 	add_var(&names, &values, "coordinator_id", d.coordinator_id)
+	coord_dn := d.coordinator_display_name if strings.trim_space(d.coordinator_display_name) != "" else d.coordinator_id
+	add_var(&names, &values, "coordinator_display_name", coord_dn)
 
 	// Role flags from the descriptor role. Exactly one is true for a chain member;
 	// all false leaves every role block dropped.
@@ -672,7 +687,11 @@ bridge_bootstrap_render_template :: proc(tpl_obj, manifest_json: string, d: Brid
 	if is_coordinator {
 		coordinator_line = "\nCoordinator: you (coordinator)"
 	} else if d.coordinator_id != "" {
-		coordinator_line = strings.concatenate({"\nCoordinator: ", d.coordinator_id})
+		if strings.trim_space(d.coordinator_display_name) != "" && strings.trim_space(d.coordinator_display_name) != d.coordinator_id {
+			coordinator_line = strings.concatenate({"\nCoordinator: ", d.coordinator_display_name, " (", d.coordinator_id, ")"})
+		} else {
+			coordinator_line = strings.concatenate({"\nCoordinator: ", d.coordinator_id})
+		}
 		coord_line_owned = true
 	}
 	add_var(&names, &values, "coordinator_line", coordinator_line)

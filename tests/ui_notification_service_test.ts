@@ -79,7 +79,7 @@ const {
   fireNotificationForWsEvent,
   showNativeNotification,
   requestNotificationPermission,
-} = await import('../src/ui/services/notificationService');
+} = await import('../src/ui/services/notificationService.ts');
 
 // --- basic gates ----------------------------------------------------------
 assert.equal(isNotificationSupported(), true, 'FakeNotification => supported');

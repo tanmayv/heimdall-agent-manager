@@ -10,14 +10,21 @@
 // policy: when the window is NOT focused it always notifies; when it IS focused
 // it notifies only for a thread other than the one currently open on screen.
 
-import { buildRouteHash, getRoutePathname } from '../utils/appLocation';
-import { notificationForWsEvent, type NotificationMapperCtx, type NotificationPlan } from '../api/notificationMapper';
+import { buildRouteHash, getRoutePathname } from '../utils/appLocation.ts';
+import { notificationForWsEvent, type NotificationMapperCtx, type NotificationPlan } from '../api/notificationMapper.ts';
 import {
   categoryEnabled,
   notificationsActive,
   selectNotificationsState,
   type NotificationPermission,
-} from '../store/notificationsSlice';
+} from '../store/notificationsSlice.ts';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from '../utils/vaultContent.ts';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../store/vaultSlice.ts';
 
 export function isNotificationSupported(): boolean {
   try {
@@ -325,6 +332,52 @@ export function fireNotificationForWsEvent(
   // - Window focused: notify UNLESS the event targets the conversation the user
   //   is currently viewing — they can already see it (REQ-N2).
   if (!isTabBackgrounded() && isViewingPlanThread(plan, ctx)) return null;
+
+  const rawState = typeof getState === 'function' ? getState() : undefined;
+  const isUnlocked = rawState ? Boolean(selectIsVaultUnlocked(rawState)) : false;
+  const rawKeyHex = rawState ? selectRawVaultKeyHex(rawState) : null;
+
+  const hasArmoredBody = isVaultArmored(plan.body) || containsVaultArmored(plan.body);
+  const hasArmoredTitle = isVaultArmored(plan.title) || containsVaultArmored(plan.title);
+
+  if (hasArmoredBody || hasArmoredTitle) {
+    if (isUnlocked && rawKeyHex) {
+      // Fire-and-forget: asynchronously decrypt before invoking showNativeNotification
+      void (async () => {
+        try {
+          if (hasArmoredBody) {
+            plan.body = isVaultArmored(plan.body)
+              ? await decryptVaultText(plan.body, rawKeyHex)
+              : await decryptEmbeddedVaultTokens(plan.body, rawKeyHex);
+          }
+          if (hasArmoredTitle) {
+            plan.title = isVaultArmored(plan.title)
+              ? await decryptVaultText(plan.title, rawKeyHex)
+              : await decryptEmbeddedVaultTokens(plan.title, rawKeyHex);
+          }
+        } catch {
+          if (hasArmoredBody) {
+            plan.body = plan.category === 'attention' ? '[🔒 Encrypted action]' : '[🔒 Encrypted message]';
+          }
+          if (hasArmoredTitle) {
+            plan.title = '[🔒 Encrypted]';
+          }
+        }
+        await showNativeNotification(plan);
+      })();
+      return plan;
+    } else {
+      // Vault locked or key unavailable: sanitize to shield OS notification center
+      if (hasArmoredBody) {
+        plan.body = plan.category === 'attention' ? '[🔒 Encrypted action]' : '[🔒 Encrypted message]';
+      }
+      if (hasArmoredTitle) {
+        plan.title = '[🔒 Encrypted]';
+      }
+      void showNativeNotification(plan);
+      return plan;
+    }
+  }
 
   // Fire-and-forget: showing is async (service-worker path), but the WS funnel is
   // synchronous and only uses the returned plan for tests/telemetry.

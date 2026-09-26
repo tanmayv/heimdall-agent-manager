@@ -101,6 +101,10 @@ pty_host_message_notice_rendering :: proc(t: ^testing.T) {
 	m := bridge_pty_host_message_notice("inst_sender")
 	defer delete(m)
 	testing.expect_value(t, m, "New message from inst_sender \u2014 run './.heimdall/bin/ham-ctl agent chat read' to view.")
+	// sender_display_name preferred when provided
+	m_dn := bridge_pty_host_message_notice("inst_sender", "Alice")
+	defer delete(m_dn)
+	testing.expect_value(t, m_dn, "New message from Alice \u2014 run './.heimdall/bin/ham-ctl agent chat read' to view.")
 	// blank sender defaults to "user"
 	m2 := bridge_pty_host_message_notice("  ")
 	defer delete(m2)
@@ -111,7 +115,11 @@ pty_host_message_notice_rendering :: proc(t: ^testing.T) {
 pty_host_task_nudge_notice_rendering :: proc(t: ^testing.T) {
 	n := bridge_pty_host_task_nudge_notice("task_123", "assignee")
 	defer delete(n)
-	testing.expect_value(t, n, "Nudge: you have been nudged on task_123 (assignee). Run './.heimdall/bin/ham-ctl tasks list' and complete your assignment.")
+	testing.expect_value(t, n, "Nudge: you have been nudged on task_123 (assignee). Run './.heimdall/bin/ham-ctl task list' and complete your assignment.")
+	// with task title
+	n_title := bridge_pty_host_task_nudge_notice("task_123", "assignee", "Fix the bug")
+	defer delete(n_title)
+	testing.expect_value(t, n_title, "Nudge: you have been nudged on \"Fix the bug\" (task_123) (assignee). Run './.heimdall/bin/ham-ctl task list' and complete your assignment.")
 	// blank defaults
 	n2 := bridge_pty_host_task_nudge_notice("", "")
 	defer delete(n2)

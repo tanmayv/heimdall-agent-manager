@@ -79,6 +79,10 @@ export function taskReviewerOf(task: TaskLike | null | undefined): string {
     (task as any)?.reviewer_refs?.[0]?.agent_instance_id ||
     (task as any)?.reviewerRefs?.[0]?.agent_instance_id ||
     (task as any)?.reviewer_refs?.[0]?.agentInstanceId ||
+    (task as any)?.reviewerRefs?.[0]?.agentId ||
+    (task as any)?.reviewer_refs?.[0]?.agent_id ||
+    (task as any)?.reviewerRefs?.[0]?.agent_id ||
+    (task as any)?.reviewer_refs?.[0]?.agentId ||
     ''
   );
 }

@@ -9,12 +9,14 @@ import assert from 'node:assert/strict';
 
 import {
   isVaultArmored,
+  containsVaultArmored,
   isValidBase64,
   bytesToBase64,
   base64ToBytes,
   resolveCryptoKey,
   encryptVaultText,
   decryptVaultText,
+  decryptEmbeddedVaultTokens,
   encryptFields,
   decryptFields,
   decryptList,
@@ -382,4 +384,48 @@ test('decryptVaultText successfully decrypts pre-computed test vector', async ()
 
   const decrypted = await decryptVaultText(precomputedArmored, TEST_KEY_HEX);
   assert.equal(decrypted, 'Hello, Heimdall Zero-Knowledge Vault!');
+});
+
+// -----------------------------------------------------------------------------
+// 7. Embedded Vault Token Detection & Decryption (REQ-INDIRECT-DECRYPT-UI-1)
+// -----------------------------------------------------------------------------
+
+test('containsVaultArmored accurately detects embedded vault:v1:... tokens', () => {
+  assert.equal(containsVaultArmored('vault:v1:AQIDBAUGBwgJCgsM2Ed9'), true);
+  assert.equal(containsVaultArmored('You: vault:v1:AQIDBAUGBwgJCgsM2Ed9'), true);
+  assert.equal(containsVaultArmored('Action: vault:v1:AQIDBAUGBwgJCgsM2Ed9 approved'), true);
+  assert.equal(containsVaultArmored('vault:v1:token1 and vault:v1:token2'), true);
+
+  assert.equal(containsVaultArmored('plain text without vault tokens'), false);
+  assert.equal(containsVaultArmored('vault:v2:notmatching'), false);
+  assert.equal(containsVaultArmored('vault:'), false);
+  assert.equal(containsVaultArmored(''), false);
+  assert.equal(containsVaultArmored(null), false);
+  assert.equal(containsVaultArmored(undefined), false);
+  assert.equal(containsVaultArmored(12345), false);
+});
+
+test('decryptEmbeddedVaultTokens decrypts single and multiple embedded tokens while preserving surroundings', async () => {
+  const secret1 = 'Secret Message Alpha';
+  const secret2 = 'Confidential Action Beta';
+  const armored1 = await encryptVaultText(secret1, TEST_KEY_HEX);
+  const armored2 = await encryptVaultText(secret2, TEST_KEY_HEX);
+
+  // Single embedded token with sender prefix (e.g. "You: vault:v1:...")
+  const prefixed = `You: ${armored1}`;
+  const decryptedPrefixed = await decryptEmbeddedVaultTokens(prefixed, TEST_KEY_HEX);
+  assert.equal(decryptedPrefixed, `You: ${secret1}`);
+
+  // Multiple embedded tokens
+  const multi = `Notice: ${armored1} was executed during ${armored2}!`;
+  const decryptedMulti = await decryptEmbeddedVaultTokens(multi, TEST_KEY_HEX);
+  assert.equal(decryptedMulti, `Notice: ${secret1} was executed during ${secret2}!`);
+
+  // Unarmored text returned as-is
+  const plain = 'Completely plain text without tokens.';
+  assert.equal(await decryptEmbeddedVaultTokens(plain, TEST_KEY_HEX), plain);
+
+  // Missing or invalid key returns text without crashing
+  assert.equal(await decryptEmbeddedVaultTokens(prefixed, ''), prefixed);
+  assert.equal(await decryptEmbeddedVaultTokens(prefixed, null as any), prefixed);
 });

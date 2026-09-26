@@ -20,9 +20,10 @@ REPLAY_MIN_INTERVAL_MS :: i64(10_000)
 // and returns a compact projection.
 
 Actionable_Task :: struct {
-	task_id:             domain.Task_ID,
-	chain_id:            domain.Task_Chain_ID,
-	status:              domain.Task_Status,
+	task_id:            domain.Task_ID,
+	chain_id:           domain.Task_Chain_ID,
+	status:             domain.Task_Status,
+	title:              string,
 	target_instance_id: string,
 	target_role:        Nudge_Target,
 	// action is the R8 work-vs-review label for the target ("work"|"review").
@@ -85,6 +86,7 @@ actionable_tasks_for_instances :: proc(service: ^Taskchain_Service, owner: domai
 				task_id            = task.task_id,
 				chain_id           = task.chain_id,
 				status             = task.status,
+				title              = task.title,
 				target_instance_id = target,
 				target_role        = role,
 				action             = action,

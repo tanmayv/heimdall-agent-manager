@@ -20,6 +20,13 @@ export function isVaultArmored(text: unknown): boolean {
 }
 
 /**
+ * Check if a string contains any vault armored token matching /vault:v1:[A-Za-z0-9+/=]+/.
+ */
+export function containsVaultArmored(text: unknown): boolean {
+  return typeof text === 'string' && /vault:v1:[A-Za-z0-9+/=]+/.test(text);
+}
+
+/**
  * Validate standard base64 string syntax.
  */
 export function isValidBase64(str: string): boolean {
@@ -155,6 +162,50 @@ export async function decryptVaultText(
 
   const dec = new TextDecoder();
   return dec.decode(decryptedRaw);
+}
+
+/**
+ * Decrypt any embedded vault armored tokens (/vault:v1:[A-Za-z0-9+/=]+/) found inside a string.
+ * Tokens that successfully decrypt are replaced with their plaintext; tokens that fail
+ * decryption or non-token surrounding text are preserved intact.
+ *
+ * @param text The input string potentially containing one or more embedded vault tokens.
+ * @param rawKeyHex The 256-bit vault key as a 64-character hex string or CryptoKey.
+ */
+export async function decryptEmbeddedVaultTokens(
+  text: string,
+  rawKeyHex: string | CryptoKey,
+): Promise<string> {
+  if (typeof text !== 'string' || !containsVaultArmored(text) || !rawKeyHex) {
+    return text;
+  }
+
+  const matches = text.match(/vault:v1:[A-Za-z0-9+/=]+/g);
+  if (!matches || matches.length === 0) {
+    return text;
+  }
+
+  const uniqueTokens = Array.from(new Set(matches));
+  const cryptoKey = await resolveCryptoKey(rawKeyHex);
+
+  const replacements = await Promise.all(
+    uniqueTokens.map(async (token) => {
+      try {
+        const decrypted = await decryptVaultText(token, cryptoKey);
+        return { token, decrypted };
+      } catch {
+        return { token, decrypted: token };
+      }
+    }),
+  );
+
+  let result = text;
+  for (const { token, decrypted } of replacements) {
+    if (token !== decrypted) {
+      result = result.split(token).join(decrypted);
+    }
+  }
+  return result;
 }
 
 /**
