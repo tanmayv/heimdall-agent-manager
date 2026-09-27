@@ -1101,6 +1101,13 @@ do_uninstall() {
   # 1. Stop the service first, best effort. Under sudo the service belongs to
   # $service_user's session, so the command is PRINTED for them rather than run
   # as root — that advice touches nothing, so it is given in dry runs too.
+  # REQ-INST-20: BOTH platforms honour that, and darwin has to be told to. `id
+  # -u` is 0 under sudo, so a root-run `launchctl bootout gui/$(id -u)/...`
+  # addresses ROOT's GUI domain and stops nothing of $service_user's — while
+  # still reporting "stopped ...". The advice therefore carries a literal
+  # gui/$(id -u), resolved in their shell to their own uid, which is exactly
+  # what the step-3 start instructions hand them. Without sudo `id -u` IS the
+  # invoking user, so the real-stop path below is unchanged and correct.
   if [ "$os" = "linux" ]; then
     if [ -n "$service_user" ]; then
       say "service runs as $service_user — stop it as that user: systemctl --user stop heimdall-bridge"
@@ -1110,11 +1117,15 @@ do_uninstall() {
       systemctl --user stop heimdall-bridge >/dev/null 2>&1 || true
       say "stopped heimdall-bridge (best effort)"
     fi
-  elif "$dry_run"; then
-    say "would stop the heimdall-bridge service (best effort)"
-  elif command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/works.earendil.heimdall-bridge" >/dev/null 2>&1 || true
-    say "stopped works.earendil.heimdall-bridge (best effort)"
+  else
+    if [ -n "$service_user" ]; then
+      say "service runs as $service_user — stop it as that user: launchctl bootout gui/\$(id -u)/works.earendil.heimdall-bridge"
+    elif "$dry_run"; then
+      say "would stop the heimdall-bridge service (best effort)"
+    elif command -v launchctl >/dev/null 2>&1; then
+      launchctl bootout "gui/$(id -u)/works.earendil.heimdall-bridge" >/dev/null 2>&1 || true
+      say "stopped works.earendil.heimdall-bridge (best effort)"
+    fi
   fi
 
   # 2. Binaries. These four names are ours alone, so their presence at
