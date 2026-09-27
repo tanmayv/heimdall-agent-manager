@@ -112,9 +112,12 @@ export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
   onOpenDrawer,
   className = '',
 }) => {
+  // REQ-FLEET-POLLING-1: fetch once on load — no polling interval. Every write
+  // path invalidates TaskChainFleets/<chainId> (see api/endpoints/taskChains.ts
+  // and api/endpoints/tasks.ts), so the chips refresh without a timer.
   const { data: rawFleets = [], isLoading } = useGetTaskChainFleetsQuery(
     { chainId },
-    { skip: !chainId, pollingInterval: 5000 }
+    { skip: !chainId }
   );
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
@@ -295,9 +298,12 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   isOpen,
   onClose,
 }) => {
+  // REQ-FLEET-POLLING-1: fetch once on open — no polling interval. Mutation
+  // cache invalidation plus the explicit refetch() after an apply keep this
+  // current; do not reintroduce a timer here.
   const { data: rawFleets = [], refetch } = useGetTaskChainFleetsQuery(
     { chainId },
-    { skip: !chainId, pollingInterval: 4000 }
+    { skip: !chainId }
   );
   const chainDetailQuery = useFetchTaskChainDetailQuery(
     { chainId },

@@ -98,6 +98,7 @@ export default {
         overlay: 'var(--z-overlay)',
         modal: 'var(--z-modal)',
         toast: 'var(--z-toast)',
+        popover: 'var(--z-popover)',
         tooltip: 'var(--z-tooltip)',
       },
       transitionDuration: {
