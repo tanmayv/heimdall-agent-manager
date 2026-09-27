@@ -25,6 +25,16 @@ Verifies the distribution surfaces end-to-end and hermetically:
    the PATH export into the TARGET user's rc file even when root's PATH
    already contains /usr/local/bin, and that failed chowns warn with path,
    owner and remediation while the install stays non-fatal.
+3b. Platform coverage, stated plainly because the file cannot imply coverage it
+   does not have: every target here comes from host_target(), which reads the
+   REAL host. On Linux the darwin branches of the installer tests -- the
+   ~/Library/LaunchAgents service paths, render_launchd_plist's output as an
+   installed file, the `launchctl bootout` in do_uninstall -- do NOT execute;
+   only the plist RENDER assertion does. They execute when this same file runs
+   unchanged on a Mac, which .github/workflows/install-sh.yml does on macos-14
+   and macos-15-intel alongside scripts/ci/installer-smoke.sh, the end-to-end
+   install/uninstall proof against the real published release. See
+   host_target()'s docstring.
 4. heimdall CLI: the binary built from src/manager emits the documented
    --version and status schemas, with the version line pinned to
    src/contracts/protocol.odin.
@@ -78,6 +88,26 @@ def sha256_of(path: Path) -> str:
 
 
 def host_target():
+    """The release target of the REAL host -- never forced, never overridden.
+
+    This is load-bearing for the darwin coverage, so read it before trusting a
+    LaunchAgents assertion below. On a Linux host every test that calls this
+    gets a linux-* target, and each `else` branch holding a
+    ~/Library/LaunchAgents path is therefore DEAD CODE in that run. Those
+    branches are not simulated anywhere: the only darwin behaviour that
+    executes on Linux is the plist RENDER assertion in dry_run_unit_text /
+    test_install_sh_dry_run_hub, which proves the template is well-formed and
+    nothing about installing, re-installing or uninstalling on a Mac.
+
+    What DOES execute them is running this same file unchanged on a real Mac,
+    which .github/workflows/install-sh.yml does on macos-14 (aarch64-darwin) and
+    macos-15-intel (x86_64-darwin) -- there host_target() returns darwin-* and
+    the darwin branches are taken for real. That workflow also names the tests
+    whose darwin halves must have PASSED, so they cannot quietly become skips.
+    Deliberately NOT solved with a platform override: install.sh must grow no
+    test-only surface, and simulated coverage on Linux would still not prove
+    plutil accepts the plist or that launchd paths are writable.
+    """
     system = platform.system()
     machine = platform.machine()
     if system == 'Linux':
@@ -1753,6 +1783,31 @@ def assert_bridge_isolated(env: dict, work: Path) -> None:
         'DBUS_SESSION_BUS_ADDRESS must be blanked before a real --uninstall; '
         'an inherited address is a second route to the live bus')
 
+    # DARWIN: the checks above are systemd-shaped and do not cover this host at
+    # all. do_uninstall's macOS branch runs
+    # `launchctl bootout gui/<uid>/works.earendil.heimdall-bridge`, and launchctl
+    # addresses the per-user launchd DOMAIN -- a sandboxed HOME does not scope
+    # it, and there is no XDG_RUNTIME_DIR equivalent to point somewhere
+    # harmless. So on darwin the isolation can only be a PRECONDITION: if that
+    # label is loaded, a real --uninstall in this suite would stop the live
+    # bridge, exactly the REQ-INST-13 accident this guard exists to prevent.
+    # Reached for the first time when this file started running on the macOS
+    # runners (.github/workflows/install-sh.yml); on a CI runner nothing is
+    # loaded, but on a developer's own Mac it very much is.
+    if platform.system() == 'Darwin':
+        if shutil.which('launchctl') is None:
+            return  # nothing can be booted out on a host without launchctl
+        label = f'gui/{os.getuid()}/works.earendil.heimdall-bridge'
+        loaded = subprocess.run(['launchctl', 'print', label],
+                                capture_output=True, text=True, timeout=30)
+        assert loaded.returncode != 0, (
+            f'{label} is LOADED in this user launchd domain, and a real '
+            '--uninstall here would bootout the running heimdall-bridge. A '
+            'sandboxed HOME does not scope launchctl, so this is a hard '
+            'precondition: unload it by hand before running this suite. Do not '
+            'weaken this guard.')
+        return
+
     if shutil.which('systemctl') is None:
         return  # nothing can be stopped on a host without systemctl
     probe = subprocess.run(
@@ -2303,11 +2358,24 @@ def version_constants():
 
 
 def build_heimdall(ctx):
+    """Build src/manager so the CLI-schema tests below have a binary.
+
+    A HOST-CAPABILITY skip, not a property of the distribution: without nix
+    there is no toolchain here to build with, and `subprocess.run(['nix', ...])`
+    would raise FileNotFoundError, which main() counts as a FAILURE. That is
+    what kept this suite from running at all on the macOS CI runners
+    (.github/workflows/install-sh.yml), where there is no nix and where the
+    point of the run is the INSTALLER's darwin branches, not the compiler.
+    Pass HEIMDALL_BIN=<path> to test a prebuilt binary instead.
+    """
     override = os.environ.get('HEIMDALL_BIN')
     if override:
         binary = Path(override)
         assert binary.is_file(), f'HEIMDALL_BIN={override} does not exist'
     else:
+        if shutil.which('nix') is None:
+            raise Skip('nix is not installed, so src/manager cannot be built '
+                       'here; set HEIMDALL_BIN=<path> to test a prebuilt binary')
         out = ctx['work'] / 'heimdall'
         res = run(['nix', 'develop', '--command', 'bash', '-c',
                    f'odin build src/manager -collection:odin_test=src -out:{out}'],

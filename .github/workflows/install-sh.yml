@@ -1,0 +1,205 @@
+# REQ-INST-15: prove scripts/install.sh on every platform it claims to support.
+#
+# install.sh advertises "Platforms: Linux (x86_64, aarch64/arm64), macOS (Intel,
+# Apple Silicon)". Linux was proven by tests/test_binary_distribution.py on
+# every developer machine that ran the gate suite. macOS was NOT proven
+# anywhere: that suite derives its target from the REAL host (host_target(),
+# platform.system()), so on a Linux host every darwin branch of the installer --
+# ~/Library/LaunchAgents, render_launchd_plist, the `launchctl bootout` in
+# do_uninstall -- sat in an else-branch nothing ever entered. The one piece of
+# darwin coverage that executed on Linux was the plist RENDER assertion, which
+# proves the template is well-formed and nothing about installing on a Mac.
+#
+# This workflow closes that with EXECUTION on the same darwin runners
+# release-local-binaries.yml already builds the darwin tarballs on, so it needs
+# no new infrastructure:
+#   darwin-arm64 -> macos-14          (aarch64-darwin)
+#   darwin-amd64 -> macos-15-intel    (x86_64-darwin)
+#
+# Deliberately NO continue-on-error and no `|| true` anywhere in this file: a
+# green tick that cannot go red proves less than no job at all.
+name: install.sh
+
+on:
+  push:
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/ci/installer-smoke.sh'
+      - 'tests/test_binary_distribution.py'
+      - '.github/workflows/install-sh.yml'
+  pull_request:
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/ci/installer-smoke.sh'
+      - 'tests/test_binary_distribution.py'
+      - '.github/workflows/install-sh.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag used for the --dry-run URL assertions (the real install always resolves the latest release, like a curl|bash user)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-sh-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 1. The installer itself, executed end-to-end against the real public
+  #    release: dry run, a failing socat preflight, a real install, an identical
+  #    re-run, and --uninstall. scripts/ci/installer-smoke.sh holds every
+  #    assertion so the same proof can be re-run by hand off CI.
+  smoke:
+    name: install.sh smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            uname_s: Linux
+            uname_m: x86_64
+          - target: darwin-amd64
+            runner: macos-15-intel
+            uname_s: Darwin
+            uname_m: x86_64
+          - target: darwin-arm64
+            runner: macos-14
+            uname_s: Darwin
+            uname_m: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The matrix claims which platform each runner IS. Assert it rather than
+      # trusting it: if GitHub ever re-points macos-15-intel at Apple Silicon,
+      # this job would quietly stop covering x86_64-darwin while still going
+      # green. Mirrors the nix_system check in release-local-binaries.yml.
+      - name: Assert this runner is the platform the matrix claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          got_s="$(uname -s)"; got_m="$(uname -m)"
+          echo "uname -s=$got_s uname -m=$got_m (expected ${{ matrix.uname_s }} / ${{ matrix.uname_m }})"
+          [ "$got_s" = "${{ matrix.uname_s }}" ] || { echo "runner OS mismatch" >&2; exit 1; }
+          [ "$got_m" = "${{ matrix.uname_m }}" ] || { echo "runner arch mismatch" >&2; exit 1; }
+
+      # socat is a FATAL preflight (REQ-INST-14) and is deliberately not
+      # bundled, so every install step needs it on PATH. The smoke script tests
+      # the MISSING-socat case with its own PATH shim before this matters, so
+      # installing it here does not weaken that assertion.
+      - name: Install socat
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v socat >/dev/null 2>&1; then
+            echo "socat already present: $(command -v socat)"
+            exit 0
+          fi
+          case "$(uname -s)" in
+            Darwin) brew install socat ;;
+            Linux)  sudo apt-get update && sudo apt-get install -y socat ;;
+          esac
+          command -v socat
+
+      - name: Run installer smoke (${{ matrix.target }})
+        shell: bash
+        env:
+          # Empty means the script's own default pin. The REAL install ignores
+          # this and resolves the latest release, exercising resolve_latest_tag
+          # and api_fetch on this host.
+          INSTALL_SMOKE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INSTALL_SMOKE_VERSION:-}" ]; then unset INSTALL_SMOKE_VERSION; fi
+          bash scripts/ci/installer-smoke.sh
+
+  # 2. The EXISTING Python suite, unchanged, on a real Mac.
+  #
+  #    This is the cheap half of the darwin coverage problem: because
+  #    host_target() is host-derived, every darwin branch the suite already
+  #    contains -- the LaunchAgents service paths in the full-run, read-only-rc,
+  #    uninstall and socat-preflight tests -- executes here for real, with no
+  #    platform override and no new test-only surface on install.sh.
+  suite:
+    name: distribution suite (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: darwin-amd64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Host facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          bash --version | head -n 1
+          python3 --version
+          for t in curl wget socat python3 shasum sha256sum; do
+            printf '%-10s %s\n' "$t" "$(command -v "$t" || echo '(absent)')"
+          done
+
+      - name: Run tests/test_binary_distribution.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/test_binary_distribution.py 2>&1 | tee "$RUNNER_TEMP/suite.log"
+          exit "${PIPESTATUS[0]}"
+
+      # A suite that SKIPPED its way to green would be the same empty tick this
+      # workflow exists to avoid: on a host without nix, unshare or wget several
+      # tests legitimately skip, and nothing stops a darwin-relevant test from
+      # joining them silently. So name the tests whose darwin branches are the
+      # whole point and require them to have PASSED.
+      - name: Assert the darwin-critical tests actually ran
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/suite.log"
+          echo "--- skipped on this host (for the record) ---"
+          grep '^SKIP: ' "$log" || echo "(none)"
+          echo "--- required to have PASSED ---"
+          # A bash array, not a heredoc: a heredoc body would have to sit at
+          # column 0 and column 0 ENDS a YAML block scalar, so the list would
+          # break the workflow file itself.
+          required=(
+            "install.sh --dry-run --version v0.1.0"
+            "install.sh --dry-run --hub <url>"
+            "install.sh full run: service lifecycle (backup/identical/force)"
+            "install.sh read-only rc is NOT fatal (REQ-INST-5)"
+            "install.sh --uninstall (dry run + real, keeps user state)"
+            "install.sh --uninstall removes the bundled openssl it recorded"
+            "socat missing is fatal, unknown hub (REQ-INST-14)"
+            "socat missing is fatal for an https:// hub (REQ-INST-14)"
+            "socat missing: --uninstall still works (REQ-INST-14)"
+          )
+          status=0
+          for name in "${required[@]}"; do
+            if grep -Fqx "PASS: $name" "$log"; then
+              echo "ok   $name"
+            else
+              echo "FAIL $name did not PASS (skipped or failed)" >&2
+              status=1
+            fi
+          done
+          exit "$status"
