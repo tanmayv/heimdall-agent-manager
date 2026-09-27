@@ -1812,32 +1812,74 @@ def live_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
+def live_homes() -> list:
+    """Every real home this suite could damage, live_home() plus SUDO_USER's.
+
+    Under sudo the two DIFFER and the second one is the dangerous one:
+    install.sh resolves its target home from SUDO_USER (scripts/install.sh,
+    service_home) and writes the service file and rc lines THERE, while
+    getpwuid(geteuid()) says /root. Watching only the latter would leave the
+    exact outage path of REQ-INST-19 unguarded whenever the suite runs under
+    sudo.
+    """
+    import pwd
+    homes = [live_home()]
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if sudo_user:
+        try:
+            extra = Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            extra = None
+        if extra is not None and extra not in homes:
+            homes.append(extra)
+    return homes
+
+
+# Every rc file install.sh can append a PATH line to, home-relative. This is a
+# copy of path_candidates() in scripts/install.sh (its union branch, plus the
+# per-shell branches), and test_tripwire_covers_every_rc_install_sh_writes below
+# RE-DERIVES it from that function and fails if the two ever drift. Keeping the
+# literals AND checking them beats either alone: the list stays readable here,
+# and a new rc file added to install.sh cannot silently go unwatched.
+TRIPWIRE_RC_FILES = (
+    '.bashrc',
+    '.bash_profile',
+    '.zshrc',
+    '.zprofile',
+    '.profile',
+    '.config/fish/config.fish',
+)
+
+
 def live_home_tripwire_paths() -> list:
     """Every path in the real home that install.sh is capable of creating,
     modifying or deleting: the binaries it installs, the checksum record it
-    keeps for --uninstall, both platforms' service files, the rc files it
-    appends a PATH line to, and its config directory.
+    keeps for --uninstall, both platforms' service files, every rc file
+    path_candidates() can name, and its config directory.
 
-    The two bin directories are watched as DIRECTORIES as well as by file, so
-    an install under a name not listed here still shows up as a changed entry
-    list rather than slipping through.
+    Directories are watched as well as files -- ~/.local/bin,
+    ~/.config/systemd/user, ~/Library/LaunchAgents and ~/.config/fish -- so a
+    write under a name not listed here still shows up as a changed entry list
+    rather than slipping through. That is what catches the timestamped
+    $service_file.bak-<date> backups, whose names cannot be enumerated, and a
+    fish config.fish created from nothing in a directory install.sh mkdir -p's
+    itself.
     """
-    home = live_home()
-    binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl', 'openssl',
-                '.heimdall-openssl.sha256')
-    paths = [home / '.local' / 'bin']
-    paths += [home / '.local' / 'bin' / name for name in binaries]
-    paths += [
-        home / '.config' / 'systemd' / 'user',
-        home / '.config' / 'systemd' / 'user' / 'heimdall-bridge.service',
-        home / 'Library' / 'LaunchAgents',
-        home / 'Library' / 'LaunchAgents' / 'works.earendil.heimdall-bridge.plist',
-        home / '.config' / 'heimdall',
-        home / '.bashrc',
-        home / '.bash_profile',
-        home / '.zshrc',
-        home / '.profile',
-    ]
+    paths = []
+    for home in live_homes():
+        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl', 'openssl',
+                    '.heimdall-openssl.sha256')
+        paths.append(home / '.local' / 'bin')
+        paths += [home / '.local' / 'bin' / name for name in binaries]
+        paths += [
+            home / '.config' / 'systemd' / 'user',
+            home / '.config' / 'systemd' / 'user' / 'heimdall-bridge.service',
+            home / 'Library' / 'LaunchAgents',
+            home / 'Library' / 'LaunchAgents' / 'works.earendil.heimdall-bridge.plist',
+            home / '.config' / 'heimdall',
+            home / '.config' / 'fish',
+        ]
+        paths += [home / rc for rc in TRIPWIRE_RC_FILES]
     return paths
 
 
@@ -1867,7 +1909,10 @@ def _tripwire_state(path: Path) -> str:
             entries = sorted(entry.name for entry in path.iterdir())
         except OSError as exc:
             return f'dir unreadable ({exc.__class__.__name__})'
-        return 'dir entries=[' + ','.join(entries) + ']'
+        # Mode is part of the fingerprint: take_ownership() chmods the config
+        # dir, and an entry list alone would not notice.
+        return (f'dir mode={stat.S_IMODE(st.st_mode):o} entries=['
+                + ','.join(entries) + ']')
     if st.st_size <= TRIPWIRE_HASH_MAX_BYTES:
         try:
             return f'file mode={stat.S_IMODE(st.st_mode):o} sha256={sha256_of(path)}'
@@ -1900,10 +1945,14 @@ def assert_live_home_untouched(before: dict, label: str) -> None:
         return
     detail = '\n'.join(f'  {path}\n    before: {was}\n    after:  {now}'
                         for path, was, now in changed)
+    homes = ', '.join(str(home) for home in live_homes())
     raise AssertionError(
-        f'{label!r} MODIFIED THE LIVE HOME at {live_home()} — a test must never '
+        f'{label!r} MODIFIED THE LIVE HOME at {homes} — a test must never '
         f'write outside its sandbox (REQ-INST-19):\n{detail}\n'
-        'Sandbox that test\'s HOME. Do not weaken this guard.')
+        "Sandbox that test's HOME. Do not weaken this guard.\n"
+        'If the changed path is under ~/.local/bin or ~/.config/heimdall, rule out '
+        'an UNRELATED process writing there concurrently before blaming the test '
+        'named above: those directories are shared with whatever else is running.')
 
 
 def dry_run_env(ctx) -> dict:
@@ -1922,6 +1971,39 @@ def dry_run_env(ctx) -> dict:
     home.mkdir(parents=True, exist_ok=True)
     return {**os.environ, 'HOME': str(home)}
 
+
+
+def test_tripwire_covers_every_rc_install_sh_writes(ctx):
+    """REQ-INST-19: the watch list must not DESYNC from install.sh.
+
+    The first version of this guard watched four rc files while
+    path_candidates() named six, so ~/.zprofile and ~/.config/fish/config.fish
+    were written by install.sh and unwatched -- and the miss was invisible,
+    because a list of literals looks complete. This re-derives the set from the
+    function itself, so the next rc file added to install.sh fails here instead
+    of quietly going unguarded.
+
+    Deliberately checks the WATCH LIST and not just TRIPWIRE_RC_FILES: what
+    matters is that the paths actually end up watched for every home.
+    """
+    body = re.search(r'^path_candidates\(\) \{(.*?)^\}', INSTALL_SCRIPT.read_text(),
+                     flags=re.S | re.M)
+    assert body, 'path_candidates() not found in install.sh — this test must be updated, not deleted'
+    named = set(re.findall(r'\$service_home/(\S+?)"', body.group(1)))
+    assert named, f'no $service_home rc paths parsed out of path_candidates():\n{body.group(1)}'
+    # Sanity: the parse found the shapes we expect, so a regex that silently
+    # matched nothing useful cannot make this test vacuous.
+    assert '.zshrc' in named and '.config/fish/config.fish' in named, (
+        f'path_candidates() parse looks wrong, got {sorted(named)}')
+
+    watched = {str(path) for path in live_home_tripwire_paths()}
+    for home in live_homes():
+        missing = sorted(rc for rc in named if str(home / rc) not in watched)
+        assert not missing, (
+            f'install.sh writes these rc files under {home} and the REQ-INST-19 '
+            f'tripwire does not watch them: {missing}. Add them to '
+            'TRIPWIRE_RC_FILES — a test that escapes its sandbox could rewrite '
+            'them with nothing noticing.')
 
 
 def sandbox_install_env(home: Path, runtime: Path) -> dict:
@@ -2991,6 +3073,8 @@ def main() -> int:
          test_socat_missing_plain_http_hub_proceeds),
         ('socat present: preflight stays silent (REQ-INST-14)',
          test_socat_present_keeps_the_installer_silent),
+        ('tripwire covers every rc file install.sh writes (REQ-INST-19)',
+         test_tripwire_covers_every_rc_install_sh_writes),
         ('install.sh full run: service lifecycle (backup/identical/force)', test_install_sh_full_run_service_lifecycle),
         ('install.sh sudo paths (SUDO_USER resolve + root refusal)', test_install_sh_sudo_paths),
         ('install.sh sudo real run: PATH write for target user', test_install_sh_sudo_path_write),
