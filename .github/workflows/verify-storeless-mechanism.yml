@@ -5,7 +5,13 @@
 name: Probe storeless execution mechanisms
 
 on:
+  # Push-triggered on its own path: this agent's token cannot create a
+  # workflow_dispatch event on this repo, and the probe must run on the real
+  # runners to be worth anything.
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/verify-storeless-mechanism.yml'
 
 permissions:
   contents: read
