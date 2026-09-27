@@ -23,7 +23,7 @@ export function isVaultArmored(text: unknown): boolean {
  * Check if a string contains any vault armored token matching /vault:v1:[A-Za-z0-9+/=]+/.
  */
 export function containsVaultArmored(text: unknown): boolean {
-  return typeof text === 'string' && /vault:v1:[A-Za-z0-9+/=]+/.test(text);
+  return typeof text === 'string' && /vault:v1:[A-Za-z0-9+/=_-]+/.test(text);
 }
 
 /**
@@ -180,7 +180,7 @@ export async function decryptEmbeddedVaultTokens(
     return text;
   }
 
-  const matches = text.match(/vault:v1:[A-Za-z0-9+/=]+/g);
+  const matches = text.match(/vault:v1:[A-Za-z0-9+/=_-]+/g);
   if (!matches || matches.length === 0) {
     return text;
   }
@@ -194,7 +194,7 @@ export async function decryptEmbeddedVaultTokens(
         const decrypted = await decryptVaultText(token, cryptoKey);
         return { token, decrypted };
       } catch {
-        return { token, decrypted: token };
+        return { token, decrypted: '[🔒 Encrypted]' };
       }
     }),
   );

@@ -1667,7 +1667,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           pickerProjects.map((project) => (
             <div key={project.projectId}>
               <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
-                {project.name || project.projectId}
+                <VaultText value={project.name || project.projectId} fallback={project.projectId} />
               </div>
               {project.chains
                 .filter((chain) => chain.liveAgents.length > 0)

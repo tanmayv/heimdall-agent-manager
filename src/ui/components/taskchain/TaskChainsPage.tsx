@@ -16,6 +16,9 @@ import { useArchivedProjectIds } from '../projects/projectModel';
 import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
+import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { decryptProjectList } from '../../utils/vaultProjects';
 import { VaultText } from '../vault/VaultText';
 
 interface TaskChainsPageProps {
@@ -375,6 +378,29 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     return list.filter((p) => !archivedProjectIds.has(p.project_id));
   }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
 
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
+
+  useEffect(() => {
+    let active = true;
+    if (!isUnlocked || !rawKeyHex) {
+      setDecryptedProjects(
+        projects.map((p) => ({
+          ...p,
+          name: p.name ? p.name.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : p.name,
+        }))
+      );
+      return;
+    }
+    decryptProjectList(projects, rawKeyHex).then((res) => {
+      if (active) setDecryptedProjects(res);
+    });
+    return () => {
+      active = false;
+    };
+  }, [projects, isUnlocked, rawKeyHex]);
+
   const rawGroups: ChainProjectGroup[] = useMemo(() => {
     const raw = filterProjectId
       ? (projectPageQuery.data ? [projectPageQuery.data] : [])
@@ -446,7 +472,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           onChange={setFilterProjectId}
         >
           <option value="">All projects</option>
-          {projects.map((p) => (
+          {decryptedProjects.map((p) => (
             <option key={p.project_id} value={p.project_id}>
               {p.name || p.project_id}
             </option>

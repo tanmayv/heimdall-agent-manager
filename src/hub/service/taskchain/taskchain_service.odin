@@ -1225,7 +1225,7 @@ comment_notify_message :: proc(task: domain.Task, action: string) -> string {
 
 comment_preview_safe :: proc(body: string) -> string {
 	trimmed := strings.trim_space(body)
-	if strings.has_prefix(trimmed, "vault:v1:") {
+	if strings.contains(trimmed, "vault:v1:") {
 		return strings.clone(trimmed)
 	}
 	b := strings.builder_make()
@@ -1264,7 +1264,7 @@ NOTICE_EXCERPT_MAX_RUNES :: 20
 // Caller owns the returned string.
 truncate_runes :: proc(s: string, max: int) -> string {
 	trimmed := strings.trim_space(s)
-	if strings.has_prefix(trimmed, "vault:v1:") {
+	if strings.contains(trimmed, "vault:v1:") {
 		return strings.clone(trimmed)
 	}
 	b := strings.builder_make()

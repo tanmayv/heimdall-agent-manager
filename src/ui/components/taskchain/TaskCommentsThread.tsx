@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
-import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { isVaultArmored, containsVaultArmored, decryptVaultText, decryptEmbeddedVaultTokens } from '../../utils/vaultContent';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import Markdown from '../Markdown';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
@@ -76,39 +76,49 @@ export const TaskCommentBody: React.FC<{ body: string; debugId: string }> = ({ b
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const isArmored = isVaultArmored(body);
+  const isEmbedded = !isArmored && containsVaultArmored(body);
+  const hasVault = isArmored || isEmbedded;
 
   const [decryptedText, setDecryptedText] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored || !isUnlocked || !rawKeyHex) {
+    if (!hasVault || !isUnlocked || !rawKeyHex) {
       setDecryptedText(null);
       return;
     }
-    decryptVaultText(body, rawKeyHex)
-      .then((decrypted) => {
-        if (mounted) setDecryptedText(decrypted);
-      })
-      .catch((err) => {
-        if (mounted) {
-          console.error('Failed to decrypt comment body:', err);
-          setDecryptedText(body);
-        }
-      });
+    const p = isArmored
+      ? decryptVaultText(body, rawKeyHex)
+      : decryptEmbeddedVaultTokens(body, rawKeyHex);
+    p.then((decrypted) => {
+      if (mounted) setDecryptedText(decrypted);
+    }).catch((err) => {
+      if (mounted) {
+        console.error('Failed to decrypt comment body:', err);
+        setDecryptedText(body.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+      }
+    });
     return () => {
       mounted = false;
     };
-  }, [body, isArmored, isUnlocked, rawKeyHex]);
+  }, [body, hasVault, isArmored, isUnlocked, rawKeyHex]);
 
-  if (isArmored && !isUnlocked) {
+  if (hasVault && !isUnlocked) {
+    if (isArmored) {
+      return (
+        <div className="py-1">
+          <VaultText value={body} as="div" />
+        </div>
+      );
+    }
     return (
       <div className="py-1">
-        <VaultText value={body} as="div" />
+        <Markdown source={body.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]')} compact copyAll={false} data-debug-id={debugId} />
       </div>
     );
   }
 
-  const displayText = decryptedText ?? body;
+  const displayText = decryptedText ?? (hasVault ? body.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : body);
   const artifactIds = artifactIdsFromText(displayText || '');
 
   return (

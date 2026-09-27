@@ -385,11 +385,13 @@ bridge_task_deliver_nudge :: proc(task_id, status, target: string, now: i64, tas
 	bridge_runtime_write_json_string(&b, target)
 	strings.write_string(&b, "\",\"task_status\":\"")
 	bridge_runtime_write_json_string(&b, status)
+	strings.write_string(&b, "\"")
 	if trimmed_title != "" {
-		strings.write_string(&b, "\",\"title\":\"")
+		strings.write_string(&b, ",\"title\":\"")
 		bridge_runtime_write_json_string(&b, trimmed_title)
+		strings.write_string(&b, "\"")
 	}
-	strings.write_string(&b, "\",\"message\":\"")
+	strings.write_string(&b, ",\"message\":\"")
 	bridge_runtime_write_json_string(&b, msg)
 	strings.write_string(&b, "\"}")
 	payload := strings.to_string(b)
