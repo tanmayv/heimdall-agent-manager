@@ -70,6 +70,9 @@ ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
                        removed.
 
 Platforms: Linux (x86_64, aarch64/arm64), macOS (Intel, Apple Silicon).
+Requires socat, the default bridge->hub TLS transport. It is not bundled;
+install it with your system package manager (sudo apt install socat /
+brew install socat) BEFORE running this installer.
 USAGE
 }
 
@@ -633,6 +636,79 @@ sha256_of() {
 # does until something else overwrites it.
 openssl_marker() { printf '%s\n' "$install_dir/.heimdall-openssl.sha256"; }
 
+# --- socat preflight (REQ-INST-14) ---------------------------------------------
+# socat is the DEFAULT bridge->hub TLS transport. src/lib/ws/ws.odin's
+# tls_client_command (:286-297) returns openssl_s_client_command ONLY when
+# HAM_TLS_BACKEND is exactly "s_client"; for every other value -- including
+# unset, the default -- it returns socat_openssl_command, which spawns an argv
+# literally named "socat" (:341). The same rule is duplicated in
+# src/lib/http_client/http_client.odin and in the bridge's
+# bridge_tls_backend_is_socat.
+#
+# socat is NOT in the release tarball (it is GPL-2.0, so bundling it is not an
+# engineering call) and a bundled bin/openssl does NOT cover this path -- it
+# only serves the s_client fallback. Without this preflight a socat-less host
+# installs cleanly, is told it succeeded, and then never reaches a wss:// hub,
+# with no error anywhere naming the cause.
+#
+# Why this went unnoticed for so long: the published bin/ham-bridge is a Nix
+# wrapProgram SHELL SCRIPT that prepends nix store paths for socat and openssl
+# onto PATH before exec'ing the real binary. On a Nix host the wrapper supplies
+# socat silently. Off Nix there is no wrapper and no socat -- so this is not a
+# corner case, it is the ordinary case for anyone installing from the tarball.
+#
+# Keep this vocabulary in sync with the "tls_dependency" field that
+# scripts/release/package-local-binary-tarball.sh writes into METADATA.json:
+# one defect, two places, one story.
+
+have_socat() { command -v socat >/dev/null 2>&1; }
+
+# Whether the hub the unit will be started with terminates TLS at all.
+# parse_ws_url (src/lib/ws/ws.odin:347) sets secure=true only for wss://, so
+# the plain-HTTP, VPN-only deployment documented in SELF_HOSTING.md genuinely
+# needs no socat. An UNKNOWN hub -- no --hub, which is the common case since
+# the unit reads [wrapper] daemon_url from config.toml -- is treated as NEEDING
+# socat: at install time we usually cannot know the eventual hub, and it is
+# overwhelmingly a remote TLS one.
+hub_is_plaintext() {
+  case "${1:-}" in
+    http://*|ws://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+socat_required_message() {
+  cat <<'SOCAT'
+socat is not installed. Install socat FIRST, then re-run this installer.
+
+  Debian/Ubuntu:  sudo apt install socat
+  macOS:          brew install socat
+  Fedora/RHEL:    sudo dnf install socat
+  Arch:           sudo pacman -S socat
+
+socat is the default bridge->hub TLS transport: the bridge spawns
+'socat OPENSSL-CONNECT' to terminate TLS for the wss:// control channel. It is
+deliberately NOT bundled in the release tarball, and a bundled bin/openssl --
+where one is present at all -- does NOT satisfy that default path: openssl
+serves only the legacy fallback. You do not need to install openssl separately
+for this: socat links libssl itself, and your package manager installs that
+along with socat.
+Installing without socat would leave a bridge that cannot reach a TLS hub, so
+this stops here rather than reporting a successful install.
+
+Nothing has been installed; no files were written.
+
+If your hub is plain HTTP with no TLS, say so explicitly and this check is
+skipped: install.sh --hub http://<host>:<port>
+
+Advanced: HAM_TLS_BACKEND=s_client switches the bridge to the legacy
+'openssl s_client' transport, which needs no socat but tears down on multi-read
+bursts above 16 KB (large file reads and artifact transfers). There is
+deliberately no automatic fallback to it -- set it only if you knowingly accept
+that limitation.
+SOCAT
+}
+
 # --- service templates (mirrors SELF_HOSTING.md sections 2.8 and 2.9) -------
 # REQ-INST-1: the unit carries --hub ONLY when the operator passed it
 # explicitly. Otherwise the bridge reads [wrapper] daemon_url from config.toml
@@ -1171,6 +1247,31 @@ main() {
     exit 0
   fi
 
+  # --- socat preflight (REQ-INST-14) --------------------------------------------
+  # Placed here deliberately: AFTER the --uninstall exit above, because removing
+  # files needs no transport and refusing to uninstall over a missing dependency
+  # would strand users; and BEFORE release resolution, so when this fires
+  # nothing has been downloaded, no network has been touched and no file
+  # written. Same shape as the sudo/home preflight higher up -- fail before we
+  # touch the system, never halfway through it.
+  socat_missing=false
+  socat_exempt_reason=""
+  if ! have_socat; then
+    socat_missing=true
+    if hub_is_plaintext "$hub_url"; then
+      socat_exempt_reason="--hub $hub_url is plain HTTP, so the bridge terminates no TLS and needs no socat"
+    fi
+  fi
+  if "$socat_missing"; then
+    if [ -n "$socat_exempt_reason" ]; then
+      warn "socat is not installed; continuing because $socat_exempt_reason. Install socat before pointing this bridge at an https:// or wss:// hub."
+    elif ! "$dry_run"; then
+      # A dry run is exempt: it writes nothing and its job is to PREVIEW, so it
+      # reports the missing socat in the plan below and still exits 0.
+      fail "$(socat_required_message)"
+    fi
+  fi
+
   # --- release URL resolution -------------------------------------------------
   if [ -n "$hub_url" ]; then
     base_url="$hub_url"
@@ -1212,6 +1313,14 @@ main() {
 
   # --- dry run ------------------------------------------------------------------
   if "$dry_run"; then
+    # REQ-INST-14: a preview must tell the truth about what a real run would do,
+    # and what a real run would do here is STOP. The headline goes on stdout,
+    # inside the plan the operator is actually reading, ahead of everything
+    # else, so it cannot be read as a footnote; the detail follows on stderr.
+    if "$socat_missing" && [ -z "$socat_exempt_reason" ]; then
+      say "socat is NOT installed: a real (non-dry-run) install would STOP HERE and install nothing"
+      socat_required_message >&2
+    fi
     say "platform: $os/$arch (release target $target)"
     say "release: $effective_version"
     say "would download: $tarball_url"

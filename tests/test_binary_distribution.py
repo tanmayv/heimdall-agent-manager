@@ -419,13 +419,40 @@ RELEASE_LIST_PRERELEASE_JSON = (
     ' {"tag_name": "v1.2.3-beta.1", "prerelease": true, "draft": false}]\n')
 
 
-def _shim_dir(base: Path, name: str) -> Path:
+def write_socat_stub(directory: Path) -> Path:
+    """Put a no-op `socat` on a PATH entry (REQ-INST-14).
+
+    install.sh resolves socat with `command -v socat` and NEVER executes it --
+    presence is the whole contract -- so a stub is an honest stand-in rather
+    than a fake. The suite supplying it is what makes every other test
+    deterministic on hosts with and without socat installed, instead of the
+    fatal preflight silently turning into a host-dependent skip.
+
+    A real socat is deliberately NOT symlinked here: a test must not pass only
+    because the machine happened to have the dependency.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    stub = directory / 'socat'
+    if not stub.exists():
+        stub.write_text('#!/bin/sh\n'
+                        '# no-op stand-in: install.sh only probes for presence\n'
+                        'exit 0\n')
+        stub.chmod(0o755)
+    return stub
+
+
+def _shim_dir(base: Path, name: str, *, with_socat: bool = True) -> Path:
     shim = base / name
     shim.mkdir(parents=True, exist_ok=True)
     for tool in SHIM_TOOLS:
         real = shutil.which(tool)
         if real and not (shim / tool).exists():
             (shim / tool).symlink_to(real)
+    # stub_env sets PATH to this directory ALONE, so without socat here every
+    # test that reaches the REQ-INST-14 preflight would die on it. Tests that
+    # want socat ABSENT ask for it with with_socat=False.
+    if with_socat:
+        write_socat_stub(shim)
     return shim
 
 
@@ -1666,7 +1693,15 @@ def sandbox_install_env(home: Path, runtime: Path) -> dict:
     uninstall path away from the live session bus. See
     assert_bridge_isolated() — and do not drop either override.
     """
+    # REQ-INST-14: socat is a FATAL preflight now, so a sandboxed run needs one
+    # on PATH. Prepending our own stub rather than relying on the host's socat
+    # keeps the suite deterministic on machines that do not have it -- notably
+    # the macOS runners, where neither outcome is guaranteed.
+    home.mkdir(parents=True, exist_ok=True)
+    socat_dir = home / '.socat-stub'
+    write_socat_stub(socat_dir)
     return {**os.environ,
+            'PATH': f'{socat_dir}{os.pathsep}' + os.environ.get('PATH', ''),
             'HOME': str(home),
             'XDG_CONFIG_HOME': '',
             'XDG_RUNTIME_DIR': str(runtime),
@@ -2392,6 +2427,243 @@ def test_readme_points_at_installer(ctx):
 
 # ---- runner --------------------------------------------------------------------
 
+# --- REQ-INST-14: socat is a hard runtime dep, checked at preflight ------------
+# socat is the DEFAULT bridge->hub TLS transport (src/lib/ws/ws.odin:286-297
+# returns socat_openssl_command for every HAM_TLS_BACKEND except the legacy
+# "s_client") and it is NOT bundled in the release tarball. Before this check a
+# socat-less host installed cleanly, was told it succeeded, and then never
+# reached a TLS hub. These tests pin the four behaviours: fatal by default,
+# exempt for --uninstall, exempt for --dry-run, exempt for an explicitly
+# plain-HTTP hub.
+
+SOCAT_FATAL_FRAGMENTS = (
+    'socat is not installed',
+    'sudo apt install socat',
+    'brew install socat',
+    'default bridge->hub TLS transport',
+    'Nothing has been installed',
+)
+
+
+def socat_free_shim(base: Path, name: str) -> Path:
+    """A hermetic PATH with every tool install.sh needs EXCEPT socat.
+
+    Absence is simulated by PATH construction, never by touching what is
+    installed on this host -- socat is what the live bridge uses to reach the
+    hub, so a test that uninstalled it would break the machine it runs on.
+    """
+    return _shim_dir(base, name, with_socat=False)
+
+
+def assert_nothing_installed(home: Path) -> None:
+    """No binary, no service file, no PATH edit -- the preflight must fire
+    before anything is written, not halfway through."""
+    install_dir = home / '.local' / 'bin'
+    if install_dir.exists():
+        stray = sorted(q.name for q in install_dir.iterdir())
+        assert not stray, f'preflight failed yet {install_dir} contains {stray}'
+    unit = home / '.config' / 'systemd' / 'user' / 'heimdall-bridge.service'
+    plist = home / 'Library' / 'LaunchAgents' / 'works.earendil.heimdall-bridge.plist'
+    assert not unit.exists(), f'a failed preflight still wrote {unit}'
+    assert not plist.exists(), f'a failed preflight still wrote {plist}'
+    for rc in ('.bashrc', '.zshrc', '.profile'):
+        target = home / rc
+        if target.exists():
+            assert 'Added by heimdall install.sh' not in target.read_text(), \
+                f'a failed preflight still edited {target}'
+
+
+def test_socat_missing_is_fatal_and_installs_nothing(ctx):
+    """REQ-INST-14. The hub is UNKNOWN here (no --hub), which is the common case
+    since REQ-INST-1 made the unit read config.toml instead of baking a URL in.
+    Unknown must be treated as needing socat: at install time we cannot know the
+    eventual hub and it is overwhelmingly a remote TLS one."""
+    base = ctx['work'] / 'socat-fatal'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat')
+
+    res = run_installer(shim, base, 'nosocat', )
+    assert res.returncode != 0, (
+        f'a missing socat must FAIL the install, got exit 0:\n{res.stdout}')
+    out = res.stdout + res.stderr
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment in out, f'the failure does not say {fragment!r}:\n{out}'
+
+    # It must fire BEFORE the release lookup and before any download -- that is
+    # the difference between "nothing happened" and "half a machine". This shim
+    # has no curl and no wget, so if the preflight ran late the run would have
+    # died with the no-downloader diagnosis instead. Asserting that message is
+    # ABSENT is what pins the ordering.
+    for other in ALL_RESOLVE_MSGS:
+        assert other not in out, (
+            f'the socat preflight ran AFTER release resolution -- got {other!r}:\n{out}')
+    assert 'downloading' not in out, f'a download was attempted anyway:\n{out}'
+    assert_nothing_installed(base / 'home-nosocat')
+
+
+def test_socat_missing_is_fatal_for_a_tls_hub(ctx):
+    """An explicit https:// hub is the unambiguous TLS case: socat is exactly
+    what terminates that connection, so this must fail like the unknown one."""
+    base = ctx['work'] / 'socat-fatal-tls'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-tls')
+
+    res = run_installer(shim, base, 'nosocat-tls', '--hub', 'https://hub.example.com')
+    assert res.returncode != 0, (
+        f'a missing socat must FAIL against an https:// hub:\n{res.stdout}')
+    out = res.stdout + res.stderr
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment in out, f'the failure does not say {fragment!r}:\n{out}'
+    assert 'downloading' not in out, f'a download was attempted anyway:\n{out}'
+    assert_nothing_installed(base / 'home-nosocat-tls')
+
+
+def test_socat_failure_names_the_escape_hatch_but_does_not_take_it(ctx):
+    """The message must offer HAM_TLS_BACKEND=s_client as an ADVANCED option --
+    a user who knowingly accepts the 16 KB multi-read teardown is not stuck --
+    while install.sh itself must never fall back to it automatically. An
+    automatic fallback would trade a loud failure for a silent degradation of
+    large FS reads and artifact transfers, which is the worse bug."""
+    base = ctx['work'] / 'socat-escape'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-escape')
+    res = run_installer(shim, base, 'nosocat-escape', '--hub', 'https://hub.example.com')
+    out = res.stdout + res.stderr
+    assert 'HAM_TLS_BACKEND=s_client' in out, \
+        f'the failure does not name the manual escape hatch:\n{out}'
+    assert 'no automatic fallback' in out, \
+        f'the failure does not say the fallback is NOT automatic:\n{out}'
+
+    code = install_sh_code()
+    assert 'HAM_TLS_BACKEND=s_client' not in code.replace(
+        'HAM_TLS_BACKEND=s_client switches', ''), (
+        'install.sh sets HAM_TLS_BACKEND itself somewhere -- the escape hatch is '
+        'the operator\'s to take, never the installer\'s')
+
+    # Structural: the preflight must guard on socat's ABSENCE, never silently
+    # accept an openssl standing in for it.
+    assert 'have_socat()' in code and 'command -v socat' in code
+
+
+def test_socat_missing_dry_run_previews_instead_of_failing(ctx):
+    """REQ-INST-14 exemption: --dry-run writes nothing and exists to PREVIEW, so
+    it must still print the plan and exit 0. But the preview has to tell the
+    TRUTH about what a real run would do, and what a real run would do is stop --
+    so the missing socat is reported at the HEAD of the plan, on stdout, where
+    the operator is actually reading, not only beside it on stderr."""
+    base = ctx['work'] / 'socat-dry'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-dry')
+
+    res = run_installer(shim, base, 'nosocat-dry', '--dry-run', '--version', 'v0.1.0')
+    assert res.returncode == 0, (
+        f'--dry-run must stay non-fatal when socat is missing:\n'
+        f'stdout:\n{res.stdout}\nstderr:\n{res.stderr}')
+    assert 'socat is NOT installed' in res.stdout, (
+        'the socat problem must appear IN the plan on stdout, not only on '
+        f'stderr:\n{res.stdout}')
+    assert 'would STOP HERE and install nothing' in res.stdout, (
+        f'the preview must say what a real run would do:\n{res.stdout}')
+    # The rest of the plan still prints: a preview that stops at the first
+    # problem is not a preview.
+    assert 'platform:' in res.stdout and 'would install' in res.stdout, (
+        f'the plan was truncated by the socat notice:\n{res.stdout}')
+    assert 'would download' in res.stdout
+    # And the remedy is still spelled out, on stderr with the rest of the detail.
+    assert 'sudo apt install socat' in res.stderr, \
+        f'the dry run does not say how to fix it:\n{res.stderr}'
+    assert_nothing_installed(base / 'home-nosocat-dry')
+
+
+def test_socat_missing_uninstall_still_works(ctx):
+    """REQ-INST-14 exemption: removing files needs no transport, and refusing to
+    uninstall over a missing dependency would strand exactly the users who most
+    need to get the thing off their machine."""
+    base = ctx['work'] / 'socat-uninstall'
+    home = base / 'home-nosocat-un'
+    runtime = base / 'run-nosocat-un'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-un')
+    env = stub_env(home, runtime, shim)
+
+    # REQ-INST-13: this is a REAL --uninstall, and install.sh's uninstall path
+    # stops `heimdall-bridge` -- the same user unit that supervises the agents on
+    # this host. Prove the env cannot reach the live session bus first.
+    assert_bridge_isolated(env, ctx['work'])
+    res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall'],
+                         env=env, capture_output=True, text=True, timeout=90)
+    assert res.returncode == 0, (
+        f'--uninstall must not require socat:\nstdout:\n{res.stdout}\n'
+        f'stderr:\n{res.stderr}')
+    out = res.stdout + res.stderr
+    assert 'uninstall complete' in out, f'--uninstall did not complete:\n{out}'
+    # Match the MESSAGE, not the bare word: this test's own sandbox paths
+    # contain "socat", so `'socat' not in out` passes only by accident of
+    # naming and fails as soon as a path is printed -- which it is.
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment not in out, (
+            f'--uninstall raised the socat requirement ({fragment!r}):\n{out}')
+    assert 'socat is NOT installed' not in out, (
+        f'--uninstall previewed the socat problem:\n{out}')
+
+
+def test_socat_missing_plain_http_hub_proceeds(ctx):
+    """REQ-INST-14 exemption: parse_ws_url (src/lib/ws/ws.odin:347) sets
+    secure=true only for wss://, so the plain-HTTP VPN-only deployment
+    documented in SELF_HOSTING.md terminates no TLS and genuinely needs no
+    socat. An explicitly plain http:// --hub must therefore inform, not fail.
+
+    Proven by ORDERING rather than by a full install: the run is pointed at a
+    closed port, so reaching a download failure is proof it got PAST the
+    preflight -- which is the whole claim. A socat error would have come first
+    and no download would have been attempted at all."""
+    base = ctx['work'] / 'socat-plain-http'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-http')
+    # curl is what turns the closed port into a download failure rather than a
+    # missing-downloader one; without it this test cannot make its point.
+    need_tool('curl')
+    if not (shim / 'curl').exists():
+        (shim / 'curl').symlink_to(shutil.which('curl'))
+
+    res = run_installer(shim, base, 'nosocat-http', '--hub', 'http://127.0.0.1:9/mirror')
+    out = res.stdout + res.stderr
+    assert 'socat is not installed; continuing because' in out, (
+        f'a plain-HTTP hub must INFORM about the missing socat, not stay silent:\n{out}')
+    assert 'is plain HTTP' in out
+    assert 'downloading http://127.0.0.1:9/mirror' in out, (
+        'the run did not get past the preflight to the download it was pointed '
+        f'at:\n{out}')
+    assert 'Nothing has been installed' not in out, (
+        f'the fatal socat message fired for an exempt plain-HTTP hub:\n{out}')
+    # It still fails -- on the unreachable mirror, which is the point: the
+    # failure that remains is the download one, not the socat one.
+    assert res.returncode != 0
+    assert 'download failed' in out, f'expected the download to be what failed:\n{out}'
+
+
+def test_socat_present_keeps_the_installer_silent(ctx):
+    """The control: with socat on PATH the preflight says nothing at all. A
+    check that narrates on the happy path is noise, and it would also mean the
+    dry-run and exemption assertions above could pass for the wrong reason."""
+    base = ctx['work'] / 'socat-present'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = _shim_dir(base, 'shim-socat')  # with_socat=True by default
+    res = run_installer(shim, base, 'socat-ok', '--dry-run', '--version', 'v0.1.0')
+    assert res.returncode == 0, f'dry run failed with socat present:\n{res.stderr}'
+    out = res.stdout + res.stderr
+    # Again the message, not the word: the sandbox path contains "socat".
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment not in out, (
+            f'the preflight spoke up although socat is present ({fragment!r}):\n{out}')
+    assert 'socat is NOT installed' not in out, (
+        f'the dry run reported socat missing although it is present:\n{out}')
+    assert 'continuing because' not in out, (
+        f'the plain-HTTP exemption fired although socat is present:\n{out}')
+    assert 'platform:' in res.stdout and 'would install' in res.stdout
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -2426,6 +2698,20 @@ def main() -> int:
          test_download_bounds_wget),
         ('download: failure names url + TMPDIR hint (REQ-INST-7)', test_download_failure_names_url_and_tmpdir),
         ('--hub / --version never call the GitHub API (REQ-INST-6)', test_hub_and_version_paths_never_call_the_api),
+        ('socat missing is fatal, unknown hub (REQ-INST-14)',
+         test_socat_missing_is_fatal_and_installs_nothing),
+        ('socat missing is fatal for an https:// hub (REQ-INST-14)',
+         test_socat_missing_is_fatal_for_a_tls_hub),
+        ('socat failure names s_client but never takes it (REQ-INST-14)',
+         test_socat_failure_names_the_escape_hatch_but_does_not_take_it),
+        ('socat missing: --dry-run previews, not fails (REQ-INST-14)',
+         test_socat_missing_dry_run_previews_instead_of_failing),
+        ('socat missing: --uninstall still works (REQ-INST-14)',
+         test_socat_missing_uninstall_still_works),
+        ('socat missing: plain-http --hub proceeds (REQ-INST-14)',
+         test_socat_missing_plain_http_hub_proceeds),
+        ('socat present: preflight stays silent (REQ-INST-14)',
+         test_socat_present_keeps_the_installer_silent),
         ('install.sh full run: service lifecycle (backup/identical/force)', test_install_sh_full_run_service_lifecycle),
         ('install.sh sudo paths (SUDO_USER resolve + root refusal)', test_install_sh_sudo_paths),
         ('install.sh sudo real run: PATH write for target user', test_install_sh_sudo_path_write),
