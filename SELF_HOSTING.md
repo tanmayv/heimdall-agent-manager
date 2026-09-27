@@ -299,20 +299,78 @@ The installer:
 2. Downloads the release tarball and its `SHA256SUMS`, and **verifies the
    SHA-256 checksum before extracting anything**.
 3. Installs `heimdall`, `ham-bridge`, `ham-pty-host` and `ham-ctl` to
-   `~/.local/bin` (`/usr/local/bin` when run as root) — no sudo required.
-   A bundled `openssl` is installed too when the release ships one.
-4. Adds the install directory to `PATH` in `~/.bashrc` / `~/.zshrc`
-   (idempotent).
+   `~/.local/bin` — no sudo required. Under `curl | sudo bash` the binaries go
+   to `/usr/local/bin` while the service file and PATH lines are written for
+   the invoking user (resolved from `SUDO_USER`) and chowned to them, so the
+   install never splits between `/usr/local/bin` and `/root`; running as root
+   without a resolvable `SUDO_USER` is refused. A bundled `openssl` is
+   installed too when the release ships one.
+4. Wires the install directory onto `PATH` in the shell config files that
+   actually exist for your shell — `~/.bashrc` / `~/.bash_profile` (bash),
+   `~/.zshrc` / `~/.zprofile` (zsh, and the login-shell files macOS reads),
+   or `~/.config/fish/config.fish` (fish) — idempotently, and under sudo in
+   the invoking user's files rather than root's. A config file for a shell you
+   do not use is never created.
+
+   **A shell config file that cannot be written is not an install failure.**
+   On NixOS and anywhere home-manager manages your dotfiles, `~/.bashrc` and
+   `~/.zshrc` are symlinks into a read-only `/nix/store` path, so the append
+   cannot succeed. The installer says which file it could not write, prints a
+   copy-pasteable snippet — the plain `export PATH=...` line, the
+   home-manager `home.sessionPath` form, and the fish `fish_add_path` form —
+   and **carries on to register the service and exits 0**. When no file could
+   be written at all, the closing summary states that the install succeeded
+   and that only `PATH` needs your action.
 5. Registers — but does not start — a user service
    (`~/.config/systemd/user/heimdall-bridge.service` on Linux,
    `~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist` on macOS).
+   An existing, differing service file is first backed up next to it as
+   `<name>.bak-<UTC timestamp>`; an identical file is left untouched; pass
+   `--force-service` to overwrite a differing file without keeping a backup.
 6. Prints the enrollment next steps (also shown below).
+
+The registered service takes the hub URL from `config.toml` (`[wrapper]
+daemon_url`, written by `heimdall enroll` in step 2 below) — no URL is baked
+into the unit. Passing `--hub <url>` to the installer is the one explicit
+exception: it writes that URL into the unit as a deliberate operator
+override.
 
 Preview every planned action without writing anything:
 
 ```bash
 bash scripts/install.sh --dry-run
 ```
+
+To reverse an install, pass `--uninstall`:
+
+```bash
+bash scripts/install.sh --uninstall --dry-run   # report only, changes nothing
+bash scripts/install.sh --uninstall
+```
+
+It stops the bridge service (best effort), removes the four binaries, the
+bundled `openssl` it installed together with the `.heimdall-openssl.sha256`
+record beside it, removes the service file, and strips the
+`PATH` lines it added — matched by the `# Added by heimdall install.sh`
+marker, so your own `PATH` edits are untouched. It deliberately **keeps** your
+state and names the path for each, so you can remove it by hand if you really
+want it gone:
+
+- `~/.config/heimdall` — the bridge token and `config.toml`, i.e. your
+  enrollment. Uninstalling the binaries does not un-enroll the device.
+- `<service file>.bak-*` — service files you had before an install replaced
+  them. These are recovery artifacts, not installer debris.
+- An `openssl` at the install directory that this installer cannot prove it
+  wrote. `openssl` is the one generic name the installer places, so authorship
+  is established by a recorded checksum rather than by the file's name or its
+  contents: the install writes `<install dir>/.heimdall-openssl.sha256` holding
+  the SHA-256 of the `openssl` it just installed, and `--uninstall` removes that
+  `openssl` only while it still hashes to the recorded value. A system or
+  hand-placed `openssl` has no such record and is always kept and named. One
+  consequence worth knowing: `heimdall self-update` refreshes a bundled
+  `openssl` without updating the record, so after a self-update `--uninstall`
+  keeps the file and tells you the checksum no longer matches — it errs toward
+  leaving a file behind rather than deleting one it cannot account for.
 
 `socat` (the default bridge → hub TLS transport) is not bundled; install it
 with your system package manager (`sudo apt install socat`,

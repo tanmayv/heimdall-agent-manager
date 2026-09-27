@@ -37,3 +37,7 @@ hub.db-wal
 dist-preview/
 .ui-preview-session
 .dev-preview-session
+
+# Python bytecode from the test suites (tests/*.py)
+__pycache__/
+*.pyc
