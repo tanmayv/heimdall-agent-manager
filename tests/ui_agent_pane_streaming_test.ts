@@ -130,3 +130,59 @@ test('End-to-end keystroke roundtrip latency meets sub-10ms budget', async () =>
     `Streaming keystroke queue latency (${perKeystrokeLatencyMs.toFixed(3)}ms) must be well under 10ms SLA`
   );
 });
+
+test('AgentPaneComposerPanel.tsx wires onStatus and surfaces blocked state in header controls', () => {
+  assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
+  const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
+
+  // 1. Wires onStatus in useAgentStream
+  assert.ok(src.includes('onStatus: (status) =>'), 'must provide onStatus callback to useAgentStream');
+  assert.ok(src.includes('setStreamRuntimeStatus(status)'), 'must update stream runtime status on status frame');
+
+  // 2. Evaluates isBlocked
+  assert.ok(
+    src.includes("effectiveRuntimeStatus === 'blocked' || effectiveRuntimeStatus === 'startup_blocked'"),
+    'must evaluate isBlocked for blocked and startup_blocked states'
+  );
+
+  // 3. Status indicator dot & label show blocked state
+  assert.ok(
+    src.includes("title={isBlocked ? 'Blocked' : isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}"),
+    'status dot title must indicate Blocked'
+  );
+  assert.ok(
+    src.includes("isBlocked") && src.includes("? 'blocked'"),
+    'interval label must indicate blocked when agent is blocked'
+  );
+});
+
+test('AgentPaneComposerPanel.tsx disables convertEol in streaming mode, enforces >=80 column floor, and allows horizontal scroll', () => {
+  assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
+  const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
+
+  // 1. convertEol is disabled during active streaming
+  assert.ok(src.includes('convertEol: !isStreamingActive'), 'must initialize Terminal with convertEol: !isStreamingActive');
+  assert.ok(
+    src.includes('terminalRef.current.options.convertEol = !isStreamingActive'),
+    'must synchronize convertEol with streaming status'
+  );
+
+  // 2. Minimum column floor (>=80 cols) and row floor (>=24 rows) enforced in resize handlers
+  assert.ok(src.includes('const effectiveCols = Math.max(cols, 80);'), 'handleResize must enforce minimum 80 cols');
+  assert.ok(src.includes('const effectiveRows = Math.max(rows, 24);'), 'handleResize must enforce minimum 24 rows');
+  assert.ok(
+    src.includes('term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24))'),
+    'dispatchResize and observers must enforce >=80 cols and >=24 rows'
+  );
+
+  // 3. Terminal container styling enables horizontal scrolling
+  assert.ok(
+    src.includes('overflow-x-auto'),
+    'terminal container must include overflow-x-auto for narrow viewports'
+  );
+  assert.ok(
+    src.includes('chat-scrollbar relative min-h-[280px]') && src.includes('overflow-x-auto'),
+    'terminal container must include chat-scrollbar and overflow-x-auto'
+  );
+});
+

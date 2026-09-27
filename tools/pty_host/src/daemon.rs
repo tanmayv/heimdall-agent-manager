@@ -2456,5 +2456,172 @@ mod tests {
         assert!(resized_back, "instance was not auto-resized back to CRT after client drop");
         server.shutdown();
     }
+
+    #[test]
+    fn test_streaming_attach_resize_auto_enter_investigation() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("investigate_ae");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let mut conn_events = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut conn_events, &CtlMsg::WatchEvents).unwrap();
+
+        let prompt = "Please confirm: Do you trust the authors of this repository and want to proceed? [Yes/no]";
+        let detect = format!(
+            r#"{{
+                "enabled": true,
+                "startup_probe_seconds": 10,
+                "capture_interval_ms": 100,
+                "auto_enter_patterns": ["{}"],
+                "auto_enter_pre_keys": [""]
+            }}"#,
+            prompt
+        );
+
+        dproto::write_ctl_msg(
+            &mut conn_events,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "inv_ae".into(),
+                argv: vec![
+                    sh.clone(),
+                    "-c".into(),
+                    format!("sleep 0.1; echo '{}'; read -r line; echo \"DISMISSED:$line\"; while :; do sleep 1; done", prompt),
+                ],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect),
+                rows: 25,
+                cols: 80,
+                display_name: None,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        assert!(await_reply(&mut conn_events, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
+
+        // Connect dedicated streaming worker socket
+        let mut conn_stream = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut conn_stream, &CtlMsg::Attach { instance: "inv_ae".into() }).unwrap();
+        let _ = dproto::read_ctl_reply(&mut conn_stream);
+
+        // Wait for prompt to print and wrap at 80 cols FIRST
+        std::thread::sleep(Duration::from_millis(250));
+
+        // Immediate resize from UI: 120 cols from UI!
+        dproto::write_ctl_msg(&mut conn_stream, &CtlMsg::Resize {
+            instance: "inv_ae".into(),
+            rows: 30,
+            cols: 120,
+        }).unwrap();
+
+        let mut dismissed = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(6) {
+            dproto::write_ctl_msg(&mut conn_stream, &CtlMsg::Capture { instance: "inv_ae".into() }).unwrap();
+            if let Some(CtlReply::Screen { screen, .. }) = await_reply(
+                &mut conn_stream,
+                |r| matches!(r, CtlReply::Screen { .. }),
+                Duration::from_millis(300),
+            ) {
+                let full = screen.lines.join("\n");
+                eprintln!("[TEST DEBUG] Screen full text:\n{}", full);
+                if full.contains("DISMISSED") {
+                    dismissed = true;
+                    break;
+                }
+            }
+        }
+        assert!(dismissed, "Auto-enter failed to dismiss prompt under streaming attach + resize");
+        server.shutdown();
+    }
+
+    #[test]
+    fn test_streaming_attach_resize_startup_blocked() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("investigate_blocked");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let mut conn_events = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut conn_events, &CtlMsg::WatchEvents).unwrap();
+
+        let prompt = "Please authenticate: Provider interactive authentication is required before starting. [Sign in]";
+        let detect = format!(
+            r#"{{
+                "enabled": true,
+                "startup_probe_seconds": 10,
+                "capture_interval_ms": 100,
+                "blocked_patterns": ["{}"],
+                "sanitized_reason_mapping": ["auth=Provider authentication required"]
+            }}"#,
+            prompt
+        );
+
+        dproto::write_ctl_msg(
+            &mut conn_events,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "inv_block".into(),
+                argv: vec![
+                    sh.clone(),
+                    "-c".into(),
+                    format!("sleep 0.1; echo '{}'; while :; do sleep 1; done", prompt),
+                ],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect),
+                rows: 25,
+                cols: 80,
+                display_name: None,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        assert!(await_reply(&mut conn_events, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
+
+        // Connect dedicated streaming worker socket
+        let mut conn_stream = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut conn_stream, &CtlMsg::Attach { instance: "inv_block".into() }).unwrap();
+        let _ = dproto::read_ctl_reply(&mut conn_stream);
+
+        // Wait for prompt to print and wrap at 80 cols FIRST
+        std::thread::sleep(Duration::from_millis(250));
+
+        // Immediate resize from UI: 120 cols
+        dproto::write_ctl_msg(&mut conn_stream, &CtlMsg::Resize {
+            instance: "inv_block".into(),
+            rows: 30,
+            cols: 120,
+        }).unwrap();
+
+        // Await StartupBlocked on WatchEvents connection
+        let reply = await_reply(
+            &mut conn_events,
+            |r| matches!(r, CtlReply::StartupBlocked { .. }),
+            Duration::from_secs(5),
+        );
+
+        match reply {
+            Some(CtlReply::StartupBlocked { instance, reason_code, safe_diagnostic }) => {
+                assert_eq!(instance, "inv_block");
+                assert_eq!(reason_code, "blocked_0Please_authenticate_Provider_interactive_authentication_is_required_before_starting_Sign_in");
+                assert_eq!(safe_diagnostic, "Provider authentication required");
+            }
+            other => panic!("expected StartupBlocked on WatchEvents, got {other:?}"),
+        }
+
+        server.shutdown();
+    }
 }
+
 

@@ -76,6 +76,12 @@ export function AgentPaneComposerPanel({
 
   const [fallbackToPolling, setFallbackToPolling] = useState<boolean>(false);
 
+  const [streamRuntimeStatus, setStreamRuntimeStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStreamRuntimeStatus(null);
+  }, [agentInstanceId]);
+
   // --------------------------------------------------------------------------
   // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
   // --------------------------------------------------------------------------
@@ -93,6 +99,11 @@ export function AgentPaneComposerPanel({
       term.write(bytes);
       if (!userScrolledUpRef.current) {
         term.scrollToBottom();
+      }
+    },
+    onStatus: (status) => {
+      if (status) {
+        setStreamRuntimeStatus(status);
       }
     },
     onError: () => {
@@ -177,15 +188,17 @@ export function AgentPaneComposerPanel({
   // Unified resize handler routing between streaming and legacy polling
   const handleResize = useCallback(
     (rows: number, cols: number) => {
+      const effectiveCols = Math.max(cols, 80);
+      const effectiveRows = Math.max(rows, 24);
       if (isStreamingActive) {
-        sendStreamResize(rows, cols);
+        sendStreamResize(effectiveRows, effectiveCols);
       } else {
         const targetId = agentInstanceIdRef.current;
         if (targetId) {
-          sendAgentPaneResize({ agentInstanceId: targetId, rows, cols }).catch(() => {});
+          sendAgentPaneResize({ agentInstanceId: targetId, rows: effectiveRows, cols: effectiveCols }).catch(() => {});
         }
       }
-      setTerminalDimensions({ cols, rows });
+      setTerminalDimensions({ cols: effectiveCols, rows: effectiveRows });
     },
     [isStreamingActive, sendStreamResize, sendAgentPaneResize]
   );
@@ -214,7 +227,7 @@ export function AgentPaneComposerPanel({
     const container = terminalContainerRef.current;
 
     const term = new Terminal({
-      convertEol: true,
+      convertEol: !isStreamingActive,
       cursorBlink: false,
       cursorInactiveStyle: 'none',
       cursorStyle: 'bar',
@@ -257,10 +270,8 @@ export function AgentPaneComposerPanel({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          // Guarantee minimum usable dimensions if fit produced 0 cols/rows
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
+          // Guarantee minimum usable dimensions (minimum 80 cols, 24 rows)
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
         if (term.rows > 0 && term.cols > 0) {
           handleResizeRef.current(term.rows, term.cols);
@@ -280,9 +291,7 @@ export function AgentPaneComposerPanel({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
       } catch (e) {}
     });
@@ -292,9 +301,7 @@ export function AgentPaneComposerPanel({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
       } catch (e) {}
     };
@@ -340,6 +347,13 @@ export function AgentPaneComposerPanel({
     }
   }, [theme]);
 
+  // Synchronize terminal convertEol option with streaming status (disabled during streaming)
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.convertEol = !isStreamingActive;
+    }
+  }, [isStreamingActive]);
+
   // Feed incoming ANSI output into terminal (LEGACY POLLING PATH)
   useEffect(() => {
     if (isStreamingActive) return; // Prevent clearing/redrawing buffer during active streaming
@@ -381,10 +395,14 @@ export function AgentPaneComposerPanel({
     return null;
   }
 
-  const isStopped = runtimeStatus === 'stopped' || runtimeStatus === 'failed';
-  const isUpdatingOrRunning = Boolean(isFetching || runtimeStatus === 'running' || runtimeStatus === 'active');
+  const effectiveRuntimeStatus = streamRuntimeStatus || runtimeStatus;
+  const isStopped = effectiveRuntimeStatus === 'stopped' || effectiveRuntimeStatus === 'failed';
+  const isBlocked = effectiveRuntimeStatus === 'blocked' || effectiveRuntimeStatus === 'startup_blocked';
+  const isUpdatingOrRunning = Boolean(isFetching || effectiveRuntimeStatus === 'running' || effectiveRuntimeStatus === 'active');
   const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false
     ? 'paused'
+    : isBlocked
+    ? 'blocked'
     : isStreamingActive
     ? 'streaming'
     : isExpanded
@@ -405,12 +423,14 @@ export function AgentPaneComposerPanel({
         className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
       >
         <div className="flex items-center gap-2">
-          {/* Status indicator dot (pulsing green if updating/running) */}
+          {/* Status indicator dot (warning if blocked, pulsing green if updating/running) */}
           <span
             data-debug-id="agent-pane-status-dot"
-            title={isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
+            title={isBlocked ? 'Blocked' : isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
             className={`h-2 w-2 rounded-full ${
-              isUpdatingOrRunning
+              isBlocked
+                ? 'bg-warning shadow-glow-warning animate-soft-pulse'
+                : isUpdatingOrRunning
                 ? 'bg-success animate-pulse'
                 : isStopped
                 ? 'bg-faint'
@@ -423,7 +443,9 @@ export function AgentPaneComposerPanel({
           {/* Refresh interval tag */}
           <span
             data-debug-id="agent-pane-interval-tag"
-            className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-mono text-muted"
+            className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
+              isBlocked ? 'bg-warning/20 text-warning font-semibold' : 'bg-neutral-soft text-muted'
+            }`}
           >
             {intervalLabel}
           </span>
@@ -484,7 +506,7 @@ export function AgentPaneComposerPanel({
         role="region"
         aria-label="Interactive Terminal"
         style={{ backgroundColor: theme.terminal.background }}
-        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none"
+        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none"
       />
 
       {/* Accessible fallback & static verification pre element */}
