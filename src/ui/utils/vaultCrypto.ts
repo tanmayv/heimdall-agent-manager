@@ -128,6 +128,23 @@ BIP39_WORDS.forEach((word, idx) => {
 });
 
 /**
+ * Whether SubtleCrypto is actually available in this context (REQ-VAULT-UNSUP-1).
+ *
+ * The User Vault is built entirely on `crypto.subtle`, which browsers gate behind a
+ * secure context: over plain HTTP on a non-localhost origin `window.crypto` still
+ * exists (so `getRandomValues` works) but `crypto.subtle` is `undefined`, and every
+ * vault operation dies on its first call.
+ *
+ * This probes for `subtle` itself rather than branching on `window.isSecureContext`,
+ * because presence at the call site is what actually matters and the two can diverge
+ * (Electron, `file://`, embedded webviews). This is the single canonical availability
+ * predicate — do not add a second one.
+ */
+export function isVaultSupported(): boolean {
+  return typeof globalThis.crypto?.subtle?.generateKey === 'function';
+}
+
+/**
  * Generate a new 256-bit symmetric AES-GCM Vault Key (KV).
  */
 export async function generateVaultKey(): Promise<CryptoKey> {

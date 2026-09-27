@@ -545,4 +545,69 @@ Acceptance Criteria:
   assert.equal(testAcceptanceSummary(bulletDescription), 'Criteria Alpha · Criteria Beta');
 });
 
+// -----------------------------------------------------------------------------
+// REQ-VAULT-UNSUP-5: embedded decryption is inert when SubtleCrypto is unavailable
+//
+// Without crypto.subtle the vault can never be unlocked, so no active key ever
+// reaches the embedded-token decrypt path. It must degrade to leaving the armored
+// text untouched — never throw a raw TypeError at the user.
+// -----------------------------------------------------------------------------
+
+test('embedded vault decryption is a no-op without an active key, touching no SubtleCrypto', async () => {
+  const { decryptEmbeddedVaultTokens, containsVaultArmored } = await import(
+    '../src/ui/utils/vaultContent.ts'
+  );
+
+  const armored = 'Task note: vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= end.';
+  assert.equal(containsVaultArmored(armored), true, 'fixture must contain an armored token');
+
+  // Simulate the unsupported context: crypto present, subtle absent, no unlocked key.
+  const realCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { getRandomValues: (a: any) => a },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    for (const noKey of ['', null, undefined] as any[]) {
+      const out = await decryptEmbeddedVaultTokens(armored, noKey);
+      assert.equal(
+        out,
+        armored,
+        'armored text must pass through unchanged when no vault key is active',
+      );
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: realCrypto,
+      configurable: true,
+      writable: true,
+    });
+  }
+});
+
+test('isVaultSupported() is the single availability predicate consumed by vault UI', async () => {
+  const { isVaultSupported } = await import('../src/ui/utils/vaultCrypto.ts');
+  assert.equal(typeof isVaultSupported, 'function', 'vaultCrypto.ts must export isVaultSupported');
+  assert.equal(isVaultSupported(), true, 'Node webcrypto is a supported context');
+
+  // Exactly one definition of the predicate exists across the UI sources.
+  const sources = [
+    'src/ui/utils/vaultCrypto.ts',
+    'src/ui/utils/vaultContent.ts',
+    'src/ui/store/vaultSlice.ts',
+    'src/ui/components/shell/AppShell.tsx',
+    'src/ui/components/shell/BottomDock.tsx',
+    'src/ui/components/settings/VaultPanel.tsx',
+  ];
+  const definitions = sources.filter((rel) =>
+    /export function isVaultSupported/.test(fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8')),
+  );
+  assert.deepEqual(
+    definitions,
+    ['src/ui/utils/vaultCrypto.ts'],
+    'isVaultSupported() must be defined exactly once, in vaultCrypto.ts',
+  );
+});
+
 console.log('ui_embedded_vault_decrypt_test: all regression tests completed successfully.');

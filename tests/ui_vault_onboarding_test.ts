@@ -13,6 +13,7 @@ import {
   generateVaultKey,
   exportRawKeyHex,
   importRawKeyHex,
+  isVaultSupported,
   AES_GCM_NONCE_BYTES,
   bytesToHex,
   hexToBytes,
@@ -34,6 +35,9 @@ import vaultReducer, {
   readOnboardingDismissed,
   writeOnboardingDismissed,
   loadInitialVaultState,
+  shouldOpenVaultOnboarding,
+  vaultStatusLabel,
+  VAULT_UNSUPPORTED_REASON,
   VAULT_SESSION_KEY,
   VAULT_ONBOARDING_DISMISSED_KEY,
 } from '../src/ui/store/vaultSlice.ts';
@@ -101,11 +105,17 @@ test('AppShell.tsx mounts VaultOnboardingModal and BottomDock displays vault-hea
     'BottomDock.tsx must render header status badge with data-debug-id="vault-header-status-badge"',
   );
 
-  // Verify header displays locked/unlocked status
+  // Verify header displays vault status via the canonical label helper
+  // (REQ-VAULT-UNSUP-3: Unsupported/Unlocked/Locked/Unconfigured)
   assert.match(
     bottomDockContent,
-    /Vault:\s*\{isVaultUnlocked\s*\?\s*['"]Unlocked['"]/,
-    'BottomDock.tsx header status badge must display Locked/Unlocked/Unconfigured status',
+    /Vault:\s*\{vaultLabel\}/,
+    'BottomDock.tsx header status badge must render the vaultStatusLabel() result',
+  );
+  assert.match(
+    bottomDockContent,
+    /vaultStatusLabel\(\{\s*isVaultUnlocked,\s*isVaultConfigured\s*\}\)/,
+    'BottomDock.tsx must derive its badge label from vaultStatusLabel()',
   );
 
   // Verify VaultOnboardingModal mounting
@@ -313,4 +323,203 @@ test('Onboarding dismissal flag prevents aggressive re-popping in current sessio
   writeOnboardingDismissed(false);
   assert.equal(store.get(VAULT_ONBOARDING_DISMISSED_KEY), undefined);
   assert.equal(readOnboardingDismissed(), false);
+});
+
+// -----------------------------------------------------------------------------
+// REQ-VAULT-UNSUP-5: graceful "Vault unsupported" when crypto.subtle is unavailable
+//
+// Self-hosting over plain HTTP on a non-localhost origin means the page is not a
+// secure context, so `crypto.subtle` is undefined while `window.crypto` still exists.
+// These tests stub that shape and assert the *decisions* the UI makes, not merely
+// that a predicate returns false.
+// -----------------------------------------------------------------------------
+
+/**
+ * Run `fn` with `globalThis.crypto` replaced by a non-secure-context shape: present,
+ * with getRandomValues, but no `subtle`. Restores the real crypto afterwards.
+ */
+function withoutSubtleCrypto<T>(fn: () => T): T {
+  const realCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { getRandomValues: (a: any) => a },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: realCrypto,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+
+test('isVaultSupported() is true in a secure context and false when crypto.subtle is absent', () => {
+  // True: Node's real webcrypto exposes subtle.generateKey.
+  assert.equal(isVaultSupported(), true, 'must be true when SubtleCrypto is present');
+
+  // False: crypto present, subtle missing — the plain-HTTP non-localhost shape.
+  withoutSubtleCrypto(() => {
+    assert.equal(
+      (globalThis.crypto as any)?.subtle,
+      undefined,
+      'stub must reproduce the non-secure-context shape (crypto present, subtle absent)',
+    );
+    assert.equal(isVaultSupported(), false, 'must be false when crypto.subtle is absent');
+  });
+
+  // False: crypto object entirely missing.
+  const realCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true, writable: true });
+  try {
+    assert.equal(isVaultSupported(), false, 'must be false when globalThis.crypto is undefined');
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { value: realCrypto, configurable: true, writable: true });
+  }
+
+  // Restored.
+  assert.equal(isVaultSupported(), true, 'must be restored to true after stubbing');
+});
+
+test('onboarding modal stays closed when crypto.subtle is absent, for both open paths', () => {
+  setupMockSessionStorage();
+
+  // Baseline: in a secure context the modal DOES open for a locked, undismissed vault.
+  assert.equal(
+    shouldOpenVaultOnboarding({ isVaultUnlocked: false, dismissed: false }),
+    true,
+    'secure-context behavior must be unchanged: modal opens when locked and not dismissed',
+  );
+
+  withoutSubtleCrypto(() => {
+    // Path 1 — AppShell first-visit auto-pop. Every combination that would otherwise
+    // open the modal must now be suppressed.
+    for (const isVaultUnlocked of [false, true]) {
+      for (const dismissed of [false, true]) {
+        assert.equal(
+          shouldOpenVaultOnboarding({ isVaultUnlocked, dismissed }),
+          false,
+          `auto-pop must stay closed when unsupported (unlocked=${isVaultUnlocked}, dismissed=${dismissed})`,
+        );
+      }
+    }
+
+    // Path 2 — the isUnlockModalOpen back door from vault placeholders is gated on
+    // isVaultSupported() directly, so a placeholder click cannot reopen the modal.
+    assert.equal(isVaultSupported(), false, 'back-door gate must evaluate false when unsupported');
+  });
+
+  // Secure-context path provably untouched after restore.
+  assert.equal(shouldOpenVaultOnboarding({ isVaultUnlocked: false, dismissed: false }), true);
+  assert.equal(shouldOpenVaultOnboarding({ isVaultUnlocked: true, dismissed: false }), false);
+  assert.equal(shouldOpenVaultOnboarding({ isVaultUnlocked: false, dismissed: true }), false);
+});
+
+test('dock badge reads "Unsupported" with precedence over Unlocked/Locked/Unconfigured', () => {
+  // Secure context: unchanged three-state behavior.
+  assert.equal(vaultStatusLabel({ isVaultUnlocked: true, isVaultConfigured: true }), 'Unlocked');
+  assert.equal(vaultStatusLabel({ isVaultUnlocked: false, isVaultConfigured: true }), 'Locked');
+  assert.equal(vaultStatusLabel({ isVaultUnlocked: false, isVaultConfigured: false }), 'Unconfigured');
+
+  // Unsupported wins over every combination.
+  withoutSubtleCrypto(() => {
+    for (const isVaultUnlocked of [false, true]) {
+      for (const isVaultConfigured of [false, true]) {
+        assert.equal(
+          vaultStatusLabel({ isVaultUnlocked, isVaultConfigured }),
+          'Unsupported',
+          `Unsupported must take precedence (unlocked=${isVaultUnlocked}, configured=${isVaultConfigured})`,
+        );
+      }
+    }
+  });
+
+  // Tooltip names both cause and remedy.
+  assert.match(VAULT_UNSUPPORTED_REASON, /secure context/i, 'tooltip must name the cause');
+  assert.match(VAULT_UNSUPPORTED_REASON, /HTTPS|localhost/i, 'tooltip must name the remedy');
+});
+
+test('AppShell gates both modal-open paths and VaultPanel has no dead end when unsupported', () => {
+  const appShell = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx'),
+    'utf8',
+  );
+
+  // Path 1: the first-visit auto-pop goes through the predicate.
+  assert.match(
+    appShell,
+    /shouldOpenVaultOnboarding\(\{\s*isVaultUnlocked,\s*dismissed\s*\}\)/,
+    'AppShell.tsx auto-pop effect must be gated by shouldOpenVaultOnboarding()',
+  );
+  // Path 2: the isUnlockModalOpen back door is gated too.
+  assert.match(
+    appShell,
+    /if\s*\(isUnlockModalOpen\s*&&\s*isVaultSupported\(\)\)/,
+    'AppShell.tsx isUnlockModalOpen effect must be gated by isVaultSupported()',
+  );
+  // No ungated setIsOnboardingModalOpen(true) survives.
+  const ungated = appShell.match(/if\s*\(!isVaultUnlocked\s*&&\s*!dismissed\)/);
+  assert.equal(ungated, null, 'the original ungated auto-pop condition must be gone');
+
+  // The badge keys tooling and tests — it must not be renamed.
+  const bottomDock = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/ui/components/shell/BottomDock.tsx'),
+    'utf8',
+  );
+  assert.match(
+    bottomDock,
+    /data-debug-id=['"]vault-header-status-badge['"]/,
+    'vault-header-status-badge debug id must be unchanged',
+  );
+
+  // REQ-VAULT-UNSUP-4: the badge routes to /settings/vault, which must explain itself.
+  const vaultPanel = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/ui/components/settings/VaultPanel.tsx'),
+    'utf8',
+  );
+  assert.match(
+    vaultPanel,
+    /if\s*\(!isVaultSupported\(\)\)/,
+    'VaultPanel.tsx must short-circuit to an unsupported explanation',
+  );
+  assert.match(
+    vaultPanel,
+    /data-debug-id=['"]vault-unsupported-notice['"]/,
+    'VaultPanel.tsx must render the unsupported notice',
+  );
+
+  // Non-goal guard: no polyfill / userland crypto fallback was introduced.
+  const vaultCrypto = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/ui/utils/vaultCrypto.ts'),
+    'utf8',
+  );
+  assert.equal(
+    /polyfill|require\(['"]crypto['"]\)|node:crypto/.test(vaultCrypto),
+    false,
+    'no crypto polyfill or userland fallback may be introduced',
+  );
+
+  // Exactly one availability predicate: nobody re-implements the subtle check.
+  for (const [file, content] of [
+    ['AppShell.tsx', appShell],
+    ['BottomDock.tsx', bottomDock],
+    ['VaultPanel.tsx', vaultPanel],
+  ] as const) {
+    // Matches a duplicated availability *check* (a probe, negation, or comparison) —
+    // deliberately not bare `crypto.subtle`, which also appears in explanatory prose.
+    const duplicateSubtleCheck =
+      /(?:[!(]\s*|typeof\s+)\w*\.?crypto\??\.subtle|crypto\??\.subtle\s*(?:===|!==|\?\?|&&|\|\|)|crypto\??\.subtle\??\.\w/;
+    assert.equal(
+      duplicateSubtleCheck.test(content),
+      false,
+      `${file} must not perform its own crypto.subtle check — use isVaultSupported()`,
+    );
+    assert.equal(
+      /isSecureContext/.test(content),
+      false,
+      `${file} must not branch on isSecureContext`,
+    );
+  }
 });
