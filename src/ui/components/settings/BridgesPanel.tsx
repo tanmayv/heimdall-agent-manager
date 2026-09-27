@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   normalizeBridgeCapabilities,
   useListBridgesQuery,
@@ -10,6 +10,10 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { Button, FormField, Icon, Input, PageShell, StatusDot, Text } from '@ui';
 import type { Tone } from '@ui';
+import {
+  isPendingEnrollment as checkIsPendingEnrollment,
+  bridgeReady as checkBridgeReady,
+} from './bridgeEnrollment';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -38,20 +42,19 @@ export default function BridgesPanel() {
   const [copiedToken, setCopiedToken] = useState(false);
 
   const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked');
+  const enrolledBridgeIds = useMemo(() => new Set<string>(
+    bridges.map((b: any) => String(b?.bridge_id || b?.bridgeId || b?.id || '')).filter(Boolean)
+  ), [bridges]);
   const enrollments = enrollmentsQuery.data?.enrollments || [];
-  const pendingEnrollments = enrollments.filter(isPendingEnrollment);
+  const pendingEnrollments = enrollments.filter((enr: any) => isPendingEnrollment(enr));
 
   useEffect(() => {
     setHasPendingEnrollments(pendingEnrollments.length > 0);
   }, [pendingEnrollments.length]);
 
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // REQ-BRG-1: Check terminal and consumed states first (status === 'consumed' || status === 'revoked' || status === 'expired', consumed_at, revoked_at, and consumed_by_bridge_id matching an enrolled bridge in bridges). If consumed or revoked, return false.
   function isPendingEnrollment(enrollment: any): boolean {
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-    const status = String(enrollment?.status || enrollment?.state || '').toLowerCase();
-    if (status) return status === 'pending' || status === 'created' || status === 'active';
-    if (enrollment?.consumed_at || enrollment?.consumed_by_bridge_id || enrollment?.revoked_at) return false;
-    return true;
+    return checkIsPendingEnrollment(enrollment, enrolledBridgeIds);
   }
 
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -75,8 +78,9 @@ export default function BridgesPanel() {
     return providers.length ? providers.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : ''}`).join(', ') : '—';
   }
 
+  // REQ-BRG-1: An enrolled, online bridge is ready regardless of whether provider capabilities are loaded yet.
   function bridgeReady(bridge: any): boolean {
-    return statusLabel(bridge) === 'online' && normalizeBridgeCapabilities(bridge).length > 0;
+    return checkBridgeReady(bridge);
   }
 
   function configuredHubUrl(): string {
@@ -237,6 +241,8 @@ export default function BridgesPanel() {
               const id = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
               const isRenaming = renamingId === id;
               const isRevoking = revokeConfirmId === id;
+              const isReady = bridgeReady(bridge);
+              const status = statusLabel(bridge);
               return (
                 <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2.5">
                   <div className="flex items-start justify-between gap-2">
@@ -249,7 +255,16 @@ export default function BridgesPanel() {
                           // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           <span className="truncate text-sm font-medium text-primary">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
-                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-success/30 bg-success-soft text-success' : 'border-warning/30 bg-warning-soft text-warning'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
+                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${isReady ? 'border-success/30 bg-success-soft text-success' : status === 'revoked' ? 'border-danger/30 bg-danger-soft text-danger' : 'border-warning/30 bg-warning-soft text-warning'}`}>{isReady ? 'ready' : status}</span>
+                        {normalizeBridgeCapabilities(bridge).length === 0 ? (
+                          <a
+                            href={`#settings/providers?bridge=${encodeURIComponent(id)}`}
+                            data-debug-id={`settings-bridge-no-providers-${id}`}
+                            className="inline-flex items-center gap-1 rounded-full border border-subtle bg-surface-raised/40 px-2 py-0.5 text-[10px] text-muted hover:border-accent hover:text-accent transition-colors"
+                          >
+                            no providers configured
+                          </a>
+                        ) : null}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-primary">{statusLabel(bridge)}</span></span>
