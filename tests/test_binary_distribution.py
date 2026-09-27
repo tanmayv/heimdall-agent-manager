@@ -35,6 +35,14 @@ Verifies the distribution surfaces end-to-end and hermetically:
    and macos-15-intel alongside scripts/ci/installer-smoke.sh, the end-to-end
    install/uninstall proof against the real published release. See
    host_target()'s docstring.
+3c. Live-HOME tripwire (REQ-INST-19). Every test in this file runs between a
+   before/after snapshot of the real user's home -- the paths install.sh can
+   create, modify or delete -- and a test that changes any of them FAILS, even
+   if it otherwise passed or skipped. The home is resolved from the password
+   database, never from $HOME, because a test that escapes its sandbox is by
+   definition a test that set $HOME somewhere else. See
+   assert_live_home_untouched(); it is the post-condition sibling of
+   assert_bridge_isolated()'s pre-condition.
 4. heimdall CLI: the binary built from src/manager emits the documented
    --version and status schemas, with the version line pinned to
    src/contracts/protocol.odin.
@@ -56,6 +64,7 @@ import re
 import shlex
 import shutil
 import socketserver
+import stat
 import subprocess
 import sys
 import tarfile
@@ -73,13 +82,14 @@ class Skip(Exception):
     pass
 
 
-def run(argv, cwd=None, timeout=120):
+def run(argv, cwd=None, timeout=120, env=None):
     return subprocess.run(
         [str(a) for a in argv],
         cwd=str(cwd) if cwd else None,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
 
 
@@ -282,7 +292,7 @@ def test_sha256sums_validation(ctx):
 # ---- 3. install.sh -----------------------------------------------------------
 
 def test_install_sh_syntax(ctx):
-    res = run(['bash', '-n', INSTALL_SCRIPT])
+    res = run(['bash', '-n', INSTALL_SCRIPT], env=dry_run_env(ctx))
     assert res.returncode == 0, f'bash -n failed:\n{res.stderr}'
     # REQ-INST-4: main "$@" must be the final line, and nothing may execute at
     # top level before it — not even the shell-options statement.
@@ -296,7 +306,7 @@ def test_install_sh_syntax(ctx):
 
 
 def test_install_sh_help(ctx):
-    res = run(['bash', INSTALL_SCRIPT, '--help'])
+    res = run(['bash', INSTALL_SCRIPT, '--help'], env=dry_run_env(ctx))
     assert res.returncode == 0
     assert 'usage: install.sh' in res.stderr
     assert '--version <tag>' in res.stderr and '--hub <url>' in res.stderr
@@ -348,7 +358,8 @@ def test_install_sh_dry_run_version(ctx):
     if target is None:
         raise Skip(f'unsupported host for install.sh dry-run: {platform.system()}/{platform.machine()}')
     install_dir = '/usr/local/bin' if os.geteuid() == 0 else '.local/bin'
-    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'], timeout=60)
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'], timeout=60,
+              env=dry_run_env(ctx))
     dry_run_common_asserts(res, target, install_dir)
     assert 'release: v0.1.0' in res.stdout
     expected_url = (f'https://github.com/{GITHUB_REPO}/releases/download/v0.1.0/'
@@ -369,7 +380,8 @@ def test_install_sh_dry_run_hub(ctx):
         raise Skip(f'unsupported host for install.sh dry-run: {platform.system()}/{platform.machine()}')
     install_dir = '/usr/local/bin' if os.geteuid() == 0 else '.local/bin'
     hub = 'http://hub.example.test'
-    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--hub', hub], timeout=60)
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--hub', hub], timeout=60,
+              env=dry_run_env(ctx))
     dry_run_common_asserts(res, target, install_dir)
     assert 'release: custom-hub-release' in res.stdout
     assert f'would download: {hub}/heimdall-local-{target}.tar.gz' in res.stdout
@@ -402,7 +414,7 @@ def test_install_sh_dry_run_hub(ctx):
 def test_install_sh_dry_run_bare(ctx):
     # Offline-tolerant: even when the latest-tag lookup fails the dry run must
     # still exit 0 and print the plan.
-    res = run(['bash', INSTALL_SCRIPT, '--dry-run'], timeout=90)
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run'], timeout=90, env=dry_run_env(ctx))
     assert res.returncode == 0, f'bare --dry-run failed:\n{res.stderr}'
     assert 'platform:' in res.stdout and 'would install' in res.stdout
     assert 'hub.example.com' not in res.stdout, 'placeholder hub must not appear in the dry-run plan'
@@ -1771,6 +1783,229 @@ def test_install_sh_sudo_chown_failure_warns(ctx):
         assert 'before starting the service' in line, f'warning must say when to remediate: {line!r}'
 
 
+# --- REQ-INST-19: the live-HOME tripwire -------------------------------------
+#
+# assert_bridge_isolated() above is a PRE-condition, and it only covers routes
+# that need the session bus. Writing
+# ~/.config/systemd/user/heimdall-bridge.service needs no bus at all, and a
+# user unit takes precedence over /etc/systemd/user — so a stray write there
+# SILENTLY SHADOWS a system-managed bridge, invisibly, until someone restarts
+# it and gets the wrong one. Installing into ~/.local/bin and editing a live rc
+# file are the same class of damage.
+#
+# So this is the matching POST-condition: after every test, prove the real home
+# is byte-for-byte what it was before. It states nothing about what the home
+# SHOULD contain — it only requires that this suite did not change it, which is
+# what makes it safe on a host whose home is already dirty.
+
+
+def live_home() -> Path:
+    """The invoking user's REAL home, from the password database — NOT $HOME.
+
+    This distinction is the whole guard, so do not "simplify" it to
+    Path.home() or os.environ['HOME']. Every test that could escape its
+    sandbox is a test that set HOME to that sandbox. Reading $HOME here would
+    compare the sandbox against itself and pass no matter what had just been
+    written to the user's actual home directory.
+    """
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+def live_homes() -> list:
+    """Every real home this suite could damage, live_home() plus SUDO_USER's.
+
+    Under sudo the two DIFFER and the second one is the dangerous one:
+    install.sh resolves its target home from SUDO_USER (scripts/install.sh,
+    service_home) and writes the service file and rc lines THERE, while
+    getpwuid(geteuid()) says /root. Watching only the latter would leave the
+    exact outage path of REQ-INST-19 unguarded whenever the suite runs under
+    sudo.
+    """
+    import pwd
+    homes = [live_home()]
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if sudo_user:
+        try:
+            extra = Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            extra = None
+        if extra is not None and extra not in homes:
+            homes.append(extra)
+    return homes
+
+
+# Every rc file install.sh can append a PATH line to, home-relative. This is a
+# copy of path_candidates() in scripts/install.sh (its union branch, plus the
+# per-shell branches), and test_tripwire_covers_every_rc_install_sh_writes below
+# RE-DERIVES it from that function and fails if the two ever drift. Keeping the
+# literals AND checking them beats either alone: the list stays readable here,
+# and a new rc file added to install.sh cannot silently go unwatched.
+TRIPWIRE_RC_FILES = (
+    '.bashrc',
+    '.bash_profile',
+    '.zshrc',
+    '.zprofile',
+    '.profile',
+    '.config/fish/config.fish',
+)
+
+
+def live_home_tripwire_paths() -> list:
+    """Every path in the real home that install.sh is capable of creating,
+    modifying or deleting: the binaries it installs, the checksum record it
+    keeps for --uninstall, both platforms' service files, every rc file
+    path_candidates() can name, and its config directory.
+
+    Directories are watched as well as files -- ~/.local/bin,
+    ~/.config/systemd/user, ~/Library/LaunchAgents and ~/.config/fish -- so a
+    write under a name not listed here still shows up as a changed entry list
+    rather than slipping through. That is what catches the timestamped
+    $service_file.bak-<date> backups, whose names cannot be enumerated, and a
+    fish config.fish created from nothing in a directory install.sh mkdir -p's
+    itself.
+    """
+    paths = []
+    for home in live_homes():
+        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl', 'openssl',
+                    '.heimdall-openssl.sha256')
+        paths.append(home / '.local' / 'bin')
+        paths += [home / '.local' / 'bin' / name for name in binaries]
+        paths += [
+            home / '.config' / 'systemd' / 'user',
+            home / '.config' / 'systemd' / 'user' / 'heimdall-bridge.service',
+            home / 'Library' / 'LaunchAgents',
+            home / 'Library' / 'LaunchAgents' / 'works.earendil.heimdall-bridge.plist',
+            home / '.config' / 'heimdall',
+            home / '.config' / 'fish',
+        ]
+        paths += [home / rc for rc in TRIPWIRE_RC_FILES]
+    return paths
+
+
+# Hash anything small enough that a same-size, same-mtime edit is conceivable
+# (rc files, unit files, the checksum record). Multi-megabyte binaries fall
+# back to identity+size+mtime, which a reinstall cannot leave untouched.
+TRIPWIRE_HASH_MAX_BYTES = 1 << 20
+
+
+def _tripwire_state(path: Path) -> str:
+    """A change-detecting fingerprint of one path. Never raises: an
+    unreadable path records WHY, and that reason is itself part of the
+    fingerprint, so a permission flip is a change too."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return 'absent'
+    except OSError as exc:
+        return f'unreadable ({exc.__class__.__name__})'
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            return f'symlink -> {os.readlink(path)}'
+        except OSError as exc:
+            return f'symlink unreadable ({exc.__class__.__name__})'
+    if stat.S_ISDIR(st.st_mode):
+        try:
+            entries = sorted(entry.name for entry in path.iterdir())
+        except OSError as exc:
+            return f'dir unreadable ({exc.__class__.__name__})'
+        # Mode is part of the fingerprint: take_ownership() chmods the config
+        # dir, and an entry list alone would not notice.
+        return (f'dir mode={stat.S_IMODE(st.st_mode):o} entries=['
+                + ','.join(entries) + ']')
+    if st.st_size <= TRIPWIRE_HASH_MAX_BYTES:
+        try:
+            return f'file mode={stat.S_IMODE(st.st_mode):o} sha256={sha256_of(path)}'
+        except OSError as exc:
+            return f'file unreadable ({exc.__class__.__name__})'
+    return (f'file mode={stat.S_IMODE(st.st_mode):o} size={st.st_size} '
+            f'mtime_ns={st.st_mtime_ns} ino={st.st_ino}')
+
+
+def snapshot_live_home() -> dict:
+    return {str(path): _tripwire_state(path) for path in live_home_tripwire_paths()}
+
+
+def assert_live_home_untouched(before: dict, label: str) -> None:
+    """REQ-INST-19. HARD post-condition after EVERY test.
+
+    If this fires, a test wrote into the real user's home. Do NOT relax it and
+    do NOT add an allowlist entry to get a green run: on 2026-09-27 exactly
+    these paths, written outside a sandbox, left this host unable to restart
+    its own production bridge for six hours, because the user unit shadowed
+    the system one and nothing failed until the next restart.
+
+    Fix the test to sandbox its HOME instead. If a change here is genuinely
+    intended, it belongs in a deliberate, reviewed commit and not in a test run.
+    """
+    after = snapshot_live_home()
+    changed = [(path, before[path], after[path])
+               for path in before if before[path] != after[path]]
+    if not changed:
+        return
+    detail = '\n'.join(f'  {path}\n    before: {was}\n    after:  {now}'
+                        for path, was, now in changed)
+    homes = ', '.join(str(home) for home in live_homes())
+    raise AssertionError(
+        f'{label!r} MODIFIED THE LIVE HOME at {homes} — a test must never '
+        f'write outside its sandbox (REQ-INST-19):\n{detail}\n'
+        "Sandbox that test's HOME. Do not weaken this guard.\n"
+        'If the changed path is under ~/.local/bin or ~/.config/heimdall, rule out '
+        'an UNRELATED process writing there concurrently before blaming the test '
+        'named above: those directories are shared with whatever else is running.')
+
+
+def dry_run_env(ctx) -> dict:
+    """Env for the --dry-run / --help / syntax invocations: a sandbox HOME.
+
+    --dry-run writes nothing today, and these tests only read its plan. That
+    is precisely why the live HOME was inherited here for so long. But it
+    meant the only thing standing between this suite and the real
+    ~/.local/bin was install.sh honouring --dry-run on every one of its paths,
+    and the dry-run plan these tests assert on was being computed against the
+    developer's actual home — which is visible in the output, where it printed
+    the real ~/.local/bin. The tripwire above CATCHES such a write; this
+    removes the reason it could happen. Keep both.
+    """
+    home = ctx['work'] / 'dry-run-home'
+    home.mkdir(parents=True, exist_ok=True)
+    return {**os.environ, 'HOME': str(home)}
+
+
+
+def test_tripwire_covers_every_rc_install_sh_writes(ctx):
+    """REQ-INST-19: the watch list must not DESYNC from install.sh.
+
+    The first version of this guard watched four rc files while
+    path_candidates() named six, so ~/.zprofile and ~/.config/fish/config.fish
+    were written by install.sh and unwatched -- and the miss was invisible,
+    because a list of literals looks complete. This re-derives the set from the
+    function itself, so the next rc file added to install.sh fails here instead
+    of quietly going unguarded.
+
+    Deliberately checks the WATCH LIST and not just TRIPWIRE_RC_FILES: what
+    matters is that the paths actually end up watched for every home.
+    """
+    body = re.search(r'^path_candidates\(\) \{(.*?)^\}', INSTALL_SCRIPT.read_text(),
+                     flags=re.S | re.M)
+    assert body, 'path_candidates() not found in install.sh — this test must be updated, not deleted'
+    named = set(re.findall(r'\$service_home/(\S+?)"', body.group(1)))
+    assert named, f'no $service_home rc paths parsed out of path_candidates():\n{body.group(1)}'
+    # Sanity: the parse found the shapes we expect, so a regex that silently
+    # matched nothing useful cannot make this test vacuous.
+    assert '.zshrc' in named and '.config/fish/config.fish' in named, (
+        f'path_candidates() parse looks wrong, got {sorted(named)}')
+
+    watched = {str(path) for path in live_home_tripwire_paths()}
+    for home in live_homes():
+        missing = sorted(rc for rc in named if str(home / rc) not in watched)
+        assert not missing, (
+            f'install.sh writes these rc files under {home} and the REQ-INST-19 '
+            f'tripwire does not watch them: {missing}. Add them to '
+            'TRIPWIRE_RC_FILES — a test that escapes its sandbox could rewrite '
+            'them with nothing noticing.')
+
+
 def sandbox_install_env(home: Path, runtime: Path) -> dict:
     """Env for a hermetic install run: sandbox HOME, no sudo, unknown shell.
     SHELL='' makes path_candidates() take its union branch, which is the
@@ -3108,6 +3343,8 @@ def main() -> int:
          test_socat_missing_plain_http_hub_proceeds),
         ('socat present: preflight stays silent (REQ-INST-14)',
          test_socat_present_keeps_the_installer_silent),
+        ('tripwire covers every rc file install.sh writes (REQ-INST-19)',
+         test_tripwire_covers_every_rc_install_sh_writes),
         ('install.sh full run: service lifecycle (backup/identical/force)', test_install_sh_full_run_service_lifecycle),
         ('install.sh sudo paths (SUDO_USER resolve + root refusal)', test_install_sh_sudo_paths),
         ('install.sh sudo real run: PATH write for target user', test_install_sh_sudo_path_write),
@@ -3149,15 +3386,29 @@ def main() -> int:
         failures = []
         skips = []
         for name, fn in tests:
+            before = snapshot_live_home()
+            outcome = None
             try:
                 fn(ctx)
-                print(f'PASS: {name}')
             except Skip as skipped:
-                skips.append((name, str(skipped)))
-                print(f'SKIP: {name} ({skipped})')
+                outcome = ('skip', str(skipped))
             except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
-                failures.append((name, str(exc)))
-                print(f'FAIL: {name}: {exc}')
+                outcome = ('fail', str(exc))
+            # REQ-INST-19: checked after a PASS, a FAIL and a SKIP alike — a
+            # test that escaped its sandbox and then skipped still escaped,
+            # and a tripped wire always downgrades the result to a failure.
+            try:
+                assert_live_home_untouched(before, name)
+            except AssertionError as exc:
+                outcome = ('fail', str(exc))
+            if outcome is None:
+                print(f'PASS: {name}')
+            elif outcome[0] == 'skip':
+                skips.append((name, outcome[1]))
+                print(f'SKIP: {name} ({outcome[1]})')
+            else:
+                failures.append((name, outcome[1]))
+                print(f'FAIL: {name}: {outcome[1]}')
         print()
         for name, _ in skips:
             print(f'skipped: {name}')
