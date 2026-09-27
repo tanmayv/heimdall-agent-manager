@@ -80,26 +80,50 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 # binary. Reordering the guard would not have fixed that case: the guard passes,
 # because wget IS present.
 #
-# Like sha256_or_empty below, the trailing `return 0` is load-bearing rather
-# than tidiness. This helper's contract is to REPORT a failed request as a
-# value, and callers read it with `code="$(api_fetch ...)"`. Under
-# `set -euo pipefail` a non-zero return here would kill the script AT THAT
-# ASSIGNMENT instead of letting the caller print a diagnosis -- the same shape
-# that aborted REQ-INST-5 and T2's uninstall in mid-operation.
+# $3 is a path the RESPONSE HEADERS are written to, for the caller to read. It
+# is a file and not a global on purpose: this function is invoked as
+# `code="$(api_fetch ...)"`, so it runs in a SUBSHELL and any variable it set
+# would be discarded at the closing paren -- the same trap the $resolved_tag note
+# on resolve_latest_tag describes. curl needs -D for this; wget's -S already
+# writes them to stderr, which this branch was redirecting to a private file and
+# then deleting, so the headers were being thrown away after one sed. Both now
+# land in the caller's file in the same shape, and header_value below reads
+# either. What needs them: a 403 can only be CALLED a rate limit when
+# X-RateLimit-Remaining says so.
+#
+# The trailing `return 0` states this helper's contract: it REPORTS a failed
+# request as a value, and callers read it with `code="$(api_fetch ...)"`, a bare
+# assignment that `set -e` would abort on if this ever returned non-zero.
+#
+# Being precise, because an overstated comment costs the next reader real time:
+# TODAY this `return 0` is DEFENSIVE, not load-bearing, for two INDEPENDENT
+# reasons, either of which alone would be enough:
+#   1. The last statement is `printf`, which always succeeds, so the function
+#      already returns 0 on every path.
+#   2. `set -e` is not even in force in this call graph. resolve_latest_tag's only
+#      caller invokes it as `if resolve_latest_tag; then`, and bash SUSPENDS
+#      `set -e` for the whole body of a function whose status is being tested.
+#      A failing assignment inside it does not abort anything.
+# Both are verified, not assumed. It is kept anyway, and must not be deleted as
+# redundant: reason 1 dies the moment someone appends a statement after the
+# printf, and reason 2 dies the moment someone calls resolve_latest_tag bare
+# instead of in an `if`. Either change silently converts a reported failure into
+# a mid-operation abort -- the shape that cost REQ-INST-5 and T2's uninstall.
+# The `return 0` is what makes those edits safe to make.
 api_fetch() {
-  url="$1"; body_out="$2"
+  url="$1"; body_out="$2"; hdr_out="$3"
   code=""
   : >"$body_out" 2>/dev/null || true
+  : >"$hdr_out" 2>/dev/null || true
   if command -v curl >/dev/null 2>&1; then
     # -f is deliberately ABSENT here, though resolution used to pass it. -f
     # turns every HTTP error into one opaque exit 22 with an empty body, which
     # is exactly what made an exhausted rate limit (403) and a prerelease-only
     # repository (404) indistinguishable from each other and from a dead link.
-    code="$(curl -sS -o "$body_out" -w '%{http_code}' \
+    code="$(curl -sS -o "$body_out" -D "$hdr_out" -w '%{http_code}' \
       --connect-timeout "$NET_CONNECT_TIMEOUT" --max-time "$NET_API_MAX_TIME" \
       "$url" 2>/dev/null)" || code=""
   elif command -v wget >/dev/null 2>&1; then
-    hdr_out="$body_out.hdr"
     wget -q -S -O "$body_out" --tries=1 \
       --connect-timeout="$NET_CONNECT_TIMEOUT" --read-timeout="$NET_API_MAX_TIME" \
       "$url" 2>"$hdr_out" || true
@@ -108,7 +132,6 @@ api_fetch() {
     # curl's %{http_code} reports.
     code="$(sed -n 's|^[[:space:]]*HTTP/[0-9.]*[[:space:]]\{1,\}\([0-9][0-9][0-9]\).*|\1|p' \
       "$hdr_out" 2>/dev/null | tail -n 1)" || code=""
-    rm -f "$hdr_out"
   fi
   case "$code" in
     [0-9][0-9][0-9]) : ;;
@@ -118,11 +141,80 @@ api_fetch() {
   return 0
 }
 
+# Prints the value of response header $1 from the header file $2, or nothing when
+# the header is absent. Reads curl's -D output and wget's -S stderr with one
+# parser: header names are case-insensitive per RFC 9110, curl keeps the CRLF
+# line endings off the wire, and wget indents each line by two spaces. No
+# separate CRLF step is needed -- POSIX [[:space:]] includes the carriage return,
+# so the trailing-whitespace trim below removes it, and an explicit sub(/\r$/)
+# here was dead code that no test could ever fail on. The LAST occurrence wins,
+# so a redirect chain reports the headers of the response the status line also
+# came from.
+header_value() {
+  awk -v want="$1" '
+    BEGIN { want = tolower(want) }
+    {
+      line = $0
+      colon = index(line, ":")
+      if (colon == 0) next
+      key = substr(line, 1, colon - 1)
+      val = substr(line, colon + 1)
+      gsub(/^[[:space:]]+/, "", key); gsub(/[[:space:]]+$/, "", key)
+      gsub(/^[[:space:]]+/, "", val); gsub(/[[:space:]]+$/, "", val)
+      if (tolower(key) == want) found = val
+    }
+    END { if (length(found)) print found }
+  ' "$2" 2>/dev/null
+  return 0
+}
+
+# Prints a SHORT single-line excerpt of the response body $1, for diagnoses that
+# can report nothing about a cause except what the server actually said. GitHub
+# puts a human-readable sentence in the JSON "message" field, so prefer that and
+# fall back to the raw head of the body; either way collapse it to one line and
+# cap it, because an error body can be long and this goes into a one-line message.
+body_excerpt() {
+  excerpt="$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$1" 2>/dev/null | head -n 1)"
+  if [ -z "$excerpt" ]; then
+    excerpt="$(head -c 400 "$1" 2>/dev/null | tr '\n\r\t' '   ')"
+  fi
+  printf '%s' "$excerpt" | tr -s ' ' | sed 's/^ *//; s/ *$//' | cut -c1-160
+  return 0
+}
+
+# Renders the epoch-seconds timestamp $1 as UTC, or prints nothing. GNU date
+# spells this -d @N and BSD/macOS date spells it -r N; when neither works the
+# caller simply omits the reset time rather than printing a raw epoch number at
+# someone, so every failure path here is silent on purpose.
+epoch_utc() {
+  case "$1" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  date -u -d "@$1" '+%Y-%m-%d %H:%M:%SZ' 2>/dev/null \
+    || date -u -r "$1" '+%Y-%m-%d %H:%M:%SZ' 2>/dev/null \
+    || true
+  return 0
+}
+
 # Prints the first "tag_name" value in the JSON body $1, or nothing when there
 # is none. GitHub returns /releases newest-first, so the first match is also the
-# newest entry. `return 0` for the same reason as api_fetch: `head -n 1` closing
-# the pipe early can SIGPIPE sed, and pipefail would hand that failure to the
-# caller's assignment.
+# newest entry.
+#
+# The trailing `return 0` matters MORE here than in api_fetch, because this
+# function can genuinely return non-zero: `head -n 1` exits after the first
+# match, sed takes SIGPIPE once its remaining output exceeds the 64K pipe buffer,
+# and pipefail propagates that as 141. Measured, not theorised -- a 2500-entry
+# release list produces 186K of sed output and the pipeline does return 141.
+#
+# It is still only DEFENSIVE as the code stands, for the reason spelled out on
+# api_fetch above: the sole caller is `if resolve_latest_tag; then`, which
+# suspends `set -e` for the entire function body, so the 141 currently goes
+# nowhere. Do not conclude from that it can be deleted. The value in
+# `tag="$(parse_tag_name ...)"` is correct even at status 141, so the day someone
+# calls resolve_latest_tag bare, deleting this line turns a WORKING lookup into a
+# silent abort with no diagnosis -- a failure that would look like the installer
+# hanging up for no reason on precisely the largest, busiest repositories.
 parse_tag_name() {
   sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null \
     | head -n 1
@@ -170,8 +262,9 @@ resolve_latest_tag() {
     return 1
   fi
 
+  hdr_file="$body_file.hdr"
   from_list=false
-  code="$(api_fetch "$api_base/latest" "$body_file")"
+  code="$(api_fetch "$api_base/latest" "$body_file" "$hdr_file")"
   if [ "$code" = "404" ]; then
     # /releases/latest EXCLUDES drafts and prereleases by GitHub's definition,
     # and this repository's own workflow defaults BOTH to true
@@ -181,10 +274,18 @@ resolve_latest_tag() {
     # while /releases lists the tags perfectly well. The list endpoint DOES
     # include prereleases, so fall back to it rather than reporting nothing.
     from_list=true
-    code="$(api_fetch "$api_base" "$body_file")"
+    code="$(api_fetch "$api_base" "$body_file" "$hdr_file")"
   fi
   tag="$(parse_tag_name "$body_file")"
-  rm -f "$body_file"
+  # Read everything the response can tell us BEFORE cleaning up, so the arms
+  # below can quote the server instead of guessing at it. Capturing the excerpt
+  # into a variable here -- rather than deferring the rm until after the case --
+  # is deliberate: the 200 branch returns from three points above the case, so a
+  # deferred rm would leak the temp file on every successful resolution.
+  rl_remaining="$(header_value 'X-RateLimit-Remaining' "$hdr_file")"
+  rl_reset="$(header_value 'X-RateLimit-Reset' "$hdr_file")"
+  api_body="$(body_excerpt "$body_file")"
+  rm -f "$body_file" "$hdr_file"
 
   if [ "$code" = "200" ]; then
     if [ -n "$tag" ]; then
@@ -220,7 +321,38 @@ resolve_latest_tag() {
 
   case "$code" in
     403|429)
-      resolve_error="api.github.com rejected the request with HTTP $code: the unauthenticated rate limit (60 requests/hour/IP) is exhausted; this is transient -- wait for the window to reset, or pass --version <tag> to skip the lookup"
+      # A 403 is NOT proof of an exhausted rate limit, and this arm used to say
+      # it was. GitHub answers 403 for secondary (abuse) rate limiting too, and
+      # for that mechanism "wait for the window to reset" is not merely unproven
+      # but WRONG ADVICE: the hourly window has nothing to do with it and waiting
+      # it out does not clear it. The only thing that establishes the primary
+      # limit is the server saying so, in X-RateLimit-Remaining. So the confirmed
+      # message is now gated on that header, and without it this reports the
+      # status, what the body said, and nothing it cannot prove -- the same
+      # discipline every other arm here follows.
+      #
+      # Each branch assigns $resolve_error exactly ONCE, composing its optional
+      # clause into a variable first. Appending to $resolve_error across several
+      # statements would read the same to a user and break the structural test
+      # that every diagnosis carries a next step, which inspects each assignment
+      # whole.
+      if [ "$rl_remaining" = "0" ]; then
+        # A reset timestamp is what turns "wait" into something actionable, so
+        # include it whenever the server sent one that renders on this host.
+        rl_when=""
+        rl_reset_utc="$(epoch_utc "$rl_reset")"
+        if [ -n "$rl_reset_utc" ]; then
+          rl_when=" and resets at $rl_reset_utc"
+        fi
+        resolve_error="api.github.com rejected the request with HTTP $code: the unauthenticated rate limit (60 requests/hour/IP) is exhausted$rl_when; this is transient -- wait for the window to reset, or pass --version <tag> to skip the lookup"
+      else
+        # GitHub's 403 body explains itself, so quote it rather than paraphrase.
+        api_said=""
+        if [ -n "$api_body" ]; then
+          api_said=" -- it answered: $api_body"
+        fi
+        resolve_error="api.github.com refused the latest-release lookup with HTTP $code and did not report an exhausted rate limit (no X-RateLimit-Remaining: 0), so the cause is not established from here$api_said; pass --version <tag> or --hub <url>"
+      fi
       ;;
     000)
       resolve_error="could not reach api.github.com (no HTTP response -- check network, DNS, or proxy); pass --version <tag> or --hub <url>"

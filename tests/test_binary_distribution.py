@@ -425,19 +425,28 @@ def _shim_dir(base: Path, name: str) -> Path:
 
 def make_api_stub(base: Path, name: str, *, tool: str,
                   latest_status: str = '200', latest_body: str = RELEASE_LATEST_JSON,
-                  list_status: str = '200', list_body: str = '[]\n') -> Path:
+                  latest_headers: tuple = (),
+                  list_status: str = '200', list_body: str = '[]\n',
+                  list_headers: tuple = ()) -> Path:
     """Build a PATH dir whose only downloader is a fake `tool` answering the two
     endpoints install.sh asks for. tool=None means NO downloader at all.
 
     Status '000' makes the stub behave like a host that got no HTTP response
     (curl exit 6 / wget exit 4, nothing on stdout), which is how api_fetch tells
     a dead network apart from an HTTP error.
+
+    *_headers are extra response header lines ('Name: value'), which is how a
+    test says whether the server reported an exhausted rate limit. The DEFAULT is
+    no headers, because that is what a secondary/abuse-limited 403 looks like --
+    the case install.sh must not diagnose as the hourly limit.
     """
     shim = _shim_dir(base, name)
     data = base / (name + '-data')
     data.mkdir(parents=True, exist_ok=True)
     (data / 'latest.json').write_text(latest_body)
     (data / 'list.json').write_text(list_body)
+    (data / 'latest.hdr').write_text(''.join(h + '\n' for h in latest_headers))
+    (data / 'list.hdr').write_text(''.join(h + '\n' for h in list_headers))
     if tool is None:
         return shim
 
@@ -446,23 +455,52 @@ def make_api_stub(base: Path, name: str, *, tool: str,
     if tool == 'curl':
         script = f"""#!{bash_path}
 # Fake curl. Covers api_fetch's `-sS -o BODY -w %{{http_code}} URL` shape.
-out=""; url=""
+out=""; url=""; hdr=""; fail_fast=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    # -D is api_fetch's header capture. WITHOUT this arm the -[!-]* cluster arm
+    # below eats only the flag and leaves its FILENAME to be read as the URL, so
+    # the stub would answer the wrong endpoint and the bug would look like a
+    # script bug rather than a stub bug.
+    -D) hdr="$2"; shift 2 ;;
     -w|--connect-timeout|--max-time|--speed-limit|--speed-time|--retry) shift 2 ;;
+    # A single-dash cluster containing f is -f/-fL/-fsSL: fail-fast. The stub MUST
+    # model this. Without it the stub answers an HTTP error identically with and
+    # without -f, so the test cannot see that dropping -f is what PRESERVES the
+    # status code -- the whole mechanism keeping 403 distinguishable from 404.
+    -[!-]*) case "$1" in *f*) fail_fast=1 ;; esac; shift ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
 case "$url" in
-  */releases/latest) status="{latest_status}"; src="{data}/latest.json" ;;
-  */releases)        status="{list_status}";   src="{data}/list.json" ;;
-  *)                 status="404";             src="/dev/null" ;;
+  */releases/latest) status="{latest_status}"; src="{data}/latest.json"; hsrc="{data}/latest.hdr" ;;
+  */releases)        status="{list_status}";   src="{data}/list.json";   hsrc="{data}/list.hdr" ;;
+  *)                 status="404";             src="/dev/null";          hsrc="/dev/null" ;;
 esac
 if [ "$status" = "000" ]; then
   echo "curl: (6) Could not resolve host: api.github.com" >&2
   exit 6
+fi
+# Real curl -D writes the status line, the headers, and a blank line, with CRLF
+# endings straight off the wire. The CRLF is modelled on purpose: a header parser
+# that forgets to strip the CR compares "0\r" against "0" and silently never
+# matches, which would make the rate-limit discrimination fail closed in the one
+# direction no assertion would notice.
+if [ -n "$hdr" ]; then
+  {{ printf 'HTTP/1.1 %s stub\r\n' "$status"
+    while IFS= read -r line; do printf '%s\r\n' "$line"; done <"$hsrc"
+    printf '\r\n'; }} >"$hdr"
+fi
+if [ "$fail_fast" = 1 ]; then
+  case "$status" in
+    2*) ;;
+    *)  # Real `curl -f`: exit 22, NO body, and NO status on stdout. The code is
+        # destroyed, which is precisely why api_fetch must not pass -f.
+        echo "curl: (22) The requested URL returned error: $status" >&2
+        exit 22 ;;
+  esac
 fi
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 # Real curl WITHOUT -f exits 0 on an HTTP error and reports the code via -w,
@@ -483,15 +521,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$url" in
-  */releases/latest) status="{latest_status}"; src="{data}/latest.json" ;;
-  */releases)        status="{list_status}";   src="{data}/list.json" ;;
-  *)                 status="404";             src="/dev/null" ;;
+  */releases/latest) status="{latest_status}"; src="{data}/latest.json"; hsrc="{data}/latest.hdr" ;;
+  */releases)        status="{list_status}";   src="{data}/list.json";   hsrc="{data}/list.hdr" ;;
+  *)                 status="404";             src="/dev/null";          hsrc="/dev/null" ;;
 esac
 if [ "$status" = "000" ]; then
   echo "wget: unable to resolve host address 'api.github.com'" >&2
   exit 4
 fi
+# wget -S indents every header line by two spaces and writes them to stderr,
+# which is a different shape from curl's -D file. api_fetch feeds both to the
+# same parser, so both shapes are exercised here.
 echo "  HTTP/1.1 $status stub" >&2
+while IFS= read -r line; do echo "  $line" >&2; done <"$hsrc"
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 case "$status" in
   2*) exit 0 ;;
@@ -543,8 +585,12 @@ MSG_RATE_LIMIT = 'the unauthenticated rate limit (60 requests/hour/IP) is exhaus
 MSG_NO_RELEASES = 'lists no published release for this repository'
 MSG_UNREACHABLE = 'could not reach api.github.com (no HTTP response'
 MSG_NO_TAG_FIELD = 'answered the latest-release lookup with no tag_name field'
+# A 403 that does NOT carry X-RateLimit-Remaining: 0 is its own diagnosis, not the
+# rate-limit one. GitHub answers 403 for secondary (abuse) limiting as well, where
+# "wait for the window to reset" is wrong advice rather than merely unproven.
+MSG_403_UNCONFIRMED = 'did not report an exhausted rate limit'
 ALL_RESOLVE_MSGS = [MSG_NO_DOWNLOADER, MSG_RATE_LIMIT, MSG_NO_RELEASES,
-                    MSG_UNREACHABLE, MSG_NO_TAG_FIELD]
+                    MSG_UNREACHABLE, MSG_NO_TAG_FIELD, MSG_403_UNCONFIRMED]
 
 
 def others(mine):
@@ -622,17 +668,84 @@ def test_resolve_wget_only_host(ctx):
                         ALL_RESOLVE_MSGS + ['api.github.com unreachable'])
 
 
-def test_resolve_rate_limited(ctx):
-    """(c) HTTP 403. Must name the rate limit and that it is transient, not send
-    the user to debug their network."""
+def test_resolve_rate_limited_confirmed(ctx):
+    """(c) HTTP 403 WITH X-RateLimit-Remaining: 0 -- the server itself saying the
+    hourly limit is exhausted. Only here may the message name that cause, and the
+    reset timestamp is included because it is what makes "wait" actionable."""
     work = ctx['work']
-    shim = make_api_stub(work, 'stub-403', tool='curl', latest_status='403',
-                         latest_body='{"message": "API rate limit exceeded"}\n')
-    res = run_installer(shim, work, 'rl')
+    reset = 4102444800  # 2100-01-01T00:00:00Z: fixed, so the assertion cannot flake.
+    shim = make_api_stub(work, 'stub-403-confirmed', tool='curl', latest_status='403',
+                         latest_body='{"message": "API rate limit exceeded"}\n',
+                         latest_headers=('X-RateLimit-Limit: 60',
+                                         'X-RateLimit-Remaining: 0',
+                                         f'X-RateLimit-Reset: {reset}'))
+    res = run_installer(shim, work, 'rl-confirmed')
     assert res.returncode != 0, f'403 must fail the run:\n{res.stdout}'
     assert_only_message(res, ['error: api.github.com rejected the request with HTTP 403',
                               MSG_RATE_LIMIT, 'transient', '--version <tag>'],
                         others(MSG_RATE_LIMIT))
+    # The reset time only counts if it was actually rendered from the header.
+    out = res.stdout + res.stderr
+    if 'resets at' in out:
+        assert '2100-01-01 00:00:00Z' in out, f'reset time not rendered from the header:\n{out}'
+    else:
+        # Neither GNU `date -d @N` nor BSD `date -r N` worked on this host, which
+        # epoch_utc is designed to survive silently. It must then print no reset
+        # claim at all rather than a raw epoch number.
+        assert str(reset) not in out, f'raw epoch leaked into the message:\n{out}'
+
+
+def test_resolve_403_without_ratelimit_header_does_not_claim_the_limit(ctx):
+    """THE NEGATIVE BRANCH, and the reason this test replaced its predecessor.
+
+    The old test stubbed a 403 with NO rate-limit headers and asserted the
+    exhausted-limit claim -- so the suite PINNED a message that names a cause the
+    response never established. Worse, GitHub answers 403 for secondary (abuse)
+    rate limiting too, and for that mechanism "wait for the window to reset" is
+    actively wrong: the hourly window is not what is blocking the caller and
+    waiting it out does not clear it.
+
+    So a headerless 403 must report only what is known -- the status, what the
+    body said, and the --version escape hatch -- and the assertion that matters is
+    the ABSENCE of the rate-limit claim."""
+    work = ctx['work']
+    shim = make_api_stub(work, 'stub-403-bare', tool='curl', latest_status='403',
+                         latest_body='{"message": "Forbidden - abuse detection"}\n')
+    res = run_installer(shim, work, 'rl-bare')
+    assert res.returncode != 0, f'403 must fail the run:\n{res.stdout}'
+    assert_only_message(res,
+                        ['error: api.github.com refused the latest-release lookup with HTTP 403',
+                         MSG_403_UNCONFIRMED,
+                         'Forbidden - abuse detection',  # the body excerpt, quoted not paraphrased
+                         '--version <tag>'],
+                        others(MSG_403_UNCONFIRMED) + [
+                            # Named explicitly as well as via others(), because these
+                            # three are the specific wrong claims being guarded:
+                            '60 requests/hour/IP',
+                            'is exhausted',
+                            'wait for the window to reset',
+                        ])
+
+
+def test_resolve_403_discrimination_also_works_on_a_wget_only_host(ctx):
+    """wget -S reports headers on stderr, indented, in a different shape from
+    curl's -D file. api_fetch parses both with one reader, so the discrimination
+    must hold on a wget-only host too -- otherwise half the hosts in the world get
+    the unproven message back."""
+    work = ctx['work']
+    shim = make_api_stub(work, 'stub-403-wget', tool='wget', latest_status='403',
+                         latest_body='{"message": "API rate limit exceeded"}\n',
+                         latest_headers=('X-RateLimit-Remaining: 0',))
+    res = run_installer(shim, work, 'rl-wget')
+    assert res.returncode != 0, f'403 must fail the run:\n{res.stdout}'
+    assert_only_message(res, [MSG_RATE_LIMIT], others(MSG_RATE_LIMIT))
+
+    bare = make_api_stub(work, 'stub-403-wget-bare', tool='wget', latest_status='403',
+                         latest_body='{"message": "Forbidden - abuse detection"}\n')
+    res = run_installer(bare, work, 'rl-wget-bare')
+    assert res.returncode != 0, f'403 must fail the run:\n{res.stdout}'
+    assert_only_message(res, [MSG_403_UNCONFIRMED],
+                        others(MSG_403_UNCONFIRMED) + ['wait for the window to reset'])
 
 
 def test_resolve_prerelease_fallback(ctx):
@@ -684,6 +797,66 @@ def test_resolve_draft_only_repo(ctx):
         for overclaim in ('no releases exist', 'repository is empty',
                           'has no releases at all'):
             assert overclaim not in out, f'[{tag}] overclaims: {overclaim!r}'
+
+
+def large_release_list(entries: int = 2500, pad: int = 64) -> str:
+    """A /releases page whose tag_name lines TOTAL more than one 64K pipe buffer.
+
+    DO NOT "SIMPLIFY" THIS FIXTURE DOWN TO A REALISTIC SIZE. Its size is the only
+    thing it is for. parse_tag_name is `sed ... | head -n 1`: head exits after the
+    first match, and sed only actually takes SIGPIPE once its REMAINING output
+    exceeds the pipe buffer. A realistically-sized response is drained before sed
+    ever notices, so a small fixture silently un-tests the property below.
+    """
+    entry = '{{"tag_name": "v9.{i}.0-{pad}", "prerelease": true, "draft": false}}'
+    body = ',\n '.join(entry.format(i=i, pad='x' * pad) for i in range(entries))
+    return '[' + body + ']\n'
+
+
+def test_resolve_large_release_list_does_not_abort(ctx):
+    """Resolution must survive a /releases page big enough to make sed take
+    SIGPIPE, and still return the NEWEST tag with a complete plan.
+
+    WHAT THIS DOES AND DOES NOT PROVE -- stated because an earlier version of this
+    docstring claimed more than the test delivers:
+
+    parse_tag_name is `sed ... | head -n 1`. head exits after the first match, and
+    once sed's remaining output exceeds the 64K pipe buffer sed really does take
+    SIGPIPE: measured at 141 from a 2500-entry list producing 186K of sed output.
+    So this fixture DOES drive the pipeline into that state, which a
+    realistically-sized response (GitHub caps a page at 100 entries) would not.
+    Keep it oversized; shrinking it stops exercising this path.
+
+    It does NOT prove parse_tag_name's `return 0` is load-bearing, and removing
+    that line does NOT make this test fail. The reason is a bash rule worth
+    knowing: resolve_latest_tag's only caller invokes it as
+    `if resolve_latest_tag; then`, and bash SUSPENDS `set -e` for the whole body
+    of a function whose status is being tested, so the 141 goes nowhere today. The
+    captured VALUE is correct even at status 141, which is why nothing breaks.
+    That line is kept as defence for the day someone calls resolve_latest_tag
+    bare -- see the comment on api_fetch in install.sh -- and the mutation harness
+    records it as expected-not-caught with that reasoning rather than pretending
+    otherwise.
+
+    What this test genuinely guards is the behaviour a user sees: a large,
+    prerelease-only release list still resolves to the newest tag, still announces
+    that it picked a prerelease, and still prints a whole plan rather than
+    stopping part-way.
+    """
+    work = ctx['work']
+    shim = make_api_stub(work, 'stub-biglist', tool='curl',
+                         latest_status='404', latest_body='{"message": "Not Found"}\n',
+                         list_status='200', list_body=large_release_list())
+    res = run_installer(shim, work, 'bigl', '--dry-run')
+    assert res.returncode == 0, (
+        'resolution aborted on a large release list: parse_tag_name lost its '
+        f'`return 0` and pipefail propagated SIGPIPE\nrc={res.returncode}\n{res.stderr}')
+    # The newest entry, and a COMPLETE plan rather than one truncated by an abort.
+    expected = 'v9.0.0-' + 'x' * 64
+    assert_only_message(res, [f'release: {expected}',
+                              f'selected the newest PRERELEASE {expected}',
+                              'would install'],
+                        ALL_RESOLVE_MSGS)
 
 
 def test_resolve_unreachable(ctx):
@@ -1802,9 +1975,15 @@ def main() -> int:
         ('install.sh resolve diagnoses stay distinct (REQ-INST-6)', test_resolve_messages_are_distinct),
         ('resolve: no downloader names the missing tool (REQ-INST-6a)', test_resolve_no_downloader),
         ('resolve: wget-only host resolves a tag (REQ-INST-6b)', test_resolve_wget_only_host),
-        ('resolve: HTTP 403 names the rate limit (REQ-INST-6c)', test_resolve_rate_limited),
+        ('resolve: 403 + X-RateLimit-Remaining 0 names the rate limit (REQ-INST-6c)',
+         test_resolve_rate_limited_confirmed),
+        ('resolve: 403 without the header does NOT claim the rate limit (REQ-INST-6c)',
+         test_resolve_403_without_ratelimit_header_does_not_claim_the_limit),
+        ('resolve: 403 discrimination holds on a wget-only host (REQ-INST-6c)',
+         test_resolve_403_discrimination_also_works_on_a_wget_only_host),
         ('resolve: prerelease fallback picks newest and says so (REQ-INST-6d)', test_resolve_prerelease_fallback),
         ('resolve: draft-only repo names the true cause (REQ-INST-6e, live case)', test_resolve_draft_only_repo),
+        ('resolve: large list does not abort (pipefail/SIGPIPE contract)', test_resolve_large_release_list_does_not_abort),
         ('resolve: no HTTP response is the only network claim (REQ-INST-6)', test_resolve_unreachable),
         ('resolve: unparseable 200 stays fail-closed (REQ-INST-6)', test_resolve_200_without_tag_is_fail_closed),
         ('download: curl and wget branches equally bounded (REQ-INST-7)', test_download_branches_are_equally_bounded),
