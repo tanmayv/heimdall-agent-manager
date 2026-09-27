@@ -111,8 +111,9 @@ LEGAL_PAGE_FOOT :: `  </article>
 // either a fact confirmed by the operator (entity name, product name, public
 // host) or traced to source in the T2 handoff comment; no retention period,
 // sub-processor, jurisdiction, or compliance claim is asserted that the system
-// does not back. The three {{...}} tokens are the operator-supplied facts that
-// no source file can answer; they are substituted in Phase B.
+// does not back. The three operator-supplied facts that no source file could
+// answer (contact address, governing law, hosted-deployment collection) were
+// supplied by the operator and substituted in Phase B; no token remains.
 POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `    <p class="brand">Heimdall</p>
     <h1>Privacy Policy</h1>
     <p class="lede">Heimdall is an agent orchestrator built by <strong>Broccoli Labs</strong>. This
@@ -128,8 +129,8 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
       <li>No passwords are stored. Access tokens are stored only as a hash.</li>
       <li>No IP addresses, no user-agent strings, and no analytics or telemetry of any kind are
         stored or sent anywhere.</li>
-      <li>The only data that leaves the machine is an optional, off-by-default push
-        notification, and it is encrypted before it leaves.</li>
+      <li>The only data that leaves the machine is a push notification sent to a browser that
+        asked for one, and it is encrypted before it leaves.</li>
     </ul>
 
     <h2>1. What Heimdall stores</h2>
@@ -145,9 +146,15 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
         memories, chat messages, artifacts, and records of the agent instances you run. Each
         record belongs to exactly one account.</li>
       <li><strong>Push subscriptions,</strong> only if you turn on notifications (section 3).</li>
-      <li><strong>Shell job records:</strong> the command text, its status, and its exit code.
-        Command <strong>output</strong> is never sent to or stored by Heimdall — it stays on the
-        machine that ran the command.</li>
+      <li><strong>The machines and workspaces you connect:</strong> for each connected machine,
+        its hostname, operating system and CPU architecture, and the label you give it; for your
+        projects and agent sessions, <strong>filesystem paths</strong> on those machines — a
+        project's directory, an agent's working directory, a shell session's working directory —
+        and a project's repository URL.</li>
+      <li><strong>Shell command records:</strong> for each command or shell session, the command
+        text, its working directory, its status and exit code, and for a session its process id
+        and any local port it serves. Command <strong>output</strong> is never sent to or stored
+        by Heimdall — it stays on the machine that ran the command.</li>
     </ul>
     <p>Heimdall supports optional client-side encryption: your client can encrypt content before
       sending it, and Heimdall then stores only an opaque ciphertext it cannot read. This is
@@ -171,9 +178,13 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
     <p>Heimdall contacts exactly one kind of external service, and only if you opt in: the web
       push service your own browser nominates, in order to deliver notifications.</p>
     <ul>
-      <li>It is <strong>off by default.</strong> It requires both a signing keypair configured by
-        the operator and a push subscription that your browser creates when you allow
-        notifications. Without either, nothing is ever sent.</li>
+      <li><strong>Nothing is sent until your browser asks for it.</strong> A notification goes
+        only to a browser that has created a push subscription, which yours does only when you
+        allow notifications; if you never do, nothing is ever sent to you. Sending also requires
+        a signing keypair configured by the operator — that keypair <strong>is</strong>
+        configured on the hosted deployment at https://heimdall.mundus.in, so notifications are
+        available there. A self-hosted install with no keypair configured cannot send at
+        all.</li>
       <li><strong>We do not choose the recipient.</strong> The destination is whatever endpoint
         URL your browser hands us — in practice the push service of your browser's vendor, such
         as Google's or Apple's.</li>
@@ -210,7 +221,24 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
     </ul>
 
     <h2>6. The hosted deployment</h2>
-    <p>{{HOSTED_DATA_COLLECTION}}</p>
+    <p>The hosted deployment at https://heimdall.mundus.in is operated by Broccoli Labs. It
+      stores the same records described in section 1, on infrastructure we run rather than on
+      your own machine.</p>
+    <p><strong>Your content — the text of your tasks, comments, memories, chat messages and
+      artifacts — is encrypted before it reaches us only if you have enabled client-side
+      encryption.</strong> Where you have, we hold an opaque ciphertext, the key is one we never
+      receive, and we cannot read it. Where you have not, that same content is stored as
+      ordinary text in the database and can be read by whoever administers the deployment. Which
+      of those two applies is your choice, and we do not claim the first on your behalf.</p>
+    <p>Alongside content, the deployment holds the operational metadata listed in section 1:
+      your account record, token metadata (never the token itself), the agent instance, machine
+      and shell command records — including the filesystem paths named there — push
+      subscriptions, and the ownership and timestamps attached to every record. That metadata is
+      not encrypted.</p>
+    <p>The application is reached through a proxy and an identity provider that sit in front of
+      it (section 5). Infrastructure of that kind commonly records request information, which
+      may include IP addresses; that happens outside Heimdall, is not what section 2 describes,
+      and this policy does not characterise it.</p>
 
     <h2>7. Keeping and deleting your data</h2>
     <p>Heimdall applies no automatic retention schedule: records stay in the database until they
@@ -220,7 +248,7 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
       <li><strong>Self-hosted:</strong> you hold the data. Deleting a record in the app removes
         it from the database, and deleting the database file removes everything.</li>
       <li><strong>Hosted:</strong> to request deletion of your account and the records belonging
-        to it, email {{PRIVACY_CONTACT_EMAIL}}.</li>
+        to it, email 12tanmayvijay@gmail.com.</li>
     </ul>
 
     <h2>8. Changes to this policy</h2>
@@ -229,15 +257,15 @@ POLICY_PAGE_HTML :: LEGAL_PAGE_HEAD + "Privacy Policy" + LEGAL_PAGE_STYLE + `   
 
     <h2>9. Contact</h2>
     <p>Questions about this policy, or a request about your data, go to
-      {{PRIVACY_CONTACT_EMAIL}}.</p>
+      12tanmayvijay@gmail.com.</p>
 
     <p class="updated">Last updated: ` + LEGAL_PAGE_LAST_UPDATED + ` · <a href="/toc">Terms of Service</a></p>
 ` + LEGAL_PAGE_FOOT
 
 // TOC_PAGE_HTML — REQ-LEGAL-5 / AC7: license and permitted use, disclaimer of
 // warranty, limitation of liability, governing law. The Apache-2.0 reference is
-// the LICENSE file actually shipped in this repository; the jurisdiction is the
-// {{GOVERNING_LAW}} token because nothing in the tree states one.
+// the LICENSE file actually shipped in this repository; the jurisdiction is not
+// derived from source — it is the operator-supplied fact recorded in T2.
 TOC_PAGE_HTML :: LEGAL_PAGE_HEAD + "Terms of Service" + LEGAL_PAGE_STYLE + `    <p class="brand">Heimdall</p>
     <h1>Terms of Service</h1>
     <p class="lede">These terms govern your use of Heimdall (the <strong>Software</strong>) and of
@@ -313,10 +341,10 @@ TOC_PAGE_HTML :: LEGAL_PAGE_HEAD + "Terms of Service" + LEGAL_PAGE_STYLE + `    
 
     <h2>9. Governing law</h2>
     <p>These terms, and any dispute arising out of them or out of your use of the Software or the
-      Service, are governed by the laws of {{GOVERNING_LAW}}.</p>
+      Service, are governed by the laws of India.</p>
 
     <h2>10. Contact</h2>
-    <p>Questions about these terms go to {{PRIVACY_CONTACT_EMAIL}}.</p>
+    <p>Questions about these terms go to 12tanmayvijay@gmail.com.</p>
 
     <p class="updated">Last updated: ` + LEGAL_PAGE_LAST_UPDATED + ` · <a href="/policy">Privacy Policy</a></p>
 ` + LEGAL_PAGE_FOOT
