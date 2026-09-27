@@ -112,3 +112,34 @@ test('useShellPaneSubscription.ts integrity is preserved without mutation', () =
   assert.ok(src.includes('computeShellPanePollingInterval'), 'computeShellPanePollingInterval must remain intact');
   assert.ok(src.includes('isShellTerminalStatus'), 'isShellTerminalStatus must remain intact');
 });
+
+test('ShellTerminalPane.tsx disables convertEol in streaming mode, enforces >=80 column floor, and allows horizontal scroll', () => {
+  assert.ok(fs.existsSync(SHELL_TERMINAL_PANE), 'ShellTerminalPane.tsx must exist');
+  const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
+
+  // 1. convertEol is disabled during active streaming
+  assert.ok(src.includes('convertEol: !isStreamingActive'), 'must initialize Terminal with convertEol: !isStreamingActive');
+  assert.ok(
+    src.includes('terminalRef.current.options.convertEol = !isStreamingActive'),
+    'must synchronize convertEol with streaming status'
+  );
+
+  // 2. Minimum column floor (>=80 cols) and row floor (>=24 rows) enforced in resize handlers
+  assert.ok(src.includes('const effectiveCols = Math.max(cols, 80);'), 'handleResize must enforce minimum 80 cols');
+  assert.ok(src.includes('const effectiveRows = Math.max(rows, 24);'), 'handleResize must enforce minimum 24 rows');
+  assert.ok(
+    src.includes('term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24))'),
+    'dispatchResize and observers must enforce >=80 cols and >=24 rows'
+  );
+
+  // 3. Terminal container styling enables horizontal scrolling
+  assert.ok(
+    src.includes('overflow-x-auto'),
+    'terminal container must include overflow-x-auto for narrow viewports'
+  );
+  assert.ok(
+    src.includes('chat-scrollbar') && src.includes('overflow-x-auto'),
+    'terminal container must include chat-scrollbar and overflow-x-auto'
+  );
+});
+

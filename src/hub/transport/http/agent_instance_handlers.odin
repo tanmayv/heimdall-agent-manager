@@ -168,6 +168,17 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 	_ = write_ws_text_frame(client, ready_json)
 	delete(ready_json)
 
+	// Send initial status frame if known.
+	if string(inst.runtime_status) != "" {
+		st_b := strings.builder_make()
+		strings.write_string(&st_b, "{\"type\":\"status\",\"status\":\"")
+		write_handler_json_string(&st_b, string(inst.runtime_status))
+		strings.write_string(&st_b, "\"}")
+		st_json := strings.to_string(st_b)
+		_ = write_ws_text_frame(client, st_json)
+		delete(st_json)
+	}
+
 	reader := bridge_ws_reader_make(client)
 	defer bridge_ws_reader_destroy(&reader)
 

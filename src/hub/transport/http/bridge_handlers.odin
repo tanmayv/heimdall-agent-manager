@@ -1497,6 +1497,9 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 				domain.agent_instance_destroy(&inst)
 			}
 		}
+		if h.shell_sessions != nil && instance_id != "" && runtime_status != "" {
+			shell_session_svc.shell_session_broadcast_status(h.shell_sessions, instance_id, runtime_status, 0, false)
+		}
 		current_runtime, _, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, instance_id)
 		_ = got
 		applied := current_seq == state_seq && current_runtime == runtime_status

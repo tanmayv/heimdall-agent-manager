@@ -214,9 +214,76 @@ impl Detector {
     }
 }
 
+/// Strip ANSI escape sequences (CSI, OSC, etc.) from `s`.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    chars.next();
+                    // CSI sequence: consume parameter and intermediate bytes until final byte 0x40..=0x7E
+                    while let Some(&b) = chars.peek() {
+                        chars.next();
+                        if ('\x40'..='\x7e').contains(&b) {
+                            break;
+                        }
+                    }
+                    continue;
+                } else if next == ']' {
+                    chars.next();
+                    // OSC sequence: consume until BEL (\x07) or ST (\x1b\\)
+                    while let Some(&b) = chars.peek() {
+                        chars.next();
+                        if b == '\x07' {
+                            break;
+                        }
+                        if b == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    continue;
+                } else if next == '(' || next == ')' {
+                    chars.next();
+                    chars.next(); // character set designation
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Normalize all consecutive whitespace characters (\n, \r, \t, spaces) into a single space.
+pub fn normalize_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_ws = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(c);
+            in_ws = false;
+        }
+    }
+    out
+}
+
 /// Index of the first non-empty pattern contained in `text`, or `None`.
-/// Mirrors Odin `first_matching_pattern` (substring, in-order).
+/// Matches:
+/// 1. Exact raw substring
+/// 2. ANSI-stripped raw substring
+/// 3. Whitespace-normalized substring (collapses newlines, tabs, and spaces so
+///    terminal row-wrapping across cols=80/120 or line breaks do not prevent matches)
+/// 4. Newline-stripped substring (handles hard terminal row wraps with no intervening space)
 pub fn first_matching_pattern(text: &str, patterns: &[String]) -> Option<usize> {
+    // 1. Fast path: exact raw substring match
     for (i, p) in patterns.iter().enumerate() {
         if p.is_empty() {
             continue;
@@ -225,6 +292,33 @@ pub fn first_matching_pattern(text: &str, patterns: &[String]) -> Option<usize> 
             return Some(i);
         }
     }
+
+    // 2. Normalized matching: strip ANSI escapes and normalize whitespace / newlines
+    let text_clean = strip_ansi(text);
+    let text_norm_ws = normalize_whitespace(&text_clean);
+    let text_no_nl = text_clean.replace(['\n', '\r'], "");
+
+    for (i, p) in patterns.iter().enumerate() {
+        if p.is_empty() {
+            continue;
+        }
+        let p_clean = strip_ansi(p);
+        if p_clean.is_empty() {
+            continue;
+        }
+        if text_clean.contains(&p_clean) {
+            return Some(i);
+        }
+        let p_norm_ws = normalize_whitespace(&p_clean).trim().to_string();
+        if !p_norm_ws.is_empty() && text_norm_ws.contains(&p_norm_ws) {
+            return Some(i);
+        }
+        let p_no_nl = p_clean.replace(['\n', '\r'], "");
+        if !p_no_nl.is_empty() && text_no_nl.contains(&p_no_nl) {
+            return Some(i);
+        }
+    }
+
     None
 }
 
@@ -648,6 +742,40 @@ mod tests {
         let c = StartupDetectionConfig::from_json("{}");
         assert!(!c.enabled);
         assert!(c.auto_enter_patterns.is_empty());
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_and_osc() {
+        let raw = "\x1b[1mBold\x1b[0m and \x1b[38;2;255;0;0mRed\x1b[39m and \x1b]0;Title\x07Text";
+        assert_eq!(strip_ansi(raw), "Bold and Red and Text");
+    }
+
+    #[test]
+    fn normalize_whitespace_collapses_newlines_and_spaces() {
+        let raw = "Hello \n  \t world \r\n across   lines";
+        assert_eq!(normalize_whitespace(raw), "Hello world across lines");
+    }
+
+    #[test]
+    fn first_matching_pattern_matches_wrapped_and_colored_prompts() {
+        let patterns = vec![
+            "Please confirm: Do you trust the authors of this repository and want to proceed? [Yes/no]".to_string(),
+            "Choose your color scheme".to_string(),
+        ];
+        // 1. Text wrapped across lines with newline and leading space
+        let screen_wrapped = "Please confirm: Do you trust the authors of this repository and want to proceed?\n [Yes/no]";
+        assert_eq!(first_matching_pattern(screen_wrapped, &patterns), Some(0));
+
+        // 2. Text with ANSI color styling and wrapped lines
+        let screen_colored_wrapped = "\x1b[1mPlease confirm:\x1b[0m Do you trust the authors of this repository and want to proceed?\n \x1b[32m[Yes/no]\x1b[0m";
+        assert_eq!(first_matching_pattern(screen_colored_wrapped, &patterns), Some(0));
+
+        // 3. Exact single-line match still works
+        let screen_exact = "Welcome! Choose your color scheme now";
+        assert_eq!(first_matching_pattern(screen_exact, &patterns), Some(1));
+
+        // 4. Non-matching text returns None
+        assert_eq!(first_matching_pattern("Random terminal output", &patterns), None);
     }
 
     /// Build a detector armed at t=0 for tests.
