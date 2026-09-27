@@ -4,13 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-    # TEMPORARY (T24/REQ-INST-25): exercise the rebuilt portability gate on the
-    # real runners without cutting a release. The `release` job is gated on a
-    # tag or inputs.publish_release, so a branch push builds and verifies only.
-    # Remove once v0.3.3 is out.
-    paths:
-      - '.github/workflows/release-local-binaries.yml'
-      - 'scripts/release/storeless-exec.sh'
   workflow_dispatch:
     inputs:
       version:
