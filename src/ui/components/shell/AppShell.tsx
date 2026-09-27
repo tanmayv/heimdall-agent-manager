@@ -1529,6 +1529,23 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     };
   }, []);
 
+  // Clamp any rogue window scroll back to the origin. The app owns the full viewport
+  // (body is position: fixed), so a non-zero window offset can only come from a browser
+  // heuristic -- e.g. mobile WebKit scrolling the document to reveal a focused element or
+  // a control under the keyboard accessory bar -- and it permanently hides the top chrome.
+  useEffect(() => {
+    const clampWindowScroll = () => {
+      if (window.scrollY !== 0 || window.scrollX !== 0) {
+        window.scrollTo(0, 0);
+      }
+    };
+    window.addEventListener('scroll', clampWindowScroll, { passive: true });
+    clampWindowScroll();
+    return () => {
+      window.removeEventListener('scroll', clampWindowScroll);
+    };
+  }, []);
+
   const primary = NAV_ROUTES.filter((item) => item.group === 'primary');
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);

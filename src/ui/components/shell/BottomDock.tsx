@@ -55,14 +55,30 @@ export default function BottomDock({
   // Active tab: sessionId
   const [activeTab, setActiveTab] = useState<string>('');
   const activeTabRef = useRef<HTMLDivElement | null>(null);
+  const tabsContainerRef = useRef<HTMLDivElement | null>(null);
   const [showNewShell, setShowNewShell] = useState<boolean>(false);
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessions, setPendingSessions] = useState<ShellSession[]>([]);
 
-  // Auto-scroll active tab into view in horizontal tab bar
+  // Auto-scroll active tab into view in horizontal tab bar (REQ-BAR-12).
+  // Deliberately NOT Element.scrollIntoView(): on iPadOS/mobile WebKit that API scrolls
+  // every scrollable ancestor up to the window, which pushed the whole app ~60px off the
+  // top of the viewport with no way to scroll back (html/body are overflow: hidden).
+  // Instead scroll ONLY the horizontal tab container by adjusting its scrollLeft.
   useEffect(() => {
-    if (activeTab && activeTabRef.current) {
-      activeTabRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    const container = tabsContainerRef.current;
+    const tab = activeTabRef.current;
+    if (!activeTab || !container || !tab) return;
+
+    // Rect-relative deltas, not offsetLeft: the tab's offsetParent is the positioned dock
+    // root (the resizer is absolutely placed), not this scroll container.
+    const tabRect = tab.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    if (tabRect.left < containerRect.left) {
+      container.scrollLeft -= containerRect.left - tabRect.left;
+    } else if (tabRect.right > containerRect.right) {
+      container.scrollLeft += tabRect.right - containerRect.right;
     }
   }, [activeTab]);
 
@@ -311,7 +327,10 @@ export default function BottomDock({
         className="flex h-9 shrink-0 items-center justify-between border-b border-subtle bg-surface-raised px-2 text-xs select-none"
       >
         {/* Left: Shell tabs and + button with horizontal sidescrolling (REQ-BAR-2) */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-smooth no-scrollbar py-0.5">
+        <div
+          ref={tabsContainerRef}
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-smooth no-scrollbar py-0.5"
+        >
           {visibleSessions.map((session) => {
             const isTabActive = activeTab === session.session_id;
             const isRunning = session.status === 'running' || session.status === 'starting';

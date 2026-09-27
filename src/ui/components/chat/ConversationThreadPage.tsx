@@ -1952,7 +1952,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   const transcript = (
-    <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
+    <div data-debug-id="conversation-thread-transcript" className="w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
       <ChatMessageList
         conversationKey={conversationId}
         messages={chatMessages}
@@ -2005,7 +2005,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       {/* Col 1: Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
       <div
         data-debug-id="conversation-chat-column"
-        className={`flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px] ${
+        className={`flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden sm:min-w-[380px] ${
           isRightPanelMaximized && panelOpen ? 'hidden' : ''
         }`}
       >
