@@ -60,7 +60,12 @@ ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
   --dry-run            print every planned action without writing anything
   --force-service      overwrite an existing, differing service file WITHOUT
                        keeping a .bak-<timestamp> backup (default: back up the
-                       old file first; skip the write when identical)
+                       old file first; skip the write when identical). On Linux
+                       it ALSO proceeds when the machine already provides a
+                       system-managed heimdall-bridge.service, which this
+                       installer otherwise refuses to shadow -- a user unit of
+                       the same name silently takes precedence over the system
+                       one, and the breakage only appears at the next restart.
   --uninstall          remove what this installer put in place: stop the
                        service (best effort), remove the heimdall binaries
                        from the install dir, remove the service file, and
@@ -777,6 +782,22 @@ service_hub_flags_plist() {
   fi
 }
 
+# --- REQ-INST-23: the SYSTEM-wide user-unit search path ------------------------
+# The directories systemd searches for USER units that the MACHINE provides, in
+# systemd's own precedence order (systemd.unit(5), "User Unit Search Path").
+# ~/.config/systemd/user is deliberately absent: that is where WE write, and it
+# sits ABOVE all of these, which is the whole problem this list exists to detect.
+# Emitted one per line by a function rather than pasted at the call site so the
+# test suite can re-derive the list from this single source instead of keeping a
+# hand-typed copy that silently drifts.
+system_unit_dirs() {
+  printf '%s\n' /etc/systemd/user \
+                /run/systemd/user \
+                /usr/local/lib/systemd/user \
+                /usr/lib/systemd/user \
+                /lib/systemd/user
+}
+
 render_systemd_unit() {
   cat <<UNIT
 [Unit]
@@ -1299,6 +1320,39 @@ main() {
     exit 0
   fi
 
+  # --- REQ-INST-23: never silently shadow a system-managed unit -----------------
+  # A unit in ~/.config/systemd/user takes PRECEDENCE over the same name in the
+  # system unit directories. Writing ours there on a host that already has a
+  # system-managed heimdall-bridge.service does not fail, does not warn, and does
+  # not even disturb the running bridge -- a running process keeps the argv it
+  # started with. The damage appears only at the NEXT restart, which silently
+  # starts our unit instead of the machine's. On 2026-09-27 that left a host
+  # unable to restart its own production bridge, undetected, for six hours; it
+  # surfaced as a ~20 minute outage when something finally stopped it.
+  #
+  # Detected by PATH, not by 'systemctl --user cat': a path check needs no session
+  # bus (so it works under sudo, in containers, and inside the test sandbox -- see
+  # REQ-INST-13), and 'cat' resolves the EFFECTIVE unit, which after our own
+  # previous install is OUR user unit -- so it could not tell "the system provides
+  # one" from "we installed one" and would fire on an idempotent re-run.
+  #
+  # Scanned on Linux only. launchd precedence is NOT systemd's: both
+  # ~/Library/LaunchAgents and /Library/LaunchAgents load and a duplicate LABEL is
+  # a CONFLICT rather than a silent override, so the failure mode differs and
+  # nobody has executed it on a Mac. Deliberately not asserted here.
+  #
+  # This check must stay BELOW the --uninstall exit above: removing our own files
+  # is never blocked by the machine having its own unit.
+  system_unit=""
+  if [ "$os" = "linux" ]; then
+    for _unit_dir in $(system_unit_dirs); do
+      if [ -e "$_unit_dir/heimdall-bridge.service" ]; then
+        system_unit="$_unit_dir/heimdall-bridge.service"
+        break
+      fi
+    done
+  fi
+
   # --- socat preflight (REQ-INST-14) --------------------------------------------
   # Placed here deliberately: AFTER the --uninstall exit above, because removing
   # files needs no transport and refusing to uninstall over a missing dependency
@@ -1391,6 +1445,12 @@ main() {
     # REQ-INST-5: name the non-fatal fallback in the plan too, so the preview
     # matches what a read-only-rc machine (NixOS, home-manager) actually gets.
     say "a shell config file that cannot be written is NOT an install failure: the PATH snippet is printed for you to add by hand and the install continues"
+    # REQ-INST-23: a preview must tell the truth about what a real run would do,
+    # and what a real run would do here is REFUSE. Same shape as the socat line
+    # at the top of this plan.
+    if [ -n "$system_unit" ] && ! "$force_service"; then
+      say "would REFUSE to continue: $system_unit already provides heimdall-bridge system-wide, and a user unit of the same name silently takes precedence over it (re-run with --force-service to shadow it deliberately)"
+    fi
     if "$force_service"; then
       say "would write service file $service_file unconditionally (--force-service: no backup) with contents:"
     else
@@ -1422,6 +1482,29 @@ main() {
   # resolution entirely and so reach a download without ever having checked.
   command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
     || fail "need curl or wget to download the release bundle; install one, or fetch $tarball_name yourself and serve it with --hub <url>"
+
+  # REQ-INST-23: fatal HERE -- below the dry-run exit so --dry-run still previews
+  # and still tells the truth, and above the download so a refused run installs
+  # NOTHING. That placement is what makes the "Nothing has been installed"
+  # sentence below TRUE: if this check is ever moved below the install step, that
+  # sentence MUST change with it. Same idiom as the curl/wget guard just above.
+  #
+  # The "only want fresher binaries" bullet deliberately names the OS and NOT
+  # `heimdall update`. On exactly the host this guard is about -- system-managed
+  # unit whose ExecStart points outside $install_dir -- `heimdall update` stops the
+  # service by NAME (src/manager/service.odin:35), replaces binaries in a directory
+  # that unit never execs, and restarts it: a production bounce for zero benefit.
+  # T22 (REQ-INST-24) fixes that; until it lands, naming the updater here would
+  # send the user into a version of the harm this message warns about.
+  if [ -n "$system_unit" ] && ! "$force_service"; then
+    fail "this machine already has a system-managed heimdall-bridge service at $system_unit.
+Writing $service_file would SILENTLY SHADOW it: a user unit of the same name takes precedence over the system one. Nothing would fail now and the running bridge would carry on, but the next restart would start THIS unit instead of the machine's -- which is how a host loses the ability to restart its own bridge with no error anywhere.
+Nothing has been installed; this run stopped before downloading.
+  - service managed by your OS (NixOS, a distro package, config management)? Nothing to do -- keep using $system_unit.
+  - only want fresher binaries? Whatever put that unit there installed the binaries it runs too, and its ExecStart decides which ones -- so update through your OS (nixos-rebuild, your distro package manager, your config management). Re-running this installer cannot refresh what that unit actually executes.
+  - want the user unit to win anyway? Re-run with --force-service.
+This installer will never remove or modify $system_unit."
+  fi
 
   say "downloading $tarball_url"
   # An explicit TEMPLATE, not a bare `mktemp -d`. On macOS a bare `mktemp -d`

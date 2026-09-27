@@ -673,9 +673,8 @@ def run_installer(shim: Path, work: Path, tag: str, *args):
     runtime.mkdir(parents=True, exist_ok=True)
     # subprocess.run directly, matching the env-passing idiom the sandboxed
     # tests above already use (run() takes no env).
-    return subprocess.run(['bash', str(INSTALL_SCRIPT), *args],
-                          env=stub_env(home, runtime, shim),
-                          capture_output=True, text=True, timeout=90)
+    return install_run_shielded(['bash', str(INSTALL_SCRIPT), *args],
+                               stub_env(home, runtime, shim), timeout=90)
 
 
 def assert_only_message(res, expected_fragments, forbidden_fragments):
@@ -1680,8 +1679,8 @@ def test_download_failure_names_url_and_tmpdir(ctx):
     env['TMPDIR'] = str(tmpdir)
     # --hub keeps this off the GitHub API entirely; the url is a local file://
     # that does not exist, so the failure is real and nothing leaves the machine.
-    res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--hub', f'file://{missing}'],
-                         env=env, capture_output=True, text=True, timeout=90)
+    res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', f'file://{missing}'],
+                               env, timeout=90)
     assert res.returncode != 0, f'a missing mirror must fail:\n{res.stdout}'
     out = res.stdout + res.stderr
     assert 'download failed: ' in out, f'failure did not name the url:\n{out}'
@@ -1740,9 +1739,13 @@ def test_install_sh_full_run_service_lifecycle(ctx):
     env = sandbox_install_env(home, base / 'xdg-runtime')
 
     def install_run(hub_url, *extra):
-        return subprocess.run(
+        # Shielded, NOT given --force-service: runs 1-3 below assert the DEFAULT
+        # service-file path (no backup on fresh, no-op when identical, exactly one
+        # .bak-<UTC> when differing), and --force-service suppresses backups --
+        # it would delete the only coverage those three runs exist for.
+        return install_run_shielded(
             ['bash', str(INSTALL_SCRIPT), '--hub', hub_url, *extra],
-            cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+            env, cwd=ROOT, timeout=120)
 
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
@@ -1900,7 +1903,16 @@ def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
     # in every invocation — a second call cannot see the first call's binaries.
     # `pre` runs inside the namespace, which is how an uninstall run gets
     # something at /usr/local/bin to act on.
-    inner = ('mount -t tmpfs tmpfs /usr && '
+    # REQ-INST-23: hide the machine's own system-wide unit dirs too. These runs
+    # perform a REAL install, so on a host that HAS a system-managed
+    # heimdall-bridge.service install.sh would (correctly) refuse and these tests
+    # would measure the guard instead of the sudo branch they exist for. Already
+    # inside unshare -rm, so this is a mount and nothing more; no extra namespace.
+    hide_units = ''.join(
+        f'if [ -d {shlex.quote(d)} ]; then {ns_tool("mount")} -t tmpfs tmpfs {shlex.quote(d)}; fi && '
+        for d in system_unit_dirs_from_install_sh())
+    inner = (hide_units
+             + 'mount -t tmpfs tmpfs /usr && '
              'mkdir -p /usr/local/bin && '
              f'mount --bind {base / "fakehome"} {entry.pw_dir} && '
              + (f'{pre} && ' if pre else '')
@@ -2346,9 +2358,9 @@ def test_install_sh_readonly_rc_nonfatal(ctx):
     rc.chmod(0o444)
 
     def install_run(*extra):
-        return subprocess.run(
+        return install_run_shielded(
             ['bash', str(INSTALL_SCRIPT), '--hub', hub, *extra],
-            cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+            env, cwd=ROOT, timeout=120)
 
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
@@ -2433,8 +2445,8 @@ def test_install_sh_uninstall(ctx):
     decoy = 'export PATH="/opt/other/bin:$PATH"\nexport EDITOR=vi\n'
     rc.write_text(decoy)
 
-    res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                         cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+    res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
+                               env, cwd=ROOT, timeout=120)
     assert res.returncode == 0, f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}'
 
     install_dir = home / '.local/bin'
@@ -2608,8 +2620,8 @@ def test_install_sh_uninstall_removes_bundled_openssl(ctx):
         home.mkdir(parents=True)
         runtime.mkdir(parents=True)
         env = sandbox_install_env(home, runtime)
-        res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                             cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
+                                   env, cwd=ROOT, timeout=120)
         assert res.returncode == 0, (
             f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
         return env, home / '.local/bin', res.stdout
@@ -2708,8 +2720,8 @@ def test_install_sh_uninstall_unhashable_openssl_nonfatal(ctx):
         home.mkdir(parents=True)
         runtime.mkdir(parents=True)
         env = sandbox_install_env(home, runtime)
-        res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                             cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
+        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
+                                   env, cwd=ROOT, timeout=120)
         assert res.returncode == 0, (
             f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
         install_dir = home / '.local/bin'
@@ -3526,6 +3538,383 @@ def test_socat_present_keeps_the_installer_silent(ctx):
     assert 'platform:' in res.stdout and 'would install' in res.stdout
 
 
+# --- REQ-INST-23: refusing to shadow a system-managed unit --------------------
+#
+# A unit in ~/.config/systemd/user takes PRECEDENCE over the same name in the
+# machine's system-wide user unit directories, so writing ours on a host that
+# already has a system-managed heimdall-bridge.service silently takes it over at
+# the next restart -- see the long comment at the guard in install.sh. install.sh
+# therefore refuses unless --force-service says the shadowing is deliberate.
+#
+# THE TESTING PROBLEM, AND WHY THESE TESTS LOOK THE WAY THEY DO.
+# The guard scans ABSOLUTE paths (/etc/systemd/user and friends), which an
+# ordinary-user test cannot redirect -- and this is not hypothetical: the machine
+# this suite is developed on HAS /etc/systemd/user/heimdall-bridge.service as a
+# NixOS symlink, so every real install below would refuse without a fixture, and
+# the negative control ("no system unit -> unchanged") could not be written here
+# at all. Redirecting the scan with an env var was considered and rejected: a
+# test-only hatch in install.sh, on a safety guard, is the worst place for one.
+# So the fixture takes the paths away instead, in a private namespace.
+
+
+# The namespace scaffolding is resolved ABSOLUTELY, from this harness's own
+# environment, because several tests below run install.sh with a deliberately
+# minimal stub PATH holding only the utilities the script needs. subprocess
+# resolves argv[0] against the PATH of the env it is GIVEN, so a bare 'unshare'
+# there raises FileNotFoundError and a bare 'mount' inside the namespace would
+# fail the same way. The fixture must not need anything on the PATH under test.
+NS_TOOLS = {name: shutil.which(name) for name in ('unshare', 'mount', 'mkdir', 'sh', 'bash')}
+
+
+def ns_tool(name: str) -> str:
+    path = NS_TOOLS.get(name)
+    assert path, f'{name} not found on the harness PATH; the namespace fixture needs it'
+    return path
+
+
+def system_unit_dirs_from_install_sh() -> list:
+    """The scanned directories, RE-DERIVED from install.sh's own
+    system_unit_dirs(). Never keep a hand-typed copy here: a mirrored list
+    desyncs the day one side is edited, and a scan this suite no longer covers
+    is exactly how a guard rots into decoration."""
+    text = INSTALL_SCRIPT.read_text(encoding='utf-8')
+    body = re.search(r'^system_unit_dirs\(\) \{(.*?)^\}', text, re.S | re.M)
+    assert body, 'install.sh no longer defines system_unit_dirs(); REQ-INST-23 scan lost'
+    dirs = re.findall(r'(/[\w.\-/]*?/systemd/user)\b', body.group(1))
+    assert dirs, f'system_unit_dirs() lists no directories:\n{body.group(1)}'
+    return dirs
+
+
+# Mounting a tmpfs over one of these to fake a unit inside it would hide most of
+# the filesystem from the namespace, so a directory whose only usable mount point
+# is one of them is skipped WITH A REASON rather than faked unsafely.
+UNSAFE_MOUNT_POINTS = ('/', '/usr', '/etc', '/var', '/run', '/lib', '/usr/lib')
+
+
+def _unit_dir_mount_point(unit_dir: str):
+    """Where to mount a tmpfs so that `unit_dir` can be created inside it, or
+    None when this host offers no safe place. A dir that exists is covered
+    directly; otherwise the nearest existing ancestor is used, provided covering
+    it does not blind the namespace."""
+    if os.path.isdir(unit_dir):
+        return unit_dir
+    parent = str(Path(unit_dir).parent)
+    if os.path.isdir(parent) and parent not in UNSAFE_MOUNT_POINTS:
+        return parent
+    return None
+
+
+def need_nonroot_userns():
+    """The machine-unit fixture needs an unprivileged mount namespace AND the
+    ability to map root back to an ordinary uid inside it."""
+    if not sys.platform.startswith('linux'):
+        raise Skip(
+            f'the machine-unit fixture needs Linux mount namespaces and {sys.platform} '
+            'has no unshare; launchd precedence differs from systemd (both LaunchAgents '
+            'dirs load and a duplicate LABEL conflicts rather than silently overriding) '
+            'and REQ-INST-23 deliberately asserts nothing about it')
+    need_tool('unshare')
+    version = run(['unshare', '--version']).stdout
+    parsed = re.search(r'(\d+)\.(\d+)', version)
+    assert parsed, f'could not parse a util-linux version out of {version!r}'
+    # Deliberately an ASSERT, not a Skip. Without --map-user the fixture would
+    # leave install.sh at uid 0, where it takes the sudo/SUDO_USER branch -- so a
+    # silent fallback would make every test below exercise the wrong code while
+    # still reporting green.
+    assert (int(parsed.group(1)), int(parsed.group(2))) >= (2, 38), (
+        f'unshare --map-user needs util-linux >= 2.38, this host has {version.strip()}; '
+        'refusing to fall back to running install.sh as uid 0, which would silently '
+        'test the sudo branch instead of the ordinary one')
+    need_userns_mount()
+    probe = run(['unshare', '-rm', 'sh', '-c',
+                 f'exec unshare --user --map-user={os.getuid()} '
+                 f'--map-group={os.getgid()} id -u'])
+    if probe.returncode != 0:
+        raise Skip(f'nested user namespace unavailable: {probe.stderr.strip() or probe.stdout.strip()}')
+    assert probe.stdout.strip() == str(os.getuid()), (
+        'the nested namespace did not restore an ordinary uid '
+        f'(wanted {os.getuid()}, got {probe.stdout.strip()!r}) -- install.sh would take '
+        'the root branch and these tests would cover the wrong path')
+
+
+def machine_unit_run(args, env, *, unit_in=None, timeout=180, cwd=None):
+    """Run install.sh with the MACHINE's system-wide user-unit directories under
+    this test's control, as an ORDINARY (non-root) user.
+
+    Both namespaces are load-bearing:
+      * the outer `unshare -rm` gives CAP_SYS_ADMIN over a PRIVATE mount
+        namespace, the only way an unprivileged test can neutralise absolute
+        paths like /etc/systemd/user -- and every mount is invisible to the host;
+      * the inner `unshare --user --map-user` maps root BACK to the caller's uid,
+        so install.sh sees an ordinary user and takes its $HOME/.local/bin
+        branch. Without it the run would stay at uid 0 and take the
+        sudo/SUDO_USER branch instead, i.e. cover different code than the test
+        claims to.
+
+    unit_in=None hides EVERY scanned directory (the negative control's world: a
+    host with no system-managed unit). unit_in=<dir> additionally plants a fake
+    machine unit there, which is the world the guard must refuse in.
+    """
+    dirs = system_unit_dirs_from_install_sh()
+    mount, mkdir = ns_tool('mount'), ns_tool('mkdir')
+    script = ['set -e']
+    for unit_dir in dirs:
+        # A directory that does not exist needs no hiding -- the scan's `[ -e ]`
+        # already misses it.
+        if os.path.isdir(unit_dir):
+            script.append(f'{mount} -t tmpfs tmpfs {shlex.quote(unit_dir)}')
+    if unit_in is not None:
+        assert unit_in in dirs, f'{unit_in} is not scanned by install.sh; dirs={dirs}'
+        mount_point = _unit_dir_mount_point(unit_in)
+        assert mount_point, f'no safe mount point for {unit_in} on this host'
+        if mount_point != unit_in:
+            script.append(f'{mount} -t tmpfs tmpfs {shlex.quote(mount_point)}')
+        script.append(f'{mkdir} -p {shlex.quote(unit_in)}')
+        # printf is a shell builtin, so it needs nothing on PATH.
+        script.append(
+            f'printf "[Unit]\\nDescription=the machine\'s own bridge\\n" '
+            f'> {shlex.quote(unit_in + "/heimdall-bridge.service")}')
+    inner = ' '.join(shlex.quote(str(a)) for a in [ns_tool('bash'), str(INSTALL_SCRIPT), *args])
+    script.append(f'exec {ns_tool("unshare")} --user --map-user={os.getuid()} '
+                  f'--map-group={os.getgid()} {inner}')
+    return subprocess.run([ns_tool('unshare'), '-rm', ns_tool('sh'), '-c', '\n'.join(script)],
+                          cwd=str(cwd or ROOT), env=env, capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def machine_unit_fixture(ctx, name: str):
+    """A stub release, a file:// mirror and a sandbox home+env, for one case."""
+    base = ctx['work'] / name
+    home = base / 'home'
+    (base / 'xdg-runtime').mkdir(parents=True)
+    res, tarball = package_tarball(base, target='linux-amd64')
+    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    hub = make_hub_mirror(base, tarball, 'linux-amd64')
+    env = sandbox_install_env(home, base / 'xdg-runtime')
+    return home, hub, env
+
+
+def host_system_unit():
+    """The machine's own heimdall-bridge unit, if this host has one. Returns the
+    path install.sh's scan would match, or None.
+
+    Tests that perform a REAL install need to know, because on a host that HAS
+    one install.sh now (correctly) refuses -- so such a host is the only place
+    those tests need the namespace fixture at all. On a host without one (every
+    CI runner today, and macOS, where the scan does not run) they keep executing
+    exactly as they did before this guard existed: no namespace, no new
+    dependency, no behaviour change."""
+    if not sys.platform.startswith('linux'):
+        return None
+    for unit_dir in system_unit_dirs_from_install_sh():
+        candidate = f'{unit_dir}/heimdall-bridge.service'
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def install_run_shielded(argv, env, *, cwd=None, timeout=120):
+    """Run install.sh so that the MACHINE's unit, if any, cannot change the
+    outcome -- for tests whose subject is the ordinary install path and not
+    REQ-INST-23.
+
+    On a host with no system-managed unit this is a plain subprocess, byte for
+    byte what these tests did before the guard existed. On a host that HAS one
+    (this development machine does) the run is wrapped in the namespace fixture
+    with every scanned directory hidden, because otherwise install.sh would
+    rightly refuse and the test would be measuring the guard instead of its own
+    subject. Passing --force-service instead was rejected: it would suppress the
+    service-file BACKUP behaviour that some of these tests exist to assert."""
+    if host_system_unit() is None:
+        return subprocess.run(argv, cwd=cwd and str(cwd), env=env,
+                              capture_output=True, text=True, timeout=timeout)
+    need_nonroot_userns()
+    assert Path(argv[0]).name == 'bash' and str(argv[1]) == str(INSTALL_SCRIPT), (
+        f'install_run_shielded expects a bash install.sh invocation, got {argv!r}')
+    return machine_unit_run(argv[2:], env, unit_in=None, timeout=timeout, cwd=cwd)
+
+
+def sandbox_home_writes(home: Path) -> list:
+    """What a run left in the sandbox home, EXCLUDING the harness's own socat
+    stub (sandbox_install_env writes that before install.sh ever starts)."""
+    return sorted(str(p.relative_to(home)) for p in home.rglob('*')
+                  if not str(p.relative_to(home)).startswith('.socat-stub'))
+
+
+def test_install_sh_refuses_to_shadow_system_unit(ctx):
+    """REQ-INST-23: with a system-managed unit present, a real run must REFUSE
+    and leave the machine exactly as it found it -- no service file, no
+    binaries, no rc edit -- and say WHY in terms the operator can act on."""
+    need_nonroot_userns()
+    home, hub, env = machine_unit_fixture(ctx, 'sysunit-refuse')
+    res = machine_unit_run(['--hub', hub], env, unit_in='/etc/systemd/user')
+
+    assert res.returncode != 0, (
+        f'a run that would shadow the machine unit must FAIL:\n{res.stdout}')
+    message = res.stdout + res.stderr
+    assert '/etc/systemd/user/heimdall-bridge.service' in message, (
+        f'the refusal must name the unit it found:\n{message}')
+    assert 'precedence' in message, (
+        f'the refusal must explain WHY writing ours is dangerous:\n{message}')
+    assert 'Nothing has been installed' in message, (
+        f'the refusal must tell the operator the machine is untouched:\n{message}')
+    assert '--force-service' in message, (
+        f'the refusal must name the deliberate-shadow escape hatch:\n{message}')
+    # The third bullet routes an upgrader at their OS, NOT at `heimdall update`:
+    # on exactly this host that command stops the service by name, swaps binaries
+    # the system unit never execs, and restarts it -- a production bounce for no
+    # benefit (T22 / REQ-INST-24). A message naming it would hand the user a
+    # version of the harm it is warning about.
+    assert 'heimdall update' not in message, (
+        'the refusal must NOT route the user at `heimdall update` while it bounces a '
+        f'system-managed service for zero benefit (T22):\n{message}')
+    assert 'never remove or modify' in message, (
+        f'the refusal must promise it will not touch the machine unit:\n{message}')
+
+    # REFUSED MEANS NOTHING WRITTEN. This is the assertion the incident is about:
+    # the damage was invisible precisely because a shadowing write succeeds
+    # quietly, so "it exited non-zero" is not enough on its own.
+    assert sandbox_home_writes(home) == [], (
+        f'a refused run must write NOTHING: {sandbox_home_writes(home)}')
+
+
+def test_install_sh_force_service_shadows_deliberately(ctx):
+    """REQ-INST-23: --force-service is the documented way to say "I know a unit
+    is in the way and I want mine to win", so the guard must not block it."""
+    need_nonroot_userns()
+    home, hub, env = machine_unit_fixture(ctx, 'sysunit-force')
+    res = machine_unit_run(['--hub', hub, '--force-service'], env,
+                           unit_in='/etc/systemd/user')
+
+    assert res.returncode == 0, (
+        f'--force-service must proceed past the guard:\n{res.stdout}\n{res.stderr}')
+    unit = home / '.config/systemd/user/heimdall-bridge.service'
+    assert unit.is_file(), '--force-service must still write the user unit'
+    for binary in ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl'):
+        assert (home / '.local/bin' / binary).is_file(), f'{binary} not installed'
+
+
+def test_install_sh_dry_run_reports_system_unit_refusal(ctx):
+    """REQ-INST-23: --dry-run must keep previewing (exit 0) and its plan must
+    tell the TRUTH -- that a real run would stop here. A preview that omits the
+    refusal is how an operator learns about it from an outage instead."""
+    need_nonroot_userns()
+    home, hub, env = machine_unit_fixture(ctx, 'sysunit-dryrun')
+    res = machine_unit_run(['--dry-run', '--hub', hub], env,
+                           unit_in='/etc/systemd/user')
+
+    assert res.returncode == 0, (
+        f'--dry-run must stay a preview, not a failure:\n{res.stderr}')
+    assert 'would REFUSE to continue' in res.stdout, (
+        f'the plan must say a real run would refuse:\n{res.stdout}')
+    assert '/etc/systemd/user/heimdall-bridge.service' in res.stdout, (
+        f'the plan must name the unit it found:\n{res.stdout}')
+    assert 'precedence' in res.stdout, f'the plan must say why:\n{res.stdout}'
+    assert sandbox_home_writes(home) == [], (
+        f'--dry-run must write nothing: {sandbox_home_writes(home)}')
+
+
+def test_install_sh_without_system_unit_installs_normally(ctx):
+    """THE NEGATIVE CONTROL, and the reason the fixture exists at all: with the
+    machine's unit directories EMPTY, install.sh must behave exactly as before.
+    Without this test an always-on guard -- one that refused on every host --
+    would pass every other test in this section."""
+    need_nonroot_userns()
+    home, hub, env = machine_unit_fixture(ctx, 'sysunit-absent')
+    res = machine_unit_run(['--hub', hub], env, unit_in=None)
+
+    assert res.returncode == 0, (
+        f'no system unit present, so the install must proceed:\n{res.stdout}\n{res.stderr}')
+    assert 'REFUSE' not in res.stdout + res.stderr, (
+        f'nothing to refuse here:\n{res.stdout}\n{res.stderr}')
+    unit = home / '.config/systemd/user/heimdall-bridge.service'
+    assert unit.is_file(), 'the user unit must be written when nothing is shadowed'
+    assert 'wrote service file' in res.stdout
+    for binary in ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl'):
+        assert (home / '.local/bin' / binary).is_file(), f'{binary} not installed'
+    # The ordinary (non-root) branch is what the nested namespace exists to
+    # preserve: install_dir must be the user's ~/.local/bin, not /usr/local/bin.
+    assert str(home / '.local/bin') in res.stdout, (
+        f'the run must have taken the ordinary $HOME/.local/bin branch:\n{res.stdout}')
+
+
+def test_install_sh_uninstall_unaffected_by_system_unit(ctx):
+    """REQ-INST-23: the guard sits BELOW the --uninstall exit, so removing our
+    own files is never blocked by the machine having its own unit. A user who
+    installed before the guard existed must still be able to get out."""
+    need_nonroot_userns()
+    home, hub, env = machine_unit_fixture(ctx, 'sysunit-uninstall')
+
+    # Install in the world where nothing is shadowed...
+    res = machine_unit_run(['--hub', hub], env, unit_in=None)
+    assert res.returncode == 0, f'setup install failed:\n{res.stdout}\n{res.stderr}'
+    unit = home / '.config/systemd/user/heimdall-bridge.service'
+    assert unit.is_file(), 'setup install did not write the unit'
+
+    # ...then uninstall in the world where the machine DOES have its own unit.
+    res = machine_unit_run(['--uninstall'], env, unit_in='/etc/systemd/user')
+    assert res.returncode == 0, (
+        f'--uninstall must not be blocked by a system unit:\n{res.stdout}\n{res.stderr}')
+    assert 'REFUSE' not in res.stdout + res.stderr, (
+        f'--uninstall has nothing to shadow:\n{res.stdout}\n{res.stderr}')
+    assert not unit.exists(), 'the user unit must be removed'
+    for binary in ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl'):
+        assert not (home / '.local/bin' / binary).exists(), f'{binary} not removed'
+
+
+def test_install_sh_system_unit_search_path_is_complete(ctx):
+    """The scan is a LIST, and a list is where coverage rots. This half is pure
+    source inspection so it can never skip: it holds the search path itself to
+    account on every host, including the macOS runners where the guard does not
+    run and the behavioural half below cannot."""
+    dirs = system_unit_dirs_from_install_sh()
+    # systemd.unit(5), "User Unit Search Path": the system-wide half of it.
+    # ~/.config/systemd/user is deliberately NOT here -- that is where install.sh
+    # writes, and it sits above all of these, which is the whole defect.
+    assert dirs == ['/etc/systemd/user', '/run/systemd/user',
+                    '/usr/local/lib/systemd/user', '/usr/lib/systemd/user',
+                    '/lib/systemd/user'], (
+        f'the system-wide user unit search path changed: {dirs}')
+    home_config = '/.config/systemd/user'
+    assert not any(d.endswith(home_config) for d in dirs), (
+        'the scan must not include the per-user dir install.sh writes to; it would '
+        f'then refuse on an idempotent re-run: {dirs}')
+
+
+def test_install_sh_scans_every_system_unit_dir(ctx):
+    """And this half EXECUTES the guard against each scanned directory the host
+    lets us fake, so a loop that silently only ever looks at its first entry is
+    caught. Directories with no safe mount point are named, never passed over in
+    silence."""
+    dirs = system_unit_dirs_from_install_sh()
+    need_nonroot_userns()
+    executed, unfakeable = [], []
+    for index, unit_dir in enumerate(dirs):
+        if _unit_dir_mount_point(unit_dir) is None:
+            unfakeable.append(unit_dir)
+            continue
+        home, hub, env = machine_unit_fixture(ctx, f'sysunit-dir{index}')
+        res = machine_unit_run(['--hub', hub], env, unit_in=unit_dir)
+        assert res.returncode != 0, (
+            f'a unit in {unit_dir} must be refused:\n{res.stdout}\n{res.stderr}')
+        assert f'{unit_dir}/heimdall-bridge.service' in res.stdout + res.stderr, (
+            f'the refusal must name the directory it matched ({unit_dir}):\n{res.stderr}')
+        assert sandbox_home_writes(home) == [], (
+            f'refused on {unit_dir} but wrote {sandbox_home_writes(home)}')
+        executed.append(unit_dir)
+
+    if not executed:
+        raise Skip('no scanned unit directory can be faked on this host without a '
+                   'tmpfs over / or /usr, which would blind the namespace: '
+                   f'{", ".join(unfakeable)} (the search path itself is still '
+                   'asserted by the source-level test above)')
+    if unfakeable:
+        # Stated, never silent: these need a tmpfs over /usr or / to fake, which
+        # would blind the namespace. They are covered by the list assertion above.
+        print(f'    (executed {len(executed)}/{len(dirs)} scanned dirs; '
+              f'no safe mount point on this host for: {", ".join(unfakeable)})')
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -3595,6 +3984,20 @@ def main() -> int:
         ('install.sh --uninstall survives unreadable openssl/record',
          test_install_sh_uninstall_unhashable_openssl_nonfatal),
         ('install.sh sudo --uninstall --dry-run', test_install_sh_sudo_uninstall_dry_run),
+        ('install.sh refuses to shadow a system unit (REQ-INST-23)',
+         test_install_sh_refuses_to_shadow_system_unit),
+        ('install.sh --force-service shadows deliberately (REQ-INST-23)',
+         test_install_sh_force_service_shadows_deliberately),
+        ('install.sh --dry-run reports the system-unit refusal (REQ-INST-23)',
+         test_install_sh_dry_run_reports_system_unit_refusal),
+        ('install.sh with NO system unit is unchanged (REQ-INST-23 control)',
+         test_install_sh_without_system_unit_installs_normally),
+        ('install.sh --uninstall unaffected by a system unit (REQ-INST-23)',
+         test_install_sh_uninstall_unaffected_by_system_unit),
+        ('install.sh system unit search path is complete (REQ-INST-23)',
+         test_install_sh_system_unit_search_path_is_complete),
+        ('install.sh scans every system unit dir (REQ-INST-23)',
+         test_install_sh_scans_every_system_unit_dir),
         ('build heimdall (nix develop / odin)', build_heimdall),
         ('heimdall --version schema', test_heimdall_version_schema),
         ('heimdall status schema', test_heimdall_status_schema),
