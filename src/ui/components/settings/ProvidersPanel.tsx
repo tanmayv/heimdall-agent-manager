@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import { getRouteSearch } from '../../utils/appLocation';
 import {
+  bridgeSupportApi,
   normalizeBridgeCapabilities,
   useDeleteBridgeProviderMutation,
   useListBridgeProvidersQuery,
@@ -10,67 +12,35 @@ import {
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
 import { Alert, Button, Checkbox, FormField, Input, PageShell, Radio, Select, Textarea } from '@ui';
+import {
+  type AutoEnterPair,
+  type ProviderForm,
+  type ReasonMapping,
+  asArray,
+  asLines,
+  bridgeId,
+  buildDuplicateForm,
+  configuredTiers,
+  emptyForm,
+  formFromProfile,
+  intValue,
+  parseReasonMappings,
+  planSaveProvider,
+  profileFromForm,
+  providerDefault,
+  shellHash,
+} from './providerManagement.ts';
+import {
+  SUPPORTED_PROVIDER_PRESETS,
+  getProviderPreset,
+  formFromPreset,
+  getModelSuggestions,
+  getFlagSuggestions,
+  type ProviderPreset,
+} from './providerCatalog.ts';
 
-type AutoEnterPair = { pattern: string; preKey: string };
-type ReasonMapping = { key: string; reason: string };
-
-type ProviderForm = {
-  name: string;
-  enabled: boolean;
-  command: string[];
-  modelsFlag: string;
-  modelsCheap: string;
-  modelsNormal: string;
-  modelsSmart: string;
-  promptFlags: string[];
-  yoloFlags: string[];
-  starterPrompt: string;
-  promptDelivery: string;
-  skillDir: string;
-  bootstrapFileName: string;
-  startupEnabled: boolean;
-  startupProbeSeconds: string;
-  startupCaptureIntervalMs: string;
-  startupBlockedPatterns: string[];
-  startupAutoEnterPairs: AutoEnterPair[];
-  startupUnknownIsBlocked: boolean;
-  startupReasonMappings: ReasonMapping[];
-  activityEnabled: boolean;
-  activitySampleLines: string;
-  activityIgnoreBottomLines: string;
-  activityCheckIntervalSeconds: string;
-  activityMinGapMs: string;
-  activityMaxGapMs: string;
-};
-
-const emptyForm: ProviderForm = {
-  name: '',
-  enabled: true,
-  command: [],
-  modelsFlag: '--model',
-  modelsCheap: '',
-  modelsNormal: '',
-  modelsSmart: '',
-  promptFlags: [],
-  yoloFlags: [],
-  starterPrompt: '',
-  promptDelivery: 'flag-injection',
-  skillDir: '',
-  bootstrapFileName: '',
-  startupEnabled: false,
-  startupProbeSeconds: '20',
-  startupCaptureIntervalMs: '500',
-  startupBlockedPatterns: [],
-  startupAutoEnterPairs: [],
-  startupUnknownIsBlocked: false,
-  startupReasonMappings: [],
-  activityEnabled: false,
-  activitySampleLines: '20',
-  activityIgnoreBottomLines: '0',
-  activityCheckIntervalSeconds: '2',
-  activityMinGapMs: '250',
-  activityMaxGapMs: '5000',
-};
+export * from './providerManagement.ts';
+export * from './providerCatalog.ts';
 
 export function ProvidersPanel() {
   // Poll: a Bridge can come online / report capabilities after this page loaded,
@@ -197,6 +167,7 @@ export function ProvidersPanel() {
                 <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
                   <Button variant="secondary" data-debug-id={`providers-enabled-toggle-${name}`} onClick={() => void toggleEnabled(profile)} disabled={offline} className="min-h-[44px]">{profile.enabled ? 'Disable' : 'Enable'}</Button>
                   <a data-debug-id={`providers-edit-btn-${name}`} href={shellHash(`/settings/providers/${encodeURIComponent(name)}/edit?bridge=${encodeURIComponent(selectedId)}`)} aria-disabled={offline} className={`inline-flex min-h-[44px] items-center justify-center rounded-lg border border-subtle px-3 py-2 text-xs text-muted hover:bg-neutral-soft ${offline ? 'pointer-events-none opacity-50' : ''}`}>Edit</a>
+                  <a data-debug-id={`providers-duplicate-btn-${name}`} href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}&duplicateFrom=${encodeURIComponent(name)}`)} aria-disabled={offline} className={`inline-flex min-h-[44px] items-center justify-center rounded-lg border border-subtle px-3 py-2 text-xs text-muted hover:bg-neutral-soft ${offline ? 'pointer-events-none opacity-50' : ''}`}>Duplicate</a>
                   <Button variant="danger" data-debug-id={`providers-delete-btn-${name}`} onClick={() => void removeProvider(profile)} disabled={offline || profile.source !== 'store'} className="min-h-[44px]">Delete</Button>
                 </div>
               </div>
@@ -210,6 +181,7 @@ export function ProvidersPanel() {
 }
 
 export function ProviderEditorPage({ providerName = '' }: { providerName?: string }) {
+  const dispatch = useDispatch();
   const isEdit = Boolean(providerName);
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
@@ -220,30 +192,119 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
   const providersQuery = useListBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
   const providers = providersQuery.data?.providers || [];
   const currentProfile = providers.find((profile: any) => String(profile.name || '') === providerName);
-  const [upsertProvider] = useUpsertBridgeProviderMutation();
-  const [form, setForm] = useState<ProviderForm>(isEdit ? { ...emptyForm, name: providerName } : emptyForm);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+
+  const [routeSearch, setRouteSearch] = useState(() => getRouteSearch());
 
   useEffect(() => {
-    const params = new URLSearchParams(getRouteSearch());
-    const bridge = params.get('bridge') || '';
+    const handleHash = () => setRouteSearch(getRouteSearch());
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const searchParams = useMemo(() => new URLSearchParams(routeSearch), [routeSearch]);
+  const duplicateFrom = searchParams.get('duplicateFrom') || '';
+  const duplicateProfile = providers.find((profile: any) => String(profile.name || '') === duplicateFrom);
+
+  const [upsertProvider] = useUpsertBridgeProviderMutation();
+  const [deleteProvider] = useDeleteBridgeProviderMutation();
+  const [setDefaults] = useSetBridgeProviderDefaultsMutation();
+
+  const [form, setForm] = useState<ProviderForm>(() => {
+    if (isEdit) return { ...emptyForm, name: providerName };
+    if (duplicateFrom) return { ...emptyForm, name: `${duplicateFrom}-copy` };
+    return emptyForm;
+  });
+  const [selectedPresetKey, setSelectedPresetKey] = useState<string>('custom');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const initializedKeyRef = useRef<string>('');
+
+  function handlePresetChange(key: string) {
+    setSelectedPresetKey(key);
+    if (key === 'custom') {
+      setForm(emptyForm);
+    } else if (SUPPORTED_PROVIDER_PRESETS[key]) {
+      setForm(formFromPreset(SUPPORTED_PROVIDER_PRESETS[key]));
+    }
+  }
+
+  useEffect(() => {
+    const bridge = searchParams.get('bridge') || '';
     if (!selectedBridgeId && bridge) setSelectedBridgeId(bridge);
     else if (!selectedBridgeId && bridges.length > 0) setSelectedBridgeId(bridgeId(bridges[0]));
-  }, [bridges, selectedBridgeId]);
+  }, [bridges, searchParams, selectedBridgeId]);
 
-  useEffect(() => { if (isEdit && currentProfile) setForm(formFromProfile(currentProfile)); }, [isEdit, providerName, currentProfile]);
+  useEffect(() => {
+    if (isEdit && currentProfile) {
+      const editKey = `edit:${providerName}`;
+      if (initializedKeyRef.current !== editKey) {
+        initializedKeyRef.current = editKey;
+        setForm(formFromProfile(currentProfile));
+        const matched = getProviderPreset(currentProfile.command?.[0] || currentProfile.name || providerName);
+        if (matched) setSelectedPresetKey(matched.name);
+      }
+    } else if (!isEdit && duplicateFrom && duplicateProfile) {
+      const dupKey = `duplicate:${duplicateFrom}`;
+      if (initializedKeyRef.current !== dupKey) {
+        initializedKeyRef.current = dupKey;
+        setForm(buildDuplicateForm(duplicateProfile, duplicateFrom));
+        const matched = getProviderPreset(duplicateProfile.command?.[0] || duplicateProfile.name);
+        if (matched) setSelectedPresetKey(matched.name);
+      }
+    } else if (!isEdit && !duplicateFrom) {
+      if (initializedKeyRef.current && initializedKeyRef.current !== 'new') {
+        initializedKeyRef.current = 'new';
+        setSelectedPresetKey('custom');
+        setForm(emptyForm);
+      }
+    }
+  }, [isEdit, providerName, currentProfile, duplicateFrom, duplicateProfile]);
 
   async function saveProvider() {
-    const name = form.name.trim();
-    if (!selectedId || !name) return;
-    setSaving(true); setError('');
+    const newName = form.name.trim();
+    if (!selectedId || !newName) return;
+    setSaving(true);
+    setError('');
     try {
-      await upsertProvider({ bridgeId: selectedId, name, profile: profileFromForm(form) }).unwrap();
+      const profile = profileFromForm(form);
+      const plan = planSaveProvider({
+        isEdit,
+        providerName,
+        formName: newName,
+        currentProfile,
+        providersData: providersQuery.data,
+        providersList: providers,
+        profile,
+      });
+
+      // 1. Issue PUT /api/v1/bridges/{bridgeId}/providers/{newName} with the updated profile.
+      await upsertProvider({ bridgeId: selectedId, name: newName, profile }).unwrap();
+
+      if (plan.isRenamed) {
+        // 2. If the original provider was a store-persisted provider (source === 'store'), issue DELETE /api/v1/bridges/{bridgeId}/providers/{oldName}.
+        if (plan.shouldDeleteOld) {
+          await deleteProvider({ bridgeId: selectedId, name: plan.oldName }).unwrap();
+        }
+
+        // 3. If the original provider was the default provider, update default_provider via POST /api/v1/bridges/{bridgeId}/provider-defaults.
+        if (plan.shouldUpdateDefault) {
+          await setDefaults({ bridgeId: selectedId, provider: newName, tier: plan.defaultTier }).unwrap();
+        }
+
+        // 4. Invalidate RTK Query cache tags (BridgeProviders, Bridges).
+        dispatch(bridgeSupportApi.util.invalidateTags([
+          { type: 'BridgeProviders', id: selectedId },
+          { type: 'Bridges', id: 'LIST' },
+          { type: 'Bridges', id: selectedId },
+        ]));
+      }
+
       window.location.hash = shellHash('/settings/providers');
     } catch (err: any) {
       setError(String(err?.message || 'Save failed'));
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -252,7 +313,19 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
       title={isEdit ? `Edit provider ${providerName}` : 'New provider'}
       description="Add values with controls and chips; no JSON, comma lists, or array syntax is typed by users."
       actions={
-        <a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm text-primary hover:bg-surface-raised">Cancel</a>
+        <div className="flex items-center gap-2">
+          {isEdit ? (
+            <a
+              data-debug-id="providers-editor-header-duplicate-btn"
+              href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}&duplicateFrom=${encodeURIComponent(providerName)}`)}
+              aria-disabled={offline}
+              className={`inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm text-primary hover:bg-surface-raised ${offline ? 'pointer-events-none opacity-50' : ''}`}
+            >
+              Duplicate
+            </a>
+          ) : null}
+          <a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm text-primary hover:bg-surface-raised">Cancel</a>
+        </div>
       }
     >
       <div className="space-y-6 text-left">
@@ -261,14 +334,73 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
         {offline ? <Alert tone="warning" className="mt-3">This Bridge is offline; saving is disabled until it reconnects.</Alert> : null}
         {error ? <Alert tone="danger" className="mt-3">{error}</Alert> : null}
       </div>
-      <ProviderFormFields form={form} setForm={setForm} nameLocked={isEdit} />
+      {!isEdit && (
+        <div data-debug-id="providers-preset-picker" className="rounded-2xl border border-subtle bg-surface-raised/40 p-5">
+          <FormField label="Start from preset" hint="Choose a supported provider preset to pre-fill commands, flags, and models, or choose Custom.">
+            <Select
+              data-debug-id="providers-preset-select"
+              value={selectedPresetKey}
+              onChange={handlePresetChange}
+              width="full"
+              className="min-h-[44px]"
+            >
+              <option value="custom">Custom</option>
+              <option value="claude">Claude</option>
+              <option value="jetski">Jetski</option>
+              <option value="antigravity">Antigravity</option>
+              <option value="pi">Pi</option>
+              <option value="codex">Codex</option>
+              <option value="copilot">Copilot</option>
+            </Select>
+          </FormField>
+          <div data-debug-id="providers-preset-chips" className="mt-3 flex flex-wrap gap-2">
+            {[
+              { key: 'custom', label: 'Custom' },
+              { key: 'claude', label: 'Claude' },
+              { key: 'jetski', label: 'Jetski' },
+              { key: 'antigravity', label: 'Antigravity' },
+              { key: 'pi', label: 'Pi' },
+              { key: 'codex', label: 'Codex' },
+              { key: 'copilot', label: 'Copilot' },
+            ].map((p) => (
+              <button
+                key={p.key}
+                type="button"
+                data-debug-id={`providers-preset-chip-${p.key}`}
+                onClick={() => handlePresetChange(p.key)}
+                className={`inline-flex min-h-[36px] items-center rounded-xl px-3 py-1.5 text-xs font-medium cursor-pointer transition-colors ${
+                  selectedPresetKey === p.key
+                    ? 'bg-accent text-accent-contrast shadow-sm'
+                    : 'border border-subtle bg-surface-raised/60 text-muted hover:bg-surface-raised hover:text-primary'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <ProviderFormFields form={form} setForm={setForm} nameLocked={false} />
       <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-subtle bg-surface/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end"><a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm hover:bg-surface-raised">Cancel</a><Button variant="primary" data-debug-id="providers-editor-save-btn" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">{saving ? 'Saving…' : 'Save provider'}</Button></div>
       </div>
     </PageShell>
   );
 }
 
-function ProviderFormFields({ form, setForm, nameLocked = false }: { form: ProviderForm; setForm: (form: ProviderForm) => void; nameLocked?: boolean }) {
+function ProviderFormFields({
+  form,
+  setForm,
+  nameLocked = false,
+}: {
+  form: ProviderForm;
+  setForm: (form: ProviderForm) => void;
+  nameLocked?: boolean;
+}) {
+  const matchedPreset = useMemo(() => getProviderPreset(form.command[0] || form.name), [form.command, form.name]);
+
+  const flagSuggestions = useMemo(() => getFlagSuggestions(matchedPreset), [matchedPreset]);
+  const modelSuggestions = useMemo(() => getModelSuggestions(matchedPreset), [matchedPreset]);
+
   return (
     <div className="space-y-5 rounded-2xl border border-subtle bg-surface-raised/40 p-5">
       <div className="grid gap-4 sm:grid-cols-2">
@@ -277,16 +409,101 @@ function ProviderFormFields({ form, setForm, nameLocked = false }: { form: Provi
       </div>
       <ChipListInput prefix="providers-editor-command" label="Command argv" placeholder="pi" values={form.command} onChange={(command) => setForm({ ...form, command })} />
       <div className="grid gap-4 sm:grid-cols-2">
-        <TextInput id="providers-editor-models-flag-input" label="Model flag" value={form.modelsFlag} onChange={(modelsFlag) => setForm({ ...form, modelsFlag })} placeholder="--model" />
+        <div>
+          <TextInput
+            id="providers-editor-models-flag-input"
+            label="Model flag"
+            value={form.modelsFlag}
+            onChange={(modelsFlag) => setForm({ ...form, modelsFlag })}
+            placeholder="--model"
+            list={matchedPreset ? 'providers-editor-models-flag-datalist' : undefined}
+          />
+          {matchedPreset && flagSuggestions.modelsFlag.length > 0 && (
+            <div data-debug-id="providers-editor-models-flag-suggestions" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+              <span>Suggestions:</span>
+              {flagSuggestions.modelsFlag.map((flag) => (
+                <button
+                  key={flag}
+                  type="button"
+                  data-debug-id={`providers-editor-models-flag-chip-${flag}`}
+                  onClick={() => setForm({ ...form, modelsFlag: flag })}
+                  className={`inline-flex min-h-[26px] items-center rounded-md border px-2 py-0.5 text-xs cursor-pointer transition-colors ${
+                    form.modelsFlag === flag
+                      ? 'border-accent bg-accent/15 text-accent font-medium'
+                      : 'border-subtle bg-surface-raised/50 text-muted hover:text-primary hover:bg-surface-raised'
+                  }`}
+                >
+                  {flag}
+                </button>
+              ))}
+            </div>
+          )}
+          {matchedPreset && (
+            <datalist id="providers-editor-models-flag-datalist" data-debug-id="providers-editor-models-flag-datalist">
+              {flagSuggestions.modelsFlag.map((flag) => (
+                <option key={flag} value={flag} />
+              ))}
+            </datalist>
+          )}
+        </div>
         <TextInput id="providers-editor-prompt-delivery-input" label="Prompt delivery" value={form.promptDelivery} onChange={(promptDelivery) => setForm({ ...form, promptDelivery })} placeholder="flag-injection" />
         <TextInput id="providers-editor-skill-dir-input" label="Skill directory" value={form.skillDir} onChange={(skillDir) => setForm({ ...form, skillDir })} placeholder=".pi/skills" />
         <FormField label="Bootstrap file name" hint="The single bootstrap file this provider’s agent reads on startup. Leave blank to keep the profile default (CLAUDE.md for the claude profile, AGENTS.md otherwise). Changing it regenerates the file under the new name and cleans up the old one on the next launch."><Input data-debug-id="providers-editor-bootstrap-file-name-input" value={form.bootstrapFileName} onChange={(value) => setForm({ ...form, bootstrapFileName: value })} placeholder="CLAUDE.md for claude, AGENTS.md otherwise (leave blank to keep default)" width="full" className="min-h-[44px]" /></FormField>
-        <TextInput id="providers-editor-models-cheap-input" label="Cheap model" value={form.modelsCheap} onChange={(modelsCheap) => setForm({ ...form, modelsCheap })} placeholder="anthropic/claude-haiku-4-5" />
-        <TextInput id="providers-editor-models-normal-input" label="Normal model" value={form.modelsNormal} onChange={(modelsNormal) => setForm({ ...form, modelsNormal })} placeholder="anthropic/claude-sonnet-4-6" />
-        <TextInput id="providers-editor-models-smart-input" label="Smart model" value={form.modelsSmart} onChange={(modelsSmart) => setForm({ ...form, modelsSmart })} placeholder="anthropic/claude-opus-4-5" />
+        <TextInput
+          id="providers-editor-models-cheap-input"
+          label="Cheap model"
+          value={form.modelsCheap}
+          onChange={(modelsCheap) => setForm({ ...form, modelsCheap })}
+          placeholder={matchedPreset?.defaultTiers.cheap || "anthropic/claude-haiku-4-5"}
+          list={matchedPreset ? "models-list" : undefined}
+        />
+        <TextInput
+          id="providers-editor-models-normal-input"
+          label="Normal model"
+          value={form.modelsNormal}
+          onChange={(modelsNormal) => setForm({ ...form, modelsNormal })}
+          placeholder={matchedPreset?.defaultTiers.normal || "anthropic/claude-sonnet-4-6"}
+          list={matchedPreset ? "models-list" : undefined}
+        />
+        <TextInput
+          id="providers-editor-models-smart-input"
+          label="Smart model"
+          value={form.modelsSmart}
+          onChange={(modelsSmart) => setForm({ ...form, modelsSmart })}
+          placeholder={matchedPreset?.defaultTiers.smart || "anthropic/claude-opus-4-5"}
+          list={matchedPreset ? "models-list" : undefined}
+        />
       </div>
-      <ChipListInput prefix="providers-editor-prompt-flags" label="Prompt flags" placeholder="--prompt" values={form.promptFlags} onChange={(promptFlags) => setForm({ ...form, promptFlags })} />
-      <ChipListInput prefix="providers-editor-yolo-flags" label="Yolo/permission flags" placeholder="--dangerously-skip-permissions" values={form.yoloFlags} onChange={(yoloFlags) => setForm({ ...form, yoloFlags })} />
+      {matchedPreset && (
+        <>
+          <datalist id="models-list" data-debug-id="models-list">
+            {modelSuggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          <datalist id="providers-models-list" data-debug-id="providers-models-datalist">
+            {modelSuggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </>
+      )}
+      <ChipListInput
+        prefix="providers-editor-prompt-flags"
+        label="Prompt flags"
+        placeholder="--prompt"
+        values={form.promptFlags}
+        onChange={(promptFlags) => setForm({ ...form, promptFlags })}
+        suggestions={flagSuggestions.promptFlags}
+      />
+      <ChipListInput
+        prefix="providers-editor-yolo-flags"
+        label="Yolo/permission flags"
+        placeholder="--dangerously-skip-permissions"
+        values={form.yoloFlags}
+        onChange={(yoloFlags) => setForm({ ...form, yoloFlags })}
+        suggestions={flagSuggestions.yoloFlags}
+      />
       <FormField label="Starter prompt"><Textarea data-debug-id="providers-editor-starter-prompt-input" value={form.starterPrompt} onChange={(v) => setForm({ ...form, starterPrompt: v })} placeholder="You are running under Heimdall. Say start-success when ready." width="full" className="h-24" /></FormField>
       <div data-debug-id="providers-editor-startup-help" className="rounded-xl border border-subtle bg-surface-raised/30 p-3 text-xs text-muted">
         <div className="text-sm font-medium text-primary">Startup detection</div>
@@ -310,10 +527,93 @@ function ProviderFormFields({ form, setForm, nameLocked = false }: { form: Provi
   );
 }
 
-export function ChipListInput({ prefix, label, placeholder, values, onChange }: { prefix: string; label: string; placeholder: string; values: string[]; onChange: (values: string[]) => void }) {
+export function ChipListInput({
+  prefix,
+  label,
+  placeholder,
+  values,
+  onChange,
+  suggestions = [],
+}: {
+  prefix: string;
+  label: string;
+  placeholder: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  suggestions?: string[];
+}) {
   const [draft, setDraft] = useState('');
-  function add() { const next = draft.trim(); if (!next) return; onChange([...values, next]); setDraft(''); }
-  return <div className="rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="text-sm font-medium text-primary">{label}</div><div className="mt-2 flex flex-col gap-2 sm:flex-row"><Input data-debug-id={`${prefix}-chip-input`} value={draft} onChange={setDraft} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} placeholder={placeholder} className="min-h-[44px] min-w-0 flex-1" /><Button variant="secondary" data-debug-id={`${prefix}-chip-add-btn`} onClick={add} className="min-h-[44px]">Add</Button></div><div className="mt-2 flex flex-wrap gap-2">{values.map((value, index) => <span key={`${value}-${index}`} data-debug-id={`${prefix}-chip-${index}`} className="inline-flex min-h-[36px] max-w-full items-center gap-2 rounded-full bg-neutral-soft px-3 py-1 text-xs text-primary"><span className="min-w-0 break-all">{value}</span><button data-debug-id={`${prefix}-chip-remove-btn-${index}`} type="button" onClick={() => onChange(values.filter((_, i) => i !== index))} className="min-h-[32px] min-w-[32px] text-muted hover:text-primary">×</button></span>)}</div></div>;
+  function add(val?: string) {
+    const next = (val !== undefined ? val : draft).trim();
+    if (!next) return;
+    if (!values.includes(next)) {
+      onChange([...values, next]);
+    }
+    if (val === undefined) setDraft('');
+  }
+  const unaddedSuggestions = suggestions.filter((s) => !values.includes(s));
+  return (
+    <div className="rounded-xl border border-subtle bg-surface-raised/30 p-3">
+      <div className="text-sm font-medium text-primary">{label}</div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+        <Input
+          data-debug-id={`${prefix}-chip-input`}
+          value={draft}
+          onChange={setDraft}
+          list={suggestions.length > 0 ? `${prefix}-datalist` : undefined}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+          placeholder={placeholder}
+          className="min-h-[44px] min-w-0 flex-1"
+        />
+        <Button variant="secondary" data-debug-id={`${prefix}-chip-add-btn`} onClick={() => add()} className="min-h-[44px]">Add</Button>
+      </div>
+      {suggestions.length > 0 && (
+        <datalist id={`${prefix}-datalist`} data-debug-id={`${prefix}-datalist`}>
+          {suggestions.map((s) => <option key={s} value={s} />)}
+        </datalist>
+      )}
+      {unaddedSuggestions.length > 0 && (
+        <div data-debug-id={`${prefix}-suggestions`} className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+          <span>Suggestions:</span>
+          {unaddedSuggestions.map((s, index) => (
+            <button
+              key={`${s}-${index}`}
+              data-debug-id={`${prefix}-suggestion-chip-${index}`}
+              type="button"
+              onClick={() => add(s)}
+              className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-subtle bg-surface-raised/60 px-2.5 py-0.5 text-xs text-primary hover:bg-surface-raised hover:text-accent cursor-pointer transition-colors"
+            >
+              + {s}
+            </button>
+          ))}
+          <button
+            data-debug-id={`${prefix}-insert-recommended-btn`}
+            type="button"
+            onClick={() => {
+              const toAdd = unaddedSuggestions.filter((s) => !values.includes(s));
+              if (toAdd.length > 0) onChange([...values, ...toAdd]);
+            }}
+            className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-medium text-accent hover:bg-accent/20 cursor-pointer transition-colors"
+          >
+            Insert recommended flags
+          </button>
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {values.map((value, index) => (
+          <span key={`${value}-${index}`} data-debug-id={`${prefix}-chip-${index}`} className="inline-flex min-h-[36px] max-w-full items-center gap-2 rounded-full bg-neutral-soft px-3 py-1 text-xs text-primary">
+            <span className="min-w-0 break-all">{value}</span>
+            <button data-debug-id={`${prefix}-chip-remove-btn-${index}`} type="button" onClick={() => onChange(values.filter((_, i) => i !== index))} className="min-h-[32px] min-w-[32px] text-muted hover:text-primary cursor-pointer">×</button>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function PairedListInput({ pairs, onChange }: { pairs: AutoEnterPair[]; onChange: (pairs: AutoEnterPair[]) => void }) {
@@ -328,30 +628,6 @@ function ReasonMappingInput({ rows, onChange }: { rows: ReasonMapping[]; onChang
   return <div className="rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="text-sm font-medium text-primary">Sanitized reason mapping</div><div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><Input data-debug-id="providers-editor-startup-reason-mapping-chip-input" value={keyValue} onChange={setKeyValue} placeholder="permission_prompt" width="full" className="min-h-[44px] min-w-0" /><Input data-debug-id="providers-editor-startup-reason-mapping-reason-input" value={reason} onChange={setReason} placeholder="Waiting for trust confirmation" width="full" className="min-h-[44px] min-w-0" /><Button variant="secondary" data-debug-id="providers-editor-startup-reason-mapping-chip-add-btn" onClick={add} className="min-h-[44px]">Add</Button></div><div className="mt-2 space-y-2">{rows.map((row, index) => <div key={index} data-debug-id={`providers-editor-startup-reason-mapping-chip-${index}`} className="flex items-center justify-between gap-2 rounded-xl bg-neutral-soft px-3 py-2 text-xs text-primary"><span className="min-w-0 break-all">{row.key || '—'} → {row.reason || '—'}</span><button data-debug-id={`providers-editor-startup-reason-mapping-chip-remove-btn-${index}`} type="button" onClick={() => onChange(rows.filter((_, i) => i !== index))} className="min-h-[32px] min-w-[32px] text-muted hover:text-primary">×</button></div>)}</div></div>;
 }
 
-function bridgeId(bridge: any): string { return String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || ''); }
-function shellHash(path: string): string { return `#${path.startsWith('/') ? path : `/${path}`}`; }
-function asArray(value: any): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : String(value || '').split(/\s+/).map((part) => part.trim()).filter(Boolean); }
-function asLines(value: any): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : String(value || '').split(/\r?\n/).map((part) => part.trim()).filter(Boolean); }
-function intValue(value: string, fallback: number): number { const n = Number.parseInt(value, 10); return Number.isFinite(n) ? n : fallback; }
-function configuredTiers(profile: any): string[] { return ['cheap', 'normal', 'smart'].filter((tier) => Boolean(profile.models?.[tier])); }
-function providerDefault(data: any, providers: any[]): { provider: string; tier: string } {
-  const provider = String(data?.default_provider || data?.defaultProvider || providers.find((profile: any) => profile.enabled && configuredTiers(profile).length)?.name || '');
-  const profile = providers.find((item: any) => String(item.name || '') === provider) || providers.find((item: any) => item.enabled && configuredTiers(item).length);
-  const tiers = configuredTiers(profile || {});
-  const tier = String(data?.default_tier || data?.defaultTier || (tiers.includes('normal') ? 'normal' : tiers[0] || ''));
-  return { provider, tier };
-}
-
-function parseReasonMappings(value: any): ReasonMapping[] { return asLines(value).map((line) => { const idx = line.indexOf('='); return idx >= 0 ? { key: line.slice(0, idx), reason: line.slice(idx + 1) } : { key: line, reason: '' }; }); }
-
-function formFromProfile(profile: any): ProviderForm {
-  const startup = profile.startup_detection || {}; const activity = profile.activity_detection || {}; const patterns = asLines(startup.auto_enter_patterns); const preKeys = asLines(startup.auto_enter_pre_keys);
-  return { ...emptyForm, name: String(profile.name || ''), enabled: Boolean(profile.enabled ?? true), command: asArray(profile.command), modelsFlag: String(profile.models?.flag || ''), modelsCheap: String(profile.models?.cheap || ''), modelsNormal: String(profile.models?.normal || ''), modelsSmart: String(profile.models?.smart || ''), promptFlags: asArray(profile.prompt_flags), yoloFlags: asArray(profile.yolo_flags), starterPrompt: String(profile.starter_prompt || ''), promptDelivery: String(profile.prompt_delivery || ''), skillDir: String(profile.skill_dir || ''), bootstrapFileName: String(profile.bootstrap_file_name || ''), startupEnabled: Boolean(startup.enabled), startupProbeSeconds: String(startup.startup_probe_seconds ?? startup.probe_seconds ?? '20'), startupCaptureIntervalMs: String(startup.capture_interval_ms ?? '500'), startupBlockedPatterns: asLines(startup.blocked_patterns), startupAutoEnterPairs: Array.from({ length: Math.max(patterns.length, preKeys.length) }, (_, i) => ({ pattern: patterns[i] || '', preKey: preKeys[i] || '' })), startupUnknownIsBlocked: Boolean(startup.startup_unknown_is_blocked), startupReasonMappings: parseReasonMappings(startup.sanitized_reason_mapping), activityEnabled: Boolean(activity.enabled), activitySampleLines: String(activity.sample_line_count ?? '20'), activityIgnoreBottomLines: String(activity.ignore_bottom_lines ?? '0'), activityCheckIntervalSeconds: String(activity.check_interval_seconds ?? '2'), activityMinGapMs: String(activity.min_gap_ms ?? '250'), activityMaxGapMs: String(activity.max_gap_ms ?? '5000') };
-}
-
-function profileFromForm(form: ProviderForm): any {
-  return { name: form.name.trim(), enabled: form.enabled, command: form.command, models: { flag: form.modelsFlag.trim(), cheap: form.modelsCheap.trim(), normal: form.modelsNormal.trim(), smart: form.modelsSmart.trim() }, prompt_flags: form.promptFlags, yolo_flags: form.yoloFlags, starter_prompt: form.starterPrompt, prompt_delivery: form.promptDelivery, skill_dir: form.skillDir.trim(), bootstrap_file_name: form.bootstrapFileName.trim(), startup_detection: { enabled: form.startupEnabled, startup_probe_seconds: intValue(form.startupProbeSeconds, 20), capture_interval_ms: intValue(form.startupCaptureIntervalMs, 500), blocked_patterns: form.startupBlockedPatterns, auto_enter_patterns: form.startupAutoEnterPairs.map((pair) => pair.pattern), auto_enter_pre_keys: form.startupAutoEnterPairs.map((pair) => pair.preKey), startup_unknown_is_blocked: form.startupUnknownIsBlocked, sanitized_reason_mapping: form.startupReasonMappings.map((row) => `${row.key}=${row.reason}`) }, activity_detection: { enabled: form.activityEnabled, sample_line_count: intValue(form.activitySampleLines, 20), ignore_bottom_lines: intValue(form.activityIgnoreBottomLines, 0), check_interval_seconds: intValue(form.activityCheckIntervalSeconds, 2), min_gap_ms: intValue(form.activityMinGapMs, 250), max_gap_ms: intValue(form.activityMaxGapMs, 5000) } };
-}
-
-function TextInput({ id, label, value, onChange, placeholder, disabled = false }: { id: string; label: string; value: string; onChange: (value: string) => void; placeholder: string; disabled?: boolean }) { return <FormField label={label}><Input data-debug-id={id} value={value} onChange={onChange} placeholder={placeholder} disabled={disabled} width="full" className="min-h-[44px]" /></FormField>; }
+function TextInput({ id, label, value, onChange, placeholder, disabled = false, list }: { id: string; label: string; value: string; onChange: (value: string) => void; placeholder: string; disabled?: boolean; list?: string }) { return <FormField label={label}><Input data-debug-id={id} value={value} onChange={onChange} placeholder={placeholder} disabled={disabled} list={list} width="full" className="min-h-[44px]" /></FormField>; }
 function NumberInput({ id, label, value, onChange, placeholder, min = 0 }: { id: string; label: string; value: string; onChange: (value: string) => void; placeholder: string; min?: number }) { return <FormField label={label}><Input data-debug-id={id} type="number" min={min} step="1" value={value} onChange={onChange} placeholder={placeholder} width="full" className="min-h-[44px]" /></FormField>; }
+
