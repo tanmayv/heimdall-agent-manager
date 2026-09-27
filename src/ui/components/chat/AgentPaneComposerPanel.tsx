@@ -11,6 +11,8 @@ const fitAddonObj = fitAddonModule as Record<string, any>;
 const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
 import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
 import { useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../../api/endpoints/agents';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { useAgentStream } from './useAgentStream';
 import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
 import { readPinnedMonitorAgents, addPinnedMonitorAgent, removePinnedMonitorAgent } from '../../utils/clientPersistence';
@@ -64,13 +66,63 @@ export function AgentPaneComposerPanel({
     rows: 120,
   });
 
+  // --------------------------------------------------------------------------
+  // Experimental Flag & Dual-Mode Configuration (REQ-STREAM-IMPL-4)
+  // --------------------------------------------------------------------------
+  const { data: expData } = useFetchExperimentsQuery();
+  const isStreamingExperimentEnabled = Boolean(
+    expData?.flags?.find((f) => f.key === 'streaming_terminal_pane')?.enabled
+  );
+
+  const [fallbackToPolling, setFallbackToPolling] = useState<boolean>(false);
+
+  // --------------------------------------------------------------------------
+  // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
+  // --------------------------------------------------------------------------
+  const {
+    connected: streamConnected,
+    sendInput: sendStreamInput,
+    sendResize: sendStreamResize,
+    reconnect: reconnectStream,
+  } = useAgentStream({
+    agentInstanceId: isExpanded && isActiveTab ? agentInstanceId : null,
+    enabled: isStreamingExperimentEnabled && !fallbackToPolling,
+    onOutput: (bytes) => {
+      const term = terminalRef.current;
+      if (!term) return;
+      term.write(bytes);
+      if (!userScrolledUpRef.current) {
+        term.scrollToBottom();
+      }
+    },
+    onError: () => {
+      // Graceful fallback: If WebSocket encounters error, fall back to polling
+      if (isStreamingExperimentEnabled) {
+        setFallbackToPolling(true);
+      }
+    },
+    onClose: () => {
+      // Graceful fallback: If WebSocket disconnects, fall back to polling
+      if (isStreamingExperimentEnabled) {
+        setFallbackToPolling(true);
+      }
+    },
+  });
+
+  const isStreamingActive = isStreamingExperimentEnabled && streamConnected && !fallbackToPolling;
+
+  // --------------------------------------------------------------------------
+  // LEGACY POLLING PATH: 500ms/5m polled capture with SHA-256 diff & term.reset()
+  // Cleanly isolated so that removing legacy polling in the future only requires
+  // deleting this block and the legacy branches in handleInput / handleResize.
+  // --------------------------------------------------------------------------
   const {
     output,
     isLoading,
     isFetching,
     refetch,
   } = useAgentPaneSubscription({
-    agentInstanceId,
+    agentInstanceId: (!isStreamingExperimentEnabled || fallbackToPolling) ? agentInstanceId : null,
     isExpanded,
     isActiveTab,
     runtimeStatus,
@@ -98,6 +150,55 @@ export function AgentPaneComposerPanel({
   useEffect(() => {
     refetchRef.current = refetch;
   }, [refetch]);
+
+  // Unified input handler cleanly routing between streaming and legacy polling
+  const handleInput = useCallback(
+    (data: string) => {
+      if (isStreamingActive) {
+        // STREAMING: Send keystrokes directly over WebSocket without debounce (<10ms latency)
+        sendStreamInput(data);
+      } else {
+        // LEGACY POLLING: HTTP POST with 50ms debounced capture refetch
+        const targetId = agentInstanceIdRef.current;
+        if (targetId) {
+          sendAgentPaneInput({ agentInstanceId: targetId, data }).catch(() => {});
+        }
+        if (keystrokeDebounceTimerRef.current) {
+          clearTimeout(keystrokeDebounceTimerRef.current);
+        }
+        keystrokeDebounceTimerRef.current = setTimeout(() => {
+          refetchRef.current?.();
+        }, 50);
+      }
+    },
+    [isStreamingActive, sendStreamInput, sendAgentPaneInput]
+  );
+
+  // Unified resize handler routing between streaming and legacy polling
+  const handleResize = useCallback(
+    (rows: number, cols: number) => {
+      if (isStreamingActive) {
+        sendStreamResize(rows, cols);
+      } else {
+        const targetId = agentInstanceIdRef.current;
+        if (targetId) {
+          sendAgentPaneResize({ agentInstanceId: targetId, rows, cols }).catch(() => {});
+        }
+      }
+      setTerminalDimensions({ cols, rows });
+    },
+    [isStreamingActive, sendStreamResize, sendAgentPaneResize]
+  );
+
+  const handleInputRef = useRef(handleInput);
+  useEffect(() => {
+    handleInputRef.current = handleInput;
+  }, [handleInput]);
+
+  const handleResizeRef = useRef(handleResize);
+  useEffect(() => {
+    handleResizeRef.current = handleResize;
+  }, [handleResize]);
 
   // Detect manual scroll up on accessible fallback pre
   const handleScroll = useCallback(() => {
@@ -128,8 +229,10 @@ export function AgentPaneComposerPanel({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
-    // Hide xterm's synthetic cursor layer so no trailing cursor sits at the end of the 25-line screen
-    term.write('\x1b[?25l');
+    // Hide xterm's synthetic cursor layer in legacy polling mode where snapshots don't preserve cursor
+    if (!isStreamingActive) {
+      term.write('\x1b[?25l');
+    }
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -140,27 +243,14 @@ export function AgentPaneComposerPanel({
       userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
     });
 
-    // Keystroke input hook: dispatch to sendAgentPaneInput and trigger debounced refetch (50ms)
+    // Keystroke input hook: dispatch to unified handleInputRef
     const dataDisposable = term.onData((data) => {
-      const targetId = agentInstanceIdRef.current;
-      if (targetId) {
-        sendAgentPaneInput({ agentInstanceId: targetId, data }).catch(() => {});
-      }
-      if (keystrokeDebounceTimerRef.current) {
-        clearTimeout(keystrokeDebounceTimerRef.current);
-      }
-      keystrokeDebounceTimerRef.current = setTimeout(() => {
-        refetchRef.current?.();
-      }, 50);
+      handleInputRef.current(data);
     });
 
-    // Terminal resize hook: dispatch to sendAgentPaneResize and update dimensions
+    // Terminal resize hook: dispatch to unified handleResizeRef
     const resizeDisposable = term.onResize(({ cols, rows }) => {
-      const targetId = agentInstanceIdRef.current;
-      if (targetId) {
-        sendAgentPaneResize({ agentInstanceId: targetId, rows, cols }).catch(() => {});
-      }
-      setTerminalDimensions({ cols, rows });
+      handleResizeRef.current(rows, cols);
     });
 
     const dispatchResize = () => {
@@ -172,14 +262,8 @@ export function AgentPaneComposerPanel({
             term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
           }
         }
-        const targetId = agentInstanceIdRef.current;
-        if (targetId && term.rows > 0 && term.cols > 0) {
-          sendAgentPaneResize({
-            agentInstanceId: targetId,
-            rows: term.rows,
-            cols: term.cols,
-          }).catch(() => {});
-          setTerminalDimensions({ cols: term.cols, rows: term.rows });
+        if (term.rows > 0 && term.cols > 0) {
+          handleResizeRef.current(term.rows, term.cols);
         }
       } catch (e) {}
     };
@@ -218,8 +302,8 @@ export function AgentPaneComposerPanel({
       window.addEventListener('resize', handleWindowResize);
     }
 
-    // Initial write if output already present
-    if (output) {
+    // Initial write if output already present in legacy mode
+    if (!isStreamingActive && output) {
       term.reset();
       term.write('\x1b[?25l' + output, () => {
         if (!userScrolledUpRef.current) {
@@ -227,7 +311,7 @@ export function AgentPaneComposerPanel({
         }
       });
       lastWrittenOutputRef.current = output;
-    } else if (isLoading) {
+    } else if (isLoading && !isStreamingActive) {
       term.write('\x1b[90mLoading terminal output…\x1b[0m');
     }
 
@@ -247,7 +331,7 @@ export function AgentPaneComposerPanel({
       fitAddonRef.current = null;
       lastWrittenOutputRef.current = '';
     };
-  }, [isExpanded, sendAgentPaneInput, sendAgentPaneResize]);
+  }, [isExpanded]);
 
   // Update terminal instance with active theme's terminal palette (REQ-THEME-EXTERNALS)
   useEffect(() => {
@@ -256,8 +340,9 @@ export function AgentPaneComposerPanel({
     }
   }, [theme]);
 
-  // Feed incoming ANSI output into terminal
+  // Feed incoming ANSI output into terminal (LEGACY POLLING PATH)
   useEffect(() => {
+    if (isStreamingActive) return; // Prevent clearing/redrawing buffer during active streaming
     const term = terminalRef.current;
     if (!term || output === undefined) return;
     if (output === lastWrittenOutputRef.current) return;
@@ -269,7 +354,7 @@ export function AgentPaneComposerPanel({
         term.scrollToBottom();
       }
     });
-  }, [output]);
+  }, [output, isStreamingActive]);
 
   // Auto-scroll to bottom on update for accessible fallback
   useEffect(() => {
@@ -298,7 +383,13 @@ export function AgentPaneComposerPanel({
 
   const isStopped = runtimeStatus === 'stopped' || runtimeStatus === 'failed';
   const isUpdatingOrRunning = Boolean(isFetching || runtimeStatus === 'running' || runtimeStatus === 'active');
-  const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false ? 'paused' : isExpanded ? '500ms continuous' : '5m';
+  const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false
+    ? 'paused'
+    : isStreamingActive
+    ? 'streaming'
+    : isExpanded
+    ? '500ms continuous'
+    : '5m';
 
   const handleClose = onClose || onToggleExpand;
 
@@ -385,9 +476,6 @@ export function AgentPaneComposerPanel({
       )}
 
       {/* Interactive xterm terminal container */}
-      <style>{`
-        .xterm-cursor-layer, .xterm-cursor { display: none !important; }
-      `}</style>
       <div
         ref={terminalContainerRef}
         data-debug-id="agent-pane-terminal"
@@ -396,7 +484,7 @@ export function AgentPaneComposerPanel({
         role="region"
         aria-label="Interactive Terminal"
         style={{ backgroundColor: theme.terminal.background }}
-        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
+        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none"
       />
 
       {/* Accessible fallback & static verification pre element */}

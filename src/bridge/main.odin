@@ -605,7 +605,12 @@ bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []st
 // makes per-chunk acks pure latency. INVARIANT: all hub-runtime writes happen on
 // the loop thread — if a background thread is ever handed `conn`, add a send
 // mutex here first, or chunk frames could be byte-interleaved.
+@(private = "file")
+_bridge_hub_send_mu: sync.Mutex
+
 bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
+	sync.mutex_lock(&_bridge_hub_send_mu)
+	defer sync.mutex_unlock(&_bridge_hub_send_mu)
 	frames := bridge_hub_chunk_frames(text)
 	if frames == nil do return ws.send_text(conn, text)
 	defer delete(frames)

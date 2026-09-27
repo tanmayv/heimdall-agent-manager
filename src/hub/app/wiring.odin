@@ -202,6 +202,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		shell_sessions      = &graph.shell_session_service,
 		shell_repo          = &graph.shell_session_repo,
 		bridge_command_sink = bridge_command_sink,
+		experiments         = &graph.experiment_repo,
 	}
 	// REQ-LSP-RLY-1. The registry is plain in-memory state: an LSP session lives
 	// exactly as long as its browser socket, so there is no table and nothing to
@@ -220,7 +221,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		shell_sessions = &graph.shell_session_service,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry}
-	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
+	graph.agent_handlers = http.Agent_Handlers{
+		auth           = &graph.auth,
+		agents         = &graph.agents,
+		event_bus      = &graph.event_bus,
+		ws_tickets     = &graph.user_handlers.ws_tickets,
+		shell_sessions = &graph.shell_session_service,
+		experiments    = &graph.experiment_repo,
+	}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus}
@@ -343,6 +351,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.list_agent_instances_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.create_agent_instance_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/pane", rawptr(&graph.agent_handlers), http.get_agent_instance_pane_handler)
+	http.router_add_upgrade(&graph.router, "GET", "/api/v1/agent-instances/*/stream", rawptr(&graph.agent_handlers), http.agent_instance_stream_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/input", rawptr(&graph.agent_handlers), http.agent_instance_input_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/resize", rawptr(&graph.agent_handlers), http.agent_instance_resize_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*", rawptr(&graph.agent_handlers), http.agent_instance_detail_handler)

@@ -617,6 +617,12 @@ impl Daemon {
             .get(&id)
             .cloned()
             .ok_or_else(|| anyhow!("attach: connection {id} has no registered sink"))?;
+        // Ensure initial CtlReply::Screen catchup snapshot is queued on the client sink
+        // BEFORE the instance is added to subs, guaranteeing FIFO delivery before any Output chunk.
+        let _ = tx.send(CtlReply::Screen {
+            instance: shell_id.to_string(),
+            screen: snap.clone(),
+        });
         let mut subs = self.subs.lock().unwrap();
         let sub = subs.entry(id).or_insert_with(|| Subscriber {
             tx,
@@ -699,16 +705,25 @@ fn pump_output(
     let mut tee: Option<TeeWriter> = tee_path.as_deref().and_then(TeeWriter::open);
     while let Ok(chunk) = output_rx.recv() {
         last_activity.store(now_secs(), Ordering::SeqCst);
+        let mut dead_subscribers = Vec::new();
         let map = subs.lock().unwrap();
-        for sub in map.values() {
+        for (&id, sub) in map.iter() {
             if sub.instances.contains(&instance) {
-                let _ = sub.tx.send(CtlReply::Output {
+                if sub.tx.send(CtlReply::Output {
                     instance: instance.clone(),
                     data: chunk.clone(),
-                });
+                }).is_err() {
+                    dead_subscribers.push(id);
+                }
             }
         }
         drop(map);
+        if !dead_subscribers.is_empty() {
+            let mut map = subs.lock().unwrap();
+            for id in dead_subscribers {
+                map.remove(&id);
+            }
+        }
         if let Some(ref mut t) = tee {
             t.write_chunk(&chunk);
         }
@@ -944,10 +959,13 @@ fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<Atom
     };
     let mut read_stream = stream;
 
+    let daemon_writer = daemon.clone();
     // Writer thread: drain this client's reply queue to the socket.
     std::thread::spawn(move || {
         while let Ok(reply) = rx.recv() {
             if dproto::write_ctl_reply(&mut write_stream, &reply).is_err() {
+                let _ = write_stream.shutdown(std::net::Shutdown::Both);
+                daemon_writer.unsubscribe(id);
                 break;
             }
         }
@@ -1009,17 +1027,14 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &Sender<CtlReply>) {
         CtlMsg::List => {
             let _ = tx.send(CtlReply::AgentList(daemon.list()));
         }
-        CtlMsg::Attach { instance } => match daemon.attach(id, &instance) {
-            Ok(screen) => {
-                let _ = tx.send(CtlReply::Screen { instance, screen });
-            }
-            Err(e) => {
+        CtlMsg::Attach { instance } => {
+            if let Err(e) = daemon.attach(id, &instance) {
                 let _ = tx.send(CtlReply::Error {
                     instance,
                     message: e.to_string(),
                 });
             }
-        },
+        }
         CtlMsg::Input { instance, data } => {
             if let Err(e) = daemon.write_input(&instance, &data) {
                 let _ = tx.send(CtlReply::Error {
@@ -2305,6 +2320,141 @@ mod tests {
         d.shell_detach(10, "sh_test_1");
 
         d.shutdown();
+    }
+
+    #[test]
+    fn attach_delivers_screen_snapshot_before_subsequent_output() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("att_fifo");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let d = server.daemon();
+        d.spawn(SpawnRequest {
+            instance: "fifo_inst".into(),
+            argv: vec![
+                sh.clone(),
+                "-c".into(),
+                "echo INITIAL_LINE; sleep 0.2; echo SUBSEQUENT_LINE; while :; do sleep 1; done".into(),
+            ],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 25,
+            cols: 80,
+            display_name: None,
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Wait until initial output is reflected in capture
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(snap) = d.capture("fifo_inst") {
+                if snap.lines.iter().any(|l| l.contains("INITIAL_LINE")) {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let mut c = UnixStream::connect(&sock).unwrap();
+        c.set_read_timeout(Some(Duration::from_millis(500))).ok();
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "fifo_inst".into() }).unwrap();
+
+        // The very FIRST reply frame MUST be CtlReply::Screen
+        let first_reply = match dproto::read_ctl_reply(&mut c) {
+            Ok(Some(r)) => r,
+            other => panic!("expected reply, got {other:?}"),
+        };
+        match first_reply {
+            CtlReply::Screen { instance, screen } => {
+                assert_eq!(instance, "fifo_inst");
+                assert!(screen.lines.iter().any(|l| l.contains("INITIAL_LINE")), "initial snapshot missing INITIAL_LINE");
+            }
+            other => panic!("first frame must be CtlReply::Screen, got {other:?}"),
+        }
+
+        // Subsequent frames should be Output containing SUBSEQUENT_LINE
+        let mut saw_subsequent = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(4) {
+            match dproto::read_ctl_reply(&mut c) {
+                Ok(Some(CtlReply::Output { instance, data })) => {
+                    assert_eq!(instance, "fifo_inst");
+                    if String::from_utf8_lossy(&data).contains("SUBSEQUENT_LINE") {
+                        saw_subsequent = true;
+                        break;
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        assert!(saw_subsequent, "never received subsequent output after screen snapshot");
+        server.shutdown();
+    }
+
+    #[test]
+    fn broken_socket_writer_auto_unsubscribes_and_resizes() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("broken_sock");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let d = server.daemon();
+        d.spawn(SpawnRequest {
+            instance: "inst_pipe".into(),
+            argv: vec![
+                sh.clone(),
+                "-c".into(),
+                "while :; do echo flood; sleep 0.05; done".into(),
+            ],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 30,
+            cols: 100,
+            display_name: None,
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Connect, attach, and resize
+        {
+            let mut c = UnixStream::connect(&sock).unwrap();
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "inst_pipe".into() }).unwrap();
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Resize { instance: "inst_pipe".into(), rows: 40, cols: 120 }).unwrap();
+            // Wait for initial screen
+            let _ = dproto::read_ctl_reply(&mut c);
+            assert_eq!(d.capture("inst_pipe").unwrap().rows, 40);
+            // Drop client stream abruptly (simulating broken pipe/disconnect)
+        }
+
+        // Once the broken socket write fails, the writer thread auto-unsubscribes and resizes back to CRT (80x25)
+        let mut resized_back = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(snap) = d.capture("inst_pipe") {
+                if snap.rows == CRT_ROWS && snap.cols == CRT_COLS {
+                    resized_back = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(resized_back, "instance was not auto-resized back to CRT after client drop");
+        server.shutdown();
     }
 }
 

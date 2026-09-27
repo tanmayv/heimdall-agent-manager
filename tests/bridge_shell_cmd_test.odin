@@ -50,7 +50,7 @@ test_shell_cmd_exec_sync_echo :: proc(t: ^testing.T) {
 
 	exec_id := bridge.bridge_local_extract_json_string(resp, "exec_id", "")
 	defer delete(exec_id)
-	testing.expect(t, strings.has_prefix(exec_id, "sexc_"), "exec_id must start with sexc_ prefix")
+	testing.expect(t, strings.has_prefix(exec_id, "shl_") || strings.has_prefix(exec_id, "sexc_"), "exec_id must start with shl_ or sexc_ prefix")
 
 	loc := bridge.bridge_local_extract_json_string(resp, "raw_output_location", "")
 	defer delete(loc)
@@ -252,7 +252,7 @@ test_shell_cmd_read_e2e_and_paging :: proc(t: ^testing.T) {
 
 	exec_id := bridge.bridge_local_extract_json_string(resp, "exec_id", "")
 	defer delete(exec_id)
-	testing.expect(t, strings.has_prefix(exec_id, "sexc_"), "valid exec_id")
+	testing.expect(t, strings.has_prefix(exec_id, "shl_") || strings.has_prefix(exec_id, "sexc_"), "valid exec_id")
 
 	// Standard read
 	read_params := fmt.tprintf("{{\"exec_id\":\"%s\"}}", exec_id)

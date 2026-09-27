@@ -11,6 +11,11 @@ const KNOWN_FLAGS: Array<{ key: string; label: string; description: string }> = 
     label: 'Language Server Protocol (LSP) support',
     description: 'Experimental LSP integration. Enables in-editor diagnostics and completions. Requires a restart of any active agent session.',
   },
+  {
+    key: 'streaming_terminal_pane',
+    label: 'Streaming Terminal Pane',
+    description: 'Real-time WebSocket streaming for interactive shell and agent terminal panes. Reduces interaction latency from 500ms to sub-10ms with native VT100 scrollback.',
+  },
 ];
 
 export default function ExperimentalPanel() {

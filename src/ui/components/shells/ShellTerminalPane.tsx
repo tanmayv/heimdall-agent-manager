@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal as TerminalType } from '@xterm/xterm';
 import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
 import * as xtermModule from '@xterm/xterm';
@@ -12,6 +12,8 @@ const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fi
 import Icon from '../Icon';
 import { useTheme } from '../../store/themeSlice';
 import { useShellPaneSubscription } from '../../hooks/useShellPaneSubscription';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { useShellStream } from './useShellStream';
 import {
   useSendShellInputMutation,
   useSendShellResizeMutation,
@@ -35,17 +37,65 @@ export function ShellTerminalPane({
 
   const isTerminal = session.kind === 'interactive' || session.kind === 'agent';
   const isRunning = session.status === 'running' || session.status === 'starting';
-
-  // Output arrives by polled capture with since_hash diffing — the model the agent pane
-  // uses — not by a PTY output stream. See useShellPaneSubscription.
   const paneSessionId = isTerminal && isRunning ? session.session_id : null;
+
+  // --------------------------------------------------------------------------
+  // Experimental Flag & Dual-Mode Configuration (REQ-STREAM-IMPL-3)
+  // --------------------------------------------------------------------------
+  const { data: expData } = useFetchExperimentsQuery();
+  const isStreamingExperimentEnabled = Boolean(
+    expData?.flags?.find((f) => f.key === 'streaming_terminal_pane')?.enabled
+  );
+
+  const [fallbackToPolling, setFallbackToPolling] = useState(false);
+
+  // --------------------------------------------------------------------------
+  // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
+  // --------------------------------------------------------------------------
+  const {
+    connected: streamConnected,
+    sendInput: sendStreamInput,
+    sendResize: sendStreamResize,
+    reconnect: reconnectStream,
+  } = useShellStream({
+    sessionId: paneSessionId,
+    enabled: isStreamingExperimentEnabled && !fallbackToPolling,
+    onOutput: (bytes) => {
+      const term = terminalRef.current;
+      if (!term) return;
+      term.write(bytes);
+      if (!userScrolledUpRef.current) {
+        term.scrollToBottom();
+      }
+    },
+    onError: () => {
+      // Graceful fallback: If WebSocket encounters error, fall back to polling
+      if (isStreamingExperimentEnabled) {
+        setFallbackToPolling(true);
+      }
+    },
+    onClose: () => {
+      // Graceful fallback: If WebSocket disconnects, fall back to polling
+      if (isStreamingExperimentEnabled) {
+        setFallbackToPolling(true);
+      }
+    },
+  });
+
+  const isStreamingActive = isStreamingExperimentEnabled && streamConnected && !fallbackToPolling;
+
+  // --------------------------------------------------------------------------
+  // LEGACY POLLING PATH: 500ms polled capture with SHA-256 diff & term.reset()
+  // Cleanly isolated so that removing legacy polling in the future only requires
+  // deleting this block and the legacy branches in handleInput / handleResize.
+  // --------------------------------------------------------------------------
   const {
     output,
     isLoading,
     isBridgeUnreachable: subIsBridgeUnreachable,
     refetch,
   } = useShellPaneSubscription({
-    sessionId: paneSessionId,
+    sessionId: (!isStreamingExperimentEnabled || fallbackToPolling) ? paneSessionId : null,
     status: session.status,
   });
 
@@ -68,6 +118,64 @@ export function ShellTerminalPane({
   const lastWrittenOutputRef = useRef<string>('');
   const userScrolledUpRef = useRef(false);
 
+  // Unified retry handler that triggers both streaming reconnect and polling refetch
+  const handleRetry = useCallback(() => {
+    setFallbackToPolling(false);
+    reconnectStream();
+    refetch();
+  }, [reconnectStream, refetch]);
+
+  // Unified input handler cleanly routing between streaming and legacy polling
+  const handleInput = useCallback(
+    (data: string) => {
+      if (isStreamingActive) {
+        // STREAMING: Send keystrokes directly over WebSocket without debounce
+        sendStreamInput(data);
+      } else {
+        // LEGACY POLLING: HTTP POST with 50ms debounced capture refetch
+        const targetId = sessionIdRef.current;
+        if (targetId) {
+          sendShellInput({ sessionId: targetId, data }).catch(() => {});
+        }
+        if (keystrokeDebounceTimerRef.current) {
+          clearTimeout(keystrokeDebounceTimerRef.current);
+        }
+        keystrokeDebounceTimerRef.current = setTimeout(() => {
+          refetchRef.current?.();
+        }, 50);
+      }
+    },
+    [isStreamingActive, sendStreamInput, sendShellInput]
+  );
+
+  // Unified resize handler routing between streaming and legacy polling
+  const handleResize = useCallback(
+    (rows: number, cols: number) => {
+      if (isStreamingActive) {
+        sendStreamResize(rows, cols);
+      } else {
+        const targetId = sessionIdRef.current;
+        if (targetId) {
+          sendShellResize({ sessionId: targetId, rows, cols }).catch(() => {});
+        }
+      }
+    },
+    [isStreamingActive, sendStreamResize, sendShellResize]
+  );
+
+  const handleInputRef = useRef(handleInput);
+  useEffect(() => {
+    handleInputRef.current = handleInput;
+  }, [handleInput]);
+
+  const handleResizeRef = useRef(handleResize);
+  useEffect(() => {
+    handleResizeRef.current = handleResize;
+  }, [handleResize]);
+
+  // --------------------------------------------------------------------------
+  // Terminal Lifecycle & Addon Management
+  // --------------------------------------------------------------------------
   useEffect(() => {
     const container = terminalContainerRef.current;
     if (!container) return;
@@ -90,26 +198,12 @@ export function ShellTerminalPane({
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Keystrokes go to the HTTP input route, then a debounced refetch pulls the echo back
-    // so typing feels immediate between poll ticks.
     const dataDisposable = term.onData((data) => {
-      const targetId = sessionIdRef.current;
-      if (targetId) {
-        sendShellInput({ sessionId: targetId, data }).catch(() => {});
-      }
-      if (keystrokeDebounceTimerRef.current) {
-        clearTimeout(keystrokeDebounceTimerRef.current);
-      }
-      keystrokeDebounceTimerRef.current = setTimeout(() => {
-        refetchRef.current?.();
-      }, 50);
+      handleInputRef.current(data);
     });
 
     const resizeDisposable = term.onResize(({ cols, rows }) => {
-      const targetId = sessionIdRef.current;
-      if (targetId) {
-        sendShellResize({ sessionId: targetId, rows, cols }).catch(() => {});
-      }
+      handleResizeRef.current(rows, cols);
     });
 
     // Track manual scroll-up so a repaint does not yank the viewport back down.
@@ -125,10 +219,7 @@ export function ShellTerminalPane({
           if (term.cols === 0 || term.rows === 0) {
             term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
           }
-          const targetId = sessionIdRef.current;
-          if (targetId) {
-            sendShellResize({ sessionId: targetId, rows: term.rows, cols: term.cols }).catch(() => {});
-          }
+          handleResizeRef.current(term.rows, term.cols);
           term.focus();
         }
       } catch { /* ignore */ }
@@ -161,8 +252,8 @@ export function ShellTerminalPane({
     };
     window.addEventListener('resize', handleWindowResize);
 
-    // Paint whatever screen we already hold, so a remount is not blank until the next tick.
-    if (output) {
+    // Initial paint on mount for polled output if available
+    if (!isStreamingActive && output) {
       term.reset();
       term.write('\x1b[?25l' + output);
       lastWrittenOutputRef.current = output;
@@ -182,11 +273,15 @@ export function ShellTerminalPane({
       fitAddonRef.current = null;
       lastWrittenOutputRef.current = '';
     };
-  }, [sendShellInput, sendShellResize]);
+  }, []);
 
-  // Repaint on a changed screen snapshot. An unchanged poll leaves `output`
-  // referentially identical, so this effect short-circuits and xterm is never touched.
+  // --------------------------------------------------------------------------
+  // LEGACY POLLING PATH: Snapshot Diff & Repaint
+  // When streaming is active, incoming bytes bypass term.reset() and are written directly.
+  // --------------------------------------------------------------------------
   useEffect(() => {
+    if (isStreamingActive) return;
+
     const term = terminalRef.current;
     if (!term || output === undefined) return;
     if (output === lastWrittenOutputRef.current) return;
@@ -198,7 +293,7 @@ export function ShellTerminalPane({
         term.scrollToBottom();
       }
     });
-  }, [output]);
+  }, [output, isStreamingActive]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -206,12 +301,16 @@ export function ShellTerminalPane({
     }
   }, [theme]);
 
+  const showUnreachableOverlay = isBridgeUnreachable && !output && !streamConnected;
+  const showUnreachableBanner = isBridgeUnreachable && (Boolean(output) || streamConnected);
+  const showConnecting = !output && !streamConnected && (session.status === 'starting' || isLoading);
+
   return (
     <div
       data-debug-id={`shell-terminal-pane-${session.session_id}`}
       className="relative flex flex-col flex-1 h-full min-h-0 w-full overflow-hidden bg-canvas"
     >
-      {isBridgeUnreachable && output && (
+      {showUnreachableBanner && (
         <div
           data-debug-id="shell-terminal-unreachable-banner"
           className="z-10 flex shrink-0 items-center justify-between gap-2 border-b border-warning/30 bg-warning-soft px-3 py-1.5 text-xs text-warning"
@@ -223,7 +322,7 @@ export function ShellTerminalPane({
           <button
             type="button"
             data-debug-id="shell-terminal-unreachable-banner-retry-btn"
-            onClick={() => refetch()}
+            onClick={handleRetry}
             className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-warning hover:bg-warning/20 transition-colors cursor-pointer"
           >
             <Icon name="refresh" size={12} />
@@ -232,7 +331,7 @@ export function ShellTerminalPane({
         </div>
       )}
 
-      {isBridgeUnreachable && !output ? (
+      {showUnreachableOverlay ? (
         <div
           data-debug-id="shell-terminal-unreachable"
           className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-canvas/95 p-6 text-center text-xs"
@@ -249,14 +348,14 @@ export function ShellTerminalPane({
           <button
             type="button"
             data-debug-id="shell-terminal-unreachable-retry-btn"
-            onClick={() => refetch()}
+            onClick={handleRetry}
             className="inline-flex items-center gap-1.5 rounded-lg bg-surface-raised px-3 py-1.5 font-medium text-primary hover:bg-neutral-soft border border-subtle transition-colors cursor-pointer"
           >
             <Icon name="refresh" size={12} />
             <span>Retry</span>
           </button>
         </div>
-      ) : !output && (session.status === 'starting' || isLoading) ? (
+      ) : showConnecting ? (
         <div
           data-debug-id={`shell-terminal-loading-${session.session_id}`}
           className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-canvas/90 text-xs text-muted pointer-events-none"
@@ -267,7 +366,6 @@ export function ShellTerminalPane({
       ) : null}
 
       {/* xterm container */}
-      <style>{`.xterm-cursor-layer, .xterm-cursor { display: none !important; }`}</style>
       <div
         ref={terminalContainerRef}
         data-debug-id={`shell-terminal-xterm-${session.session_id}`}

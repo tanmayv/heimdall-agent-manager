@@ -125,3 +125,49 @@ test_experiment_repo_sqlite_lifecycle :: proc(t: ^testing.T) {
 	for e in persisted_a { delete(e.owner_user_id); delete(e.key); delete(e.updated_at) }
 	delete(persisted_a)
 }
+
+@(test)
+test_experiment_repo_streaming_terminal_pane :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_exp_streaming_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, _ := open(db_path)
+	testing.expect(t, open_ok, "db open ok")
+	defer close(&conn)
+
+	mig_ok, _ := run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+
+	impl := Experiment_Repo_SQLite{}
+	repo := new_experiment_repository(&impl, &conn)
+
+	user := "user_stream_test"
+
+	// Initially absent
+	list0, err0 := iface.experiment_list_by_owner(&repo, user)
+	testing.expect_value(t, err0.code, domain.Error_Code.None)
+	testing.expect_value(t, len(list0), 0)
+	delete(list0)
+
+	// Set streaming_terminal_pane = true
+	exp := domain.Experiment{
+		owner_user_id = user,
+		key           = domain.STREAMING_TERMINAL_PANE_EXPERIMENT_KEY,
+		enabled       = true,
+		updated_at    = "2026-09-27T01:00:00Z",
+	}
+	ok, err := iface.experiment_set(&repo, exp)
+	testing.expect(t, ok, "set streaming_terminal_pane ok")
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+
+	list1, err1 := iface.experiment_list_by_owner(&repo, user)
+	testing.expect_value(t, err1.code, domain.Error_Code.None)
+	testing.expect_value(t, len(list1), 1)
+	if len(list1) == 1 {
+		testing.expect_value(t, list1[0].key, "streaming_terminal_pane")
+		testing.expect(t, list1[0].enabled, "streaming_terminal_pane must be enabled")
+	}
+	for e in list1 { delete(e.owner_user_id); delete(e.key); delete(e.updated_at) }
+	delete(list1)
+}

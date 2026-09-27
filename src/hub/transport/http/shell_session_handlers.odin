@@ -26,46 +26,89 @@ Shell_Session_Stream_Handlers :: struct {
 	shell_sessions:      ^shell_session_svc.Shell_Session_Service,
 	shell_repo:          ^iface.Shell_Session_Repository,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
+	experiments:         ^iface.Experiment_Repository,
+}
+
+shell_stream_experiment_enabled :: proc(repo: ^iface.Experiment_Repository, owner_user_id: string) -> bool {
+	if repo == nil || repo.list_by_owner == nil || owner_user_id == "" do return false
+	exps, err := iface.experiment_list_by_owner(repo, owner_user_id)
+	if err.code != .None do return false
+	defer {
+		for exp in exps {
+			delete(exp.owner_user_id)
+			delete(exp.key)
+			delete(exp.updated_at)
+		}
+		delete(exps)
+	}
+	for exp in exps {
+		if exp.key == domain.STREAMING_TERMINAL_PANE_EXPERIMENT_KEY do return exp.enabled
+	}
+	return false
+}
+
+write_stream_error :: proc(client: net.TCP_Socket, resp: Response) {
+	write_http_response(client, resp)
+	delete(resp.body)
 }
 
 // GET /api/v1/shells/{session_id}/stream — WS upgrade; §2 row 12.
 shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket) {
 	h := (^Shell_Session_Stream_Handlers)(ctx)
 
+	auth_ctx: contracts.Auth_Context
 	ticket := query_value(req.query, "ticket")
-	if ticket == "" {
-		write_http_response(client, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket required for shell stream"), req.request_id))
+	if ticket != "" {
+		c, ok := user_ws_ticket_store_consume(h.ws_tickets, ticket)
+		if !ok {
+			write_stream_error(client, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket is invalid or expired"), req.request_id))
+			return
+		}
+		auth_ctx = c
+	} else if h.auth != nil {
+		c, ok, resp := require_auth(h.auth, req)
+		if !ok {
+			write_stream_error(client, resp)
+			return
+		}
+		auth_ctx = c
+	} else {
+		write_stream_error(client, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket required for shell stream"), req.request_id))
 		return
 	}
-	auth_ctx, auth_ok := user_ws_ticket_store_consume(h.ws_tickets, ticket)
-	if !auth_ok {
-		write_http_response(client, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket is invalid or expired"), req.request_id))
+
+	// Experiment gate (REQ-STREAM-IMPL-2): with the flag off the route refuses.
+	if !shell_stream_experiment_enabled(h.experiments, auth_ctx.user_id) {
+		write_stream_error(client, respond_error(domain.domain_error(.Forbidden, "the streaming_terminal_pane experiment is not enabled for this user"), req.request_id))
 		return
 	}
 
 	session_id := path_part(req.path, 4)
 	if session_id == "" || strings.contains(session_id, "/") {
-		write_http_response(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
+		write_stream_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return
 	}
 
 	session, found, repo_err := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
 	if !found || repo_err.code != .None {
-		write_http_response(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
+		write_stream_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return
 	}
 	defer domain.shell_session_destroy(session)
 	if session.owner_user_id != auth_ctx.user_id {
-		write_http_response(client, respond_error(domain.domain_error(.Forbidden, "not the session owner"), req.request_id))
+		write_stream_error(client, respond_error(domain.domain_error(.Forbidden, "not the session owner"), req.request_id))
 		return
 	}
 
 	key := header_value(req.headers, "Sec-WebSocket-Key")
 	if key == "" {
-		write_http_response(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id))
+		write_stream_error(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id))
 		return
 	}
 	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) do return
+
+	shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client, session.bridge_id)
+	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client, session.bridge_id)
 
 	// Send ready frame.
 	ready_b := strings.builder_make()
@@ -76,20 +119,15 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	_ = write_ws_text_frame(client, ready_json)
 	delete(ready_json)
 
-	shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client)
-	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client)
-
 	reader := bridge_ws_reader_make(client)
 	defer bridge_ws_reader_destroy(&reader)
 
-	sink_override: project_service.Bridge_Command_Sink = {}
+	sink_override := h.bridge_command_sink
 	for {
 		text, ok := read_ws_text_blocking(&reader, 120 * time.Second)
 		if !ok do return
-		defer delete(text)
 
 		frame_type := json_string(text, "type")
-		defer delete(frame_type)
 
 		switch frame_type {
 		case "input":
@@ -104,6 +142,11 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 				}
 			} else {
 				delete(data_b64)
+				raw_data := json_string(text, "data")
+				if raw_data != "" {
+					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, sink_override)
+					delete(raw_data)
+				}
 			}
 		case "resize":
 			rows := json_int(text, "rows", 0)
@@ -112,6 +155,8 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 				bridge_service.send_shell_resize(h.bridges, auth_ctx, session.bridge_id, session_id, rows, cols, sink_override)
 			}
 		}
+		delete(frame_type)
+		delete(text)
 	}
 }
 

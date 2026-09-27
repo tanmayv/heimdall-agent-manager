@@ -14,7 +14,7 @@ import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
 } from '../../store/vaultSlice';
-import { buildRouteHash } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import {
   readBottomDockHeight,
   writeBottomDockHeight,
@@ -250,6 +250,29 @@ export default function BottomDock({
     );
   }, [allSessions, pendingSessions, activeTab]);
 
+  // Current route tracking for main view duplication prevention
+  const [currentRoute, setCurrentRoute] = useState<string>(() => getRoutePathname());
+  useEffect(() => {
+    const handleRouteChange = () => {
+      setCurrentRoute(getRoutePathname());
+    };
+    window.addEventListener('hashchange', handleRouteChange);
+    window.addEventListener('popstate', handleRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', handleRouteChange);
+      window.removeEventListener('popstate', handleRouteChange);
+    };
+  }, []);
+
+  const isViewedInMainView = useMemo(() => {
+    if (!activeSession) return false;
+    const path = currentRoute || getRoutePathname();
+    const mainShellId = path.startsWith('/shells/')
+      ? decodeURIComponent(path.slice('/shells/'.length).split('/')[0].split('?')[0])
+      : null;
+    return mainShellId === activeSession.session_id;
+  }, [activeSession, currentRoute]);
+
   // Previews from preview tabs slice
   const previewTabs = useSelector(selectPreviewTabs);
 
@@ -411,12 +434,24 @@ export default function BottomDock({
       {/* Dock Body - ShellTerminalPane occupies 100% of parent container (REQ-BAR-5) */}
       {!isMinimized && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden bg-canvas">
-          {activeSession ? (
+          {activeSession && !isViewedInMainView ? (
             <ShellTerminalPane
               session={activeSession}
               isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
               onClose={() => handleKillSession(activeSession.session_id)}
             />
+          ) : activeSession && isViewedInMainView ? (
+            <div
+              data-debug-id="bottom-dock-duplicate-state"
+              className="grid h-full place-items-center p-6 text-center text-xs text-muted"
+            >
+              <div>
+                <p className="font-semibold text-primary">Shell active in main view</p>
+                <p className="mt-1 text-faint">
+                  This shell session is currently open in the main view.
+                </p>
+              </div>
+            </div>
           ) : (
             <div
               data-debug-id="bottom-dock-empty-state"

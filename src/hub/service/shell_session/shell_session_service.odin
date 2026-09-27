@@ -31,13 +31,14 @@ Shell_Session_Service :: struct {
 	// WS fan-out registry (T7) — protected by mu.
 	mu:      sync.Mutex,
 	viewers: map[string][dynamic]net.TCP_Socket, // session_id → attached WS client sockets
-	// CRUD layer (T5) — session_owners also protected by mu.
+	// CRUD layer (T5) — session_owners and session_bridges also protected by mu.
 	repo:                ^iface.Shell_Session_Repository,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
 	events:              ^events.User_Event_Bus,
 	ids:                 ^platform.ID_Generator,
 	clock:               ^platform.Clock,
 	session_owners:      map[string]string, // session_id → owner_user_id (heap strings)
+	session_bridges:     map[string]string, // session_id → bridge_id (heap strings)
 	// Tunnel stream registry (T8) — protected by tunnel_mu.
 	tunnel_streams: map[string]^Preview_Tunnel_Stream, // stream_id → live stream
 	tunnel_mu:      sync.Mutex,
@@ -59,54 +60,160 @@ new_shell_session_service :: proc(
 		ids             = ids,
 		clock           = clock,
 		session_owners  = make(map[string]string, heap),
+		session_bridges = make(map[string]string, heap),
 		tunnel_streams  = make(map[string]^Preview_Tunnel_Stream, heap),
 	}
 }
 
 shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 	if svc == nil do return
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	defer sync.mutex_unlock(&svc.mu)
-	for _, viewers in svc.viewers do delete(viewers)
+	for k, viewers in svc.viewers {
+		delete(k, heap)
+		delete(viewers)
+	}
 	delete(svc.viewers)
-	for k, v in svc.session_owners { delete(k); delete(v) }
+	for k, v in svc.session_owners { delete(k, heap); delete(v, heap) }
 	delete(svc.session_owners)
+	for k, v in svc.session_bridges { delete(k, heap); delete(v, heap) }
+	delete(svc.session_bridges)
 	sync.mutex_lock(&svc.tunnel_mu)
 	defer sync.mutex_unlock(&svc.tunnel_mu)
 	for k, stream in svc.tunnel_streams {
-		delete(k)
-		for chunk in stream.chunks do delete(chunk)
+		delete(k, heap)
+		for chunk in stream.chunks do delete(chunk, heap)
 		delete(stream.chunks)
-		free(stream)
+		free(stream, heap)
 	}
 	delete(svc.tunnel_streams)
 }
 
-// --- WS attach/detach (T7, unchanged) ---
+// --- WS attach/detach (Attach-gated streaming, REQ-STREAM-IMPL-2) ---
 
-shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket) {
+shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") {
 	if svc == nil || session_id == "" do return
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
-	defer sync.mutex_unlock(&svc.mu)
 	if _, ok := svc.viewers[session_id]; !ok {
 		svc.viewers[strings.clone(session_id, heap)] = make([dynamic]net.TCP_Socket, heap)
 	}
-	append(&svc.viewers[session_id], socket)
-}
-
-shell_session_detach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket) {
-	if svc == nil || session_id == "" do return
-	sync.mutex_lock(&svc.mu)
-	defer sync.mutex_unlock(&svc.mu)
-	viewers, ok := &svc.viewers[session_id]
-	if !ok do return
-	for i := 0; i < len(viewers); i += 1 {
-		if viewers[i] == socket {
-			ordered_remove(viewers, i)
+	prev_count := len(svc.viewers[session_id])
+	already_present := false
+	for s in svc.viewers[session_id] {
+		if s == socket {
+			already_present = true
 			break
 		}
 	}
+	if !already_present {
+		append(&svc.viewers[session_id], socket)
+	}
+
+	resolved_bridge := bridge_id
+	if resolved_bridge == "" {
+		if b, ok := svc.session_bridges[session_id]; ok {
+			resolved_bridge = b
+		} else if svc.repo != nil {
+			if sess, s_ok, _ := iface.shell_session_get_by_id(svc.repo, session_id); s_ok {
+				resolved_bridge = sess.bridge_id
+				domain.shell_session_destroy(sess)
+			}
+		}
+	}
+	if resolved_bridge != "" {
+		if _, ok := svc.session_bridges[session_id]; !ok {
+			svc.session_bridges[strings.clone(session_id, heap)] = strings.clone(resolved_bridge, heap)
+		}
+	}
+
+	should_attach := false
+	target_bridge := ""
+	if prev_count == 0 && resolved_bridge != "" {
+		should_attach = true
+		target_bridge = strings.clone(resolved_bridge, context.temp_allocator)
+	}
+	sync.mutex_unlock(&svc.mu)
+
+	if should_attach && target_bridge != "" {
+		cmd_id := ""
+		if svc.ids != nil {
+			cmd_id = platform.generate_id(svc.ids, "cmd_sh_attach_")
+		}
+		cmd_json := _shell_stream_attach_command_json(cmd_id, session_id)
+		defer delete(cmd_json)
+		_, _ = project_service.bridge_command_send_runtime(
+			svc.bridge_command_sink,
+			project_service.Runtime_Command{
+				bridge_id  = target_bridge,
+				command_id = cmd_id,
+				body_json  = cmd_json,
+			},
+		)
+	}
+}
+
+shell_session_detach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") {
+	if svc == nil || session_id == "" do return
+	sync.mutex_lock(&svc.mu)
+	viewers, ok := &svc.viewers[session_id]
+	if !ok {
+		sync.mutex_unlock(&svc.mu)
+		return
+	}
+	removed := false
+	for i := 0; i < len(viewers); i += 1 {
+		if viewers[i] == socket {
+			ordered_remove(viewers, i)
+			removed = true
+			break
+		}
+	}
+
+	should_detach := false
+	target_bridge := ""
+	if removed && len(viewers^) == 0 {
+		should_detach = true
+		if b, b_ok := svc.session_bridges[session_id]; b_ok {
+			target_bridge = strings.clone(b, context.temp_allocator)
+		} else if bridge_id != "" {
+			target_bridge = strings.clone(bridge_id, context.temp_allocator)
+		} else if svc.repo != nil {
+			if sess, s_ok, _ := iface.shell_session_get_by_id(svc.repo, session_id); s_ok {
+				target_bridge = strings.clone(sess.bridge_id, context.temp_allocator)
+				domain.shell_session_destroy(sess)
+			}
+		}
+	}
+	sync.mutex_unlock(&svc.mu)
+
+	if should_detach && target_bridge != "" {
+		cmd_id := ""
+		if svc.ids != nil {
+			cmd_id = platform.generate_id(svc.ids, "cmd_sh_detach_")
+		}
+		cmd_json := _shell_stream_detach_command_json(cmd_id, session_id)
+		defer delete(cmd_json)
+		_, _ = project_service.bridge_command_send_runtime(
+			svc.bridge_command_sink,
+			project_service.Runtime_Command{
+				bridge_id  = target_bridge,
+				command_id = cmd_id,
+				body_json  = cmd_json,
+			},
+		)
+	}
+}
+
+shell_session_viewer_count :: proc(svc: ^Shell_Session_Service, session_id: string) -> int {
+	if svc == nil || session_id == "" do return 0
+	sync.mutex_lock(&svc.mu)
+	defer sync.mutex_unlock(&svc.mu)
+	if viewers, ok := svc.viewers[session_id]; ok {
+		return len(viewers)
+	}
+	return 0
 }
 
 // shell_session_broadcast_output fans PTY output (already base64-encoded by the bridge)
@@ -118,7 +225,11 @@ shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, 
 	if len(sockets) == 0 do return
 	frame := _output_frame_json(data_b64)
 	defer delete(frame)
-	for sock in sockets do _write_ws_text(sock, frame)
+	for sock in sockets {
+		if !_write_ws_text(sock, frame) {
+			shell_session_detach(svc, session_id, sock)
+		}
+	}
 }
 
 // shell_session_broadcast_status fans a status-change event to all attached clients.
@@ -129,7 +240,11 @@ shell_session_broadcast_status :: proc(svc: ^Shell_Session_Service, session_id, 
 	if len(sockets) == 0 do return
 	frame := _status_frame_json(status, exit_code, exit_code_set)
 	defer delete(frame)
-	for sock in sockets do _write_ws_text(sock, frame)
+	for sock in sockets {
+		if !_write_ws_text(sock, frame) {
+			shell_session_detach(svc, session_id, sock)
+		}
+	}
 }
 
 // --- CRUD service procs (T5) ---
@@ -183,10 +298,11 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	_, upsert_err := iface.shell_session_upsert(svc.repo, session)
 	if upsert_err.code != .None do return {}, false, upsert_err
 
-	// Track owner for handle_exited (heap-allocated key + value).
+	// Track owner and bridge for handle_exited and attach-gating (heap-allocated keys + values).
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	svc.session_owners[strings.clone(session_id, heap)] = strings.clone(string(owner), heap)
+	svc.session_bridges[strings.clone(session_id, heap)] = strings.clone(input.bridge_id, heap)
 	sync.mutex_unlock(&svc.mu)
 
 	// Send shell_start to bridge and wait for reply.
@@ -581,7 +697,7 @@ shell_session_get_pane :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth
 shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, bridge_id, status: string, exit_code: int, exit_code_set: bool) {
 	if svc == nil || svc.repo == nil || session_id == "" || bridge_id == "" do return
 
-	// Remove the entry from session_owners under the lock, capturing the heap strings.
+	// Remove the entry from session_owners and session_bridges under the lock, capturing the heap strings.
 	sync.mutex_lock(&svc.mu)
 	map_key: string
 	map_val: string
@@ -592,6 +708,14 @@ shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, bri
 			map_val = svc.session_owners[k]
 			delete_key(&svc.session_owners, k)
 			found_entry = true
+			break
+		}
+	}
+	for k in svc.session_bridges {
+		if k == session_id {
+			delete(k)
+			delete(svc.session_bridges[k])
+			delete_key(&svc.session_bridges, k)
 			break
 		}
 	}
@@ -834,6 +958,26 @@ _shell_signal_command_json :: proc(session_id: string, signal: int) -> string {
 _shell_restart_command_json :: proc(cmd_id, session_id: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_restart\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+_shell_stream_attach_command_json :: proc(cmd_id, session_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_stream_attach\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+_shell_stream_detach_command_json :: proc(cmd_id, session_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_stream_detach\",\"command_id\":\"")
 	contracts.write_json_string(&b, cmd_id)
 	strings.write_string(&b, "\",\"session_id\":\"")
 	contracts.write_json_string(&b, session_id)

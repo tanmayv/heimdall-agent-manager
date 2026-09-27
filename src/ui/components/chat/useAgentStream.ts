@@ -6,15 +6,15 @@ const INITIAL_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 
-type ShellStreamMsg =
+type AgentStreamMsg =
   | { type: 'output'; data_b64: string }
   | { type: 'screen'; screen_b64?: string; data_b64?: string }
-  | { type: 'ready'; session_id?: string }
+  | { type: 'ready'; agent_instance_id?: string; session_id?: string }
   | { type: 'status'; status: string }
   | { type: 'error'; message: string };
 
-export type UseShellStreamOptions = {
-  sessionId: string | null;
+export type UseAgentStreamOptions = {
+  agentInstanceId: string | null | undefined;
   enabled?: boolean;
   onOutput?: (data: Uint8Array) => void;
   onStatus?: (status: string) => void;
@@ -22,7 +22,7 @@ export type UseShellStreamOptions = {
   onClose?: () => void;
 };
 
-export interface UseShellStreamResult {
+export interface UseAgentStreamResult {
   connected: boolean;
   sendInput: (data: string) => void;
   sendResize: (rows: number, cols: number) => void;
@@ -63,8 +63,8 @@ function httpUrlToWs(httpUrl: string): string {
  * eliminating the mandatory HTTP pre-flight ticket request per user directive.
  * Outside Electron, resolves via apiAbsoluteUrl to preserve preview tunnel prefixes.
  */
-async function shellStreamUrl(sessionId: string): Promise<string> {
-  const path = `/api/v1/shells/${encodeURIComponent(sessionId)}/stream`;
+async function agentStreamUrl(agentInstanceId: string): Promise<string> {
+  const path = `/api/v1/agent-instances/${encodeURIComponent(agentInstanceId)}/stream`;
   if (hasElectronDeviceAuth()) {
     const base = await electronApiBaseUrl();
     return httpToWsUrl(base, path);
@@ -72,14 +72,14 @@ async function shellStreamUrl(sessionId: string): Promise<string> {
   return httpUrlToWs(apiAbsoluteUrl(path));
 }
 
-export function useShellStream({
-  sessionId,
+export function useAgentStream({
+  agentInstanceId,
   enabled = true,
   onOutput,
   onStatus,
   onError,
   onClose,
-}: UseShellStreamOptions): UseShellStreamResult {
+}: UseAgentStreamOptions): UseAgentStreamResult {
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<number | undefined>(undefined);
@@ -137,13 +137,13 @@ export function useShellStream({
   };
 
   const connect = useCallback(() => {
-    if (!sessionId || !enabled || stoppedRef.current) return;
+    if (!agentInstanceId || !enabled || stoppedRef.current) return;
     closeSocket();
 
     const connectId = ++activeConnectIdRef.current;
     let socket: WebSocket;
 
-    shellStreamUrl(sessionId)
+    agentStreamUrl(agentInstanceId)
       .then((url) => {
         if (activeConnectIdRef.current !== connectId || stoppedRef.current || !enabled) return;
         socket = new WebSocket(url);
@@ -161,7 +161,7 @@ export function useShellStream({
 
         socket.onmessage = (event) => {
           if (activeConnectIdRef.current !== connectId) return;
-          let msg: ShellStreamMsg;
+          let msg: AgentStreamMsg;
           try {
             msg = JSON.parse(event.data);
           } catch {
@@ -217,20 +217,20 @@ export function useShellStream({
         socket.onerror = () => {
           if (activeConnectIdRef.current !== connectId) return;
           if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-            onErrorRef.current?.('Shell stream connection error');
+            onErrorRef.current?.('Agent instance stream connection error');
           }
         };
       })
       .catch((err) => {
         if (activeConnectIdRef.current !== connectId) return;
-        onErrorRef.current?.(String(err?.message || err || 'Failed to connect to shell stream'));
+        onErrorRef.current?.(String(err?.message || err || 'Failed to connect to agent instance stream'));
       });
-  }, [sessionId, enabled]);
+  }, [agentInstanceId, enabled]);
 
   useEffect(() => {
     stoppedRef.current = false;
     reconnectAttemptsRef.current = 0;
-    if (enabled && sessionId) {
+    if (enabled && agentInstanceId) {
       connect();
     } else {
       closeSocket();
@@ -240,7 +240,7 @@ export function useShellStream({
       stoppedRef.current = true;
       closeSocket();
     };
-  }, [sessionId, enabled, connect]);
+  }, [agentInstanceId, enabled, connect]);
 
   const sendInput = useCallback((data: string) => {
     const s = socketRef.current;

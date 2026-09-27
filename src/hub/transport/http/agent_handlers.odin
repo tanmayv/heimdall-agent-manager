@@ -7,11 +7,16 @@ import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
+import iface "odin_test:hub/repository/iface"
+import shell_session_svc "odin_test:hub/service/shell_session"
 
 Agent_Handlers :: struct {
-	auth: ^auth_service.Auth_Service,
-	agents: ^agent_service.Agent_Service,
-	event_bus: ^events.User_Event_Bus,
+	auth:           ^auth_service.Auth_Service,
+	agents:         ^agent_service.Agent_Service,
+	event_bus:      ^events.User_Event_Bus,
+	ws_tickets:     ^User_WS_Ticket_Store,
+	shell_sessions: ^shell_session_svc.Shell_Session_Service,
+	experiments:    ^iface.Experiment_Repository,
 }
 
 list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
