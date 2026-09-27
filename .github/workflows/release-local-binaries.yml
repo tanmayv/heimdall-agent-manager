@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+    # Throwaway validation branch only (T24/REQ-INST-25); never merged to main.
+    # Lets the rebuilt portability gate run on the real runners without
+    # dispatch rights and without cutting a release -- the `release` job is
+    # gated on a tag or inputs.publish_release, so nothing is published.
+    branches:
+      - 't24/gate-validation'
   workflow_dispatch:
     inputs:
       version:
