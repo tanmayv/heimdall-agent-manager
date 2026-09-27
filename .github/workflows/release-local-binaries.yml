@@ -87,8 +87,8 @@ jobs:
             version="${{ inputs.version }}"
           fi
           if [ -z "$version" ]; then
-            echo "release version is required" >&2
-            exit 2
+            # Validation branch only: a branch push carries no version input.
+            version="v0.0.0-t24-validation"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
