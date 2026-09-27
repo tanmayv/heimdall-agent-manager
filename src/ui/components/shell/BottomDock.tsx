@@ -13,6 +13,8 @@ import { openTab, selectPreviewTabs } from '../../store/previewTabsSlice';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
+  vaultStatusLabel,
+  VAULT_UNSUPPORTED_REASON,
 } from '../../store/vaultSlice';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import {
@@ -44,6 +46,11 @@ export default function BottomDock({
   // Vault status (REQ-BOTTOMDOCK-VAULT-2)
   const isVaultConfigured = useSelector(selectIsVaultConfigured);
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  // 'Unsupported' wins over Unlocked/Locked/Unconfigured (REQ-VAULT-UNSUP-3).
+  const vaultLabel = vaultStatusLabel({ isVaultUnlocked, isVaultConfigured });
+  const vaultBadgeTitle = vaultLabel === 'Unsupported'
+    ? VAULT_UNSUPPORTED_REASON
+    : `User Vault: ${vaultLabel} (Click to manage)`;
 
   // Active tab: sessionId
   const [activeTab, setActiveTab] = useState<string>('');
@@ -407,10 +414,10 @@ export default function BottomDock({
               window.location.hash = buildRouteHash('/settings/vault', '');
             }}
             className="inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-primary transition-colors cursor-pointer mr-2"
-            title={`User Vault: ${isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'} (Click to manage)`}
+            title={vaultBadgeTitle}
           >
             <Icon name="lock" size={12} />
-            <span>Vault: {isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'}</span>
+            <span>Vault: {vaultLabel}</span>
           </button>
           <button
             type="button"

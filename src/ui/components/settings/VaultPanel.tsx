@@ -21,6 +21,8 @@ import {
   setVaultConfigured,
   setVaultUnlocked,
   lockVault,
+  VAULT_UNSUPPORTED_TITLE,
+  VAULT_UNSUPPORTED_REASON,
 } from '../../store/vaultSlice';
 import {
   useGetUserVaultQuery,
@@ -37,6 +39,7 @@ import {
   decryptVaultKeyEnvelope,
   generateSaltHex,
   DEFAULT_KDF_ITERATIONS,
+  isVaultSupported,
 } from '../../utils/vaultCrypto';
 
 async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -307,6 +310,42 @@ export default function VaultPanel() {
     } finally {
       setIsUnlocking(false);
     }
+  }
+
+  // Unsupported context (REQ-VAULT-UNSUP-4). The bottom-dock badge routes here, so this
+  // must explain the situation rather than offering setup/unlock controls that cannot
+  // possibly work — every one of them calls crypto.subtle on its first action.
+  if (!isVaultSupported()) {
+    return (
+      <PageShell
+        title="User Vault"
+        description="Zero-Knowledge client vault with Master Password encryption and 12-word recovery phrase."
+      >
+        <div data-debug-id="settings-vault-panel" className="space-y-6 text-left">
+          <Panel tone="raised" padding="lg" className="border border-subtle">
+            <div
+              data-debug-id="vault-unsupported-notice"
+              className="flex items-start gap-3"
+            >
+              <Icon name="lock" size="md" className="mt-0.5 text-muted" />
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Text role="title">{VAULT_UNSUPPORTED_TITLE}</Text>
+                  <StatusPill tone="neutral" data-debug-id="vault-status-badge">Unsupported</StatusPill>
+                </div>
+                <p className="text-sm text-muted">{VAULT_UNSUPPORTED_REASON}</p>
+                <p className="text-xs text-faint">
+                  Browsers expose Web Crypto (<code>crypto.subtle</code>) only in a secure
+                  context. Reach this page over HTTPS, or on <code>localhost</code>, and the
+                  vault setup and unlock controls become available. No vault data is lost —
+                  the vault simply cannot be opened from this origin.
+                </p>
+              </div>
+            </div>
+          </Panel>
+        </div>
+      </PageShell>
+    );
   }
 
   // Loading State
