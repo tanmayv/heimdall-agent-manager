@@ -113,7 +113,12 @@ router_dispatch :: proc(router: ^Router, req: Request) -> Response {
 	if router == nil {
 		return respond_error(domain.domain_error(.Internal_Error, "router is not configured"), req.request_id)
 	}
-	if !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) {
+	// Non-/api/v1 paths are closed EXCEPT for the public page allowlist
+	// (PUBLIC_PAGE_PATHS in legal_page_handlers.odin, consulted with exact
+	// string matching — no prefix/wildcard/trailing-slash/case tolerance).
+	// Everything else keeps 404ing here. The two upgrade dispatchers above
+	// deliberately keep their unconditional /api/v1 gate.
+	if !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) && !is_public_page_path(req.path) {
 		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
 	}
 	for route in router.routes {
