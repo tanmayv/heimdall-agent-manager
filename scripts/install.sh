@@ -21,13 +21,25 @@ NET_CONNECT_TIMEOUT=15
 NET_API_MAX_TIME=30
 # A tarball is multi-MB, so a FLAT total cap would fail a slow-but-healthy
 # transfer. Bound the STALL instead: abort only when throughput stays under
-# NET_STALL_BYTES_PER_SEC for NET_STALL_SECONDS. curl spells this
-# --speed-limit/--speed-time; wget's --read-timeout is the direct analogue,
-# which is what lets the two branches make the same promise.
+# NET_STALL_BYTES_PER_SEC for NET_STALL_SECONDS. curl spells this natively with
+# --speed-limit/--speed-time.
+#
+# wget CANNOT express this, and an earlier version of this comment claimed
+# --read-timeout was "the direct analogue", which is false and was measured to be
+# false: --read-timeout bounds a single IDLE read, so a server sending one byte
+# every 0.5s resets it forever. Real wget 1.25.0 against a 2 B/s trickle -- 0.2%
+# of the floor below -- was still running after 25 seconds having moved 50 bytes,
+# and wget has no total-duration option either, so NET_DOWNLOAD_MAX_TIME went
+# unenforced on that branch entirely. curl states both bounds natively but applies
+# --max-time PER ATTEMPT, so with --retry 3 its real ceiling was four times this
+# value. run_bounded supplies the operation-wide guarantee for both; see the note
+# there.
 NET_STALL_SECONDS=60
 NET_STALL_BYTES_PER_SEC=1024
 # Absolute backstop so a mirror that dribbles just above the stall floor cannot
 # hold the installer forever. Generous: 10 minutes is a slow link, not a hang.
+# Enforced for the whole operation by run_bounded on both branches, because
+# curl's --max-time is per attempt and wget has no equivalent flag at all.
 NET_DOWNLOAD_MAX_TIME=600
 
 usage() {
@@ -58,6 +70,9 @@ ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
                        removed.
 
 Platforms: Linux (x86_64, aarch64/arm64), macOS (Intel, Apple Silicon).
+Requires socat, the default bridge->hub TLS transport. It is not bundled;
+install it with your system package manager (sudo apt install socat /
+brew install socat) BEFORE running this installer.
 USAGE
 }
 
@@ -367,7 +382,22 @@ resolve_latest_tag() {
 # REQ-INST-7: fatal download diagnosis. Names the URL that failed, because the
 # installer fetches several and a bare "download failed" does not say which.
 download_failed() {
-  url="$1"; out="$2"
+  url="$1"; out="$2"; why="${3:-}"
+  # $3 is OPTIONAL and must stay defaulted: main() runs under `set -euo pipefail`
+  # and the other call sites pass two arguments, so a bare "$3" aborts the script
+  # with "unbound variable" instead of reporting the download failure. Caught by
+  # the suite, which is the whole argument for having it.
+  #
+  # It names the bound that was exceeded when the watchdog stopped the transfer.
+  # Without it the user sees "download failed" for a transfer that was still
+  # technically alive, which is the same unproven-cause problem REQ-INST-6 is
+  # about: a killed download must say it was killed and why.
+  # Set off with a dash rather than parentheses: the TMPDIR clause below is already
+  # parenthesised, and two adjacent parentheticals read as a stutter.
+  detail=""
+  if [ -n "$why" ]; then
+    detail=" -- $why"
+  fi
   tmp_root="${TMPDIR:-/tmp}"
   tmp_root="${tmp_root%/}"
   case "$out" in
@@ -375,31 +405,188 @@ download_failed() {
       # mktemp -d puts the tarball wherever TMPDIR points. On a host where that
       # is a small tmpfs the real failure is running out of space, which looks
       # nothing like a network problem in the output.
-      fail "download failed: $url (target $out is under $tmp_root; if that is a small tmpfs the transfer can exhaust it -- set TMPDIR to a larger filesystem and re-run)"
+      fail "download failed: $url$detail (target $out is under $tmp_root; if that is a small tmpfs the transfer can exhaust it -- set TMPDIR to a larger filesystem and re-run)"
       ;;
   esac
-  fail "download failed: $url"
+  fail "download failed: $url$detail"
+}
+
+# Bytes currently in $1, or 0. `wc -c <file` and not `stat`: stat's size flag is
+# -c%s on GNU and -f%z on BSD, and this has to work on both.
+file_bytes() {
+  # The existence check is not redundant with the redirect's 2>/dev/null: the
+  # FAILED REDIRECT is reported by the shell itself, not by wc, so without this the
+  # watchdog printed "No such file or directory" on every poll before the
+  # downloader had created the file -- a shell error in the middle of a healthy
+  # download, which reads like a fault and is not one.
+  if [ ! -f "$1" ]; then
+    printf '0'
+    return 0
+  fi
+  bytes="$(wc -c <"$1" 2>/dev/null | tr -d ' ')"
+  case "$bytes" in
+    ''|*[!0-9]*) bytes=0 ;;
+  esac
+  printf '%s' "$bytes"
+}
+
+# REQ-INST-7. Runs the downloader in $@ against output file $1 and enforces the
+# two bounds NEITHER downloader can state for itself. Sets $bound_error to the
+# bound that was exceeded, or empty; otherwise returns the downloader's status.
+#
+# WHY A WATCHDOG, FOR BOTH BRANCHES. Neither tool can express a bound on the whole
+# operation, and each fails differently:
+#
+#   wget has NO minimum-throughput option and NO total-duration option.
+#   --read-timeout is not the analogue of curl's --speed-time: it bounds one IDLE
+#   read, so a byte every 0.5s resets it forever. Measured, not theorised -- real
+#   wget 1.25.0 with exactly the flags this branch used to pass was still running
+#   after 25s on a 2 B/s trickle, 0.2% of the floor, having moved 50 bytes.
+#
+#   curl states both bounds natively, but --max-time is PER ATTEMPT, not per
+#   operation. Also measured: against an above-floor endless stream,
+#   `--retry 3 --max-time 3` took 19s, not 3s -- four attempts plus backoff. So
+#   with --retry 3 the real worst case was 4 * NET_DOWNLOAD_MAX_TIME plus backoff,
+#   roughly 40 minutes rather than the 10 the constant promises.
+#
+# The native flags are kept on both branches: they abort a doomed attempt sooner
+# and with a better message than a kill. This adds the guarantee they cannot make.
+#
+# NOT coreutils `timeout`: macOS ships no `timeout` and this installer registers a
+# launchd service, so it runs there. Plain POSIX shell plus wc -c.
+#
+# THE FLOOR IS AN AVERAGE SINCE THE LAST KNOWN-GOOD POINT, not a per-window bucket,
+# and that distinction was forced by measurement rather than chosen for elegance.
+#
+# Progress is observed as bytes landing in the output file, which is what can be seen
+# without cooperation from the tool and which also catches a downloader that retries
+# and truncates without ever getting anywhere. But the file size LAGS the socket:
+# both tools write in bursts, so sampled once a second a healthy 4096 B/s transfer
+# produces deltas like wget's 4096,4096,4096,4096,0,8192 and curl's 4096,0,8192,0.
+#
+# Bucketing those into fixed NET_STALL_SECONDS windows and judging each one fails
+# honest transfers. Measured: a server sending 16 KB every 4 seconds -- 4096 B/s,
+# FOUR TIMES the floor -- was declared stalled on the wget branch, because two
+# consecutive 2-second windows saw no write at all. Requiring two consecutive
+# sub-floor windows did not save it; the flaw is the bucket, not the count.
+#
+# So an ANCHOR is kept at the last moment throughput was demonstrably fine, and the
+# test is whether average throughput since that anchor has met the floor. Any sample
+# that clears it re-anchors. A stall is declared only when the anchor has gone
+# unmoved for a horizon of two full stall periods, because a bursty transfer
+# re-anchors on every burst while a genuinely stalled one never does.
+#
+# THE MEASURED TOLERANCE, so the next reader knows the real edge rather than guessing
+# at it. Holding the average at 4x the floor and varying only the gap between bursts,
+# with NET_STALL_SECONDS compressed to 2s (horizon 4s): gaps of 0.5s, 1s and 2s are
+# correctly carried to the deadline on BOTH branches; at a 3s gap -- 75% of the
+# horizon -- wget's write lag makes the anchor look unmoved and a false stall is
+# declared. So the floor reliably tolerates burst gaps up to about
+# NET_STALL_SECONDS. At the real 60s that is a 60-second gap with nothing arriving,
+# which is a stall by any definition worth having, and write buffers are measured in
+# seconds rather than minutes. The limitation is real but sits far outside the range
+# a healthy transfer occupies.
+run_bounded() {
+  out="$1"; shift
+  bound_error=""
+  # Reset explicitly. download() is called more than once per run (tarball, then
+  # SHA256SUMS), and leaving a previous non-zero status in this global would fail
+  # the SECOND download because the FIRST one failed.
+  dl_status=0
+
+  "$@" &
+  dl_pid=$!
+
+  now="$(date +%s)"
+  deadline=$(( now + NET_DOWNLOAD_MAX_TIME ))
+  # Last point at which throughput was demonstrably at or above the floor.
+  anchor_time="$now"
+  anchor_bytes="$(file_bytes "$out")"
+  stall_horizon=$(( NET_STALL_SECONDS * 2 ))
+
+  while kill -0 "$dl_pid" 2>/dev/null; do
+    sleep 1
+    # Re-test liveness AFTER the sleep, before judging any bound. Without this
+    # there is a race that fails a SUCCESSFUL download: if the transfer finishes
+    # during the sleep on a tick that also crosses a window boundary, the window
+    # sees only the bytes from its own final fraction of a second, finds them under
+    # the floor, and reports a stall for a download that had already completed.
+    # `wait` would then return 0 while $bound_error forced a failure -- the worst
+    # shape available, a wrong cause on a working install.
+    kill -0 "$dl_pid" 2>/dev/null || break
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      bound_error="exceeded the ${NET_DOWNLOAD_MAX_TIME}s total download limit"
+    else
+      current="$(file_bytes "$out")"
+      since=$(( now - anchor_time ))
+      if [ "$(( current - anchor_bytes ))" -ge "$(( NET_STALL_BYTES_PER_SEC * since ))" ]; then
+        # Throughput since the anchor meets the floor, so this is the new
+        # known-good point. A bursty transfer lands here on every burst.
+        anchor_time="$now"
+        anchor_bytes="$current"
+      elif [ "$since" -ge "$stall_horizon" ]; then
+        bound_error="stalled below ${NET_STALL_BYTES_PER_SEC} bytes/sec for ${since}s"
+      fi
+    fi
+    if [ -n "$bound_error" ]; then
+      # TERM first so the downloader can close the socket, then KILL if it ignores
+      # it. The grace loop is bounded, because a watchdog that can itself hang is
+      # not one.
+      kill "$dl_pid" 2>/dev/null || true
+      grace=0
+      while [ "$grace" -lt 5 ] && kill -0 "$dl_pid" 2>/dev/null; do
+        sleep 1
+        grace=$(( grace + 1 ))
+      done
+      kill -9 "$dl_pid" 2>/dev/null || true
+      break
+    fi
+  done
+
+  # `wait` reaps it and yields its status; after a kill that status is non-zero,
+  # which is what the caller needs. The `|| dl_status=$?` form is required rather
+  # than stylistic: a bare `wait` would make a non-zero status the function's own
+  # exit status at a point where this still has cleanup to decide.
+  #
+  # The loop above tests liveness with `kill -0`, which reports an exited child as
+  # DEAD rather than as a lingering zombie, because bash reaps background children
+  # on SIGCHLD and keeps the status in its jobs table for `wait` to return later.
+  # Both halves verified on this host, since if `kill -0` had reported a finished
+  # child as alive the loop would have run on past a COMPLETED download and then
+  # reported a stall for a transfer that had already succeeded.
+  wait "$dl_pid" 2>/dev/null || dl_status=$?
+  if [ -n "$bound_error" ]; then
+    return 1
+  fi
+  return "$dl_status"
 }
 
 download() {
   url="$1"; out="$2"
   if command -v curl >/dev/null 2>&1; then
-    # --max-time was missing here: --connect-timeout bounds only the handshake,
-    # so a connection that established and then trickled one byte a minute was
-    # bounded by nothing at all.
-    curl -fL --retry 3 --connect-timeout "$NET_CONNECT_TIMEOUT" \
-      --speed-limit "$NET_STALL_BYTES_PER_SEC" --speed-time "$NET_STALL_SECONDS" \
-      --max-time "$NET_DOWNLOAD_MAX_TIME" \
-      -o "$out" "$url" || download_failed "$url" "$out"
+    # --max-time was missing here entirely: --connect-timeout bounds only the
+    # handshake, so a connection that established and then trickled one byte a
+    # minute was bounded by nothing at all. It is PER ATTEMPT though, so
+    # run_bounded is what caps the whole operation across --retry.
+    run_bounded "$out" \
+      curl -fL --retry 3 --connect-timeout "$NET_CONNECT_TIMEOUT" \
+        --speed-limit "$NET_STALL_BYTES_PER_SEC" --speed-time "$NET_STALL_SECONDS" \
+        --max-time "$NET_DOWNLOAD_MAX_TIME" \
+        -o "$out" "$url" \
+      || download_failed "$url" "$out" "$bound_error"
   else
-    # Was a bare `wget -O "$out" "$url"`: no retries, no connect timeout, no
-    # read timeout. --read-timeout is wget's --speed-time: it aborts a transfer
-    # that stops delivering data, so this branch now makes the same promise the
-    # curl branch does.
-    wget -O "$out" --tries=3 \
-      --connect-timeout="$NET_CONNECT_TIMEOUT" \
-      --read-timeout="$NET_STALL_SECONDS" \
-      "$url" || download_failed "$url" "$out"
+    # Was a bare `wget -O "$out" "$url"`: no retries, no connect timeout, no read
+    # timeout. It now has all three, and run_bounded supplies the two bounds wget
+    # cannot express as flags at all -- the total cap and the throughput floor.
+    # That is what makes this branch's promise the same as the curl branch's,
+    # rather than a comment claiming it is.
+    run_bounded "$out" \
+      wget -O "$out" --tries=3 \
+        --connect-timeout="$NET_CONNECT_TIMEOUT" \
+        --read-timeout="$NET_STALL_SECONDS" \
+        "$url" \
+      || download_failed "$url" "$out" "$bound_error"
   fi
 }
 
@@ -448,6 +635,79 @@ sha256_of() {
 # authorship rather than a guess: a stranger's file cannot match it, and ours
 # does until something else overwrites it.
 openssl_marker() { printf '%s\n' "$install_dir/.heimdall-openssl.sha256"; }
+
+# --- socat preflight (REQ-INST-14) ---------------------------------------------
+# socat is the DEFAULT bridge->hub TLS transport. src/lib/ws/ws.odin's
+# tls_client_command (:286-297) returns openssl_s_client_command ONLY when
+# HAM_TLS_BACKEND is exactly "s_client"; for every other value -- including
+# unset, the default -- it returns socat_openssl_command, which spawns an argv
+# literally named "socat" (:341). The same rule is duplicated in
+# src/lib/http_client/http_client.odin and in the bridge's
+# bridge_tls_backend_is_socat.
+#
+# socat is NOT in the release tarball (it is GPL-2.0, so bundling it is not an
+# engineering call) and a bundled bin/openssl does NOT cover this path -- it
+# only serves the s_client fallback. Without this preflight a socat-less host
+# installs cleanly, is told it succeeded, and then never reaches a wss:// hub,
+# with no error anywhere naming the cause.
+#
+# Why this went unnoticed for so long: the published bin/ham-bridge is a Nix
+# wrapProgram SHELL SCRIPT that prepends nix store paths for socat and openssl
+# onto PATH before exec'ing the real binary. On a Nix host the wrapper supplies
+# socat silently. Off Nix there is no wrapper and no socat -- so this is not a
+# corner case, it is the ordinary case for anyone installing from the tarball.
+#
+# Keep this vocabulary in sync with the "tls_dependency" field that
+# scripts/release/package-local-binary-tarball.sh writes into METADATA.json:
+# one defect, two places, one story.
+
+have_socat() { command -v socat >/dev/null 2>&1; }
+
+# Whether the hub the unit will be started with terminates TLS at all.
+# parse_ws_url (src/lib/ws/ws.odin:347) sets secure=true only for wss://, so
+# the plain-HTTP, VPN-only deployment documented in SELF_HOSTING.md genuinely
+# needs no socat. An UNKNOWN hub -- no --hub, which is the common case since
+# the unit reads [wrapper] daemon_url from config.toml -- is treated as NEEDING
+# socat: at install time we usually cannot know the eventual hub, and it is
+# overwhelmingly a remote TLS one.
+hub_is_plaintext() {
+  case "${1:-}" in
+    http://*|ws://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+socat_required_message() {
+  cat <<'SOCAT'
+socat is not installed. Install socat FIRST, then re-run this installer.
+
+  Debian/Ubuntu:  sudo apt install socat
+  macOS:          brew install socat
+  Fedora/RHEL:    sudo dnf install socat
+  Arch:           sudo pacman -S socat
+
+socat is the default bridge->hub TLS transport: the bridge spawns
+'socat OPENSSL-CONNECT' to terminate TLS for the wss:// control channel. It is
+deliberately NOT bundled in the release tarball, and a bundled bin/openssl --
+where one is present at all -- does NOT satisfy that default path: openssl
+serves only the legacy fallback. You do not need to install openssl separately
+for this: socat links libssl itself, and your package manager installs that
+along with socat.
+Installing without socat would leave a bridge that cannot reach a TLS hub, so
+this stops here rather than reporting a successful install.
+
+Nothing has been installed; no files were written.
+
+If your hub is plain HTTP with no TLS, say so explicitly and this check is
+skipped: install.sh --hub http://<host>:<port>
+
+Advanced: HAM_TLS_BACKEND=s_client switches the bridge to the legacy
+'openssl s_client' transport, which needs no socat but tears down on multi-read
+bursts above 16 KB (large file reads and artifact transfers). There is
+deliberately no automatic fallback to it -- set it only if you knowingly accept
+that limitation.
+SOCAT
+}
 
 # --- service templates (mirrors SELF_HOSTING.md sections 2.8 and 2.9) -------
 # REQ-INST-1: the unit carries --hub ONLY when the operator passed it
@@ -987,6 +1247,31 @@ main() {
     exit 0
   fi
 
+  # --- socat preflight (REQ-INST-14) --------------------------------------------
+  # Placed here deliberately: AFTER the --uninstall exit above, because removing
+  # files needs no transport and refusing to uninstall over a missing dependency
+  # would strand users; and BEFORE release resolution, so when this fires
+  # nothing has been downloaded, no network has been touched and no file
+  # written. Same shape as the sudo/home preflight higher up -- fail before we
+  # touch the system, never halfway through it.
+  socat_missing=false
+  socat_exempt_reason=""
+  if ! have_socat; then
+    socat_missing=true
+    if hub_is_plaintext "$hub_url"; then
+      socat_exempt_reason="--hub $hub_url is plain HTTP, so the bridge terminates no TLS and needs no socat"
+    fi
+  fi
+  if "$socat_missing"; then
+    if [ -n "$socat_exempt_reason" ]; then
+      warn "socat is not installed; continuing because $socat_exempt_reason. Install socat before pointing this bridge at an https:// or wss:// hub."
+    elif ! "$dry_run"; then
+      # A dry run is exempt: it writes nothing and its job is to PREVIEW, so it
+      # reports the missing socat in the plan below and still exits 0.
+      fail "$(socat_required_message)"
+    fi
+  fi
+
   # --- release URL resolution -------------------------------------------------
   if [ -n "$hub_url" ]; then
     base_url="$hub_url"
@@ -1028,6 +1313,14 @@ main() {
 
   # --- dry run ------------------------------------------------------------------
   if "$dry_run"; then
+    # REQ-INST-14: a preview must tell the truth about what a real run would do,
+    # and what a real run would do here is STOP. The headline goes on stdout,
+    # inside the plan the operator is actually reading, ahead of everything
+    # else, so it cannot be read as a footnote; the detail follows on stderr.
+    if "$socat_missing" && [ -z "$socat_exempt_reason" ]; then
+      say "socat is NOT installed: a real (non-dry-run) install would STOP HERE and install nothing"
+      socat_required_message >&2
+    fi
     say "platform: $os/$arch (release target $target)"
     say "release: $effective_version"
     say "would download: $tarball_url"

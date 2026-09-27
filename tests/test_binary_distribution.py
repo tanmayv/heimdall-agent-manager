@@ -36,16 +36,22 @@ Run: python3 tests/test_binary_distribution.py
 Env: HEIMDALL_BIN=<path> skips the odin build and tests that binary instead.
 """
 from pathlib import Path
+import contextlib
 import hashlib
+import http.server
 import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import socketserver
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / 'scripts' / 'release' / 'package-local-binary-tarball.sh'
@@ -413,13 +419,40 @@ RELEASE_LIST_PRERELEASE_JSON = (
     ' {"tag_name": "v1.2.3-beta.1", "prerelease": true, "draft": false}]\n')
 
 
-def _shim_dir(base: Path, name: str) -> Path:
+def write_socat_stub(directory: Path) -> Path:
+    """Put a no-op `socat` on a PATH entry (REQ-INST-14).
+
+    install.sh resolves socat with `command -v socat` and NEVER executes it --
+    presence is the whole contract -- so a stub is an honest stand-in rather
+    than a fake. The suite supplying it is what makes every other test
+    deterministic on hosts with and without socat installed, instead of the
+    fatal preflight silently turning into a host-dependent skip.
+
+    A real socat is deliberately NOT symlinked here: a test must not pass only
+    because the machine happened to have the dependency.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    stub = directory / 'socat'
+    if not stub.exists():
+        stub.write_text('#!/bin/sh\n'
+                        '# no-op stand-in: install.sh only probes for presence\n'
+                        'exit 0\n')
+        stub.chmod(0o755)
+    return stub
+
+
+def _shim_dir(base: Path, name: str, *, with_socat: bool = True) -> Path:
     shim = base / name
     shim.mkdir(parents=True, exist_ok=True)
     for tool in SHIM_TOOLS:
         real = shutil.which(tool)
         if real and not (shim / tool).exists():
             (shim / tool).symlink_to(real)
+    # stub_env sets PATH to this directory ALONE, so without socat here every
+    # test that reaches the REQ-INST-14 preflight would die on it. Tests that
+    # want socat ABSENT ask for it with with_socat=False.
+    if with_socat:
+        write_socat_stub(shim)
     return shim
 
 
@@ -890,14 +923,17 @@ def test_resolve_200_without_tag_is_fail_closed(ctx):
 # --- REQ-INST-7: bounded downloads --------------------------------------------
 
 def test_download_branches_are_equally_bounded(ctx):
-    """Both branches must bound connect, stall and total time. The old asymmetry
-    (curl retried and had --connect-timeout, wget had nothing at all) meant the
-    failure mode depended on which tool the host happened to have: a stalled
-    mirror hung a wget host forever. These flags are the part that cannot be
-    exercised without a deliberately stalling server, so they are asserted
-    structurally; the failure REPORTING below is asserted by execution."""
+    """Cheap structural regression guard on the flags. It does NOT establish
+    equivalence -- test_download_bounds_are_enforced below does that by execution.
+
+    An earlier version of this docstring claimed both paths bound total time on the
+    strength of these flags, and that claim was false for BOTH of them: wget's
+    --read-timeout bounds one IDLE read, not duration and not throughput, and wget
+    has no total-time flag at all; curl's --max-time is per ATTEMPT, so --retry 3
+    multiplied its ceiling by four. The operation-wide bounds come from run_bounded,
+    so that is what this asserts."""
     text = INSTALL_SCRIPT.read_text()
-    body = text.split('download() {', 1)[1].split('\n}', 1)[0]
+    body = text.split('\ndownload() {', 1)[1].split('\n}', 1)[0]
     curl_branch, wget_branch = body.split('else', 1)
 
     for flag in ('--retry 3', '--connect-timeout', '--speed-limit', '--speed-time',
@@ -905,6 +941,22 @@ def test_download_branches_are_equally_bounded(ctx):
         assert flag in curl_branch, f'curl download branch lost {flag}:\n{curl_branch}'
     for flag in ('--tries=3', '--connect-timeout=', '--read-timeout='):
         assert flag in wget_branch, f'wget download branch lost {flag}:\n{wget_branch}'
+    # BOTH branches must go through the watchdog: neither tool can bound the whole
+    # operation on its own, so a branch that skips it is unbounded again.
+    for name, branch in (('curl', curl_branch), ('wget', wget_branch)):
+        assert 'run_bounded' in branch, \
+            f'{name} branch no longer goes through the watchdog:\n{branch}'
+    watchdog = text.split('run_bounded() {', 1)[1].split('\n}', 1)[0]
+    for bound in ('NET_DOWNLOAD_MAX_TIME', 'NET_STALL_BYTES_PER_SEC', 'NET_STALL_SECONDS'):
+        assert bound in watchdog, f'watchdog does not enforce {bound}:\n{watchdog}'
+    # The stall WINDOW is derived from the floor, never a second literal: the
+    # horizon must stay a multiple of NET_STALL_SECONDS so that retuning the
+    # floor retunes the window with it. A hardcoded number here decouples them
+    # silently, which is exactly the shape of bug the watchdog exists to stop.
+    # Structural on purpose -- this cannot flake, unlike a timing assertion.
+    assert 'stall_horizon=$(( NET_STALL_SECONDS * 2 ))' in watchdog, (
+        'the stall horizon is no longer derived from NET_STALL_SECONDS:\n'
+        f'{watchdog}')
     assert 'wget -O "$out" "$url"' not in install_sh_code(), \
         'the unbounded wget call is back'
 
@@ -917,6 +969,412 @@ def test_download_branches_are_equally_bounded(ctx):
     odin = (ROOT / 'src' / 'manager' / 'update.odin').read_text()
     assert 'MANAGER_UPDATE_TIMEOUT_MS :: 60000' in odin, \
         'update.odin changed; re-justify install.sh download bounds against it'
+
+
+# --- REQ-INST-7 adversarial download bounds ------------------------------------
+# A localhost server that answers a huge Content-Length and then trickles, so a
+# download starts healthily and never ends. Hermetic: loopback only, no external
+# network, same discipline as the PATH shims above.
+
+class _DribbleHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    chunk = 1
+    interval = 0.5
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '100000000')
+        self.end_headers()
+        try:
+            while True:
+                self.wfile.write(b'x' * self.chunk)
+                self.wfile.flush()
+                time.sleep(self.interval)
+        except Exception:
+            pass  # client hung up: that is the bound firing, which is the point.
+
+    def log_message(self, *a):
+        pass
+
+
+class _SlowFiniteHandler(http.server.BaseHTTPRequestHandler):
+    """Serves a SMALL body slowly and then closes -- a successful transfer whose
+    average rate is far below the stall floor."""
+    protocol_version = 'HTTP/1.1'
+    body = b'heimdall' * 12   # 96 bytes
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+        self.wfile.flush()
+
+    def log_message(self, *a):
+        pass
+
+
+class _BurstThenTrickleHandler(http.server.BaseHTTPRequestHandler):
+    """Sends a large burst fast, then trickles below the floor for ever.
+
+    This is what a connection that dies mid-transfer looks like, and it is the shape
+    that distinguishes a floor anchored at the last known-good point from one
+    averaged over the whole transfer: the burst keeps a whole-transfer average above
+    the floor indefinitely, so an unanchored floor never notices the transfer stopped
+    making progress. It trickles rather than going silent on purpose -- a truly idle
+    socket is caught by wget's own --read-timeout, which would mask the difference.
+    """
+    protocol_version = 'HTTP/1.1'
+    burst = 512 * 1024
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '100000000')
+        self.end_headers()
+        try:
+            self.wfile.write(b'x' * self.burst)
+            self.wfile.flush()
+            while True:
+                time.sleep(1.0)
+                self.wfile.write(b'x')
+                self.wfile.flush()
+        except Exception:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+class _DribbleServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+@contextlib.contextmanager
+def burst_then_trickle_server():
+    srv = _DribbleServer(('127.0.0.1', 0), _BurstThenTrickleHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f'http://127.0.0.1:{srv.server_address[1]}'
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@contextlib.contextmanager
+def slow_finite_server():
+    srv = _DribbleServer(('127.0.0.1', 0), _SlowFiniteHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f'http://127.0.0.1:{srv.server_address[1]}', len(_SlowFiniteHandler.body)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@contextlib.contextmanager
+def dribble_server(bytes_per_tick, interval):
+    handler = type('H', (_DribbleHandler,),
+                   {'chunk': bytes_per_tick, 'interval': interval})
+    srv = _DribbleServer(('127.0.0.1', 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f'http://127.0.0.1:{srv.server_address[1]}'
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+# Real values are minutes; the tests need seconds. Rewriting a COPY keeps the
+# production defaults free of test-only env knobs.
+# A stall now needs TWO consecutive sub-floor windows (one is write buffering), so
+# detection takes ~2 * NET_STALL_SECONDS. The total cap is set well clear of that so
+# the two bounds are distinguishable by elapsed time rather than only by message.
+FAST_BOUNDS = {
+    'NET_CONNECT_TIMEOUT': 5,
+    'NET_STALL_SECONDS': 2,
+    'NET_STALL_BYTES_PER_SEC': 1024,
+    'NET_DOWNLOAD_MAX_TIME': 14,
+}
+
+
+def install_sh_with_fast_bounds(work: Path, name: str) -> Path:
+    """install.sh with the NET_* constants shrunk to seconds.
+
+    Each substitution must match EXACTLY once. Without that check a renamed
+    constant would silently leave the real 600s value in place and the bound tests
+    would pass by timing out somewhere else entirely.
+    """
+    text = INSTALL_SCRIPT.read_text()
+    for const, value in FAST_BOUNDS.items():
+        pattern = rf'^{const}=\d+$'
+        text, n = re.subn(pattern, f'{const}={value}', text, flags=re.M)
+        assert n == 1, f'expected exactly one {const} assignment to rewrite, got {n}'
+    path = work / name
+    path.write_text(text)
+    return path
+
+
+def run_download_bound(script: Path, work: Path, tag: str, url: str, tool: str):
+    """Drive download() directly against $url with only `tool` on PATH.
+
+    Sourcing the script would run main(), so this appends a call instead -- the
+    REQ-INST-4 structure (everything in functions, one main "$@" at the end) is
+    what makes that possible.
+    """
+    tool_path = shutil.which(tool)
+    assert tool_path, f'{tool} is required for this test'
+    shim = _shim_dir(work, f'bound-{tag}')
+    if not (shim / tool).exists():
+        (shim / tool).symlink_to(tool_path)
+    # Everything run_bounded and download_failed shell out to. `kill` is a bash
+    # builtin and needs no link.
+    for helper in ('date', 'sleep', 'wc', 'tr'):
+        real = shutil.which(helper)
+        assert real, f'{helper} is required to exercise the download bounds'
+        if not (shim / helper).exists():
+            (shim / helper).symlink_to(real)
+
+    driver = work / f'driver-{tag}.sh'
+    driver.write_text(
+        script.read_text().replace('\nmain "$@"\n', '\n')
+        + f'\nset -euo pipefail\n'
+        + f'download {shlex.quote(url)} {shlex.quote(str(work / ("dl-" + tag + ".bin")))}\n')
+    started = time.monotonic()
+    # PATH is the shim ALONE. This is what makes the tool selection real: with the
+    # host PATH appended, download() found the system curl and took the curl branch
+    # even when this test meant to exercise wget, so the wget bound was never
+    # actually executed. Same hermetic rule as stub_env above.
+    res = subprocess.run(['bash', str(driver)],
+                         env={'PATH': str(shim), 'HOME': str(work), 'TMPDIR': str(work)},
+                         capture_output=True, text=True, timeout=180)
+    return res, time.monotonic() - started
+
+
+# Worst case for each branch, from the flags download() actually passes. curl
+# retries (--retry 3 = up to 4 attempts, with 1+2+4s of backoff) and its native
+# --max-time is PER ATTEMPT -- measured: `--retry 3 --max-time 3` against an
+# above-floor endless stream took 19s, not 3s. run_bounded is what bounds the whole
+# operation, so the ceiling asserted below is the WATCHDOG's, and the retry
+# arithmetic only sets how much slack to allow before it fires.
+WATCHDOG_TICK_SLACK = 4  # 1s poll + one TERM/teardown tick, for the STALL ceiling
+
+# The stall ceiling above doubles as the LOWER bound that distinguishes "the floor
+# fired" from "the deadline fired", so it is deliberately kept tight. The DEADLINE
+# ceiling gets its own, wider slack, sized from run_bounded's real worst case rather
+# than from the typical one:
+#
+#   1s poll granularity + the bounded grace loop (5 x 1s, install.sh:535) + teardown
+#
+# That matters because these assertions are about to run on GitHub-hosted macOS
+# runners (T12), which are shared and throttled. MEASURED on this host with the
+# suite's own scenarios, idle and under 16 CPU burners on 4 cpus:
+#
+#            idle        under 4x oversubscription
+#   curl     15.4s       14.4s
+#   wget     15.3s       17.0s      <-- 1.0s under an 18s ceiling
+#
+# wget's 17.0s left one second of headroom, so the old `total_s + 4` was genuinely
+# too tight: a busier runner fails it while the watchdog is working perfectly, the
+# test gets marked flaky, and the bound stops being checked at all. The bounds
+# themselves are WALL-CLOCK (`date +%s`), so a slow host does not move them -- only
+# the teardown term grows, which is what this slack covers.
+#
+# ENFORCEMENT, not a precise window, is the requirement: a non-zero exit plus the
+# named bound is what proves the watchdog fired, and the endless server means the
+# transfer can never end on its own. This ceiling only catches "it ran far past the
+# bound", so widening it to the true worst case costs no detection power -- confirmed
+# by re-running the mutation sweep against the wider ceiling.
+WATCHDOG_KILL_SLACK = 8  # 1s poll + 5s bounded grace loop + teardown
+
+
+def assert_download_bounds_enforced(ctx, tool):
+    """REQ-INST-7 BY EXECUTION: both bounds, against a server that dribbles forever.
+
+    The structural test above only reads flags. This drives a REAL downloader
+    against a real endless server, which is the only thing that proves the two
+    branches make the SAME promise rather than asserting they do. Both branches run
+    the identical assertions; that symmetry IS the requirement.
+
+    Each branch failed differently before run_bounded, and each was measured:
+      wget -- no throughput floor and no total-duration flag exist. --read-timeout
+        bounds one IDLE read, so real wget 1.25.0 on a 2 B/s trickle was still
+        running after 25s having moved 50 bytes.
+      curl -- states both bounds natively, but --max-time is PER ATTEMPT:
+        `--retry 3 --max-time 3` against an above-floor endless stream took 19s,
+        not 3s, so the real ceiling was 4x the constant.
+
+    The curl assertions are on TIME, not on which mechanism named the bound: curl's
+    native --speed-limit and --max-time sit at the same values as the watchdog's, so
+    the two race and either may win. The wget assertions additionally require the
+    watchdog to NAME the bound, because wget has no native equivalent of either and
+    nothing else could have fired.
+    """
+    if not shutil.which(tool):
+        raise Skip(f'{tool} is not installed, so its download bounds cannot be executed')
+
+    work = ctx['work']
+    script = install_sh_with_fast_bounds(work, f'install-fast-{tool}.sh')
+    stall_s = FAST_BOUNDS['NET_STALL_SECONDS']
+    total_s = FAST_BOUNDS['NET_DOWNLOAD_MAX_TIME']
+    floor = FAST_BOUNDS['NET_STALL_BYTES_PER_SEC']
+    ceiling = total_s + WATCHDOG_KILL_SLACK
+    # Two consecutive sub-floor windows, plus a tick of slack.
+    stall_ceiling = 2 * stall_s + WATCHDOG_TICK_SLACK
+
+    # (a) STALL: 2 B/s against a 1024 B/s floor. The watchdog's absolute deadline
+    #     would eventually stop this too, so asserting "it died" proves nothing
+    #     about the floor. The floor is what makes it die EARLY, and on a host where
+    #     the deadline is 10 minutes that difference is the whole point.
+    with dribble_server(1, 0.5) as base:
+        res, elapsed = run_download_bound(script, work, f'stall-{tool}',
+                                          f'{base}/heimdall.tar.gz', tool)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0, f'{tool}: a 2 B/s trickle must fail:\n{out}'
+    assert 'download failed' in out, f'{tool}: no diagnosis:\n{out}'
+    # A throughput floor fired, not the deadline -- asserted by TIME rather than by
+    # message, because curl has a native --speed-limit at the same value and either
+    # its floor or the watchdog's may win the race. Which one is immaterial; that a
+    # sub-floor transfer dies well before the total cap is the requirement.
+    assert elapsed < stall_ceiling, (
+        f'{tool}: sub-floor trickle ran {elapsed:.1f}s, past the {stall_ceiling}s a '
+        f'{floor} B/s floor allows -- nothing enforced it and it was heading for the '
+        f'{total_s}s deadline instead:\n{out}')
+    if tool == 'wget':
+        # wget has NO native throughput floor, so here the watchdog is the only
+        # thing that can have fired and it must say so.
+        assert 'stalled below' in out, (
+            f'wget: the stall was not named, so the floor did not fire '
+            f'(elapsed {elapsed:.1f}s):\n{out}')
+
+    # (b) DEADLINE: 4096 B/s, comfortably ABOVE the floor, so the stall check must
+    #     never fire -- but the stream never ends. This is the case a watchdog
+    #     implementing only the stall half would hang on forever, and the case
+    #     curl's per-attempt --max-time multiplied by four.
+    with dribble_server(4096, 1.0) as base:
+        res, elapsed = run_download_bound(script, work, f'total-{tool}',
+                                          f'{base}/heimdall.tar.gz', tool)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0, f'{tool}: an endless stream must fail:\n{out}'
+    assert 'download failed' in out, f'{tool}: no diagnosis:\n{out}'
+    assert elapsed < ceiling, (
+        f'{tool}: above-floor endless stream ran {elapsed:.1f}s, past the {total_s}s '
+        f'cap -- NET_DOWNLOAD_MAX_TIME is not bounding the whole operation:\n{out}')
+    assert elapsed > stall_ceiling, (
+        f'{tool}: died in {elapsed:.1f}s on an ABOVE-floor stream, inside the window '
+        f'a stall would be detected in -- the floor is firing on a transfer that is '
+        f'meeting it, which is what write buffering causes when a single window is '
+        f'trusted:\n{out}')
+    if tool == 'wget':
+        # wget has no total-duration flag at all, so only the watchdog can have
+        # stopped this, and naming the bound is the difference between a diagnosis
+        # and "download failed" for a transfer that was still moving data.
+        assert 'total download limit' in out, (
+            f'wget: the TOTAL cap was not named (elapsed {elapsed:.1f}s):\n{out}')
+
+    # (c) BURSTY but healthy: 8192 bytes every NET_STALL_SECONDS = 4096 B/s average,
+    #     FOUR TIMES the floor, delivered in bursts exactly as far apart as the stall
+    #     window. Seconds of zero file growth are guaranteed by construction while the
+    #     transfer comfortably meets the floor -- so this is the shape that a
+    #     per-window floor gets wrong, and the reason the floor is an average since
+    #     the last known-good anchor instead.
+    #
+    #     The gap is pinned at NET_STALL_SECONDS because that is the tolerance the
+    #     implementation can actually claim: measured across gaps of 0.5s, 1s, 2s and
+    #     3s at a fixed 4x-floor average, both branches carry the first three to the
+    #     deadline, while a 3s gap (75% of the horizon) makes wget's write lag look
+    #     like a stall. At the production 60s that edge is a full minute of silence,
+    #     which is a stall by any useful definition.
+    with dribble_server(2 * 4096, float(FAST_BOUNDS['NET_STALL_SECONDS'])) as base:
+        res, elapsed = run_download_bound(script, work, f'bursty-{tool}',
+                                          f'{base}/heimdall.tar.gz', tool)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0, f'{tool}: an endless bursty stream must still fail:\n{out}'
+    assert 'stalled below' not in out, (
+        f'{tool}: bursty delivery at 4x the floor was called a STALL after '
+        f'{elapsed:.1f}s -- a single zero-growth window is write buffering, not a '
+        f'stall:\n{out}')
+    assert elapsed > stall_ceiling, (
+        f'{tool}: bursty above-floor stream died in {elapsed:.1f}s, inside the stall '
+        f'detection window:\n{out}')
+    assert elapsed < ceiling, (
+        f'{tool}: bursty stream ran {elapsed:.1f}s, past the {total_s}s cap:\n{out}')
+
+    if tool != 'wget':
+        # curl has a native throughput floor at the same value, and it fires on the
+        # trickle below before the watchdog's anchor can be the deciding mechanism.
+        # The case is therefore only observable on the branch that has no native
+        # floor -- which is also the branch that needs the watchdog.
+        return
+
+    # (d) FAST, THEN DEAD: a 512 KB burst followed by a 1 B/s trickle for ever. This
+    #     is a connection that dies mid-transfer, and it is the case that proves the
+    #     floor is anchored at the last KNOWN-GOOD point rather than averaged over the
+    #     whole transfer. An unanchored average keeps the burst in the numerator for
+    #     ever, so it never notices the transfer stopped progressing and lets it run to
+    #     the total cap instead -- a 10-minute hang in production where the floor
+    #     should have caught it in 60 seconds. It trickles rather than going silent
+    #     because a truly idle socket is caught by wget's own --read-timeout, which
+    #     would hide the difference.
+    with burst_then_trickle_server() as base:
+        res, elapsed = run_download_bound(script, work, f'burstdead-{tool}',
+                                          f'{base}/heimdall.tar.gz', tool)
+    out = res.stdout + res.stderr
+    assert res.returncode != 0, f'{tool}: a transfer that died must fail:\n{out}'
+    assert 'stalled below' in out, (
+        f'{tool}: a 512 KB burst followed by 1 B/s was not called a stall after '
+        f'{elapsed:.1f}s -- the floor is being averaged over the whole transfer '
+        f'instead of since the last known-good point:\n{out}')
+    assert elapsed < stall_ceiling, (
+        f'{tool}: took {elapsed:.1f}s to notice a dead transfer; the floor should '
+        f'catch it within {stall_ceiling}s, not at the {total_s}s cap:\n{out}')
+
+
+def test_download_floor_does_not_punish_small_files(ctx):
+    """The floor is a STALL detector, not a minimum-average-rate requirement.
+
+    SHA256SUMS is a couple of hundred bytes. If the watchdog demanded
+    NET_STALL_BYTES_PER_SEC * NET_STALL_SECONDS bytes per window unconditionally,
+    every small file would be aborted for the crime of being small, and the message
+    would blame a stall for a transfer that was fine.
+
+    This also pins the liveness re-check after the poll sleep. Without it, a
+    transfer that finishes during a tick that crosses a window boundary is judged on
+    the bytes of its own final fraction of a second, finds them under the floor, and
+    reports a stall for a download that had already SUCCEEDED -- a wrong cause on a
+    working install.
+    """
+    tool = 'curl' if shutil.which('curl') else 'wget'
+    if not shutil.which(tool):
+        raise Skip('neither curl nor wget is installed')
+
+    work = ctx['work']
+    script = install_sh_with_fast_bounds(work, f'install-fast-small-{tool}.sh')
+    with slow_finite_server() as (base, size):
+        res, elapsed = run_download_bound(script, work, f'small-{tool}',
+                                          f'{base}/SHA256SUMS', tool)
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, (
+        f'{tool}: a {size}-byte file must download successfully even though its '
+        f'average rate is far under the floor:\n{out}')
+    assert 'stalled below' not in out, f'{tool}: false stall on a small file:\n{out}'
+    assert 'download failed' not in out, f'{tool}: small file reported failure:\n{out}'
+    landed = (work / f'dl-small-{tool}.bin')
+    assert landed.is_file() and landed.stat().st_size == size, (
+        f'{tool}: expected {size} bytes at {landed}, got '
+        f'{landed.stat().st_size if landed.is_file() else "no file"}')
+
+
+def test_download_bounds_curl(ctx):
+    """curl states both bounds natively (--speed-limit/--speed-time, --max-time).
+    Executed anyway, so the two branches are held to ONE assertion."""
+    assert_download_bounds_enforced(ctx, 'curl')
+
+
+def test_download_bounds_wget(ctx):
+    """wget can express NEITHER bound as a flag, so download_with_wget enforces
+    both. This is the blocking REQ-INST-7 defect's regression test."""
+    assert_download_bounds_enforced(ctx, 'wget')
 
 
 def test_download_failure_names_url_and_tmpdir(ctx):
@@ -1235,7 +1693,15 @@ def sandbox_install_env(home: Path, runtime: Path) -> dict:
     uninstall path away from the live session bus. See
     assert_bridge_isolated() — and do not drop either override.
     """
+    # REQ-INST-14: socat is a FATAL preflight now, so a sandboxed run needs one
+    # on PATH. Prepending our own stub rather than relying on the host's socat
+    # keeps the suite deterministic on machines that do not have it -- notably
+    # the macOS runners, where neither outcome is guaranteed.
+    home.mkdir(parents=True, exist_ok=True)
+    socat_dir = home / '.socat-stub'
+    write_socat_stub(socat_dir)
     return {**os.environ,
+            'PATH': f'{socat_dir}{os.pathsep}' + os.environ.get('PATH', ''),
             'HOME': str(home),
             'XDG_CONFIG_HOME': '',
             'XDG_RUNTIME_DIR': str(runtime),
@@ -1961,6 +2427,243 @@ def test_readme_points_at_installer(ctx):
 
 # ---- runner --------------------------------------------------------------------
 
+# --- REQ-INST-14: socat is a hard runtime dep, checked at preflight ------------
+# socat is the DEFAULT bridge->hub TLS transport (src/lib/ws/ws.odin:286-297
+# returns socat_openssl_command for every HAM_TLS_BACKEND except the legacy
+# "s_client") and it is NOT bundled in the release tarball. Before this check a
+# socat-less host installed cleanly, was told it succeeded, and then never
+# reached a TLS hub. These tests pin the four behaviours: fatal by default,
+# exempt for --uninstall, exempt for --dry-run, exempt for an explicitly
+# plain-HTTP hub.
+
+SOCAT_FATAL_FRAGMENTS = (
+    'socat is not installed',
+    'sudo apt install socat',
+    'brew install socat',
+    'default bridge->hub TLS transport',
+    'Nothing has been installed',
+)
+
+
+def socat_free_shim(base: Path, name: str) -> Path:
+    """A hermetic PATH with every tool install.sh needs EXCEPT socat.
+
+    Absence is simulated by PATH construction, never by touching what is
+    installed on this host -- socat is what the live bridge uses to reach the
+    hub, so a test that uninstalled it would break the machine it runs on.
+    """
+    return _shim_dir(base, name, with_socat=False)
+
+
+def assert_nothing_installed(home: Path) -> None:
+    """No binary, no service file, no PATH edit -- the preflight must fire
+    before anything is written, not halfway through."""
+    install_dir = home / '.local' / 'bin'
+    if install_dir.exists():
+        stray = sorted(q.name for q in install_dir.iterdir())
+        assert not stray, f'preflight failed yet {install_dir} contains {stray}'
+    unit = home / '.config' / 'systemd' / 'user' / 'heimdall-bridge.service'
+    plist = home / 'Library' / 'LaunchAgents' / 'works.earendil.heimdall-bridge.plist'
+    assert not unit.exists(), f'a failed preflight still wrote {unit}'
+    assert not plist.exists(), f'a failed preflight still wrote {plist}'
+    for rc in ('.bashrc', '.zshrc', '.profile'):
+        target = home / rc
+        if target.exists():
+            assert 'Added by heimdall install.sh' not in target.read_text(), \
+                f'a failed preflight still edited {target}'
+
+
+def test_socat_missing_is_fatal_and_installs_nothing(ctx):
+    """REQ-INST-14. The hub is UNKNOWN here (no --hub), which is the common case
+    since REQ-INST-1 made the unit read config.toml instead of baking a URL in.
+    Unknown must be treated as needing socat: at install time we cannot know the
+    eventual hub and it is overwhelmingly a remote TLS one."""
+    base = ctx['work'] / 'socat-fatal'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat')
+
+    res = run_installer(shim, base, 'nosocat', )
+    assert res.returncode != 0, (
+        f'a missing socat must FAIL the install, got exit 0:\n{res.stdout}')
+    out = res.stdout + res.stderr
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment in out, f'the failure does not say {fragment!r}:\n{out}'
+
+    # It must fire BEFORE the release lookup and before any download -- that is
+    # the difference between "nothing happened" and "half a machine". This shim
+    # has no curl and no wget, so if the preflight ran late the run would have
+    # died with the no-downloader diagnosis instead. Asserting that message is
+    # ABSENT is what pins the ordering.
+    for other in ALL_RESOLVE_MSGS:
+        assert other not in out, (
+            f'the socat preflight ran AFTER release resolution -- got {other!r}:\n{out}')
+    assert 'downloading' not in out, f'a download was attempted anyway:\n{out}'
+    assert_nothing_installed(base / 'home-nosocat')
+
+
+def test_socat_missing_is_fatal_for_a_tls_hub(ctx):
+    """An explicit https:// hub is the unambiguous TLS case: socat is exactly
+    what terminates that connection, so this must fail like the unknown one."""
+    base = ctx['work'] / 'socat-fatal-tls'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-tls')
+
+    res = run_installer(shim, base, 'nosocat-tls', '--hub', 'https://hub.example.com')
+    assert res.returncode != 0, (
+        f'a missing socat must FAIL against an https:// hub:\n{res.stdout}')
+    out = res.stdout + res.stderr
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment in out, f'the failure does not say {fragment!r}:\n{out}'
+    assert 'downloading' not in out, f'a download was attempted anyway:\n{out}'
+    assert_nothing_installed(base / 'home-nosocat-tls')
+
+
+def test_socat_failure_names_the_escape_hatch_but_does_not_take_it(ctx):
+    """The message must offer HAM_TLS_BACKEND=s_client as an ADVANCED option --
+    a user who knowingly accepts the 16 KB multi-read teardown is not stuck --
+    while install.sh itself must never fall back to it automatically. An
+    automatic fallback would trade a loud failure for a silent degradation of
+    large FS reads and artifact transfers, which is the worse bug."""
+    base = ctx['work'] / 'socat-escape'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-escape')
+    res = run_installer(shim, base, 'nosocat-escape', '--hub', 'https://hub.example.com')
+    out = res.stdout + res.stderr
+    assert 'HAM_TLS_BACKEND=s_client' in out, \
+        f'the failure does not name the manual escape hatch:\n{out}'
+    assert 'no automatic fallback' in out, \
+        f'the failure does not say the fallback is NOT automatic:\n{out}'
+
+    code = install_sh_code()
+    assert 'HAM_TLS_BACKEND=s_client' not in code.replace(
+        'HAM_TLS_BACKEND=s_client switches', ''), (
+        'install.sh sets HAM_TLS_BACKEND itself somewhere -- the escape hatch is '
+        'the operator\'s to take, never the installer\'s')
+
+    # Structural: the preflight must guard on socat's ABSENCE, never silently
+    # accept an openssl standing in for it.
+    assert 'have_socat()' in code and 'command -v socat' in code
+
+
+def test_socat_missing_dry_run_previews_instead_of_failing(ctx):
+    """REQ-INST-14 exemption: --dry-run writes nothing and exists to PREVIEW, so
+    it must still print the plan and exit 0. But the preview has to tell the
+    TRUTH about what a real run would do, and what a real run would do is stop --
+    so the missing socat is reported at the HEAD of the plan, on stdout, where
+    the operator is actually reading, not only beside it on stderr."""
+    base = ctx['work'] / 'socat-dry'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-dry')
+
+    res = run_installer(shim, base, 'nosocat-dry', '--dry-run', '--version', 'v0.1.0')
+    assert res.returncode == 0, (
+        f'--dry-run must stay non-fatal when socat is missing:\n'
+        f'stdout:\n{res.stdout}\nstderr:\n{res.stderr}')
+    assert 'socat is NOT installed' in res.stdout, (
+        'the socat problem must appear IN the plan on stdout, not only on '
+        f'stderr:\n{res.stdout}')
+    assert 'would STOP HERE and install nothing' in res.stdout, (
+        f'the preview must say what a real run would do:\n{res.stdout}')
+    # The rest of the plan still prints: a preview that stops at the first
+    # problem is not a preview.
+    assert 'platform:' in res.stdout and 'would install' in res.stdout, (
+        f'the plan was truncated by the socat notice:\n{res.stdout}')
+    assert 'would download' in res.stdout
+    # And the remedy is still spelled out, on stderr with the rest of the detail.
+    assert 'sudo apt install socat' in res.stderr, \
+        f'the dry run does not say how to fix it:\n{res.stderr}'
+    assert_nothing_installed(base / 'home-nosocat-dry')
+
+
+def test_socat_missing_uninstall_still_works(ctx):
+    """REQ-INST-14 exemption: removing files needs no transport, and refusing to
+    uninstall over a missing dependency would strand exactly the users who most
+    need to get the thing off their machine."""
+    base = ctx['work'] / 'socat-uninstall'
+    home = base / 'home-nosocat-un'
+    runtime = base / 'run-nosocat-un'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-un')
+    env = stub_env(home, runtime, shim)
+
+    # REQ-INST-13: this is a REAL --uninstall, and install.sh's uninstall path
+    # stops `heimdall-bridge` -- the same user unit that supervises the agents on
+    # this host. Prove the env cannot reach the live session bus first.
+    assert_bridge_isolated(env, ctx['work'])
+    res = subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall'],
+                         env=env, capture_output=True, text=True, timeout=90)
+    assert res.returncode == 0, (
+        f'--uninstall must not require socat:\nstdout:\n{res.stdout}\n'
+        f'stderr:\n{res.stderr}')
+    out = res.stdout + res.stderr
+    assert 'uninstall complete' in out, f'--uninstall did not complete:\n{out}'
+    # Match the MESSAGE, not the bare word: this test's own sandbox paths
+    # contain "socat", so `'socat' not in out` passes only by accident of
+    # naming and fails as soon as a path is printed -- which it is.
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment not in out, (
+            f'--uninstall raised the socat requirement ({fragment!r}):\n{out}')
+    assert 'socat is NOT installed' not in out, (
+        f'--uninstall previewed the socat problem:\n{out}')
+
+
+def test_socat_missing_plain_http_hub_proceeds(ctx):
+    """REQ-INST-14 exemption: parse_ws_url (src/lib/ws/ws.odin:347) sets
+    secure=true only for wss://, so the plain-HTTP VPN-only deployment
+    documented in SELF_HOSTING.md terminates no TLS and genuinely needs no
+    socat. An explicitly plain http:// --hub must therefore inform, not fail.
+
+    Proven by ORDERING rather than by a full install: the run is pointed at a
+    closed port, so reaching a download failure is proof it got PAST the
+    preflight -- which is the whole claim. A socat error would have come first
+    and no download would have been attempted at all."""
+    base = ctx['work'] / 'socat-plain-http'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = socat_free_shim(base, 'shim-nosocat-http')
+    # curl is what turns the closed port into a download failure rather than a
+    # missing-downloader one; without it this test cannot make its point.
+    need_tool('curl')
+    if not (shim / 'curl').exists():
+        (shim / 'curl').symlink_to(shutil.which('curl'))
+
+    res = run_installer(shim, base, 'nosocat-http', '--hub', 'http://127.0.0.1:9/mirror')
+    out = res.stdout + res.stderr
+    assert 'socat is not installed; continuing because' in out, (
+        f'a plain-HTTP hub must INFORM about the missing socat, not stay silent:\n{out}')
+    assert 'is plain HTTP' in out
+    assert 'downloading http://127.0.0.1:9/mirror' in out, (
+        'the run did not get past the preflight to the download it was pointed '
+        f'at:\n{out}')
+    assert 'Nothing has been installed' not in out, (
+        f'the fatal socat message fired for an exempt plain-HTTP hub:\n{out}')
+    # It still fails -- on the unreachable mirror, which is the point: the
+    # failure that remains is the download one, not the socat one.
+    assert res.returncode != 0
+    assert 'download failed' in out, f'expected the download to be what failed:\n{out}'
+
+
+def test_socat_present_keeps_the_installer_silent(ctx):
+    """The control: with socat on PATH the preflight says nothing at all. A
+    check that narrates on the happy path is noise, and it would also mean the
+    dry-run and exemption assertions above could pass for the wrong reason."""
+    base = ctx['work'] / 'socat-present'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = _shim_dir(base, 'shim-socat')  # with_socat=True by default
+    res = run_installer(shim, base, 'socat-ok', '--dry-run', '--version', 'v0.1.0')
+    assert res.returncode == 0, f'dry run failed with socat present:\n{res.stderr}'
+    out = res.stdout + res.stderr
+    # Again the message, not the word: the sandbox path contains "socat".
+    for fragment in SOCAT_FATAL_FRAGMENTS:
+        assert fragment not in out, (
+            f'the preflight spoke up although socat is present ({fragment!r}):\n{out}')
+    assert 'socat is NOT installed' not in out, (
+        f'the dry run reported socat missing although it is present:\n{out}')
+    assert 'continuing because' not in out, (
+        f'the plain-HTTP exemption fired although socat is present:\n{out}')
+    assert 'platform:' in res.stdout and 'would install' in res.stdout
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -1987,8 +2690,28 @@ def main() -> int:
         ('resolve: no HTTP response is the only network claim (REQ-INST-6)', test_resolve_unreachable),
         ('resolve: unparseable 200 stays fail-closed (REQ-INST-6)', test_resolve_200_without_tag_is_fail_closed),
         ('download: curl and wget branches equally bounded (REQ-INST-7)', test_download_branches_are_equally_bounded),
+        ('download: stall floor does not punish small files (REQ-INST-7)',
+         test_download_floor_does_not_punish_small_files),
+        ('download: curl bounds enforced vs a real dribbling server (REQ-INST-7)',
+         test_download_bounds_curl),
+        ('download: wget bounds enforced vs a real dribbling server (REQ-INST-7)',
+         test_download_bounds_wget),
         ('download: failure names url + TMPDIR hint (REQ-INST-7)', test_download_failure_names_url_and_tmpdir),
         ('--hub / --version never call the GitHub API (REQ-INST-6)', test_hub_and_version_paths_never_call_the_api),
+        ('socat missing is fatal, unknown hub (REQ-INST-14)',
+         test_socat_missing_is_fatal_and_installs_nothing),
+        ('socat missing is fatal for an https:// hub (REQ-INST-14)',
+         test_socat_missing_is_fatal_for_a_tls_hub),
+        ('socat failure names s_client but never takes it (REQ-INST-14)',
+         test_socat_failure_names_the_escape_hatch_but_does_not_take_it),
+        ('socat missing: --dry-run previews, not fails (REQ-INST-14)',
+         test_socat_missing_dry_run_previews_instead_of_failing),
+        ('socat missing: --uninstall still works (REQ-INST-14)',
+         test_socat_missing_uninstall_still_works),
+        ('socat missing: plain-http --hub proceeds (REQ-INST-14)',
+         test_socat_missing_plain_http_hub_proceeds),
+        ('socat present: preflight stays silent (REQ-INST-14)',
+         test_socat_present_keeps_the_installer_silent),
         ('install.sh full run: service lifecycle (backup/identical/force)', test_install_sh_full_run_service_lifecycle),
         ('install.sh sudo paths (SUDO_USER resolve + root refusal)', test_install_sh_sudo_paths),
         ('install.sh sudo real run: PATH write for target user', test_install_sh_sudo_path_write),
