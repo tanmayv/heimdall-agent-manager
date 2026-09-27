@@ -75,6 +75,95 @@ fi
 install -m 0644 README.md "$stage/README.md"
 install -m 0644 LICENSE "$stage/LICENSE"
 
+# REQ-INST-16: the release tarballs target stock Linux/macOS hosts that have no
+# /nix/store. Gate the staged tree HERE, at the single chokepoint every release
+# path shares, before the tarball exists:
+#   * Linux  -- every shipped ELF must be fully static: no program interpreter
+#     at all (a /nix/store one is the historical bug; ANY interpreter means the
+#     binary was not built via the release-* flake attrs) and no RUNPATH/NEEDED
+#     under /nix/store.
+#   * Darwin -- Mach-O binaries get nix-store dylib install names rewritten to
+#     the system equivalents below (libiconv is the only nix dylib the Rust
+#     build picks up; the Odin binaries already have clean load commands).
+#     Any OTHER /nix/store dylib, or any /nix/store rpath, is a hard error.
+# Non-binary payloads (shell stubs, README) are skipped by magic bytes, so test
+# fixtures that stage #!/bin/sh stubs keep passing.
+file_magic() {
+  od -A n -t x1 -N 4 "$1" 2>/dev/null | tr -d ' \n'
+}
+
+gate_linux_elf() {
+  local bin="$1" interp
+  interp="$(readelf -l "$bin" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \(.*\)].*/\1/p')"
+  if [ -n "$interp" ]; then
+    echo "error: $bin has a program interpreter ($interp); release Linux binaries must be fully static (build the release-* flake attrs)" >&2
+    exit 1
+  fi
+  if readelf -d "$bin" 2>/dev/null | grep -q '/nix/store'; then
+    echo "error: $bin has RUNPATH/NEEDED under /nix/store" >&2
+    exit 1
+  fi
+}
+
+rewrite_darwin_macho() {
+  local bin="$1" dump line path base
+  if command -v llvm-objdump >/dev/null 2>&1; then
+    dump="$(llvm-objdump --macho --dylibs-used "$bin" 2>/dev/null)"
+  elif command -v otool >/dev/null 2>&1; then
+    dump="$(otool -L "$bin" 2>/dev/null)"
+  else
+    echo "error: need llvm-objdump or otool to audit $bin" >&2
+    exit 1
+  fi
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in
+      /nix/store/*)
+        path="${line%%[[:space:]]*}"
+        base="$(basename "$path")"
+        case "$base" in
+          libiconv*.dylib)
+            install_name_tool -change "$path" /usr/lib/libiconv.2.dylib "$bin" ;;
+          *)
+            echo "error: $bin links nix-store dylib with no system mapping: $path" >&2
+            exit 1 ;;
+        esac ;;
+    esac
+  done <<EOF
+$dump
+EOF
+  if command -v llvm-objdump >/dev/null 2>&1; then
+    if llvm-objdump --macho --rpaths "$bin" 2>/dev/null | grep -q '/nix/store'; then
+      echo "error: $bin has an rpath under /nix/store" >&2
+      exit 1
+    fi
+  fi
+}
+
+for staged in "$stage"/bin/*; do
+  magic="$(file_magic "$staged")"
+  case "$magic" in
+    7f454c46)
+      case "$target" in
+        linux-*) gate_linux_elf "$staged" ;;
+        *) echo "error: ELF binary $staged staged for $target" >&2; exit 1 ;;
+      esac ;;
+    cffaedfe|cefaedfe|cafebabe|cafebabf|feedface|feedfacf)
+      case "$target" in
+        darwin-*) rewrite_darwin_macho "$staged" ;;
+        *) echo "error: Mach-O binary $staged staged for $target" >&2; exit 1 ;;
+      esac ;;
+    *)  # not a recognised binary; a SHELL SCRIPT must still not reference the
+        # nix store -- the historical REQ-INST-16 bug shipped bin/ham-bridge as
+        # the 652-byte nix wrapper, whose shebang and exec both live under
+        # /nix/store and die with ENOENT on any stock host.
+      if head -c 2 "$staged" | grep -q '^#!' && grep -q '/nix/store' "$staged"; then
+        echo "error: script $staged references /nix/store (nix wrapper scripts are not portable)" >&2
+        exit 1
+      fi ;;
+  esac
+done
+
 commit="${GITHUB_SHA:-$(git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
 built_at="${SOURCE_DATE_EPOCH:-}"
 if [ -n "$built_at" ]; then
@@ -95,7 +184,7 @@ cat > "$stage/METADATA.json" <<META
   "commit": "$commit",
   "built_at": "$built_at_iso",
   "binaries": $binaries_json,
-  "tls_dependency": "socat (DEFAULT bridge->hub TLS transport; NOT bundled -- install it with your system package manager). OpenSSL s_client is the legacy fallback, used only when HAM_TLS_BACKEND=s_client, and it is what bundled bin/openssl serves; the bundled openssl does NOT satisfy the default socat path."
+  "tls_dependency": "socat (DEFAULT bridge->hub TLS transport; NOT bundled -- install it with your system package manager). OpenSSL s_client is the legacy fallback, used only when HAM_TLS_BACKEND=s_client; it is resolved from the system PATH and is NOT bundled in this tarball."
 }
 META
 

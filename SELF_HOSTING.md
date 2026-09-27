@@ -304,7 +304,10 @@ The installer:
    the invoking user (resolved from `SUDO_USER`) and chowned to them, so the
    install never splits between `/usr/local/bin` and `/root`; running as root
    without a resolvable `SUDO_USER` is refused. A bundled `openssl` is
-   installed too when the release ships one.
+   installed too when the release ships one — current releases do not (it
+   linked Nix-store libraries and could not run on stock hosts, so
+   REQ-INST-16 dropped it from the bundle); the legacy
+   `HAM_TLS_BACKEND=s_client` path resolves `openssl` from your system `PATH`.
 4. Wires the install directory onto `PATH` in the shell config files that
    actually exist for your shell — `~/.bashrc` / `~/.bash_profile` (bash),
    `~/.zshrc` / `~/.zprofile` (zsh, and the login-shell files macOS reads),
@@ -348,8 +351,9 @@ bash scripts/install.sh --uninstall --dry-run   # report only, changes nothing
 bash scripts/install.sh --uninstall
 ```
 
-It stops the bridge service (best effort), removes the four binaries, the
-bundled `openssl` it installed together with the `.heimdall-openssl.sha256`
+It stops the bridge service (best effort), removes the four binaries, and —
+for older releases that shipped one — the bundled `openssl` it installed
+together with the `.heimdall-openssl.sha256`
 record beside it, removes the service file, and strips the
 `PATH` lines it added — matched by the `# Added by heimdall install.sh`
 marker, so your own `PATH` edits are untouched. It deliberately **keeps** your
@@ -374,7 +378,9 @@ want it gone:
 
 `socat` (the default bridge → hub TLS transport) is not bundled; install it
 with your system package manager (`sudo apt install socat`,
-`brew install socat`) if it is not already on `PATH`.
+`brew install socat`) if it is not already on `PATH`. `openssl` is likewise
+not bundled: the `HAM_TLS_BACKEND=s_client` fallback resolves it from your
+system `PATH`.
 
 **Then enroll, configure vault encryption, and start the bridge with the `heimdall` CLI:**
 
@@ -418,8 +424,8 @@ diagnostics (ports, permissions, harnesses, service unit). Run
 | `ham-bridge` | Odin binary — agent supervisor, shell job executor, fs explorer |
 | `ham-pty-host` | Rust binary — spawns agent CLIs in real PTYs (replaces tmux wrapper) |
 | `ham-ctl` | CLI used by agents to read/send messages, update tasks, etc. |
-| `socat` | TLS transport for bridge → hub connection (default backend) |
-| `openssl` | Fallback TLS transport and socat's OpenSSL engine |
+| `socat` | TLS transport for bridge → hub connection (default backend; not bundled — system `PATH`) |
+| `openssl` | Legacy fallback TLS transport (`HAM_TLS_BACKEND=s_client`; not bundled — system `PATH`) |
 | The agent CLI | `claude`, `codex`, or any other supported CLI |
 
 ### 2.3 Build dependencies
@@ -445,6 +451,10 @@ Same Nix setup as the hub. The bridge and pty-host are built from the same flake
 ```bash
 # Build bridge binary (bundles socat + openssl on PATH via wrapProgram)
 nix build .#ham-bridge
+
+# Release binaries for the public tarballs (fully static on Linux, no nix
+# store references — these are what the release workflow ships; REQ-INST-16)
+nix build .#release-ham-bridge .#release-ham-ctl .#release-ham-pty-host .#release-heimdall
 
 # Build pty-host (Rust — hermetic crane build)
 nix build .#ham-pty-host

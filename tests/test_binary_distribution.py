@@ -2386,6 +2386,208 @@ def test_heimdall_vault_lifecycle(ctx):
     assert not vault_key_file.exists(), 'vault clear must remove the vault key file'
 
 
+# ---- 4b. release portability gate (REQ-INST-16) -------------------------------
+#
+# The release tarballs target stock Linux/macOS hosts with no /nix/store. The
+# bug this gate exists for: v0.3.2 shipped bin/ham-bridge as the 652-byte nix
+# wrapProgram shell script (shebang AND exec target under /nix/store) and the
+# other binaries as dynamically linked ELFs whose interpreter/RUNPATH point
+# under /nix/store, so the whole bundle failed on any non-Nix machine.
+#
+# The gate builds the release-* flake attrs (static glibc for the Odin
+# binaries, musl +crt-static for the Rust pty host -- see flake.nix), packages
+# a tarball through the REAL packaging script, then:
+#   1. scans every shipped binary for /nix/store references (ELF interpreter,
+#      dynamic section, Mach-O dylibs/rpaths, script text), and
+#   2. EXECUTES every Linux binary in a rootfs without /nix/store (docker
+#      scratch if a daemon is up, else a user-namespace chroot; hard failure
+#      if neither exists -- this check may never silently skip), and
+#   3. proves the execution half has teeth with a negative control that MUST
+#      fail to run storeless.
+
+RELEASE_BINARIES = ('ham-bridge', 'ham-ctl', 'heimdall', 'ham-pty-host')
+# Release attr per binary; the pty-host out dir name carries the musl target
+# triple, so out dirs are matched to binaries by name prefix, not position.
+RELEASE_ATTRS = {name: f'release-{name}' for name in RELEASE_BINARIES}
+
+
+def build_release_attrs(ctx):
+    if shutil.which('nix') is None:
+        raise Skip('nix not available')
+    res = run(['nix', 'build', *[f'.#{a}' for a in RELEASE_ATTRS.values()],
+               '--print-out-paths', '--no-link'], cwd=ROOT, timeout=1200)
+    assert res.returncode == 0, f'nix build of release-* attrs failed:\n{res.stderr}'
+    outs = [l for l in res.stdout.splitlines() if l.startswith('/nix/store/')]
+    assert len(outs) == len(RELEASE_BINARIES), (
+        f'expected {len(RELEASE_BINARIES)} nix out paths, got: {outs!r}')
+    release_outs = {}
+    for out in outs:
+        # Store dir names are <32-char hash>-<pname>-<version>; drop the hash.
+        base = Path(out).name.split('-', 1)[1]
+        for name in RELEASE_BINARIES:
+            if base.startswith(name) or base.startswith(f'release-{name}'):
+                release_outs[name] = Path(out)
+                break
+    missing = set(RELEASE_BINARIES) - set(release_outs)
+    assert not missing, f'could not map nix outs to binaries, missing: {sorted(missing)}'
+    for name, out in release_outs.items():
+        binary = out / 'bin' / name
+        assert binary.is_file(), f'{RELEASE_ATTRS[name]} produced no binary at {binary}'
+    ctx['release_outs'] = release_outs
+
+
+def scan_binary_for_nix_references(binary: Path, name: str):
+    """Static half of the gate: no shipped binary may reference /nix/store."""
+    head = binary.read_bytes()[:4]
+    assert head != b'#!', (
+        f'{name} is a shell script, not a binary -- the v0.3.2 nix wrapper '
+        'regression is back')
+    if platform.system() == 'Linux':
+        assert head == b'\x7fELF', f'{name} is not an ELF binary'
+        res = run(['readelf', '-l', str(binary)])
+        assert res.returncode == 0, f'readelf -l failed on {name}:\n{res.stderr}'
+        assert 'Requesting program interpreter' not in res.stdout, (
+            f'{name} has a program interpreter; release Linux binaries must be '
+            f'fully static:\n{res.stdout}')
+        res = run(['readelf', '-d', str(binary)])
+        assert res.returncode == 0, f'readelf -d failed on {name}:\n{res.stderr}'
+        assert '/nix/store' not in res.stdout, (
+            f'{name} references /nix/store in its dynamic section:\n{res.stdout}')
+    else:
+        res = run(['llvm-objdump', '--macho', '--dylibs-used', str(binary)])
+        out = res.stdout + res.stderr
+        assert res.returncode == 0, f'llvm-objdump failed on {name}:\n{out}'
+        assert '/nix/store' not in out, f'{name} links a nix-store dylib:\n{out}'
+        res = run(['llvm-objdump', '--macho', '--rpaths', str(binary)])
+        assert res.returncode == 0, f'llvm-objdump --rpaths failed on {name}:\n{res.stderr}'
+        assert '/nix/store' not in res.stdout, (
+            f'{name} has an rpath under /nix/store:\n{res.stdout}')
+
+
+def test_release_binaries_have_no_nix_references(ctx):
+    if 'release_outs' not in ctx:
+        raise Skip('release attrs were not built')
+    for name, out in ctx['release_outs'].items():
+        scan_binary_for_nix_references(out / 'bin' / name, name)
+
+
+def _docker_usable():
+    if shutil.which('docker') is None:
+        return False
+    return run(['docker', 'info'], timeout=30).returncode == 0
+
+
+def _unshare_chroot_usable():
+    if shutil.which('unshare') is None:
+        return False
+    return run(['unshare', '-rm', 'true'], timeout=30).returncode == 0
+
+
+def storeless_exec(binary: Path, args, work: Path, timeout=60):
+    """Execute a binary in an environment with no /nix/store. On Linux this is
+    a docker scratch container when a daemon is up, else a user-namespace
+    chroot into an empty rootfs; both prove the binary needs nothing from the
+    store, not even a dynamic loader. On Darwin the host itself is the clean
+    environment (the load-command scan is what proves store independence)."""
+    if platform.system() == 'Darwin':
+        return run([str(binary), *args], timeout=timeout)
+    root = work / f'rootfs-{binary.name}'
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copy(binary, root / binary.name)
+    if _docker_usable():
+        return run(['docker', 'run', '--rm', '-v', f'{root}:/verify:ro',
+                    'scratch', f'/verify/{binary.name}', *args], timeout=timeout)
+    if _unshare_chroot_usable():
+        return run(['unshare', '-rm', 'chroot', str(root), f'/{binary.name}', *args],
+                   timeout=timeout)
+    raise AssertionError(
+        'neither a working docker daemon nor `unshare -rm` is available; '
+        'refusing to skip the storeless-execution half of the REQ-INST-16 gate')
+
+
+def test_release_tarball_is_portable(ctx):
+    """Package the freshly built release outs through the REAL packaging
+    script, then scan and storeless-execute every binary in the tarball. This
+    is the check that would have caught the v0.3.2 wrapper shipment."""
+    if 'release_outs' not in ctx:
+        raise Skip('release attrs were not built')
+    target = host_target()
+    if target is None:
+        raise Skip(f'unsupported host for portability gate: {platform.system()}/{platform.machine()}')
+    out_dir = ctx['work'] / 'release-dist'
+    outs = ctx['release_outs']
+    res = run(['bash', PACKAGE_SCRIPT, target, 'v0.1.0', out_dir,
+               outs['ham-bridge'], outs['ham-ctl'], outs['heimdall'],
+               outs['ham-pty-host']], cwd=ROOT, timeout=120)
+    assert res.returncode == 0, f'packaging release tarball failed:\n{res.stderr}'
+    tarball = out_dir / f'heimdall-local-{target}.tar.gz'
+    assert tarball.is_file(), f'no tarball at {tarball}'
+
+    extract = ctx['work'] / 'release-extract'
+    extract.mkdir(exist_ok=True)
+    res = run(['tar', '-xzf', str(tarball), '-C', str(extract)], timeout=60)
+    assert res.returncode == 0, f'tar extract failed:\n{res.stderr}'
+    names = sorted(p.name for p in (extract / 'bin').iterdir())
+    assert sorted(RELEASE_BINARIES) == names, (
+        f'tarball bin/ mismatch: {names!r} != {sorted(RELEASE_BINARIES)!r}')
+
+    for name in RELEASE_BINARIES:
+        scan_binary_for_nix_references(extract / 'bin' / name, name)
+    # The bundled-openssl era is over: nothing nix-linked may ship.
+    assert 'openssl' not in names, (
+        'bundled openssl is back in the tarball; it links nix glibc and cannot '
+        'run on stock hosts (REQ-INST-16 removed it on purpose)')
+
+    app_version, protocol_version = version_constants()
+    expected = {
+        'ham-bridge': f'ham-bridge {app_version} protocol {protocol_version} bridge 1 ws 1',
+        'ham-ctl': f'ham-ctl {app_version} protocol {protocol_version}',
+        'heimdall': f'heimdall {app_version} protocol {protocol_version}',
+    }
+    exec_work = ctx['work'] / 'storeless'
+    exec_work.mkdir(exist_ok=True)
+    for name, line in expected.items():
+        res = storeless_exec(extract / 'bin' / name, ['--version'], exec_work)
+        assert res.returncode == 0, (
+            f'{name} --version failed storeless (rc={res.returncode}):\n{res.stderr}')
+        assert res.stdout.splitlines()[0] == line, (
+            f'{name} version line mismatch storeless: {res.stdout.splitlines()[:1]!r}')
+    # ham-pty-host is clap-based: no --version, but --help must load and run.
+    res = storeless_exec(extract / 'bin' / 'ham-pty-host', ['--help'], exec_work)
+    assert res.returncode == 0, (
+        f'ham-pty-host --help failed storeless (rc={res.returncode}):\n{res.stderr}')
+    assert res.stdout.strip(), 'ham-pty-host --help printed nothing storeless'
+
+
+def test_storeless_exec_has_teeth(ctx):
+    """Negative control for the execution half. A dynamically linked binary
+    MUST fail to execute in the empty rootfs; if it runs, the gate is
+    decorative and would pass the exact bug it exists to catch."""
+    if platform.system() != 'Linux':
+        raise Skip('teeth check is Linux-specific')
+    control = Path('/bin/sh')
+    if not control.is_file():
+        raise Skip('no /bin/sh control binary')
+    # Whichever /bin/sh this is (NixOS store bash or a distro dash), it is
+    # dynamically linked and its loader is absent from our empty rootfs.
+    root = ctx['work'] / 'teeth-rootfs'
+    root.mkdir(exist_ok=True)
+    shutil.copy(control, root / 'sh')
+    if _docker_usable():
+        res = run(['docker', 'run', '--rm', '-v', f'{root}:/verify:ro',
+                   'scratch', '/verify/sh', '-c', 'true'], timeout=60)
+    elif _unshare_chroot_usable():
+        res = run(['unshare', '-rm', 'chroot', str(root), '/sh', '-c', 'true'],
+                  timeout=60)
+    else:
+        raise AssertionError(
+            'neither docker nor unshare -rm available; refusing to skip the '
+            'REQ-INST-16 gate')
+    assert res.returncode != 0, (
+        'control binary /bin/sh ran inside the empty rootfs; the storeless '
+        'exec gate has no teeth and would not catch a nix-linked release')
+
+
 # ---- 5. documentation regression ----------------------------------------------
 
 def part2_text():
@@ -2729,6 +2931,12 @@ def main() -> int:
         ('heimdall --version schema', test_heimdall_version_schema),
         ('heimdall status schema', test_heimdall_status_schema),
         ('heimdall vault lifecycle', test_heimdall_vault_lifecycle),
+        ('build release attrs (nix, REQ-INST-16)', build_release_attrs),
+        ('release binaries: no /nix/store references (REQ-INST-16)',
+         test_release_binaries_have_no_nix_references),
+        ('release tarball: package + storeless execution (REQ-INST-16)',
+         test_release_tarball_is_portable),
+        ('storeless execution gate has teeth (REQ-INST-16)', test_storeless_exec_has_teeth),
         ('SELF_HOSTING.md Part 2 installer docs', test_self_hosting_documents_installer),
         ('README installer pointer', test_readme_points_at_installer),
     ]
