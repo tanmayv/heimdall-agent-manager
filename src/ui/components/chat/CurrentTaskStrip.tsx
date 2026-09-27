@@ -163,6 +163,44 @@ export default function CurrentTaskStrip({
   const effectiveDesc = decryptedDesc !== null ? decryptedDesc : (isVaultArmored(rawDesc) ? '' : rawDesc);
   const summary = acceptanceSummary(effectiveDesc);
 
+  const [decryptedSwitchableTasks, setDecryptedSwitchableTasks] = useState(switchableTasks || []);
+
+  useEffect(() => {
+    let active = true;
+    if (!switchableTasks || switchableTasks.length === 0) {
+      setDecryptedSwitchableTasks([]);
+      return;
+    }
+    if (!isUnlocked || !rawKeyHex) {
+      setDecryptedSwitchableTasks(
+        switchableTasks.map((t) => ({
+          ...t,
+          title: t.title ? t.title.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : t.title,
+        }))
+      );
+      return;
+    }
+    Promise.all(
+      switchableTasks.map(async (t) => {
+        const rawTitle = String(t.title || '');
+        if (!isVaultArmored(rawTitle) && !containsVaultArmored(rawTitle)) return t;
+        try {
+          const dec = isVaultArmored(rawTitle)
+            ? await decryptVaultText(rawTitle, rawKeyHex)
+            : await decryptEmbeddedVaultTokens(rawTitle, rawKeyHex);
+          return { ...t, title: dec };
+        } catch {
+          return { ...t, title: rawTitle.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') };
+        }
+      })
+    ).then((res) => {
+      if (active) setDecryptedSwitchableTasks(res);
+    });
+    return () => {
+      active = false;
+    };
+  }, [switchableTasks, isUnlocked, rawKeyHex]);
+
   const { data: identitiesData } = useListAgentIdentitiesQuery();
   const agentIdentities = identitiesData?.agents || (identitiesData as any)?.identities || [];
 
@@ -281,7 +319,7 @@ export default function CurrentTaskStrip({
           <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-btn`} onClick={() => setCommenting((open) => !open)} className="rounded-full border border-subtle px-2.5 py-1 text-muted hover:bg-neutral-soft hover:text-primary">Comment</button>
         ) : null}
         {/* CT-9: manual "switch current task" control (user/coordinator). */}
-        {onSwitchCurrentTask && switchableTasks && switchableTasks.length > 0 ? (
+        {onSwitchCurrentTask && decryptedSwitchableTasks && decryptedSwitchableTasks.length > 0 ? (
           <Select
             data-debug-id={`${debugPrefix}-current-task-switch`}
             value={taskId}
@@ -289,7 +327,7 @@ export default function CurrentTaskStrip({
             size="sm"
             title="Switch current task"
           >
-            {switchableTasks.map((candidate) => {
+            {decryptedSwitchableTasks.map((candidate) => {
               const cid = String(candidate.taskId || candidate.task_id || '');
               return <option key={cid} value={cid}>{String(candidate.title || cid)}</option>;
             })}

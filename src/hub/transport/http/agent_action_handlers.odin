@@ -98,6 +98,9 @@ chat_event_preview :: proc(body: string, max_len: int) -> string {
 	fields := strings.fields(trimmed)
 	defer delete(fields)
 	collapsed := strings.join(fields, " ")
+	if strings.contains(trimmed, "vault:v1:") {
+		return collapsed
+	}
 	runes := utf8.rune_count_in_string(collapsed)
 	if runes <= max_len {
 		return collapsed

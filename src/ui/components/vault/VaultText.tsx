@@ -9,7 +9,9 @@ import {
 } from '../../store/vaultSlice';
 import {
   isVaultArmored,
+  containsVaultArmored,
   decryptVaultText,
+  decryptEmbeddedVaultTokens,
   decryptList,
 } from '../../utils/vaultContent';
 
@@ -43,49 +45,54 @@ export function VaultText({
 
   const rawString = value ?? '';
   const isArmored = isVaultArmored(rawString);
+  const isEmbedded = !isArmored && containsVaultArmored(rawString);
+  const hasVault = isArmored || isEmbedded;
 
   const [decryptedText, setDecryptedText] = useState<string | null>(null);
   const [isDecrypting, setIsDecrypting] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored) {
+    if (!hasVault) {
       setDecryptedText(rawString);
       setIsDecrypting(false);
       return;
     }
 
     if (!isUnlocked || !rawKey) {
-      setDecryptedText(null);
+      setDecryptedText(
+        isEmbedded ? rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : null
+      );
       setIsDecrypting(false);
       return;
     }
 
     setIsDecrypting(true);
-    decryptVaultText(rawString, rawKey)
-      .then((decrypted) => {
-        if (mounted) {
-          setDecryptedText(decrypted);
-          setIsDecrypting(false);
-        }
-      })
-      .catch((err) => {
-        if (mounted) {
-          console.error('Failed to decrypt vault armored text:', err);
-          setDecryptedText(fallback || '[Decryption failed]');
-          setIsDecrypting(false);
-        }
-      });
+    const p = isArmored
+      ? decryptVaultText(rawString, rawKey)
+      : decryptEmbeddedVaultTokens(rawString, rawKey);
+    p.then((decrypted) => {
+      if (mounted) {
+        setDecryptedText(decrypted);
+        setIsDecrypting(false);
+      }
+    }).catch((err) => {
+      if (mounted) {
+        console.error('Failed to decrypt vault armored text:', err);
+        setDecryptedText(fallback || rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setIsDecrypting(false);
+      }
+    });
 
     return () => {
       mounted = false;
     };
-  }, [rawString, isArmored, isUnlocked, rawKey, fallback]);
+  }, [rawString, hasVault, isArmored, isEmbedded, isUnlocked, rawKey, fallback]);
 
   const Tag = as;
 
-  // 1. Not armored: render plaintext directly
-  if (!isArmored) {
+  // 1. Not armored or embedded: render plaintext directly
+  if (!hasVault) {
     return (
       <Tag className={className} title={title}>
         {rawString || fallback}
@@ -93,31 +100,38 @@ export function VaultText({
     );
   }
 
-  // 2. Armored and vault is locked: render interactive placeholder
+  // 2. Vault content and vault is locked
   if (!isUnlocked || !rawKey) {
+    if (isArmored) {
+      return (
+        <button
+          type="button"
+          data-debug-id="vault-locked-placeholder"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onUnlockClick) {
+              onUnlockClick();
+            } else {
+              dispatch(openUnlockModal());
+            }
+          }}
+          title={title || 'Encrypted content — click to unlock vault'}
+          aria-label="Encrypted content — click to unlock vault"
+          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-medium bg-neutral-soft hover:bg-neutral-raised text-accent border border-subtle cursor-pointer transition-colors select-none ${className || ''}`}
+        >
+          <span aria-hidden="true">🔒</span>
+          <span>[🔒 Encrypted content - click to unlock]</span>
+        </button>
+      );
+    }
     return (
-      <button
-        type="button"
-        data-debug-id="vault-locked-placeholder"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (onUnlockClick) {
-            onUnlockClick();
-          } else {
-            dispatch(openUnlockModal());
-          }
-        }}
-        title={title || 'Encrypted content — click to unlock vault'}
-        aria-label="Encrypted content — click to unlock vault"
-        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-medium bg-neutral-soft hover:bg-neutral-raised text-accent border border-subtle cursor-pointer transition-colors select-none ${className || ''}`}
-      >
-        <span aria-hidden="true">🔒</span>
-        <span>[🔒 Encrypted content - click to unlock]</span>
-      </button>
+      <Tag className={className} title={title}>
+        {decryptedText !== null ? decryptedText : rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]')}
+      </Tag>
     );
   }
 
-  // 3. Armored and currently decrypting
+  // 3. Vault content and currently decrypting
   if (isDecrypting && decryptedText === null) {
     return (
       <Tag className={`${className || ''} opacity-60 italic`} title={title}>
@@ -126,7 +140,7 @@ export function VaultText({
     );
   }
 
-  // 4. Armored and decrypted: render plaintext
+  // 4. Decrypted: render plaintext
   return (
     <Tag className={className} title={title}>
       {decryptedText !== null ? decryptedText : fallback}
@@ -147,45 +161,48 @@ export function useDecryptedText(value?: string | null): {
   const rawKey = useSelector(selectRawVaultKeyHex);
   const raw = value ?? '';
   const isArmored = isVaultArmored(raw);
+  const isEmbedded = !isArmored && containsVaultArmored(raw);
+  const hasVault = isArmored || isEmbedded;
 
   const [text, setText] = useState<string>(raw);
   const [isDecrypting, setIsDecrypting] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored) {
+    if (!hasVault) {
       setText(raw);
       setIsDecrypting(false);
       return;
     }
     if (!isUnlocked || !rawKey) {
-      setText(raw);
+      setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
       setIsDecrypting(false);
       return;
     }
     setIsDecrypting(true);
-    decryptVaultText(raw, rawKey)
-      .then((decrypted) => {
-        if (mounted) {
-          setText(decrypted);
-          setIsDecrypting(false);
-        }
-      })
-      .catch(() => {
-        if (mounted) {
-          setText(raw);
-          setIsDecrypting(false);
-        }
-      });
+    const p = isArmored
+      ? decryptVaultText(raw, rawKey)
+      : decryptEmbeddedVaultTokens(raw, rawKey);
+    p.then((decrypted) => {
+      if (mounted) {
+        setText(decrypted.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setIsDecrypting(false);
+      }
+    }).catch(() => {
+      if (mounted) {
+        setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setIsDecrypting(false);
+      }
+    });
     return () => {
       mounted = false;
     };
-  }, [raw, isArmored, isUnlocked, rawKey]);
+  }, [raw, isArmored, isEmbedded, hasVault, isUnlocked, rawKey]);
 
   return {
     text,
-    isArmored,
-    isLocked: isArmored && !isUnlocked,
+    isArmored: hasVault,
+    isLocked: hasVault && !isUnlocked,
     isDecrypting,
   };
 }

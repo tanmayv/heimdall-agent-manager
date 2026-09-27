@@ -1,7 +1,13 @@
 // Zero-Knowledge Vault Transformers for Tasks and Task Comments
 // REQ-VAULT-TASKS-1
 
-import { isVaultArmored, encryptVaultText, decryptVaultText } from './vaultContent.ts';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  encryptVaultText,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+} from './vaultContent.ts';
 
 export interface TaskPayload {
   title?: string;
@@ -58,30 +64,53 @@ export async function decryptTaskRecord<T extends TaskPayload>(
   let title = task.title;
   let description = task.description;
 
-  if (title && isVaultArmored(title)) {
-    try {
-      title = await decryptVaultText(title, rawKeyHex);
-    } catch {}
+  if (title) {
+    if (isVaultArmored(title)) {
+      try {
+        title = await decryptVaultText(title, rawKeyHex);
+      } catch {}
+    } else if (containsVaultArmored(title)) {
+      try {
+        title = await decryptEmbeddedVaultTokens(title, rawKeyHex);
+      } catch {}
+    }
   }
-  if (description && isVaultArmored(description)) {
-    try {
-      description = await decryptVaultText(description, rawKeyHex);
-    } catch {}
+  if (description) {
+    if (isVaultArmored(description)) {
+      try {
+        description = await decryptVaultText(description, rawKeyHex);
+      } catch {}
+    } else if (containsVaultArmored(description)) {
+      try {
+        description = await decryptEmbeddedVaultTokens(description, rawKeyHex);
+      } catch {}
+    }
   }
 
   // Also decrypt comment summary if present
   let commentSummary = (task as any).comment_summary || (task as any).commentSummary;
   if (commentSummary && typeof commentSummary === 'object') {
     const preview = commentSummary.last_comment_preview || commentSummary.lastCommentPreview;
-    if (preview && isVaultArmored(preview)) {
-      try {
-        const decryptedPreview = await decryptVaultText(preview, rawKeyHex);
-        commentSummary = {
-          ...commentSummary,
-          last_comment_preview: decryptedPreview,
-          lastCommentPreview: decryptedPreview,
-        };
-      } catch {}
+    if (preview) {
+      if (isVaultArmored(preview)) {
+        try {
+          const decryptedPreview = await decryptVaultText(preview, rawKeyHex);
+          commentSummary = {
+            ...commentSummary,
+            last_comment_preview: decryptedPreview,
+            lastCommentPreview: decryptedPreview,
+          };
+        } catch {}
+      } else if (containsVaultArmored(preview)) {
+        try {
+          const decryptedPreview = await decryptEmbeddedVaultTokens(preview, rawKeyHex);
+          commentSummary = {
+            ...commentSummary,
+            last_comment_preview: decryptedPreview,
+            lastCommentPreview: decryptedPreview,
+          };
+        } catch {}
+      }
     }
   }
 
@@ -100,11 +129,14 @@ export async function decryptTaskCommentRecord<T extends TaskCommentPayload>(
   comment: T,
   rawKeyHex?: string | null,
 ): Promise<T> {
-  if (!rawKeyHex || !isVaultArmored(comment.body)) return comment;
+  if (!rawKeyHex || (!isVaultArmored(comment.body) && !containsVaultArmored(comment.body))) return comment;
   try {
+    const decrypted = isVaultArmored(comment.body)
+      ? await decryptVaultText(comment.body, rawKeyHex)
+      : await decryptEmbeddedVaultTokens(comment.body, rawKeyHex);
     return {
       ...comment,
-      body: await decryptVaultText(comment.body, rawKeyHex),
+      body: decrypted,
     };
   } catch {
     return comment;

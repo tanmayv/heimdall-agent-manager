@@ -79,16 +79,16 @@ function ActivityBubbleItem({
       return;
     }
     if (!isUnlocked || !rawKeyHex) {
-      setSummary(raw.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]'));
+      setSummary(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
       return;
     }
     const p = isVaultArmored(raw)
       ? decryptVaultText(raw, rawKeyHex)
       : decryptEmbeddedVaultTokens(raw, rawKeyHex);
     p.then((res) => {
-      if (active) setSummary(res);
+      if (active) setSummary(res.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
     }).catch(() => {
-      if (active) setSummary(raw);
+      if (active) setSummary(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
     });
     return () => {
       active = false;
