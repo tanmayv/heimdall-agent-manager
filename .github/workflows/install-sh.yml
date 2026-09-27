@@ -121,6 +121,158 @@ jobs:
           if [ -z "${INSTALL_SMOKE_VERSION:-}" ]; then unset INSTALL_SMOKE_VERSION; fi
           bash scripts/ci/installer-smoke.sh
 
+  # 2. The sudo/SUDO_USER branch (REQ-INST-18), which no test had ever executed
+  #    on ANY platform, and whose macOS half -- the `dscl` home lookup at
+  #    install.sh:1224-1225 -- had no executed coverage anywhere at all.
+  #
+  #    Why it needed its own job rather than a step in `smoke`: this branch
+  #    CANNOT be sandboxed. When euid is 0 install.sh hardcodes
+  #    install_dir=/usr/local/bin (:1211) and takes the service home from
+  #    dscl/getent -- the invoking user's REAL home. Neither is influenced by
+  #    HOME or any other variable, so a sudo run makes real writes by
+  #    construction. That is exactly why it is CI-only (REQ-INST-13) and why
+  #    installer-smoke.sh refuses to enter this mode without an explicit
+  #    opt-in AND a clean machine, and asserts afterwards that it left one.
+  #
+  #    The Linux runner is here as a DIFFERENTIAL, not as padding: the same
+  #    assertions through the getent branch (:1218) demonstrate they bind to the
+  #    sudo logic rather than to darwin. If only macOS ran, a passing assertion
+  #    could not be distinguished from one that happens to hold on a Mac.
+  sudo-smoke:
+    name: install.sh sudo path (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            uname_s: Linux
+            uname_m: x86_64
+          - target: darwin-amd64
+            runner: macos-15-intel
+            uname_s: Darwin
+            uname_m: x86_64
+          - target: darwin-arm64
+            runner: macos-14
+            uname_s: Darwin
+            uname_m: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Same reason as the smoke job: the matrix CLAIMS a platform, so assert it
+      # rather than trusting it. It matters more here -- the whole point of this
+      # job is that the dscl half runs on darwin, and a re-pointed runner label
+      # would silently take that away while staying green.
+      - name: Assert this runner is the platform the matrix claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          got_s="$(uname -s)"; got_m="$(uname -m)"
+          echo "uname -s=$got_s uname -m=$got_m (expected ${{ matrix.uname_s }} / ${{ matrix.uname_m }})"
+          [ "$got_s" = "${{ matrix.uname_s }}" ] || { echo "runner OS mismatch" >&2; exit 1; }
+          [ "$got_m" = "${{ matrix.uname_m }}" ] || { echo "runner arch mismatch" >&2; exit 1; }
+
+      # Passwordless sudo is the capability this whole job rests on. Assert it
+      # HERE, before anything else, so a runner image that ever changes fails
+      # with that sentence instead of somewhere inside the installer.
+      - name: Assert passwordless sudo (the capability this job depends on)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n true
+          echo "sudo -n works; euid under sudo: $(sudo -n id -u)"
+          [ "$(sudo -n id -u)" = "0" ] || { echo "sudo did not give uid 0" >&2; exit 1; }
+
+      - name: Install socat
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v socat >/dev/null 2>&1; then
+            echo "socat already present: $(command -v socat)"
+            exit 0
+          fi
+          case "$(uname -s)" in
+            Darwin) brew install socat ;;
+            Linux)  sudo apt-get update && sudo apt-get install -y socat ;;
+          esac
+          command -v socat
+
+      - name: Run installer smoke in SUDO mode (${{ matrix.target }})
+        shell: bash
+        env:
+          INSTALL_SMOKE_MODE: sudo
+          # The opt-in the script demands before it will make real writes. Set
+          # here and nowhere else: a developer running the script the ordinary
+          # way gets a refusal, which is the intended default.
+          INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES: '1'
+          INSTALL_SMOKE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INSTALL_SMOKE_VERSION:-}" ]; then unset INSTALL_SMOKE_VERSION; fi
+          bash scripts/ci/installer-smoke.sh 2>&1 | tee "$RUNNER_TEMP/sudo-smoke.log"
+          exit "${PIPESTATUS[0]}"
+
+      # A job that exits 0 having refused to run would be the empty tick this
+      # whole workflow exists to avoid -- and this mode has MORE ways to exit
+      # early than any other, because it is built to refuse. So require the
+      # load-bearing assertions to be PRESENT in the log by name.
+      #
+      # grep -Fq (substring) rather than the -Fqx (whole-line) the suite job
+      # uses: these lines carry variable tails -- a username, a home directory,
+      # a checksum -- so a whole-line match would need this file to predict the
+      # runner's own identity.
+      - name: Assert the sudo path actually executed, and did not refuse its way to green
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/sudo-smoke.log"
+          required=(
+            "explicit opt-in present"
+            "no heimdall binaries in /usr/local/bin to clobber"
+            "refuses to run as root"
+            "names SUDO_USER as unset"
+            "names root as the resolved SUDO_USER"
+            "refused on an unresolvable home"
+            "did NOT fall through to the root refusal"
+            "announces the sudo split and the home IT resolved"
+            "names the service file under the INVOKING user's home"
+            "service file belongs to the invoking user"
+            "service file is NOT root-owned"
+            "service directory belongs to the invoking user"
+            "binary stays root-owned in the shared dir"
+            "PATH line written into"
+            "no rc file of root's carries the installer marker or PATH line"
+            "root's home is clean (both /var/root and /root)"
+            "no heimdall service file or binary under any home but"
+            "INSTALLER SUDO SMOKE PASSED"
+          )
+          # The home-lookup assertion is the POINT of this job, and its wording
+          # names the tool -- so require the RIGHT tool per platform. Accepting
+          # either would let a darwin job pass on a getent line, which is the
+          # one outcome that would mean the dscl branch went unexecuted.
+          if [ "$(uname -s)" = "Darwin" ]; then
+            required+=( "dscl agrees with \$HOME for" )
+          else
+            required+=( "getent agrees with \$HOME for" )
+          fi
+          status=0
+          for name in "${required[@]}"; do
+            if grep -Fq "$name" "$log"; then
+              echo "ok   $name"
+            else
+              echo "FAIL missing from the log: $name" >&2
+              status=1
+            fi
+          done
+          # awk, not `grep -c ... || true`: this file's header promises no
+          # `|| true` anywhere in it, and awk reports 0 without a non-zero exit.
+          awk '/^ok   /{n++} END{printf "assertions recorded: %d\n", n+0}' "$log"
+          exit "$status"
+
   # 2. The EXISTING Python suite, unchanged, on a real Mac.
   #
   #    This is the cheap half of the darwin coverage problem: because
