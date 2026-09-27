@@ -461,8 +461,47 @@ file_bytes() {
 # and that distinction was forced by measurement rather than chosen for elegance.
 #
 # Progress is observed as bytes landing in the output file, which is what can be seen
-# without cooperation from the tool and which also catches a downloader that retries
-# and truncates without ever getting anywhere. But the file size LAGS the socket:
+# without cooperation from the tool. It is counted as CUMULATIVE DELIVERED BYTES --
+# each poll credits max(0, growth since the last poll) -- and NOT as the file's
+# current size.
+#
+# REQ-INST-17 is why. download() calls wget without -c, so a retry RESTARTS FROM
+# ZERO and truncates the output file. Measured against the file's size, that
+# regression made (current - anchor) negative, which no floor can ever clear: the
+# re-anchor branch became unreachable, anchor_time froze, `since` grew without
+# bound, and the required byte count (floor * since) ROSE while progress was still
+# being compared with a stale pre-truncation anchor. A stall was then declared with
+# CERTAINTY at the horizon, on a transfer that was recovering perfectly well. Found
+# in a live macos-15-intel CI log: "Read error at byte 8192/100000000 ... Retrying".
+# Counting delivered bytes makes a truncation worth zero rather than negative, so a
+# recovering transfer keeps re-anchoring on the bytes it is really moving.
+#
+# WHEN THE FILE NEVER SHRINKS THIS IS ARITHMETICALLY THE OLD CODE: delivered equals
+# (current - initial), so (delivered - anchor_delivered) equals the former
+# (current - anchor_bytes), exactly. Every property measured below is therefore
+# unchanged for every transfer that does not truncate.
+#
+# AND A DOWNLOADER THAT RETRIES AND TRUNCATES WITHOUT EVER GETTING ANYWHERE IS STILL
+# CAUGHT. The previous version of this comment claimed the file-size signal covered
+# that case; counting delivered bytes does not give it up. MEASURED, not assumed:
+#   - the ordinary futile loop re-fetches the same chunk and keeps returning to the
+#     SAME size, so consecutive polls observe no growth, nothing is credited, and the
+#     floor fires exactly as before -- measured, delivered plateaued at 13312 bytes
+#     across ten polls of a 0.5s truncate/refetch cycle;
+#   - a loop that sits EMPTY long enough for a poll to land in its trough does credit
+#     about one chunk per cycle -- measured, ~2730 B/s on a 3s cycle -- so it clears
+#     the floor and is bounded by NET_DOWNLOAD_MAX_TIME instead, whose message names
+#     the total limit, which is what actually happened.
+# Either way it is bounded, and neither message asserts a cause the evidence does not
+# support. What separates a RECOVERING transfer from both is that it grows past every
+# previous poll, so its bytes are credited and it keeps re-anchoring.
+#
+# The alternative considered and REJECTED was a second predicate on the high-water
+# mark: fail when the mark has not advanced within a horizon. It false-fires on the
+# very case this fix exists for -- a retry late in a large transfer leaves the mark
+# unmoved for as long as it takes to re-fetch what had already arrived. Do not add it.
+#
+# But the file size LAGS the socket:
 # both tools write in bursts, so sampled once a second a healthy 4096 B/s transfer
 # produces deltas like wget's 4096,4096,4096,4096,0,8192 and curl's 4096,0,8192,0.
 #
@@ -502,8 +541,12 @@ run_bounded() {
   now="$(date +%s)"
   deadline=$(( now + NET_DOWNLOAD_MAX_TIME ))
   # Last point at which throughput was demonstrably at or above the floor.
+  # anchor_delivered is a position in the monotonic delivered-bytes count, NOT a
+  # file size, which is what keeps a truncation from poisoning the comparison.
   anchor_time="$now"
-  anchor_bytes="$(file_bytes "$out")"
+  last_bytes="$(file_bytes "$out")"
+  delivered=0
+  anchor_delivered=0
   stall_horizon=$(( NET_STALL_SECONDS * 2 ))
 
   while kill -0 "$dl_pid" 2>/dev/null; do
@@ -521,12 +564,19 @@ run_bounded() {
       bound_error="exceeded the ${NET_DOWNLOAD_MAX_TIME}s total download limit"
     else
       current="$(file_bytes "$out")"
+      # Credit GROWTH ONLY. A truncating retry is worth zero here, never a
+      # negative: it delivered nothing new, but it did not un-deliver what the
+      # wire had already carried. See REQ-INST-17 in the header.
+      if [ "$current" -gt "$last_bytes" ]; then
+        delivered=$(( delivered + current - last_bytes ))
+      fi
+      last_bytes="$current"
       since=$(( now - anchor_time ))
-      if [ "$(( current - anchor_bytes ))" -ge "$(( NET_STALL_BYTES_PER_SEC * since ))" ]; then
+      if [ "$(( delivered - anchor_delivered ))" -ge "$(( NET_STALL_BYTES_PER_SEC * since ))" ]; then
         # Throughput since the anchor meets the floor, so this is the new
         # known-good point. A bursty transfer lands here on every burst.
         anchor_time="$now"
-        anchor_bytes="$current"
+        anchor_delivered="$delivered"
       elif [ "$since" -ge "$stall_horizon" ]; then
         bound_error="stalled below ${NET_STALL_BYTES_PER_SEC} bytes/sec for ${since}s"
       fi

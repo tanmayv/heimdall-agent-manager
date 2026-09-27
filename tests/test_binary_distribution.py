@@ -1474,6 +1474,192 @@ def test_download_bounds_wget(ctx):
     assert_download_bounds_enforced(ctx, 'wget')
 
 
+# --- REQ-INST-17: a TRUNCATING retry is progress, not a stall -------------------
+# Found by T12 in a live macos-15-intel CI log: wget, which download() calls
+# without -c, hit a read timeout, logged "Read error at byte 8192/100000000 ...
+# Retrying", and RESTARTED FROM ZERO -- truncating the output file. run_bounded
+# then compared the shrunken size against a high-water anchor, so
+# (current - anchor_bytes) went negative, the re-anchor branch became UNREACHABLE,
+# anchor_time never advanced, and the stall fired with certainty at the horizon on
+# a transfer that was actively recovering.
+#
+# These drive run_bounded DIRECTLY rather than through a real downloader. The
+# defect is in the WATCHDOG, not in wget's retry policy: any truncation reproduces
+# it, the file size is the only signal run_bounded actually reads, and a synthetic
+# writer makes the timing deterministic instead of racing a retry. It also keeps
+# the case covered on hosts with no wget, where the real wget bound SKIPs.
+
+
+def run_bounded_scenario(script: Path, work: Path, tag: str, body: str,
+                         timeout: int = 180):
+    """Run `run_bounded <out> bash -c <body> <out>` from a fast-bounds copy of
+    the script and report what the watchdog decided.
+
+    Deliberately no `set -e`: run_bounded returning non-zero is the OUTCOME under
+    test, not a reason to abandon the driver before it prints which bound fired.
+    """
+    out = work / f'rb-{tag}.bin'
+    shim = _shim_dir(work, f'rb-{tag}')
+    for helper in ('date', 'sleep', 'wc', 'tr', 'bash'):
+        real = shutil.which(helper)
+        assert real, f'{helper} is required to exercise run_bounded'
+        if not (shim / helper).exists():
+            (shim / helper).symlink_to(real)
+    driver = work / f'driver-rb-{tag}.sh'
+    driver.write_text(
+        script.read_text().replace('\nmain "$@"\n', '\n')
+        + '\nset -uo pipefail\n'
+        + f'run_bounded {shlex.quote(str(out))} bash -c {shlex.quote(body)} '
+          f'writer {shlex.quote(str(out))}\n'
+        + 'rc=$?\n'
+        + 'printf "RC=%s\\n" "$rc"\n'
+        + 'printf "BOUND_ERROR=%s\\n" "$bound_error"\n')
+    started = time.monotonic()
+    res = subprocess.run(['bash', str(driver)],
+                         env={'PATH': str(shim), 'HOME': str(work), 'TMPDIR': str(work)},
+                         capture_output=True, text=True, timeout=timeout)
+    elapsed = time.monotonic() - started
+    rc = next((int(line.split('=', 1)[1])
+               for line in res.stdout.splitlines() if line.startswith('RC=')), None)
+    bound_error = next((line.split('=', 1)[1]
+                        for line in res.stdout.splitlines()
+                        if line.startswith('BOUND_ERROR=')), '')
+    assert rc is not None, f'driver never reported RC:\n{res.stdout}\n{res.stderr}'
+    return rc, bound_error, elapsed, res
+
+
+# Builds a LARGE high-water mark, truncates once, then recovers at a healthy rate
+# that stays BELOW that mark for longer than the stall horizon. The large mark is
+# the whole point: a retry EARLY in a transfer re-passes its old size immediately
+# and hides the defect, while a retry LATE in one -- the expensive case, and the
+# one a user on a lossy link actually hits -- cannot.
+_TRUNCATE_THEN_RECOVER = r"""
+out="$1"
+chunk="$(printf '%01024d' 0)"
+# Phase 1: 512 KiB fast, so the high-water anchor sits far above what follows.
+i=0
+while [ "$i" -lt 512 ]; do printf '%s' "$chunk" >> "$out"; i=$(( i + 1 )); done
+sleep 1
+# The truncating retry: exactly what wget without -c does to its output file.
+: > "$out"
+# Phase 2: recover at 8192 B/s -- EIGHT TIMES the 1024 B/s floor -- for 8s, twice
+# the compressed horizon. It never regains 512 KiB, so a high-water anchor stays
+# unmoved the entire time while real bytes land every single second.
+i=0
+while [ "$i" -lt 8 ]; do
+  j=0
+  while [ "$j" -lt 8 ]; do printf '%s' "$chunk" >> "$out"; j=$(( j + 1 )); done
+  sleep 1
+  i=$(( i + 1 ))
+done
+"""
+
+_TRUNCATE_FOREVER_TIGHT = r"""
+out="$1"
+chunk="$(printf '%01024d' 0)"
+# FUTILE, and the ordinary shape of one: every cycle throws away what it just
+# fetched and re-fetches the SAME 8 KiB, so the file keeps returning to the same
+# size and a 1s poll almost never observes growth.
+while :; do
+  : > "$out"
+  i=0
+  while [ "$i" -lt 8 ]; do printf '%s' "$chunk" >> "$out"; i=$(( i + 1 )); done
+  sleep 0.5
+done
+"""
+
+_TRUNCATE_FOREVER_TROUGH = r"""
+out="$1"
+chunk="$(printf '%01024d' 0)"
+# Also futile, but it sits EMPTY for long enough that polls land in the trough and
+# credit roughly one chunk per cycle -- about 2730 B/s, comfortably over the floor.
+while :; do
+  : > "$out"
+  sleep 1.5
+  i=0
+  while [ "$i" -lt 8 ]; do printf '%s' "$chunk" >> "$out"; i=$(( i + 1 )); done
+  sleep 1.5
+done
+"""
+
+
+def test_download_futile_truncate_loop_still_hits_the_floor(ctx):
+    """REQ-INST-17: the fix must not COST the guarantee run_bounded's header has
+    always claimed -- that a downloader retrying and truncating without ever
+    getting anywhere is caught.
+
+    It does not, and this is the case that proves it. A loop re-fetching the same
+    chunk keeps returning to the same size, so consecutive polls observe no
+    growth, nothing is credited, and the floor fires just as it did before. The
+    recovering transfer in the test above is distinguished precisely because it
+    grows past every previous poll.
+    """
+    work = ctx['work']
+    script = install_sh_with_fast_bounds(work, 'install-futile-tight.sh')
+    rc, bound_error, elapsed, res = run_bounded_scenario(
+        script, work, 'futile-tight', _TRUNCATE_FOREVER_TIGHT, timeout=180)
+    assert rc != 0, 'a futile truncate/refetch loop must not run unbounded'
+    assert f'stalled below {FAST_BOUNDS["NET_STALL_BYTES_PER_SEC"]} bytes/sec' in bound_error, (
+        'the floor must still catch a futile loop that never delivers observable '
+        f'growth; got {bound_error!r}')
+    # It was the FLOOR and not the total limit: the floor fires at the horizon,
+    # well before NET_DOWNLOAD_MAX_TIME.
+    assert elapsed < FAST_BOUNDS['NET_DOWNLOAD_MAX_TIME'] + WATCHDOG_KILL_SLACK, (
+        f'took {elapsed:.1f}s, which does not distinguish the floor from the total limit')
+
+
+def test_download_futile_loop_with_a_trough_is_bounded_by_the_total_limit(ctx):
+    """REQ-INST-17: the other shape, and the honest limit of the floor.
+
+    A futile loop that stays empty long enough for polls to catch its trough DOES
+    credit real delivered bytes -- measured at about 2730 B/s, over the floor. The
+    floor therefore cannot catch it, and it must not pretend to: a transfer moving
+    bytes is not 'stalled below N bytes/sec', and saying so would assert a cause
+    the evidence does not support (the REQ-INST-6 defect class). NET_DOWNLOAD_MAX_TIME
+    is what bounds it, and the message must name that instead.
+    """
+    work = ctx['work']
+    script = install_sh_with_fast_bounds(work, 'install-futile-trough.sh')
+    rc, bound_error, elapsed, res = run_bounded_scenario(
+        script, work, 'futile-trough', _TRUNCATE_FOREVER_TROUGH, timeout=180)
+    assert rc != 0, 'a futile truncate/refetch loop must not run unbounded'
+    total = FAST_BOUNDS['NET_DOWNLOAD_MAX_TIME']
+    assert f'exceeded the {total}s total download limit' in bound_error, (
+        f'this shape must be bounded by the TOTAL limit, got {bound_error!r}')
+    assert 'stalled' not in bound_error, (
+        'a loop delivering ~2730 B/s is not stalled; claiming so would name a cause '
+        f'the evidence does not support: {bound_error!r}')
+    assert elapsed >= total, (
+        f'ended after {elapsed:.1f}s, too early for the {total}s total limit to have '
+        f'been the bound that fired ({bound_error!r})')
+
+
+def test_download_truncating_retry_is_not_a_stall(ctx):
+    """REQ-INST-17. The regression test for the defect itself.
+
+    A transfer that truncates once and then recovers well above the floor must be
+    carried to completion. Before the fix it was killed at the horizon with a
+    stall diagnosis -- deterministically, on every host, however fast the recovery
+    was actually going.
+    """
+    work = ctx['work']
+    script = install_sh_with_fast_bounds(work, 'install-trunc.sh')
+    rc, bound_error, elapsed, res = run_bounded_scenario(
+        script, work, 'trunc', _TRUNCATE_THEN_RECOVER, timeout=120)
+    assert rc == 0, (
+        'a transfer that truncated once and then recovered at 8x the floor was '
+        f'killed by the watchdog (rc={rc}, bound_error={bound_error!r}). That is '
+        'REQ-INST-17: a recovering transfer must not be diagnosed as a stall.\n'
+        f'stdout:\n{res.stdout}\nstderr:\n{res.stderr}')
+    assert bound_error == '', f'no bound should have fired, got {bound_error!r}'
+    # The recovery really did stay under the old high-water mark, so the case the
+    # test claims to cover is the case it ran. 8 * 8 KiB < 512 KiB.
+    final = (work / 'rb-trunc.bin').stat().st_size
+    assert final < 512 * 1024, (
+        f'the recovery reached {final} bytes and passed the 512 KiB high-water '
+        'mark, so this run did not exercise the defect at all')
+
+
 def test_download_failure_names_url_and_tmpdir(ctx):
     """A failed download must name WHICH url failed -- the installer fetches
     several -- and, when the target sits under TMPDIR, say that a small tmpfs can
@@ -3327,6 +3513,12 @@ def main() -> int:
          test_download_bounds_curl),
         ('download: wget bounds enforced vs a real dribbling server (REQ-INST-7)',
          test_download_bounds_wget),
+        ('download: a truncating retry is not a stall (REQ-INST-17)',
+         test_download_truncating_retry_is_not_a_stall),
+        ('download: a futile truncate loop still hits the floor (REQ-INST-17)',
+         test_download_futile_truncate_loop_still_hits_the_floor),
+        ('download: a futile loop with a trough is bounded by the total limit (REQ-INST-17)',
+         test_download_futile_loop_with_a_trough_is_bounded_by_the_total_limit),
         ('download: failure names url + TMPDIR hint (REQ-INST-7)', test_download_failure_names_url_and_tmpdir),
         ('--hub / --version never call the GitHub API (REQ-INST-6)', test_hub_and_version_paths_never_call_the_api),
         ('socat missing is fatal, unknown hub (REQ-INST-14)',
