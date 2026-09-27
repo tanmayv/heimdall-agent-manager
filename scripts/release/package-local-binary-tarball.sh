@@ -94,6 +94,10 @@ file_magic() {
 
 gate_linux_elf() {
   local bin="$1" interp
+  command -v readelf >/dev/null 2>&1 || {
+    echo "error: readelf is required to audit Linux release binaries" >&2
+    exit 1
+  }
   interp="$(readelf -l "$bin" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \(.*\)].*/\1/p')"
   if [ -n "$interp" ]; then
     echo "error: $bin has a program interpreter ($interp); release Linux binaries must be fully static (build the release-* flake attrs)" >&2

@@ -2409,11 +2409,19 @@ RELEASE_BINARIES = ('ham-bridge', 'ham-ctl', 'heimdall', 'ham-pty-host')
 # Release attr per binary; the pty-host out dir name carries the musl target
 # triple, so out dirs are matched to binaries by name prefix, not position.
 RELEASE_ATTRS = {name: f'release-{name}' for name in RELEASE_BINARIES}
+RELEASE_ATTRS_SKIP_REASON = 'nix is unavailable; REQ-INST-16 release build checks require Nix'
+
+
+def release_attrs_or_skip(ctx):
+    if 'release_outs' not in ctx:
+        raise Skip(ctx.get('release_attrs_skip_reason', 'release attrs were not built'))
+    return ctx['release_outs']
 
 
 def build_release_attrs(ctx):
     if shutil.which('nix') is None:
-        raise Skip('nix not available')
+        ctx['release_attrs_skip_reason'] = RELEASE_ATTRS_SKIP_REASON
+        raise Skip(RELEASE_ATTRS_SKIP_REASON)
     res = run(['nix', 'build', *[f'.#{a}' for a in RELEASE_ATTRS.values()],
                '--print-out-paths', '--no-link'], cwd=ROOT, timeout=1200)
     assert res.returncode == 0, f'nix build of release-* attrs failed:\n{res.stderr}'
@@ -2434,6 +2442,25 @@ def build_release_attrs(ctx):
         binary = out / 'bin' / name
         assert binary.is_file(), f'{RELEASE_ATTRS[name]} produced no binary at {binary}'
     ctx['release_outs'] = release_outs
+
+
+def test_release_build_skips_without_nix(ctx):
+    original_path = os.environ.get('PATH')
+    try:
+        os.environ['PATH'] = ''
+        skip_ctx = {}
+        try:
+            build_release_attrs(skip_ctx)
+        except Skip as skipped:
+            assert str(skipped) == RELEASE_ATTRS_SKIP_REASON
+            assert skip_ctx['release_attrs_skip_reason'] == RELEASE_ATTRS_SKIP_REASON
+        else:
+            raise AssertionError('release build must skip when nix is unavailable')
+    finally:
+        if original_path is None:
+            os.environ.pop('PATH', None)
+        else:
+            os.environ['PATH'] = original_path
 
 
 def scan_binary_for_nix_references(binary: Path, name: str):
@@ -2465,10 +2492,53 @@ def scan_binary_for_nix_references(binary: Path, name: str):
 
 
 def test_release_binaries_have_no_nix_references(ctx):
-    if 'release_outs' not in ctx:
-        raise Skip('release attrs were not built')
-    for name, out in ctx['release_outs'].items():
+    for name, out in release_attrs_or_skip(ctx).items():
         scan_binary_for_nix_references(out / 'bin' / name, name)
+
+
+def test_release_gate_rejects_nix_wrapper(ctx):
+    base = ctx['work'] / 'gate-nix-wrapper'
+    base.mkdir()
+    bridge = make_stub_input(base, 'bridge-out', ['ham-bridge'])
+    (bridge / 'bin' / 'ham-bridge').write_text(
+        '#!/nix/store/fake-shell/bin/bash\n'
+        'exec /nix/store/fake-bridge/bin/ham-bridge "$@"\n')
+    (bridge / 'bin' / 'ham-bridge').chmod(0o755)
+    ctl = make_stub_input(base, 'ctl-out', ['ham-ctl'])
+    manager = make_stub_input(base, 'manager-out', ['heimdall'])
+    pty_host = make_stub_input(base, 'pty-host-out', ['ham-pty-host'])
+    res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', base / 'dist',
+               bridge, ctl, manager, pty_host], cwd=ROOT)
+    assert res.returncode != 0, 'the v0.3.2-style Nix wrapper must be rejected'
+    assert 'script' in res.stderr and '/nix/store' in res.stderr, res.stderr
+
+
+def test_release_gate_rejects_dynamic_elf(ctx):
+    if platform.system() != 'Linux':
+        raise Skip('dynamic ELF gate check requires Linux')
+    need_tool('readelf')
+    candidates = [Path(path) for path in (shutil.which('sh'), '/bin/sh', '/usr/bin/env') if path]
+    dynamic_binary = None
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        probe = run(['readelf', '-l', candidate])
+        if probe.returncode == 0 and 'Requesting program interpreter' in probe.stdout:
+            dynamic_binary = candidate
+            break
+    assert dynamic_binary is not None, 'test host has no dynamic ELF control binary'
+
+    base = ctx['work'] / 'gate-dynamic-elf'
+    base.mkdir()
+    bridge = make_stub_input(base, 'bridge-out', ['ham-bridge'])
+    ctl = make_stub_input(base, 'ctl-out', ['ham-ctl'])
+    shutil.copy(dynamic_binary, ctl / 'bin' / 'ham-ctl')
+    manager = make_stub_input(base, 'manager-out', ['heimdall'])
+    pty_host = make_stub_input(base, 'pty-host-out', ['ham-pty-host'])
+    res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', base / 'dist',
+               bridge, ctl, manager, pty_host], cwd=ROOT)
+    assert res.returncode != 0, 'a dynamic ELF must be rejected'
+    assert 'has a program interpreter' in res.stderr, res.stderr
 
 
 def _docker_usable():
@@ -2509,13 +2579,11 @@ def test_release_tarball_is_portable(ctx):
     """Package the freshly built release outs through the REAL packaging
     script, then scan and storeless-execute every binary in the tarball. This
     is the check that would have caught the v0.3.2 wrapper shipment."""
-    if 'release_outs' not in ctx:
-        raise Skip('release attrs were not built')
     target = host_target()
     if target is None:
         raise Skip(f'unsupported host for portability gate: {platform.system()}/{platform.machine()}')
     out_dir = ctx['work'] / 'release-dist'
-    outs = ctx['release_outs']
+    outs = release_attrs_or_skip(ctx)
     res = run(['bash', PACKAGE_SCRIPT, target, 'v0.1.0', out_dir,
                outs['ham-bridge'], outs['ham-ctl'], outs['heimdall'],
                outs['ham-pty-host']], cwd=ROOT, timeout=120)
@@ -2931,6 +2999,12 @@ def main() -> int:
         ('heimdall --version schema', test_heimdall_version_schema),
         ('heimdall status schema', test_heimdall_status_schema),
         ('heimdall vault lifecycle', test_heimdall_vault_lifecycle),
+        ('release build skips when Nix is absent (REQ-INST-16)',
+         test_release_build_skips_without_nix),
+        ('release gate rejects Nix wrapper scripts (REQ-INST-16)',
+         test_release_gate_rejects_nix_wrapper),
+        ('release gate rejects dynamic ELF binaries (REQ-INST-16)',
+         test_release_gate_rejects_dynamic_elf),
         ('build release attrs (nix, REQ-INST-16)', build_release_attrs),
         ('release binaries: no /nix/store references (REQ-INST-16)',
          test_release_binaries_have_no_nix_references),

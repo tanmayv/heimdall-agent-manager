@@ -219,9 +219,49 @@ jobs:
           "$work/bin/heimdall" --version
           "$work/bin/ham-pty-host" --help >/dev/null
 
+  verify-storeless:
+    name: Execute release binaries without Nix (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-amd64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Execute target tarball on a storeless host
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /nix/store ]; then
+            echo "FAIL: this job must run without a Nix store" >&2
+            exit 1
+          fi
+          work="$RUNNER_TEMP/storeless-verify"
+          rm -rf "$work"
+          mkdir -p "$work"
+          tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          "$work/bin/ham-bridge" --version
+          "$work/bin/ham-ctl" --version
+          "$work/bin/heimdall" --version
+          "$work/bin/ham-pty-host" --help >/dev/null
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, verify-storeless]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
     permissions:
