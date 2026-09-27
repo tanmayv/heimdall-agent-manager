@@ -74,6 +74,11 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / 'scripts' / 'release' / 'package-local-binary-tarball.sh'
+STORELESS_SCRIPT = ROOT / 'scripts' / 'release' / 'storeless-exec.sh'
+# storeless-exec.sh contract: the static control exits 42, and 70 means no
+# clean-environment mechanism could be validated.
+STORELESS_CONTROL_RC = 42
+STORELESS_NO_MECHANISM = 70
 INSTALL_SCRIPT = ROOT / 'scripts' / 'install.sh'
 GITHUB_REPO = 'tanmayv/heimdall-agent-manager'
 
@@ -2946,11 +2951,17 @@ def test_heimdall_vault_lifecycle(ctx):
 # a tarball through the REAL packaging script, then:
 #   1. scans every shipped binary for /nix/store references (ELF interpreter,
 #      dynamic section, Mach-O dylibs/rpaths, script text), and
-#   2. EXECUTES every Linux binary in a rootfs without /nix/store (docker
-#      scratch if a daemon is up, else a user-namespace chroot; hard failure
-#      if neither exists -- this check may never silently skip), and
-#   3. proves the execution half has teeth with a negative control that MUST
-#      fail to run storeless.
+#   2. EXECUTES every Linux binary in a rootfs without /nix/store, via
+#      scripts/release/storeless-exec.sh -- the same helper the release
+#      workflow uses, which picks a mechanism (an empty imported docker image,
+#      or a user-namespace chroot) by proving it can run a static control and
+#      reject a dynamic one, and hard-fails rather than skipping when it can
+#      prove neither, and
+#   3. proves the execution half has teeth with a DIFFERENTIAL negative
+#      control: the same mechanism must run a known-good static binary AND
+#      fail a dynamic one. Asserting only that the dynamic binary failed is
+#      what let the unrunnable `docker run ... scratch` invocation pass this
+#      check vacuously on every docker host until v0.3.3 (REQ-INST-25).
 
 RELEASE_BINARIES = ('ham-bridge', 'ham-ctl', 'heimdall', 'ham-pty-host')
 # Release attr per binary; the pty-host out dir name carries the musl target
@@ -3088,38 +3099,51 @@ def test_release_gate_rejects_dynamic_elf(ctx):
     assert 'has a program interpreter' in res.stderr, res.stderr
 
 
-def _docker_usable():
-    if shutil.which('docker') is None:
-        return False
-    return run(['docker', 'info'], timeout=30).returncode == 0
+def storeless_mechanism(timeout=120):
+    """Name of the validated clean-environment mechanism, or AssertionError.
+
+    Delegates to scripts/release/storeless-exec.sh, the same helper the release
+    workflow uses, so the CI gate and this suite cannot disagree about what a
+    storeless execution is. The helper validates by EXECUTION -- it will only
+    report a mechanism that ran a known-good static control and refused a
+    dynamic one -- so a truthy answer here is evidence, not availability.
+
+    Never raises Skip: a storeless check that quietly does nothing is the
+    defect this gate exists to catch (REQ-INST-25).
+    """
+    res = run(['bash', str(STORELESS_SCRIPT), 'select'], timeout=timeout)
+    assert res.returncode == 0, (
+        'no storeless-execution mechanism could be validated on this host; '
+        'refusing to skip the REQ-INST-16 execution gate:\n' + res.stderr)
+    return res.stdout.strip()
 
 
-def _unshare_chroot_usable():
-    if shutil.which('unshare') is None:
-        return False
-    return run(['unshare', '-rm', 'true'], timeout=30).returncode == 0
+def write_static_control(dest: Path):
+    """Materialise the known-good static control binary from the shared helper.
+
+    Taken from storeless-exec.sh rather than rebuilt here on purpose: a second
+    copy of the control is a second thing that can rot out of step with the
+    mechanism it is meant to validate.
+    """
+    res = run(['bash', str(STORELESS_SCRIPT), 'write-control', str(dest)], timeout=60)
+    assert res.returncode == 0, f'could not write static control:\n{res.stderr}'
+    return dest
 
 
-def storeless_exec(binary: Path, args, work: Path, timeout=60):
-    """Execute a binary in an environment with no /nix/store. On Linux this is
-    a docker scratch container when a daemon is up, else a user-namespace
-    chroot into an empty rootfs; both prove the binary needs nothing from the
-    store, not even a dynamic loader. On Darwin the host itself is the clean
-    environment (the load-command scan is what proves store independence)."""
+def storeless_exec(binary: Path, args, timeout=60):
+    """Execute a binary in an environment with no /nix/store, proving it needs
+    nothing from the store, not even a dynamic loader. On Linux this is
+    scripts/release/storeless-exec.sh (an empty imported docker image, or a
+    user-namespace chroot, whichever is proven to work). On Darwin the host
+    itself is the clean environment -- the load-command scan is what proves
+    store independence there."""
     if platform.system() == 'Darwin':
         return run([str(binary), *args], timeout=timeout)
-    root = work / f'rootfs-{binary.name}'
-    root.mkdir(parents=True, exist_ok=True)
-    shutil.copy(binary, root / binary.name)
-    if _docker_usable():
-        return run(['docker', 'run', '--rm', '-v', f'{root}:/verify:ro',
-                    'scratch', f'/verify/{binary.name}', *args], timeout=timeout)
-    if _unshare_chroot_usable():
-        return run(['unshare', '-rm', 'chroot', str(root), f'/{binary.name}', *args],
-                   timeout=timeout)
-    raise AssertionError(
-        'neither a working docker daemon nor `unshare -rm` is available; '
-        'refusing to skip the storeless-execution half of the REQ-INST-16 gate')
+    res = run(['bash', str(STORELESS_SCRIPT), 'run', str(binary), *args], timeout=timeout)
+    assert res.returncode != STORELESS_NO_MECHANISM, (
+        f'storeless-exec.sh could not run {binary.name} at all '
+        f'(rc={STORELESS_NO_MECHANISM}); the gate did not execute:\n{res.stderr}')
+    return res
 
 
 def test_release_tarball_is_portable(ctx):
@@ -3159,48 +3183,69 @@ def test_release_tarball_is_portable(ctx):
         'ham-ctl': f'ham-ctl {app_version} protocol {protocol_version}',
         'heimdall': f'heimdall {app_version} protocol {protocol_version}',
     }
-    exec_work = ctx['work'] / 'storeless'
-    exec_work.mkdir(exist_ok=True)
+    print(f'    storeless mechanism: {storeless_mechanism()}')
     for name, line in expected.items():
-        res = storeless_exec(extract / 'bin' / name, ['--version'], exec_work)
+        res = storeless_exec(extract / 'bin' / name, ['--version'])
         assert res.returncode == 0, (
             f'{name} --version failed storeless (rc={res.returncode}):\n{res.stderr}')
         assert res.stdout.splitlines()[0] == line, (
             f'{name} version line mismatch storeless: {res.stdout.splitlines()[:1]!r}')
     # ham-pty-host is clap-based: no --version, but --help must load and run.
-    res = storeless_exec(extract / 'bin' / 'ham-pty-host', ['--help'], exec_work)
+    res = storeless_exec(extract / 'bin' / 'ham-pty-host', ['--help'])
     assert res.returncode == 0, (
         f'ham-pty-host --help failed storeless (rc={res.returncode}):\n{res.stderr}')
     assert res.stdout.strip(), 'ham-pty-host --help printed nothing storeless'
 
 
 def test_storeless_exec_has_teeth(ctx):
-    """Negative control for the execution half. A dynamically linked binary
-    MUST fail to execute in the empty rootfs; if it runs, the gate is
-    decorative and would pass the exact bug it exists to catch."""
+    """Negative control for the execution half, made DIFFERENTIAL.
+
+    A dynamically linked binary must fail to execute in the clean environment;
+    if it runs, the gate is decorative and would pass the exact bug it exists
+    to catch. But "it failed" is not enough on its own, and that is what broke
+    in v0.3.3: the old control asserted only rc != 0, and the docker branch it
+    selected was unrunnable (`scratch` is a reserved name), so the daemon's
+    exit 125 refusal satisfied the assertion on every docker host. The test
+    written to prove the gate had teeth was the one with none.
+
+    So both legs are required, on the SAME mechanism:
+      positive -- a known-good static control must run and return exactly 42
+      negative -- a dynamic binary must fail
+    A mechanism that merely refuses commands fails the positive leg and the
+    test fails loudly, instead of passing while executing nothing.
+    """
     if platform.system() != 'Linux':
         raise Skip('teeth check is Linux-specific')
-    control = Path('/bin/sh')
-    if not control.is_file():
-        raise Skip('no /bin/sh control binary')
-    # Whichever /bin/sh this is (NixOS store bash or a distro dash), it is
-    # dynamically linked and its loader is absent from our empty rootfs.
-    root = ctx['work'] / 'teeth-rootfs'
-    root.mkdir(exist_ok=True)
-    shutil.copy(control, root / 'sh')
-    if _docker_usable():
-        res = run(['docker', 'run', '--rm', '-v', f'{root}:/verify:ro',
-                   'scratch', '/verify/sh', '-c', 'true'], timeout=60)
-    elif _unshare_chroot_usable():
-        res = run(['unshare', '-rm', 'chroot', str(root), '/sh', '-c', 'true'],
-                  timeout=60)
-    else:
-        raise AssertionError(
-            'neither docker nor unshare -rm available; refusing to skip the '
-            'REQ-INST-16 gate')
+    # Not a Skip: if nothing can execute, that is a failure of the gate.
+    mechanism = storeless_mechanism()
+
+    # Positive leg: proves the mechanism can execute at all.
+    control = write_static_control(ctx['work'] / 'teeth-static-control')
+    res = run(['bash', str(STORELESS_SCRIPT), 'run', str(control)], timeout=60)
+    assert res.returncode == STORELESS_CONTROL_RC, (
+        f'mechanism {mechanism!r} did not execute the known-good static '
+        f'control (rc={res.returncode}, expected {STORELESS_CONTROL_RC}). The '
+        f'clean environment is not running anything, so the negative leg below '
+        f'would be vacuous:\n{res.stderr}')
+
+    # Negative leg: whichever /bin/sh this is (NixOS store bash or a distro
+    # dash), it is dynamically linked and its loader is absent from the clean
+    # environment, so it must not run.
+    dynamic = Path('/bin/sh')
+    assert dynamic.is_file(), 'no /bin/sh dynamic control binary on this host'
+    probe = run(['readelf', '-l', str(dynamic)], timeout=30)
+    assert 'Requesting program interpreter' in probe.stdout, (
+        '/bin/sh is not dynamically linked on this host, so it cannot serve as '
+        'the negative control')
+    res = run(['bash', str(STORELESS_SCRIPT), 'run', str(dynamic), '-c', 'true'],
+              timeout=60)
     assert res.returncode != 0, (
-        'control binary /bin/sh ran inside the empty rootfs; the storeless '
-        'exec gate has no teeth and would not catch a nix-linked release')
+        f'dynamic control /bin/sh ran inside the clean environment under '
+        f'mechanism {mechanism!r}; the storeless exec gate has no teeth and '
+        f'would not catch a nix-linked release')
+    assert res.returncode != STORELESS_NO_MECHANISM, (
+        'the dynamic control failed because no mechanism was available, not '
+        'because the binary could not find its loader')
 
 
 # ---- 5. documentation regression ----------------------------------------------

@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+    # TEMPORARY (T24/REQ-INST-25): exercise the rebuilt portability gate on the
+    # real runners without cutting a release. The `release` job is gated on a
+    # tag or inputs.publish_release, so a branch push builds and verifies only.
+    # Remove once v0.3.3 is out.
+    paths:
+      - '.github/workflows/release-local-binaries.yml'
+      - 'scripts/release/storeless-exec.sh'
   workflow_dispatch:
     inputs:
       version:
@@ -158,7 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/portable-verify"
-          rm -rf "$work"; mkdir -p "$work/root"
+          rm -rf "$work"; mkdir -p "$work"
           tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
           for f in "$work"/bin/*; do
             case "$(od -A n -t x1 -N 4 "$f" | tr -d ' \n')" in
@@ -175,23 +182,23 @@ jobs:
               exit 1
             fi
           done
-          if command -v docker >/dev/null 2>&1; then
-            docker run --rm -v "$work:/verify:ro" scratch /verify/bin/ham-bridge --version
-            docker run --rm -v "$work:/verify:ro" scratch /verify/bin/ham-ctl --version
-            docker run --rm -v "$work:/verify:ro" scratch /verify/bin/heimdall --version
-            docker run --rm -v "$work:/verify:ro" scratch /verify/bin/ham-pty-host --help >/dev/null
-          elif command -v unshare >/dev/null 2>&1 && unshare -rm true 2>/dev/null; then
-            for b in ham-bridge ham-ctl heimdall ham-pty-host; do
-              cp "$work/bin/$b" "$work/root/$b"
-            done
-            unshare -rm chroot "$work/root" /ham-bridge --version
-            unshare -rm chroot "$work/root" /ham-ctl --version
-            unshare -rm chroot "$work/root" /heimdall --version
-            unshare -rm chroot "$work/root" /ham-pty-host --help >/dev/null
-          else
-            echo "FAIL: neither docker nor user-namespace chroot available to prove storeless execution" >&2
-            exit 1
-          fi
+          # The execution half. scripts/release/storeless-exec.sh picks a clean
+          # environment by PROVING it can run a static control and reject a
+          # dynamic one, and exits non-zero rather than skipping when it can
+          # prove neither -- so this step cannot pass without executing.
+          echo "storeless mechanism: $(scripts/release/storeless-exec.sh select)"
+          for b in ham-bridge ham-ctl heimdall; do
+            echo "--- $b --version (storeless) ---"
+            out="$(scripts/release/storeless-exec.sh run "$work/bin/$b" --version)" || {
+              echo "FAIL: $b could not execute without /nix/store" >&2; exit 1; }
+            [ -n "$out" ] || { echo "FAIL: $b --version printed nothing storeless" >&2; exit 1; }
+            echo "$out"
+          done
+          echo "--- ham-pty-host --help (storeless) ---"
+          out="$(scripts/release/storeless-exec.sh run "$work/bin/ham-pty-host" --help)" || {
+            echo "FAIL: ham-pty-host could not execute without /nix/store" >&2; exit 1; }
+          [ -n "$out" ] || { echo "FAIL: ham-pty-host --help printed nothing storeless" >&2; exit 1; }
+          echo "$out" | head -3
 
       - name: Verify release binaries are portable (macOS)
         if: ${{ startsWith(matrix.target, 'darwin-') }}
