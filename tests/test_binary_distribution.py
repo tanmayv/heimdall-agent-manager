@@ -25,6 +25,16 @@ Verifies the distribution surfaces end-to-end and hermetically:
    the PATH export into the TARGET user's rc file even when root's PATH
    already contains /usr/local/bin, and that failed chowns warn with path,
    owner and remediation while the install stays non-fatal.
+3b. Platform coverage, stated plainly because the file cannot imply coverage it
+   does not have: every target here comes from host_target(), which reads the
+   REAL host. On Linux the darwin branches of the installer tests -- the
+   ~/Library/LaunchAgents service paths, render_launchd_plist's output as an
+   installed file, the `launchctl bootout` in do_uninstall -- do NOT execute;
+   only the plist RENDER assertion does. They execute when this same file runs
+   unchanged on a Mac, which .github/workflows/install-sh.yml does on macos-14
+   and macos-15-intel alongside scripts/ci/installer-smoke.sh, the end-to-end
+   install/uninstall proof against the real published release. See
+   host_target()'s docstring.
 4. heimdall CLI: the binary built from src/manager emits the documented
    --version and status schemas, with the version line pinned to
    src/contracts/protocol.odin.
@@ -78,6 +88,26 @@ def sha256_of(path: Path) -> str:
 
 
 def host_target():
+    """The release target of the REAL host -- never forced, never overridden.
+
+    This is load-bearing for the darwin coverage, so read it before trusting a
+    LaunchAgents assertion below. On a Linux host every test that calls this
+    gets a linux-* target, and each `else` branch holding a
+    ~/Library/LaunchAgents path is therefore DEAD CODE in that run. Those
+    branches are not simulated anywhere: the only darwin behaviour that
+    executes on Linux is the plist RENDER assertion in dry_run_unit_text /
+    test_install_sh_dry_run_hub, which proves the template is well-formed and
+    nothing about installing, re-installing or uninstalling on a Mac.
+
+    What DOES execute them is running this same file unchanged on a real Mac,
+    which .github/workflows/install-sh.yml does on macos-14 (aarch64-darwin) and
+    macos-15-intel (x86_64-darwin) -- there host_target() returns darwin-* and
+    the darwin branches are taken for real. That workflow also names the tests
+    whose darwin halves must have PASSED, so they cannot quietly become skips.
+    Deliberately NOT solved with a platform override: install.sh must grow no
+    test-only surface, and simulated coverage on Linux would still not prove
+    plutil accepts the plist or that launchd paths are writable.
+    """
     system = platform.system()
     machine = platform.machine()
     if system == 'Linux':
@@ -352,7 +382,21 @@ def test_install_sh_dry_run_hub(ctx):
     # and DOES land in the rendered unit.
     unit = dry_run_unit_text(res)
     assert '--hub' in unit, 'unit must carry --hub when it was explicitly passed'
-    assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+    # The FORM differs by platform and this assertion used to state only the
+    # systemd one, so it was wrong on darwin -- and being wrong cost nothing
+    # until the suite first ran on a Mac, because host_target() never returns
+    # darwin-* on Linux. systemd puts the flag and its value on an ExecStart
+    # continuation line; a launchd plist spells them as two separate <string>
+    # elements in ProgramArguments (service_hub_flags_plist, install.sh:722-727),
+    # so '--hub <url>' as one literal string cannot appear there. The full-run
+    # test below already knew this; this one did not.
+    if target.startswith('linux'):
+        assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+    else:
+        assert '<string>--hub</string>' in unit, (
+            'the plist must pass --hub as its own ProgramArguments string')
+        assert f'<string>{hub}</string>' in unit, (
+            'the plist must pass the hub URL as the string after --hub')
 
 
 def test_install_sh_dry_run_bare(ctx):
@@ -367,6 +411,21 @@ def test_install_sh_dry_run_bare(ctx):
 def need_tool(name):
     if shutil.which(name) is None:
         raise Skip(f'{name} not available')
+
+
+def sha256_cli(path) -> list:
+    """The argv a FIXTURE should use to hash a file, mirroring install.sh.
+
+    sha256_or_empty (install.sh:610-613) falls back sha256sum -> shasum -a 256
+    because macOS ships only the latter. Test code has to make the same choice:
+    a bare ['sha256sum', ...] here raised FileNotFoundError on macos-14, which
+    main() counts as a FAILURE of the test rather than of the installer.
+    """
+    if shutil.which('sha256sum'):
+        return ['sha256sum', str(path)]
+    if shutil.which('shasum'):
+        return ['shasum', '-a', '256', str(path)]
+    raise Skip('neither sha256sum nor shasum is available to hash with')
 
 
 def make_hub_mirror(base: Path, tarball: Path, target: str) -> str:
@@ -1272,20 +1331,46 @@ def assert_download_bounds_enforced(ctx, tool):
         assert 'total download limit' in out, (
             f'wget: the TOTAL cap was not named (elapsed {elapsed:.1f}s):\n{out}')
 
-    # (c) BURSTY but healthy: 8192 bytes every NET_STALL_SECONDS = 4096 B/s average,
-    #     FOUR TIMES the floor, delivered in bursts exactly as far apart as the stall
-    #     window. Seconds of zero file growth are guaranteed by construction while the
-    #     transfer comfortably meets the floor -- so this is the shape that a
-    #     per-window floor gets wrong, and the reason the floor is an average since
-    #     the last known-good anchor instead.
+    # (c) BURSTY but healthy: bursts of 4 x floor x gap bytes every `gap` seconds,
+    #     i.e. a 4096 B/s average against a 1024 B/s floor, delivered in bursts
+    #     further apart than the watchdog's 1s poll. Seconds of zero file growth are
+    #     guaranteed by construction while the transfer comfortably meets the floor --
+    #     so this is the shape that a per-window floor gets wrong, and the reason the
+    #     floor is an average since the last known-good anchor instead.
     #
-    #     The gap is pinned at NET_STALL_SECONDS because that is the tolerance the
-    #     implementation can actually claim: measured across gaps of 0.5s, 1s, 2s and
-    #     3s at a fixed 4x-floor average, both branches carry the first three to the
-    #     deadline, while a 3s gap (75% of the horizon) makes wget's write lag look
-    #     like a stall. At the production 60s that edge is a full minute of silence,
-    #     which is a stall by any useful definition.
-    with dribble_server(2 * 4096, float(FAST_BOUNDS['NET_STALL_SECONDS'])) as base:
+    #     THE GAP USED TO BE PINNED AT NET_STALL_SECONDS and had to be moved off it,
+    #     for a reason that only a real Mac could show. download() passes wget
+    #     --read-timeout=NET_STALL_SECONDS, so a gap EQUAL to that value races
+    #     wget's own idle-read timeout. On Linux the data arrives just in time; on
+    #     both macOS runners it does not, and the run measured there is worth
+    #     stating exactly, because it is also a finding about run_bounded:
+    #
+    #       wget: 'Read error at byte 8192 (Operation timed out). Retrying.'
+    #       -> wget RESTARTS from byte 0 and TRUNCATES the output file (no -c)
+    #       -> run_bounded's anchor_bytes is still 8192 while file_bytes drops to 0,
+    #          so (current - anchor_bytes) is NEGATIVE for the whole horizon
+    #       -> 'stalled below 1024 bytes/sec for 4s' on a transfer that was actively
+    #          re-downloading.
+    #
+    #     That cascade is NOT a fixture artifact: any wget retry mid-transfer -- a
+    #     read timeout, a dropped connection, a flaky link -- truncates the file and
+    #     can make the watchdog report a stall as the cause. It is filed as a
+    #     divergence for whoever owns REQ-INST-7 and wants a test of its own (an
+    #     explicit mid-transfer-retry case); it is deliberately not fixed here,
+    #     because install.sh is not this task's file to change.
+    #
+    #     So the gap is now 0.75 * NET_STALL_SECONDS: still LONGER than the 1s poll,
+    #     which is what guarantees the zero-growth windows this case exists to
+    #     produce, and comfortably SHORTER than wget's read timeout, so the shape
+    #     under test is the watchdog's anchored floor and not a race with wget's
+    #     retry logic. The burst scales with it to hold the average at 4x the floor.
+    #     The narrower claim is stated plainly: gaps of 0.5s, 1s and 1.5s are carried
+    #     to the deadline on Linux and darwin; a gap at or above the read timeout is
+    #     the retry cascade above, and at the production 60s such a gap is a stall by
+    #     any useful definition anyway.
+    bursty_gap = 0.75 * FAST_BOUNDS['NET_STALL_SECONDS']
+    bursty_chunk = int(4 * FAST_BOUNDS['NET_STALL_BYTES_PER_SEC'] * bursty_gap)
+    with dribble_server(bursty_chunk, bursty_gap) as base:
         res, elapsed = run_download_bound(script, work, f'bursty-{tool}',
                                           f'{base}/heimdall.tar.gz', tool)
     out = res.stdout + res.stderr
@@ -1441,12 +1526,15 @@ def test_install_sh_full_run_service_lifecycle(ctx):
     # re-run with a different --hub produces a differing unit.
     hub2 = make_hub_mirror(base / 'second', tarball, target)
 
-    env = {**os.environ,
-           'HOME': str(home),
-           'XDG_CONFIG_HOME': '',
-           'XDG_RUNTIME_DIR': str(base / 'xdg-runtime'),
-           'SUDO_USER': '',
-           'SHELL': ''}
+    # sandbox_install_env, NOT a hand-rolled dict: this test used to build its
+    # own env, which meant it was the ONE sandboxed run without the socat stub
+    # on PATH. REQ-INST-14 makes a missing socat fatal, so it passed only on a
+    # host that happened to have socat installed and failed on every host that
+    # did not -- both macOS runners AND ubuntu-24.04 in CI, where this was the
+    # only failure. A test whose result depends on a package the host may or may
+    # not ship is not a gate. The helper also blanks DBUS_SESSION_BUS_ADDRESS,
+    # which this env was missing.
+    env = sandbox_install_env(home, base / 'xdg-runtime')
 
     def install_run(hub_url, *extra):
         return subprocess.run(
@@ -1752,6 +1840,31 @@ def assert_bridge_isolated(env: dict, work: Path) -> None:
     assert env.get('DBUS_SESSION_BUS_ADDRESS', '') == '', (
         'DBUS_SESSION_BUS_ADDRESS must be blanked before a real --uninstall; '
         'an inherited address is a second route to the live bus')
+
+    # DARWIN: the checks above are systemd-shaped and do not cover this host at
+    # all. do_uninstall's macOS branch runs
+    # `launchctl bootout gui/<uid>/works.earendil.heimdall-bridge`, and launchctl
+    # addresses the per-user launchd DOMAIN -- a sandboxed HOME does not scope
+    # it, and there is no XDG_RUNTIME_DIR equivalent to point somewhere
+    # harmless. So on darwin the isolation can only be a PRECONDITION: if that
+    # label is loaded, a real --uninstall in this suite would stop the live
+    # bridge, exactly the REQ-INST-13 accident this guard exists to prevent.
+    # Reached for the first time when this file started running on the macOS
+    # runners (.github/workflows/install-sh.yml); on a CI runner nothing is
+    # loaded, but on a developer's own Mac it very much is.
+    if platform.system() == 'Darwin':
+        if shutil.which('launchctl') is None:
+            return  # nothing can be booted out on a host without launchctl
+        label = f'gui/{os.getuid()}/works.earendil.heimdall-bridge'
+        loaded = subprocess.run(['launchctl', 'print', label],
+                                capture_output=True, text=True, timeout=30)
+        assert loaded.returncode != 0, (
+            f'{label} is LOADED in this user launchd domain, and a real '
+            '--uninstall here would bootout the running heimdall-bridge. A '
+            'sandboxed HOME does not scope launchctl, so this is a hard '
+            'precondition: unload it by hand before running this suite. Do not '
+            'weaken this guard.')
+        return
 
     if shutil.which('systemctl') is None:
         return  # nothing can be stopped on a host without systemctl
@@ -2211,7 +2324,7 @@ def test_install_sh_uninstall_unhashable_openssl_nonfatal(ctx):
     openssl = install_dir / 'openssl'
 
     openssl.chmod(0o000)
-    assert run(['sha256sum', str(openssl)]).returncode != 0, (
+    assert run(sha256_cli(openssl)).returncode != 0, (
         'fixture sanity: the openssl must actually be unhashable for this test to mean anything')
 
     res = real_uninstall(env)
@@ -2303,11 +2416,24 @@ def version_constants():
 
 
 def build_heimdall(ctx):
+    """Build src/manager so the CLI-schema tests below have a binary.
+
+    A HOST-CAPABILITY skip, not a property of the distribution: without nix
+    there is no toolchain here to build with, and `subprocess.run(['nix', ...])`
+    would raise FileNotFoundError, which main() counts as a FAILURE. That is
+    what kept this suite from running at all on the macOS CI runners
+    (.github/workflows/install-sh.yml), where there is no nix and where the
+    point of the run is the INSTALLER's darwin branches, not the compiler.
+    Pass HEIMDALL_BIN=<path> to test a prebuilt binary instead.
+    """
     override = os.environ.get('HEIMDALL_BIN')
     if override:
         binary = Path(override)
         assert binary.is_file(), f'HEIMDALL_BIN={override} does not exist'
     else:
+        if shutil.which('nix') is None:
+            raise Skip('nix is not installed, so src/manager cannot be built '
+                       'here; set HEIMDALL_BIN=<path> to test a prebuilt binary')
         out = ctx['work'] / 'heimdall'
         res = run(['nix', 'develop', '--command', 'bash', '-c',
                    f'odin build src/manager -collection:odin_test=src -out:{out}'],

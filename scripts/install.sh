@@ -402,9 +402,11 @@ download_failed() {
   tmp_root="${tmp_root%/}"
   case "$out" in
     "$tmp_root"/*)
-      # mktemp -d puts the tarball wherever TMPDIR points. On a host where that
-      # is a small tmpfs the real failure is running out of space, which looks
-      # nothing like a network problem in the output.
+      # main() creates the work dir under TMPDIR with an explicit mktemp
+      # template, so the tarball is where TMPDIR points on Linux AND macOS --
+      # see the note there for why the template is not optional. On a host where
+      # that is a small tmpfs the real failure is running out of space, which
+      # looks nothing like a network problem in the output.
       fail "download failed: $url$detail (target $out is under $tmp_root; if that is a small tmpfs the transfer can exhaust it -- set TMPDIR to a larger filesystem and re-run)"
       ;;
   esac
@@ -1372,7 +1374,19 @@ main() {
     || fail "need curl or wget to download the release bundle; install one, or fetch $tarball_name yourself and serve it with --hub <url>"
 
   say "downloading $tarball_url"
-  work_dir="$(mktemp -d)"
+  # An explicit TEMPLATE, not a bare `mktemp -d`. On macOS a bare `mktemp -d`
+  # IGNORES $TMPDIR and always uses the per-user darwin temp dir. Measured on
+  # both hosted runners (.github/workflows/install-sh.yml prints it every run):
+  #   TMPDIR=/Users/runner/work/_temp/tmpdir-probe mktemp -d
+  #     -> /var/folders/20/jp1_0n3n7kndh6rnbqb5344m0000gn/T/tmp.G4ukaEijuP
+  # That made download_failed's remediation below -- "set TMPDIR to a larger
+  # filesystem and re-run" -- FALSE on macOS: the tarball landed in the same
+  # place whatever the user set, so the one piece of advice offered for a
+  # space-exhausted download could not work. With a template both platforms
+  # honour TMPDIR and the advice is true on both. The name is no longer a bare
+  # tmp.XXXXXXXX either, which is worth having in a leftover directory.
+  tmp_base="${TMPDIR:-/tmp}"
+  work_dir="$(mktemp -d "${tmp_base%/}/heimdall-install.XXXXXX")"
   cleanup() { rm -rf "$work_dir"; }
   trap cleanup EXIT
 
