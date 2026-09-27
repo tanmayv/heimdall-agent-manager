@@ -158,6 +158,9 @@
   --z-overlay: 40;
   --z-modal: 50;
   --z-toast: 60;
+  /* Portaled popups (Select's listbox): must clear --z-modal so a dropdown
+     opened inside a Drawer/Modal is not painted under it. */
+  --z-popover: 70;
   --z-tooltip: 80;
 
   /* ---------------------------------------------------------------- *

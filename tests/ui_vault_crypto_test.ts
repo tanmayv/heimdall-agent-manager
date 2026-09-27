@@ -37,6 +37,22 @@ import vaultReducer, {
   selectRawVaultKeyHex,
 } from '../src/ui/store/vaultSlice.ts';
 
+/**
+ * Flip every bit of the first byte of a hex string, for tamper-detection assertions.
+ *
+ * Do NOT tamper by assigning a fixed byte (e.g. `'00' + hex.slice(2)`): that is the
+ * identity function whenever the first byte already equals the value assigned, so on
+ * 1 run in 256 nothing is actually tampered, decryption legitimately succeeds, and the
+ * assertion either fails spuriously or — worse — passes without testing tamper
+ * detection at all. XOR with 0xff always changes the byte.
+ *
+ * Matches the byte-flip convention already used in tests/ui_vault_content_test.ts.
+ */
+function flipFirstByteHex(hex: string): string {
+  const flipped = (parseInt(hex.slice(0, 2), 16) ^ 0xff).toString(16).padStart(2, '0');
+  return flipped + hex.slice(2);
+}
+
 // -----------------------------------------------------------------------------
 // 1. BIP-39 Word List
 // -----------------------------------------------------------------------------
@@ -219,7 +235,7 @@ test('encryptVaultKeyEnvelope and decryptVaultKeyEnvelope round-trip with passwo
   });
 
   // Tampered tag fails
-  const tamperedTag = '00' + envelope.tagHex.slice(2);
+  const tamperedTag = flipFirstByteHex(envelope.tagHex);
   await assert.rejects(async () => {
     await decryptVaultKeyEnvelope(
       masterKey,
@@ -230,7 +246,7 @@ test('encryptVaultKeyEnvelope and decryptVaultKeyEnvelope round-trip with passwo
   });
 
   // Tampered ciphertext fails
-  const tamperedCiphertext = '00' + envelope.ciphertextHex.slice(2);
+  const tamperedCiphertext = flipFirstByteHex(envelope.ciphertextHex);
   await assert.rejects(async () => {
     await decryptVaultKeyEnvelope(
       masterKey,

@@ -251,6 +251,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_pane_capture_drain_outgoing(conn)
 		bridge_shell_output_drain_outgoing(conn)
 		bridge_shell_exited_drain_outgoing(conn)
+		bridge_pty_stream_drain_outgoing(conn)
 		bridge_tunnel_data_drain_outgoing(conn)
 		bridge_lsp_drain_outgoing(conn)
 		// Flush any status transitions applied on background threads (e.g. a
@@ -528,6 +529,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_pty_resize(conn, text)
 		return
 	}
+	if type == "shell_stream_attach" {
+		bridge_hub_handle_shell_stream_attach(conn, text)
+		return
+	}
+	if type == "shell_stream_detach" {
+		bridge_hub_handle_shell_stream_detach(conn, text)
+		return
+	}
 	if type == "shell_start" {
 		bridge_hub_handle_shell_start(conn, text)
 		return
@@ -735,6 +744,79 @@ bridge_hub_handle_shell_pty_resize :: proc(conn: ^ws.Connection, text: string) {
 		bridge_runtime_cache_command(command_id, result)
 		if conn != nil do _ = bridge_hub_send(conn, result)
 	}
+}
+
+bridge_hub_handle_shell_stream_attach :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "session_id", "")
+	if session_id == "" do session_id = extract_json_string(text, "shell_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "shell_id", "")
+	if session_id == "" do session_id = extract_json_string(text, "agent_instance_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "agent_instance_id", "")
+
+	send_result :: proc(conn: ^ws.Connection, command_id: string, ok: bool, err_msg: string = "") {
+		if command_id == "" do return
+		status := "succeeded" if ok else "failed"
+		result := bridge_command_result_json(command_id, status, err_msg)
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+
+	if session_id == "" {
+		send_result(conn, command_id, false, "missing session_id")
+		return
+	}
+
+	shell_id := session_id
+	if sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id); ok {
+		if sess.shell_id != "" do shell_id = sess.shell_id
+	}
+
+	ok := bridge_pty_stream_worker_start(session_id, shell_id, conn)
+	if !ok {
+		send_result(conn, command_id, false, "failed to start streaming worker")
+		return
+	}
+	send_result(conn, command_id, true)
+}
+
+bridge_hub_handle_shell_stream_detach :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "session_id", "")
+	if session_id == "" do session_id = extract_json_string(text, "shell_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "shell_id", "")
+	if session_id == "" do session_id = extract_json_string(text, "agent_instance_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "agent_instance_id", "")
+
+	send_result :: proc(conn: ^ws.Connection, command_id: string, ok: bool, err_msg: string = "") {
+		if command_id == "" do return
+		status := "succeeded" if ok else "failed"
+		result := bridge_command_result_json(command_id, status, err_msg)
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+
+	if session_id == "" {
+		send_result(conn, command_id, false, "missing session_id")
+		return
+	}
+
+	ok := bridge_pty_stream_worker_detach(session_id)
+	send_result(conn, command_id, ok)
 }
 
 bridge_hub_handle_get_agent_pane :: proc(conn: ^ws.Connection, text: string) {

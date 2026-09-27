@@ -1,9 +1,11 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:testing"
 
 // BR-2 runtime-layer tests: the flag gate, env-pair conversion, and spawn-request
@@ -376,4 +378,144 @@ pty_host_deliver_shell_input_and_resize_validation :: proc(t: ^testing.T) {
 	testing.expect(t, !bridge_pty_host_deliver_shell_resize("sh_a", 0, 100), "zero rows fails for resize")
 	testing.expect(t, !bridge_pty_host_deliver_shell_resize("sh_a", 24, 0), "zero cols fails for resize")
 }
+
+@(test)
+shell_stream_attach_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Cached command returns early
+	bridge_runtime_cache_command("cmd_stream_attach_1", `{"command_id":"cmd_stream_attach_1","status":"cached_ok"}`)
+	bridge_hub_handle_shell_stream_attach(nil, `{"type":"shell_stream_attach","command_id":"cmd_stream_attach_1","session_id":"sh_test"}`)
+	cached, ok := bridge_runtime_cached_command("cmd_stream_attach_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Missing session_id fails gracefully
+	cmd_empty := `{"type":"shell_stream_attach","command_id":"cmd_stream_attach_2","session_id":""}`
+	bridge_hub_handle_shell_stream_attach(nil, cmd_empty)
+	res2, res2_ok := bridge_runtime_cached_command("cmd_stream_attach_2")
+	testing.expect(t, res2_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res2, "failed"), "missing session_id fails gracefully")
+
+	// 3. Nested payload with missing session_id fails gracefully
+	cmd_nested_empty := `{"type":"shell_stream_attach","command_id":"cmd_stream_attach_3","payload":{"session_id":""}}`
+	bridge_hub_handle_shell_stream_attach(nil, cmd_nested_empty)
+	res3, res3_ok := bridge_runtime_cached_command("cmd_stream_attach_3")
+	testing.expect(t, res3_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res3, "failed"), "nested empty session_id fails gracefully")
+
+	// 4. Dispatch via bridge_hub_handle_command
+	cmd_dispatch := `{"type":"shell_stream_attach","command_id":"cmd_stream_attach_4","session_id":""}`
+	bridge_hub_handle_command(nil, cmd_dispatch)
+	res4, res4_ok := bridge_runtime_cached_command("cmd_stream_attach_4")
+	testing.expect(t, res4_ok, "shell_stream_attach dispatched through bridge_hub_handle_command")
+	testing.expect(t, strings.contains(res4, "failed"), "empty session_id fails gracefully")
+}
+
+@(test)
+shell_stream_detach_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Cached command returns early
+	bridge_runtime_cache_command("cmd_stream_detach_1", `{"command_id":"cmd_stream_detach_1","status":"cached_ok"}`)
+	bridge_hub_handle_shell_stream_detach(nil, `{"type":"shell_stream_detach","command_id":"cmd_stream_detach_1","session_id":"sh_test"}`)
+	cached, ok := bridge_runtime_cached_command("cmd_stream_detach_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Missing session_id fails gracefully
+	cmd_empty := `{"type":"shell_stream_detach","command_id":"cmd_stream_detach_2","session_id":""}`
+	bridge_hub_handle_shell_stream_detach(nil, cmd_empty)
+	res2, res2_ok := bridge_runtime_cached_command("cmd_stream_detach_2")
+	testing.expect(t, res2_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res2, "failed"), "missing session_id fails gracefully")
+
+	// 3. Detaching non-active session succeeds cleanly (idempotent)
+	cmd_nonactive := `{"type":"shell_stream_detach","command_id":"cmd_stream_detach_3","session_id":"sh_nonexistent"}`
+	bridge_hub_handle_shell_stream_detach(nil, cmd_nonactive)
+	res3, res3_ok := bridge_runtime_cached_command("cmd_stream_detach_3")
+	testing.expect(t, res3_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res3, "succeeded"), "idempotent detach succeeds")
+
+	// 4. Dispatch via bridge_hub_handle_command
+	cmd_dispatch := `{"type":"shell_stream_detach","command_id":"cmd_stream_detach_4","session_id":""}`
+	bridge_hub_handle_command(nil, cmd_dispatch)
+	res4, res4_ok := bridge_runtime_cached_command("cmd_stream_detach_4")
+	testing.expect(t, res4_ok, "shell_stream_detach dispatched through bridge_hub_handle_command")
+	testing.expect(t, strings.contains(res4, "failed"), "empty session_id fails gracefully")
+}
+
+@(private = "file")
+bridge_test_stream_mutex: sync.Mutex
+
+@(test)
+pty_stream_worker_emit_frame_encodes_base64_and_queues :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	test_data := "echo streaming test\n"
+	bridge_pty_stream_emit_frame(nil, "sh_stream_1", transmute([]byte)test_data)
+
+	frames := bridge_pty_stream_take_outgoing()
+	defer {
+		for f in frames do delete(f)
+		delete(frames)
+	}
+
+	testing.expect_value(t, len(frames), 1)
+	if len(frames) == 1 {
+		frame := frames[0]
+		testing.expect(t, strings.contains(frame, `"type":"shell_pty_output"`), "frame type is shell_pty_output")
+		testing.expect(t, strings.contains(frame, `"session_id":"sh_stream_1"`), "frame has session_id")
+		testing.expect(t, strings.contains(frame, `"data_b64":"ZWNobyBzdHJlYW1pbmcgdGVzdAo="`), "frame data_b64 matches encoded test string")
+	}
+}
+
+@(test)
+pty_stream_worker_detach_deregisters_immediately :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	defer posix.close(fds[0])
+	defer posix.close(fds[1])
+
+	heap := runtime.heap_allocator()
+	worker := new(Bridge_PTY_Stream_Worker, heap)
+	worker.session_id = strings.clone("sh_detach_imm", heap)
+	worker.shell_id = strings.clone("sh_detach_imm", heap)
+	worker.fd = fds[0]
+	worker.active = true
+
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	if bridge_pty_stream_map.workers == nil {
+		bridge_pty_stream_map.workers = make(map[string]^Bridge_PTY_Stream_Worker, allocator = heap)
+	}
+	bridge_pty_stream_map.workers[strings.clone("sh_detach_imm", heap)] = worker
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+
+	testing.expect(t, bridge_pty_stream_worker_is_active("sh_detach_imm"), "worker is initially active")
+
+	// Detach must immediately deregister from map
+	bridge_pty_stream_worker_detach("sh_detach_imm")
+
+	testing.expect(t, !bridge_pty_stream_worker_is_active("sh_detach_imm"), "worker is no longer active after detach")
+
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	_, found := bridge_pty_stream_map.workers["sh_detach_imm"]
+	testing.expect(t, !found, "session key immediately purged from bridge_pty_stream_map")
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+
+	// Clean up worker memory
+	delete(worker.session_id, heap)
+	delete(worker.shell_id, heap)
+	free(worker, heap)
+}
+
 

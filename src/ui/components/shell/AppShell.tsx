@@ -66,7 +66,9 @@ import {
   setUnlockModalOpen,
   readOnboardingDismissed,
   readSessionVaultKey,
+  shouldOpenVaultOnboarding,
 } from '../../store/vaultSlice';
+import { isVaultSupported } from '../../utils/vaultCrypto';
 import {
   setBulkChainTitles,
   selectSearchChains,
@@ -1274,17 +1276,20 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     window.dispatchEvent(new CustomEvent('heimdall:toggle-bottom-dock'));
   }, []);
 
-  // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not dismissed
+  // Auto-pop onboarding modal on first visit if vault is unconfigured or locked and not
+  // dismissed. Suppressed entirely when SubtleCrypto is unavailable (REQ-VAULT-UNSUP-2).
   useEffect(() => {
     const dismissed = readOnboardingDismissed();
-    if (!isVaultUnlocked && !dismissed) {
+    if (shouldOpenVaultOnboarding({ isVaultUnlocked, dismissed })) {
       setIsOnboardingModalOpen(true);
     }
   }, [isVaultUnlocked]);
 
-  // Open onboarding modal when isUnlockModalOpen is triggered from vault placeholders
+  // Open onboarding modal when isUnlockModalOpen is triggered from vault placeholders.
+  // Gated by the same predicate, otherwise a placeholder click reopens the modal by the
+  // back door on an unsupported context (REQ-VAULT-UNSUP-2).
   useEffect(() => {
-    if (isUnlockModalOpen) {
+    if (isUnlockModalOpen && isVaultSupported()) {
       setIsOnboardingModalOpen(true);
     }
   }, [isUnlockModalOpen]);
@@ -1521,6 +1526,23 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     return () => {
       window.removeEventListener('hashchange', update);
       window.removeEventListener('popstate', update);
+    };
+  }, []);
+
+  // Clamp any rogue window scroll back to the origin. The app owns the full viewport
+  // (body is position: fixed), so a non-zero window offset can only come from a browser
+  // heuristic -- e.g. mobile WebKit scrolling the document to reveal a focused element or
+  // a control under the keyboard accessory bar -- and it permanently hides the top chrome.
+  useEffect(() => {
+    const clampWindowScroll = () => {
+      if (window.scrollY !== 0 || window.scrollX !== 0) {
+        window.scrollTo(0, 0);
+      }
+    };
+    window.addEventListener('scroll', clampWindowScroll, { passive: true });
+    clampWindowScroll();
+    return () => {
+      window.removeEventListener('scroll', clampWindowScroll);
     };
   }, []);
 

@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import { importRawKeyHex } from '../utils/vaultCrypto.ts';
+import { importRawKeyHex, isVaultSupported } from '../utils/vaultCrypto.ts';
 
 export const VAULT_SESSION_KEY = 'heimdall:vault:raw-key';
 export const VAULT_ONBOARDING_DISMISSED_KEY = 'heimdall:vault:onboarding-dismissed';
@@ -225,6 +225,47 @@ export const {
   closeUnlockModal,
   setUnlockModalOpen,
 } = vaultSlice.actions;
+
+export const VAULT_UNSUPPORTED_TITLE = 'User Vault unavailable';
+export const VAULT_UNSUPPORTED_REASON =
+  'User Vault unavailable: this page is not a secure context, so Web Crypto (crypto.subtle) is missing. Open Heimdall over HTTPS or on localhost.';
+
+export type VaultStatusLabel = 'Unsupported' | 'Unlocked' | 'Locked' | 'Unconfigured';
+
+/**
+ * Text for the bottom-dock vault badge (REQ-VAULT-UNSUP-3).
+ *
+ * `Unsupported` takes precedence over every other state: without SubtleCrypto the
+ * configured/unlocked flags describe a vault that cannot be operated at all.
+ */
+export function vaultStatusLabel(args: {
+  isVaultUnlocked: boolean;
+  isVaultConfigured: boolean;
+  supported?: boolean;
+}): VaultStatusLabel {
+  const supported = args.supported ?? isVaultSupported();
+  if (!supported) return 'Unsupported';
+  if (args.isVaultUnlocked) return 'Unlocked';
+  return args.isVaultConfigured ? 'Locked' : 'Unconfigured';
+}
+
+/**
+ * Whether the vault onboarding modal may open (REQ-VAULT-UNSUP-2).
+ *
+ * Gates both AppShell entry points: the first-visit auto-pop and the
+ * `isUnlockModalOpen` path driven by vault placeholders. When SubtleCrypto is missing
+ * the modal must never open — its first action would throw a raw TypeError at
+ * `generateVaultKey()`, which is a user-visible dead end.
+ */
+export function shouldOpenVaultOnboarding(args: {
+  isVaultUnlocked: boolean;
+  dismissed: boolean;
+  supported?: boolean;
+}): boolean {
+  const supported = args.supported ?? isVaultSupported();
+  if (!supported) return false;
+  return !args.isVaultUnlocked && !args.dismissed;
+}
 
 export const selectVaultState = (state: { vault?: VaultState }) => state?.vault;
 export const selectIsVaultConfigured = (state: { vault?: VaultState }) => Boolean(state?.vault?.isConfigured);

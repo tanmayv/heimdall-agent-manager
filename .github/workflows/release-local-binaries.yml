@@ -16,14 +16,22 @@ on:
         default: false
         type: boolean
       draft:
+        # Default FALSE: a draft release is invisible to unauthenticated API
+        # callers (absent from /releases, not merely excluded from
+        # /releases/latest) and its assets are not publicly downloadable, so
+        # scripts/install.sh cannot resolve or fetch it. Tick this only to
+        # stage a release you intend to publish by hand afterwards.
         description: 'Create the GitHub Release as a draft'
         required: true
-        default: true
+        default: false
         type: boolean
       prerelease:
+        # Default FALSE: /releases/latest excludes prereleases by design, which
+        # is what scripts/install.sh resolves against. Tick this for a genuine
+        # beta and expect the installer to fall back to /releases.
         description: 'Mark the GitHub Release as a prerelease'
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:

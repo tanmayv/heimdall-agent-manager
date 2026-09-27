@@ -13,8 +13,10 @@ import { openTab, selectPreviewTabs } from '../../store/previewTabsSlice';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
+  vaultStatusLabel,
+  VAULT_UNSUPPORTED_REASON,
 } from '../../store/vaultSlice';
-import { buildRouteHash } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import {
   readBottomDockHeight,
   writeBottomDockHeight,
@@ -44,18 +46,39 @@ export default function BottomDock({
   // Vault status (REQ-BOTTOMDOCK-VAULT-2)
   const isVaultConfigured = useSelector(selectIsVaultConfigured);
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  // 'Unsupported' wins over Unlocked/Locked/Unconfigured (REQ-VAULT-UNSUP-3).
+  const vaultLabel = vaultStatusLabel({ isVaultUnlocked, isVaultConfigured });
+  const vaultBadgeTitle = vaultLabel === 'Unsupported'
+    ? VAULT_UNSUPPORTED_REASON
+    : `User Vault: ${vaultLabel} (Click to manage)`;
 
   // Active tab: sessionId
   const [activeTab, setActiveTab] = useState<string>('');
   const activeTabRef = useRef<HTMLDivElement | null>(null);
+  const tabsContainerRef = useRef<HTMLDivElement | null>(null);
   const [showNewShell, setShowNewShell] = useState<boolean>(false);
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingSessions, setPendingSessions] = useState<ShellSession[]>([]);
 
-  // Auto-scroll active tab into view in horizontal tab bar
+  // Auto-scroll active tab into view in horizontal tab bar (REQ-BAR-12).
+  // Deliberately NOT Element.scrollIntoView(): on iPadOS/mobile WebKit that API scrolls
+  // every scrollable ancestor up to the window, which pushed the whole app ~60px off the
+  // top of the viewport with no way to scroll back (html/body are overflow: hidden).
+  // Instead scroll ONLY the horizontal tab container by adjusting its scrollLeft.
   useEffect(() => {
-    if (activeTab && activeTabRef.current) {
-      activeTabRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    const container = tabsContainerRef.current;
+    const tab = activeTabRef.current;
+    if (!activeTab || !container || !tab) return;
+
+    // Rect-relative deltas, not offsetLeft: the tab's offsetParent is the positioned dock
+    // root (the resizer is absolutely placed), not this scroll container.
+    const tabRect = tab.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    if (tabRect.left < containerRect.left) {
+      container.scrollLeft -= containerRect.left - tabRect.left;
+    } else if (tabRect.right > containerRect.right) {
+      container.scrollLeft += tabRect.right - containerRect.right;
     }
   }, [activeTab]);
 
@@ -250,6 +273,29 @@ export default function BottomDock({
     );
   }, [allSessions, pendingSessions, activeTab]);
 
+  // Current route tracking for main view duplication prevention
+  const [currentRoute, setCurrentRoute] = useState<string>(() => getRoutePathname());
+  useEffect(() => {
+    const handleRouteChange = () => {
+      setCurrentRoute(getRoutePathname());
+    };
+    window.addEventListener('hashchange', handleRouteChange);
+    window.addEventListener('popstate', handleRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', handleRouteChange);
+      window.removeEventListener('popstate', handleRouteChange);
+    };
+  }, []);
+
+  const isViewedInMainView = useMemo(() => {
+    if (!activeSession) return false;
+    const path = currentRoute || getRoutePathname();
+    const mainShellId = path.startsWith('/shells/')
+      ? decodeURIComponent(path.slice('/shells/'.length).split('/')[0].split('?')[0])
+      : null;
+    return mainShellId === activeSession.session_id;
+  }, [activeSession, currentRoute]);
+
   // Previews from preview tabs slice
   const previewTabs = useSelector(selectPreviewTabs);
 
@@ -281,7 +327,10 @@ export default function BottomDock({
         className="flex h-9 shrink-0 items-center justify-between border-b border-subtle bg-surface-raised px-2 text-xs select-none"
       >
         {/* Left: Shell tabs and + button with horizontal sidescrolling (REQ-BAR-2) */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-smooth no-scrollbar py-0.5">
+        <div
+          ref={tabsContainerRef}
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-smooth no-scrollbar py-0.5"
+        >
           {visibleSessions.map((session) => {
             const isTabActive = activeTab === session.session_id;
             const isRunning = session.status === 'running' || session.status === 'starting';
@@ -384,10 +433,10 @@ export default function BottomDock({
               window.location.hash = buildRouteHash('/settings/vault', '');
             }}
             className="inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-primary transition-colors cursor-pointer mr-2"
-            title={`User Vault: ${isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'} (Click to manage)`}
+            title={vaultBadgeTitle}
           >
             <Icon name="lock" size={12} />
-            <span>Vault: {isVaultUnlocked ? 'Unlocked' : isVaultConfigured ? 'Locked' : 'Unconfigured'}</span>
+            <span>Vault: {vaultLabel}</span>
           </button>
           <button
             type="button"
@@ -411,12 +460,24 @@ export default function BottomDock({
       {/* Dock Body - ShellTerminalPane occupies 100% of parent container (REQ-BAR-5) */}
       {!isMinimized && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden bg-canvas">
-          {activeSession ? (
+          {activeSession && !isViewedInMainView ? (
             <ShellTerminalPane
               session={activeSession}
               isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
               onClose={() => handleKillSession(activeSession.session_id)}
             />
+          ) : activeSession && isViewedInMainView ? (
+            <div
+              data-debug-id="bottom-dock-duplicate-state"
+              className="grid h-full place-items-center p-6 text-center text-xs text-muted"
+            >
+              <div>
+                <p className="font-semibold text-primary">Shell active in main view</p>
+                <p className="mt-1 text-faint">
+                  This shell session is currently open in the main view.
+                </p>
+              </div>
+            </div>
           ) : (
             <div
               data-debug-id="bottom-dock-empty-state"

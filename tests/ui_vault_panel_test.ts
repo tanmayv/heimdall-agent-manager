@@ -66,9 +66,11 @@ test('AppShell.tsx correctly registers /settings/vault in SETTINGS_NAV and wires
   );
 
   // Verify component rendering
+  // The route condition also accepts nested /settings/vault/* paths, so match the
+  // VaultPanel render rather than an exact shape of the ternary test.
   assert.match(
     content,
-    /path === ['"]\/settings\/vault['"]\s*\?\s*\(\s*<VaultPanel\s*\/>/,
+    /path === ['"]\/settings\/vault['"][^?]*\?\s*\(\s*<VaultPanel\s*\/>/,
     'AppShell must render <VaultPanel /> when path === "/settings/vault"',
   );
 });

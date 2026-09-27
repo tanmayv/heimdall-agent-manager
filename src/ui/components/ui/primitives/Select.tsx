@@ -40,9 +40,19 @@
  *
  * Tokens only: color/radius/spacing/type/motion resolve to tokens. No raw hex/px.
  *
+ * Popup layering: the listbox is PORTALED to `document.body` and positioned
+ * `fixed` from the trigger's viewport rect. It therefore escapes every ancestor
+ * clipping context (`overflow: hidden/auto`, `transform`, constrained heights) —
+ * a Select inside a scrollable card or a Drawer is never cut off. Position is
+ * recomputed on scroll (capture phase, so inner scrollers count) and resize, the
+ * popup flips above the trigger when there is not enough room below, and is
+ * clamped to the viewport horizontally. `z-popover` sits above `z-modal` so a
+ * dropdown opened inside a Drawer/Modal paints on top of it.
+ *
  * Escape hatch: `className` merges onto the root wrapper `<div>`.
  */
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Icon from './Icon';
 import type {
   ChangeHandler,
@@ -138,6 +148,51 @@ function parseOptions(children: React.ReactNode): OptionItem[] {
   return items;
 }
 
+/** Gap between the trigger and the popup, in px. */
+const TRIGGER_GAP = 4;
+/** Minimum breathing room between the popup and a viewport edge, in px. */
+const VIEWPORT_MARGIN = 8;
+/** Tallest the popup ever gets (matches the previous `max-h-72`), in px. */
+const MAX_POPUP_HEIGHT = 288;
+/** Below this much room underneath the trigger we consider flipping above, in px. */
+const FLIP_THRESHOLD = 180;
+/** Never shrink the popup below this — a one-row listbox is unusable, in px. */
+const MIN_POPUP_HEIGHT = 120;
+
+/** Fixed-position box for the portaled listbox. Exactly one of `top`/`bottom`. */
+interface PopupCoords {
+  left: number;
+  width: number;
+  maxHeight: number;
+  top?: number;
+  bottom?: number;
+}
+
+/**
+ * Place the popup from the trigger's viewport rect: open downwards unless the
+ * room below is cramped and there is more of it above, clamp horizontally to the
+ * viewport, and bound the height by whichever side we landed on.
+ */
+function computeCoords(rect: DOMRect): PopupCoords {
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const spaceAbove = rect.top;
+  const flip = spaceBelow < FLIP_THRESHOLD && spaceAbove > spaceBelow;
+  const available = (flip ? spaceAbove : spaceBelow) - TRIGGER_GAP - VIEWPORT_MARGIN;
+
+  const box = {
+    left: Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(rect.left, window.innerWidth - rect.width - VIEWPORT_MARGIN),
+    ),
+    width: rect.width,
+    maxHeight: Math.max(MIN_POPUP_HEIGHT, Math.min(MAX_POPUP_HEIGHT, available)),
+  };
+
+  return flip
+    ? { ...box, bottom: window.innerHeight - rect.top + TRIGGER_GAP }
+    : { ...box, top: rect.bottom + TRIGGER_GAP };
+}
+
 const TRIGGER_BASE =
   'flex w-full items-center justify-between gap-2 rounded-[var(--radius-md)] border bg-surface ' +
   'text-left text-primary transition duration-fast outline-none cursor-pointer ' +
@@ -214,6 +269,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
   const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
 
   const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<PopupCoords | null>(null);
   const [activeIndex, setActiveIndex] = useState(selectedIndex >= 0 ? selectedIndex : enabledIndexes[0] ?? 0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -316,22 +372,52 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
     }
   }
 
-  // Close on outside pointer-down.
+  // Close on outside pointer-down. The listbox lives in a body portal, so it is
+  // NOT inside rootRef — both subtrees count as "inside".
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      const inside =
+        rootRef.current?.contains(target) || listboxRef.current?.contains(target);
+      if (!inside) setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
 
-  // Keep the active option scrolled into view.
+  // Pin the popup to the trigger while open. Layout effect so the first paint is
+  // already in the right place; capture-phase scroll so scrolling ANY ancestor
+  // (a drawer body, a scrollable card) re-places it, not just the window.
+  useLayoutEffect(() => {
+    if (!open) {
+      setCoords(null);
+      return;
+    }
+    const update = () => {
+      const trigger = buttonRef.current;
+      if (trigger) setCoords(computeCoords(trigger.getBoundingClientRect()));
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open]);
+
+  // Keep the active option scrolled into view. `popupMounted` is load-bearing in the
+  // dep list: the listbox is gated on `coords`, which the layout effect above sets in a
+  // SECOND commit, and React flushes this passive effect after the first one. Without it
+  // the effect runs while `listboxRef.current` is still null and the active option is
+  // never revealed on open.
+  const popupMounted = coords !== null;
   useEffect(() => {
-    if (!open) return;
+    if (!open || !popupMounted) return;
     const el = listboxRef.current?.querySelector<HTMLElement>(`#${CSS.escape(optionDomId(activeIndex))}`);
     el?.scrollIntoView({ block: 'nearest' });
-  }, [open, activeIndex]);
+  }, [open, popupMounted, activeIndex]);
 
   const triggerClassName = [
     TRIGGER_BASE,
@@ -427,16 +513,27 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
 
       {name ? <input type="hidden" name={name} value={value} /> : null}
 
-      {open ? (
-        <ul
-          ref={listboxRef}
-          id={listboxId}
-          role="listbox"
-          className="absolute left-0 right-0 z-dropdown mt-1 max-h-72 overflow-auto rounded-[var(--radius-md)] border border-subtle bg-surface-raised py-1 shadow-overlay"
-        >
-          {rows}
-        </ul>
-      ) : null}
+      {open && coords && typeof document !== 'undefined'
+        ? createPortal(
+            <ul
+              ref={listboxRef}
+              id={listboxId}
+              role="listbox"
+              style={{
+                position: 'fixed',
+                left: coords.left,
+                top: coords.top,
+                bottom: coords.bottom,
+                width: coords.width,
+                maxHeight: coords.maxHeight,
+              }}
+              className="z-popover overflow-auto rounded-[var(--radius-md)] border border-subtle bg-surface-raised py-1 shadow-overlay"
+            >
+              {rows}
+            </ul>,
+            document.body,
+          )
+        : null}
     </div>
   );
 });

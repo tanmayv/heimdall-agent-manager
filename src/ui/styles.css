@@ -47,6 +47,10 @@ body,
 }
 
 body {
+  /* overflow: hidden alone does not stop window panning on iOS/iPadOS Safari;
+     pinning the body removes the document scroll box entirely. */
+  position: fixed;
+  inset: 0;
   background: var(--color-canvas, var(--fd-canvas));
   color: var(--color-text-primary, var(--fd-ink));
 }

@@ -95,7 +95,7 @@ cat > "$stage/METADATA.json" <<META
   "commit": "$commit",
   "built_at": "$built_at_iso",
   "binaries": $binaries_json,
-  "tls_dependency": "OpenSSL s_client via PATH or bundled bin/openssl when present"
+  "tls_dependency": "socat (DEFAULT bridge->hub TLS transport; NOT bundled -- install it with your system package manager). OpenSSL s_client is the legacy fallback, used only when HAM_TLS_BACKEND=s_client, and it is what bundled bin/openssl serves; the bundled openssl does NOT satisfy the default socat path."
 }
 META
 

@@ -1,10 +1,15 @@
 package http
 
+import base64 "core:encoding/base64"
+import "core:net"
 import "core:strconv"
 import "core:strings"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
 import agent_service "odin_test:hub/service/agent"
+import shell_session_svc "odin_test:hub/service/shell_session"
 
 // POST /api/v1/agent-instances/{id}/input
 // Streams interactive keystrokes and raw terminal input to a running agent instance.
@@ -73,3 +78,135 @@ agent_instance_resize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 post_agent_instance_resize_handler :: agent_instance_resize_handler
+
+// GET /api/v1/agent-instances/{id}/stream — WS upgrade; streaming terminal pane for agent instances (REQ-STREAM-IMPL-4).
+agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket) {
+	h := (^Agent_Handlers)(ctx)
+
+	auth_ctx: contracts.Auth_Context
+	ticket := query_value(req.query, "ticket")
+	if ticket != "" {
+		if h.ws_tickets == nil {
+			write_stream_error(client, respond_error(domain.domain_error(.Unauthenticated, "ticket store not configured"), req.request_id))
+			return
+		}
+		c, ok := user_ws_ticket_store_consume(h.ws_tickets, ticket)
+		if !ok {
+			write_stream_error(client, respond_error(domain.domain_error(.Unauthenticated, "websocket ticket is invalid or expired"), req.request_id))
+			return
+		}
+		auth_ctx = c
+	} else if h.auth != nil {
+		c, ok, resp := require_auth(h.auth, req)
+		if !ok {
+			write_stream_error(client, resp)
+			return
+		}
+		auth_ctx = c
+	} else {
+		write_stream_error(client, respond_error(domain.domain_error(.Unauthenticated, "authentication required for agent instance stream"), req.request_id))
+		return
+	}
+
+	// Experiment gate (REQ-STREAM-IMPL-4): with the flag off the route refuses.
+	if !shell_stream_experiment_enabled(h.experiments, auth_ctx.user_id) {
+		write_stream_error(client, respond_error(domain.domain_error(.Forbidden, "the streaming_terminal_pane experiment is not enabled for this user"), req.request_id))
+		return
+	}
+
+	instance_id := path_part(req.path, 4)
+	if instance_id == "" || strings.contains(instance_id, "/") {
+		write_stream_error(client, respond_error(domain.domain_error(.Not_Found, "agent instance not found"), req.request_id))
+		return
+	}
+
+	if h.agents == nil || h.agents.agents == nil {
+		write_stream_error(client, respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id))
+		return
+	}
+
+	inst, got, err := iface.agent_get_instance(h.agents.agents, instance_id)
+	if !got || err.code != .None {
+		write_stream_error(client, respond_error(domain.domain_error(.Not_Found, "agent instance not found"), req.request_id))
+		return
+	}
+
+	if string(inst.owner_user_id) != auth_ctx.user_id {
+		write_stream_error(client, respond_error(domain.domain_error(.Forbidden, "not the instance owner"), req.request_id))
+		return
+	}
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		write_stream_error(client, respond_error(domain.domain_error(.Bridge_Offline, "agent instance has no bridge"), req.request_id))
+		return
+	}
+
+	key := header_value(req.headers, "Sec-WebSocket-Key")
+	if key == "" {
+		write_stream_error(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id))
+		return
+	}
+	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) do return
+
+	if h.shell_sessions != nil {
+		shell_session_svc.shell_session_attach(h.shell_sessions, instance_id, client, inst.bridge_id)
+	}
+	defer {
+		if h.shell_sessions != nil {
+			shell_session_svc.shell_session_detach(h.shell_sessions, instance_id, client, inst.bridge_id)
+		}
+	}
+
+	// Send ready frame.
+	ready_b := strings.builder_make()
+	strings.write_string(&ready_b, "{\"type\":\"ready\",\"agent_instance_id\":\"")
+	write_handler_json_string(&ready_b, instance_id)
+	strings.write_string(&ready_b, "\",\"session_id\":\"")
+	write_handler_json_string(&ready_b, instance_id)
+	strings.write_string(&ready_b, "\"}")
+	ready_json := strings.to_string(ready_b)
+	_ = write_ws_text_frame(client, ready_json)
+	delete(ready_json)
+
+	reader := bridge_ws_reader_make(client)
+	defer bridge_ws_reader_destroy(&reader)
+
+	for {
+		text, ok := read_ws_text_blocking(&reader, 120 * time.Second)
+		if !ok do return
+
+		frame_type := json_string(text, "type")
+
+		switch frame_type {
+		case "input":
+			data_b64 := json_string(text, "data_b64")
+			if data_b64 != "" {
+				decoded, decode_err := base64.decode(data_b64)
+				delete(data_b64)
+				if decode_err == nil && decoded != nil {
+					raw_data := string(decoded)
+					agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, raw_data)
+					delete(decoded)
+				}
+			} else {
+				delete(data_b64)
+				raw_data := json_string(text, "data")
+				if raw_data != "" {
+					agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, raw_data)
+					delete(raw_data)
+				}
+			}
+		case "resize":
+			rows := json_int(text, "rows", 0)
+			cols := json_int(text, "cols", 0)
+			if rows >= 1 && cols >= 1 {
+				agent_service.agent_service_send_pty_resize(h.agents, auth_ctx, instance_id, rows, cols)
+			}
+		case "heartbeat":
+			// Keepalive
+		}
+		delete(frame_type)
+		delete(text)
+	}
+}
+
