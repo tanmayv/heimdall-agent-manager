@@ -2582,7 +2582,23 @@ resolve_agent_id_instance :: proc(service: ^Taskchain_Service, chain: domain.Tas
 // ensure_chain_member adds instance_id to the chain members with a worker role if not
 // already present. Best-effort: failures are non-fatal because the ref will still be
 // validated by agent_instance_same_chain (owner + chain checks).
+//
+// An EXISTING member is left untouched. taskchain_save_member is an upsert that does
+// `SET role=excluded.role`, so writing the worker row unconditionally would rewrite the
+// role of a member that already has one. That mattered most for the coordinator: since
+// is_chain_coordinator (H9) reads this table as the single canonical authority, promoting
+// the coordinator instance onto a planning or micro-task demoted its member row to
+// "worker" and locked the real coordinator out of every coordinator-gated action
+// (reconcile, update_chain/set-title/set-description/set-status, publish). Preserving ANY
+// existing role — not just "coordinator" — is the invariant, so a reviewer member is not
+// silently rewritten either.
 ensure_chain_member :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id, agent_id: string) {
+	if members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); err.code == .None {
+		defer delete(members)
+		for m in members {
+			if m.agent_instance_id == instance_id do return
+		}
+	}
 	now := platform.clock_now(service.clock)
 	member := domain.Task_Chain_Member{
 		chain_id = chain.chain_id,
