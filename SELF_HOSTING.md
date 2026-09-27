@@ -303,10 +303,12 @@ The installer:
    to `/usr/local/bin` while the service file and PATH lines are written for
    the invoking user (resolved from `SUDO_USER`) and chowned to them, so the
    install never splits between `/usr/local/bin` and `/root`; running as root
-   without a resolvable `SUDO_USER` is refused. A bundled `openssl` is
-   installed too when the release ships one — current releases do not (it
-   linked Nix-store libraries and could not run on stock hosts, so
-   REQ-INST-16 dropped it from the bundle); the legacy
+   without a resolvable `SUDO_USER` is refused. The installer never installs
+   an `openssl` — not even from an older release tarball that still ships one:
+   `openssl` is a generic name the installer does not own, and writing it into
+   a shared `/usr/local/bin` could clobber the host's own. REQ-INST-21 retired
+   the bundled-openssl machinery precisely because its provenance record could
+   then get that host file deleted on uninstall. The legacy
    `HAM_TLS_BACKEND=s_client` path resolves `openssl` from your system `PATH`.
 4. Wires the install directory onto `PATH` in the shell config files that
    actually exist for your shell — `~/.bashrc` / `~/.bash_profile` (bash),
@@ -351,10 +353,8 @@ bash scripts/install.sh --uninstall --dry-run   # report only, changes nothing
 bash scripts/install.sh --uninstall
 ```
 
-It stops the bridge service (best effort), removes the four binaries, and —
-for older releases that shipped one — the bundled `openssl` it installed
-together with the `.heimdall-openssl.sha256`
-record beside it, removes the service file, and strips the
+It stops the bridge service (best effort), removes the four binaries, removes
+the service file, and strips the
 `PATH` lines it added — matched by the `# Added by heimdall install.sh`
 marker, so your own `PATH` edits are untouched. It deliberately **keeps** your
 state and names the path for each, so you can remove it by hand if you really
@@ -364,17 +364,15 @@ want it gone:
   enrollment. Uninstalling the binaries does not un-enroll the device.
 - `<service file>.bak-*` — service files you had before an install replaced
   them. These are recovery artifacts, not installer debris.
-- An `openssl` at the install directory that this installer cannot prove it
-  wrote. `openssl` is the one generic name the installer places, so authorship
-  is established by a recorded checksum rather than by the file's name or its
-  contents: the install writes `<install dir>/.heimdall-openssl.sha256` holding
-  the SHA-256 of the `openssl` it just installed, and `--uninstall` removes that
-  `openssl` only while it still hashes to the recorded value. A system or
-  hand-placed `openssl` has no such record and is always kept and named. One
-  consequence worth knowing: `heimdall self-update` refreshes a bundled
-  `openssl` without updating the record, so after a self-update `--uninstall`
-  keeps the file and tells you the checksum no longer matches — it errs toward
-  leaving a file behind rather than deleting one it cannot account for.
+- Any `openssl` at the install directory. The installer never installs one —
+  not even from an older release tarball that still ships a bundled `openssl` —
+  so `--uninstall` has nothing of its own to remove and never touches the name.
+  `openssl` is a generic name the installer does not own: older versions
+  installed a bundled copy and recorded `<install dir>/.heimdall-openssl.sha256`
+  as proof of authorship, and REQ-INST-21 retired that machinery after its
+  provenance record got a host's own `/usr/local/bin/openssl` overwritten and
+  then deleted. Whatever `openssl` sits there now is yours or your package
+  manager's, and it stays.
 
 `socat` (the default bridge → hub TLS transport) is not bundled; install it
 with your system package manager (`sudo apt install socat`,

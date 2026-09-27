@@ -333,20 +333,20 @@ heimdall_traces_under_home() { # <home>
 
 sudo_install_dir="/usr/local/bin"
 
-# install.sh writes a BUNDLED openssl into $install_dir unconditionally
-# (install.sh:1566-1568: `install -m 0755 ... "$install_dir/openssl"`, with no
-# existence check and no backup -- unlike the service file, which it carefully
-# copies to .bak-* before replacing). Under sudo $install_dir is the SHARED
-# /usr/local/bin, so on any host that already has an openssl there -- an Intel
-# Mac with Homebrew is the ordinary case -- a `curl | sudo bash` silently
-# replaces it, and because install.sh then records ITS OWN copy's checksum as
-# provenance, a later --uninstall DELETES it. Net effect: install followed by
-# uninstall removes the host's openssl.
-# This mode does not fail on that (it is install.sh's documented-nowhere
-# behaviour, not a defect in the branch under test), but it will not let it pass
-# unremarked either: the file is snapshotted, the replacement is REPORTED, and
-# the original bytes are put back during cleanup so a runner is not left
-# without an openssl it arrived with.
+# install.sh once wrote a BUNDLED openssl into $install_dir unconditionally
+# (no existence check, no backup), then recorded ITS OWN copy's checksum as
+# provenance, so a later --uninstall deleted a pre-existing host openssl on
+# the strength of that self-created record. Under sudo $install_dir is the
+# SHARED /usr/local/bin, so on a host that already had an openssl there -- an
+# Intel Mac with Homebrew is the ordinary case -- `curl | sudo bash` followed
+# by --uninstall removed the host's openssl.
+# REQ-INST-21 retired that machinery: current install.sh neither writes nor
+# removes an openssl by any route, and heimdall update leaves one untouched.
+# This mode keeps the guard as the regression detector for exactly that
+# defect: the shared openssl is snapshotted before install, any divergence is
+# REPORTED, and the original bytes are put back during cleanup so a runner is
+# never left without an openssl it arrived with. It should report the
+# unchanged path forever; if it ever fires again, that is a real regression.
 openssl_path="$sudo_install_dir/openssl"
 openssl_pre_existed=false
 openssl_pre_sha=""
@@ -476,7 +476,8 @@ $pre_existing Refusing to run: --uninstall would remove it."
   #    makes the ordering unambiguous to the next reader.
   ok "live-bridge precondition already passed above (assert_no_live_bridge, unweakened)"
 
-  # 7. Snapshot the one shared file install.sh will overwrite without asking.
+  # 7. Snapshot the shared openssl the guard watches — install.sh must not
+  #    touch it, and this snapshot is what proves it did not.
   snapshot_shared_openssl
 }
 
