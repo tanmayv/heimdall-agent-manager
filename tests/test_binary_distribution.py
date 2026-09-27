@@ -382,7 +382,21 @@ def test_install_sh_dry_run_hub(ctx):
     # and DOES land in the rendered unit.
     unit = dry_run_unit_text(res)
     assert '--hub' in unit, 'unit must carry --hub when it was explicitly passed'
-    assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+    # The FORM differs by platform and this assertion used to state only the
+    # systemd one, so it was wrong on darwin -- and being wrong cost nothing
+    # until the suite first ran on a Mac, because host_target() never returns
+    # darwin-* on Linux. systemd puts the flag and its value on an ExecStart
+    # continuation line; a launchd plist spells them as two separate <string>
+    # elements in ProgramArguments (service_hub_flags_plist, install.sh:722-727),
+    # so '--hub <url>' as one literal string cannot appear there. The full-run
+    # test below already knew this; this one did not.
+    if target.startswith('linux'):
+        assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+    else:
+        assert '<string>--hub</string>' in unit, (
+            'the plist must pass --hub as its own ProgramArguments string')
+        assert f'<string>{hub}</string>' in unit, (
+            'the plist must pass the hub URL as the string after --hub')
 
 
 def test_install_sh_dry_run_bare(ctx):
@@ -397,6 +411,21 @@ def test_install_sh_dry_run_bare(ctx):
 def need_tool(name):
     if shutil.which(name) is None:
         raise Skip(f'{name} not available')
+
+
+def sha256_cli(path) -> list:
+    """The argv a FIXTURE should use to hash a file, mirroring install.sh.
+
+    sha256_or_empty (install.sh:610-613) falls back sha256sum -> shasum -a 256
+    because macOS ships only the latter. Test code has to make the same choice:
+    a bare ['sha256sum', ...] here raised FileNotFoundError on macos-14, which
+    main() counts as a FAILURE of the test rather than of the installer.
+    """
+    if shutil.which('sha256sum'):
+        return ['sha256sum', str(path)]
+    if shutil.which('shasum'):
+        return ['shasum', '-a', '256', str(path)]
+    raise Skip('neither sha256sum nor shasum is available to hash with')
 
 
 def make_hub_mirror(base: Path, tarball: Path, target: str) -> str:
@@ -1302,20 +1331,46 @@ def assert_download_bounds_enforced(ctx, tool):
         assert 'total download limit' in out, (
             f'wget: the TOTAL cap was not named (elapsed {elapsed:.1f}s):\n{out}')
 
-    # (c) BURSTY but healthy: 8192 bytes every NET_STALL_SECONDS = 4096 B/s average,
-    #     FOUR TIMES the floor, delivered in bursts exactly as far apart as the stall
-    #     window. Seconds of zero file growth are guaranteed by construction while the
-    #     transfer comfortably meets the floor -- so this is the shape that a
-    #     per-window floor gets wrong, and the reason the floor is an average since
-    #     the last known-good anchor instead.
+    # (c) BURSTY but healthy: bursts of 4 x floor x gap bytes every `gap` seconds,
+    #     i.e. a 4096 B/s average against a 1024 B/s floor, delivered in bursts
+    #     further apart than the watchdog's 1s poll. Seconds of zero file growth are
+    #     guaranteed by construction while the transfer comfortably meets the floor --
+    #     so this is the shape that a per-window floor gets wrong, and the reason the
+    #     floor is an average since the last known-good anchor instead.
     #
-    #     The gap is pinned at NET_STALL_SECONDS because that is the tolerance the
-    #     implementation can actually claim: measured across gaps of 0.5s, 1s, 2s and
-    #     3s at a fixed 4x-floor average, both branches carry the first three to the
-    #     deadline, while a 3s gap (75% of the horizon) makes wget's write lag look
-    #     like a stall. At the production 60s that edge is a full minute of silence,
-    #     which is a stall by any useful definition.
-    with dribble_server(2 * 4096, float(FAST_BOUNDS['NET_STALL_SECONDS'])) as base:
+    #     THE GAP USED TO BE PINNED AT NET_STALL_SECONDS and had to be moved off it,
+    #     for a reason that only a real Mac could show. download() passes wget
+    #     --read-timeout=NET_STALL_SECONDS, so a gap EQUAL to that value races
+    #     wget's own idle-read timeout. On Linux the data arrives just in time; on
+    #     both macOS runners it does not, and the run measured there is worth
+    #     stating exactly, because it is also a finding about run_bounded:
+    #
+    #       wget: 'Read error at byte 8192 (Operation timed out). Retrying.'
+    #       -> wget RESTARTS from byte 0 and TRUNCATES the output file (no -c)
+    #       -> run_bounded's anchor_bytes is still 8192 while file_bytes drops to 0,
+    #          so (current - anchor_bytes) is NEGATIVE for the whole horizon
+    #       -> 'stalled below 1024 bytes/sec for 4s' on a transfer that was actively
+    #          re-downloading.
+    #
+    #     That cascade is NOT a fixture artifact: any wget retry mid-transfer -- a
+    #     read timeout, a dropped connection, a flaky link -- truncates the file and
+    #     can make the watchdog report a stall as the cause. It is filed as a
+    #     divergence for whoever owns REQ-INST-7 and wants a test of its own (an
+    #     explicit mid-transfer-retry case); it is deliberately not fixed here,
+    #     because install.sh is not this task's file to change.
+    #
+    #     So the gap is now 0.75 * NET_STALL_SECONDS: still LONGER than the 1s poll,
+    #     which is what guarantees the zero-growth windows this case exists to
+    #     produce, and comfortably SHORTER than wget's read timeout, so the shape
+    #     under test is the watchdog's anchored floor and not a race with wget's
+    #     retry logic. The burst scales with it to hold the average at 4x the floor.
+    #     The narrower claim is stated plainly: gaps of 0.5s, 1s and 1.5s are carried
+    #     to the deadline on Linux and darwin; a gap at or above the read timeout is
+    #     the retry cascade above, and at the production 60s such a gap is a stall by
+    #     any useful definition anyway.
+    bursty_gap = 0.75 * FAST_BOUNDS['NET_STALL_SECONDS']
+    bursty_chunk = int(4 * FAST_BOUNDS['NET_STALL_BYTES_PER_SEC'] * bursty_gap)
+    with dribble_server(bursty_chunk, bursty_gap) as base:
         res, elapsed = run_download_bound(script, work, f'bursty-{tool}',
                                           f'{base}/heimdall.tar.gz', tool)
     out = res.stdout + res.stderr
@@ -1471,12 +1526,15 @@ def test_install_sh_full_run_service_lifecycle(ctx):
     # re-run with a different --hub produces a differing unit.
     hub2 = make_hub_mirror(base / 'second', tarball, target)
 
-    env = {**os.environ,
-           'HOME': str(home),
-           'XDG_CONFIG_HOME': '',
-           'XDG_RUNTIME_DIR': str(base / 'xdg-runtime'),
-           'SUDO_USER': '',
-           'SHELL': ''}
+    # sandbox_install_env, NOT a hand-rolled dict: this test used to build its
+    # own env, which meant it was the ONE sandboxed run without the socat stub
+    # on PATH. REQ-INST-14 makes a missing socat fatal, so it passed only on a
+    # host that happened to have socat installed and failed on every host that
+    # did not -- both macOS runners AND ubuntu-24.04 in CI, where this was the
+    # only failure. A test whose result depends on a package the host may or may
+    # not ship is not a gate. The helper also blanks DBUS_SESSION_BUS_ADDRESS,
+    # which this env was missing.
+    env = sandbox_install_env(home, base / 'xdg-runtime')
 
     def install_run(hub_url, *extra):
         return subprocess.run(
@@ -2266,7 +2324,7 @@ def test_install_sh_uninstall_unhashable_openssl_nonfatal(ctx):
     openssl = install_dir / 'openssl'
 
     openssl.chmod(0o000)
-    assert run(['sha256sum', str(openssl)]).returncode != 0, (
+    assert run(sha256_cli(openssl)).returncode != 0, (
         'fixture sanity: the openssl must actually be unhashable for this test to mean anything')
 
     res = real_uninstall(env)

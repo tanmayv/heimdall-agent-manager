@@ -192,6 +192,15 @@ printf 'installer smoke: %s (%s/%s), target %s\n' "$uname_s" "$os" "$arch" "$tar
 printf 'sandbox HOME: %s\n' "$HOME"
 printf 'pinned release for URL assertions: %s\n' "$pin_version"
 printf 'bash: %s\n' "$(bash --version | head -n 1)"
+# Printed on every run because it is the evidence behind a filed divergence:
+# install.sh's download_failed advises "set TMPDIR to a larger filesystem", which
+# is only true where mktemp -d actually HONOURS TMPDIR. These two lines say
+# whether it does on this host.
+probe_tmpdir="$sandbox/tmpdir-probe"
+mkdir -p "$probe_tmpdir"
+printf 'TMPDIR=%s\n' "${TMPDIR:-(unset)}"
+printf 'mktemp -d with TMPDIR=%s gives: %s\n' \
+  "$probe_tmpdir" "$(TMPDIR="$probe_tmpdir" mktemp -d)"
 
 assert_no_live_bridge
 
@@ -268,12 +277,38 @@ if [ -e "$install_dir" ]; then die "--dry-run created $install_dir"; fi
 assert_gone "$service_file" "--dry-run wrote no service file"
 ok "--dry-run wrote nothing"
 
-# --- 4. the real install ------------------------------------------------------
-# No --version: this resolves the latest GitHub release exactly as the
-# documented `curl -fsSL ... | bash` invocation does, which is also what puts
-# resolve_latest_tag's curl path and api_fetch on a darwin host under test.
-step "real install (latest release, no --version): exit 0 and every file in place"
-run_installer 0
+# --- 4a. release resolution, probed rather than depended on -------------------
+# The real install below PINS --version, and that is not laziness: the first run
+# of this script on macos-14 died here with
+#   "api.github.com rejected the request with HTTP 403: the unauthenticated rate
+#    limit (60 requests/hour/IP) is exhausted"
+# because hosted macOS runners share egress IPs, so the 60/hour anonymous budget
+# is routinely already spent by someone else. A gate whose result depends on
+# another tenant's API usage is not a gate.
+#
+# The resolution path still gets EXECUTED here, as a probe with an exhaustive
+# list of acceptable outcomes: it either resolves a tag, or it fails with the
+# specific, correct diagnosis. What it must never do is blame the network for a
+# rate limit (REQ-INST-6) -- so the probe is strict about WHICH failure, not
+# about whether it failed.
+step "bare --dry-run: release resolution executes and diagnoses itself honestly"
+run_installer 0 --dry-run
+resolve_out="$out"
+case "$resolve_out" in
+  *"release: v"*)
+    ok "resolved a release tag from api.github.com on this host" ;;
+  *"the unauthenticated rate limit (60 requests/hour/IP) is exhausted"*)
+    ok "rate-limited, and said so precisely (shared-IP runner; REQ-INST-6c)" ;;
+  *)
+    printf 'FAIL bare --dry-run neither resolved a tag nor gave a known-good diagnosis\n--- output ---\n%s\n' "$resolve_out" >&2
+    exit 1 ;;
+esac
+assert_absent "never blamed the network for a non-network failure" \
+  "could not reach api.github.com" "$resolve_out"
+
+# --- 4b. the real install -----------------------------------------------------
+step "real install (--version $pin_version): exit 0 and every file in place"
+run_installer 0 --version "$pin_version"
 install_out="$out"
 assert_contains "downloaded a tarball" "downloading https://github.com/tanmayv/heimdall-agent-manager/releases/download/" "$install_out"
 assert_contains "verified the checksum BEFORE extracting" "checksum verified" "$install_out"
@@ -323,7 +358,7 @@ ok "PATH export written into a sandbox rc file"
 
 # --- 5. re-run is a no-op on the service file --------------------------------
 step "identical re-run: exit 0, service file left untouched"
-run_installer 0
+run_installer 0 --version "$pin_version"
 assert_contains "identical unit detected" "already up to date; leaving it untouched" "$out"
 if ls "$service_file".bak-* >/dev/null 2>&1; then
   die "an identical re-run created a backup: $(ls "$service_file".bak-*)"

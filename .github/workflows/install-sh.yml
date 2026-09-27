@@ -157,6 +157,13 @@ jobs:
           for t in curl wget socat python3 shasum sha256sum; do
             printf '%-10s %s\n' "$t" "$(command -v "$t" || echo '(absent)')"
           done
+          # Evidence for a filed divergence: install.sh's download_failed tells
+          # the user to "set TMPDIR to a larger filesystem", which only helps on a
+          # host where mktemp -d HONOURS TMPDIR. This says whether this one does.
+          mkdir -p "$RUNNER_TEMP/tmpdir-probe"
+          printf 'TMPDIR=%s\n' "${TMPDIR:-(unset)}"
+          printf 'mktemp -d with TMPDIR=%s gives %s\n' "$RUNNER_TEMP/tmpdir-probe" \
+            "$(TMPDIR="$RUNNER_TEMP/tmpdir-probe" mktemp -d)"
 
       - name: Run tests/test_binary_distribution.py
         shell: bash
