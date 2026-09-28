@@ -46,6 +46,7 @@
  *     and these pages never call them.
  */
 import { buildRouteHash } from '../../utils/appLocation';
+import { isVaultArmored } from '../../utils/vaultContent.ts';
 import type { IconName, Tone } from '@ui';
 import type { ShellSession, ShellSessionKind, ShellSessionStatus, ShellStatusFilter } from '../../api/endpoints/shells';
 
@@ -403,8 +404,8 @@ export function exitTone(session: ShellSession): Tone {
  */
 export function shellSearchableText(session: ShellSession): string {
   return [
-    session.label,
-    session.cmd,
+    session.label && !isVaultArmored(session.label) ? session.label : '',
+    session.cmd && !isVaultArmored(session.cmd) ? session.cmd : '',
     session.cwd,
     session.session_id,
     session.kind,

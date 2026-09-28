@@ -8,6 +8,7 @@ import { useListAgentsQuery } from '../api/endpoints/agents';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 import { VaultText } from './vault/VaultText';
+import { isVaultArmored } from '../utils/vaultContent.ts';
 
 import { Button, Icon, Input, Select } from '@ui';
 export type LibraryPageProps = {
@@ -131,7 +132,10 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
       if (agentFilter && creatorId(a) !== agentFilter) return false;
       if (chainFilter && originRef(a) !== chainFilter) return false;
       if (q) {
-        const hay = `${a?.name || ''} ${a?.description || ''} ${artifactId(a)} ${originRef(a)}`.toLowerCase();
+        const nameText = a?.name && !isVaultArmored(a.name) ? a.name : '';
+        const descText = a?.description && !isVaultArmored(a.description) ? a.description : '';
+        const originRefText = originRef(a) && !isVaultArmored(originRef(a)) ? originRef(a) : '';
+        const hay = `${nameText} ${descText} ${artifactId(a)} ${originRefText}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;

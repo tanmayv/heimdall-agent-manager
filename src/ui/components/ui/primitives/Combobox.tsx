@@ -63,6 +63,7 @@
  *     `ScopeField` pattern will absorb. Prefer NOT to use it.
  */
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { isVaultArmored } from '../../../utils/vaultContent.ts';
 import { Icon } from './Icon';
 import type {
   DisableableProps,
@@ -204,7 +205,7 @@ export function Combobox(props: ComboboxProps) {
     if (!q) return options;
     return options.filter((option) =>
       [option.title, option.tag, option.subtitle, option.id, option.keywords]
-        .filter(Boolean)
+        .filter((field): field is string => Boolean(field) && !isVaultArmored(field))
         .join(' ')
         .toLowerCase()
         .includes(q),

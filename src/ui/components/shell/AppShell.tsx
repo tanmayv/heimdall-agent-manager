@@ -305,9 +305,9 @@ const SETTINGS_NAV = [
 
 export function resolveSettingsTab(path: string): string {
   const clean = (path.startsWith('#') ? path.slice(1) : path).split('?')[0];
-  if (!clean.startsWith('/settings')) return 'general';
+  if (!clean.startsWith('/settings')) return 'appearance';
   const sub = clean.slice('/settings'.length).replace(/^\//, '').split('/')[0] || '';
-  if (!sub) return 'general';
+  if (!sub || sub === 'general') return 'appearance';
   return sub;
 }
 
@@ -1528,7 +1528,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         break;
       case 'settings':
       case 'settings-modal':
-        setSettingsModalTab('general');
+        setSettingsModalTab('appearance');
         setSettingsModalOpenState(true);
         break;
       case 'settings-appearance':
@@ -1690,7 +1690,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
                   item.path.startsWith('/settings')
                     ? (e) => {
                         e.preventDefault();
-                        setSettingsModalTab('general');
+                        setSettingsModalTab('appearance');
                         setSettingsModalOpen(true);
                       }
                     : undefined
@@ -1752,7 +1752,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           }}
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenSettings={() => {
-            setSettingsModalTab('general');
+            setSettingsModalTab('appearance');
             setSettingsModalOpen(true);
           }}
           isSettingsOpen={settingsModalOpen}

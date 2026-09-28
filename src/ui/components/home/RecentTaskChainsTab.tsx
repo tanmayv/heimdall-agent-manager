@@ -1,10 +1,13 @@
 import React, { useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
 import { Badge, EmptyState, Icon, Input, Spinner, Text } from '@ui';
 import { useIsMobile } from '../shell/responsive';
 import { useFetchTaskChainGroupsQuery, type ChainListItem } from '../../api/endpoints/tasks';
 import { buildRouteHash } from '../../utils/appLocation';
 import { VaultText } from '../vault/VaultText';
 import { useArchivedProjectIds } from '../projects/projectModel';
+import { isVaultArmored } from '../../utils/vaultContent';
+import { selectSearchChains } from '../../store/searchTitleSlice';
 
 function shellHash(path: string): string {
   return buildRouteHash(path, '');
@@ -34,6 +37,7 @@ export function RecentTaskChainsTab() {
   const isMobile = useIsMobile();
   const { data, isLoading, error, refetch } = useFetchTaskChainGroupsQuery();
   const archivedProjectIds = useArchivedProjectIds();
+  const searchChains = useSelector(selectSearchChains);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -74,9 +78,14 @@ export function RecentTaskChainsTab() {
         // Search query filter
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase().trim();
-          const matchesTitle = (chain.title || '').toLowerCase().includes(q);
+          const title = searchChains[chain.chainId]?.decryptedTitle || chain.title || '';
+          const matchesTitle = !isVaultArmored(title) && title.toLowerCase().includes(q);
           const matchesId = (chain.chainId || '').toLowerCase().includes(q);
-          const matchesProject = (chain.projectName || '').toLowerCase().includes(q);
+          const projectName = chain.projectName || '';
+          const matchesProject =
+            Boolean(projectName) &&
+            !isVaultArmored(projectName) &&
+            projectName.toLowerCase().includes(q);
           if (!matchesTitle && !matchesId && !matchesProject) {
             return false;
           }
@@ -89,7 +98,7 @@ export function RecentTaskChainsTab() {
         const timeB = new Date(b.updatedAt).getTime() || 0;
         return timeB - timeA;
       });
-  }, [allChains, statusFilter, searchQuery]);
+  }, [allChains, statusFilter, searchQuery, searchChains]);
 
   return (
     <div

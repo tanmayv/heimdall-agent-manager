@@ -1,7 +1,8 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import { VaultText } from '../vault/VaultText';
-import { isVaultArmored } from '../../utils/vaultContent';
+import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   Avatar,
   Badge,
@@ -167,13 +168,39 @@ function AttentionTaskReviewCard({
   const [voteComment, setVoteComment] = useState('');
   const [voteError, setVoteError] = useState('');
 
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const [decryptedDescription, setDecryptedDescription] = useState<string | null>(null);
+
   const fullTask = detailData?.task || task;
-  const description = String(fullTask.description || '').trim();
+  const rawDescription = String(fullTask.description || '').trim();
+
+  useEffect(() => {
+    let active = true;
+    if (isVaultArmored(rawDescription) && isVaultUnlocked && rawKeyHex) {
+      decryptVaultText(rawDescription, rawKeyHex)
+        .then((decrypted) => {
+          if (active) setDecryptedDescription(decrypted);
+        })
+        .catch(() => {
+          if (active) setDecryptedDescription(null);
+        });
+    } else {
+      setDecryptedDescription(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [rawDescription, isVaultUnlocked, rawKeyHex]);
+
+  const effectiveDescription = isVaultArmored(rawDescription)
+    ? (decryptedDescription || '')
+    : rawDescription;
 
   // Extract checklist items from description
   const checklistItems = useMemo(() => {
-    if (!description) return [];
-    const lines = description.split('\n');
+    if (!effectiveDescription) return [];
+    const lines = effectiveDescription.split('\n');
     return lines
       .map((l) => l.trim())
       .filter((l) => /^(\[[\sxX]\]|-\s*\[[\sxX]\])/.test(l))
@@ -181,7 +208,7 @@ function AttentionTaskReviewCard({
         checked: /\[[xX]\]/.test(l),
         text: l.replace(/^[-*]?\s*\[[\sxX]\]\s*/, ''),
       }));
-  }, [description]);
+  }, [effectiveDescription]);
 
   const handleVote = async (result: 'lgtm' | 'ngtm') => {
     try {
@@ -233,9 +260,13 @@ function AttentionTaskReviewCard({
                 ))}
               </ul>
             </div>
-          ) : description ? (
+          ) : isVaultArmored(rawDescription) && (!isVaultUnlocked || !rawKeyHex) ? (
             <div className="max-h-48 overflow-y-auto rounded bg-surface-secondary/40 p-2 text-xs">
-              <Markdown source={description} compact copyAll={false} />
+              <VaultText value={rawDescription} as="div" fallback="[🔒 Encrypted description]" />
+            </div>
+          ) : effectiveDescription ? (
+            <div className="max-h-48 overflow-y-auto rounded bg-surface-secondary/40 p-2 text-xs">
+              <Markdown source={effectiveDescription} compact copyAll={false} />
             </div>
           ) : (
             <p className="text-xs italic text-muted">No description provided for this task.</p>

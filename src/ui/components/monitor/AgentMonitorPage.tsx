@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Icon from '../Icon';
 import { readPinnedMonitorAgents, writePinnedMonitorAgents } from '../../utils/clientPersistence';
+import { isVaultArmored } from '../../utils/vaultContent.ts';
 import {
   useFetchAgentInstanceQuery,
   useListAgentInstancesQuery,
@@ -94,7 +95,8 @@ function AddPaneDialog({ pinned, onAdd, onClose }: { pinned: string[]; onAdd: (i
     const name = String(i?.display_name || '');
     if (!id) return false;
     if (!q) return true;
-    return name.toLowerCase().includes(q) || id.toLowerCase().includes(q);
+    const nameMatch = !isVaultArmored(name) && name.toLowerCase().includes(q);
+    return nameMatch || id.toLowerCase().includes(q);
   });
 
   return (

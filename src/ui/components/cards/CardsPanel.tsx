@@ -15,6 +15,7 @@ import {
 } from '../../api/endpoints/cards';
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
+import { isVaultArmored } from '../../utils/vaultContent';
 
 const STATUS_TABS = [
   { id: 'pending', label: 'Pending' },
@@ -83,13 +84,16 @@ export default function CardsPanel() {
         const q = searchQuery.toLowerCase();
         const project = card.project_id ? projectMap.get(card.project_id) : null;
         const opLabels = (card.operations || []).map((op) => formatOpLabel(op).toLowerCase()).join(' ');
+        const safeTitle = !isVaultArmored(card.title) ? card.title : null;
+        const safeRationale = !isVaultArmored(card.rationale) ? card.rationale : null;
+        const safeProjectName = !isVaultArmored(project?.name) ? project?.name : null;
         const haystack = [
-          card.title,
-          card.rationale,
+          safeTitle,
+          safeRationale,
           card.scope,
           card.provider,
           card.card_id,
-          project?.name,
+          safeProjectName,
           opLabels,
         ].filter(Boolean).join(' ').toLowerCase();
 

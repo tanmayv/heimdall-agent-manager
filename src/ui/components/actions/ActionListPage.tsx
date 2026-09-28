@@ -57,6 +57,7 @@ import {
   usePaneIsWide,
 } from './ActionDetail';
 import { getRouteSearch } from '../../utils/appLocation';
+import { isVaultArmored } from '../../utils/vaultContent.ts';
 import {
   useDeleteActionMutation,
   useListActionsQuery,
@@ -115,7 +116,7 @@ type ToastEntry = {
  */
 function searchableText(row: Action, catalog: ActionCatalog): string {
   return [
-    row.prompt_text,
+    row.prompt_text && !isVaultArmored(row.prompt_text) ? row.prompt_text : '',
     row.id,
     row.cron_expr,
     scheduleLabel(row),
