@@ -762,7 +762,7 @@ SOCAT
 # baked-in URL beating the enrolled config on every start.
 
 service_hub_flags_systemd() {
-  if [ -n "$hub_url" ]; then printf ' \\\n    --hub %s' "$hub_url"; fi
+  if [ -n "$hub_url" ]; then printf ' \\\n    --hub "%s"' "$hub_url"; fi
 }
 
 service_hub_flags_plist() {
@@ -904,15 +904,15 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$install_dir/ham-bridge \\
-    --bridge-token-file %h/.config/heimdall/bridge-token \\
+ExecStart="$install_dir/ham-bridge" \\
+    --bridge-token-file "%h/.config/heimdall/bridge-token" \\
     --port 49323 \\
     --local-endpoint-port 49324 \\
     --local-run-dir /tmp/heimdall-bridge-local$(service_hub_flags_systemd)
 Environment="PATH=$(service_path_value)"
-Environment=HEIMDALL_HAM_PTY_HOST_BIN=$install_dir/ham-pty-host
+Environment="HEIMDALL_HAM_PTY_HOST_BIN=$install_dir/ham-pty-host"
 Environment=HEIMDALL_BRIDGE_PTY_HOST=true
-Environment=HEIMDALL_HAM_CTL_BIN=$install_dir/ham-ctl
+Environment="HEIMDALL_HAM_CTL_BIN=$install_dir/ham-ctl"
 Restart=on-failure
 RestartSec=5s
 KillMode=process
@@ -1095,7 +1095,7 @@ path_snippet() {
     (equivalently: home.sessionVariables.PATH = "$install_dir:\$PATH";)
 
     fish (~/.config/fish/config.fish):
-      fish_add_path $install_dir
+      fish_add_path "$install_dir"
   ------------------------------------------------------------------------
 EOF
 }
@@ -1113,7 +1113,7 @@ EOF
 # summary can say the install succeeded and only PATH remains.
 wire_path() {
   case "${service_shell:-${SHELL:-}}" in
-    *fish*) path_line="fish_add_path $install_dir" ;;
+    *fish*) path_line="fish_add_path \"$install_dir\"" ;;
     *)      path_line="export PATH=\"$install_dir:\$PATH\"" ;;
   esac
 
@@ -1258,7 +1258,7 @@ do_uninstall() {
     [ -e "$rc" ] || continue
     tmp="$(mktemp)"
     if awk -v export_line="export PATH=\"$install_dir:\$PATH\"" \
-           -v fish_line="fish_add_path $install_dir" '
+           -v fish_line="fish_add_path \"$install_dir\"" '
         $0 == "# Added by heimdall install.sh" { pending = 1; changed = 1; next }
         pending == 1 {
           pending = 0

@@ -348,8 +348,13 @@ def dry_run_common_asserts(res, target, install_dir_hint):
     assert '--force-service' in out, 'dry run must mention --force-service'
     assert 'heimdall enroll' in out, 'onboarding must show the heimdall enroll command'
     if target.startswith('linux'):
-        for marker in ('[Unit]', 'Description=Heimdall Bridge', 'ExecStart=',
-                       'Environment=HEIMDALL_HAM_PTY_HOST_BIN=',
+        # REQ-INST-28: ExecStart and the interpolated Environment= values are
+        # QUOTED now, because systemd splits those lines on unquoted whitespace
+        # and a spaced $install_dir silently truncated them. The opening quote is
+        # part of each marker deliberately: matching the bare key would still
+        # pass if the quoting were reverted.
+        for marker in ('[Unit]', 'Description=Heimdall Bridge', 'ExecStart="',
+                       'Environment="HEIMDALL_HAM_PTY_HOST_BIN=',
                        'WantedBy=default.target'):
             assert marker in out, f'systemd unit missing {marker!r}'
         assert 'systemctl --user enable --now heimdall-bridge' in out
@@ -409,7 +414,7 @@ def test_install_sh_dry_run_hub(ctx):
     # so '--hub <url>' as one literal string cannot appear there. The full-run
     # test below already knew this; this one did not.
     if target.startswith('linux'):
-        assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+        assert f'--hub "{hub}"' in unit, 'the passed hub URL must follow --hub in the unit'
     else:
         assert '<string>--hub</string>' in unit, (
             'the plist must pass --hub as its own ProgramArguments string')
@@ -1776,8 +1781,8 @@ def test_install_sh_full_run_service_lifecycle(ctx):
 
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
-        hub_in_unit = f'--hub {hub}'
-        hub2_in_unit = f'--hub {hub2}'
+        hub_in_unit = f'--hub "{hub}"'
+        hub2_in_unit = f'--hub "{hub2}"'
     else:
         service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
         hub_in_unit = f'<string>{hub}</string>'
@@ -1917,7 +1922,7 @@ def sudo_ns_fixture(base: Path):
 
 
 def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
-                    pre: str = ''):
+                    pre: str = '', host_path: str = None, socat_stub: bool = True):
     """Run install.sh as uid 0 inside a private user+mount namespace:
     a tmpfs over /usr keeps /usr/local/bin writes contained, and the sandbox
     home is bind-mounted over the SUDO_USER's real home (ns-private) so the
@@ -1982,8 +1987,18 @@ def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
     # path_prefix stays FIRST: a caller's stub (e.g. the failing `chown` in
     # test_install_sh_sudo_chown_failure_warns) has to outrank the real tool, and
     # losing that order would quietly stop those tests testing anything.
-    env['PATH'] = os.pathsep.join([path_prefix, str(socat_stub_dir(root_home)),
-                                   '/usr/local/bin', os.environ['PATH']])
+    # host_path and socat_stub exist for ONE caller: the REQ-INST-27 binding test
+    # below, which must be able to run this exact code path with socat absent to
+    # prove the probe and its assertion still bite. They are deliberately NOT a
+    # production escape hatch -- install.sh is untouched by them, and every other
+    # caller gets the defaults, which are the behaviour REQ-INST-22 established.
+    stub = [str(socat_stub_dir(root_home))] if socat_stub else []
+    tail = os.environ['PATH'] if host_path is None else host_path
+    # Empty components are filtered: '' in a PATH means the CURRENT DIRECTORY to
+    # every resolver, which is not something these runs should ever search, and
+    # a caller passing an empty path_prefix or host_path would silently add one.
+    env['PATH'] = os.pathsep.join(
+        [p for p in [path_prefix, *stub, '/usr/local/bin', tail] if p])
     res = subprocess.run(['unshare', '-rm', 'env', 'bash', '-c', inner],
                          cwd=str(base), env=env, capture_output=True, text=True,
                          timeout=120)
@@ -2009,8 +2024,8 @@ def test_install_sh_sudo_path_write(ctx):
     service = fake_home / '.config/systemd/user/heimdall-bridge.service'
     assert service.is_file(), 'service file not written into the SUDO_USER home'
     unit = service.read_text()
-    assert 'ExecStart=/usr/local/bin/ham-bridge' in unit
-    assert f'--hub {hub}' in unit
+    assert 'ExecStart="/usr/local/bin/ham-bridge"' in unit
+    assert f'--hub "{hub}"' in unit
     expected_rc = '.zshrc' if entry.pw_shell.endswith('zsh') else '.bashrc'
     rc = fake_home / expected_rc
     assert rc.is_file(), f'target user rc file {expected_rc} not written despite root PATH containing /usr/local/bin'
@@ -2453,7 +2468,9 @@ def test_install_sh_readonly_rc_nonfatal(ctx):
     assert f'export PATH="{install_dir}:$PATH"' in out, 'plain export form missing from snippet'
     assert f'home.sessionPath = [ "{install_dir}" ];' in out, 'home-manager form missing from snippet'
     assert 'home.sessionVariables.PATH' in out, 'home-manager sessionVariables variant missing'
-    assert f'fish_add_path {install_dir}' in out, 'fish form missing from snippet'
+    # REQ-INST-28: the fish form is quoted too -- unquoted, fish reads a spaced
+    # install dir as two arguments and adds neither.
+    assert f'fish_add_path "{install_dir}"' in out, 'fish form missing from snippet'
 
     # The summary must read as a SUCCESS with one manual step left.
     assert 'the install SUCCEEDED' in out, (
@@ -4076,13 +4093,14 @@ def test_service_path_survives_a_space_in_the_install_dir(ctx):
 
     # Let systemd judge its own syntax where we can -- but judge OUR line only.
     #
-    # The whole rendered unit does not verify clean on a space-containing home,
-    # and deliberately so: ExecStart and the two HEIMDALL_*_BIN Environment=
-    # lines have the identical unquoted-whitespace defect, they pre-date
-    # REQ-INST-26, and fixing them is T29 rather than this task. Asserting on the
-    # full unit would therefore fail here for a reason that is not this test's
-    # subject, and relaxing the assertion to tolerate that would also tolerate a
-    # regression in the PATH line itself.
+    # This lifts the PATH line into a minimal unit rather than verifying the
+    # whole thing, so that any environment-assignment complaint from systemd is
+    # unambiguously about the line under test and cannot be masked or satisfied
+    # by a sibling line. REQ-INST-28 has since fixed ExecStart and the two
+    # HEIMDALL_*_BIN lines, which carried the identical defect, and
+    # test_systemd_unit_survives_a_space_in_the_install_dir now verifies the
+    # COMPLETE rendered unit. Both are wanted: that one proves a user's bridge
+    # starts, this one keeps the PATH line individually pinned.
     #
     # So the PATH line is lifted into a minimal unit of its own. Any
     # environment-assignment complaint from systemd is then unambiguously about
@@ -4099,6 +4117,323 @@ def test_service_path_survives_a_space_in_the_install_dir(ctx):
     combined = vres.stdout + vres.stderr
     assert 'Invalid environment assignment' not in combined, (
         f'systemd rejected the PATH assignment {line!r}:\n{combined}')
+
+
+# --- REQ-INST-28: a space in $install_dir must not break the generated units ---
+# systemd's Environment= and ExecStart= split on UNQUOTED whitespace, so an
+# interpolated path containing a space silently truncates the line: no error at
+# install time, total failure at runtime. Everything below is asserted on the
+# RENDERED unit and, where the platform's own parser is available, judged by
+# THAT parser rather than by this file's reading of the manual.
+
+SPACED_HOME_DIRNAME = 'my home'
+
+
+def render_unit_with_spaced_home(ctx, name: str, extra_env: dict = None):
+    """Run a real --dry-run whose $HOME (and so $install_dir) contains a space.
+
+    Returns (res, install_dir). A ham-bridge stub is created at the rendered
+    install_dir because systemd-analyze resolves ExecStart against the
+    filesystem: without it systemd reports "is not executable: No such file",
+    which would be indistinguishable from the truncation defect under test.
+    """
+    base = ctx['work'] / name
+    home = base / SPACED_HOME_DIRNAME
+    install_dir = home / '.local' / 'bin'
+    install_dir.mkdir(parents=True, exist_ok=True)
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+    stub = install_dir / 'ham-bridge'
+    stub.write_text('#!/bin/sh\nexit 0\n')
+    stub.chmod(0o755)
+    env = {**os.environ, 'HOME': str(home)}
+    if extra_env:
+        env.update(extra_env)
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0',
+               '--hub', 'https://hub.example/x'], timeout=60, env=env)
+    assert res.returncode == 0, f'dry-run failed:\n{res.stdout}\n{res.stderr}'
+    return res, str(install_dir)
+
+
+def test_systemd_unit_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-28. The WHOLE unit must verify clean, not one lifted line.
+
+    T27's REQ-INST-26 test could only lift its PATH line into a minimal unit,
+    because ExecStart and the two HEIMDALL_*_BIN lines carried the identical
+    defect and would have failed the full-unit check for a reason that was not
+    that test's subject. This task fixed those three, so the full-unit check is
+    now possible -- and it is the only form that proves a user's bridge would
+    actually start.
+    """
+    res, install_dir = render_unit_with_spaced_home(ctx, 'unit-space-systemd')
+    assert 'platform: linux/' in res.stdout, 'expected the linux branch on this host'
+    unit = dry_run_unit_text(res)
+
+    # Every interpolated value must survive WHOLE into the rendered unit.
+    for key, want in (('HEIMDALL_HAM_PTY_HOST_BIN', f'{install_dir}/ham-pty-host'),
+                      ('HEIMDALL_HAM_CTL_BIN', f'{install_dir}/ham-ctl')):
+        line = next((l for l in unit.splitlines()
+                     if l.startswith('Environment=') and key in l), None)
+        assert line is not None, f'no {key} line in:\n{unit}'
+        assert line == f'Environment="{key}={want}"', (
+            f'{key} must be QUOTED or systemd truncates it at the first space '
+            f'in $install_dir; got {line!r}')
+    exec_line = next((l for l in unit.splitlines() if l.startswith('ExecStart=')), None)
+    assert exec_line is not None, f'no ExecStart in:\n{unit}'
+    assert exec_line.startswith(f'ExecStart="{install_dir}/ham-bridge"'), (
+        f'ExecStart must quote $install_dir or systemd execs the truncated '
+        f'prefix; got {exec_line!r}')
+
+    # Now let systemd judge its own syntax, on the COMPLETE unit.
+    analyze = shutil.which('systemd-analyze')
+    if analyze is None:
+        raise Skip('systemd-analyze not available; rendered-text assertions above still ran')
+    unit_file = ctx['work'] / 'unit-space-systemd' / 'heimdall-bridge.service'
+    unit_file.write_text(unit + '\n')
+    vres = run([analyze, 'verify', str(unit_file)], timeout=60)
+    combined = vres.stdout + vres.stderr
+    assert 'Invalid environment assignment' not in combined, (
+        f'systemd rejected an Environment= line:\n{combined}\n\nunit:\n{unit}')
+    assert 'is not executable' not in combined, (
+        f'systemd could not resolve ExecStart -- the path was truncated at a '
+        f'space:\n{combined}\n\nunit:\n{unit}')
+    assert vres.returncode == 0, (
+        f'systemd-analyze verify failed on the rendered unit:\n{combined}\n\nunit:\n{unit}')
+
+
+def test_launchd_plist_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-28, the NEGATIVE half: launchd was ALREADY correct.
+
+    XML is not whitespace-split, so $install_dir inside a <string> needs no
+    quoting and none was added. This is a REGRESSION TEST, not a fix: it pins
+    the property so a future 'tidy-up' of the plist heredoc -- say one that
+    moved ProgramArguments to a single space-separated <string> -- cannot
+    reintroduce on macOS the defect just fixed on Linux.
+
+    The darwin branch is reached on Linux with the uname shim from REQ-INST-26,
+    so this assertion actually EXECUTES here instead of being written and only
+    ever proven on a Mac we may not reach.
+    """
+    shim = darwin_uname_shim(ctx['work'] / 'unit-space-launchd-shim')
+    res, install_dir = render_unit_with_spaced_home(
+        ctx, 'unit-space-launchd', {'PATH': f'{shim}:{os.environ["PATH"]}'})
+    assert 'platform: darwin/arm64' in res.stdout, (
+        f'the uname shim did not move the run onto the darwin branch; the plist '
+        f'assertions would silently test nothing:\n{res.stdout[:400]}')
+
+    xml = dry_run_unit_text(res)
+    if not xml.lstrip().startswith('<?xml'):
+        xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml
+    parsed = plistlib.loads(xml.encode('utf-8'))
+
+    argv = parsed['ProgramArguments']
+    # The decisive assertion: the spaced path is ONE argv element, not two.
+    assert argv[0] == f'{install_dir}/ham-bridge', (
+        f'ProgramArguments[0] must be the whole spaced path as a single '
+        f'element; got {argv[0]!r} in {argv!r}')
+    for i, arg in enumerate(argv):
+        assert arg == arg.strip(), f'argv[{i}]={arg!r} has stray whitespace'
+    # No element may be a fragment of the install dir -- what splitting looks like.
+    head = install_dir.split(' ')[0]
+    assert head not in argv, (
+        f'argv contains {head!r}, the prefix of $install_dir up to its first '
+        f'space -- the path was split: {argv!r}')
+    env_vars = parsed['EnvironmentVariables']
+    assert env_vars['HEIMDALL_HAM_PTY_HOST_BIN'] == f'{install_dir}/ham-pty-host'
+    assert env_vars['HEIMDALL_HAM_CTL_BIN'] == f'{install_dir}/ham-ctl'
+
+
+def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
+    """REQ-INST-28: the same defect in the rc writer, not a unit file.
+
+    `fish_add_path /home/my user/.local/bin` is TWO arguments to fish, so on a
+    spaced home the installer writes an rc line that adds two wrong paths and
+    not the right one. Worse, the awk idempotency mirror in wire_path() then
+    cannot match the line install.sh itself wrote, so every re-run appends
+    another copy.
+
+    This is a REAL install into a sandboxed spaced HOME -- the rc file on disk
+    is the artifact asserted on, because the printed fallback snippet and the
+    written line are two different code paths and only the written one decides
+    a user's PATH.
+    """
+    need_tool('curl')
+    target = host_target()
+    if target is None:
+        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
+    base = ctx['work'] / 'fish-space'
+    home = base / SPACED_HOME_DIRNAME
+    runtime = base / 'xdg-runtime'
+    runtime.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+
+    res, tarball = package_tarball(base, target=target)
+    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    hub = make_hub_mirror(base, tarball, target)
+
+    # sandbox_install_env blanks SHELL (its union branch); this test is
+    # specifically the *fish* branch of path_candidates()/wire_path(), so SHELL
+    # is set back to a fish. The binary need not exist -- install.sh only
+    # case-globs the string.
+    env = {**sandbox_install_env(home, runtime), 'SHELL': '/usr/bin/fish'}
+    install_dir = home / '.local' / 'bin'
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+
+    res = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert res.returncode == 0, (
+        f'install into a spaced HOME failed:\nstdout:\n{res.stdout}\n'
+        f'stderr:\n{res.stderr}')
+
+    config_fish = home / '.config' / 'fish' / 'config.fish'
+    assert config_fish.is_file(), (
+        f'the fish branch must write config.fish; got:\n{res.stdout}')
+    written = config_fish.read_text()
+    want = f'fish_add_path "{install_dir}"'
+    assert want in written, (
+        f'the rc line must QUOTE the spaced install dir -- unquoted, fish takes '
+        f'{install_dir!r} as two arguments and adds neither.\n'
+        f'wanted: {want!r}\ngot:\n{written}')
+
+    # Idempotency: the awk mirror in wire_path() must match the line the
+    # installer itself wrote, or a re-run appends a second copy. This is the
+    # half that an unquoted mirror breaks even after the write is fixed.
+    res2 = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert res2.returncode == 0, f're-run failed:\n{res2.stderr}'
+    rewritten = config_fish.read_text()
+    assert rewritten.count('fish_add_path') == 1, (
+        f'a re-run must not append a second PATH line -- the awk idempotency '
+        f'mirror no longer matches what install.sh writes:\n{rewritten}')
+
+
+# --- REQ-INST-27: the socat probe's own assertion must BIND --------------------
+
+# Exactly the tools sudo_ns_install's inner script needs BEFORE install.sh runs:
+# the mounts, the probe, and the shells that carry them. Supplying precisely
+# these -- and nothing else -- is what makes the mutation below surgical.
+#
+# The trap this avoids was measured during REQ-INST-22: on this host socat is
+# supplied by FOUR PATH entries, one of which (/run/current-system/sw/bin) is
+# the ONLY provider of `mount`. Dropping "socat's PATH entry" therefore kills
+# `mount` too, and the mutant dies of a broken mount rather than of a missing
+# socat -- a caught mutant that caught nothing. Linking INDIVIDUAL binaries by
+# their resolved absolute path sidesteps directory granularity entirely.
+NS_PROBE_PREREQS = ('mount', 'mkdir', 'unshare', 'env', 'bash', 'sh', 'umount')
+
+
+def thinned_tool_dir(base: Path):
+    """A PATH dir holding symlinks to exactly NS_PROBE_PREREQS, socat excluded.
+
+    Returns (dir, skip_reason). skip_reason is non-None when this host cannot
+    support an HONEST mutation, and the caller must skip rather than assert:
+    a tool resolving under /usr would be hidden by the fixture's own tmpfs over
+    /usr inside the namespace, so the run would die of a missing `mount` and the
+    mutation would prove nothing. That is the same host assumption
+    sudo_ns_install ALREADY makes at its bare `mount`/`mkdir` calls -- this test
+    inherits it, it does not add one.
+    """
+    thin = base / 'thin-bin'
+    thin.mkdir(parents=True, exist_ok=True)
+    under_usr = []
+    for name in NS_PROBE_PREREQS:
+        found = shutil.which(name)
+        if not found:
+            return thin, f'{name} not on PATH; cannot build a surgical namespace PATH'
+        real = os.path.realpath(found)
+        if real.startswith('/usr/'):
+            under_usr.append(f'{name}->{real}')
+        link = thin / name
+        if not link.exists():
+            link.symlink_to(real)
+    if under_usr:
+        return thin, ('these tools resolve under /usr, which the fixture mounts a '
+                      'tmpfs over inside the namespace, so the mutation would die '
+                      f'of a missing tool rather than of a missing socat: {under_usr}')
+    return thin, None
+
+
+def test_socat_probe_assertion_binds(ctx):
+    """REQ-INST-27: MUTATION + CONTROL for the REQ-INST-22 probe.
+
+    REQ-INST-22 added a socat probe inside sudo_ns_install and asserted
+    SOCAT_UNREACHABLE_IN_NS is absent from stderr. That assertion's proof was a
+    throwaway harness run once and never committed -- so a later refactor could
+    neuter the probe and the suite would go quiet again, which is the very
+    failure mode REQ-INST-22 exists to remove, one level up.
+
+    This drives the REAL sudo_ns_install (not a copy of its inner script), so
+    BOTH the probe and the assertion that reads it are under test:
+
+      MUTATION: surgical PATH, no socat anywhere -> sudo_ns_install must RAISE.
+      CONTROL : byte-identical run + the socat stub -> must NOT raise.
+
+    The control is what makes the mutation mean anything. A mutation alone
+    proves the probe died; only the control proves it died of MISSING SOCAT
+    rather than of the thinning having broken the namespace -- and that
+    distinction is the entire point, established when the naive mutation was
+    measured vacuous in REQ-INST-22.
+
+    HOST ASSUMPTION, stated rather than assumed: the tools in NS_PROBE_PREREQS
+    must resolve OUTSIDE /usr (they do on a Nix host; see thinned_tool_dir,
+    which skips loudly otherwise). Note this is NOT sensitive to where socat
+    lives: socat is excluded BY NAME from the thinned dir, so a host with
+    /usr/bin/socat is fine on that axis -- and doubly so, since the fixture's
+    tmpfs over /usr would hide it anyway.
+    """
+    need_userns_mount()
+    base = ctx['work'] / 'socat-probe-binding'
+    base.mkdir(parents=True, exist_ok=True)
+    thin, skip_reason = thinned_tool_dir(base)
+    if skip_reason:
+        raise Skip(f'cannot mutate honestly on this host: {skip_reason}')
+
+    thin_path = str(thin)
+    # PRECONDITIONS. Without these the mutation is not attributable: the first
+    # makes socat genuinely absent, the second proves the thinning did not
+    # break the namespace tooling and take the probe down with it.
+    assert shutil.which('socat', path=thin_path) is None, (
+        f'the thinned PATH still reaches socat, so the mutation would not '
+        f'suppress it: {shutil.which("socat", path=thin_path)}')
+    assert shutil.which('mount', path=thin_path), (
+        'the thinned PATH lost `mount`; the mutant would die of a broken '
+        'namespace rather than of a missing socat')
+
+    hub, _fake_home, entry = sudo_ns_fixture(base)
+
+    # --- MUTATION: socat absent. The probe must fire AND be caught. ----------
+    try:
+        sudo_ns_install(base, hub, entry, thin_path,
+                        host_path='', socat_stub=False)
+    except AssertionError as exc:
+        mutation_error = str(exc)
+    else:
+        raise AssertionError(
+            'THE PROBE NO LONGER BINDS: socat was absent from the namespace and '
+            'sudo_ns_install did not raise. Either the probe was removed from '
+            'the inner script or the SOCAT_UNREACHABLE_IN_NS assertion no longer '
+            'reads it -- which is exactly the silent regression REQ-INST-22 was '
+            'written to prevent.')
+    assert 'SOCAT_UNREACHABLE_IN_NS' in mutation_error, (
+        f'the probe fired but not via its own diagnostic:\n{mutation_error}')
+    # The failure must be about socat, not about a namespace we broke.
+    lowered = mutation_error.lower()
+    for noise in ('permission denied', 'operation not permitted',
+                  'mount: ', 'no such file or directory'):
+        assert noise not in lowered, (
+            f'the mutation died with {noise!r} in its output, so it is not '
+            f'attributable to the missing socat alone:\n{mutation_error}')
+
+    # --- CONTROL: byte-identical, plus the stub. Must NOT raise. ------------
+    # install.sh itself will fail further on (the thinned PATH has no curl or
+    # tar) and that is FINE and deliberately not asserted against: the only
+    # claim here is that the PROBE passed, which is the single variable that
+    # differs from the mutation above.
+    control = sudo_ns_install(base, hub, entry, thin_path,
+                              host_path='', socat_stub=True)
+    assert 'SOCAT_UNREACHABLE_IN_NS' not in control.stderr, (
+        f'CONTROL FAILED: socat WAS supplied and the probe still fired, so the '
+        f'mutation above proved nothing about socat -- the thinned PATH itself '
+        f'is what breaks these runs:\n{control.stderr}')
 
 
 def main() -> int:
@@ -4208,6 +4543,14 @@ def main() -> int:
          test_service_path_tool_inventory_does_not_desync),
         ('service PATH survives a space in install_dir (REQ-INST-26)',
          test_service_path_survives_a_space_in_the_install_dir),
+        ('systemd unit survives a space in install_dir (REQ-INST-28)',
+         test_systemd_unit_survives_a_space_in_the_install_dir),
+        ('launchd plist survives a space in install_dir (REQ-INST-28)',
+         test_launchd_plist_survives_a_space_in_the_install_dir),
+        ('fish rc line quotes a spaced install_dir (REQ-INST-28)',
+         test_fish_rc_line_quotes_a_spaced_install_dir),
+        ('socat probe assertion binds: mutation + control (REQ-INST-27)',
+         test_socat_probe_assertion_binds),
     ]
 
     ctx = {}
