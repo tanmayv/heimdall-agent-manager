@@ -123,11 +123,11 @@ jobs:
 
   # 2. The sudo/SUDO_USER branch (REQ-INST-18), which no test had ever executed
   #    on ANY platform, and whose macOS half -- the `dscl` home lookup at
-  #    install.sh:1235-1236 -- had no executed coverage anywhere at all.
+  #    install.sh:1306-1307 -- had no executed coverage anywhere at all.
   #
   #    Why it needed its own job rather than a step in `smoke`: this branch
   #    CANNOT be sandboxed. When euid is 0 install.sh hardcodes
-  #    install_dir=/usr/local/bin (:1222) and takes the service home from
+  #    install_dir=/usr/local/bin (:1293) and takes the service home from
   #    dscl/getent -- the invoking user's REAL home. Neither is influenced by
   #    HOME or any other variable, so a sudo run makes real writes by
   #    construction. That is exactly why it is CI-only (REQ-INST-13) and why
@@ -135,7 +135,7 @@ jobs:
   #    opt-in AND a clean machine, and asserts afterwards that it left one.
   #
   #    The Linux runner is here as a DIFFERENTIAL, not as padding: the same
-  #    assertions through the getent branch (:1229) demonstrate they bind to the
+  #    assertions through the getent branch (:1300) demonstrate they bind to the
   #    sudo logic rather than to darwin. If only macOS ran, a passing assertion
   #    could not be distinguished from one that happens to hold on a Mac.
   sudo-smoke:
