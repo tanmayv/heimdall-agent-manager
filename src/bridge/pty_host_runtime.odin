@@ -420,6 +420,32 @@ bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string, task_tit
 	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run './.heimdall/bin/ham-ctl task list' and complete your assignment."})
 }
 
+// bridge_shell_run_notice renders the line an agent sees when one of its BACKGROUND
+// runs finishes or is killed (REQ-SHELL-5 §1).
+//
+// The SESSION ID leads, because it is the handle the agent was given when the run was
+// backgrounded and it is what `shell log` takes — the notice is only useful if the
+// agent can act on it without a lookup. Status and exit code follow when known.
+//
+// NO OUTPUT, not even a tail. Output lives on this host and is read on demand; pasting
+// it into the agent's pane would both flood the pane and defeat the rule that output
+// never travels with status. The closing instruction points at the command that fetches
+// it, which is the whole of what the agent needs.
+//
+// Pure and testable, like bridge_pty_host_task_nudge_notice above. Caller owns the
+// returned string.
+bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string {
+	sid := strings.trim_space(session_id)
+	if sid == "" do sid = "unknown"
+	st := strings.trim_space(status)
+	if st == "" do st = "exited"
+	code := strings.trim_space(exit_code)
+	if code != "" {
+		return strings.concatenate({"Shell run ", sid, " ", st, " (exit ", code, "). Run './.heimdall/bin/ham-ctl shell log ", sid, "' to read its output."})
+	}
+	return strings.concatenate({"Shell run ", sid, " ", st, ". Run './.heimdall/bin/ham-ctl shell log ", sid, "' to read its output."})
+}
+
 // bridge_pty_host_deliver_message renders the same notice the wrapper produced for
 // an agent_message push and delivers it.
 //

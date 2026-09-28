@@ -408,6 +408,36 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
+	if type == "notify_shell_run" {
+		// REQ-SHELL-5 §1 — a BACKGROUND run of this agent's has finished or been killed.
+		//
+		// Delivered over the SAME gated path as notify_title_nudge: push the notice to a
+		// live wrapper, else wake the local agent so it picks it up on boot. Never a new
+		// notifier, and never a chat message — the run's one conversation entry was
+		// written by the hub at creation.
+		//
+		// The notice leads with the SESSION ID because that is the handle the agent was
+		// given when its run was backgrounded, and it is what `shell log` takes. No
+		// output is carried or fetched here: output stays on this host and is read on
+		// demand.
+		command_id := extract_json_string(text, "command_id", "")
+		instance_id := extract_json_string(text, "agent_instance_id", "")
+		session_id := extract_json_string(text, "session_id", "")
+		status := extract_json_string(text, "status", "exited")
+		exit_code := extract_json_string(text, "exit_code", "")
+		notice := bridge_shell_run_notice(session_id, status, exit_code)
+		defer delete(notice)
+		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
+			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+			return
+		}
+		ok := bridge_task_status_notify_wake_local(instance_id)
+		if !ok do fmt.println("bridge notify_shell_run pending/no-daemon", instance_id, command_id)
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		return
+	}
 	if type == "notify_title_nudge" {
 		// Activity-gated title-nudge (REQ-4,5,6). Delivered over the SAME gated
 		// path as notify_task_nudge: push to a live wrapper, else wake the local

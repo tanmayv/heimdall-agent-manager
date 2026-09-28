@@ -519,3 +519,27 @@ pty_stream_worker_detach_deregisters_immediately :: proc(t: ^testing.T) {
 }
 
 
+
+// REQ-SHELL-5 §1: the line an agent sees when one of its BACKGROUND runs ends.
+//
+// The assertions worth having here are the two the requirement actually constrains:
+// the SESSION ID is present (it is the handle the agent was handed when the run was
+// backgrounded, and what `shell log` takes), and NO OUTPUT travels with the status.
+@(test)
+bridge_shell_run_notice_rendering :: proc(t: ^testing.T) {
+	n := bridge_shell_run_notice("sh_123", "exited", "0")
+	defer delete(n)
+	testing.expect_value(t, n, "Shell run sh_123 exited (exit 0). Run './.heimdall/bin/ham-ctl shell log sh_123' to read its output.")
+
+	// A kill reports as killed, and an unknown exit code is simply omitted rather than
+	// fabricated as 0 — the agent must be able to tell "no code" from "exit 0".
+	killed := bridge_shell_run_notice("sh_456", "killed", "")
+	defer delete(killed)
+	testing.expect_value(t, killed, "Shell run sh_456 killed. Run './.heimdall/bin/ham-ctl shell log sh_456' to read its output.")
+
+	// Blank defaults, matching the task-nudge notice's behaviour above: render
+	// something truthful rather than an empty sentence.
+	blank := bridge_shell_run_notice("", "", "")
+	defer delete(blank)
+	testing.expect(t, strings.contains(blank, "Shell run unknown exited"), "blank session/status defaults")
+}

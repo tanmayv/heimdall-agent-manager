@@ -85,7 +85,11 @@ content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:d
 		// Instead, filter out caller-sent agent_to_agent messages directly.
 		append(&filters, "(direction != 'agent_to_agent' OR sender_agent_instance_id != ?)")
 	}
-	if !include_debug do append(&filters, "message_type NOT IN ('pane_capture', 'status_update', 'pane_capture_result')")
+	// 'shell_run' joins the UI-only message types here (REQ-SHELL-5): it is a marker
+	// the UI renders as a run indicator, not correspondence addressed to the agent.
+	// The agent learns its background run finished from a transient nudge instead, so
+	// surfacing the marker in its inbox would be the same fact twice, as noise.
+	if !include_debug do append(&filters, "message_type NOT IN ('pane_capture', 'status_update', 'pane_capture_result', 'shell_run')")
 	
 	if cursor != "" do append(&filters, "created_at < ?")
 	

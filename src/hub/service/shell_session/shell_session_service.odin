@@ -11,6 +11,7 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
+import content_service "odin_test:hub/service/content"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import iface "odin_test:hub/repository/iface"
@@ -35,6 +36,11 @@ Shell_Session_Service :: struct {
 	repo:                ^iface.Shell_Session_Repository,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
 	events:              ^events.User_Event_Bus,
+	// content — REQ-SHELL-5. Used for ONE thing: writing a run's single `shell_run`
+	// marker into the conversation that triggered it. Optional; nil simply means no
+	// marker is written, which is what every test that does not care about the marker
+	// relies on. It is NOT a general licence for this service to write chat.
+	content:             ^content_service.Content_Service,
 	ids:                 ^platform.ID_Generator,
 	clock:               ^platform.Clock,
 	session_owners:      map[string]string, // session_id → owner_user_id (heap strings)
@@ -50,6 +56,7 @@ new_shell_session_service :: proc(
 	event_bus:           ^events.User_Event_Bus = nil,
 	ids:                 ^platform.ID_Generator = nil,
 	clock:               ^platform.Clock = nil,
+	content:             ^content_service.Content_Service = nil,
 ) -> Shell_Session_Service {
 	heap := runtime.heap_allocator()
 	return Shell_Session_Service{
@@ -59,6 +66,7 @@ new_shell_session_service :: proc(
 		events          = event_bus,
 		ids             = ids,
 		clock           = clock,
+		content         = content,
 		session_owners  = make(map[string]string, heap),
 		session_bridges = make(map[string]string, heap),
 		tunnel_streams  = make(map[string]^Preview_Tunnel_Stream, heap),
@@ -315,6 +323,38 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	input := input
 	if starter == .Agent && auth.agent_instance_id != "" {
 		if kind_enum == .Run do input.agent_instance_id = auth.agent_instance_id
+		// ...and neither can it be attributed to a different CONVERSATION by asking
+		// (REQ-SHELL-5 §2). conversation_id arrives from the request body
+		// (shell_session_rest_handlers.odin), and REQ-SHELL-5 requires a run to appear
+		// in the conversation of whoever triggered it and NOWHERE ELSE. A body field
+		// cannot carry that guarantee: an agent could name somebody else's conversation
+		// and have its run marker written there.
+		//
+		// So for a run it is RESOLVED FROM THE TOKEN, exactly as agent_instance_id is
+		// one line above and for exactly the same reason. A run is agent-only
+		// (SHELL_SESSION_STARTER_RULES), so "the conversation that triggered it" is
+		// always the starting agent's own conversation — there is no case this
+		// overwrites with a worse answer. ctl no longer offers a way to name one
+		// (REQ-SHELL-5 AC9 deleted its --conversation flag), so for the CLI this is
+		// belt-and-braces; it remains the enforcement point for any other caller.
+		//
+		// Fixed HERE, on the column, rather than at the point the marker is written:
+		// resolving it only at the marker would leave the stored conversation_id
+		// spoofable and hand the same hole to every future reader of that column.
+		//
+		// run ONLY. A `shell` is user-started and a `server` is chain-scoped and may be
+		// started by either — neither has this shape, and neither is touched.
+		if kind_enum == .Run && svc.content != nil {
+			if c, conv_ok, _ := content_service.get_conversation_by_instance(svc.content, auth, auth.agent_instance_id); conv_ok {
+				input.conversation_id = c.conversation_id
+			} else {
+				// No conversation for this agent: record none rather than keeping an
+				// unverified one from the body. An empty conversation_id means "no marker",
+				// which is the safe direction; a wrong one means a run showing up in a
+				// conversation it has nothing to do with.
+				input.conversation_id = ""
+			}
+		}
 	}
 	// A `shell` may omit cmd; the bridge falls back to $SHELL. Every other kind
 	// needs an explicit command.
@@ -423,6 +463,33 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	svc.session_owners[strings.clone(session_id, heap)] = strings.clone(string(owner), heap)
 	svc.session_bridges[strings.clone(session_id, heap)] = strings.clone(input.bridge_id, heap)
 	sync.mutex_unlock(&svc.mu)
+
+	// REQ-SHELL-5 §4 — THE RUN'S ONE AND ONLY MARKER MESSAGE.
+	//
+	// Emitted HERE, and this is the only call site in the codebase. Placement is the
+	// whole of how "exactly one message per run, whatever status path is taken" (AC4)
+	// is guaranteed:
+	//
+	//   - AT CREATION, not on status change. Nothing downstream writes a second one,
+	//     so there is no counter to keep and no de-duplication to get right.
+	//   - BEFORE the bridge round trip, so a run whose start FAILS still leaves its
+	//     marker. REQ-SHELL-16 settled that a refused start must leave a trace; a
+	//     failed run that silently had no message would be the same disappearance in a
+	//     different place.
+	//   - ABOVE every one of this proc's remaining early returns (kill-before-start,
+	//     bridge unreachable, bridge refusal), so none of them can skip it.
+	//
+	// A run that is later converted to background writes NOTHING here or anywhere else
+	// — _shell_session_set_background_for_owner flips a flag and emits no message — so
+	// the conversion cannot produce a second marker. Status is not in this message, so
+	// it never needs editing either.
+	//
+	// kind=run ONLY. A `server` is chain-scoped and surfaces in the chain summary, and
+	// a `shell` is an interactive terminal the user is already looking at; neither is a
+	// run and neither belongs in this transcript (REQ-SHELL-5 §2).
+	if kind_enum == .Run && svc.content != nil && session.conversation_id != "" {
+		_, _ = content_service.record_shell_run_marker(svc.content, session.conversation_id, session_id, session.agent_instance_id)
+	}
 
 	// Send shell_start to bridge and wait for reply.
 	// cmd_id is NOT freed here, and must not be. platform.generate_id returns
@@ -1086,6 +1153,17 @@ shell_session_handle_exited :: proc(
 	if svc == nil || svc.repo == nil || session_id == "" || bridge_id == "" do return false
 
 	// Remove the entry from session_owners and session_bridges under the lock, capturing the heap strings.
+	// ALLOCATOR: session_owners/session_bridges keys and values are allocated from the
+	// HEAP allocator in shell_session_create (`strings.clone(..., heap)`), and
+	// shell_session_service_free releases them the same way. These frees must match.
+	//
+	// They did not: they used the implicit context.allocator. In production that
+	// happens to be the heap allocator, so the mismatch was invisible — but under the
+	// test tracking allocator every one of them reports a bad free, which is what a
+	// mismatched free IS, and any context running with a non-default allocator would
+	// have made it a genuine one. Surfaced by the first test to exercise create followed
+	// by handle_exited (REQ-SHELL-5); fixed here rather than left as a trap.
+	exited_heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	map_key: string
 	map_val: string
@@ -1099,19 +1177,26 @@ shell_session_handle_exited :: proc(
 			break
 		}
 	}
+	// ORDER MATTERS, and it was wrong here. The original freed the KEY and then used
+	// that same freed string to look the VALUE up (`delete(k)` followed by
+	// `svc.session_bridges[k]`) — a use-after-free that the context allocator's
+	// free-list happened to survive, and that faults outright once the free actually
+	// releases the memory. Capture both, unlink, then free.
 	for k in svc.session_bridges {
 		if k == session_id {
-			delete(k)
-			delete(svc.session_bridges[k])
+			bridge_key := k
+			bridge_val := svc.session_bridges[k]
 			delete_key(&svc.session_bridges, k)
+			delete(bridge_key, exited_heap)
+			delete(bridge_val, exited_heap)
 			break
 		}
 	}
 	sync.mutex_unlock(&svc.mu)
 
 	// Fast path frees remain exactly as before; they only apply when the map hit.
-	defer if found_entry do delete(map_key)
-	defer if found_entry do delete(map_val) // map_val is the owner_user_id
+	defer if found_entry do delete(map_key, exited_heap)
+	defer if found_entry do delete(map_val, exited_heap) // map_val is the owner_user_id
 
 	owner:    string
 	session:  domain.Shell_Session
@@ -1239,7 +1324,93 @@ shell_session_handle_exited :: proc(
 		evt := _shell_exited_event_json(session_id, effective_status, exit_code, exit_code_set)
 		events.publish_owned(svc.events, owner, evt)
 	}
+
+	// REQ-SHELL-5 §1 — NOTIFY THE OWNING AGENT, background runs only.
+	_shell_session_notify_run_finished(svc, session, effective_status)
 	return true
+}
+
+// _shell_session_notify_run_finished delivers a run's completion notice to the agent
+// that started it (REQ-SHELL-5 §1).
+//
+// WHY IT LIVES AT THE TAIL OF handle_exited. That is the single point at which a
+// bridge-reported terminal status is actually APPLIED to a row, which makes it the one
+// place both notifiable outcomes pass through: a run that finishes on its own and a run
+// that is killed both reach the hub as a shell_exited carrying `exited` / `killed` /
+// `failed`. One call site, both outcomes, no second path to keep in step.
+//
+// It sits BELOW the idempotency guard on purpose, not merely by position. That guard
+// returns early for an exit that has already been applied — the duplicate delivery an
+// at-least-once outbox is expected to produce — so a replayed exit cannot notify a
+// second time. "Notify exactly once" is inherited from "apply exactly once" rather than
+// being a separate promise with its own bugs.
+//
+// BACKGROUND ONLY, and this is the condition most likely to be lost in a later edit.
+// A FOREGROUND run returns its result inline to the caller that is still blocked on it
+// (REQ-SHELL-2 owns that return path) and must send NOTHING — a notification would be
+// the same answer delivered twice, once to a caller that already has it. The whole of
+// the distinction is the `background` flag: REQ-SHELL-2 deleted the implicit 15s
+// auto-background rule, so the flag is set only by an explicit --bg at start or by the
+// user converting a live run, never inferred. A converted run carries background=true by
+// the time it exits, so it notifies — which is AC3.
+//
+// This delivers a TRANSIENT NUDGE and inserts NOTHING into any conversation, matching
+// what the original design intended ("delivers a transient nudge; no chat/conversation
+// message is ever inserted", agent_action_handlers.odin). The run's one conversation
+// entry was written at create; there is no second message here and no output anywhere on
+// this path — the notice names the session and its status, and the agent reads the log
+// from the bridge on demand.
+_shell_session_notify_run_finished :: proc(svc: ^Shell_Session_Service, session: domain.Shell_Session, status: string) {
+	if svc == nil do return
+	if svc.bridge_command_sink.send_runtime_command == nil && svc.bridge_command_sink.send_runtime_command_wait == nil do return
+
+	kind, known := domain.shell_session_kind_from_string(session.kind)
+	if !known || kind != .Run do return
+	if !session.background do return
+	// The notice is addressed to an agent on a bridge. Without either id there is
+	// nobody to deliver to; a run always has both, so this is a guard, not a case.
+	if session.agent_instance_id == "" || session.bridge_id == "" do return
+
+	cmd_id := platform.generate_id(svc.ids, "cmd_sh_run_")
+	body := _shell_run_notify_command_json(cmd_id, session.session_id, session.agent_instance_id, status, session.exit_code, session.exit_code_set)
+	defer delete(body)
+
+	cmd := project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = body}
+	// Fire-and-forget. A nudge the bridge misses is not worth failing or retrying an
+	// already-applied exit over: the row is terminal and authoritative, and the agent
+	// can always read the session. Deliberately NOT durable — this is a wake-up, not
+	// the record. The record is the row.
+	if svc.bridge_command_sink.send_runtime_command != nil {
+		_, _ = project_service.bridge_command_send_runtime(svc.bridge_command_sink, cmd)
+		return
+	}
+	_, _, _ = project_service.bridge_command_send_runtime_wait(svc.bridge_command_sink, cmd, 1000)
+}
+
+// _shell_run_notify_command_json builds the notify_shell_run runtime command.
+//
+// It carries the SESSION ID above all else (REQ-SHELL-5 §1: "the notification must
+// carry the shell session id, since that is what the agent was handed when the run was
+// backgrounded"), plus the status and exit code so the notice can be read without a
+// follow-up call. It carries NO OUTPUT — output never leaves the bridge, and this
+// command is travelling toward the bridge anyway. Caller owns the returned string.
+_shell_run_notify_command_json :: proc(cmd_id, session_id, agent_instance_id, status: string, exit_code: int, exit_code_set: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"notify_shell_run","command_id":"`)
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, `","agent_instance_id":"`)
+	contracts.write_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","session_id":"`)
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, `","status":"`)
+	contracts.write_json_string(&b, status)
+	strings.write_string(&b, `"`)
+	if exit_code_set {
+		strings.write_string(&b, `,"exit_code":`)
+		strings.write_string(&b, fmt.tprintf("%d", exit_code))
+	}
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
 }
 
 // --- Tunnel stream registry (T8) ---

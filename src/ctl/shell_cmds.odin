@@ -220,9 +220,16 @@ ctl_shell_run :: proc(endpoint, token: string, tokens, args: []string) {
 	// caller's token, so this is belt-and-braces rather than the only source —
 	// which is why an explicit --agent cannot be used to attribute a run elsewhere.
 	append(&fields, json_kv("agent_instance_id", option_value(args, "--agent", ctx.agent_instance_id)))
-	// The TRIGGERING conversation. A run's completion notice goes here and nowhere
-	// else — never to a chain-wide or user-wide feed.
-	if v := option_value(args, "--conversation", ctx.conversation_id); v != "" do append(&fields, json_kv("conversation_id", v))
+	// The TRIGGERING conversation. A run's completion notice and its one `shell_run`
+	// marker go here and nowhere else — never to a chain-wide or user-wide feed.
+	//
+	// TAKEN FROM CONTEXT, with no flag to override it (REQ-SHELL-5 AC9). There used to
+	// be a `--conversation` here whose default was already ctx.conversation_id, so the
+	// flag could only ever replace the correct answer with a different one. The hub now
+	// resolves a run's conversation from the caller's token regardless
+	// (shell_session_create), so sending anything else was at best ignored and at worst
+	// an attempt to write into somebody else's conversation.
+	if ctx.conversation_id != "" do append(&fields, json_kv("conversation_id", ctx.conversation_id))
 	// project_id is an annotation every kind may carry, not a scope column.
 	if v := option_value(args, "--project", ctx.project_id); v != "" do append(&fields, json_kv("project_id", v))
 	// chain_id is deliberately NOT sent: a run is agent-scoped and the hub refuses
@@ -297,7 +304,10 @@ ctl_shell_serve :: proc(endpoint, token: string, tokens, args: []string) {
 	// chain_id + bridge_id are a server's SCOPE KEY: the chain summary lists every
 	// server started for that chain, whoever started it.
 	append(&fields, json_kv("chain_id", chain_id))
-	if v := option_value(args, "--conversation", ctx.conversation_id); v != "" do append(&fields, json_kv("conversation_id", v))
+	// From context, no flag — same reasoning as `run` above (REQ-SHELL-5 AC9). A server
+	// is chain-scoped, so this is an annotation recording who started it rather than a
+	// scope column, and it is still the starting agent's own conversation.
+	if ctx.conversation_id != "" do append(&fields, json_kv("conversation_id", ctx.conversation_id))
 	if v := option_value(args, "--project", ctx.project_id); v != "" do append(&fields, json_kv("project_id", v))
 	// agent_instance_id is deliberately NOT sent: a server is chain-scoped, and the
 	// hub refuses one that names an agent instance.
@@ -499,7 +509,8 @@ print_help_shell :: proc() {
 	fmt.println("        Ctrl-C does not stop the run. It keeps going, and you can still")
 	fmt.println("        reach it with `shell log <id>` and `shell kill <id>`.")
 	fmt.println("        Bridge, agent, conversation and project are taken from your own")
-	fmt.println("        context; every one can be overridden with a flag.")
+	fmt.println("        context. Bridge, agent and project can be overridden with a flag;")
+	fmt.println("        the conversation cannot — a run belongs to the one that started it.")
 	fmt.println("  serve --cmd '<command>' [--port <n>] [--cwd <dir>] [--label <lbl>]")
 	fmt.println("        Start a long-running process. Returns as soon as it is up.")
 	fmt.println("        NOT subject to the 30-minute cap that bounds a run.")

@@ -194,6 +194,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		event_bus           = &graph.event_bus,
 		ids                 = &graph.ids,
 		clock               = &graph.clock,
+		// REQ-SHELL-5: writes a run's single `shell_run` marker into the triggering
+		// conversation. graph.content is constructed above, so the order holds.
+		content             = &graph.content,
 	)
 	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
 		auth                = &graph.auth,
