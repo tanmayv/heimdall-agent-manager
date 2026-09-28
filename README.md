@@ -291,11 +291,14 @@ developer machine that should host agents. Point the bridges at the hub, and age
 every device coordinate through that one board.
 
 On bridge devices you can skip Nix and the source checkout entirely — the one-line
-installer pulls prebuilt binaries, verifies their checksum, and registers the service:
+installer checks the `socat` runtime dependency, pulls prebuilt binaries, verifies
+their checksum, and registers the service:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash
 ```
 
-See `SELF_HOSTING.md` for the full deployment guide (Part 2 covers bridges), and the
-`nix-homelab-config` repository for the NixOS deployment configuration.
+Use `heimdall update` for later binary updates. See `SELF_HOSTING.md` for the full
+deployment guide, including the `--hub` mirror layout and the Linux linger step
+required to keep a headless bridge running after logout. The
+`nix-homelab-config` repository contains the NixOS deployment configuration.

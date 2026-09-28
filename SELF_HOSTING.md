@@ -275,7 +275,16 @@ connects outbound to the hub and never needs to be publicly reachable itself.
 
 On any Linux (x86_64, arm64) or macOS (Intel, Apple Silicon) machine, install
 prebuilt binaries with the one-line installer — no Nix, no Odin, no Rust
-toolchain, no source checkout:
+toolchain, no source checkout. For an HTTPS or WSS hub, install `socat` first:
+
+```bash
+sudo apt install socat  # Debian/Ubuntu
+brew install socat      # macOS
+```
+
+The installer checks this dependency before any download or write and stops with
+these commands if it is missing. Nix builds provide `socat` through the wrapped
+bridge runtime; this prerequisite applies to the prebuilt installer path.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash
@@ -340,6 +349,43 @@ into the unit. Passing `--hub <url>` to the installer is the one explicit
 exception: it writes that URL into the unit as a deliberate operator
 override.
 
+#### Self-hosted mirror layout
+
+`install.sh --hub <url>` and `heimdall update --hub <url>` consume the same
+static layout. The mirror root must contain `SHA256SUMS` and an unversioned
+archive basename for every target you serve:
+
+```text
+SHA256SUMS
+heimdall-local-linux-amd64.tar.gz
+heimdall-local-linux-arm64.tar.gz
+heimdall-local-darwin-amd64.tar.gz
+heimdall-local-darwin-arm64.tar.gz
+```
+
+The filenames inside `SHA256SUMS` must also be those unversioned basenames. Do
+not copy a GitHub release manifest verbatim: its entries are versioned. Do not
+use a per-target CI checksum artifact either: its entry is prefixed with
+`dist/`. Both forms fail with `SHA256SUMS has no entry for <name>`.
+
+Starting with the four versioned GitHub release assets in the current directory,
+stage a compatible mirror like this:
+
+```bash
+version=v0.3.2
+mirror_dir="$PWD/heimdall-mirror"
+mkdir -p "$mirror_dir"
+for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+  cp "heimdall-local-${target}-${version}.tar.gz" \
+    "$mirror_dir/heimdall-local-${target}.tar.gz"
+done
+(cd "$mirror_dir" && sha256sum heimdall-local-*.tar.gz > SHA256SUMS)
+```
+
+Serve that directory at the URL passed to `--hub`. For example,
+`--hub https://hub.example.com` fetches `https://hub.example.com/SHA256SUMS`
+and the matching unversioned archive.
+
 Preview every planned action without writing anything:
 
 ```bash
@@ -396,6 +442,7 @@ heimdall vault set-key <64-hex>
 heimdall vault status
 
 # 4. Start the registered service
+sudo loginctl enable-linger "$USER"                  # Linux server/headless host
 systemctl --user enable --now heimdall-bridge        # Linux
 launchctl bootstrap gui/$(id -u) \
   ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist   # macOS
@@ -403,6 +450,10 @@ launchctl bootstrap gui/$(id -u) \
 # 5. Verify: enrollment, service state, hub connection, binary versions
 heimdall status
 ```
+
+On a non-desktop Linux host, lingering is required so the user service keeps
+running after the last login session ends; without it, the bridge stops when you
+log out. This does not apply to the macOS LaunchAgent.
 
 Keeping the node current is one command as well:
 

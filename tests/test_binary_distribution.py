@@ -76,6 +76,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / 'scripts' / 'release' / 'package-local-binary-tarball.sh'
 STORELESS_SCRIPT = ROOT / 'scripts' / 'release' / 'storeless-exec.sh'
+INSTALLER_SMOKE_SCRIPT = ROOT / 'scripts' / 'ci' / 'installer-smoke.sh'
 # storeless-exec.sh contract: the static control exits 42, and 70 means no
 # clean-environment mechanism could be validated.
 STORELESS_CONTROL_RC = 42
@@ -309,6 +310,87 @@ def test_install_sh_syntax(ctx):
         assert not line.startswith('set -'), (
             f'"set -" must live inside main(), not at top level: {line!r}')
     assert '\n  set -euo pipefail\n' in text, 'main() must enable set -euo pipefail'
+
+
+def shell_function(script: Path, name: str) -> str:
+    match = re.search(
+        rf'(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n',
+        script.read_text(encoding='utf-8'))
+    assert match, f'{name}() not found in {script}'
+    return match.group(0)
+
+
+def test_report_shared_openssl_guard_has_teeth(ctx):
+    """The CI proof gate must fail closed on every unproven outcome."""
+    base = ctx['work'] / 'report-shared-openssl'
+    base.mkdir(parents=True, exist_ok=True)
+    function = shell_function(INSTALLER_SMOKE_SCRIPT, 'report_shared_openssl')
+    harness = f'''set +e
+ok() {{ :; }}
+sha_of() {{ printf '%s\\n' hash; }}
+cmp() {{
+  if [ "$case_mode" = cmp-error ]; then return 2; fi
+  command cmp "$@"
+}}
+{function}
+run_case() {{
+  label="$1"
+  expected="$2"
+  openssl_pre_existed="$3"
+  case_mode="$4"
+  case_dir={shlex.quote(str(base))}/"$label"
+  sandbox="$case_dir/sandbox"
+  openssl_path="$case_dir/openssl"
+  openssl_pre_sha=before
+  mkdir -p "$sandbox"
+  case "$case_mode" in
+    absent) ;;
+    created) printf created >"$openssl_path" ;;
+    deleted) printf before >"$sandbox/openssl-before" ;;
+    identical)
+      printf same >"$sandbox/openssl-before"
+      printf same >"$openssl_path"
+      ;;
+    replaced)
+      printf before >"$sandbox/openssl-before"
+      printf after >"$openssl_path"
+      ;;
+    cmp-error)
+      printf same >"$sandbox/openssl-before"
+      printf same >"$openssl_path"
+      ;;
+  esac
+  report_shared_openssl >"$case_dir/stdout" 2>"$case_dir/stderr"
+  status=$?
+  printf 'report_shared_openssl branch=%s status=%s expected=%s\\n' \
+    "$label" "$status" "$expected"
+  if [ "$status" -ne "$expected" ]; then
+    cat "$case_dir/stdout" "$case_dir/stderr" >&2
+    return 1
+  fi
+}}
+failures=0
+run_case proven-absence 0 false absent || failures=$((failures + 1))
+run_case unexpected-creation 1 false created || failures=$((failures + 1))
+run_case unexpected-deletion 1 true deleted || failures=$((failures + 1))
+run_case byte-identical 0 true identical || failures=$((failures + 1))
+run_case byte-replacement 1 true replaced || failures=$((failures + 1))
+run_case cmp-error 1 true cmp-error || failures=$((failures + 1))
+exit "$failures"
+'''
+    res = run(['bash', '-c', harness], cwd=ROOT)
+    print(res.stdout, end='')
+    expected = (
+        'report_shared_openssl branch=proven-absence status=0 expected=0\n'
+        'report_shared_openssl branch=unexpected-creation status=1 expected=1\n'
+        'report_shared_openssl branch=unexpected-deletion status=1 expected=1\n'
+        'report_shared_openssl branch=byte-identical status=0 expected=0\n'
+        'report_shared_openssl branch=byte-replacement status=1 expected=1\n'
+        'report_shared_openssl branch=cmp-error status=1 expected=1\n'
+    )
+    assert res.stdout == expected, (
+        f'guard branch results changed:\n{res.stdout}\nstderr:\n{res.stderr}')
+    assert res.returncode == 0, f'guard branch harness failed:\n{res.stderr}'
 
 
 def test_install_sh_help(ctx):
@@ -3150,6 +3232,17 @@ def test_self_hosting_documents_installer(ctx):
         assert command in part2, f'Part 2 must document {command}'
     assert part2.count('heimdall vault set-key <64-hex>') >= 2, (
         'Part 2 must document vault setup in quick-install and bridge setup flows')
+    for target in ('linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64'):
+        asset = f'heimdall-local-{target}.tar.gz'
+        assert asset in part2, f'mirror layout must name {asset}'
+    assert '`install.sh --hub <url>` and `heimdall update --hub <url>` consume the same' in part2
+    assert 'mirror root must contain `SHA256SUMS`' in part2
+    assert 'unversioned basenames' in part2
+    assert 'sha256sum heimdall-local-*.tar.gz > SHA256SUMS' in part2
+    assert 'sudo loginctl enable-linger "$USER"' in part2
+    assert 'bridge stops when you\nlog out' in part2
+    for socat_command in ('sudo apt install socat', 'brew install socat'):
+        assert socat_command in part2, f'quick install must document {socat_command}'
     # Manual/source paths retained as advanced alternatives.
     for marker in ('nix build .#ham-bridge', 'ham-bridge enroll',
                    'Systemd user service', 'launchd agent', 'Home Manager module'):
@@ -3167,6 +3260,10 @@ def test_readme_points_at_installer(ctx):
     readme = (ROOT / 'README.md').read_text(encoding='utf-8')
     assert 'install.sh | bash' in readme, 'README Getting started must point at the installer'
     assert 'SELF_HOSTING.md' in readme
+    assert '`socat` runtime dependency' in readme
+    assert '`heimdall update`' in readme
+    assert '`--hub` mirror layout' in readme
+    assert 'keep a headless bridge running after logout' in readme
 
 
 # ---- runner --------------------------------------------------------------------
@@ -4104,7 +4201,7 @@ def test_service_path_survives_a_space_in_the_install_dir(ctx):
     #
     # So the PATH line is lifted into a minimal unit of its own. Any
     # environment-assignment complaint from systemd is then unambiguously about
-    # the line under test. When T29 lands, this test keeps working unchanged.
+    # the line under test. T30 leaves this focused check working unchanged.
     analyze = shutil.which('systemd-analyze')
     if analyze is None:
         raise Skip('systemd-analyze not available; rendered-text assertions above still ran')
@@ -4247,14 +4344,26 @@ def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
 
     `fish_add_path /home/my user/.local/bin` is TWO arguments to fish, so on a
     spaced home the installer writes an rc line that adds two wrong paths and
-    not the right one. Worse, the awk idempotency mirror in wire_path() then
-    cannot match the line install.sh itself wrote, so every re-run appends
-    another copy.
+    not the right one. The independent awk mirror in do_uninstall() must change
+    in lockstep or uninstall silently leaves that line behind.
 
     This is a REAL install into a sandboxed spaced HOME -- the rc file on disk
     is the artifact asserted on, because the printed fallback snippet and the
     written line are two different code paths and only the written one decides
     a user's PATH.
+
+    SCOPE OF THIS TEST, stated because a first draft of it overclaimed: the
+    quoted form is written by wire_path(), whose own re-run check is
+    `grep -Fqx "$path_line"` against the SAME variable it writes, so the write
+    and the re-run check cannot desync. The second run below pins that.
+
+    It does NOT cover do_uninstall()'s awk matcher, which carries an
+    INDEPENDENT hand-typed copy of the same line (`fish_line=`). That copy had
+    to be quoted in lockstep or --uninstall would stop recognising the line the
+    installer had just written and would silently leave it behind. Mutation-
+    tested and found NOT to bind here: unquoting that mirror alone leaves this
+    test green. It is reported as an uncovered path rather than left to look
+    covered.
     """
     need_tool('curl')
     target = host_target()
@@ -4294,16 +4403,18 @@ def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
         f'{install_dir!r} as two arguments and adds neither.\n'
         f'wanted: {want!r}\ngot:\n{written}')
 
-    # Idempotency: the awk mirror in wire_path() must match the line the
-    # installer itself wrote, or a re-run appends a second copy. This is the
-    # half that an unquoted mirror breaks even after the write is fixed.
+    # Idempotency: a second run must not append a second copy. wire_path()
+    # decides this with `grep -Fqx "$path_line"`, i.e. against the very string
+    # it writes -- so this pins that the WRITTEN form stays greppable (a stray
+    # trailing space or a re-quoting would break it), not that two independent
+    # copies agree.
     res2 = install_run_shielded(
         ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
     assert res2.returncode == 0, f're-run failed:\n{res2.stderr}'
     rewritten = config_fish.read_text()
     assert rewritten.count('fish_add_path') == 1, (
-        f'a re-run must not append a second PATH line -- the awk idempotency '
-        f'mirror no longer matches what install.sh writes:\n{rewritten}')
+        f'a re-run must not append a second PATH line -- wire_path no longer '
+        f'recognises the exact line it writes:\n{rewritten}')
 
 
 # --- REQ-INST-27: the socat probe's own assertion must BIND --------------------
@@ -4443,6 +4554,8 @@ def main() -> int:
         ('packaging error cases', test_packaging_error_cases),
         ('SHA256SUMS validation + tamper fail-closed', test_sha256sums_validation),
         ('install.sh syntax (bash -n)', test_install_sh_syntax),
+        ('report_shared_openssl guard branch teeth (REQ-INST-21)',
+         test_report_shared_openssl_guard_has_teeth),
         ('install.sh --help', test_install_sh_help),
         ('install.sh --dry-run --version v0.1.0', test_install_sh_dry_run_version),
         ('install.sh --dry-run --hub <url>', test_install_sh_dry_run_hub),

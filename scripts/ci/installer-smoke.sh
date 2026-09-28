@@ -426,6 +426,7 @@ seed_shared_openssl_for_ci() {
   cmp -s "$seed_file" "$sandbox/openssl-before" \
     || die "the pre-install $openssl_path snapshot does not contain the CI seed bytes"
 }
+# Proof gate: cmp must establish byte identity and fail closed when it cannot.
 report_shared_openssl() {
   if ! "$openssl_pre_existed"; then
     if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
@@ -458,6 +459,7 @@ report_shared_openssl() {
   fi
   return 1
 }
+# Safety path: unlike the proof gate, compare symlink entries without dereferencing them.
 restore_shared_openssl() {
   if ! "$openssl_pre_existed"; then
     if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
