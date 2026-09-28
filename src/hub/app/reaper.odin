@@ -5,6 +5,7 @@ import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import http "odin_test:hub/transport/http"
+import shell_session_svc "odin_test:hub/service/shell_session"
 
 // REAPER_STALE_MS mirrors the request-driven sweep threshold used on bridge
 // heartbeats (http.BRIDGE_INSTANCE_STALE_MS = 90s): an instance still in an
@@ -51,6 +52,11 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	defer domain.agent_instances_destroy(reaped)
 	for inst in reaped {
+		// REQ-SHELL-2 §9: the staleness sweep is the third and last liveness signal,
+		// and it gets the same rule as the other two — a foreground run whose agent
+		// is gone becomes a background run, so it stays tracked and reapable instead
+		// of blocking for a caller that no longer exists.
+		shell_session_svc.shell_session_background_runs_for_agent(&graph.shell_session_service, string(inst.owner_user_id), inst.agent_instance_id)
 		summary := http.agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 		events.publish_resource_changed(
 			&graph.event_bus,

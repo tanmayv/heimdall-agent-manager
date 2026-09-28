@@ -6,16 +6,71 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
+import project_service "odin_test:hub/service/project"
 import shell_session_svc "odin_test:hub/service/shell_session"
 
 Shell_Session_Rest_Handlers :: struct {
 	auth:           ^auth_service.Auth_Service,
 	shell_sessions: ^shell_session_svc.Shell_Session_Service,
+	// REQ-SHELL-10 work item 3: the live bridge-connection registry, read ONLY to
+	// derive the bridge-offline presentation state below. Nothing on this path writes
+	// to it.
+	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
+}
+
+// --- bridge-offline session state (REQ-SHELL-10 work item 3) ------------------
+//
+// A session whose bridge is disconnected must not be presented as plainly `running`,
+// which asserts something we cannot currently see, nor as `failed`/`killed`, which
+// assert something we do not know. It needs a third reading: "the bridge that owns
+// this is gone; its true status is unknown until it returns". REQ-SHELL-6 §8 renders
+// it.
+//
+// DERIVED AT READ TIME, NOT STORED, and not written on disconnect. This is the design
+// decision of this work item, so here is the whole reasoning:
+//
+//  - NOTHING IS TRIGGERED BY A DISCONNECT. Three call sites in this codebase
+//    deliberately choose CONVERT-NOT-KILL when a bridge drops, because a WS drop is
+//    usually a transient blip with the processes alive; a status write on disconnect
+//    would be a fourth behaviour reintroducing the risk they exist to avoid, and it
+//    would have to be undone again moments later on a fast reconnect.
+//  - IT IS SELF-CORRECTING IN BOTH DIRECTIONS FOR FREE. The flag simply follows the
+//    registry, so it appears the instant the connection drops and disappears the
+//    instant it returns, with no teardown racing a reconnect and therefore no
+//    connection-generation guard to get right on this path.
+//  - IT ADDS NO STATUS VALUE. domain.SHELL_SESSION_TERMINAL_STATUSES and the whole
+//    status vocabulary are untouched, so every existing live/finished filter keeps
+//    meaning what it meant — and REQ-SHELL-14, whose acceptance forbids a new status
+//    value, is unaffected.
+//
+// The row's `status` is still reported verbatim; this only tells a client how much to
+// trust it.
+
+// shell_session_bridge_online answers whether the bridge owning a session is
+// connected RIGHT NOW. A nil registry (tests, and only tests, since wiring always
+// supplies one) answers "online": the alternative would have every serialization
+// without a registry claim every session's status is untrustworthy.
+shell_session_bridge_online :: proc(registry: ^project_service.Bridge_Runtime_Registry, s: domain.Shell_Session) -> bool {
+	if registry == nil do return true
+	return project_service.bridge_runtime_registry_has_live(registry, s.bridge_id)
+}
+
+// shell_session_status_unknown is the state itself: the status on this row cannot
+// currently be trusted because the only thing that could confirm it is unreachable.
+//
+// TERMINAL SESSIONS ARE EXCLUDED, which is the whole reason this is a named rule
+// rather than `!bridge_online` at the call site. A session that has already ended has
+// a FINAL status — it is a fact about the past, and no bridge is needed to vouch for
+// it. Only a session the hub believes is still live has a status that depends on a
+// bridge we cannot currently reach.
+shell_session_status_unknown :: proc(registry: ^project_service.Bridge_Runtime_Registry, s: domain.Shell_Session) -> bool {
+	if domain.shell_session_is_terminal(s) do return false
+	return !shell_session_bridge_online(registry, s)
 }
 
 // --- JSON serialization ---
 
-write_shell_session_json :: proc(b: ^strings.Builder, s: domain.Shell_Session) {
+write_shell_session_json :: proc(b: ^strings.Builder, s: domain.Shell_Session, registry: ^project_service.Bridge_Runtime_Registry = nil) {
 	strings.write_string(b, "{\"session_id\":\"")
 	write_handler_json_string(b, s.session_id)
 	strings.write_string(b, "\",\"owner_user_id\":\"")
@@ -46,6 +101,30 @@ write_shell_session_json :: proc(b: ^strings.Builder, s: domain.Shell_Session) {
 	}
 	strings.write_string(b, fmt.tprintf(",\"pid\":%d", s.pid))
 	strings.write_string(b, fmt.tprintf(",\"server_port\":%d", s.server_port))
+	if s.background {
+		strings.write_string(b, ",\"background\":true")
+	} else {
+		strings.write_string(b, ",\"background\":false")
+	}
+	strings.write_string(b, ",\"conversation_id\":\"")
+	write_handler_json_string(b, s.conversation_id)
+	strings.write_string(b, "\"")
+	// REQ-SHELL-10 work item 3. Both are DERIVED, never stored — see
+	// shell_session_status_unknown. `status_unknown` is the one a client should render;
+	// `bridge_online` is the raw fact it is derived from, reported so the UI can say
+	// WHY (and so the honest kill affordance REQ-SHELL-6 §8 asks for — the request is
+	// durable and will be delivered when the bridge returns — has something to key on).
+	// The rule lives in one place so nothing recomputes it and drifts.
+	if shell_session_bridge_online(registry, s) {
+		strings.write_string(b, ",\"bridge_online\":true")
+	} else {
+		strings.write_string(b, ",\"bridge_online\":false")
+	}
+	if shell_session_status_unknown(registry, s) {
+		strings.write_string(b, ",\"status_unknown\":true")
+	} else {
+		strings.write_string(b, ",\"status_unknown\":false")
+	}
 	if s.preview_enabled {
 		strings.write_string(b, ",\"preview_enabled\":true")
 	} else {
@@ -87,7 +166,9 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		project_id        = json_string(req.body, "project_id"),
 		chain_id          = json_string(req.body, "chain_id"),
 		agent_instance_id = json_string(req.body, "agent_instance_id"),
+		conversation_id   = json_string(req.body, "conversation_id"),
 		server_port       = json_int(req.body, "server_port", 0),
+		background        = json_bool(req.body, "background"),
 	}
 	defer {
 		delete(input.kind)
@@ -97,6 +178,7 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		delete(input.project_id)
 		delete(input.chain_id)
 		delete(input.agent_instance_id)
+		delete(input.conversation_id)
 	}
 
 	session, created, err := shell_session_svc.shell_session_create(h.shell_sessions, auth_ctx, input)
@@ -104,7 +186,40 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"session\":")
-	write_shell_session_json(&b, session)
+	write_shell_session_json(&b, session, h.bridge_runtime_registry)
+	strings.write_string(&b, "}")
+	body := strings.to_string(b)
+	return respond_success(body, req.request_id, auth_ctx_server_time(req))
+}
+
+// POST /api/v1/shells/{session_id}/background
+//
+// Converts a LIVE FOREGROUND run to a background one (REQ-SHELL-2 §3): the
+// blocked caller is released with the session id, and the run starts notifying on
+// completion. One-way — a run already background, or already terminal, is a 409
+// rather than a silent success, so a double-click cannot release a second waiter.
+//
+// Deliberately open to BOTH a user and an agent. The user is the one REQ-SHELL-6
+// builds the control for, and an agent that decides mid-flight it no longer wants
+// to block is asking for exactly the same transition. Ownership is what limits it:
+// the service resolves the session owner-scoped, so nobody can background another
+// owner's run.
+shell_session_background_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Shell_Session_Rest_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+
+	session_id := path_part(req.path, 4)
+	if session_id == "" {
+		return respond_error(domain.domain_error(.Validation_Failed, "session_id is required"), req.request_id)
+	}
+
+	session, done, err := shell_session_svc.shell_session_set_background(h.shell_sessions, auth_ctx, session_id)
+	if !done do return respond_error(err, req.request_id)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"ok\":true,\"session\":")
+	write_shell_session_json(&b, session, h.bridge_runtime_registry)
 	strings.write_string(&b, "}")
 	body := strings.to_string(b)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
@@ -130,7 +245,7 @@ shell_session_list_by_bridge_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	defer domain.shell_sessions_destroy(sessions)
 	defer delete(next_cursor)
 
-	body := _shell_session_list_json(sessions[:], next_cursor)
+	body := _shell_session_list_json(sessions[:], next_cursor, h.bridge_runtime_registry)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
@@ -150,11 +265,11 @@ shell_session_list_by_project_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	defer domain.shell_sessions_destroy(sessions)
 	defer delete(next_cursor)
 
-	body := _shell_session_list_json(sessions[:], next_cursor)
+	body := _shell_session_list_json(sessions[:], next_cursor, h.bridge_runtime_registry)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
-// GET /api/v1/shells[?bridge_id=&project_id=&chain_id=&status=&limit=&cursor=]
+// GET /api/v1/shells[?bridge_id=&project_id=&chain_id=&agent_instance_id=&status=&limit=&cursor=]
 //
 // The owner-wide shell list. With NO query parameters it returns every shell the
 // caller owns, across every bridge — the product had no such view before, and it
@@ -171,11 +286,16 @@ shell_session_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
+	// Each scope-column filter also narrows by kind, per the domain's per-kind
+	// scope rules — the repository applies that, not this handler (REQ-SHELL-1 §5).
+	// agent_instance_id is here because it is kind=run's scope key; without it a
+	// run has no filter that names its own scope.
 	filter := iface.Shell_Session_List_Filter{
-		bridge_id  = query_value(req.query, "bridge_id"),
-		project_id = query_value(req.query, "project_id"),
-		chain_id   = query_value(req.query, "chain_id"),
-		status     = query_value(req.query, "status"),
+		bridge_id         = query_value(req.query, "bridge_id"),
+		project_id        = query_value(req.query, "project_id"),
+		chain_id          = query_value(req.query, "chain_id"),
+		agent_instance_id = query_value(req.query, "agent_instance_id"),
+		status            = query_value(req.query, "status"),
 	}
 	cursor := query_value(req.query, "cursor")
 	limit  := query_int(req.query, "limit", 25)
@@ -185,7 +305,7 @@ shell_session_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	defer domain.shell_sessions_destroy(sessions)
 	defer delete(next_cursor)
 
-	body := _shell_session_list_json(sessions[:], next_cursor)
+	body := _shell_session_list_json(sessions[:], next_cursor, h.bridge_runtime_registry)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
@@ -206,13 +326,25 @@ shell_session_get_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"session\":")
-	write_shell_session_json(&b, session)
+	write_shell_session_json(&b, session, h.bridge_runtime_registry)
 	strings.write_string(&b, "}")
 	body := strings.to_string(b)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
-// DELETE /api/v1/shells/{session_id} — sends kill to bridge.
+// DELETE /api/v1/shells/{session_id} — accepts a kill for the session.
+//
+// THE OUTCOME IS PART OF THE ANSWER (REQ-SHELL-3). This used to reply a flat
+// {"ok":true} whether the kill had reached the bridge or not, which made a QUEUED
+// kill byte-identical to a DELIVERED one: a user could click kill, see success, and
+// watch the shell keep running. Both are still successes — the intent is durable
+// either way — but the caller is told which it got, in three ways that agree:
+//   - the status code: 200 delivered, 202 Accepted for queued, which is exactly what
+//     202 means ("accepted for processing, not yet acted on");
+//   - `outcome`, the machine-readable value the UI switches on;
+//   - `message`, the sentence a human reads. ham-ctl prints this response verbatim,
+//     so this field is also the CLI's output.
+// The service owns both spellings so the transport cannot drift from it.
 shell_session_kill_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -223,9 +355,17 @@ shell_session_kill_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
 
-	sent, err := shell_session_svc.shell_session_kill(h.shell_sessions, auth_ctx, session_id)
-	if !sent do return respond_error(err, req.request_id)
-	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))
+	outcome, accepted, err := shell_session_svc.shell_session_kill(h.shell_sessions, auth_ctx, session_id)
+	if !accepted do return respond_error(err, req.request_id)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"ok\":true,\"outcome\":\"")
+	write_handler_json_string(&b, shell_session_svc.shell_session_kill_outcome_string(outcome))
+	strings.write_string(&b, "\",\"message\":\"")
+	write_handler_json_string(&b, shell_session_svc.shell_session_kill_outcome_message(outcome))
+	strings.write_string(&b, "\"}")
+	status := outcome == .Queued ? 202 : 200
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), status)
 }
 
 // POST /api/v1/shells/{session_id}/signal
@@ -265,7 +405,7 @@ shell_session_restart_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"session\":")
-	write_shell_session_json(&b, session)
+	write_shell_session_json(&b, session, h.bridge_runtime_registry)
 	strings.write_string(&b, "}")
 	body := strings.to_string(b)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
@@ -304,7 +444,7 @@ shell_session_set_port_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"session\":")
-	write_shell_session_json(&b, session)
+	write_shell_session_json(&b, session, h.bridge_runtime_registry)
 	strings.write_string(&b, "}")
 	body := strings.to_string(b)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
@@ -394,12 +534,12 @@ shell_session_pane_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 // --- private ---
 
-_shell_session_list_json :: proc(sessions: []domain.Shell_Session, next_cursor: string) -> string {
+_shell_session_list_json :: proc(sessions: []domain.Shell_Session, next_cursor: string, registry: ^project_service.Bridge_Runtime_Registry = nil) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"ok\":true,\"sessions\":[")
 	for s, i in sessions {
 		if i > 0 do strings.write_string(&b, ",")
-		write_shell_session_json(&b, s)
+		write_shell_session_json(&b, s, registry)
 	}
 	strings.write_string(&b, "],\"next_cursor\":\"")
 	write_handler_json_string(&b, next_cursor)

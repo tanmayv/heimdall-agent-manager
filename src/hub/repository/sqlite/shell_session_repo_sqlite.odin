@@ -1,6 +1,7 @@
 package sqlite
 
 import "core:c"
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import domain "odin_test:hub/domain"
@@ -23,6 +24,11 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		list_by_owner   = shell_session_list_by_owner_sqlite,
 		delete          = shell_session_delete_sqlite,
 		set_server_port = shell_session_set_server_port_sqlite,
+		find_live_by_port = shell_session_find_live_by_port_sqlite,
+		count_live        = shell_session_count_live_sqlite,
+		set_kill_requested = shell_session_set_kill_requested_sqlite,
+		list_pending_kills = shell_session_list_pending_kills_sqlite,
+		list_live_by_bridge = shell_session_list_live_by_bridge_sqlite,
 	}
 }
 
@@ -30,8 +36,9 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 // 0:session_id 1:owner_user_id 2:bridge_id 3:project_id 4:chain_id
 // 5:agent_instance_id 6:kind 7:label 8:cmd 9:cwd 10:status
 // 11:exit_code 12:pid 13:server_port 14:started_at 15:finished_at
-// 16:created_at 17:last_activity_at
-shell_session_select_cols :: "session_id, owner_user_id, bridge_id, project_id, chain_id, agent_instance_id, kind, label, cmd, cwd, status, exit_code, pid, server_port, started_at, finished_at, created_at, last_activity_at"
+// 16:created_at 17:last_activity_at 18:background 19:conversation_id
+// 20:kill_requested_at 21:run_seq
+shell_session_select_cols :: "session_id, owner_user_id, bridge_id, project_id, chain_id, agent_instance_id, kind, label, cmd, cwd, status, exit_code, pid, server_port, started_at, finished_at, created_at, last_activity_at, background, conversation_id, kill_requested_at, run_seq"
 
 shell_session_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Shell_Session {
 	s: domain.Shell_Session
@@ -61,6 +68,16 @@ shell_session_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Shell_Session {
 	s.finished_at      = column_text(stmt, 15)
 	s.created_at       = column_text(stmt, 16)
 	s.last_activity_at = column_text(stmt, 17)
+	// background is INTEGER NOT NULL DEFAULT 0 (migration 049); any non-zero
+	// reading is true, so a value written by anything but this repo still reads
+	// sensibly.
+	if v, ok := strconv.parse_int(column_text_unowned(stmt, 18)); ok { s.background = v != 0 }
+	s.conversation_id  = column_text(stmt, 19)
+	s.kill_requested_at = column_text(stmt, 20)
+	// run_seq is INTEGER NOT NULL DEFAULT 0 (migration 051). A row written before
+	// 051 reads back as run 0, which is the same value a never-restarted session
+	// carries, so old rows and new ones agree without a backfill.
+	if v, ok := strconv.parse_int(column_text_unowned(stmt, 21)); ok do s.run_seq = v
 	return s
 }
 
@@ -70,21 +87,64 @@ shell_session_upsert_sqlite :: proc(ctx: rawptr, session: domain.Shell_Session) 
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := `INSERT INTO shell_sessions (
+	query := fmt.tprintf(`INSERT INTO shell_sessions (
 		session_id, owner_user_id, bridge_id, project_id, chain_id, agent_instance_id,
 		kind, label, cmd, cwd, status, exit_code, pid, server_port,
-		started_at, finished_at, created_at, last_activity_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(session_id) DO UPDATE SET
+		started_at, finished_at, created_at, last_activity_at, background, conversation_id,
+		kill_requested_at, run_seq
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(bridge_id, session_id) DO UPDATE SET
 		status           = excluded.status,
+		-- background is ONE-WAY (domain.shell_session_run_may_background): MAX, not
+		-- assignment, so a bridge-event upsert that carries the default 0 -- every
+		-- shell_exited report does -- cannot silently clear a run the user has
+		-- already backgrounded. Same guard in spirit as the pid/server_port CASEs
+		-- above, expressed as MAX because the value is a one-way boolean.
+		background       = MAX(excluded.background, shell_sessions.background),
+		conversation_id  = CASE WHEN excluded.conversation_id != '' THEN excluded.conversation_id ELSE shell_sessions.conversation_id END,
 		exit_code        = excluded.exit_code,
 		pid              = CASE WHEN excluded.pid != 0 THEN excluded.pid ELSE shell_sessions.pid END,
 		server_port      = CASE WHEN excluded.server_port != 0 THEN excluded.server_port ELSE shell_sessions.server_port END,
 		finished_at      = CASE WHEN excluded.finished_at != '' THEN excluded.finished_at ELSE shell_sessions.finished_at END,
 		last_activity_at = CASE WHEN excluded.last_activity_at != '' THEN excluded.last_activity_at ELSE shell_sessions.last_activity_at END,
 		label            = CASE WHEN excluded.label != '' THEN excluded.label ELSE shell_sessions.label END,
-		cwd              = CASE WHEN excluded.cwd != '' THEN excluded.cwd ELSE shell_sessions.cwd END;`
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		cwd              = CASE WHEN excluded.cwd != '' THEN excluded.cwd ELSE shell_sessions.cwd END,
+		-- kill_requested_at (REQ-SHELL-3) has THREE branches, and the order matters.
+		--
+		-- 1. A terminal status CLEARS it. This is work item 5 -- "clear the intent once
+		--    the session reaches a terminal status" -- satisfied structurally rather
+		--    than by remembering to call something: every path that lands a terminal
+		--    status goes through this upsert (shell_session_handle_exited included), so
+		--    a row can never carry a kill request for a process that is already gone.
+		--    That matters beyond tidiness: a spent intent left set would be re-delivered
+		--    on the next reconnect, and the pid it named may by then belong to an
+		--    unrelated process.
+		-- 2. Otherwise a non-empty incoming value SETS it.
+		-- 3. Otherwise the stored value is KEPT, so the bridge-event upserts -- which
+		--    know nothing about this column and carry "" -- cannot silently drop a
+		--    pending kill. Same guard in spirit as the pid/server_port CASEs above.
+		--
+		-- The terminal set is BOUND from domain.SHELL_SESSION_TERMINAL_STATUSES, not
+		-- written out here, so "terminal" means in SQL exactly what
+		-- shell_session_is_terminal means in Odin.
+		kill_requested_at = CASE
+			WHEN excluded.status IN (%s) THEN ''
+			WHEN excluded.kill_requested_at != '' THEN excluded.kill_requested_at
+			ELSE shell_sessions.kill_requested_at END,
+		-- run_seq (REQ-SHELL-4) is MONOTONIC, so MAX rather than assignment, for the
+		-- same reason background is MAX: only shell_session_restart advances it, and
+		-- every other writer carries whatever it last read. A bridge-event upsert that
+		-- raced a restart would otherwise roll the counter BACK to the run it knew
+		-- about, and the hub would then accept that run's stale exits as current --
+		-- re-opening precisely the hole this column closes.
+		run_seq          = MAX(excluded.run_seq, shell_sessions.run_seq);`, shell_session_terminal_placeholders())
+	// clone_to_cstring, not cstring(raw_data(query)). This query stopped being a
+	// string LITERAL when the terminal set made it interpolated, and a literal is
+	// NUL-terminated while tprintf output is not guaranteed to be — so the (-1,
+	// "read to the NUL") form below would be reading past the string. The temp
+	// allocator is reclaimed wholesale, so there is nothing to free.
+	c_query := strings.clone_to_cstring(query, context.temp_allocator)
+	if sqlite3_prepare_v2(impl.conn.db, c_query, -1, &stmt, nil) != SQLITE_OK {
 		return false, domain.domain_error(.Internal_Error, "failed to prepare shell session upsert")
 	}
 	defer sqlite3_finalize(stmt)
@@ -112,6 +172,14 @@ shell_session_upsert_sqlite :: proc(ctx: rawptr, session: domain.Shell_Session) 
 	bind_text(stmt, 16, session.finished_at)
 	bind_text(stmt, 17, session.created_at)
 	bind_text(stmt, 18, session.last_activity_at)
+	sqlite3_bind_int(stmt, 19, c.int(session.background ? 1 : 0))
+	bind_text(stmt, 20, session.conversation_id)
+	bind_text(stmt, 21, session.kill_requested_at)
+	sqlite3_bind_int(stmt, 22, c.int(session.run_seq))
+	// The terminal set for the kill_requested_at CASE, bound after every value
+	// parameter so adding a status to the domain table shifts nothing above.
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	for st, i in terminal do bind_text(stmt, 23 + i, st)
 
 	if sqlite3_step(stmt) != SQLITE_DONE {
 		return false, domain.domain_error(.Internal_Error, "failed to upsert shell session")
@@ -136,36 +204,47 @@ shell_session_get_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string)
 	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
 }
 
-// shell_session_get_by_id_sqlite mirrors shell_session_get_sqlite but selects on
-// session_id alone. session_id is the table's primary key, so this returns at
-// most one row. Unscoped by design — see Shell_Session_Get_By_Id_Proc; it backs
-// the shell_exited event path only and must not be reached from an HTTP handler.
-shell_session_get_by_id_sqlite :: proc(ctx: rawptr, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+// shell_session_get_by_id_sqlite resolves a session without an owner, for the
+// trusted bridge-event path (REQ-RECON-5) — see Shell_Session_Get_By_Id_Proc. It
+// must not be reached from an HTTP handler.
+//
+// It is OWNER-unscoped but no longer BRIDGE-unscoped (REQ-SHELL-1 §7). The key is
+// (bridge_id, session_id), and the one caller — a shell_exited report — always
+// knows which bridge reported it, so binding that bridge is free and makes this
+// strictly narrower than the single-column lookup it replaces: a bridge can now
+// only resolve its own sessions, where before a colliding session_id from another
+// bridge would have resolved and been mutated.
+shell_session_get_by_id_sqlite :: proc(ctx: rawptr, bridge_id, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := strings.concatenate({"SELECT ", shell_session_select_cols, " FROM shell_sessions WHERE session_id = ? LIMIT 1;"}, context.temp_allocator)
+	query := strings.concatenate({"SELECT ", shell_session_select_cols, " FROM shell_sessions WHERE bridge_id = ? AND session_id = ? LIMIT 1;"}, context.temp_allocator)
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "failed to prepare shell session get by id")
 	}
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, session_id)
+	bind_text(stmt, 1, bridge_id)
+	bind_text(stmt, 2, session_id)
 	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Session{}, false, domain.Domain_Error{}
 	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
 }
 
+// The three scoped list routes. Each passes the SCOPE COLUMN it narrows on, so
+// shell_session_list_generic can add the matching per-kind restriction from the
+// domain's scope rules. project_id is not a scope column — it is an annotation
+// every kind may carry — so the by-project route narrows on kind not at all.
 shell_session_list_by_bridge_sqlite :: proc(ctx: rawptr, owner_user_id, bridge_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "bridge_id", owner_user_id, bridge_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "bridge_id", .Bridge, true, owner_user_id, bridge_id, status_filter, cursor, limit)
 }
 
 shell_session_list_by_project_sqlite :: proc(ctx: rawptr, owner_user_id, project_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "project_id", owner_user_id, project_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "project_id", nil, false, owner_user_id, project_id, status_filter, cursor, limit)
 }
 
 shell_session_list_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "chain_id", owner_user_id, chain_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "chain_id", .Chain, true, owner_user_id, chain_id, status_filter, cursor, limit)
 }
 
 // shell_session_list_by_owner_sqlite lists every session the owner has, across
@@ -173,14 +252,32 @@ shell_session_list_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id, chain_id,
 // No filter at all is the owner-wide default listing.
 shell_session_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, filter: iface.Shell_Session_List_Filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	clauses := make([dynamic]Shell_Session_Where_Clause, context.temp_allocator)
-	if filter.bridge_id  != "" do append(&clauses, shell_session_eq("bridge_id",  filter.bridge_id))
+	// Each scope-column filter also constrains kind, from the same domain rules the
+	// scoped routes use: narrowing by a column a kind does not key on must not
+	// return that kind (REQ-SHELL-1 §6). project_id is an annotation, not a scope
+	// column, so it narrows on value alone.
+	if filter.bridge_id != "" {
+		append(&clauses, shell_session_eq("bridge_id", filter.bridge_id))
+		append(&clauses, shell_session_kind_scope_clause(.Bridge))
+	}
 	if filter.project_id != "" do append(&clauses, shell_session_eq("project_id", filter.project_id))
-	if filter.chain_id   != "" do append(&clauses, shell_session_eq("chain_id",   filter.chain_id))
-	if filter.status     != "" do append(&clauses, shell_session_status_clause(filter.status))
+	if filter.chain_id != "" {
+		append(&clauses, shell_session_eq("chain_id", filter.chain_id))
+		append(&clauses, shell_session_kind_scope_clause(.Chain))
+	}
+	if filter.agent_instance_id != "" {
+		append(&clauses, shell_session_eq("agent_instance_id", filter.agent_instance_id))
+		append(&clauses, shell_session_kind_scope_clause(.Agent_Instance))
+	}
+	if filter.status != "" do append(&clauses, shell_session_status_clause(filter.status))
 	return shell_session_list_where(ctx, owner_user_id, clauses[:], cursor, limit)
 }
 
-shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+// shell_session_list_generic is the one scoped list. `scope_col` is the column to
+// narrow on; when `is_scope_column` it is also a domain scope column, and
+// `scope_kind_col` says which — so the query additionally restricts to the kinds
+// that key on it.
+shell_session_list_generic :: proc(ctx: rawptr, scope_col: string, scope_kind_col: domain.Shell_Session_Scope_Column, is_scope_column: bool, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	// The scope clause is UNCONDITIONAL, including when scope_val is "". These
 	// three lists are scoped by construction, and an empty scope value means
 	// "the sessions whose column is empty" — dropping the clause instead would
@@ -188,10 +285,27 @@ shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_
 	// filter is optional here, exactly as before.
 	clauses := make([dynamic]Shell_Session_Where_Clause, context.temp_allocator)
 	append(&clauses, shell_session_eq(scope_col, scope_val))
+	// REQ-SHELL-1 §6. Before this, list_by_chain(owner, "") returned every session
+	// with an empty chain_id — i.e. all the agent-scoped runs and bridge-scoped
+	// shells — to a caller asking about a chain. Restricting to the kinds that key
+	// on the column closes that: a by-chain listing can only ever return servers.
+	if is_scope_column do append(&clauses, shell_session_kind_scope_clause(scope_kind_col))
 	// Through the same translator as the owner-wide list, so `status=live` and
 	// `status=finished` work identically on all four list routes.
 	if status_filter != "" do append(&clauses, shell_session_status_clause(status_filter))
 	return shell_session_list_where(ctx, owner_user_id, clauses[:], cursor, limit)
+}
+
+// shell_session_kind_scope_clause restricts a listing to the kinds whose scope
+// key includes `col`, straight from domain.SHELL_SESSION_SCOPE_RULES. The repo
+// never spells a kind/scope pairing itself, so the query layer cannot drift from
+// the domain's table the way it could if this were a hand-written kind IN (...).
+shell_session_kind_scope_clause :: proc(col: domain.Shell_Session_Scope_Column) -> Shell_Session_Where_Clause {
+	buf: [len(domain.Shell_Session_Kind)]string
+	kinds := domain.shell_session_kinds_scoped_by(col, &buf)
+	vals := make([]string, len(kinds), context.temp_allocator)
+	for k, i in kinds do vals[i] = k
+	return Shell_Session_Where_Clause{col = "kind", op = .In, vals = vals}
 }
 
 Shell_Session_Where_Op :: enum {
@@ -243,6 +357,21 @@ shell_session_status_clause :: proc(status: string) -> Shell_Session_Where_Claus
 // shell_session_terminal_vals copies the domain's terminal set into a temp slice
 // for binding. Copied rather than referenced because the domain constant is a
 // fixed-size array, and the clause holds a slice.
+// shell_session_terminal_placeholders renders the bind placeholders for the
+// terminal set — "?, ?, ?" for three statuses. It exists so a query that has to
+// EMBED the set in its text (the upsert's kill_requested_at CASE) still gets its
+// width from domain.SHELL_SESSION_TERMINAL_STATUSES rather than hard-coding one,
+// and still binds the values instead of interpolating them.
+shell_session_terminal_placeholders :: proc() -> string {
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	for _, i in terminal {
+		if i > 0 do strings.write_string(&b, ", ")
+		strings.write_string(&b, "?")
+	}
+	return strings.to_string(b)
+}
+
 shell_session_terminal_vals :: proc() -> []string {
 	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
 	vals := make([]string, len(terminal), context.temp_allocator)
@@ -358,4 +487,246 @@ shell_session_delete_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: stri
 		return false, domain.domain_error(.Internal_Error, "failed to delete shell session")
 	}
 	return true, domain.Domain_Error{}
+}
+
+// shell_session_find_live_by_port_sqlite backs the create-time port conflict check
+// (REQ-SHELL-2 §10). See Shell_Session_Find_Live_By_Port_Proc for why it is
+// deliberately owner-unscoped: a port belongs to the host, so a cross-tenant
+// conflict is a real conflict and would otherwise surface as a failed bind.
+//
+// The live predicate is built from domain.SHELL_SESSION_TERMINAL_STATUSES, not
+// from a hand-written status list, so a terminal session releases its port by
+// exactly the rule that makes it terminal anywhere else. server_port = 0 means "no
+// port declared" and is never a conflict; the caller does not ask in that case,
+// and the guard here keeps that true if one ever does.
+//
+// ORDER BY started_at: with several holders (only possible from a pre-049 database
+// or a manual edit) the OLDEST is named, since it is the one that actually owns
+// the bind.
+shell_session_find_live_by_port_sqlite :: proc(ctx: rawptr, bridge_id: string, server_port: int) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	if server_port <= 0 || bridge_id == "" do return domain.Shell_Session{}, false, domain.Domain_Error{}
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT ")
+	strings.write_string(&b, shell_session_select_cols)
+	strings.write_string(&b, " FROM shell_sessions WHERE bridge_id = ? AND server_port = ? AND status NOT IN (")
+	for _, i in terminal {
+		if i > 0 do strings.write_string(&b, ", ")
+		strings.write_string(&b, "?")
+	}
+	strings.write_string(&b, ") ORDER BY started_at ASC, session_id ASC LIMIT 1;")
+	query := strings.to_string(b)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "failed to prepare shell session port lookup")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, bridge_id)
+	sqlite3_bind_int(stmt, 2, c.int(server_port))
+	for st, i in terminal do bind_text(stmt, 3 + i, st)
+	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Session{}, false, domain.Domain_Error{}
+	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
+}
+
+// shell_session_count_live_sqlite counts an owner's live sessions of one kind in
+// one scope, backing the per-agent run cap and the per-chain server cap.
+//
+// scope_column is NOT interpolated from user input: the service passes
+// domain.shell_session_scope_column_name(...), which returns one of three fixed
+// literals, and anything else is refused below rather than reaching the SQL. That
+// keeps the column name a closed set even though it has to be concatenated (SQLite
+// cannot bind an identifier).
+shell_session_count_live_sqlite :: proc(ctx: rawptr, owner_user_id, kind, scope_column, scope_value: string) -> (int, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return 0, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	if owner_user_id == "" || kind == "" || scope_value == "" do return 0, domain.Domain_Error{}
+
+	// Closed set, checked against the domain's own spelling of each scope column.
+	allowed := false
+	for col in domain.Shell_Session_Scope_Column {
+		if domain.shell_session_scope_column_name(col) == scope_column {
+			allowed = true
+			break
+		}
+	}
+	if !allowed do return 0, domain.domain_error(.Internal_Error, "unknown shell session scope column")
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT COUNT(*) FROM shell_sessions WHERE owner_user_id = ? AND kind = ? AND ")
+	strings.write_string(&b, scope_column)
+	strings.write_string(&b, " = ? AND status NOT IN (")
+	for _, i in terminal {
+		if i > 0 do strings.write_string(&b, ", ")
+		strings.write_string(&b, "?")
+	}
+	strings.write_string(&b, ");")
+	query := strings.to_string(b)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return 0, domain.domain_error(.Internal_Error, "failed to prepare shell session live count")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, owner_user_id)
+	bind_text(stmt, 2, kind)
+	bind_text(stmt, 3, scope_value)
+	for st, i in terminal do bind_text(stmt, 4 + i, st)
+	if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.Domain_Error{}
+	if v, ok := strconv.parse_int(column_text_unowned(stmt, 0)); ok do return int(v), domain.Domain_Error{}
+	return 0, domain.Domain_Error{}
+}
+
+// shell_session_set_kill_requested_sqlite records an accepted kill on the row
+// (REQ-SHELL-3). Owner-scoped, and FIRST-WRITER-WINS via the
+// `AND kill_requested_at = ''` guard: a second kill of the same session leaves the
+// original timestamp in place, so "pending since" is when the user first asked
+// rather than when they last retried.
+//
+// The returned bool is "the row exists and carries an intent", NOT "this call wrote
+// it". A second kill must read as success — the intent it asked for is outstanding,
+// which is the whole of what the caller needs to know — so reporting the no-op write
+// as a failure would turn a correct idempotent retry into an error. sqlite3_changes
+// is therefore deliberately not consulted; the row is re-read instead.
+//
+// It never clears. Clearing belongs to the upsert, keyed on a terminal status
+// landing, so an intent cannot be retired while the process is still alive.
+shell_session_set_kill_requested_sqlite :: proc(ctx: rawptr, owner_user_id, session_id, kill_requested_at: string) -> (bool, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	if owner_user_id == "" || session_id == "" || kill_requested_at == "" {
+		return false, domain.domain_error(.Validation_Failed, "owner, session id and kill_requested_at are required")
+	}
+
+	stmt: sqlite3_stmt = nil
+	query := `UPDATE shell_sessions SET kill_requested_at = ?
+		WHERE owner_user_id = ? AND session_id = ? AND kill_requested_at = '';`
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return false, domain.domain_error(.Internal_Error, "failed to prepare shell session kill intent write")
+	}
+	bind_text(stmt, 1, kill_requested_at)
+	bind_text(stmt, 2, owner_user_id)
+	bind_text(stmt, 3, session_id)
+	step := sqlite3_step(stmt)
+	sqlite3_finalize(stmt)
+	if step != SQLITE_DONE {
+		return false, domain.domain_error(.Internal_Error, "failed to write shell session kill intent")
+	}
+
+	// Re-read rather than trusting the change count, so an already-pending session
+	// (the idempotent second kill) reports success and a session that does not exist
+	// for this owner reports false.
+	read: sqlite3_stmt = nil
+	check := `SELECT kill_requested_at FROM shell_sessions WHERE owner_user_id = ? AND session_id = ? LIMIT 1;`
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(check)), -1, &read, nil) != SQLITE_OK {
+		return false, domain.domain_error(.Internal_Error, "failed to prepare shell session kill intent read-back")
+	}
+	defer sqlite3_finalize(read)
+	bind_text(read, 1, owner_user_id)
+	bind_text(read, 2, session_id)
+	if sqlite3_step(read) != SQLITE_ROW do return false, domain.Domain_Error{}
+	return column_text_unowned(read, 0) != "", domain.Domain_Error{}
+}
+
+// shell_session_list_pending_kills_sqlite lists one bridge's OUTSTANDING kill
+// intents — the reconnect replay's query, and the only reader of the partial index
+// migration 050 creates.
+//
+// "Outstanding" is `kill_requested_at != '' AND status NOT IN (terminal)`, which is
+// domain.shell_session_kill_intent_pending expressed in SQL, with the terminal set
+// BOUND from the domain's own table. A spent intent (one whose session already
+// terminated) is excluded here as well as cleared by the upsert — belt and braces on
+// purpose, since re-delivering a spent kill is exactly how a signal reaches a
+// recycled pid.
+//
+// Owner-unscoped by design; see Shell_Session_List_Pending_Kills_Proc. Ordered
+// oldest-first so the longest-waiting kill is delivered first, and bounded by
+// `limit` as a runaway backstop rather than as pagination.
+shell_session_list_pending_kills_sqlite :: proc(ctx: rawptr, bridge_id: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	if bridge_id == "" do return nil, domain.Domain_Error{}
+	lim := limit
+	if lim <= 0 do lim = 100
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT ")
+	strings.write_string(&b, shell_session_select_cols)
+	strings.write_string(&b, " FROM shell_sessions WHERE bridge_id = ? AND kill_requested_at != '' AND status NOT IN (")
+	strings.write_string(&b, shell_session_terminal_placeholders())
+	strings.write_string(&b, ") ORDER BY kill_requested_at ASC, session_id ASC LIMIT ?;")
+	query := strings.clone_to_cstring(strings.to_string(b), context.temp_allocator)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
+		return nil, domain.domain_error(.Internal_Error, "failed to prepare shell session pending kill listing")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, bridge_id)
+	for st, i in terminal do bind_text(stmt, 2 + i, st)
+	sqlite3_bind_int(stmt, c.int(2 + len(terminal)), c.int(lim))
+
+	out := make([dynamic]domain.Shell_Session)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, shell_session_from_stmt(stmt))
+	}
+	return out, domain.Domain_Error{}
+}
+
+// shell_session_list_live_by_bridge_sqlite lists one bridge's NON-TERMINAL sessions —
+// the hub side of REQ-SHELL-10's inventory diff.
+//
+// The terminal set is BOUND from domain.SHELL_SESSION_TERMINAL_STATUSES rather than
+// written out, exactly as the pending-kill listing above binds it, so adding a sixth
+// terminal status cannot leave this query treating it as live.
+//
+// Owner-unscoped, bridge-scoped; see Shell_Session_List_Live_By_Bridge_Proc. Ordered
+// by session_id so a diff over a bridge is deterministic run to run, which is what
+// makes "applying the same inventory twice changes nothing" testable rather than
+// merely true in practice.
+shell_session_list_live_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	if bridge_id == "" do return nil, domain.Domain_Error{}
+	lim := limit
+	if lim <= 0 do lim = 100
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT ")
+	strings.write_string(&b, shell_session_select_cols)
+	strings.write_string(&b, " FROM shell_sessions WHERE bridge_id = ? AND status NOT IN (")
+	strings.write_string(&b, shell_session_terminal_placeholders())
+	strings.write_string(&b, ") ORDER BY session_id ASC LIMIT ?;")
+	query := strings.clone_to_cstring(strings.to_string(b), context.temp_allocator)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
+		return nil, domain.domain_error(.Internal_Error, "failed to prepare shell session live listing")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, bridge_id)
+	for st, i in terminal do bind_text(stmt, 2 + i, st)
+	sqlite3_bind_int(stmt, c.int(2 + len(terminal)), c.int(lim))
+
+	out := make([dynamic]domain.Shell_Session)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, shell_session_from_stmt(stmt))
+	}
+	return out, domain.Domain_Error{}
 }

@@ -1209,6 +1209,24 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	if h.taskchains != nil {
 		_ = taskchain_service.replay_bridge_actionable_notifications(h.taskchains, domain.User_ID(bridge.owner_user_id), bridge.bridge_id)
 	}
+	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
+	// while the bridge was offline is durable on the row and undelivered; this is
+	// where it is re-issued, so "kill it even if the bridge is disconnected; it dies
+	// when the bridge is next connected" holds. Same shape and same placement as the
+	// notification replay above, and for the same reason — after bridge_ready, so the
+	// command socket the send needs is registered.
+	//
+	// PUSHED from here rather than pulled by the bridge's reconcile pass: that pass
+	// returns without touching anything when the pty-host daemon is unreachable, so a
+	// kill riding it would be silently deferred while appearing to work. See
+	// shell_session_replay_kill_intents for the full reasoning.
+	//
+	// Inline, not on a thread, unlike the bridge-side reconcile: this is a repository
+	// read plus N non-blocking sends on an already-registered socket, with no daemon
+	// spawn to wait on.
+	if h.shell_sessions != nil {
+		_ = shell_session_svc.shell_session_replay_kill_intents(h.shell_sessions, bridge.bridge_id)
+	}
 	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader)
 }
 
@@ -1254,6 +1272,18 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	cleared := agent_service.mark_bridge_instances_unreachable(h.agents, bridge_id)
 	defer domain.agent_instances_destroy(cleared)
 	for inst in cleared {
+		// REQ-SHELL-2 §9: a FOREGROUND run is bound to its agent's liveness. Its
+		// caller is blocked waiting for a result that will now never be delivered to
+		// it, so the run must not stay a foreground run — convert it to background so
+		// it remains addressable, reapable, capped and notifying, rather than a
+		// foreground run nobody is listening to.
+		//
+		// CONVERT, NOT KILL, and this call site is exactly why. This sweep fires on
+		// BRIDGE disconnect and clears EVERY instance on the bridge at once; the agent
+		// processes are usually alive and only the hub link dropped. Killing here would
+		// destroy in-flight work on a transient blip — and the kill could not be
+		// delivered anyway, to a bridge that has just gone.
+		shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
 		summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 		events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 		delete(summary)
@@ -1446,13 +1476,26 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		// (via the ack) so the stale old ham-wrapper self-terminates.
 		superseded: []string
 		if h.agents != nil do superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
-		if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+		if h.agents != nil {
+			// The per-instance unreachability signal: the bridge is still connected and
+			// reporting, and these instances are simply no longer among the ones it
+			// reports active. Their foreground runs get the same treatment as on a
+			// bridge-wide disconnect — converted, not killed — deliberately, so there
+			// is no "which signal fired?" branch whose wrong answer destroys work.
+			gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+			defer domain.agent_instances_destroy(gone)
+			for inst in gone {
+				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
+				reconciled += 1
+			}
+		}
 		// Opportunistic time-based reap: catches instances stranded by a
 		// disconnect the hub never observed (hub restart with persisted DB, or a
 		// lost WS close). Request-driven, so no background thread is required.
 		if h.agents != nil {
 			reaped := agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS)
 			for inst in reaped {
+				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
 				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 				delete(summary)
@@ -1577,12 +1620,34 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			if status == "" do status = strings.clone("exited")
 			exit_code := json_int(text, "exit_code", 0)
 			exit_code_set := json_key_present(text, "exit_code")
+			// REQ-SHELL-4: which RUN of the session this exit is about. Absent means
+			// UNSTATED, which handle_exited applies rather than discards — see
+			// SHELL_SESSION_RUN_SEQ_UNSTATED for why that is not spelled 0.
+			run_seq := json_int(text, "run_seq", shell_session_svc.SHELL_SESSION_RUN_SEQ_UNSTATED)
 			if session_id != "" {
-				shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
-				shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, bridge_id, status, exit_code, exit_code_set)
+				// APPLY FIRST, BROADCAST ONLY IF IT APPLIED. The broadcast used to run
+				// unconditionally and ahead of the decision, so an exit the hub then
+				// discarded — a stale run's, or a duplicate replayed from the bridge's
+				// durable outbox — still reached every attached viewer, showing them a
+				// terminal status the row does not have and that nothing later corrects.
+				if shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, bridge_id, status, exit_code, exit_code_set, run_seq) {
+					shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
+				}
 			}
 			delete(session_id)
 			delete(status)
+		}
+	// REQ-SHELL-10: the bridge's FULL LIVE SESSION LIST, sent on every (re)connect.
+	// The whole frame is handed to the service rather than being parsed here, matching
+	// bridge_proxy_handle_open above: the diff's decisions and its parse belong in one
+	// testable place, and this arm has no decision of its own to make.
+	//
+	// bridge_id is the AUTHENTICATED id of the connection this frame arrived on, never
+	// anything the frame itself names — an inventory mutates many rows at once, so the
+	// scope it is confined to must come from the transport, not from its payload.
+	case "shell_inventory":
+		if h.shell_sessions != nil {
+			_ = shell_session_svc.shell_session_apply_inventory(h.shell_sessions, bridge_id, text)
 		}
 	// tunnel_data: bridge→hub direction — response bytes from the dev server.
 	case "tunnel_data":
