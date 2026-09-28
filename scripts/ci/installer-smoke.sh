@@ -168,7 +168,20 @@ assert_no_live_bridge() {
 
 # --- sandbox ------------------------------------------------------------------
 sandbox="$(mktemp -d)"
-cleanup() { rm -rf "$sandbox"; }
+cleanup() {
+  exit_status=$?
+  trap - EXIT
+  set +e
+  if [ "${openssl_runner_state_saved:-false}" = true ] && declare -F restore_runner_openssl >/dev/null; then
+    restore_runner_openssl
+    restore_status=$?
+    if [ "$exit_status" -eq 0 ] && [ "$restore_status" -ne 0 ]; then
+      exit_status=$restore_status
+    fi
+  fi
+  rm -rf "$sandbox"
+  exit "$exit_status"
+}
 trap cleanup EXIT
 real_home="$HOME"
 # Captured BEFORE the overrides so assert_no_live_bridge can ask the real
@@ -343,18 +356,36 @@ sudo_install_dir="/usr/local/bin"
 # REQ-INST-21 retired that machinery: current install.sh neither writes nor
 # removes an openssl by any route, and heimdall update leaves one untouched.
 # This mode keeps the guard as the regression detector for exactly that
-# defect: the shared openssl is snapshotted before install, any divergence is
-# REPORTED, and the original bytes are put back during cleanup so a runner is
-# never left without an openssl it arrived with. It should report the
-# unchanged path forever; if it ever fires again, that is a real regression.
+# defect: the shared openssl is snapshotted before install, any divergence
+# FAILS the smoke test, and the runner's original state is restored before the
+# process exits.
 openssl_path="$sudo_install_dir/openssl"
 openssl_pre_existed=false
 openssl_pre_sha=""
+openssl_runner_state_saved=false
+openssl_runner_pre_existed=false
 sha_of() { # <path>; empty when it cannot be hashed
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" 2>/dev/null | awk '{print $1}'
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+remove_current_openssl_entry() {
+  if [ -d "$openssl_path" ] && [ ! -L "$openssl_path" ]; then
+    sudo -n rm -rf "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not remove replacement directory %s\n' "$openssl_path" >&2
+      return 1
+    }
+  elif [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    sudo -n rm -f "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not unlink replacement entry %s\n' "$openssl_path" >&2
+      return 1
+    }
+  fi
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    printf 'REGRESSION CLEANUP ERROR: replacement entry still exists at %s\n' "$openssl_path" >&2
+    return 1
   fi
 }
 snapshot_shared_openssl() {
@@ -368,37 +399,115 @@ snapshot_shared_openssl() {
     ok "no pre-existing $openssl_path on this host; the guard will verify install.sh does not create one"
   fi
 }
+seed_shared_openssl_for_ci() {
+  if [ "${INSTALL_SMOKE_SUDO_SEED_OPENSSL:-}" != "1" ]; then
+    snapshot_shared_openssl
+    return 0
+  fi
+
+  seed_file="$sandbox/openssl-ci-seed"
+  printf '#!/bin/sh\nprintf "heimdall installer smoke openssl sentinel\\n"\n' >"$seed_file"
+  chmod 0755 "$seed_file"
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    openssl_runner_pre_existed=true
+    sudo -n cp -Pp "$openssl_path" "$sandbox/openssl-runner-before" \
+      || die "$openssl_path exists but its original state could not be preserved before seeding"
+    ok "preserved the runner's original $openssl_path before seeding"
+  else
+    ok "the runner arrived without $openssl_path"
+  fi
+  openssl_runner_state_saved=true
+  remove_current_openssl_entry \
+    || die "could not clear $openssl_path before installing the CI seed"
+  sudo -n install -m 0755 "$seed_file" "$openssl_path" \
+    || die "could not seed $openssl_path for the sudo byte-identity assertion"
+  ok "seeded distinguishable pre-existing $openssl_path for the sudo cycle"
+  snapshot_shared_openssl
+  cmp -s "$seed_file" "$sandbox/openssl-before" \
+    || die "the pre-install $openssl_path snapshot does not contain the CI seed bytes"
+}
 report_shared_openssl() {
   if ! "$openssl_pre_existed"; then
-    ok "nothing to compare: $openssl_path did not pre-exist"
+    if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+      printf '\nREGRESSION (REQ-INST-21): %s did not pre-exist but was CREATED during install+uninstall.\n' "$openssl_path" >&2
+      return 1
+    fi
+    ok "$openssl_path remains absent after install+uninstall"
+    ok "shared openssl absence verified (REQ-INST-21)"
     return 0
   fi
-  if [ ! -e "$openssl_path" ]; then
-    printf '\nREGRESSION (REQ-INST-21): %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path"
+  if [ ! -e "$openssl_path" ] && [ ! -L "$openssl_path" ]; then
+    printf '\nREGRESSION (REQ-INST-21): %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path" >&2
+    return 1
+  fi
+  if cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    now_sha="$(sha_of "$openssl_path")"
+    ok "$openssl_path remains byte-identical after install+uninstall (sha ${now_sha:-unknown})"
+    ok "shared openssl byte identity verified (REQ-INST-21)"
     return 0
+  else
+    cmp_status=$?
   fi
   now_sha="$(sha_of "$openssl_path")"
-  if [ -n "$openssl_pre_sha" ] && [ -n "$now_sha" ] && [ "$now_sha" != "$openssl_pre_sha" ]; then
+  if [ "$cmp_status" -eq 1 ]; then
     printf '\nREGRESSION (REQ-INST-21):\n  %s was REPLACED during install+uninstall.\n  before: %s\n  after:  %s\n  install.sh must not write or remove a shared openssl by any route.\n' \
-      "$openssl_path" "$openssl_pre_sha" "$now_sha"
+      "$openssl_path" "${openssl_pre_sha:-unknown}" "${now_sha:-unknown}" >&2
   else
-    ok "$openssl_path is unchanged (sha ${now_sha:-unknown})"
+    printf '\nREGRESSION (REQ-INST-21): %s could not be compared with its pre-install snapshot (cmp exit %s).\n' \
+      "$openssl_path" "$cmp_status" >&2
   fi
+  return 1
 }
 restore_shared_openssl() {
   if ! "$openssl_pre_existed"; then
-    if [ -e "$openssl_path" ]; then
-      sudo -n rm -f "$openssl_path"
+    if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+      remove_current_openssl_entry || return 1
       ok "removed $openssl_path, which this run introduced"
     fi
     return 0
   fi
-  if [ ! -e "$openssl_path" ] || ! cmp -s "$sandbox/openssl-before" "$openssl_path"; then
-    sudo -n cp -p "$sandbox/openssl-before" "$openssl_path"
-    ok "restored the original $openssl_path this run had replaced"
-  else
-    ok "$openssl_path needs no restoration"
+  if [ -f "$openssl_path" ] && [ ! -L "$openssl_path" ] \
+      && cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    ok "$openssl_path needs no pre-install restoration"
+    return 0
   fi
+  remove_current_openssl_entry || return 1
+  sudo -n cp -p "$sandbox/openssl-before" "$openssl_path" || {
+    printf 'REGRESSION CLEANUP ERROR: could not recreate the saved pre-install %s\n' "$openssl_path" >&2
+    return 1
+  }
+  if [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
+      || ! cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    printf 'REGRESSION CLEANUP ERROR: recreated %s does not match its pre-install snapshot\n' "$openssl_path" >&2
+    return 1
+  fi
+  ok "restored the pre-install $openssl_path this run had replaced"
+}
+restore_runner_openssl() {
+  [ "$openssl_runner_state_saved" = true ] || return 0
+  remove_current_openssl_entry || return 1
+  if "$openssl_runner_pre_existed"; then
+    sudo -n cp -Pp "$sandbox/openssl-runner-before" "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not restore the runner original %s\n' "$openssl_path" >&2
+      return 1
+    }
+    if [ -L "$sandbox/openssl-runner-before" ]; then
+      if [ ! -L "$openssl_path" ] \
+          || [ "$(readlink "$sandbox/openssl-runner-before")" != "$(readlink "$openssl_path")" ]; then
+        printf 'REGRESSION CLEANUP ERROR: restored %s does not match the runner original symlink\n' "$openssl_path" >&2
+        return 1
+      fi
+    elif [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
+        || ! sudo -n cmp -s "$sandbox/openssl-runner-before" "$openssl_path"; then
+      printf 'REGRESSION CLEANUP ERROR: restored %s does not match the runner original bytes\n' "$openssl_path" >&2
+      return 1
+    fi
+  elif [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    printf 'REGRESSION CLEANUP ERROR: %s still exists although the runner arrived without it\n' "$openssl_path" >&2
+    return 1
+  fi
+  openssl_runner_state_saved=false
+  ok "restored the runner's original openssl state after the seeded sudo cycle"
 }
 
 # --- the invoking user, resolved WITHOUT asking install.sh ---------------------
@@ -476,9 +585,10 @@ $pre_existing Refusing to run: --uninstall would remove it."
   #    makes the ordering unambiguous to the next reader.
   ok "live-bridge precondition already passed above (assert_no_live_bridge, unweakened)"
 
-  # 7. Snapshot the shared openssl the guard watches — install.sh must not
-  #    touch it, and this snapshot is what proves it did not.
-  snapshot_shared_openssl
+  # 7. CI seeds a distinguishable shared openssl before the installer runs so
+  #    the sudo job must execute the byte-identity branch, not merely observe
+  #    that the runner happened to arrive without this path.
+  seed_shared_openssl_for_ci
 }
 
 # --- the rc files we are allowed to touch, and their state BEFORE the run -----
@@ -903,10 +1013,14 @@ EOF
   # created are not its to remove. Both are correct installer behaviour and
   # both are OUR debris, so this mode removes them itself rather than leaving a
   # runner (or a developer who opted in) subtly changed.
-  report_shared_openssl
+  openssl_guard_failed=false
+  if ! report_shared_openssl; then
+    openssl_guard_failed=true
+  fi
 
   step "cleanup: remove the residue this mode created, not install.sh's job"
   restore_shared_openssl
+  restore_runner_openssl
   sudo -n rm -rf "$config_dir"
   assert_gone "$config_dir" "removed the enrollment dir this run created"
   for rc in $inv_rc_files; do
@@ -930,6 +1044,9 @@ EOF
       ok "removed $rc, which install.sh created during this run"
     fi
   done
+  if "$openssl_guard_failed"; then
+    die "shared openssl preservation failed (REQ-INST-21); runner cleanup was attempted before failing"
+  fi
 }
 
 assert_no_live_bridge

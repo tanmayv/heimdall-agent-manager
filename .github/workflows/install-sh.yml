@@ -209,6 +209,8 @@ jobs:
           # here and nowhere else: a developer running the script the ordinary
           # way gets a refusal, which is the intended default.
           INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES: '1'
+          # Exercise byte identity even when the runner image lacks this path.
+          INSTALL_SMOKE_SUDO_SEED_OPENSSL: '1'
           INSTALL_SMOKE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -249,6 +251,9 @@ jobs:
             "root's home is clean (both /var/root and /root)"
             "no heimdall service file or binary under any home but"
             "uninstall DEFERS the stop to the invoking user's own session"
+            "seeded distinguishable pre-existing /usr/local/bin/openssl for the sudo cycle"
+            "shared openssl byte identity verified (REQ-INST-21)"
+            "restored the runner's original openssl state after the seeded sudo cycle"
             "INSTALLER SUDO SMOKE PASSED"
           )
           # The home-lookup assertion is the POINT of this job, and its wording
