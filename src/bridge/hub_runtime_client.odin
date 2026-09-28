@@ -100,6 +100,11 @@ bridge_shell_output_outgoing: [dynamic]Bridge_Shell_Output_Outgoing
 
 Bridge_Shell_Exited_Outgoing :: struct {
 	event_json: string,
+	// REQ-SHELL-4: path of this exit's durable envelope under
+	// <data_dir>/shell_exited_outbox, or "" when it could not be persisted. The
+	// drain removes it only after the frame goes out, so a restart replays
+	// anything that was queued but not yet delivered.
+	outbox_path: string,
 }
 bridge_shell_exited_outgoing: [dynamic]Bridge_Shell_Exited_Outgoing
 
@@ -251,6 +256,19 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_pane_capture_drain_outgoing(conn)
 		bridge_shell_output_drain_outgoing(conn)
 		bridge_shell_exited_drain_outgoing(conn)
+		// REQ-SHELL-10: immediately after the exit drain, so the fast path's exits are
+		// on the wire ahead of the snapshot that is meant to be the safety net for
+		// whatever it lost.
+		//
+		// Ordering is an optimisation, NOT the correctness argument. Do not read this
+		// placement as the thing that keeps the exit outbox and the inventory from
+		// disagreeing — the outbox makes no ordering promise across a bridge restart, so
+		// a reorder here would look harmless and change nothing about what is guaranteed.
+		// What keeps them honest is the pair of guards on APPLY: an outbox exit is
+		// OBSERVED and wins permanently, a status the hub synthesizes from a missing
+		// inventory entry is not and yields to a later observed exit. See
+		// shell_inventory.odin.
+		bridge_shell_inventory_drain_outgoing(conn)
 		bridge_pty_stream_drain_outgoing(conn)
 		bridge_tunnel_data_drain_outgoing(conn)
 		bridge_lsp_drain_outgoing(conn)
@@ -542,6 +560,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_start(conn, text)
 		return
 	}
+	if type == "shell_background" {
+		bridge_hub_handle_shell_background(text)
+		return
+	}
 	if type == "shell_kill" {
 		bridge_hub_handle_shell_kill(text)
 		return
@@ -774,10 +796,13 @@ bridge_hub_handle_shell_stream_attach :: proc(conn: ^ws.Connection, text: string
 		return
 	}
 
-	shell_id := session_id
-	if sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id); ok {
-		if sess.shell_id != "" do shell_id = sess.shell_id
-	}
+	// An OWNED clone of the daemon key; an unknown session streams under its own id,
+	// which is what the fallback inside the accessor resolves to anyway. The delete is
+	// deferred to THIS scope, not to an `if` body — a defer inside the `if` would fire
+	// before the id is used.
+	key, have_key := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id)
+	defer if have_key do bridge_shell_session_str_delete(&bridge_shell_session_map, key)
+	shell_id := key if have_key else session_id
 
 	ok := bridge_pty_stream_worker_start(session_id, shell_id, conn)
 	if !ok {
@@ -2069,11 +2094,68 @@ bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 
 // ---- shell_exited outgoing event queue ------------------------------------
 
+// bridge_shell_exited_enqueue queues an exit for the hub and, in the same call,
+// writes it to the durable outbox (REQ-SHELL-4). Persisting BEFORE the in-memory
+// append means a crash anywhere after this point still replays the exit: the window
+// in which an exit exists only in RAM is now the window inside this proc, not the
+// whole time the bridge is disconnected.
+//
+// A failed write is not fatal — the exit is still queued in memory and will be
+// delivered normally if the process lives long enough. bridge_shell_exited_outbox_write
+// reports the failure itself.
 bridge_shell_exited_enqueue :: proc(event_json: string) {
 	if strings.trim_space(event_json) == "" do return
+
+	outbox_path: string
+	// Persisted outside the lock: this is file I/O, and bridge_runtime_mutex is the
+	// hot lock the WS service loop takes every 25ms tick.
+	if data_dir := bridge_shell_data_dir(); data_dir != "" {
+		defer delete(data_dir)
+		session_id := extract_json_string(event_json, "session_id", "")
+		// run_seq is read back OUT of the frame rather than passed in alongside it, so
+		// the envelope's key and the frame's contents cannot disagree: whatever run the
+		// hub will be told about is the run the file is named for.
+		run_seq := extract_json_int(event_json, "run_seq", 0)
+		outbox_path = bridge_shell_exited_outbox_write(data_dir, session_id, event_json, bridge_now_unix_ms(), run_seq)
+	}
+
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	append(&bridge_shell_exited_outgoing, Bridge_Shell_Exited_Outgoing{event_json = strings.clone(event_json)})
+	append(&bridge_shell_exited_outgoing, Bridge_Shell_Exited_Outgoing{
+		event_json  = strings.clone(event_json),
+		outbox_path = outbox_path,
+	})
+}
+
+// bridge_shell_exited_outbox_restore reloads exits persisted by a PREVIOUS bridge
+// process and puts them back at the FRONT of the in-memory queue, so a restart's
+// backlog drains ahead of whatever this process has since produced. Called once from
+// bridge_hub_runtime_start; the existing drain in bridge_hub_runtime_loop sends them
+// as soon as the hub WS is up, with no poller and no extra thread.
+bridge_shell_exited_outbox_restore :: proc() {
+	data_dir := bridge_shell_data_dir()
+	if data_dir == "" do return
+	defer delete(data_dir)
+
+	entries := bridge_shell_exited_outbox_load(data_dir, bridge_now_unix_ms())
+	if len(entries) == 0 {
+		delete(entries)
+		return
+	}
+	defer delete(entries)
+
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for e, i in entries {
+		inject_at(&bridge_shell_exited_outgoing, i, Bridge_Shell_Exited_Outgoing{
+			// event_json and path are re-homed into the queue item, which owns them
+			// from here; only session_id is surplus to the queue's needs.
+			event_json  = e.event_json,
+			outbox_path = e.path,
+		})
+		if e.session_id != "" do delete(e.session_id)
+	}
+	fmt.println("bridge shell_exited outbox: restored", len(entries), "undelivered exit(s) from disk")
 }
 
 bridge_shell_exited_drain_outgoing :: proc(conn: ^ws.Connection) {
@@ -2095,18 +2177,38 @@ bridge_shell_exited_drain_outgoing :: proc(conn: ^ws.Connection) {
 			conn.connected = false
 			return
 		}
+		// Only now is the exit durably OFF the queue. Removing the envelope before
+		// the send would reintroduce exactly the loss this outbox exists to stop; a
+		// crash between the send and this remove replays the exit instead, which the
+		// hub's idempotent apply absorbs.
+		bridge_shell_exited_outbox_remove(item.outbox_path)
+		if item.outbox_path != "" do delete(item.outbox_path)
 		delete(item.event_json)
 	}
 }
 
 // ---- shell_exited event JSON builder ------------------------------------
 
-bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_code_set: bool, status: string) -> string {
+// run_seq (REQ-SHELL-4) names which RUN of the session exited. The hub discards a
+// report whose run_seq is older than its row's, which is what stops an exit replayed
+// from the durable outbox from terminating a session that has since been restarted
+// and is genuinely alive.
+bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_code_set: bool, status: string, run_seq: int) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_exited\",\"session_id\":\"")
 	bridge_runtime_write_json_string(&b, session_id)
 	strings.write_string(&b, "\",\"exit_code\":")
-	strings.write_string(&b, bridge_agent_itoa(exit_code))
+	// Boy-scout: this site used bridge_agent_itoa and DROPPED the result, leaking a
+	// few bytes per exit reported. The obvious fix — deleting it — is WRONG, because
+	// bridge_agent_itoa is only conditionally owned: it returns the literal "0" for
+	// n == 0 and strings.clone otherwise (agent_api.odin:414-428), so a delete is a
+	// bad free for exit_code 0, which is the single most common exit code there is.
+	// Sidestepped rather than papered over: strconv.itoa writes into a stack buffer
+	// and allocates nothing, so there is no ownership question to get wrong.
+	{
+		buf: [24]byte
+		strings.write_string(&b, strconv.write_int(buf[:], i64(exit_code), 10))
+	}
 	strings.write_string(&b, ",\"exit_code_set\":")
 	strings.write_string(&b, "true" if exit_code_set else "false")
 	strings.write_string(&b, ",\"status\":\"")
@@ -2114,7 +2216,12 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 	finished_at := action_scheduler_format_rfc3339_utc(bridge_now_unix_ms())
 	strings.write_string(&b, "\",\"finished_at\":\"")
 	bridge_runtime_write_json_string(&b, finished_at)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\",\"run_seq\":")
+	{
+		buf: [24]byte
+		strings.write_string(&b, strconv.write_int(buf[:], i64(run_seq), 10))
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
@@ -2125,7 +2232,7 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	session_id  := extract_json_string(text, "session_id", "")
 	command_id  := extract_json_string(text, "command_id", "")
-	kind_str    := extract_json_string(text, "kind", "command")
+	kind_str    := extract_json_string(text, "kind", "run")
 	cmd         := extract_json_string(text, "cmd", "")
 	cwd         := extract_json_string(text, "cwd", "")
 	label       := extract_json_string(text, "label", "")
@@ -2133,7 +2240,19 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	chain_id    := extract_json_string(text, "chain_id", "")
 	agent_iid   := extract_json_string(text, "agent_instance_id", "")
 	owner_uid   := extract_json_string(text, "owner_user_id", "")
+	// REQ-SHELL-1 §8: the HUB clock is authoritative for every lifecycle and age
+	// decision, so the hub sends the started_at it assigned and the bridge stores
+	// THAT rather than stamping its own. Falls back to the local clock only when a
+	// caller omits it (there is no hub-side path that does).
+	hub_started_at := extract_json_string(text, "started_at", "")
 	server_port := extract_json_int(text, "server_port", 0)
+	// REQ-SHELL-2: a run may be born background (--bg). Only a run uses this; a
+	// shell and a server have no foreground form to convert from.
+	background := bridge_local_extract_json_bool(text, "background", false)
+	// REQ-SHELL-4: the hub-assigned run number, echoed back on every exit this
+	// session reports. Same "hub assigns, bridge stores THAT" rule as started_at
+	// above. Absent means run 0, the first run.
+	run_seq := extract_json_int(text, "run_seq", 0)
 
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
 		b := strings.builder_make()
@@ -2156,13 +2275,13 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 
 	kind := bridge_shell_session_kind_from_str(kind_str)
 
-	// T11-BUG-3: an interactive shell has no command of its own — it *is* the
+	// T11-BUG-3: an interactive `shell` has no command of its own — it *is* the
 	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
 	// rejecting the request. Every other kind still requires an explicit cmd.
 	cmd_owned := false
 	cmd_defaulted := false
 	defer if cmd_owned do delete(cmd)
-	if kind == .Interactive && cmd == "" {
+	if kind == .Shell && cmd == "" {
 		shell_env := os.get_env("SHELL", context.temp_allocator)
 		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
 		cmd_owned = true
@@ -2173,10 +2292,11 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	// For kind=Agent: spawn instance under the agent_instance_id as daemon key.
-	// For all other kinds: spawn under session_id as daemon key.
+	// EVERY kind spawns under session_id as the daemon key (REQ-SHELL-1 §2). The
+	// old kind=Agent branch that keyed the daemon by agent_instance_id instead is
+	// gone with the kind itself: agent terminal panes never came through here, they
+	// are served by capture_agent_pane / get_agent_pane.
 	spawn_instance := session_id
-	if kind == .Agent && agent_iid != "" do spawn_instance = agent_iid
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
@@ -2196,7 +2316,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		spawn_cmd = strings.concatenate({"exec ", cmd})
 		spawn_cmd_owned = true
 	} else if cmd_defaulted {
-		// T11-BUG-11 (REQ-SHELL-ENV-1): an interactive session with no cmd means
+		// T11-BUG-11 (REQ-SHELL-ENV-1): a `shell` session with no cmd means
 		// "give me my shell", so start it as a *login* shell. Without -l only
 		// ~/.zshrc runs; ~/.zprofile, ~/.zlogin and /etc/profile never do, so the
 		// session misses everything the user sets up in their profile.
@@ -2282,36 +2402,71 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	now_ms := bridge_now_unix_ms()
-	started_at := strings.clone(action_scheduler_format_rfc3339_utc(now_ms))
+	started_at := strings.clone(bridge_shell_authoritative_started_at(hub_started_at, action_scheduler_format_rfc3339_utc(now_ms)))
 	defer delete(started_at)
 
+	// THE MAP'S ALLOCATOR, explicitly: register below takes ownership of every string
+	// here and the map frees them when this entry is superseded (reconcile, on a
+	// background thread) or removed. context.allocator differs per thread, so cloning
+	// through it would free through a different allocator than it allocated from.
+	map_heap := bridge_shell_session_map_allocator(&bridge_shell_session_map)
 	sess := Bridge_Shell_Session{
-		session_id        = strings.clone(session_id),
+		session_id        = strings.clone(session_id, map_heap),
 		kind              = kind,
-		label             = strings.clone(label),
-		cmd               = strings.clone(cmd),
-		cwd               = strings.clone(cwd),
-		bridge_id         = strings.clone(bridge_config.daemon_id),
-		project_id        = strings.clone(project_id),
-		chain_id          = strings.clone(chain_id),
-		agent_instance_id = strings.clone(agent_iid),
-		owner_user_id     = strings.clone(owner_uid),
+		label             = strings.clone(label, map_heap),
+		cmd               = strings.clone(cmd, map_heap),
+		cwd               = strings.clone(cwd, map_heap),
+		bridge_id         = strings.clone(bridge_config.daemon_id, map_heap),
+		project_id        = strings.clone(project_id, map_heap),
+		chain_id          = strings.clone(chain_id, map_heap),
+		agent_instance_id = strings.clone(agent_iid, map_heap),
+		owner_user_id     = strings.clone(owner_uid, map_heap),
 		pid               = int(pid),
 		server_port       = server_port,
+		run_seq           = run_seq,
 		status            = .Running,
-		started_at        = strings.clone(started_at),
-		// For kind=Agent, shell_id=spawn_instance (agent_iid) so reconcile can match d.shell_id==s.shell_id.
-		// For other kinds, shell_id==session_id.
-		shell_id          = strings.clone(spawn_instance),
+		started_at        = strings.clone(started_at, map_heap),
+		// shell_id == session_id for every kind now, which is what reconcile matches
+		// on (d.shell_id == s.shell_id). Kept as spawn_instance rather than inlining
+		// session_id so the daemon key stays spelled once.
+		shell_id          = strings.clone(spawn_instance, map_heap),
 		started_unix_ms   = now_ms,
+		background        = background,
+		// Spawned BY THE PTY-HOST DAEMON, so this session does appear in its roster
+		// and reconcile resolves it there. The legacy shell-cmd path sets this false
+		// because its child is a direct os.process_start and can never be in the
+		// roster; reconcile branches on this rather than on kind, since kind=run
+		// arrives by both mechanisms today.
+		pty_host          = true,
+		pty_host_provenance_known = true,
 	}
-	bridge_shell_session_register(&bridge_shell_session_map, sess)
-
+	// SPEC FIRST, THEN REGISTER (REQ-SHELL-11 review). save_spec reads every string of
+	// `sess`, and once register has it the MAP owns those strings — a concurrent
+	// re-register of this session_id (a reconcile pass on the background thread, which
+	// a hub WS reconnect triggers while the hub is reissuing starts) would free them
+	// mid-read. The bridge_expand_home calls below used to sit inside that window and
+	// widen it.
+	//   Reordering DELETES the window instead of making it safe: `sess` is fully
+	// populated before either call — the pid included, so REQ-SHELL-2's "save the spec
+	// only once the pid is known" rule still holds — so the spec content is identical
+	// either way. It is also the better crash ordering: a crash between the two now
+	// leaves a spec with no map entry, which reconcile's orphan path already handles,
+	// rather than a map entry with no spec, which a restart simply loses.
 	data_dir := bridge_expand_home(bridge_config.data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 	bridge_shell_session_save_spec(data_dir, sess)
 
+	// CONSUMES sess: it is zeroed here and must not be read below.
+	bridge_shell_session_register(&bridge_shell_session_map, &sess)
+
 	bridge_pty_host_events_ensure()
+
+	// REQ-SHELL-2 §8: arm the 30-minute hard cap. Only a RUN is armed — a server is
+	// long-running by definition and must never be capped — see
+	// bridge_shell_run_cap_start for why the cap needs its own watchdog on this path
+	// at all (the shell-cmd reaper that used to enforce it owns a direct child, and
+	// a hub-path run has no such owner).
+	bridge_shell_run_cap_start(session_id, kind)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_start_result\",\"session_id\":\"")
@@ -2326,9 +2481,67 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	result := strings.to_string(b)
 	if conn != nil do _ = bridge_hub_send(conn, result)
 	delete(result)
+
+	// KILL BEFORE START, THE APPLY HALF (REQ-SHELL-3 work item 5b). A kill that
+	// arrived while this start was in flight was recorded as a pending intent, because
+	// there was no session and no pid to act on at the time. There is now, so apply it:
+	// a session that starts carrying a kill intent must be killed immediately, never
+	// left running.
+	//
+	// AFTER the start_result reply, deliberately. The hub is blocked on that reply and
+	// uses it to learn the pid and write status=running; answering first keeps the
+	// create path's contract unchanged, and the kill then arrives at the hub as the
+	// shell_exited it would have seen for any other kill. The hub re-checks its own row
+	// after the reply and re-dispatches if an intent is still pending, so neither side
+	// depends on the other's ordering to get this right.
+	if bridge_shell_kill_intent_take(session_id) {
+		// RE-READ THE DAEMON KEY FROM THE MAP rather than from `sess`. `sess` was handed
+		// to bridge_shell_session_register above, so the map owns its strings from that
+		// point and reading sess.shell_id here is a read of map-owned memory after the
+		// mutex was released — the very borrow REQ-SHELL-11 removes, and a
+		// use-after-free the moment register started freeing superseded strings (a
+		// reconcile pass racing this start is enough).
+		if shell_id, have_key := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id); have_key {
+			bridge_shell_kill_arm(session_id, shell_id)
+			bridge_shell_session_str_delete(&bridge_shell_session_map, shell_id)
+		}
+	}
+}
+
+// bridge_shell_authoritative_started_at picks the started_at a session records.
+//
+// REQ-SHELL-1 §8: THE HUB CLOCK IS AUTHORITATIVE for every lifecycle and age
+// decision. started_at used to be stamped twice for one fact — once hub-side, on
+// the row the 1-day server reap reads, and once bridge-side, on the spec the
+// 5-day output-retention sweep reads — so clock skew between the two hosts made
+// them disagree about the same session's age. The hub now sends the value it
+// assigned and the bridge stores THAT, so both sweeps measure against one clock.
+//
+// local_fallback is used only when the hub sent nothing, which no hub-side path
+// does; it keeps a hand-rolled or replayed frame from recording an empty
+// timestamp. Bridge-local stamps (Bridge_Shell_Session.started_unix_ms) survive
+// as DIAGNOSTICS — they feed execution_time_ms — and must never drive a
+// lifecycle decision.
+bridge_shell_authoritative_started_at :: proc(hub_started_at, local_fallback: string) -> string {
+	return hub_started_at != "" ? hub_started_at : local_fallback
 }
 
 // Bridge_Shell_Kill_Ctx carries state for the background kill thread.
+// Bridge_Shell_Kill_Ctx is handed to bridge_shell_kill_worker on another thread.
+//
+// ALLOCATOR: context.allocator, on BOTH sides, at EVERY arming site. The struct and
+// its two strings are allocated with the implicit context.allocator by whoever arms
+// the kill, and bridge_shell_kill_worker frees them the same way. Stated here, at
+// the struct, because it is the kind of rule that is remembered at one call site and
+// forgotten at the next: pinning the allocation at one site while the worker's free
+// stays implicit pairs a pinned alloc with an unpinned free, which is correct only
+// while the context happens to carry the default allocator.
+//
+// It is NOT pinned to runtime.default_allocator() the way Bridge_Shell_Async_Ctx and
+// the waiter registry are. Those are pinned because they cross into a thread whose
+// context legitimately differs; this one is uniform and self-consistent as it
+// stands, and pinning it properly means changing every arming site together —
+// tracked as REQ-SHELL-13 (N8) rather than done piecemeal here.
 Bridge_Shell_Kill_Ctx :: struct {
 	session_id: string,
 	shell_id:   string,
@@ -2373,16 +2586,73 @@ bridge_shell_kill_worker :: proc(data: rawptr) {
 
 // bridge_hub_handle_shell_kill handles the "shell_kill" command.
 // FIRE-AND-FORGET: sends SIGTERM then (after 5s) SIGKILL if still alive.
+//
+// REQ-SHELL-3 made this IDEMPOTENT and gave it a KILL-BEFORE-START path. Both are
+// required because a kill is now durable on the hub row and re-issued on every
+// reconnect, so this handler must expect to be called more than once for the same
+// session, and to be called for a session it has never heard of.
 bridge_hub_handle_shell_kill :: proc(text: string) {
 	session_id := extract_json_string(text, "session_id", "")
 	if session_id == "" do return
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
-	if !ok do return
+	sc, ok := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
+	if !ok {
+		// KILL BEFORE START (REQ-SHELL-3 work item 5b). The hub writes its row and then
+		// sends shell_start, so a kill accepted in between arrives here for a session
+		// that does not exist yet — there is no pid to signal and nothing to mark. This
+		// used to return silently and the process leaked the instant it spawned.
+		//
+		// Record the intent instead; bridge_hub_handle_shell_start applies it as soon as
+		// the spawn yields a pid. Recording is also the right answer for a kill naming a
+		// session this bridge will never start (a stale id, a session belonging to a
+		// previous bridge life): the entry is inert, because it can only ever be consumed
+		// by a spawn of that same session_id.
+		bridge_shell_kill_intent_record(session_id)
+		return
+	}
 
-	shell_id := sess.shell_id
-	if shell_id == "" do shell_id = sess.session_id
+	// IDEMPOTENT REDELIVERY (REQ-SHELL-3 work item 3). A kill may legitimately arrive
+	// twice — the hub replays outstanding intents on every reconnect, and reconnects
+	// can race — so killing an already-terminal session must be a no-op rather than an
+	// error. The check is on the session's own status, which the arming step below
+	// sets to .Killed BEFORE the worker starts; that is what makes the second delivery
+	// see a terminal session.
+	//
+	// This is not merely tidiness. Without it, a redelivered kill would arm a SECOND
+	// SIGTERM/SIGKILL pair against a pid whose process has since exited, and the 5s
+	// grace window between them is exactly when the OS is free to hand that pid to an
+	// unrelated process — the PID-reuse hazard that
+	// bridge_shell_session_orphan_kill_worker's identity re-check exists to prevent.
+	// Not arming the second worker at all is the strongest available guard.
+	if bridge_shell_session_status_is_terminal(sc.status) do return
 
+	// An OWNED clone of the daemon key. THIS is the path the old leak comment named as
+	// the use-after-free window: kill_arm's worker reads the key across a
+	// bridge_pty_host_ensure_daemon call that can block for up to 5s, while reconcile
+	// re-registers the same session from a background thread. The clone is what makes
+	// holding it across that call safe.
+	shell_id, have_key := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id)
+	if !have_key do return // removed between the two reads; nothing left to kill
+	defer bridge_shell_session_str_delete(&bridge_shell_session_map, shell_id)
+	bridge_shell_kill_arm(session_id, shell_id)
+}
+
+// bridge_shell_kill_arm marks a session .Killed and starts its kill worker. Factored
+// out of bridge_hub_handle_shell_kill so the spawn path (which must apply a pending
+// intent the moment a pid exists) uses the SAME arming sequence rather than its own
+// copy — one place decides what killing a session means.
+//
+// The status is written before the worker starts, and that ordering is load-bearing
+// in two ways: ChildExited then reports status="killed" rather than a plain exit, and
+// it is what makes a redelivered kill see a terminal session and no-op.
+// REQ-SHELL-11 changed the second parameter from the whole Bridge_Shell_Session to
+// the resolved daemon key, which is the only field this proc ever read. Taking the
+// struct meant every caller had to hold a borrowed copy of a map entry to call it;
+// taking the string means the caller passes an owned clone from
+// bridge_shell_session_shell_id (which also resolves the shell_id-or-session_id
+// fallback that used to be spelled out here). The four statements below are otherwise
+// unchanged, ordering included.
+bridge_shell_kill_arm :: proc(session_id: string, shell_id: string) {
 	// Mark intent to kill immediately so ChildExited can report status="killed".
 	bridge_shell_session_update_status(&bridge_shell_session_map, session_id, .Killed, -1, false)
 
@@ -2392,6 +2662,24 @@ bridge_hub_handle_shell_kill :: proc(text: string) {
 	thread.run_with_data(rawptr(ctx), bridge_shell_kill_worker)
 }
 
+// bridge_hub_handle_shell_background handles the "shell_background" command
+// (REQ-SHELL-2 §3): convert a LIVE FOREGROUND run to a background one at runtime.
+//
+// This is the transition the user drives from the UI (REQ-SHELL-6 builds the
+// control) and that the hub's agent-liveness hook drives when a run's owning
+// agent instance goes unreachable. Both arrive here as the same command, because
+// they are the same state change — there is no second "converted differently"
+// flavour of background for a consumer to have to distinguish.
+//
+// Fire-and-forget, like shell_kill and shell_signal: bridge_shell_set_background
+// persists the flag and releases the blocked caller locally, and the hub has
+// already written its own row. There is nothing for the hub to wait on.
+bridge_hub_handle_shell_background :: proc(text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" do return
+	_ = bridge_shell_set_background(session_id)
+}
+
 // bridge_hub_handle_shell_signal handles the "shell_signal" command.
 // FIRE-AND-FORGET: delivers signal to process group.
 bridge_hub_handle_shell_signal :: proc(text: string) {
@@ -2399,11 +2687,11 @@ bridge_hub_handle_shell_signal :: proc(text: string) {
 	signal     := extract_json_int(text, "signal", 15)
 	if session_id == "" do return
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	// An OWNED clone, held across bridge_pty_host_ensure_daemon below — the other half
+	// of the window the old leak comment named (see bridge_hub_handle_shell_kill).
+	shell_id, ok := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id)
 	if !ok do return
-
-	shell_id := sess.shell_id
-	if shell_id == "" do shell_id = sess.session_id
+	defer bridge_shell_session_str_delete(&bridge_shell_session_map, shell_id)
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok do return
@@ -2455,21 +2743,24 @@ bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
 
 	// Same refusal vocabulary the hub and tunnel_open use, so one set of reason
 	// strings describes a refusal wherever it is decided.
-	sess, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	sc, found := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
 	if !found {
 		send_result(conn, session_id, command_id, false, "session_not_found")
 		return
 	}
-	if sess.status != .Running {
+	if sc.status != .Running {
 		send_result(conn, session_id, command_id, false, "session_not_running")
 		return
 	}
 
+	// An OWNED snapshot of the updated record, so the spec re-save below reads memory
+	// nothing else can supersede.
 	updated, ok := bridge_shell_session_set_server_port(&bridge_shell_session_map, session_id, port)
 	if !ok {
 		send_result(conn, session_id, command_id, false, "session_not_found")
 		return
 	}
+	defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, updated)
 
 	data_dir := bridge_expand_home(bridge_config.data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
@@ -2483,6 +2774,10 @@ bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
 bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 	session_id := extract_json_string(text, "session_id", "")
 	command_id := extract_json_string(text, "command_id", "")
+	// REQ-SHELL-4: the run number this session is to carry FROM NOW ON. Adopted only
+	// on a SUCCESSFUL respawn (see below), which is what keeps the two sides in step
+	// when a restart fails — the hub does not advance its row on a failure either.
+	new_run_seq := extract_json_int(text, "run_seq", 0)
 
 	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, pid: int) {
 		b := strings.builder_make()
@@ -2507,14 +2802,16 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	// A SNAPSHOT: this path needs cmd as well as the daemon key, and it holds both
+	// across bridge_pty_host_ensure_daemon, a pty-host close and a fresh spawn.
+	sess, ok := bridge_shell_session_snapshot(&bridge_shell_session_map, session_id)
 	if !ok {
 		send_result(conn, session_id, command_id, false, 0)
 		return
 	}
+	defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, sess)
 
-	shell_id := sess.shell_id
-	if shell_id == "" do shell_id = sess.session_id
+	shell_id := sess.shell_id if sess.shell_id != "" else sess.session_id
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
@@ -2550,7 +2847,26 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
+	// ADOPT THE NEW RUN NUMBER ONLY NOW, after the spawn succeeded. Every exit this
+	// session reports from here on is stamped with it, so the previous run's exits —
+	// including the one the close above just produced, and anything still sitting in
+	// the durable outbox — carry the OLD number and are discarded hub-side as stale.
+	//
+	// On any failure path above we returned without touching it, so a restart that did
+	// not happen leaves the bridge on the run the hub's row still names.
+	// Status first, run number second, so the SNAPSHOT the re-save reads already
+	// carries both — one spec write per restart rather than two, and never a spec on
+	// disk that names the new run while still claiming the old status.
 	bridge_shell_session_update_status(&bridge_shell_session_map, session_id, .Running, 0, false)
+	if updated, ok := bridge_shell_session_set_run_seq(&bridge_shell_session_map, session_id, new_run_seq); ok {
+		defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, updated)
+		// PERSISTED, not just held in memory: the spec is what a restarted BRIDGE
+		// reloads, and a bridge that came back on the OLD run number would stamp every
+		// exit with it and have them all discarded hub-side as stale.
+		data_dir := bridge_expand_home(bridge_config.data_dir)
+		if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+		bridge_shell_session_save_spec(data_dir, updated)
+	}
 	send_result(conn, session_id, command_id, true, int(pid))
 }
 
@@ -2558,8 +2874,10 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 // REQUEST/REPLY: returns the serialized session list.
 bridge_hub_handle_shell_list :: proc(conn: ^ws.Connection, text: string) {
 	command_id := extract_json_string(text, "command_id", "")
-	sessions := bridge_shell_session_list(&bridge_shell_session_map)
-	defer delete(sessions)
+	// DEEP-CLONED: the loop below serializes every string field of every entry, and the
+	// old by-value list handed out a borrowed pointer for each one.
+	sessions := bridge_shell_session_list_snapshot(&bridge_shell_session_map)
+	defer bridge_shell_session_list_destroy(&bridge_shell_session_map, sessions)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_list_result\",\"command_id\":\"")
@@ -2644,15 +2962,17 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
-	if !ok {
+	// Existence is the only fact this path needs from the map: the output path is
+	// derived from the session_id already in hand, which is the same string the entry's
+	// session_id field holds.
+	if !bridge_shell_session_exists(&bridge_shell_session_map, session_id) {
 		send_error(conn, session_id, command_id, "session not found")
 		return
 	}
 
 	// Read from the tee output file (stored at bridge_shell_output_path for Command kind,
 	// or at the tee_path stored in the session — fall back to shell_output_path if unset).
-	output_path := bridge_shell_output_path(sess.session_id)
+	output_path := bridge_shell_output_path(session_id)
 	defer delete(output_path)
 
 	raw, rerr := os.read_entire_file(output_path, context.allocator)
@@ -2737,14 +3057,12 @@ bridge_hub_handle_shell_get_pane :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	shell_id, ok := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id)
 	if !ok {
 		send_failure(conn, command_id, "session not found")
 		return
 	}
-
-	shell_id := sess.shell_id
-	if shell_id == "" do shell_id = sess.session_id
+	defer bridge_shell_session_str_delete(&bridge_shell_session_map, shell_id)
 
 	pane_ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane(shell_id, since_hash, line_limit, width)
 	defer if h != "" do delete(h)
@@ -2781,14 +3099,12 @@ bridge_hub_handle_shell_capture :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	shell_id, ok := bridge_shell_session_shell_id(&bridge_shell_session_map, session_id)
 	if !ok {
 		send_error(conn, session_id, command_id, "session not found")
 		return
 	}
-
-	shell_id := sess.shell_id
-	if shell_id == "" do shell_id = sess.session_id
+	defer bridge_shell_session_str_delete(&bridge_shell_session_map, shell_id)
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
@@ -2839,6 +3155,11 @@ bridge_hub_base_url_for_runtime :: proc(base_url: string) -> string {
 
 bridge_hub_runtime_start :: proc() {
 	bridge_hub_runtime_init()
+	// REQ-SHELL-4: pick up exits this bridge queued before it was restarted, so the
+	// hub converges on the next connect rather than showing those sessions running
+	// forever. Must follow init (it appends to the queue init makes) and precede the
+	// worker that drains it.
+	bridge_shell_exited_outbox_restore()
 	if strings.trim_space(bridge_config.bridge_token) != "" && strings.trim_space(bridge_config.daemon_url) != "" {
 		thread.run(bridge_hub_runtime_worker)
 	}
@@ -2891,7 +3212,7 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 	// reachable whatever its kind, so an interactive shell started with --port 3000 works.
 	// The two properties that actually fence this path are unchanged: the port comes from
 	// the session record (never the request) and the dial below is loopback-only.
-	session, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	session, found := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
 	if !found || session.status != .Running || session.server_port <= 0 {
 		// XM-8: these are PRECONDITIONS, not an authorisation decision — ownership is
 		// settled in the hub before tunnel_open is ever sent, and kind is no longer part

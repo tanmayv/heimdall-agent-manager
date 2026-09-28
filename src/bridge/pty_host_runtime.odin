@@ -588,7 +588,11 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 	bridge_runtime_set_status(instance, "stopped", "idle")
 
 	// Emit shell_exited WS event for any T4-registered shell session matching this daemon shell_id.
-	if sess, ok := bridge_shell_session_get_by_shell_id(&bridge_shell_session_map, instance); ok {
+	// An OWNED snapshot: session_id is read repeatedly below, after the map lock is
+	// released and after this path has itself mutated the entry — which under the old
+	// by-value getter meant reading a pointer into the entry it was updating.
+	if sess, ok := bridge_shell_session_snapshot_by_shell_id(&bridge_shell_session_map, instance); ok {
+		defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, sess)
 		final_status := Bridge_Shell_Session_Status.Exited
 		status_str := "exited"
 		if sess.status == .Killed {
@@ -598,12 +602,18 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 		bridge_shell_session_update_status(&bridge_shell_session_map, sess.session_id, final_status, int(code), true)
 		data_dir := bridge_expand_home(bridge_config.data_dir)
 		if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
-		updated, has := bridge_shell_session_get(&bridge_shell_session_map, sess.session_id)
-		if has {
+		if updated, has := bridge_shell_session_snapshot(&bridge_shell_session_map, sess.session_id); has {
 			bridge_shell_session_save_spec(data_dir, updated)
+			bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, updated)
 		}
 		bridge_shell_session_delete_spec(data_dir, sess.session_id)
-		event := bridge_shell_exited_event_json(sess.session_id, int(code), true, status_str)
+		// REQ-SHELL-2 (W3): ONE exit event, TWO independent consumers. This releases
+		// a blocked FOREGROUND caller waiting on the session; the enqueue below is
+		// the hub notification path, which is unchanged and must never be starved or
+		// replaced by the local waiter. A run nobody is waiting on takes the signal
+		// as a no-op and behaves exactly as it did before waiters existed.
+		bridge_shell_wait_signal_exit(sess.session_id, final_status, int(code), true)
+		event := bridge_shell_exited_event_json(sess.session_id, int(code), true, status_str, sess.run_seq)
 		bridge_shell_exited_enqueue(event)
 		delete(event)
 	}

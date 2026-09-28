@@ -642,8 +642,33 @@ bridge_local_extract_json_object :: proc(json, key: string) -> string {
 	return "{}"
 }
 
+// bridge_local_extract_json_bool reads a JSON boolean by key, completing the
+// bridge_local_extract_json_* trio (string/int/bool) that the local RPC params
+// are parsed with. Matches the key the same way its int sibling does — quoted
+// key, then a colon — so "background" and "is_background" cannot be confused the
+// way a bare substring match would confuse them.
+//
+// Anything that is not literally true or false yields the caller's default,
+// including a missing key. That makes an absent flag and a malformed one behave
+// identically, which is what every caller here wants: an omitted `background` is
+// simply a foreground run.
+bridge_local_extract_json_bool :: proc(json, key: string, default: bool) -> bool {
+	needle := strings.concatenate({"\"", key, "\""})
+	defer delete(needle)
+	idx := strings.index(json, needle)
+	if idx < 0 do return default
+	rest := json[idx + len(needle):]
+	colon := strings.index_byte(rest, ':')
+	if colon < 0 do return default
+	rest = strings.trim_space(rest[colon + 1:])
+	if strings.has_prefix(rest, "true")  do return true
+	if strings.has_prefix(rest, "false") do return false
+	return default
+}
+
 bridge_local_extract_json_int :: proc(json, key: string, default: int) -> int {
 	needle := strings.concatenate({"\"", key, "\""})
+	defer delete(needle) // was leaked on every call; one allocation per parsed int
 	idx := strings.index(json, needle)
 	if idx < 0 do return default
 	rest := json[idx + len(needle):]
