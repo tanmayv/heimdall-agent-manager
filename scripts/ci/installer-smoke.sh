@@ -366,9 +366,9 @@ openssl_runner_state_saved=false
 openssl_runner_pre_existed=false
 sha_of() { # <path>; empty when it cannot be hashed
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    sha256sum "$1" 2>/dev/null | awk '{print $1}' || true
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || true
   fi
 }
 remove_current_openssl_entry() {
@@ -389,12 +389,12 @@ remove_current_openssl_entry() {
   fi
 }
 snapshot_shared_openssl() {
-  if [ -e "$openssl_path" ]; then
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
     openssl_pre_existed=true
+    sudo -n cp -Pp "$openssl_path" "$sandbox/openssl-before" 2>/dev/null \
+      || die "$openssl_path exists as a path entry but could not be copied without dereferencing for safekeeping; refusing to run a mode that would overwrite it"
     openssl_pre_sha="$(sha_of "$openssl_path")"
-    cp -p "$openssl_path" "$sandbox/openssl-before" 2>/dev/null \
-      || die "$openssl_path exists but could not be copied for safekeeping; refusing to run a mode that would overwrite it"
-    ok "snapshotted the pre-existing $openssl_path (sha ${openssl_pre_sha:-unknown}) so it can be restored"
+    ok "snapshotted the pre-existing $openssl_path entry (sha ${openssl_pre_sha:-unknown}) so it can be restored"
   else
     ok "no pre-existing $openssl_path on this host; the guard will verify install.sh does not create one"
   fi
@@ -466,17 +466,29 @@ restore_shared_openssl() {
     fi
     return 0
   fi
-  if [ -f "$openssl_path" ] && [ ! -L "$openssl_path" ] \
+  if [ -L "$sandbox/openssl-before" ]; then
+    if [ -L "$openssl_path" ] \
+        && [ "$(readlink "$sandbox/openssl-before")" = "$(readlink "$openssl_path")" ]; then
+      ok "$openssl_path needs no pre-install restoration"
+      return 0
+    fi
+  elif [ -f "$openssl_path" ] && [ ! -L "$openssl_path" ] \
       && cmp -s "$sandbox/openssl-before" "$openssl_path"; then
     ok "$openssl_path needs no pre-install restoration"
     return 0
   fi
   remove_current_openssl_entry || return 1
-  sudo -n cp -p "$sandbox/openssl-before" "$openssl_path" || {
+  sudo -n cp -Pp "$sandbox/openssl-before" "$openssl_path" || {
     printf 'REGRESSION CLEANUP ERROR: could not recreate the saved pre-install %s\n' "$openssl_path" >&2
     return 1
   }
-  if [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
+  if [ -L "$sandbox/openssl-before" ]; then
+    if [ ! -L "$openssl_path" ] \
+        || [ "$(readlink "$sandbox/openssl-before")" != "$(readlink "$openssl_path")" ]; then
+      printf 'REGRESSION CLEANUP ERROR: recreated %s does not match its pre-install symlink\n' "$openssl_path" >&2
+      return 1
+    fi
+  elif [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
       || ! cmp -s "$sandbox/openssl-before" "$openssl_path"; then
     printf 'REGRESSION CLEANUP ERROR: recreated %s does not match its pre-install snapshot\n' "$openssl_path" >&2
     return 1
