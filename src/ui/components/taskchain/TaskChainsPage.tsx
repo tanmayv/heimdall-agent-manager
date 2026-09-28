@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Badge, PageShell, Select } from '@ui';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
@@ -19,6 +19,8 @@ import { TaskChainOverview } from './TaskChainOverview';
 import { useSelector } from 'react-redux';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import { decryptProjectList } from '../../utils/vaultProjects';
+import { decryptChainList } from '../../utils/vaultChains';
+import { isVaultArmored } from '../../utils/vaultContent';
 import { VaultText } from '../vault/VaultText';
 
 interface TaskChainsPageProps {
@@ -37,6 +39,14 @@ function shellHash(path: string): string {
 // previews up to 5 chains per project (from the grouped endpoint); each Load more
 // then pulls a page of this size via the per-project cursor endpoint.
 const PAGE_SIZE = 20;
+
+// The four status filters, as tabs in the list pane's filter row.
+const STATUS_TABS: { value: 'active' | 'completed' | 'archived' | 'all'; label: string }[] = [
+  { value: 'active', label: 'Active' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'archived', label: 'Archived' },
+  { value: 'all', label: 'All' },
+];
 
 function statusBadgeClass(status: string): string {
   switch (String(status || '').toLowerCase()) {
@@ -60,15 +70,21 @@ function formatUpdatedAt(value: string): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-// One chain row: status badge + title + updated_at, linking to the coordinator's
-// conversation (instance-id route from TC-ROUTING; the id is already in the row,
-// so no extra fetch). Rows without a coordinator render as non-clickable.
+// One chain row: status badge + title + updated_at. Clicking the row SELECTS the
+// chain into the detail pane (REQ-TCUI-2) rather than navigating away. The
+// coordinator's conversation stays reachable as an icon button in the action
+// cluster (instance-id route from TC-ROUTING; the id is already in the row, so no
+// extra fetch). Rows without a coordinator simply omit that button.
 function ChainRow({
   chain,
+  active,
+  onSelect,
   onArchive,
   onRestore,
 }: {
   chain: ChainListItem;
+  active: boolean;
+  onSelect?: (chainId: string) => void;
   onArchive?: (chainId: string) => void;
   onRestore?: (chainId: string) => void;
 }) {
@@ -76,31 +92,36 @@ function ChainRow({
   const isMobile = useIsMobile();
   const isArchived = chain.status === 'archived';
 
+  // Title on its own line, meta beneath it — the same shape `ResourceEntryCard` gives
+  // `IssueRow`. The old single-line row was built for a full-width page; inside
+  // ResourceContainer's <=420px list column its content no longer fits, and the title (the
+  // only `flex-1 min-w-0` item) was the one that collapsed — to literally 0px, so `truncate`
+  // clipped it away entirely and rows rendered with an empty gap where the name should be.
   const inner = (
     <>
-      <span
-        data-debug-id={`task-chains-row-status-${chain.chainId}`}
-        className={`shrink-0 rounded-md border px-2 py-0.5 text-caption font-semibold capitalize ${statusBadgeClass(chain.status)}`}
-      >
-        {chain.status || 'unknown'}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-primary">
+      <span className="block min-w-0 truncate text-sm text-primary">
         <VaultText value={chain.title} fallback={chain.chainId} />
       </span>
-      <span
-        data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
-        className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"
-        title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
-      >
-        {chain.taskCount}
+      <span className="flex min-w-0 flex-wrap items-center gap-2">
+        <span
+          data-debug-id={`task-chains-row-status-${chain.chainId}`}
+          className={`shrink-0 rounded-md border px-2 py-0.5 text-caption font-semibold capitalize ${statusBadgeClass(chain.status)}`}
+        >
+          {chain.status || 'unknown'}
+        </span>
+        <span
+          data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
+          className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"
+          title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
+        >
+          {chain.taskCount}
+        </span>
+        {chain.updatedAt ? (
+          <span className="shrink-0 text-caption text-faint">{formatUpdatedAt(chain.updatedAt)}</span>
+        ) : null}
       </span>
-      {chain.updatedAt ? (
-        <span className="shrink-0 text-caption text-faint">{formatUpdatedAt(chain.updatedAt)}</span>
-      ) : null}
     </>
   );
-  const className =
-    'flex items-center gap-3 rounded-xl border border-subtle bg-surface px-3 py-2.5 transition-colors';
 
   const href = isMobile
     ? shellHash(`/conversations/${encodeURIComponent(coordinator)}`)
@@ -109,29 +130,51 @@ function ChainRow({
   return (
     <div
       data-debug-id={`task-chains-row-${chain.chainId}`}
-      className={`${className} justify-between hover:bg-surface-raised`}
+      className={[
+        'flex items-start justify-between gap-2 rounded-xl border px-3 py-2.5 transition-colors',
+        active
+          ? 'border-accent/40 bg-accent/10'
+          : 'border-subtle bg-surface hover:bg-surface-raised',
+      ].join(' ')}
     >
-      {coordinator ? (
-        <a
-          href={href}
-          title={`Open coordinator conversation (${coordinator})`}
-          onClick={() => {
-            if (isMobile) {
-              writeRightSidebarOpen(false);
-              window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
-            }
-          }}
-          className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden"
-        >
+      {/* The flex row lives on an inner <span>, NOT on the <button>. Firefox wraps a
+          button's children in an anonymous box, so `display:flex` on the button itself does
+          not make them flex items: the title's `flex-1` collapsed to zero width and the
+          title rendered invisibly (present in the DOM, painted at 0px) while the count and
+          date overflowed and were clipped. Keeping the real <button> preserves the
+          semantics and keyboard behaviour; the inner span does the layout. */}
+      <button
+        type="button"
+        data-debug-id={`task-chains-row-select-${chain.chainId}`}
+        onClick={() => onSelect?.(chain.chainId)}
+        aria-current={active ? 'true' : undefined}
+        title="Open this task chain"
+        className="min-w-0 flex-1 text-left"
+      >
+        <span className="flex min-h-[32px] w-full min-w-0 flex-col justify-center gap-1.5 overflow-hidden">
           {inner}
-        </a>
-      ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-3 opacity-70" title="No coordinator instance to open">
-          {inner}
-        </div>
-      )}
+        </span>
+      </button>
 
       <div className="flex shrink-0 items-center gap-2 pl-2" data-debug-id={`task-chains-row-actions-${chain.chainId}`}>
+        {coordinator ? (
+          <a
+            href={href}
+            data-debug-id={`task-chains-row-coordinator-link-${chain.chainId}`}
+            title="Open coordinator conversation"
+            aria-label={`Open coordinator conversation (${coordinator})`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isMobile) {
+                writeRightSidebarOpen(false);
+                window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
+              }
+            }}
+            className="inline-flex h-[32px] w-[32px] min-h-[32px] shrink-0 items-center justify-center rounded-lg border border-subtle bg-surface text-muted transition-colors hover:border-strong hover:bg-surface-raised hover:text-primary"
+          >
+            <Icon name="chat" size={14} />
+          </a>
+        ) : null}
         {isArchived ? (
           <button
             type="button"
@@ -143,7 +186,7 @@ function ChainRow({
             }}
             title="Restore chain to active"
             aria-label="Restore chain to active"
-            className="rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs font-semibold text-primary transition-colors hover:border-strong hover:bg-surface-raised"
+            className="min-h-[32px] rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs font-semibold text-primary transition-colors hover:border-strong hover:bg-surface-raised"
           >
             Restore
           </button>
@@ -158,7 +201,7 @@ function ChainRow({
             }}
             title="Archive chain"
             aria-label="Archive chain"
-            className="rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-warning/40 hover:bg-warning-soft hover:text-warning"
+            className="min-h-[32px] rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-warning/40 hover:bg-warning-soft hover:text-warning"
           >
             Archive chain
           </button>
@@ -181,6 +224,9 @@ function ChainGroupCard({
   totalCount,
   onlyWithTasks,
   filterStatus,
+  matchesSearch,
+  activeChainId,
+  onSelectChain,
   collapsed,
   onToggle,
   onLaunchProject,
@@ -195,6 +241,11 @@ function ChainGroupCard({
   totalCount: number;
   onlyWithTasks: boolean;
   filterStatus: 'active' | 'completed' | 'archived' | 'all';
+  // Applied here as well as in the page's `groups` memo, so rows pulled in by
+  // "Load more" are filtered by the search box too.
+  matchesSearch: (chain: ChainListItem) => boolean;
+  activeChainId: string;
+  onSelectChain?: (chainId: string) => void;
   collapsed: boolean;
   onToggle: () => void;
   onLaunchProject?: (project: { projectId: string; name: string }) => void;
@@ -218,12 +269,13 @@ function ChainGroupCard({
 
   const chains = useMemo(() => {
     return rawChains.filter((c) => {
+      if (!matchesSearch(c)) return false;
       if (filterStatus === 'active') return c.status === 'active';
       if (filterStatus === 'completed') return c.status === 'completed';
       if (filterStatus === 'archived') return c.status === 'archived';
       return true;
     });
-  }, [rawChains, filterStatus]);
+  }, [rawChains, filterStatus, matchesSearch]);
 
   const onLoadMore = async () => {
     try {
@@ -252,22 +304,22 @@ function ChainGroupCard({
       data-debug-id={`task-chains-project-group-${projectId || 'unassigned'}`}
       className="overflow-hidden rounded-2xl border border-subtle bg-surface"
     >
-      <div className="flex items-center justify-between border-b border-subtle bg-surface-raised px-4 py-3 transition-colors hover:bg-neutral-soft">
+      <div className="flex items-center justify-between gap-2 border-b border-subtle bg-surface-raised px-4 py-3 transition-colors hover:bg-neutral-soft">
         <button
           type="button"
           data-debug-id={`task-chains-project-toggle-${projectId || 'unassigned'}`}
           onClick={onToggle}
-          className="flex flex-1 items-center gap-3 text-left"
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <span className="text-muted">
+          <span className="shrink-0 text-muted">
             <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
           </span>
-          <div className="flex items-center gap-2">
-            <Icon name="folder" size={15} className="text-accent" />
-            <span className="text-sm font-semibold text-primary">{displayName}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <Icon name="folder" size={15} className="shrink-0 text-accent" />
+            <span className="truncate text-sm font-semibold text-primary">{displayName}</span>
           </div>
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {hasProject && (
             <button
               type="button"
@@ -301,6 +353,8 @@ function ChainGroupCard({
               <ChainRow
                 key={chain.chainId}
                 chain={chain}
+                active={activeChainId === chain.chainId}
+                onSelect={onSelectChain}
                 onArchive={onArchiveChain}
                 onRestore={onRestoreChain}
               />
@@ -324,9 +378,15 @@ function ChainGroupCard({
 }
 
 export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, isMobile }) => {
+  // Read the viewport the same way ResourceContainer does, so the page and the
+  // container can never disagree about where the 2-pane boundary is.
+  const viewport = useViewport();
+  const twoPane = viewport === 'desktop';
+
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   // Roughly half of real chains carry no tasks yet and have nothing to show, so
   // the list hides them by default; the toggle brings them back.
   const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
@@ -338,18 +398,18 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     setSelectedChainId(initialChainId || '');
   }, [initialChainId]);
 
-  // KEEP the chain-detail branch (deep link / row click into a specific chain).
-  const showList = !selectedChainId;
-
   const shouldIncludeArchived = showArchivedProjects || filterStatus === 'archived' || filterStatus === 'all';
 
+  // The list queries no longer skip when a chain is selected: on desktop the list
+  // and the detail are shown TOGETHER, so the list must stay loaded. Only the
+  // filterProjectId split (grouped endpoint vs per-project endpoint) remains.
   const groupsQuery = useFetchTaskChainGroupsQuery(
     { hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
-    { skip: !showList || Boolean(filterProjectId) },
+    { skip: Boolean(filterProjectId) },
   );
   const projectPageQuery = useFetchTaskChainProjectPageQuery(
     { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks, includeArchived: shouldIncludeArchived },
-    { skip: !showList || !filterProjectId },
+    { skip: !filterProjectId },
   );
   const projectsQuery = useListProjectsQuery();
   const archivedProjectIds = useArchivedProjectIds();
@@ -411,10 +471,59 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     return raw;
   }, [filterProjectId, projectPageQuery.data, groupsQuery.data, showArchivedProjects, archivedProjectIds]);
 
+  // Chain titles are vault-encrypted, so the search box must match the DECRYPTED
+  // title — matching `chain.title` directly would be matching ciphertext. Titles
+  // are decrypted once into a chainId -> plaintext map; armored titles that cannot
+  // be read (vault locked) are simply absent, so those chains match on chainId only.
+  const allChains = useMemo(() => rawGroups.flatMap((g) => g.chains), [rawGroups]);
+  const [titleByChainId, setTitleByChainId] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    if (!isUnlocked || !rawKeyHex) {
+      const plain: Record<string, string> = {};
+      for (const chain of allChains) {
+        const raw = String(chain.title || '');
+        if (raw && !isVaultArmored(raw)) plain[chain.chainId] = raw;
+      }
+      setTitleByChainId(plain);
+      return;
+    }
+    decryptChainList(allChains, rawKeyHex)
+      .then((list) => {
+        if (!active) return;
+        const next: Record<string, string> = {};
+        for (const chain of list) {
+          const title = String(chain.title || '');
+          if (title && !isVaultArmored(title)) next[chain.chainId] = title;
+        }
+        setTitleByChainId(next);
+      })
+      .catch(() => {
+        // Search degrades to chainId matching rather than breaking the list.
+        if (active) setTitleByChainId({});
+      });
+    return () => {
+      active = false;
+    };
+  }, [allChains, isUnlocked, rawKeyHex]);
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const matchesSearch = useCallback(
+    (chain: ChainListItem) => {
+      if (!normalizedQuery) return true;
+      if (chain.chainId.toLowerCase().includes(normalizedQuery)) return true;
+      const title = titleByChainId[chain.chainId];
+      return Boolean(title) && title.toLowerCase().includes(normalizedQuery);
+    },
+    [normalizedQuery, titleByChainId],
+  );
+
   const groups: ChainProjectGroup[] = useMemo(() => {
     return rawGroups
       .map((g) => {
         const matching = g.chains.filter((c) => {
+          if (!matchesSearch(c)) return false;
           if (filterStatus === 'active') return c.status === 'active';
           if (filterStatus === 'completed') return c.status === 'completed';
           if (filterStatus === 'archived') return c.status === 'archived';
@@ -427,77 +536,81 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         };
       })
       .filter((g) => Boolean(filterProjectId) || g.chains.length > 0);
-  }, [rawGroups, filterStatus, filterProjectId]);
+  }, [rawGroups, filterStatus, filterProjectId, matchesSearch]);
 
   const totalChains = useMemo(() => groups.reduce((sum, g) => sum + (g.chainTotal || g.chains.length), 0), [groups]);
   const isLoading = filterProjectId ? projectPageQuery.isLoading : groupsQuery.isLoading;
   const error = filterProjectId ? projectPageQuery.error : groupsQuery.error;
+
+  // Desktop shows both panes, so an empty detail pane is wasted space: preselect
+  // the first visible chain (mirrors IssueListPage). State only — no route push,
+  // so '/chains' stays '/chains' until the user actually picks a row.
+  const firstChainId = groups[0]?.chains[0]?.chainId || '';
+  useEffect(() => {
+    if (twoPane && !selectedChainId && firstChainId) {
+      setSelectedChainId(firstChainId);
+    }
+  }, [twoPane, selectedChainId, firstChainId]);
 
   const toggleCollapse = (projectId: string) => {
     const key = projectId || '__unassigned__';
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  if (selectedChainId) {
-    return (
-      <div className="h-full w-full max-w-full min-w-0 overflow-x-hidden">
-        <TaskChainOverview chainId={selectedChainId} focusTaskId={focusTaskId} onClose={() => setSelectedChainId('')} isMobile={isMobile} />
-      </div>
-    );
-  }
+  // Selecting a row syncs the hash route so deep links and the browser back button
+  // keep working. AppShell renders TaskChainsPage from the same position for both
+  // '/chains' and '/chains/*', so this updates the page in place rather than
+  // remounting it — the filters, collapse state and loaded pages all survive.
+  const handleSelectChain = (chainId: string) => {
+    setSelectedChainId(chainId);
+    window.location.hash = shellHash(`/chains/${encodeURIComponent(chainId)}`);
+  };
 
-  return (
-    <PageShell
-      title={
-        <span className="inline-flex items-center gap-2.5">
-          Task Chains
-          <Badge data-debug-id="task-chains-total-count" tone="info">
-            {totalChains} {totalChains === 1 ? 'chain' : 'chains'}
-          </Badge>
-        </span>
-      }
-      description="Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews."
-    >
-      <div data-debug-id="task-chains-page" className="text-left">
-      {/* Project and status filters */}
-      <div className="mb-5 flex flex-wrap items-center gap-2">
-        <label htmlFor="task-chains-project-filter" className="text-xs text-muted">
-          Project
-        </label>
-        <Select
-          id="task-chains-project-filter"
-          data-debug-id="task-chains-project-filter"
-          size="sm"
-          value={filterProjectId}
-          onChange={setFilterProjectId}
-        >
-          <option value="">All projects</option>
-          {decryptedProjects.map((p) => (
-            <option key={p.project_id} value={p.project_id}>
-              {p.name || p.project_id}
-            </option>
-          ))}
-        </Select>
+  const handleCloseDetail = () => {
+    setSelectedChainId('');
+    window.location.hash = shellHash('/chains');
+  };
 
-        <label htmlFor="task-chains-status-filter" className="ml-1 text-xs text-muted">
-          Status
-        </label>
-        <Select
-          id="task-chains-status-filter"
-          data-debug-id="task-chains-status-filter"
-          size="sm"
-          value={filterStatus}
-          onChange={(val) => setFilterStatus(val as any)}
-        >
-          <option value="active">Active</option>
-          <option value="completed">Completed</option>
-          <option value="archived">Archived</option>
-          <option value="all">All</option>
-        </Select>
-
+  const listColumn = (
+    <div data-debug-id="task-chains-page" className="flex h-full min-w-0 flex-col overflow-hidden text-left">
+      <ResourceSearchFilter
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search chains…"
+        searchDebugId="task-chains-search-input"
+        activeTab={filterStatus}
+        onTabChange={(tab) => setFilterStatus(tab as 'active' | 'completed' | 'archived' | 'all')}
+        // The status <Select> this replaces was named by a <label htmlFor>; the tabs list needs
+        // an explicit label or it falls back to ResourceSearchFilter's generic "Filter tabs".
+        tabsLabel="Filter chains by status"
+        tabs={STATUS_TABS.map((tab) => ({
+          value: tab.value,
+          label: tab.label,
+          debugId: `task-chains-filter-status-${tab.value}`,
+        }))}
+        filters={[
+          {
+            value: filterProjectId,
+            onChange: setFilterProjectId,
+            options: [
+              { value: '', label: 'All projects' },
+              ...decryptedProjects.map((p) => ({
+                value: p.project_id,
+                label: p.name || p.project_id,
+              })),
+            ],
+            ariaLabel: 'Filter by project',
+            debugId: 'task-chains-project-filter',
+          },
+        ]}
+        showFooterCounter
+        itemsCount={totalChains}
+        itemsLabel="chain"
+        counterDebugId="task-chains-footer-count"
+      >
         <label
           htmlFor="task-chains-has-tasks-filter"
-          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
+          className="inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
         >
           <input
             id="task-chains-has-tasks-filter"
@@ -512,7 +625,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
         <label
           htmlFor="task-chains-include-archived-filter"
-          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
+          className="inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
         >
           <input
             id="task-chains-include-archived-filter"
@@ -524,63 +637,102 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           />
           Include archived projects
         </label>
-      </div>
+      </ResourceSearchFilter>
 
-      {isLoading && (
-        <div data-debug-id="task-chains-loading" className="rounded-2xl border border-subtle bg-surface p-6 text-sm text-muted">
-          Loading task chains…
-        </div>
-      )}
-
-      {!isLoading && error && (
-        <div data-debug-id="task-chains-error" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
-          Failed to load task chains: {String((error as any)?.error || (error as any)?.message || error)}
-        </div>
-      )}
-
-      {!isLoading && !error && groups.length === 0 && (
-        <div
-          data-debug-id="task-chains-empty-state"
-          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
-        >
-          <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted">
-            <Icon name="tasks" size={24} />
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {isLoading && (
+          <div data-debug-id="task-chains-loading" className="rounded-2xl border border-subtle bg-surface p-6 text-sm text-muted">
+            Loading task chains…
           </div>
-          <h3 className="text-base font-semibold text-primary">No Task Chains</h3>
-          <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
-            {filterProjectId
-              ? 'This project has no task chains matching filter.'
-              : 'Task chains appear here once a coordinator starts a multi-agent workflow.'}
-          </p>
-        </div>
-      )}
+        )}
 
-      {!isLoading && !error && groups.length > 0 && (
-        <div data-debug-id="task-chains-project-groups" className="space-y-6">
-          {groups.map((group) => {
-            const key = group.projectId || '__unassigned__';
-            return (
-              <ChainGroupCard
-                key={key}
-                projectId={group.projectId}
-                projectName={group.projectName}
-                initialChains={group.chains}
-                initialHasMore={group.hasMore}
-                initialNextCursor={group.nextCursor}
-                totalCount={group.chainTotal || group.chains.length}
-                onlyWithTasks={onlyWithTasks}
-                filterStatus={filterStatus}
-                collapsed={Boolean(collapsed[key])}
-                onToggle={() => toggleCollapse(group.projectId)}
-                onLaunchProject={setLaunchModalProject}
-                onArchiveChain={handleArchiveChain}
-                onRestoreChain={handleRestoreChain}
-              />
-            );
-          })}
-        </div>
-      )}
+        {!isLoading && error && (
+          <div data-debug-id="task-chains-error" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
+            Failed to load task chains: {String((error as any)?.error || (error as any)?.message || error)}
+          </div>
+        )}
 
+        {!isLoading && !error && groups.length === 0 && (
+          <div
+            data-debug-id="task-chains-empty-state"
+            className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
+          >
+            <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted">
+              <Icon name="tasks" size={24} />
+            </div>
+            <h3 className="text-base font-semibold text-primary">No Task Chains</h3>
+            <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
+              {normalizedQuery
+                ? 'No task chains match your search.'
+                : filterProjectId
+                  ? 'This project has no task chains matching filter.'
+                  : 'Task chains appear here once a coordinator starts a multi-agent workflow.'}
+            </p>
+          </div>
+        )}
+
+        {!isLoading && !error && groups.length > 0 && (
+          <div data-debug-id="task-chains-project-groups" className="space-y-6">
+            {groups.map((group) => {
+              const key = group.projectId || '__unassigned__';
+              return (
+                <ChainGroupCard
+                  key={key}
+                  projectId={group.projectId}
+                  projectName={group.projectName}
+                  initialChains={group.chains}
+                  initialHasMore={group.hasMore}
+                  initialNextCursor={group.nextCursor}
+                  totalCount={group.chainTotal || group.chains.length}
+                  onlyWithTasks={onlyWithTasks}
+                  filterStatus={filterStatus}
+                  matchesSearch={matchesSearch}
+                  activeChainId={selectedChainId}
+                  onSelectChain={handleSelectChain}
+                  collapsed={Boolean(collapsed[key])}
+                  onToggle={() => toggleCollapse(group.projectId)}
+                  onLaunchProject={setLaunchModalProject}
+                  onArchiveChain={handleArchiveChain}
+                  onRestoreChain={handleRestoreChain}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <ResourceContainer
+      title={
+        <span className="inline-flex items-center gap-2.5">
+          Task Chains
+          <Badge data-debug-id="task-chains-total-count" tone="info">
+            {totalChains} {totalChains === 1 ? 'chain' : 'chains'}
+          </Badge>
+        </span>
+      }
+      description="Multi-agent workflows grouped by project. Select a chain to follow its tasks, dependencies, and reviews."
+      breadcrumbs={[{ label: 'Task Chains' }]}
+      selectedId={selectedChainId}
+      detailTitle="Task Chain"
+      listDebugId="task-chains-list-column"
+      detailDebugId="task-chains-detail-pane"
+      emptyDetailText="Select a task chain to see it here."
+      list={listColumn}
+      detail={
+        selectedChainId ? (
+          <TaskChainOverview
+            embedded
+            chainId={selectedChainId}
+            focusTaskId={focusTaskId}
+            isMobile={isMobile}
+            onClose={handleCloseDetail}
+          />
+        ) : null
+      }
+    >
       <ProjectLaunchModal
         isOpen={Boolean(launchModalProject)}
         project={launchModalProject}
@@ -590,8 +742,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
         }}
       />
-      </div>
-    </PageShell>
+    </ResourceContainer>
   );
 };
 

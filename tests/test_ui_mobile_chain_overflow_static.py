@@ -42,8 +42,13 @@ class TestUiMobileChainOverflowStatic(unittest.TestCase):
         self.assertIn('max-w-full', content)
         self.assertIn('min-w-0', content)
 
-        # PageShell actions slot must allow flex-wrap on FleetSlotChips and status badge
-        self.assertIn('actions={\n          <div className="flex flex-wrap items-center gap-2 max-w-full">', content)
+        # PageShell actions slot must allow flex-wrap on FleetSlotChips and status badge.
+        # Asserted WITHOUT requiring adjacency to `actions={`: REQ-TCUI-3 extracts the cluster to a
+        # single `actionsNode` so the standalone and embedded branches render the same node (that is
+        # what makes the no-regression guarantee structural). The div itself is byte-identical, and
+        # the wiring to the actions slot is asserted separately below.
+        self.assertIn('<div className="flex flex-wrap items-center gap-2 max-w-full">', content)
+        self.assertIn('actions={actionsNode}', content)
 
         # TaskCard contextual action buttons must allow flex-wrap
         self.assertIn('className="flex flex-wrap items-center gap-1.5"', content)
@@ -56,7 +61,13 @@ class TestUiMobileChainOverflowStatic(unittest.TestCase):
         with open(tcp_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        self.assertIn('className="h-full w-full max-w-full min-w-0 overflow-x-hidden"', content)
+        # The old assertion pinned the wrapper <div> of the `if (selectedChainId)` early return,
+        # which REQ-TCUI-1 removes. Page-level overflow is now owned by ResourceContainer (a
+        # different file, not read by this test); what TaskChainsPage.tsx still genuinely owns is
+        # the list column's own width/overflow containment, so that is what is asserted here.
+        self.assertIn('data-debug-id="task-chains-page"', content)
+        self.assertIn('min-w-0', content)
+        self.assertIn('overflow-hidden', content)
 
     def test_chain_header_wrapping(self):
         ch_path = os.path.join(REPO_ROOT, "src", "ui", "components", "chat", "ChainHeader.tsx")
