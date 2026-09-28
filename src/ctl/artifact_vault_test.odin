@@ -71,6 +71,8 @@ test_artifact_create_encryption_with_vault_key :: proc(t: ^testing.T) {
 test_artifact_create_without_vault_key_leaves_plaintext :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("artifact-create-without-vault-key-leaves-plaintext")
+	defer ctl_vault_test_sandbox_close(&sb)
 	orig_name := "public-readme.md"
 	orig_desc := "Public documentation for open-source library"
 	orig_content := "# Public Library\nOpen documentation."
