@@ -3878,7 +3878,7 @@ def assert_service_path_is_sane(value: str, install_dir: str, default_dirs, labe
             f'the boot-time net for when discovery finds nothing.')
 
 
-def test_service_units_set_path_for_both_writers(ctx):
+def test_service_units_set_path_for_both_writers(ctx, install_script=INSTALL_SCRIPT):
     """REQ-INST-26. BOTH writers, together, asserted on rendered output.
 
     A systemd-only fix would leave macOS broken, and macOS is where this is
@@ -3892,7 +3892,7 @@ def test_service_units_set_path_for_both_writers(ctx):
     install_dir = str(Path(env['HOME']) / '.local' / 'bin')
 
     # --- linux / systemd ------------------------------------------------------
-    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+    res = run(['bash', install_script, '--dry-run', '--version', 'v0.1.0'],
               timeout=60, env=env)
     assert res.returncode == 0, f'linux dry-run failed:\n{res.stderr}'
     assert 'platform: linux/' in res.stdout, (
@@ -3904,7 +3904,7 @@ def test_service_units_set_path_for_both_writers(ctx):
     # --- darwin / launchd, forced with the uname shim -------------------------
     shim = darwin_uname_shim(base)
     denv = {**env, 'PATH': f'{shim}:{env["PATH"]}'}
-    dres = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+    dres = run(['bash', install_script, '--dry-run', '--version', 'v0.1.0'],
                timeout=60, env=denv)
     assert dres.returncode == 0, f'darwin dry-run failed:\n{dres.stderr}'
     assert 'platform: darwin/arm64' in dres.stdout, (
@@ -3917,6 +3917,31 @@ def test_service_units_set_path_for_both_writers(ctx):
         'the launchd plist PATH must include /opt/homebrew/bin: launchd default '
         'PATH omits it, and `brew install socat` puts socat there on Apple '
         f'Silicon. got {plist_path!r}')
+
+
+def test_service_path_writer_mutations_are_detected(ctx):
+    source = INSTALL_SCRIPT.read_text(encoding='utf-8')
+    mutations = (
+        ('systemd PATH line removed',
+         'Environment="PATH=$(service_path_value)"\n',
+         'systemd unit:'),
+        ('launchd PATH entry removed',
+         '    <key>PATH</key>\n    <string>$(service_path_value)</string>\n',
+         'launchd plist:'),
+    )
+
+    for name, anchor, expected_failure in mutations:
+        assert source.count(anchor) == 1, (
+            f'{name}: mutation anchor must occur exactly once')
+        mutant = ctx['work'] / f'{name.replace(" ", "-")}.sh'
+        mutant.write_text(source.replace(anchor, '', 1), encoding='utf-8')
+        try:
+            test_service_units_set_path_for_both_writers(ctx, mutant)
+        except AssertionError as error:
+            assert expected_failure in str(error), (
+                f'{name}: killed for the wrong reason: {error}')
+        else:
+            raise AssertionError(f'mutation survived: {name}')
 
 
 def test_service_path_reaches_a_socat_outside_the_default_dirs(ctx):
@@ -4175,6 +4200,8 @@ def main() -> int:
         ('README installer pointer', test_readme_points_at_installer),
         ('service units set PATH, both writers (REQ-INST-26)',
          test_service_units_set_path_for_both_writers),
+        ('service PATH writer mutations are detected (REQ-INST-26)',
+         test_service_path_writer_mutations_are_detected),
         ('service PATH reaches a socat outside the default dirs (REQ-INST-26)',
          test_service_path_reaches_a_socat_outside_the_default_dirs),
         ('service PATH tool inventory does not desync (REQ-INST-26)',
