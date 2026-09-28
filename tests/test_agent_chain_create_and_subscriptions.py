@@ -109,6 +109,7 @@ def main() -> int:
         env["HAM_CLOUDTOP_OWNER"] = "testowner"
         env["PATH"] = f"{ROOT / 'bin'}:{env.get('PATH', '')}"
         env["HEIMDALL_MOCK_GCERT_REMAINING_MINUTES"] = "1200"
+        env.pop("HEIMDALL_VAULT_KEY", None)
 
         hub_log_path = test_dir / "hub.log"
         bridge_log_path = test_dir / "bridge.log"
