@@ -717,7 +717,7 @@ export default function ChainOverviewPanel({
                           {currentTask ? (
                             <span className="flex items-center gap-1 text-accent">
                               <Icon name="tasks" size={10} />
-                              <span className="truncate">{currentTask.title}</span>
+                              <VaultText value={currentTask.title} as="span" className="truncate" />
                             </span>
                           ) : (
                             <span className="text-faint">Idle / No active task</span>
