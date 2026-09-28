@@ -138,8 +138,17 @@ shell_session_apply_inventory :: proc(svc: ^Shell_Session_Service, bridge_id, fr
 	defer delete(entries)
 	truncated := _json_bool(frame_json, "truncated")
 
+	// BORROWED, NEVER DELETED. platform.clock_now bottoms out in fmt.tprintf, so what
+	// it returns lives in the temp allocator's arena and was never a heap block —
+	// handing it to delete()/free() is an invalid free that segfaults the process.
+	// This was the only one of the hub's ~135 clock_now call sites to free its result;
+	// every other one treats the value as borrowed, which is the contract. Because an
+	// inventory frame is what a bridge sends on RECONNECT, the bad free made bridge
+	// reconnection a reliable way to crash the hub.
+	//
+	// Nothing below needs `now` to outlive this call: the upserts bind it as SQLite
+	// text (copied at bind time) and the events publish it into their own buffers.
 	now := platform.clock_now(svc.clock)
-	defer delete(now)
 
 	// Pass 1 — every entry the bridge reported: adopt, correct, revive.
 	for entry in entries {

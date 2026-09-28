@@ -32,6 +32,8 @@ package shell_session
 // use-after-free, and would be testing an ownership rule the real repository does not
 // have.
 
+import "core:fmt"
+import "core:mem"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -683,4 +685,64 @@ t10_kill_intent_replayed_for_corrected_session :: proc(t: ^testing.T) {
 	row, _ := fx10_row(&fx, "sh_1")
 	testing.expect(t, domain.shell_session_kill_intent_pending(row),
 		"an intent is spent by a terminal status landing, not by being dispatched")
+}
+
+// --- the production clock's ALLOCATION contract -------------------------------
+
+// REGRESSION. This diff once did `defer delete(now)` on the result of
+// platform.clock_now, and it crash-looped the production hub: every bridge reconnect
+// sends an inventory, so every reconnect freed a pointer the heap never handed out.
+//
+// WHY 64 GREEN TESTS SHIPPED A SEGFAULT, and the only reason this test exists in this
+// shape: the fixture clock above (now10) returns strings.clone(NOW10) — a HEAP block —
+// so under test the bad free was a perfectly legal one. The real clock
+// (platform.real_clock_now -> format_rfc3339_utc -> fmt.tprintf) returns TEMP-arena
+// memory. The fake was not merely simpler than production, it had the opposite
+// ownership, which is the one way a fake can hide a bug rather than just miss it.
+//
+// So this fixture allocates the way PRODUCTION does, and the test installs its OWN
+// mem.Tracking_Allocator to ASSERT on the outcome rather than leave it to the runner.
+// That matters: `odin test`'s built-in tracking reports an invalid free as a WARN line
+// and still calls the run successful, which is precisely the reporting level that let
+// this ship. bad_free_count must be 0 for the test to pass, so a re-introduced
+// `delete(now)` fails CI instead of printing a warning nobody gates on.
+@(private = "file")
+now10_temp :: proc(ctx: rawptr) -> string {
+	_ = ctx
+	return fmt.tprintf("%s", NOW10) // temp arena, exactly like format_rfc3339_utc
+}
+
+@(test)
+t10_apply_does_not_free_the_clock_string :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
+	fx.clk.now = now10_temp // production's allocation contract, not the fixture's
+	fx.svc.clock = &fx.clk
+
+	// One entry to adopt and one live row to reap: both write branches read `now`.
+	fx10_seed(&fx, Seed10{session_id = "sh_gone", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	e := entry10(Entry10{session_id = "sh_new", pid = 4242}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	// THE ASSERTION THIS TEST EXISTS FOR. Every pointer this call freed must be one
+	// the heap allocator actually issued. `now` is not.
+	testing.expect_value(t, len(track.bad_free_array), 0)
+	for bf in track.bad_free_array {
+		testing.expectf(t, false, "freed a pointer the heap never allocated: %p at %v", bf.memory, bf.location)
+	}
+
+	testing.expect_value(t, res.adopted, 1)
+	testing.expect_value(t, res.terminated, 1)
+	// The timestamp still has to LAND, so this cannot be satisfied by simply not
+	// reading the clock.
+	adopted, _ := fx10_row(&fx, "sh_new")
+	testing.expect_value(t, adopted.created_at, NOW10)
+	reaped, _ := fx10_row(&fx, "sh_gone")
+	testing.expect_value(t, reaped.finished_at, NOW10)
 }
