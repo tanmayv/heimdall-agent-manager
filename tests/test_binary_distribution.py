@@ -517,6 +517,32 @@ def write_socat_stub(directory: Path) -> Path:
     return stub
 
 
+# The stub's directory name has TWO independent users -- socat_stub_dir() below
+# creates it, and sandbox_home_writes() excludes it from "what the install wrote".
+# A renamed literal in one place and not the other fails SILENTLY: the stub would
+# start being reported as install.sh output. One definition, so it cannot drift.
+SOCAT_STUB_DIRNAME = '.socat-stub'
+
+
+def socat_stub_dir(home: Path) -> Path:
+    """The PATH entry carrying the socat stub for a sandboxed install run.
+
+    Defined ONCE on purpose (REQ-INST-22). Every sandboxed run -- the plain ones
+    and the uid-0 namespace ones alike -- must get its socat from the suite and
+    not from the host, or REQ-INST-14's fatal preflight turns into a
+    host-dependent outcome. sudo_ns_install used to build its env inline and so
+    never got a stub; it passed only because this host keeps socat outside /usr,
+    where its own tmpfs-over-/usr could not hide it.
+
+    Callers must keep this directory OUTSIDE any path the run bind-mounts over:
+    sudo_ns_install shadows the target user's real home, so a stub under that
+    home would vanish inside the namespace.
+    """
+    socat_dir = home / SOCAT_STUB_DIRNAME
+    write_socat_stub(socat_dir)
+    return socat_dir
+
+
 def _shim_dir(base: Path, name: str, *, with_socat: bool = True) -> Path:
     shim = base / name
     shim.mkdir(parents=True, exist_ok=True)
@@ -1911,21 +1937,60 @@ def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
     hide_units = ''.join(
         f'if [ -d {shlex.quote(d)} ]; then {ns_tool("mount")} -t tmpfs tmpfs {shlex.quote(d)}; fi && '
         for d in system_unit_dirs_from_install_sh())
+    # REQ-INST-22: install.sh resolves socat with `command -v`, so its FATAL
+    # preflight depends on PATH -- and every mount above hides part of the
+    # filesystem from this namespace (the tmpfs over /usr, plus one per unit dir
+    # from hide_units). A distro /usr/bin/socat would therefore be hidden, while
+    # this host's /nix/store one is not. That difference, not anything the test
+    # asserts, is what decided the outcome. So probe AFTER every mount and BEFORE
+    # install.sh runs, and fail loudly naming the PATH searched. Note ns_tool()
+    # shields T21's OWN tools by absolute path but socat is not among them
+    # (NS_TOOLS), which is exactly the gap this closes.
+    socat_probe = ('command -v socat >/dev/null 2>&1 || '
+                   '{ echo "SOCAT_UNREACHABLE_IN_NS: PATH=$PATH" >&2; exit 97; }')
     inner = (hide_units
              + 'mount -t tmpfs tmpfs /usr && '
              'mkdir -p /usr/local/bin && '
-             f'mount --bind {base / "fakehome"} {entry.pw_dir} && '
+             + socat_probe + ' && '
+             + f'mount --bind {base / "fakehome"} {entry.pw_dir} && '
              + (f'{pre} && ' if pre else '')
              + f'cd {base} && bash {script_copy} --hub {hub}'
              + (' ' + ' '.join(extra) if extra else ''))
-    env = {**os.environ,
-           'HOME': str(base / 'root-home'),
-           'SUDO_USER': entry.pw_name,
-           'PATH': f'{path_prefix}:/usr/local/bin:{os.environ["PATH"]}'}
-    (base / 'root-home').mkdir(exist_ok=True)
-    return subprocess.run(['unshare', '-rm', 'env', 'bash', '-c', inner],
-                          cwd=str(base), env=env, capture_output=True, text=True,
-                          timeout=120)
+    root_home = base / 'root-home'
+    runtime = base / 'root-runtime'
+    root_home.mkdir(exist_ok=True)
+    runtime.mkdir(exist_ok=True)
+    # Build on the SHARED sandbox env rather than an inline one (REQ-INST-22),
+    # so the socat stub and the XDG_RUNTIME_DIR/DBUS blanking that keeps
+    # `systemctl --user` off the live session bus come from one place — the same
+    # fix D-4 got for test_install_sh_full_run_service_lifecycle.
+    #
+    # Two overrides are re-asserted because they ARE the sudo path, and
+    # sandbox_install_env deliberately sets both the other way for its own
+    # (non-sudo) runs: SUDO_USER names the target user the install must resolve,
+    # and HOME is root's, not the sandbox's.
+    #
+    # sandbox_install_env also blanks SHELL, which is safe here and NOT an
+    # oversight: in its uid-0 branch install.sh reads the target user's shell
+    # from `getent passwd` into service_shell, and both path_candidates() and
+    # wire_path() prefer "${service_shell:-${SHELL:-}}", so the blanked SHELL is
+    # never consulted on this path.
+    env = {**sandbox_install_env(root_home, runtime),
+           'HOME': str(root_home),
+           'SUDO_USER': entry.pw_name}
+    # path_prefix stays FIRST: a caller's stub (e.g. the failing `chown` in
+    # test_install_sh_sudo_chown_failure_warns) has to outrank the real tool, and
+    # losing that order would quietly stop those tests testing anything.
+    env['PATH'] = os.pathsep.join([path_prefix, str(socat_stub_dir(root_home)),
+                                   '/usr/local/bin', os.environ['PATH']])
+    res = subprocess.run(['unshare', '-rm', 'env', 'bash', '-c', inner],
+                         cwd=str(base), env=env, capture_output=True, text=True,
+                         timeout=120)
+    assert 'SOCAT_UNREACHABLE_IN_NS' not in res.stderr, (
+        'the socat stub is not reachable inside the namespace, so this test would '
+        'have exercised install.sh\'s socat preflight instead of the sudo install '
+        f'it claims to test:\n{res.stderr}')
+    return res
 
 
 def test_install_sh_sudo_path_write(ctx):
@@ -2224,8 +2289,7 @@ def sandbox_install_env(home: Path, runtime: Path) -> dict:
     # keeps the suite deterministic on machines that do not have it -- notably
     # the macOS runners, where neither outcome is guaranteed.
     home.mkdir(parents=True, exist_ok=True)
-    socat_dir = home / '.socat-stub'
-    write_socat_stub(socat_dir)
+    socat_dir = socat_stub_dir(home)
     return {**os.environ,
             'PATH': f'{socat_dir}{os.pathsep}' + os.environ.get('PATH', ''),
             'HOME': str(home),
@@ -3736,9 +3800,9 @@ def install_run_shielded(argv, env, *, cwd=None, timeout=120):
 
 def sandbox_home_writes(home: Path) -> list:
     """What a run left in the sandbox home, EXCLUDING the harness's own socat
-    stub (sandbox_install_env writes that before install.sh ever starts)."""
+    stub (socat_stub_dir writes that before install.sh ever starts)."""
     return sorted(str(p.relative_to(home)) for p in home.rglob('*')
-                  if not str(p.relative_to(home)).startswith('.socat-stub'))
+                  if not str(p.relative_to(home)).startswith(SOCAT_STUB_DIRNAME))
 
 
 def test_install_sh_refuses_to_shadow_system_unit(ctx):
