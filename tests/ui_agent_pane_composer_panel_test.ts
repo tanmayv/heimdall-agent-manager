@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import React from 'react';
-import { AgentPaneComposerPanel } from '../src/ui/components/chat/AgentPaneComposerPanel';
+import { AgentPaneComposerPanel, computeFittedFontSize } from '../src/ui/components/chat/AgentPaneComposerPanel';
 import { computeAgentPanePollingInterval } from '../src/ui/hooks/useAgentPaneSubscription';
 
 console.log('Testing AgentPaneComposerPanel module and export contracts...');
@@ -134,4 +134,23 @@ resizeDisposable.dispose();
 assert.equal(typeof testTerminal.scrollToBottom, 'function', 'Terminal must support scrollToBottom');
 testTerminal.scrollToBottom();
 
-console.log('ALL COMPOSER PANEL & INTERACTIVE TERMINAL TESTS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-INT-3, REQ-WINSIZE-3)');
+// REQ-PANE-MOBILE-1 & REQ-PANE-MOBILE-2: Compact mobile height & 80-column auto-fit scaling
+console.log('Testing REQ-PANE-MOBILE-2: computeFittedFontSize and 80-column mobile auto-fit...');
+assert.equal(typeof computeFittedFontSize, 'function', 'computeFittedFontSize must be exported');
+assert.equal(computeFittedFontSize(600), 12, 'Desktop width (600px) must retain default 12px font');
+assert.equal(computeFittedFontSize(500), 12, '500px boundary must retain default 12px font');
+
+const font360 = computeFittedFontSize(360);
+const font390 = computeFittedFontSize(390);
+const font480 = computeFittedFontSize(480);
+
+assert.ok(font360 >= 6 && font360 <= 12, '360px font size must be within 6-12');
+assert.ok(font390 >= 6 && font390 <= 12, '390px font size must be within 6-12');
+assert.ok(font480 >= 6 && font480 <= 12, '480px font size must be within 6-12');
+
+// Monospace aspect ratio ~0.6; available width = containerWidth - 16px (p-2 padding)
+assert.ok(80 * (font360 * 0.6) <= 360 - 16, '80 columns must fit within 360px container');
+assert.ok(80 * (font390 * 0.6) <= 390 - 16, '80 columns must fit within 390px container');
+assert.ok(80 * (font480 * 0.6) <= 480 - 16, '80 columns must fit within 480px container');
+
+console.log('ALL COMPOSER PANEL & INTERACTIVE TERMINAL TESTS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-INT-3, REQ-WINSIZE-3, REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2)');

@@ -58,6 +58,10 @@ def main() -> None:
     require(all(ord(c) <= 0x1F000 for c in panel_src), "Zero emojis allowed in panel")
     require('data-debug-id="agent-pane-collapse-btn"' in panel_src, "Collapse button must have data-debug-id")
     require("chevron-down" in panel_src, "Collapse button must use chevron-down icon")
+    require('data-debug-id="agent-pane-maximize-btn"' in panel_src,
+            "Header must include maximize/restore toggle button for mobile viewports (REQ-PANE-MOBILE-1)")
+    require("maximize" in panel_src and "minimize" in panel_src,
+            "Maximize button must support maximize and minimize icons")
 
     # Interactive terminal cursor & keystroke refetch checks (REQ-STREAM-2, REQ-CURSOR-1)
     require("cursorBlink: false" in panel_src, "Terminal cursorBlink must be false")
@@ -68,12 +72,17 @@ def main() -> None:
     require("50" in panel_src and ("refetch" in panel_src or "setTimeout" in panel_src),
             "Terminal onData must trigger debounced refetch(50ms) on keystrokes")
 
-    # Content pre element & interactive terminal (REQ-INT-3)
+    # Content pre element & interactive terminal (REQ-INT-3, REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2)
     require("@xterm/xterm" in panel_src, "Component must import @xterm/xterm")
     require("@xterm/addon-fit" in panel_src, "Component must import @xterm/addon-fit")
     require('data-debug-id="agent-pane-terminal"' in panel_src, "Component must mount interactive terminal with data-debug-id")
     require("useSendAgentPaneInputMutation" in panel_src, "Component must use useSendAgentPaneInputMutation hook")
-    require("max-h-[280px]" in panel_src and "max-h-[420px]" in panel_src, "Component must maintain responsive heights (max-h-[280px] mobile, max-h-[420px] desktop)")
+    require("min-h-[140px]" in panel_src and "h-[140px]" in panel_src and "max-h-[200px]" in panel_src,
+            "Component must provide compact mobile height default (REQ-PANE-MOBILE-1)")
+    require("sm:min-h-[360px]" in panel_src and "sm:h-[360px]" in panel_src and "sm:max-h-[420px]" in panel_src,
+            "Component must maintain desktop terminal dimensions (REQ-PANE-MOBILE-1)")
+    require("computeFittedFontSize" in panel_src or "clientWidth < 500" in panel_src,
+            "Component must implement 80-column auto-fit scaling on narrow containers (REQ-PANE-MOBILE-2)")
     require("onData" in panel_src, "Terminal must hook onData for keystroke dispatch")
     require("<pre" in panel_src, "Component must render a <pre> element")
     require("chat-scrollbar" in panel_src, "Pre element must use chat-scrollbar class")
@@ -145,7 +154,7 @@ def main() -> None:
     else:
         print(result.stdout.strip())
 
-    print("[+] ALL CHECKS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-WINSIZE-3)")
+    print("[+] ALL CHECKS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-WINSIZE-3, REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2)")
 
 
 if __name__ == "__main__":
