@@ -16,6 +16,10 @@ type AgentStreamMsg =
 export type UseAgentStreamOptions = {
   agentInstanceId: string | null | undefined;
   enabled?: boolean;
+  rows?: number;
+  cols?: number;
+  onConnect?: () => void;
+  onReset?: () => void;
   onOutput?: (data: Uint8Array) => void;
   onStatus?: (status: string) => void;
   onError?: (message: string) => void;
@@ -75,6 +79,10 @@ async function agentStreamUrl(agentInstanceId: string): Promise<string> {
 export function useAgentStream({
   agentInstanceId,
   enabled = true,
+  rows,
+  cols,
+  onConnect,
+  onReset,
   onOutput,
   onStatus,
   onError,
@@ -84,15 +92,24 @@ export function useAgentStream({
   const socketRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<number | undefined>(undefined);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
+  const microNudgeTimerRef = useRef<number | undefined>(undefined);
   const reconnectAttemptsRef = useRef(0);
   const stoppedRef = useRef(false);
   const activeConnectIdRef = useRef(0);
 
+  const rowsRef = useRef(rows);
+  const colsRef = useRef(cols);
+  const onConnectRef = useRef(onConnect);
+  const onResetRef = useRef(onReset);
   const onOutputRef = useRef(onOutput);
   const onStatusRef = useRef(onStatus);
   const onErrorRef = useRef(onError);
   const onCloseRef = useRef(onClose);
 
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
+  useEffect(() => { colsRef.current = cols; }, [cols]);
+  useEffect(() => { onConnectRef.current = onConnect; }, [onConnect]);
+  useEffect(() => { onResetRef.current = onReset; }, [onReset]);
   useEffect(() => { onOutputRef.current = onOutput; }, [onOutput]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
@@ -106,6 +123,11 @@ export function useAgentStream({
   const clearReconnectTimer = () => {
     if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = undefined;
+  };
+
+  const clearMicroNudgeTimer = () => {
+    if (microNudgeTimerRef.current) window.clearTimeout(microNudgeTimerRef.current);
+    microNudgeTimerRef.current = undefined;
   };
 
   const startHeartbeat = (socket: WebSocket) => {
@@ -125,6 +147,7 @@ export function useAgentStream({
     activeConnectIdRef.current += 1;
     clearHeartbeat();
     clearReconnectTimer();
+    clearMicroNudgeTimer();
     if (socketRef.current) {
       socketRef.current.onclose = null;
       socketRef.current.onerror = null;
@@ -135,6 +158,12 @@ export function useAgentStream({
     }
     setConnected(false);
   };
+
+  const sendResize = useCallback((rows: number, cols: number) => {
+    const s = socketRef.current;
+    if (!s || s.readyState !== WebSocket.OPEN) return;
+    s.send(JSON.stringify({ type: 'resize', rows, cols }));
+  }, []);
 
   const connect = useCallback(() => {
     if (!agentInstanceId || !enabled || stoppedRef.current) return;
@@ -157,6 +186,24 @@ export function useAgentStream({
           reconnectAttemptsRef.current = 0;
           setConnected(true);
           startHeartbeat(socket);
+
+          // Purge stale terminal buffer on stream open / reconnect (REQ-STREAM-REDRAW-1)
+          onConnectRef.current?.();
+          onResetRef.current?.();
+
+          // SIGWINCH micro-nudge for instant full-screen native repaint (REQ-STREAM-REDRAW-2)
+          // Matches tools/pty_host/src/dclient.rs:392-414: resize to cols - 1 then restore after 25ms
+          const targetRows = rowsRef.current ?? 24;
+          const targetCols = colsRef.current ?? 80;
+          if (targetCols > 1) {
+            sendResize(targetRows, targetCols - 1);
+            clearMicroNudgeTimer();
+            microNudgeTimerRef.current = window.setTimeout(() => {
+              if (activeConnectIdRef.current === connectId && socket.readyState === WebSocket.OPEN) {
+                sendResize(targetRows, targetCols);
+              }
+            }, 25);
+          }
         };
 
         socket.onmessage = (event) => {
@@ -195,6 +242,7 @@ export function useAgentStream({
         socket.onclose = () => {
           if (activeConnectIdRef.current !== connectId) return;
           clearHeartbeat();
+          clearMicroNudgeTimer();
           setConnected(false);
 
           // Auto-reconnect with exponential backoff if not explicitly stopped
@@ -225,7 +273,7 @@ export function useAgentStream({
         if (activeConnectIdRef.current !== connectId) return;
         onErrorRef.current?.(String(err?.message || err || 'Failed to connect to agent instance stream'));
       });
-  }, [agentInstanceId, enabled]);
+  }, [agentInstanceId, enabled, sendResize]);
 
   useEffect(() => {
     stoppedRef.current = false;
@@ -246,12 +294,6 @@ export function useAgentStream({
     const s = socketRef.current;
     if (!s || s.readyState !== WebSocket.OPEN) return;
     s.send(JSON.stringify({ type: 'input', data_b64: btoa(data) }));
-  }, []);
-
-  const sendResize = useCallback((rows: number, cols: number) => {
-    const s = socketRef.current;
-    if (!s || s.readyState !== WebSocket.OPEN) return;
-    s.send(JSON.stringify({ type: 'resize', rows, cols }));
   }, []);
 
   const reconnect = useCallback(() => {

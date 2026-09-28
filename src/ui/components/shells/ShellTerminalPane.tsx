@@ -151,12 +151,14 @@ export function ShellTerminalPane({
   // Unified resize handler routing between streaming and legacy polling
   const handleResize = useCallback(
     (rows: number, cols: number) => {
+      const effectiveCols = Math.max(cols, 80);
+      const effectiveRows = Math.max(rows, 24);
       if (isStreamingActive) {
-        sendStreamResize(rows, cols);
+        sendStreamResize(effectiveRows, effectiveCols);
       } else {
         const targetId = sessionIdRef.current;
         if (targetId) {
-          sendShellResize({ sessionId: targetId, rows, cols }).catch(() => {});
+          sendShellResize({ sessionId: targetId, rows: effectiveRows, cols: effectiveCols }).catch(() => {});
         }
       }
     },
@@ -181,7 +183,7 @@ export function ShellTerminalPane({
     if (!container) return;
 
     const term = new Terminal({
-      convertEol: true,
+      convertEol: !isStreamingActive,
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
@@ -216,9 +218,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
           handleResizeRef.current(term.rows, term.cols);
           term.focus();
         }
@@ -235,9 +235,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
       } catch { /* ignore */ }
     });
@@ -247,6 +245,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
       } catch { /* ignore */ }
     };
@@ -300,6 +299,13 @@ export function ShellTerminalPane({
       terminalRef.current.options.theme = theme.terminal;
     }
   }, [theme]);
+
+  // Synchronize terminal convertEol option with streaming status (disabled during streaming)
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.convertEol = !isStreamingActive;
+    }
+  }, [isStreamingActive]);
 
   const showUnreachableOverlay = isBridgeUnreachable && !output && !streamConnected;
   const showUnreachableBanner = isBridgeUnreachable && (Boolean(output) || streamConnected);
@@ -374,7 +380,7 @@ export function ShellTerminalPane({
         role="region"
         aria-label="Shell Terminal"
         style={{ backgroundColor: theme.terminal.background }}
-        className="relative flex-1 min-h-0 w-full overflow-hidden p-2 font-mono text-xs cursor-text focus:outline-none"
+        className="chat-scrollbar relative flex-1 min-h-0 w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none"
       />
     </div>
   );

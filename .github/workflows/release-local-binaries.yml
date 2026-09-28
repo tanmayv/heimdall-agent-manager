@@ -97,10 +97,10 @@ jobs:
             exit 1
           fi
           nix build \
-            .#ham-bridge \
-            .#ham-ctl \
-            .#ham-pty-host \
-            .#ham-manager \
+            .#release-ham-bridge \
+            .#release-ham-ctl \
+            .#release-ham-pty-host \
+            .#release-heimdall \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
           paths=()
@@ -147,9 +147,121 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # REQ-INST-16: the release tarballs target stock hosts with no /nix/store.
+      # Fail the build here if a shipped binary references the store OR cannot
+      # execute without it. The packaging script already gates the staged tree;
+      # this re-checks the final tarball and adds the execution proof that scan
+      # alone cannot give. (matrix.target is defined in-file, not event data.)
+      - name: Verify release binaries are portable (Linux)
+        if: ${{ startsWith(matrix.target, 'linux-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/portable-verify"
+          rm -rf "$work"; mkdir -p "$work"
+          tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          for f in "$work"/bin/*; do
+            case "$(od -A n -t x1 -N 4 "$f" | tr -d ' \n')" in
+              7f454c46) ;;
+              *) echo "FAIL: $f is not an ELF binary" >&2; exit 1 ;;
+            esac
+            interp="$(readelf -l "$f" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \(.*\)].*/\1/p' || true)"
+            if [ -n "$interp" ]; then
+              echo "FAIL: $f has a program interpreter ($interp); release Linux binaries must be fully static" >&2
+              exit 1
+            fi
+            if readelf -d "$f" 2>/dev/null | grep -q '/nix/store'; then
+              echo "FAIL: $f references /nix/store in its dynamic section" >&2
+              exit 1
+            fi
+          done
+          # The execution half. scripts/release/storeless-exec.sh picks a clean
+          # environment by PROVING it can run a static control and reject a
+          # dynamic one, and exits non-zero rather than skipping when it can
+          # prove neither -- so this step cannot pass without executing.
+          echo "storeless mechanism: $(scripts/release/storeless-exec.sh select)"
+          for b in ham-bridge ham-ctl heimdall; do
+            echo "--- $b --version (storeless) ---"
+            out="$(scripts/release/storeless-exec.sh run "$work/bin/$b" --version)" || {
+              echo "FAIL: $b could not execute without /nix/store" >&2; exit 1; }
+            [ -n "$out" ] || { echo "FAIL: $b --version printed nothing storeless" >&2; exit 1; }
+            echo "$out"
+          done
+          echo "--- ham-pty-host --help (storeless) ---"
+          out="$(scripts/release/storeless-exec.sh run "$work/bin/ham-pty-host" --help)" || {
+            echo "FAIL: ham-pty-host could not execute without /nix/store" >&2; exit 1; }
+          [ -n "$out" ] || { echo "FAIL: ham-pty-host --help printed nothing storeless" >&2; exit 1; }
+          echo "$out" | head -3
+
+      - name: Verify release binaries are portable (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/portable-verify"
+          rm -rf "$work"; mkdir -p "$work"
+          tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          for f in "$work"/bin/*; do
+            if otool -L "$f" | grep -q '/nix/store'; then
+              echo "FAIL: $f links a nix-store dylib" >&2
+              exit 1
+            fi
+            if otool -l "$f" | grep -A2 LC_RPATH | grep -q '/nix/store'; then
+              echo "FAIL: $f has an rpath under /nix/store" >&2
+              exit 1
+            fi
+          done
+          # The macOS runner has no nix store before our Nix install step puts
+          # one there; the scan above is what proves these binaries never
+          # touch it. Execution proves they load and run on a stock host.
+          "$work/bin/ham-bridge" --version
+          "$work/bin/ham-ctl" --version
+          "$work/bin/heimdall" --version
+          "$work/bin/ham-pty-host" --help >/dev/null
+
+  verify-storeless:
+    name: Execute release binaries without Nix (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-amd64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Execute target tarball on a storeless host
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /nix/store ]; then
+            echo "FAIL: this job must run without a Nix store" >&2
+            exit 1
+          fi
+          work="$RUNNER_TEMP/storeless-verify"
+          rm -rf "$work"
+          mkdir -p "$work"
+          tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          "$work/bin/ham-bridge" --version
+          "$work/bin/ham-ctl" --version
+          "$work/bin/heimdall" --version
+          "$work/bin/ham-pty-host" --help >/dev/null
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, verify-storeless]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
     permissions:

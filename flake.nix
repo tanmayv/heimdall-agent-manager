@@ -91,6 +91,35 @@
         '';
       };
 
+      # REQ-INST-16: portable release binaries. The regular attrs above are
+      # Nix-native (wrapProgram + nix-store runtime deps, ELF interpreter
+      # under /nix/store) and CANNOT run on hosts without /nix/store -- which
+      # is every machine the public tarballs target. The release workflow
+      # used to build the regular attrs, which is how bin/ham-bridge shipped
+      # as a 652-byte nix wrapper script. These release attrs build the same
+      # sources for the tarball:
+      #   Linux (Odin): fully static glibc via -static -no-pie against
+      #     glibc.static. odin's own -lm/-lc land earlier in the link line
+      #     but GNU ld resolves them from -L${glibc.static}/lib anyway.
+      #   Darwin (Odin): plain build; the Mach-O load commands are already
+      #     clean (/usr/lib/libSystem + system frameworks).
+      # Never wrapProgram and never stage nix-store runtime deps here.
+      mkReleaseOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
+        pname = "release-${name}";
+        version = appVersion;
+        src = ./.;
+        nativeBuildInputs = [ odin ];
+        dontConfigure = true;
+        dontInstall = true;
+        buildPhase = ''
+          runHook preBuild
+          mkdir -p $out/bin
+          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name} \
+            ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''-extra-linker-flags:"-static -no-pie -L${pkgs.glibc.static}/lib"''}
+          runHook postBuild
+        '';
+      };
+
       mkOdinUiPackage = pkgs: pkgs.buildNpmPackage {
         pname = "heimdall";
         version = appVersion;
@@ -156,6 +185,48 @@
           cargoTestExtraArgs = "-- --test-threads=1";
         });
 
+      # REQ-INST-16: release ham-pty-host. Linux cross-builds against musl via
+      # crane (pkgsCross.*-musl) with +crt-static, yielding a static-PIE binary
+      # with no loader at all -- cargo's link invocation is fully controllable,
+      # which is what makes musl practical here where odin's hard-coded
+      # -lc/-lm makes glibc-static the simpler path. Darwin keeps the plain
+      # clang build; package-local-binary-tarball.sh rewrites its single nix
+      # dylib (libiconv) to /usr/lib when staging the tarball.
+      mkReleasePtyHost = pkgs:
+        if pkgs.stdenv.hostPlatform.isDarwin then
+          mkPtyHost pkgs
+        else
+          let
+            crossPkgs =
+              if pkgs.stdenv.hostPlatform.isAarch64 then
+                pkgs.pkgsCross.aarch64-multiplatform-musl
+              else
+                pkgs.pkgsCross.musl64;
+            craneLib = crane.mkLib crossPkgs;
+            src = craneLib.cleanCargoSource ./tools/pty_host;
+            rustTarget = crossPkgs.stdenv.hostPlatform.rust.rustcTarget;
+            rustflagsEnv = "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings [ "-" ] [ "_" ] rustTarget)}_RUSTFLAGS";
+            commonArgs = {
+              inherit src;
+              strictDeps = true;
+            };
+            cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+              pname = "ham-pty-host";
+              version = appVersion;
+              cargoToml = ./tools/pty_host/Cargo.toml;
+            });
+          in
+          craneLib.buildPackage (commonArgs // {
+            inherit cargoArtifacts;
+            pname = "ham-pty-host";
+            version = appVersion;
+            # Cross-built: cargo cannot execute the foreign test binaries
+            # without qemu; the native ham-pty-host attr keeps doCheck=true.
+            doCheck = false;
+          } // pkgs.lib.listToAttrs [
+            (pkgs.lib.nameValuePair rustflagsEnv "-C target-feature=+crt-static")
+          ]);
+
       mkOdin = pkgs:
         let
           fArgs = pkgs.odin.override.__functionArgs or {};
@@ -216,6 +287,13 @@
           ham-manager = mkOdinPackage pkgs odin "heimdall" "src/manager";
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;
+          # REQ-INST-16: portable release attrs consumed by
+          # scripts/release/package-local-binary-tarball.sh. Static on Linux,
+          # clean load commands on Darwin; nothing references /nix/store.
+          release-ham-bridge = mkReleaseOdinPackage pkgs odin "ham-bridge" "src/bridge";
+          release-ham-ctl = mkReleaseOdinPackage pkgs odin "ham-ctl" "src/ctl";
+          release-heimdall = mkReleaseOdinPackage pkgs odin "heimdall" "src/manager";
+          release-ham-pty-host = mkReleasePtyHost pkgs;
           bc-test-agent = self.packages.${system}.ham-test-agent;
           default = self.packages.${system}.ham-hub;
         });

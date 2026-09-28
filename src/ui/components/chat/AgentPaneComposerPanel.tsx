@@ -17,6 +17,24 @@ import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
 import { readPinnedMonitorAgents, addPinnedMonitorAgent, removePinnedMonitorAgent } from '../../utils/clientPersistence';
 
+/**
+ * Compute fitted font size for terminal container on narrow viewports (<500px).
+ * Standard CLI layouts require 80 columns. On mobile screens (e.g. 360px - 390px),
+ * normal 12px font (~7.2px/col) exceeds container width and causes horizontal scrollbars.
+ * Scaling font size ensures 80 columns fit within available width (REQ-PANE-MOBILE-2).
+ */
+export function computeFittedFontSize(containerWidth: number): number {
+  if (containerWidth >= 500) {
+    return 12;
+  }
+  // Available width accounting for p-2 (16px) horizontal padding
+  const availableWidth = Math.max(0, containerWidth - 16);
+  // Monospace character aspect ratio is ~0.6 (charWidth ~= fontSize * 0.6)
+  // For 80 columns: fontSize <= availableWidth / (80 * 0.6) = availableWidth / 48
+  const calculated = Math.floor(availableWidth / (80 * 0.6));
+  return Math.max(6, Math.min(12, calculated));
+}
+
 export interface AgentPaneComposerPanelProps {
   agentInstanceId?: string | null;
   isExpanded: boolean;
@@ -41,6 +59,8 @@ export function AgentPaneComposerPanel({
   onPin,
 }: AgentPaneComposerPanelProps) {
   const { theme } = useTheme();
+  // Mobile maximize / restore state (REQ-PANE-MOBILE-1)
+  const [isMobileMaximized, setIsMobileMaximized] = useState<boolean>(false);
   // Whether this agent is pinned to the /agent-monitor grid (per-browser localStorage).
   const [isPinned, setIsPinned] = useState<boolean>(false);
   useEffect(() => {
@@ -76,6 +96,12 @@ export function AgentPaneComposerPanel({
 
   const [fallbackToPolling, setFallbackToPolling] = useState<boolean>(false);
 
+  const [streamRuntimeStatus, setStreamRuntimeStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStreamRuntimeStatus(null);
+  }, [agentInstanceId]);
+
   // --------------------------------------------------------------------------
   // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
   // --------------------------------------------------------------------------
@@ -87,12 +113,26 @@ export function AgentPaneComposerPanel({
   } = useAgentStream({
     agentInstanceId: isExpanded && isActiveTab ? agentInstanceId : null,
     enabled: isStreamingExperimentEnabled && !fallbackToPolling,
+    rows: terminalDimensions.rows,
+    cols: terminalDimensions.cols,
+    onConnect: () => {
+      const term = terminalRef.current;
+      if (!term) return;
+      term.reset();
+      term.write('\x1b[H');
+      lastWrittenOutputRef.current = '';
+    },
     onOutput: (bytes) => {
       const term = terminalRef.current;
       if (!term) return;
       term.write(bytes);
       if (!userScrolledUpRef.current) {
         term.scrollToBottom();
+      }
+    },
+    onStatus: (status) => {
+      if (status) {
+        setStreamRuntimeStatus(status);
       }
     },
     onError: () => {
@@ -177,15 +217,17 @@ export function AgentPaneComposerPanel({
   // Unified resize handler routing between streaming and legacy polling
   const handleResize = useCallback(
     (rows: number, cols: number) => {
+      const effectiveCols = Math.max(cols, 80);
+      const effectiveRows = Math.max(rows, 24);
       if (isStreamingActive) {
-        sendStreamResize(rows, cols);
+        sendStreamResize(effectiveRows, effectiveCols);
       } else {
         const targetId = agentInstanceIdRef.current;
         if (targetId) {
-          sendAgentPaneResize({ agentInstanceId: targetId, rows, cols }).catch(() => {});
+          sendAgentPaneResize({ agentInstanceId: targetId, rows: effectiveRows, cols: effectiveCols }).catch(() => {});
         }
       }
-      setTerminalDimensions({ cols, rows });
+      setTerminalDimensions({ cols: effectiveCols, rows: effectiveRows });
     },
     [isStreamingActive, sendStreamResize, sendAgentPaneResize]
   );
@@ -213,13 +255,17 @@ export function AgentPaneComposerPanel({
     if (!isExpanded || !terminalContainerRef.current) return;
     const container = terminalContainerRef.current;
 
+    const initialFontSize = typeof container.clientWidth === 'number' && container.clientWidth > 0
+      ? computeFittedFontSize(container.clientWidth)
+      : 12;
+
     const term = new Terminal({
-      convertEol: true,
+      convertEol: !isStreamingActive,
       cursorBlink: false,
       cursorInactiveStyle: 'none',
       cursorStyle: 'bar',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      fontSize: 12,
+      fontSize: initialFontSize,
       lineHeight: 1.25,
       scrollback: 1000,
       theme: theme.terminal,
@@ -256,11 +302,23 @@ export function AgentPaneComposerPanel({
     const dispatchResize = () => {
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
-          fitAddon.fit();
-          // Guarantee minimum usable dimensions if fit produced 0 cols/rows
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          // Mobile 80-column auto-fit (REQ-PANE-MOBILE-2)
+          if (container.clientWidth < 500) {
+            const fittedSize = computeFittedFontSize(container.clientWidth);
+            if (term.options.fontSize !== fittedSize) {
+              term.options.fontSize = fittedSize;
+            }
+          } else if (term.options.fontSize !== 12) {
+            term.options.fontSize = 12;
           }
+          fitAddon.fit();
+          // If on a narrow viewport and measured cols is still under 80, decrement font size and re-fit
+          if (container.clientWidth < 500 && term.cols < 80 && (term.options.fontSize ?? 12) > 6) {
+            term.options.fontSize = Math.max(6, (term.options.fontSize ?? 12) - 1);
+            fitAddon.fit();
+          }
+          // Guarantee minimum usable dimensions (minimum 80 cols, 24 rows)
+          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
         }
         if (term.rows > 0 && term.cols > 0) {
           handleResizeRef.current(term.rows, term.cols);
@@ -277,26 +335,12 @@ export function AgentPaneComposerPanel({
     }, 150);
 
     const resizeObserver = new ResizeObserver(() => {
-      try {
-        if (container.clientWidth > 0 && container.clientHeight > 0) {
-          fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
-        }
-      } catch (e) {}
+      dispatchResize();
     });
     resizeObserver.observe(container);
 
     const handleWindowResize = () => {
-      try {
-        if (container.clientWidth > 0 && container.clientHeight > 0) {
-          fitAddon.fit();
-          if (term.cols === 0 || term.rows === 0) {
-            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-          }
-        }
-      } catch (e) {}
+      dispatchResize();
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('resize', handleWindowResize);
@@ -340,6 +384,13 @@ export function AgentPaneComposerPanel({
     }
   }, [theme]);
 
+  // Synchronize terminal convertEol option with streaming status (disabled during streaming)
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.convertEol = !isStreamingActive;
+    }
+  }, [isStreamingActive]);
+
   // Feed incoming ANSI output into terminal (LEGACY POLLING PATH)
   useEffect(() => {
     if (isStreamingActive) return; // Prevent clearing/redrawing buffer during active streaming
@@ -381,10 +432,14 @@ export function AgentPaneComposerPanel({
     return null;
   }
 
-  const isStopped = runtimeStatus === 'stopped' || runtimeStatus === 'failed';
-  const isUpdatingOrRunning = Boolean(isFetching || runtimeStatus === 'running' || runtimeStatus === 'active');
+  const effectiveRuntimeStatus = streamRuntimeStatus || runtimeStatus;
+  const isStopped = effectiveRuntimeStatus === 'stopped' || effectiveRuntimeStatus === 'failed';
+  const isBlocked = effectiveRuntimeStatus === 'blocked' || effectiveRuntimeStatus === 'startup_blocked';
+  const isUpdatingOrRunning = Boolean(isFetching || effectiveRuntimeStatus === 'running' || effectiveRuntimeStatus === 'active');
   const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false
     ? 'paused'
+    : isBlocked
+    ? 'blocked'
     : isStreamingActive
     ? 'streaming'
     : isExpanded
@@ -405,12 +460,14 @@ export function AgentPaneComposerPanel({
         className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
       >
         <div className="flex items-center gap-2">
-          {/* Status indicator dot (pulsing green if updating/running) */}
+          {/* Status indicator dot (warning if blocked, pulsing green if updating/running) */}
           <span
             data-debug-id="agent-pane-status-dot"
-            title={isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
+            title={isBlocked ? 'Blocked' : isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
             className={`h-2 w-2 rounded-full ${
-              isUpdatingOrRunning
+              isBlocked
+                ? 'bg-warning shadow-glow-warning animate-soft-pulse'
+                : isUpdatingOrRunning
                 ? 'bg-success animate-pulse'
                 : isStopped
                 ? 'bg-faint'
@@ -423,7 +480,9 @@ export function AgentPaneComposerPanel({
           {/* Refresh interval tag */}
           <span
             data-debug-id="agent-pane-interval-tag"
-            className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-mono text-muted"
+            className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
+              isBlocked ? 'bg-warning/20 text-warning font-semibold' : 'bg-neutral-soft text-muted'
+            }`}
           >
             {intervalLabel}
           </span>
@@ -458,6 +517,19 @@ export function AgentPaneComposerPanel({
             <Icon name="refresh" size={12} className={isFetching ? 'animate-spin' : ''} />
           </button>
 
+          {/* Maximize / restore toggle for mobile viewports (REQ-PANE-MOBILE-1) */}
+          <button
+            type="button"
+            data-debug-id="agent-pane-maximize-btn"
+            title={isMobileMaximized ? 'Restore compact terminal height' : 'Maximize terminal'}
+            aria-label={isMobileMaximized ? 'Restore compact terminal height' : 'Maximize terminal'}
+            aria-pressed={isMobileMaximized}
+            onClick={() => setIsMobileMaximized((prev) => !prev)}
+            className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary sm:hidden"
+          >
+            <Icon name={isMobileMaximized ? 'minimize' : 'maximize'} size={12} />
+          </button>
+
           {/* Collapse chevron */}
           {handleClose ? (
             <button
@@ -475,7 +547,7 @@ export function AgentPaneComposerPanel({
       </div>
       )}
 
-      {/* Interactive xterm terminal container */}
+      {/* Interactive xterm terminal container (REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2) */}
       <div
         ref={terminalContainerRef}
         data-debug-id="agent-pane-terminal"
@@ -484,7 +556,11 @@ export function AgentPaneComposerPanel({
         role="region"
         aria-label="Interactive Terminal"
         style={{ backgroundColor: theme.terminal.background }}
-        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none"
+        className={`chat-scrollbar relative w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none sm:min-h-[360px] sm:h-[360px] sm:max-h-[420px] ${
+          isMobileMaximized
+            ? 'min-h-[360px] h-[360px] max-h-[420px]'
+            : 'min-h-[140px] h-[140px] max-h-[200px]'
+        }`}
       />
 
       {/* Accessible fallback & static verification pre element */}
@@ -493,7 +569,9 @@ export function AgentPaneComposerPanel({
         onScroll={handleScroll}
         data-debug-id="agent-pane-output"
         aria-hidden="true"
-        className="sr-only chat-scrollbar max-h-[280px] sm:max-h-[420px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-primary"
+        className={`sr-only chat-scrollbar overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-primary sm:max-h-[420px] ${
+          isMobileMaximized ? 'max-h-[420px]' : 'max-h-[200px]'
+        }`}
       >
         {output || (isLoading ? 'Loading terminal output…' : '')}
       </pre>

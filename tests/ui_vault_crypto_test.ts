@@ -236,25 +236,33 @@ test('encryptVaultKeyEnvelope and decryptVaultKeyEnvelope round-trip with passwo
 
   // Tampered tag fails
   const tamperedTag = flipFirstByteHex(envelope.tagHex);
-  await assert.rejects(async () => {
-    await decryptVaultKeyEnvelope(
-      masterKey,
-      envelope.ciphertextHex,
-      envelope.nonceHex,
-      tamperedTag,
-    );
-  });
+  await assert.rejects(
+    async () => {
+      await decryptVaultKeyEnvelope(
+        masterKey,
+        envelope.ciphertextHex,
+        envelope.nonceHex,
+        tamperedTag,
+      );
+    },
+    /operation|mac|tag|decrypt/i,
+    'Tampered auth tag must fail AES-GCM authentication, not merely fail to parse',
+  );
 
   // Tampered ciphertext fails
   const tamperedCiphertext = flipFirstByteHex(envelope.ciphertextHex);
-  await assert.rejects(async () => {
-    await decryptVaultKeyEnvelope(
-      masterKey,
-      tamperedCiphertext,
-      envelope.nonceHex,
-      envelope.tagHex,
-    );
-  });
+  await assert.rejects(
+    async () => {
+      await decryptVaultKeyEnvelope(
+        masterKey,
+        tamperedCiphertext,
+        envelope.nonceHex,
+        envelope.tagHex,
+      );
+    },
+    /operation|mac|tag|decrypt/i,
+    'Tampered ciphertext must fail AES-GCM authentication, not merely fail to parse',
+  );
 });
 
 // -----------------------------------------------------------------------------

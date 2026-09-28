@@ -14,6 +14,11 @@ package hub_h9_coordinator_single_source_test
 //       still authorized once the member is backfilled (simulating migration 018).
 //   T5. coordinator-gated actions authorize the coordinator and reject others,
 //       using only the single source.
+//   T6. ensure_chain_member must NOT demote an existing member: promoting the
+//       coordinator onto a planning/micro-task used to rewrite its members row to
+//       role="worker" (save_member upserts with SET role=excluded.role), locking the
+//       real coordinator out of every coordinator-gated action. Regression for
+//       iss_18d892561e009db7.
 
 import "core:fmt"
 import "core:os"
@@ -173,6 +178,38 @@ main :: proc() {
 	check(!w_ok && w_err.code == .Forbidden, "T5: a worker must be rejected by the single-source coordinator gate")
 	_, c_ok, c_err := taskchain_service.update_chain(&service, auth2, chain.chain_id, taskchain_service.Update_Chain_Input{description = "by coordinator"})
 	check(c_ok, fmt.tprintf("T5: the coordinator must be authorized: %s", c_err.message))
+
+	// --- T6: ensure_chain_member must not demote an existing member (iss_18d892561e009db7) ---
+	// `chain` is coordinated by coord2 at this point (T2 moved it). Simulate promotion
+	// choosing the COORDINATOR instance for a planning / micro-task: that path calls
+	// ensure_chain_member for the chosen instance.
+	check(taskchain_service.is_chain_coordinator(&service, chain, coord2), "T6: precondition — coord2 coordinates the chain")
+	taskchain_service.ensure_chain_member(&service, chain, coord2, "agt_a")
+	// Before the fix this wrote role="worker" over the coordinator row, so the canonical
+	// members table stopped recognising the coordinator at all.
+	check(taskchain_service.is_chain_coordinator(&service, chain, coord2), "T6: ensure_chain_member must NOT demote the coordinator to worker")
+	// And the coordinator-gated actions the demotion broke must still authorize it.
+	_, r_ok, r_err := taskchain_service.update_chain(&service, auth2, chain.chain_id, taskchain_service.Update_Chain_Input{description = "still coordinator after taking a task"})
+	check(r_ok, fmt.tprintf("T6: coordinator must stay authorized after ensure_chain_member: %s", r_err.message))
+
+	// A genuinely absent instance is still added, with the worker role (the original contract).
+	newcomer := "inst_newcomer"
+	add_instance(&data, newcomer, "alice", string(chain.chain_id))
+	taskchain_service.ensure_chain_member(&service, chain, newcomer, "agt_a")
+	t6_members, _ := member_list(rawptr(&data), chain.chain_id, "alice")
+	newcomer_role := ""
+	for m in t6_members { if m.agent_instance_id == newcomer do newcomer_role = m.role }
+	check(newcomer_role == "worker", fmt.tprintf("T6: an absent instance must still be added as worker, got %q", newcomer_role))
+
+	// An existing REVIEWER member must not be rewritten to worker either.
+	rev := "inst_reviewer"
+	add_instance(&data, rev, "alice", string(chain.chain_id))
+	_, _, _ = taskchain_service.add_chain_member(&service, auth2, chain.chain_id, rev, "reviewer")
+	taskchain_service.ensure_chain_member(&service, chain, rev, "agt_a")
+	rev_members, _ := member_list(rawptr(&data), chain.chain_id, "alice")
+	rev_role := ""
+	for m in rev_members { if m.agent_instance_id == rev do rev_role = m.role }
+	check(rev_role == "reviewer", fmt.tprintf("T6: an existing reviewer member must keep its role, got %q", rev_role))
 
 	fmt.println("PASS: hub H9 coordinator single source of truth")
 }
