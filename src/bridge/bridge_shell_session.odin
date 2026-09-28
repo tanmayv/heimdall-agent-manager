@@ -857,6 +857,12 @@ bridge_shell_session_reconcile_now :: proc() {
 	data_dir := bridge_expand_home(raw_dir)
 	defer if raw_data(data_dir) != raw_data(raw_dir) do delete(data_dir)
 
+	// REQ-SHELL-8: second of the three retention triggers. Deliberately placed
+	// BEFORE the pty-host check below, which returns early when the daemon is
+	// unreachable — output retention does not depend on the roster and has no reason
+	// to be skipped just because reconcile cannot run.
+	bridge_shell_output_sweep_if_due()
+
 	socket, sock_ok := bridge_pty_host_ensure_daemon()
 	if !sock_ok do return
 	reply, list_ok := bridge_pty_host_list(socket)

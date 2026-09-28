@@ -97,6 +97,12 @@ main :: proc() {
 		return
 	}
 	bridge_runtime_init()
+	// REQ-SHELL-8: reclaim shell output past its retention window. Bridge start is a
+	// trigger rather than a tick — this is the first of three events that already
+	// happen (start, session create, hub reconnect) and between them they age output
+	// out with no poller anywhere. Safe this early because the sweep decides liveness
+	// from the on-disk specs, which is exactly the evidence that survives a restart.
+	bridge_shell_output_sweep_if_due()
 	bridge_agent_token_store_init()
 	// Start the local endpoint at bridge boot, not lazily on launch. Wrappers may
 	// outlive and reconnect after a bridge restart, so recovery requires the local

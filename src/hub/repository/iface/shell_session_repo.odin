@@ -129,6 +129,22 @@ Shell_Session_List_Pending_Kills_Proc :: proc(ctx: rawptr, bridge_id: string, li
 // on in full, and `limit` is a runaway backstop rather than pagination.
 Shell_Session_List_Live_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error)
 
+// Shell_Session_Delete_Terminal_Before_Proc removes TERMINAL rows whose effective
+// end timestamp is strictly older than cutoff_rfc3339, returning how many went.
+// REQ-SHELL-8 item 6: shell output got a retention window but the rows never did,
+// so terminal sessions accumulated forever and every list query and chain summary
+// degraded permanently.
+//
+// OWNER-UNSCOPED, like get_by_id and find_live_by_port, and for the same kind of
+// reason: the caller is the hub's own periodic sweep, which acts for no user and
+// has no auth context to scope by. It is a maintenance operation over the whole
+// table and is not reachable from any request handler.
+//
+// It can only ever delete rows that are already terminal — a live session is
+// excluded by status, not by age, so a server running for a month is untouchable
+// however old its row is.
+Shell_Session_Delete_Terminal_Before_Proc :: proc(ctx: rawptr, cutoff_rfc3339: string) -> (int, domain.Domain_Error)
+
 Shell_Session_Repository :: struct {
 	ctx:             rawptr,
 	upsert:          Shell_Session_Upsert_Proc,
@@ -145,6 +161,7 @@ Shell_Session_Repository :: struct {
 	set_kill_requested: Shell_Session_Set_Kill_Requested_Proc,
 	list_pending_kills: Shell_Session_List_Pending_Kills_Proc,
 	list_live_by_bridge: Shell_Session_List_Live_By_Bridge_Proc,
+	delete_terminal_before: Shell_Session_Delete_Terminal_Before_Proc,
 }
 
 shell_session_upsert :: proc(repo: ^Shell_Session_Repository, session: domain.Shell_Session) -> (bool, domain.Domain_Error) {
@@ -193,6 +210,13 @@ shell_session_delete :: proc(repo: ^Shell_Session_Repository, owner_user_id, ses
 
 // shell_session_set_server_port updates only the server_port column, scoped to
 // the owner. See Shell_Session_Set_Server_Port_Proc for why it is not an upsert.
+// shell_session_delete_terminal_before is the row-retention sweep's entry point.
+// See Shell_Session_Delete_Terminal_Before_Proc for why it is owner-unscoped.
+shell_session_delete_terminal_before :: proc(repo: ^Shell_Session_Repository, cutoff_rfc3339: string) -> (int, domain.Domain_Error) {
+	if repo == nil || repo.delete_terminal_before == nil do return 0, domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.delete_terminal_before(repo.ctx, cutoff_rfc3339)
+}
+
 shell_session_set_server_port :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.set_server_port == nil do return false, domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.set_server_port(repo.ctx, owner_user_id, session_id, server_port)

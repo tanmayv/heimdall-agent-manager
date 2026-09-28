@@ -29,6 +29,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		set_kill_requested = shell_session_set_kill_requested_sqlite,
 		list_pending_kills = shell_session_list_pending_kills_sqlite,
 		list_live_by_bridge = shell_session_list_live_by_bridge_sqlite,
+		delete_terminal_before = shell_session_delete_terminal_before_sqlite,
 	}
 }
 
@@ -487,6 +488,59 @@ shell_session_delete_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: stri
 		return false, domain.domain_error(.Internal_Error, "failed to delete shell session")
 	}
 	return true, domain.Domain_Error{}
+}
+
+// shell_session_delete_terminal_before_sqlite is the row-retention sweep
+// (REQ-SHELL-8 item 6). It deletes TERMINAL rows that ended before the cutoff.
+//
+// The live predicate is built from domain.SHELL_SESSION_TERMINAL_STATUSES rather
+// than a hand-written status list, exactly as find_live_by_port does, so a session
+// is "over" here by the same single definition that makes it over everywhere else.
+// Adding a sixth status to that table makes it retainable and reapable in one edit
+// instead of two, and cannot make it terminal in one place and live in the other.
+//
+// AGE COLUMN: finished_at is the honest end time, but it is nullable and a session
+// whose terminal status was INFERRED (a bridge that never came back, a reconcile
+// that reaped an orphan) can carry an empty one. Falling back through
+// last_activity_at to started_at means such a row still ages out instead of
+// becoming immortal through a missing timestamp — and since started_at is NOT NULL,
+// the coalesce can never land on NULL and quietly exclude the row from the compare.
+//
+// The comparison is a plain string compare because every one of these columns holds
+// platform.format_rfc3339_utc output: fixed width, zero-padded, always UTC, always
+// Z-suffixed. Lexicographic order is chronological order for that format.
+shell_session_delete_terminal_before_sqlite :: proc(ctx: rawptr, cutoff_rfc3339: string) -> (int, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return 0, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	// An empty cutoff would compare greater than nothing and delete nothing, but it
+	// means the caller failed to read a clock — refuse rather than silently no-op.
+	if cutoff_rfc3339 == "" do return 0, domain.domain_error(.Validation_Failed, "shell session row retention requires a cutoff")
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "DELETE FROM shell_sessions WHERE status IN (")
+	for _, i in terminal {
+		if i > 0 do strings.write_string(&b, ", ")
+		strings.write_string(&b, "?")
+	}
+	strings.write_string(&b, ") AND COALESCE(NULLIF(finished_at, ''), NULLIF(last_activity_at, ''), started_at) < ?;")
+	// clone_to_cstring rather than cstring(raw_data(...)): prepare_v2 is given -1 for
+	// the length, so it reads to a NUL that a builder's buffer does not promise.
+	query := strings.clone_to_cstring(strings.to_string(b), context.temp_allocator)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
+		return 0, domain.domain_error(.Internal_Error, "failed to prepare shell session row retention delete")
+	}
+	defer sqlite3_finalize(stmt)
+	for st, i in terminal do bind_text(stmt, 1 + i, st)
+	bind_text(stmt, 1 + len(terminal), cutoff_rfc3339)
+	if sqlite3_step(stmt) != SQLITE_DONE {
+		return 0, domain.domain_error(.Internal_Error, "failed to delete expired shell session rows")
+	}
+	return int(sqlite3_changes(impl.conn.db)), domain.Domain_Error{}
 }
 
 // shell_session_find_live_by_port_sqlite backs the create-time port conflict check

@@ -307,19 +307,18 @@ bridge_shell_wait_rpc :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	// Already over, or already background. Answer immediately rather than parking
 	// on a signal that has been and gone — a waiter registered after the exit would
 	// sit until its own ceiling on a run that finished before it asked.
-	output_path := bridge_shell_output_path(session_id)
-	defer delete(output_path)
 	switch sess.status {
 	case .Exited, .Killed, .Failed:
+		// A wait against an ALREADY-terminal run is the one place in this file that
+		// can meet reclaimed output: the run may have finished days ago and the
+		// caller is only now asking. Read it through the three-state reader so that
+		// case is refused explicitly instead of answering with an empty log
+		// (REQ-SHELL-8 AC3).
 		b := strings.builder_make()
-		raw, rerr := os.read_entire_file(output_path, context.allocator)
-		defer if rerr == nil do delete(raw)
-		output_str := ""
-		output_size := 0
-		if rerr == nil {
-			output_str = string(raw)
-			output_size = len(raw)
-		}
+		output_str, out_state := bridge_shell_output_read(session_id)
+		defer if out_state == .Available do delete(output_str)
+		if out_state == .Reclaimed do return bridge_local_response_error(request_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
+		output_size := len(output_str)
 		tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 		bridge_shell_write_session_json(&b, &sess, tail, truncated, output_size, true)
 		return bridge_local_response_data(request_id, strings.to_string(b))
@@ -335,7 +334,7 @@ bridge_shell_wait_rpc :: proc(request_id, params: string, rec: Bridge_Local_Agen
 		}
 	}
 
-	return bridge_shell_run_wait_response(request_id, session_id, output_path, timeout_ms)
+	return bridge_shell_run_wait_response(request_id, session_id, timeout_ms)
 }
 
 // ---- foreground -> background conversion ---------------------------------

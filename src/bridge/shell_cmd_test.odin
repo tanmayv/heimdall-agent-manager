@@ -162,7 +162,9 @@ bridge_shell_cmd_exec_sync_completed :: proc(t: ^testing.T) {
 	exec_id := bridge_local_extract_json_string(resp, "exec_id", "")
 	testing.expect(t, strings.has_prefix(exec_id, "shl_"), "exec_id has shl_ prefix")
 	loc := bridge_local_extract_json_string(resp, "raw_output_location", "")
-	testing.expect(t, strings.has_prefix(loc, "/tmp/ham-shell-sync-test/shell_jobs/"), "raw_output_location under data_dir/shell_jobs")
+	// REQ-SHELL-8 moved output next to the spec it belongs to: one directory per
+	// session concept, and the retired shell_jobs name gone from the layout too.
+	testing.expect(t, strings.has_prefix(loc, "/tmp/ham-shell-sync-test/shell_sessions/"), "raw_output_location under data_dir/shell_sessions")
 	testing.expect(t, os.exists(loc), "output file written to disk")
 
 	// read back the same job -> same completed shape from the local file.

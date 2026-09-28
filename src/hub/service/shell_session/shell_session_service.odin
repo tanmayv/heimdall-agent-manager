@@ -995,6 +995,13 @@ shell_session_list :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Con
 	return iface.shell_session_list_by_owner(svc.repo, string(owner), filter, cursor, limit)
 }
 
+// SHELL_OUTPUT_RECLAIMED_CODE is the bridge's machine-readable marker for "the
+// retention window took this output" (BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE in
+// src/bridge/shell_output_retention.odin — one wire string, two processes). It is
+// matched on rather than the human message, so the message can be reworded for a
+// user without silently reclassifying the error as a generic bridge failure.
+SHELL_OUTPUT_RECLAIMED_CODE :: "output_reclaimed"
+
 Shell_Session_Log_Result :: struct {
 	lines_raw:   string, // raw JSON array (caller must delete)
 	truncated:   bool,
@@ -1024,7 +1031,19 @@ shell_session_get_log :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	if !reply_ok do return {}, false, reply_err
 	defer delete(reply)
 
-	if !_json_bool(reply, "ok") do return {}, false, _bridge_failure(reply, "bridge failed to retrieve shell logs")
+	// Three outcomes, three DISTINCT domain errors, which is the point of REQ-SHELL-8
+	// AC3 (before it, all three arrived as an empty log):
+	//   reply never came      -> reply_err above, .Bridge_Offline. The bridge is gone.
+	//   output was reclaimed  -> .Gone. The bridge is fine; retention took the file.
+	//   ok, zero lines        -> success. The command genuinely printed nothing.
+	if !_json_bool(reply, "ok") {
+		code := _json_str(reply, "error_code")
+		defer delete(code)
+		if code == SHELL_OUTPUT_RECLAIMED_CODE {
+			return {}, false, domain.domain_error(.Gone, "output no longer available: reclaimed by the bridge retention window")
+		}
+		return {}, false, _bridge_failure(reply, "bridge failed to retrieve shell logs")
+	}
 
 	lines_raw   := _json_array_raw(reply, "lines")
 	truncated   := _json_bool(reply, "truncated")

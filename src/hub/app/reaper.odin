@@ -49,6 +49,19 @@ reaper_loop :: proc(graph: ^App_Graph) {
 // launch reaper_loop as a thread entry point.
 reaper_sweep_once :: proc(graph: ^App_Graph) {
 	if graph == nil do return
+
+	// REQ-SHELL-8 item 6: terminal shell_sessions rows past their retention window.
+	// It rides THIS sweep rather than bringing its own timer — the loop already runs
+	// on a cadence, and a second thread walking the same table would be the polling
+	// the shells redesign exists to remove. Deliberately one call, for REQ-SHELL-9's
+	// server reaping to extend rather than duplicate.
+	//
+	// A failure here is logged by neither side on purpose: retention is a best-effort
+	// tidy-up, the next tick retries it unchanged, and letting it abort the sweep
+	// would take the stale-instance reap down with it — the safety net this loop
+	// actually exists for.
+	_, _ = shell_session_svc.shell_session_sweep_terminal_rows(&graph.shell_session_service)
+
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	defer domain.agent_instances_destroy(reaped)
 	for inst in reaped {

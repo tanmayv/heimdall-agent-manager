@@ -4,7 +4,9 @@ package main
 //
 // An agent calls `agent.shell_cmd.exec {cmd}` and the bridge runs it LOCALLY
 // (sh -c) on this host as a direct child process, capturing stdout+stderr into
-// <data_dir>/shell_jobs/<session_id>.out. Output is NEVER sent to the hub; it is
+// <data_dir>/shell_sessions/<session_id>.out (see bridge_shell_output_dir, and
+// REQ-SHELL-8 for the retention window that file now lives under). Output is
+// NEVER sent to the hub; it is
 // read on demand from this machine.
 //
 // REQ-SHELL-2 DELETED THE 15s AUTO-BACKGROUND RULE. This file used to race a
@@ -63,7 +65,7 @@ BRIDGE_SHELL_HARD_TIMEOUT :: 30 * time.Minute
 BRIDGE_SHELL_TAIL_THRESHOLD :: 200
 BRIDGE_SHELL_TAIL_KEEP :: 100
 
-// Package-level session map (replaces the old bridge_shell_jobs map).
+// Package-level session map.
 // All exec sessions (kind=Run) are registered here.
 bridge_shell_session_map: Bridge_Shell_Session_Map
 
@@ -105,6 +107,12 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 		if !os.exists(working_dir) do return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"shell-cmd exec --cwd does not exist: ", working_dir}))
 		if !os.is_dir(working_dir) do return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"shell-cmd exec --cwd is not a directory: ", working_dir}))
 	}
+
+	// REQ-SHELL-8: third retention trigger. A session create is the event most
+	// correlated with output growth, so it is the one that keeps a busy bridge tidy
+	// between restarts; bridge_shell_output_sweep_if_due debounces it so a hundred
+	// runs a minute do not become a hundred directory walks.
+	bridge_shell_output_sweep_if_due()
 
 	session_id := bridge_shell_session_next_id()
 	defer delete(session_id)
@@ -246,7 +254,7 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 
 	// ---- foreground: block until terminal, then return the result inline -------
 	// No threshold, no conversion: however long this takes, it comes back here.
-	return bridge_shell_run_wait_response(request_id, session_id, output_path)
+	return bridge_shell_run_wait_response(request_id, session_id)
 }
 
 // bridge_shell_run_wait_response blocks on a live run and renders the result the
@@ -263,7 +271,7 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 //   timeout       -> the wait call's own ceiling elapsed. THE RUN IS UNAFFECTED
 //                    (W2/W4): it keeps running, and the id in the response is how
 //                    the caller re-reads or kills it.
-bridge_shell_run_wait_response :: proc(request_id, session_id, output_path: string, timeout_ms := BRIDGE_SHELL_WAIT_DEFAULT_MS) -> string {
+bridge_shell_run_wait_response :: proc(request_id, session_id: string, timeout_ms := BRIDGE_SHELL_WAIT_DEFAULT_MS) -> string {
 	w := bridge_shell_wait_register(session_id)
 	// Unregistered on EVERY exit path by the waiting thread itself, which is what
 	// leaves nothing behind when a caller walks away.
@@ -298,14 +306,15 @@ bridge_shell_run_wait_response :: proc(request_id, session_id, output_path: stri
 	if !ok do return bridge_local_response_error(request_id, "not_found", strings.concatenate({"no shell session with id ", session_id}))
 	defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, snap)
 
-	raw, rerr := os.read_entire_file(output_path, context.allocator)
-	defer if rerr == nil do delete(raw)
-	output_str := ""
-	output_size := 0
-	if rerr == nil {
-		output_str = string(raw)
-		output_size = len(raw)
-	}
+	// A run that has only just reached a terminal status cannot have been reclaimed
+	// (retention needs five days), so .Available is the expected state here — but it
+	// is still read through the one three-state reader rather than open-coding
+	// "missing means empty", which is the behaviour REQ-SHELL-8 removes. A zero-byte
+	// file is .Available and reports an honest empty log.
+	output_str, out_state := bridge_shell_output_read(session_id)
+	defer if out_state == .Available do delete(output_str)
+	if out_state == .Reclaimed do return bridge_local_response_error(request_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
+	output_size := len(output_str)
 	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 
 	b := strings.builder_make()
@@ -343,17 +352,16 @@ bridge_shell_cmd_read :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	if !ok do return bridge_local_response_error(request_id, "not_found", strings.concatenate({"no shell job with exec_id ", exec_id}))
 	defer bridge_shell_session_snapshot_destroy(&bridge_shell_session_map, snap)
 
-	output_path := bridge_shell_output_path(exec_id)
-	defer delete(output_path)
-
-	raw, rerr := os.read_entire_file(output_path, context.allocator)
-	defer if rerr == nil do delete(raw)
-	output_str := ""
-	output_size := 0
-	if rerr == nil {
-		output_str = string(raw)
-		output_size = len(raw)
-	}
+	// Three distinct outcomes, none of which may be collapsed into another
+	// (REQ-SHELL-8 AC3): a present file — INCLUDING a zero-byte one — is a real log
+	// and is served; a file retention has taken is an explicit refusal carrying
+	// BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE; and an absent file with no tombstone falls
+	// through as an empty log for a session the map still knows, which is what a run
+	// that has not written its first byte yet looks like.
+	output_str, out_state := bridge_shell_output_read(exec_id)
+	defer if out_state == .Available do delete(output_str)
+	if out_state == .Reclaimed do return bridge_local_response_error(request_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
+	output_size := len(output_str)
 	tail: string
 	truncated: bool
 	tail_owned := false
@@ -652,18 +660,27 @@ bridge_shell_page :: proc(output: string, offset, limit: int, grep: string) -> (
 	return strings.to_string(b), truncated
 }
 
-bridge_shell_jobs_dir :: proc() -> string {
-	raw_dir := strings.trim_space(bridge_config.data_dir)
-	if raw_dir == "" do raw_dir = "~/.local/share/heimdall"
-	data_dir := bridge_expand_home(raw_dir)
-	defer if raw_data(data_dir) != raw_data(raw_dir) do delete(data_dir)
-	return strings.concatenate({strings.trim_right(data_dir, "/"), "/shell_jobs"})
+// bridge_shell_output_dir is where a session's captured output lives. It is the
+// SAME directory REQ-SHELL-2 already owns for spawn specs — <data_dir>/shell_sessions
+// — so one session's two on-disk artifacts (<id>.json and <id>.out) sit together
+// under one name, and the retired "shell_jobs" concept is gone from the bridge's
+// filesystem layout as well as from its code (REQ-SHELL-7 removes the name
+// elsewhere). The two coexist safely: load_specs matches *.json and the retention
+// sweep matches *.out, so neither can ever see the other's files.
+//
+// Sharing bridge_shell_session_spec_dir rather than re-deriving the path is what
+// keeps that true — moving the spec directory now moves the output with it instead
+// of silently splitting the pair across two locations.
+bridge_shell_output_dir :: proc() -> string {
+	data_dir := bridge_shell_data_dir()
+	defer delete(data_dir)
+	return bridge_shell_session_spec_dir(data_dir)
 }
 
 bridge_shell_output_path :: proc(session_id: string) -> string {
-	jobs_dir := bridge_shell_jobs_dir()
-	defer delete(jobs_dir)
-	return strings.concatenate({jobs_dir, "/", session_id, ".out"})
+	dir := bridge_shell_output_dir()
+	defer delete(dir)
+	return strings.concatenate({dir, "/", session_id, BRIDGE_SHELL_OUTPUT_SUFFIX})
 }
 
 bridge_shell_append_line :: proc(path, line: string) {

@@ -180,7 +180,7 @@ bridge_shell2_conversion_releases_the_blocked_caller :: proc(t: ^testing.T) {
 	th := thread.create_and_start_with_data(rawptr(&ctx), convert_worker)
 	defer thread.destroy(th)
 
-	resp := bridge_shell_run_wait_response("req_conv", session_id, "/nonexistent", 5_000)
+	resp := bridge_shell_run_wait_response("req_conv", session_id, 5_000)
 
 	// Released with the session id, and reported as background — byte-identical in
 	// shape to what a --bg start returns, so a converted run and a born-background
@@ -260,7 +260,7 @@ bridge_shell2_dropping_the_waiter_does_not_touch_the_run :: proc(t: ^testing.T) 
 
 	// A wait that gives up (the caller's ceiling elapsed) is exactly what a Ctrl-C
 	// looks like from the run's side: the waiter unregisters and nothing else moves.
-	resp := bridge_shell_run_wait_response("req_drop", session_id, "/nonexistent", 60)
+	resp := bridge_shell_run_wait_response("req_drop", session_id, 60)
 	testing.expect(t, strings.contains(resp, "\"timed_out\":true"), "the CALL reports it gave up")
 	testing.expect(t, strings.contains(resp, "\"status\":\"running\""), "and says the run is still going")
 

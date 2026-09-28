@@ -1899,11 +1899,20 @@ bridge_hub_handle_get_shell_output :: proc(conn: ^ws.Connection, text: string) {
 	strings.write_string(&b, ",\"exec_id\":\"")
 	bridge_runtime_write_json_string(&b, exec_id)
 	strings.write_byte(&b, '"')
-	output_path := bridge_shell_output_path(exec_id)
-	raw, rerr := os.read_entire_file(output_path, context.allocator)
-	defer if rerr == nil do delete(raw)
-	output_str := ""
-	if rerr == nil do output_str = string(raw)
+	output_str, out_state := bridge_shell_output_read(exec_id)
+	defer if out_state == .Available do delete(output_str)
+	if out_state == .Reclaimed {
+		// Explicit refusal rather than an empty log (REQ-SHELL-8 AC3). The hub maps
+		// this code to domain .Gone, which is distinct both from an offline bridge
+		// (no reply at all -> .Bridge_Offline) and from a successful empty log.
+		strings.write_string(&b, ",\"ok\":false,\"error_code\":\"")
+		strings.write_string(&b, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE)
+		strings.write_string(&b, "\",\"error\":\"")
+		bridge_runtime_write_json_string(&b, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
+		strings.write_string(&b, "\"}")
+		bridge_shell_output_enqueue_result(strings.to_string(b), command_id)
+		return
+	}
 	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 	strings.write_string(&b, ",\"ok\":true,\"output\":\"")
 	bridge_runtime_write_json_string(&b, tail)
@@ -2328,6 +2337,11 @@ bridge_shell_error_result_json :: proc(result_type, session_id, command_id, msg,
 // bridge_hub_handle_shell_start handles the "shell_start" command.
 // REQUEST/REPLY: spawns a new PTY session via the daemon and returns shell_start_result.
 bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
+	// REQ-SHELL-8: the session-create trigger, on the hub-driven side. Same debounced
+	// sweep the agent run path calls; both spellings of "a session was created" reach
+	// retention so neither can be the one that never tidies up.
+	bridge_shell_output_sweep_if_due()
+
 	session_id  := extract_json_string(text, "session_id", "")
 	command_id  := extract_json_string(text, "command_id", "")
 	kind_str    := extract_json_string(text, "kind", "run")
@@ -3045,23 +3059,42 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	// Existence is the only fact this path needs from the map: the output path is
-	// derived from the session_id already in hand, which is the same string the entry's
-	// session_id field holds.
-	if !bridge_shell_session_exists(&bridge_shell_session_map, session_id) {
-		send_error(conn, session_id, command_id, "session not found")
+	// DISK, NOT THE MAP, DECIDES. This used to require the session in the map and
+	// answer "session not found" otherwise, which made the 5-day window unreachable
+	// across a bridge restart: a terminal session's spec is deleted when it ends, so
+	// after a restart NOTHING terminal is in the map, and a hub row still well inside
+	// its own (longer) retention would be told its session never existed. The hub has
+	// already authorised the caller against that row — an owner-scoped lookup in
+	// shell_session_get, before this command is ever sent — so the map lookup was
+	// never an access control and dropping it grants nothing.
+	//
+	// The precedence is exactly three-way, and the last branch matters as much as the
+	// first two: an id that never ran here, or whose tombstone has itself aged out
+	// after 30 days, stays genuinely not_found. Retention must not turn every unknown
+	// id into "reclaimed" — that is the same class of wrong answer as the silent-empty
+	// behaviour this replaces.
+	output_str, out_state := bridge_shell_output_read(session_id)
+	defer if out_state == .Available do delete(output_str)
+	switch out_state {
+	case .Reclaimed:
+		// Explicitly allocated and freed rather than temp-allocated: this runs on the
+		// long-lived hub WS handler, which never reclaims a temp arena, so anything
+		// left there would accumulate for the life of the bridge.
+		extra := strings.concatenate({"\"lines\":[],\"truncated\":false,\"total_lines\":0,\"error_code\":\"", BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, "\","})
+		defer delete(extra)
+		bridge_shell_send_error(conn, "shell_logs_result", session_id, command_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE, extra)
 		return
+	case .Absent:
+		// No output file and no tombstone. A session the map still knows has simply
+		// not written its first byte yet and gets an honest empty log; one the map
+		// does not know either never existed here at all.
+		if !bridge_shell_session_exists(&bridge_shell_session_map, session_id) {
+			send_error(conn, session_id, command_id, "session not found")
+			return
+		}
+	case .Available:
+		// Served below — including a zero-byte file, which is a real empty log.
 	}
-
-	// Read from the tee output file (stored at bridge_shell_output_path for Command kind,
-	// or at the tee_path stored in the session — fall back to shell_output_path if unset).
-	output_path := bridge_shell_output_path(session_id)
-	defer delete(output_path)
-
-	raw, rerr := os.read_entire_file(output_path, context.allocator)
-	defer if rerr == nil do delete(raw)
-	output_str := ""
-	if rerr == nil do output_str = string(raw)
 
 	total_lines := 0
 	for i in 0..<len(output_str) { if output_str[i] == '\n' do total_lines += 1 }
