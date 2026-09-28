@@ -89,19 +89,17 @@ export function statusTone(status: ShellSessionStatus): Tone {
 
 export function kindLabel(kind: ShellSessionKind): string {
   switch (kind) {
-    case 'agent': return 'Agent';
-    case 'interactive': return 'Interactive';
+    case 'run': return 'Run';
+    case 'shell': return 'Shell';
     case 'server': return 'Server';
-    case 'command': return 'Command';
     default: return kind;
   }
 }
 
 export const KIND_FILTER_OPTIONS: { value: ShellSessionKind; label: string }[] = [
-  { value: 'agent', label: 'Agent' },
-  { value: 'interactive', label: 'Interactive' },
+  { value: 'run', label: 'Run' },
+  { value: 'shell', label: 'Shell' },
   { value: 'server', label: 'Server' },
-  { value: 'command', label: 'Command' },
 ];
 
 /* ------------------------------------------------------------------ *

@@ -56,10 +56,9 @@ export function hasAccessAffordance(session: ShellSession): boolean {
 }
 
 const KIND_BADGE_COLORS: Record<ShellSessionKind, string> = {
-  agent: 'bg-accent/20 text-accent',
-  interactive: 'bg-success/20 text-success',
+  shell: 'bg-success/20 text-success',
   server: 'bg-warning/20 text-warning',
-  command: 'bg-neutral-soft text-muted',
+  run: 'bg-neutral-soft text-muted',
 };
 
 function statusDotClass(status: ShellSessionStatus): string {
@@ -412,15 +411,15 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
     ? sessions.find((s) => s.session_id === activePane.session.session_id) ?? activePane.session
     : null;
 
-  // BUG-12: the row click always opens a pane — the terminal for a live interactive or
-  // agent session, the log for everything else. A running server used to take a preview
+  // BUG-12: the row click always opens a pane — the terminal for a live `shell`
+  // session, the log for everything else. A running server used to take a preview
   // arm here, which left its stdout unreachable exactly while it mattered (startup banner,
   // bound port, crash trace) even though a dead server's log was one click away. The
   // preview is now an explicit opt-in via the Preview button, which still opens in the
   // right-hand sidebar so it survives navigating away from this table.
   const handleRowClick = (session: ShellSession) => {
     if (
-      (session.kind === 'interactive' || session.kind === 'agent') &&
+      session.kind === 'shell' &&
       (session.status === 'running' || session.status === 'starting')
     ) {
       setActivePane({ type: 'terminal', session });

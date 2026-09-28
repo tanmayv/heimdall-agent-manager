@@ -35,7 +35,7 @@ export function ShellTerminalPane({
   const terminalRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
 
-  const isTerminal = session.kind === 'interactive' || session.kind === 'agent';
+  const isTerminal = session.kind === 'shell';
   const isRunning = session.status === 'running' || session.status === 'starting';
   const paneSessionId = isTerminal && isRunning ? session.session_id : null;
 

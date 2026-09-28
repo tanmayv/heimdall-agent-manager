@@ -1,8 +1,22 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 
-export type ShellSessionKind = 'agent' | 'interactive' | 'server' | 'command';
+// REQ-SHELL-1 collapsed the model to three kinds: `command` became `run`,
+// `interactive` became `shell`, and `agent` was dropped (agent terminal panes were
+// never shell sessions). Hard rename — the hub rejects the old spellings.
+export type ShellSessionKind = 'run' | 'shell' | 'server';
 export type ShellSessionStatus = 'starting' | 'running' | 'exited' | 'killed' | 'failed';
+
+// The outcome of an accepted kill (REQ-SHELL-3). Both values are successes: a kill is
+// durable once accepted, and these say whether it has been DELIVERED to the bridge or
+// is QUEUED against a bridge that is currently offline.
+export type ShellKillOutcome = 'delivered' | 'queued';
+
+export interface ShellKillResult {
+  outcome: ShellKillOutcome;
+  // The hub's own sentence for the outcome, safe to show verbatim.
+  message: string;
+}
 
 export type ShellSession = {
   session_id: string;
@@ -245,11 +259,20 @@ export const shellsApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: 'ShellSessions' as const, id: 'LIST' }],
     }),
 
-    killShell: build.mutation<void, { sessionId: string }>({
+    // REQ-SHELL-3: a kill is DURABLE, so the answer is two-valued and the caller must
+    // be able to tell the two apart. `delivered` means the bridge has the kill and the
+    // process is being torn down now; `queued` means the bridge is offline, the intent
+    // is recorded durably, and it will be applied when the bridge next connects (the
+    // hub answers 202 for that case). Returning void here — as this did — would throw
+    // the distinction away at the client boundary and let the UI report a still-running
+    // shell as dead. `message` is the hub's own sentence for the outcome, so the UI can
+    // show it without composing a second wording that could drift from the service's.
+    killShell: build.mutation<ShellKillResult, { sessionId: string }>({
       queryFn: async ({ sessionId }) => {
         try {
-          await cookieMutation(`/shells/${encodeURIComponent(sessionId)}`, 'DELETE', undefined);
-          return { data: undefined };
+          const data = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}`, 'DELETE', undefined);
+          const outcome: ShellKillOutcome = data?.outcome === 'queued' ? 'queued' : 'delivered';
+          return { data: { outcome, message: typeof data?.message === 'string' ? data.message : '' } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }

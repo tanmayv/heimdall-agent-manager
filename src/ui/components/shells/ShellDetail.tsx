@@ -612,7 +612,7 @@ export function ShellDetailBody({
   wide: boolean;
   onVerb: (verb: ShellVerb) => void;
 }) {
-  const isInteractiveCapable = record.kind === 'interactive' || record.kind === 'agent';
+  const isInteractiveCapable = record.kind === 'shell';
   const isRunning = record.status === 'running' || record.status === 'starting';
 
   const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(

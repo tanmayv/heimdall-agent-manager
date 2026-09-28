@@ -159,7 +159,7 @@ export default function BottomDock({
     const combined = [...allSessions, ...unconfirmedPending];
     return combined.filter((s) => {
       if (closingSessionIds.has(s.session_id)) return false;
-      const isInteractive = s.kind === 'interactive' || s.kind === 'agent';
+      const isInteractive = s.kind === 'shell';
       const isLive = s.status === 'running' || s.status === 'starting';
       return (isInteractive && isLive) || s.session_id === activeTab;
     });
@@ -513,7 +513,7 @@ export default function BottomDock({
             const placeholder: ShellSession = {
               session_id: sessionId,
               status: 'starting',
-              kind: 'interactive',
+              kind: 'shell',
               label: 'New Shell',
               cmd: '',
               cwd: '',
