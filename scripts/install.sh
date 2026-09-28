@@ -682,17 +682,6 @@ sha256_of() {
   printf '%s\n' "$sum"
 }
 
-# Where the provenance record for the bundled openssl lives, beside the binary
-# it describes. 'openssl' is the one generic name this installer writes, so
-# --uninstall cannot tell ours from the system's by CONTENT -- that test is
-# wrong in both directions: stock OpenSSL carries no 'heimdall' bytes (so our
-# own file would survive, misreported as a stranger's), while a stranger's
-# wrapper script that merely mentions heimdall would be deleted. The sidecar
-# records the sha256 of the file we installed, so removal needs proof of
-# authorship rather than a guess: a stranger's file cannot match it, and ours
-# does until something else overwrites it.
-openssl_marker() { printf '%s\n' "$install_dir/.heimdall-openssl.sha256"; }
-
 # --- socat preflight (REQ-INST-14) ---------------------------------------------
 # socat is the DEFAULT bridge->hub TLS transport. src/lib/ws/ws.odin's
 # tls_client_command (:286-297) returns openssl_s_client_command ONLY when
@@ -1130,49 +1119,12 @@ do_uninstall() {
 
   # 2. Binaries. These four names are ours alone, so their presence at
   # $install_dir is itself proof this installer wrote them — no content check is
-  # needed or wanted here. Do not "fix" this asymmetry with the openssl rule
-  # below: openssl is the only generic name we write, and it is the only one
-  # that needs proof of authorship.
+  # needed or wanted here.
   for b in heimdall ham-bridge ham-pty-host ham-ctl; do
     target="$install_dir/$b"
     [ -f "$target" ] || continue
     remove_installed "$target"
   done
-
-  # 2b. The bundled openssl, removed only against the provenance recorded at
-  # install time (see openssl_marker). Every other outcome KEEPS the file and
-  # says which of them it was, so the output never claims authorship it cannot
-  # prove — nor denies authorship of a file we did write.
-  openssl_file="$install_dir/openssl"
-  marker_file="$(openssl_marker)"
-  if [ -f "$openssl_file" ]; then
-    recorded=""
-    marker_present=false
-    if [ -f "$marker_file" ]; then
-      marker_present=true
-      recorded="$(awk 'NR == 1 {print $1; exit}' "$marker_file" 2>/dev/null || true)"
-    fi
-    current="$(sha256_or_empty "$openssl_file")"
-    if [ -z "$recorded" ] && "$marker_present"; then
-      # A record EXISTS and we could not read it. Saying "no record" here would
-      # deny authorship of a file we may well have written — the same false
-      # claim the content-marker design used to make. Keep the file either way,
-      # but report which of the two states we are actually in.
-      say "left $openssl_file in place (a provenance record exists at $marker_file but could not be read, so this installer cannot prove the file is its own; remove it by hand if unwanted)"
-    elif [ -z "$recorded" ]; then
-      say "left $openssl_file in place (this installer has no record of writing it; remove it by hand if unwanted)"
-    elif [ -z "$current" ]; then
-      say "left $openssl_file in place (could not hash it to check against $marker_file — unreadable, or no sha256sum/shasum on PATH; remove it by hand if unwanted)"
-    elif [ "$current" = "$recorded" ]; then
-      remove_installed "$openssl_file"
-      remove_installed "$marker_file"
-    else
-      say "left $openssl_file in place (it no longer matches the checksum recorded at $marker_file, so something replaced it after install — a self-update, or your package manager; remove it by hand if unwanted)"
-    fi
-  elif [ -f "$marker_file" ]; then
-    # The openssl is already gone; its record is our own debris.
-    remove_installed "$marker_file"
-  fi
 
   # 3. Service file.
   if [ -e "$service_file" ]; then
@@ -1443,7 +1395,7 @@ main() {
     say "would download: $tarball_url"
     say "would download: $sums_url"
     say "would verify SHA-256 of $tarball_name against SHA256SUMS before extracting"
-    say "would install bin/heimdall bin/ham-bridge bin/ham-pty-host bin/ham-ctl (and bin/openssl if bundled) to $install_dir"
+    say "would install bin/heimdall bin/ham-bridge bin/ham-pty-host bin/ham-ctl to $install_dir"
     if [ -n "$service_user" ]; then
       say "sudo detected: binaries go to $install_dir; the service file and PATH lines will be written for user $service_user (home: $service_home)"
       say "would add $install_dir to PATH in $service_home/.bashrc / .zshrc as needed (idempotent; decided from $service_user's rc files, not the sudo PATH)"
@@ -1563,21 +1515,6 @@ This installer will never remove or modify $system_unit."
     install -m 0755 "$bundle_bin/$b" "$install_dir/$b"
     say "installed $install_dir/$b"
   done
-  if [ -f "$bundle_bin/openssl" ]; then
-    install -m 0755 "$bundle_bin/openssl" "$install_dir/openssl"
-    say "installed bundled $install_dir/openssl"
-    # Record what we just wrote so --uninstall can PROVE this openssl is ours
-    # before deleting it (see openssl_marker). A sidecar we fail to write means
-    # --uninstall will keep the file: the fallback leans toward leaving a
-    # leftover, never toward removing a file we cannot account for.
-    openssl_sha="$(sha256_or_empty "$install_dir/openssl")"
-    if [ -n "$openssl_sha" ] && printf '%s\n' "$openssl_sha" > "$(openssl_marker)" 2>/dev/null; then
-      say "recorded its checksum at $(openssl_marker) so --uninstall can tell it from a system openssl"
-    else
-      rm -f "$(openssl_marker)" 2>/dev/null || true
-      warn "could not record openssl provenance at $(openssl_marker); --uninstall will leave $install_dir/openssl in place for you to remove by hand"
-    fi
-  fi
 
   # --- PATH (REQ-INST-5: never fatal) -------------------------------------------
   # wire_path handles every outcome itself — added / already present / could

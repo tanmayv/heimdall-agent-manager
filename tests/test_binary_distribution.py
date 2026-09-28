@@ -404,7 +404,7 @@ def test_install_sh_dry_run_hub(ctx):
     # until the suite first ran on a Mac, because host_target() never returns
     # darwin-* on Linux. systemd puts the flag and its value on an ExecStart
     # continuation line; a launchd plist spells them as two separate <string>
-    # elements in ProgramArguments (service_hub_flags_plist, install.sh:722-727),
+    # elements in ProgramArguments (service_hub_flags_plist, install.sh:711-716),
     # so '--hub <url>' as one literal string cannot appear there. The full-run
     # test below already knew this; this one did not.
     if target.startswith('linux'):
@@ -2121,9 +2121,8 @@ TRIPWIRE_RC_FILES = (
 
 def live_home_tripwire_paths() -> list:
     """Every path in the real home that install.sh is capable of creating,
-    modifying or deleting: the binaries it installs, the checksum record it
-    keeps for --uninstall, both platforms' service files, every rc file
-    path_candidates() can name, and its config directory.
+    modifying or deleting: the four binaries, both platforms' service files,
+    every rc file path_candidates() can name, and its config directory.
 
     Directories are watched as well as files -- ~/.local/bin,
     ~/.config/systemd/user, ~/Library/LaunchAgents and ~/.config/fish -- so a
@@ -2135,8 +2134,7 @@ def live_home_tripwire_paths() -> list:
     """
     paths = []
     for home in live_homes():
-        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl', 'openssl',
-                    '.heimdall-openssl.sha256')
+        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl')
         paths.append(home / '.local' / 'bin')
         paths += [home / '.local' / 'bin' / name for name in binaries]
         paths += [
@@ -2485,10 +2483,10 @@ def test_install_sh_readonly_rc_nonfatal(ctx):
 
 
 def test_install_sh_uninstall(ctx):
-    """REQ-INST-8: --uninstall reverses the install and nothing more. Proves
-    the dry run touches nothing, that only the marked PATH lines are removed,
-    and that the three categories of user state — enrollment, unit backups,
-    and a same-named file this installer did not write — are all KEPT."""
+    """REQ-INST-8/21: install and uninstall touch only installer-owned paths.
+    Proves the dry run touches nothing, only marked PATH lines are removed, user
+    state is kept, and a pre-existing openssl stays byte-identical even when an
+    older release tarball contains a bundled openssl."""
     need_tool('curl')
     target = host_target()
     if target is None:
@@ -2498,8 +2496,10 @@ def test_install_sh_uninstall(ctx):
     home = base / 'home'
     home.mkdir(parents=True)
     (base / 'xdg-runtime').mkdir(parents=True)
-    res, tarball = package_tarball(base, target=target)
+    res, tarball = package_tarball(base, with_openssl=True, target=target)
     assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    names, _, _ = read_tarball(tarball)
+    assert 'bin/openssl' in names, 'the old-release fixture must contain a bundled openssl'
     hub = make_hub_mirror(base, tarball, target)
     env = sandbox_install_env(home, base / 'xdg-runtime')
 
@@ -2509,28 +2509,28 @@ def test_install_sh_uninstall(ctx):
     decoy = 'export PATH="/opt/other/bin:$PATH"\nexport EDITOR=vi\n'
     rc.write_text(decoy)
 
+    install_dir = home / '.local/bin'
+    install_dir.mkdir(parents=True)
+    stranger = install_dir / 'openssl'
+    stranger_bytes = b'#!/bin/sh\n# wrapper used by heimdall, not written by it\n'
+    stranger.write_bytes(stranger_bytes)
+    stranger.chmod(0o755)
+    stranger_sha = sha256_of(stranger)
+    sidecar = install_dir / '.heimdall-openssl.sha256'
+
     res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
                                env, cwd=ROOT, timeout=120)
     assert res.returncode == 0, f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}'
+    assert stranger.read_bytes() == stranger_bytes, 'install replaced the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'install changed the pre-existing openssl checksum'
+    assert not sidecar.exists(), 'install created retired openssl provenance state'
 
-    install_dir = home / '.local/bin'
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
     else:
         service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
     assert service.is_file()
 
-    # A generic-named file this installer did NOT write: must survive. It
-    # deliberately MENTIONS heimdall, because the superseded design proved
-    # authorship by grepping the file for that string — which would have
-    # deleted this stranger. Provenance now comes from the sidecar hash
-    # recorded at install time, and no sidecar exists here.
-    stranger = install_dir / 'openssl'
-    stranger.write_text('#!/bin/sh\n# wrapper used by heimdall, not written by it\n')
-    stranger.chmod(0o755)
-    assert 'heimdall' in stranger.read_text(), 'fixture sanity: the stranger must mention heimdall'
-    assert not (install_dir / '.heimdall-openssl.sha256').exists(), (
-        'this install shipped no openssl, so there must be no provenance record')
     # A unit backup (RULING 2: recovery artifact, must survive and be named).
     backup = service.parent / f'{service.name}.bak-20260101T000000Z'
     backup.write_text('[Unit]\n# hand-tuned unit\n')
@@ -2559,7 +2559,10 @@ def test_install_sh_uninstall(ctx):
         assert (install_dir / binary).is_file(), 'dry run must not remove a binary'
     assert service.is_file(), 'dry run must not remove the service file'
     assert rc.read_text() == rc_after_install, 'dry run must not touch the rc file'
-    assert stranger.is_file() and backup.is_file() and enrollment.is_file()
+    assert stranger.read_bytes() == stranger_bytes, 'dry-run uninstall changed the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'dry-run uninstall changed the openssl checksum'
+    assert not sidecar.exists(), 'dry-run uninstall created retired openssl provenance state'
+    assert backup.is_file() and enrollment.is_file()
 
     # --- real uninstall ------------------------------------------------------
     # REQ-INST-13: the unit name install.sh stops is the SAME one running this
@@ -2582,12 +2585,11 @@ def test_install_sh_uninstall(ctx):
     assert 'export PATH="/opt/other/bin:$PATH"' in body, 'an unrelated PATH export must survive'
     assert 'export EDITOR=vi' in body, 'unrelated rc content must survive'
 
-    # Kept state, each reported with the path to remove by hand.
-    assert stranger.is_file(), 'a generic-named file this installer did not write must be kept'
-    assert f'left {stranger} in place' in out, 'the kept stranger file must be named'
-    assert 'no record of writing it' in out, (
-        f'the reason must be the missing provenance record — the one case where '
-        f'denying authorship is actually true:\n{out}')
+    # Kept state, each reported with the path to remove by hand where applicable.
+    assert stranger.read_bytes() == stranger_bytes, 'uninstall changed the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'uninstall changed the openssl checksum'
+    assert not sidecar.exists(), 'uninstall created retired openssl provenance state'
+    assert str(stranger) not in out, 'uninstall must not inspect or report a path it no longer owns'
     assert backup.is_file(), 'unit backups are recovery artifacts and must be kept'
     assert f'kept service file backup {backup}' in out, 'the kept backup must be named'
     assert f'rm -f {service}.bak-*' in out, 'the backup glob must be given for manual removal'
@@ -2649,220 +2651,6 @@ def test_uninstall_guard_detects_live_session(ctx):
         assert probe.stdout.strip() not in ('active', 'inactive', 'activating', 'failed'), (
             f'the sandbox env REACHED a user bus (stdout={probe.stdout.strip()!r}); '
             f'a real --uninstall under it could stop the running bridge')
-
-
-def test_install_sh_uninstall_removes_bundled_openssl(ctx):
-    """REQ-INST-8, the openssl clause. The release bundle DOES ship bin/openssl
-    (flake.nix gives ham-bridge one, and package-local-binary-tarball.sh ships
-    it whenever present), so the installer writes a file under a GENERIC name.
-    Authorship therefore cannot be inferred from content — stock OpenSSL has no
-    'heimdall' bytes — so install.sh records the sha256 of the openssl it wrote
-    and --uninstall removes it only against that record.
-
-    Asserts both directions with one install each:
-      - ours: openssl + sidecar written, then both removed;
-      - tampered: the same install with the openssl overwritten afterwards is
-        KEPT, named, and reported as no-longer-matching rather than falsely
-        called a file this installer never wrote."""
-    need_tool('curl')
-    target = host_target()
-    if target is None:
-        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
-
-    base = ctx['work'] / 'uninstall-openssl'
-    base.mkdir(parents=True)
-    res, tarball = package_tarball(base, with_openssl=True, target=target)
-    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
-    names, _, _ = read_tarball(tarball)
-    assert 'bin/openssl' in names, 'this test is meaningless unless the bundle ships an openssl'
-    hub = make_hub_mirror(base, tarball, target)
-
-    def fresh_install(tag):
-        """A full install into its own sandbox HOME; returns (env, install_dir)."""
-        home = base / tag
-        runtime = base / f'{tag}-xdg'
-        home.mkdir(parents=True)
-        runtime.mkdir(parents=True)
-        env = sandbox_install_env(home, runtime)
-        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                                   env, cwd=ROOT, timeout=120)
-        assert res.returncode == 0, (
-            f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
-        return env, home / '.local/bin', res.stdout
-
-    def uninstall(env, *extra):
-        # REQ-INST-13: never make the destructive call against the live bus.
-        # install.sh stops the unit name that runs this very agent, so the
-        # sandbox env is asserted first, immediately before the call.
-        if '--dry-run' not in extra:
-            assert_bridge_isolated(env, ctx['work'])
-        return subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall', *extra],
-                              cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
-
-    # --- ours: installed openssl + provenance sidecar are both removed -------
-    env, install_dir, install_out = fresh_install('ours')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    assert openssl.is_file(), 'the bundled openssl must be installed'
-    assert f'installed bundled {openssl}' in install_out
-    assert sidecar.is_file(), (
-        'install must record the openssl provenance; without it --uninstall can '
-        'never prove the file is ours and will leave it behind forever')
-    assert sidecar.read_text().split()[0] == sha256_of(openssl), (
-        'the recorded hash must match the installed openssl')
-    assert str(sidecar) in install_out, 'the provenance record must be named at install time'
-
-    # Dry run lists both and removes neither.
-    res = uninstall(env, '--dry-run')
-    assert res.returncode == 0, f'--uninstall --dry-run failed:\n{res.stderr}'
-    assert f'would remove {openssl}' in res.stdout, (
-        f'the openssl this installer wrote must be listed for removal:\n{res.stdout}')
-    assert f'would remove {sidecar}' in res.stdout, 'the provenance record must be removed too'
-    assert openssl.is_file() and sidecar.is_file(), 'a dry run must remove nothing'
-
-    # Real uninstall: this is the arm that never ran before.
-    res = uninstall(env)
-    assert res.returncode == 0, f'--uninstall failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}'
-    assert not openssl.exists(), (
-        f'the openssl this installer wrote must be REMOVED:\n{res.stdout}')
-    assert not sidecar.exists(), 'the provenance record must not be left behind as debris'
-    assert f'removed {openssl}' in res.stdout
-    assert f'left {openssl} in place' not in res.stdout, (
-        f'our own openssl must not be reported as left in place:\n{res.stdout}')
-
-    # --- tampered: same install, openssl replaced afterwards -> KEPT ---------
-    env, install_dir, _ = fresh_install('tampered')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    recorded = sidecar.read_text().split()[0]
-    # Something else overwrote it after install: a self-update, or the user's
-    # package manager. The recorded hash no longer describes the file.
-    openssl.write_text('#!/bin/sh\n# replaced after install\n')
-    assert sha256_of(openssl) != recorded
-
-    res = uninstall(env)
-    assert res.returncode == 0, f'--uninstall failed:\n{res.stderr}'
-    assert openssl.is_file(), (
-        f'an openssl that no longer matches the record must be KEPT, not deleted:\n{res.stdout}')
-    assert f'left {openssl} in place' in res.stdout, 'the kept file must be named'
-    assert 'no longer matches the checksum' in res.stdout, (
-        f'the reason must be the failed provenance check, not a false claim that '
-        f'this installer never wrote it:\n{res.stdout}')
-    assert 'no record of writing it' not in res.stdout, (
-        'we DID write an openssl here, so the output must not deny authorship')
-
-
-def test_install_sh_uninstall_unhashable_openssl_nonfatal(ctx):
-    """Unreadable files on the removal path must not abort the uninstall, and
-    must not make the output lie about provenance. Two shapes, one install each:
-    the openssl itself unhashable, and its provenance record unreadable.
-
-    do_uninstall computes the file's current hash before deciding anything, and
-    under `set -euo pipefail` an empty answer was not the same as a successful
-    one: a failing sha256sum poisons the pipeline through pipefail, so the bare
-    assignment killed the script between the binaries and the service file —
-    the REQ-INST-5 failure shape again, on the removal side. Exit 0 alone does
-    not prove the fix, so this asserts the uninstall RAN TO COMPLETION past the
-    openssl step: service file gone, PATH lines gone, kept-state report
-    printed, and the unhashable file itself kept and named."""
-    need_tool('curl')
-    if os.getuid() == 0:
-        raise Skip('running as root: root reads a 0000 file, so it cannot be made unhashable')
-    target = host_target()
-    if target is None:
-        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
-
-    base = ctx['work'] / 'uninstall-unhashable'
-    base.mkdir(parents=True)
-    res, tarball = package_tarball(base, with_openssl=True, target=target)
-    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
-    hub = make_hub_mirror(base, tarball, target)
-
-    def fresh_install(tag):
-        home = base / tag
-        runtime = base / f'{tag}-xdg'
-        home.mkdir(parents=True)
-        runtime.mkdir(parents=True)
-        env = sandbox_install_env(home, runtime)
-        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                                   env, cwd=ROOT, timeout=120)
-        assert res.returncode == 0, (
-            f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
-        install_dir = home / '.local/bin'
-        if target.startswith('linux'):
-            service = home / '.config/systemd/user/heimdall-bridge.service'
-        else:
-            service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
-        rc = home / '.bashrc'
-        assert (install_dir / 'openssl').is_file() and service.is_file()
-        assert '# Added by heimdall install.sh' in rc.read_text(), (
-            'fixture needs the PATH lines present')
-        return env, install_dir, service, rc
-
-    def real_uninstall(env):
-        # REQ-INST-13: the unit install.sh stops is the same one running this agent.
-        assert_bridge_isolated(env, ctx['work'])
-        return subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall'],
-                              cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
-
-    def assert_completed(out, install_dir, service, rc, res):
-        """The decider: the uninstall CONTINUED past the openssl step."""
-        assert res.returncode == 0, (
-            f'an unreadable file must not fail the uninstall; exit={res.returncode}\n'
-            f'stdout:\n{out}\nstderr:\n{res.stderr}')
-        for binary in ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl'):
-            assert not (install_dir / binary).exists(), f'{binary} not removed'
-        assert not service.exists(), (
-            f'the uninstall aborted at the openssl step — the service file survived, which is '
-            f'the REQ-INST-5 bug shape on the removal side:\n{out}')
-        assert '# Added by heimdall install.sh' not in rc.read_text(), (
-            f'the uninstall aborted before the PATH step:\n{out}')
-        assert 'kept enrollment state at' in out, (
-            f'the kept-state report must still be printed:\n{out}')
-        assert 'uninstall complete' in out, f'the uninstall must report completion:\n{out}'
-
-    # --- shape 1: the openssl itself cannot be hashed ------------------------
-    env, install_dir, service, rc = fresh_install('openssl-unreadable')
-    openssl = install_dir / 'openssl'
-
-    openssl.chmod(0o000)
-    assert run(sha256_cli(openssl)).returncode != 0, (
-        'fixture sanity: the openssl must actually be unhashable for this test to mean anything')
-
-    res = real_uninstall(env)
-    out = res.stdout
-    assert_completed(out, install_dir, service, rc, res)
-    # Kept, named, and the reason is the failed hash — not a false claim that
-    # this installer never wrote it, since a sidecar for it does exist.
-    assert openssl.exists(), 'a file we cannot hash must never be deleted'
-    assert f'left {openssl} in place' in out, f'the kept file must be named:\n{out}'
-    assert 'could not hash it' in out, f'the reason must be the failed hash:\n{out}'
-    assert 'no record of writing it' not in out, (
-        f'a sidecar exists here, so the output must not deny authorship:\n{out}')
-
-    # --- shape 2: the PROVENANCE RECORD cannot be read ----------------------
-    # An existing-but-unreadable sidecar used to fall into the "no record"
-    # branch, denying authorship of a file this installer may well have
-    # written. Keep the file either way, but say which state we are in.
-    env, install_dir, service, rc = fresh_install('sidecar-unreadable')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    assert sidecar.is_file(), 'fixture needs the provenance record present'
-    sidecar.chmod(0o000)
-    assert run(['cat', str(sidecar)]).returncode != 0, (
-        'fixture sanity: the sidecar must actually be unreadable')
-
-    res = real_uninstall(env)
-    out = res.stdout
-    assert_completed(out, install_dir, service, rc, res)
-    assert openssl.exists(), 'an openssl whose record we cannot read must be kept'
-    assert f'left {openssl} in place' in out, f'the kept file must be named:\n{out}'
-    assert 'no record of writing it' not in out, (
-        f'a record DOES exist here — it was merely unreadable — so the output must not '
-        f'deny authorship:\n{out}')
-    assert str(sidecar) in out, f'the unreadable record must be named:\n{out}'
-    assert 'could not be read' in out, (
-        f'the reason must be that the record exists but was unreadable:\n{out}')
 
 
 def test_install_sh_sudo_uninstall_dry_run(ctx):
@@ -4043,10 +3831,6 @@ def main() -> int:
         ('uninstall isolation guard fires on a live session (REQ-INST-13)',
          test_uninstall_guard_detects_live_session),
         ('install.sh --uninstall (dry run + real, keeps user state)', test_install_sh_uninstall),
-        ('install.sh --uninstall removes the bundled openssl it recorded',
-         test_install_sh_uninstall_removes_bundled_openssl),
-        ('install.sh --uninstall survives unreadable openssl/record',
-         test_install_sh_uninstall_unhashable_openssl_nonfatal),
         ('install.sh sudo --uninstall --dry-run', test_install_sh_sudo_uninstall_dry_run),
         ('install.sh refuses to shadow a system unit (REQ-INST-23)',
          test_install_sh_refuses_to_shadow_system_unit),

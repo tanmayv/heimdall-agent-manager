@@ -146,10 +146,10 @@ assert_no_live_bridge() {
   # Second, independent check, and it is about the SANDBOX env specifically, so
   # it applies to sandbox mode only. Under sudo there is no sandbox env to
   # check: install.sh runs as root, and on linux do_uninstall does not invoke
-  # systemctl at all when service_user is set (install.sh:1112-1113 only PRINTS
+  # systemctl at all when service_user is set (install.sh:1101-1102 only PRINTS
   # the stop advice), so the first check above is the whole defence there.
   if [ "$mode" != "sandbox" ]; then
-    ok "sudo mode: no sandbox env to probe (linux uninstall defers the stop to the user's own session, install.sh:1112-1113)"
+    ok "sudo mode: no sandbox env to probe (linux uninstall defers the stop to the user's own session, install.sh:1101-1102)"
     return 0
   fi
   # The same one the Python suite makes before its own destructive runs: the env
@@ -241,13 +241,13 @@ printf 'mktemp -d with TMPDIR=%s gives: %s\n' \
 # =============================================================================
 # Everything below runs only for INSTALL_SMOKE_MODE=sudo and proves the ONE
 # branch of install.sh that had never executed on any platform: the
-# sudo/SUDO_USER block at install.sh:1289-1315, whose macOS half resolves the
-# invoking user's home with `dscl` (:1306-1307) where Linux uses `getent`
-# (:1300).
+# sudo/SUDO_USER block at install.sh:1241-1267, whose macOS half resolves the
+# invoking user's home with `dscl` (:1258-1259) where Linux uses `getent`
+# (:1252).
 #
 # WHY THIS MODE CANNOT BE SANDBOXED, and why that is a property of install.sh
 # rather than a shortcut here: when euid is 0 the installer HARDCODES
-# install_dir=/usr/local/bin (:1293) and takes service_home from
+# install_dir=/usr/local/bin (:1245) and takes service_home from
 # dscl/getent -- i.e. the invoking user's REAL home. Neither is influenced by
 # HOME, TMPDIR or any other variable this script could set. A sudo run
 # therefore writes to the real /usr/local/bin and a real home BY CONSTRUCTION.
@@ -265,9 +265,9 @@ printf 'mktemp -d with TMPDIR=%s gives: %s\n' \
 #
 # The two REFUSALS are asserted SEPARATELY and deliberately, because they are
 # different code paths and only one of them reaches dscl:
-#   R1 (:1295-1297) SUDO_USER unset, or literally "root" -- fires BEFORE the
+#   R1 (:1247-1249) SUDO_USER unset, or literally "root" -- fires BEFORE the
 #      `[ "$os" = "linux" ]` test, so it never reaches dscl at all.
-#   R2 (:1309-1311) SUDO_USER set and plausible, but dscl/getent yields no home
+#   R2 (:1261-1263) SUDO_USER set and plausible, but dscl/getent yields no home
 #      -- the ONLY path that executes dscl on a FAILING lookup.
 # Asserting only "SUDO_USER unset" would leave dscl's failure path unexecuted
 # while appearing to cover the refusal.
@@ -365,7 +365,7 @@ snapshot_shared_openssl() {
       || die "$openssl_path exists but could not be copied for safekeeping; refusing to run a mode that would overwrite it"
     ok "snapshotted the pre-existing $openssl_path (sha ${openssl_pre_sha:-unknown}) so it can be restored"
   else
-    ok "no pre-existing $openssl_path to be overwritten on this host"
+    ok "no pre-existing $openssl_path on this host; the guard will verify install.sh does not create one"
   fi
 }
 report_shared_openssl() {
@@ -374,12 +374,12 @@ report_shared_openssl() {
     return 0
   fi
   if [ ! -e "$openssl_path" ]; then
-    printf '\nNOTED DIVERGENCE: %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path"
+    printf '\nREGRESSION (REQ-INST-21): %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path"
     return 0
   fi
   now_sha="$(sha_of "$openssl_path")"
   if [ -n "$openssl_pre_sha" ] && [ -n "$now_sha" ] && [ "$now_sha" != "$openssl_pre_sha" ]; then
-    printf '\nNOTED DIVERGENCE (not a failure of the branch under test, and NOT fixed here):\n  %s was REPLACED by the bundled openssl.\n  before: %s\n  after:  %s\n  install.sh:1566-1568 writes it with no existence check and no .bak-*, unlike the\n  service file. Under sudo that is a shared system path, and --uninstall then\n  deletes it on the strength of the provenance install.sh recorded for its own copy.\n' \
+    printf '\nREGRESSION (REQ-INST-21):\n  %s was REPLACED during install+uninstall.\n  before: %s\n  after:  %s\n  install.sh must not write or remove a shared openssl by any route.\n' \
       "$openssl_path" "$openssl_pre_sha" "$now_sha"
   else
     ok "$openssl_path is unchanged (sha ${now_sha:-unknown})"
@@ -416,14 +416,14 @@ sudo_preconditions() {
   #    home, so it must never be reachable by running the script the ordinary
   #    way. CI sets this; a developer has to mean it.
   if [ "${INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES:-}" != "1" ]; then
-    die "sudo mode makes REAL writes to $sudo_install_dir and to $inv_home (it cannot be sandboxed: uid 0 hardcodes install_dir at install.sh:1293 and takes the home from dscl/getent). Refusing to run without INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1. This is intended for a disposable CI runner, NOT a developer machine or any host with a live bridge."
+    die "sudo mode makes REAL writes to $sudo_install_dir and to $inv_home (it cannot be sandboxed: uid 0 hardcodes install_dir at install.sh:1245 and takes the home from dscl/getent). Refusing to run without INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1. This is intended for a disposable CI runner, NOT a developer machine or any host with a live bridge."
   fi
   ok "explicit opt-in present (INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1)"
 
   # 2. We must NOT already be root: the whole branch under test is reached via
   #    sudo, and SUDO_USER has to name a real invoking user.
   if [ "$inv_uid" -eq 0 ]; then
-    die "run this mode as a NORMAL user — it invokes sudo itself. Running it as root would leave SUDO_USER naming root (or unset), which install.sh:1295-1297 refuses, so the install half of this mode could never execute."
+    die "run this mode as a NORMAL user — it invokes sudo itself. Running it as root would leave SUDO_USER naming root (or unset), which install.sh:1247-1249 refuses, so the install half of this mode could never execute."
   fi
   ok "running as a non-root user ($inv_user, uid $inv_uid) that sudo can name in SUDO_USER"
 
@@ -533,7 +533,7 @@ assert_root_home_clean() { # <label>
     [ -d "$rhome" ] || continue
     while IFS= read -r trace; do
       [ -n "$trace" ] || continue
-      die "$1: found $trace — a sudo install must never write into root's home (install.sh:1296 exists to prevent exactly this)."
+      die "$1: found $trace — a sudo install must never write into root's home (install.sh:1248 exists to prevent exactly this)."
     done <<EOF
 $(heimdall_traces_under_home "$rhome")
 EOF
@@ -595,9 +595,9 @@ sudo_smoke() {
   # -------------------------------------------------------------------------
   # `env -u SUDO_USER` removes the variable sudo itself sets. This is the shape
   # of a root shell that was not reached through sudo at all -- a cron job, or
-  # `su -`. Both refusals precede the socat preflight (:1382-1390) and any
+  # `su -`. Both refusals precede the socat preflight (:1334-1342) and any
   # download, so this needs neither socat nor network and must write nothing.
-  step "R1 SUDO_USER unset: refused, and nothing written (install.sh:1295-1297)"
+  step "R1 SUDO_USER unset: refused, and nothing written (install.sh:1247-1249)"
   run_sudo_installer 1 -u SUDO_USER -- --version "$pin_version"
   assert_contains "refuses to run as root" "refusing to run as root" "$out"
   assert_contains "names SUDO_USER as unset" "SUDO_USER is 'unset'" "$out"
@@ -614,7 +614,7 @@ sudo_smoke() {
   # -------------------------------------------------------------------------
   # `sudo -u root sudo ...` would produce this naturally; injecting it is the
   # same condition without depending on a nested-sudo policy.
-  step "R1 SUDO_USER=root: refused, and nothing written (install.sh:1295-1297)"
+  step "R1 SUDO_USER=root: refused, and nothing written (install.sh:1247-1249)"
   run_sudo_installer 1 SUDO_USER=root -- --version "$pin_version"
   assert_contains "refuses to run as root" "refusing to run as root" "$out"
   assert_contains "names root as the resolved SUDO_USER" "SUDO_USER is 'root'" "$out"
@@ -629,7 +629,7 @@ sudo_smoke() {
   # lookup -- the only assertion on this chain that does. R1 above fires two
   # lines earlier and never reaches it, which is why these are separate steps
   # rather than one "refusal" test.
-  step "R2 SUDO_USER is a nonexistent user: dscl/getent lookup FAILS and the install is refused (install.sh:1309-1311)"
+  step "R2 SUDO_USER is a nonexistent user: dscl/getent lookup FAILS and the install is refused (install.sh:1261-1263)"
   ghost_user="heimdall-no-such-user-t16"
   # Assert the user really is absent, so a pass here cannot be an accident of
   # the name happening to exist on some future runner image.
@@ -674,7 +674,7 @@ sudo_smoke() {
   fi
   [ -n "$resolved_home" ] || die "$lookup_tool returned no home directory for '$inv_user'"
   if [ "$resolved_home" != "$inv_home" ]; then
-    die "$lookup_tool says $inv_user's home is '$resolved_home' but \$HOME is '$inv_home'. install.sh:1306 would write the service file and PATH lines to the former."
+    die "$lookup_tool says $inv_user's home is '$resolved_home' but \$HOME is '$inv_home'. install.sh:1258 would write the service file and PATH lines to the former."
   fi
   ok "$lookup_tool agrees with \$HOME for $inv_user: $resolved_home"
 
@@ -714,7 +714,7 @@ sudo_smoke() {
 
   # 5a. Binaries: in the shared dir, executable, and ROOT-owned. Root ownership
   #     is the correct outcome, not an oversight: /usr/local/bin is a
-  #     system-wide location and take_ownership (install.sh:949-957) is applied
+  #     system-wide location and take_ownership (install.sh:938-946) is applied
   #     to the service file, its directory and the rc files -- never to the
   #     binaries. Asserting it pins the intended split rather than leaving the
   #     question open.
@@ -773,7 +773,7 @@ sudo_smoke() {
     fi
   done
   [ -n "$sudo_rc_hit" ] \
-    || die "no rc file under $inv_home carries 'export PATH=\"$sudo_install_dir:\$PATH\"'. Under sudo the PATH decision must come from the target user's rc files (install.sh:1021-1071)."
+    || die "no rc file under $inv_home carries 'export PATH=\"$sudo_install_dir:\$PATH\"'. Under sudo the PATH decision must come from the target user's rc files (install.sh:1010-1060)."
   ok "PATH line written into $sudo_rc_hit"
   assert_root_rc_untouched "no rc file of root's carries the installer marker or PATH line"
   assert_root_home_clean "the real install wrote nothing into root's home"
@@ -821,8 +821,8 @@ sudo_smoke() {
 
   # 6b. REQ-INST-20: BOTH PLATFORMS DEFER THE STOP TO THE USER'S OWN SESSION.
   #     do_uninstall's stop step is now guarded on service_user on darwin as
-  #     well as linux (install.sh:1111-1129), so the one contract its comment
-  #     states at :1101-1110 holds on both. Before T18 the darwin branch had no
+  #     well as linux (install.sh:1100-1118), so the one contract its comment
+  #     states at :1090-1099 holds on both. Before T18 the darwin branch had no
   #     guard: as root it ran `launchctl bootout gui/$(id -u)/...` with id -u
   #     == 0 -- ROOT's GUI domain, not the invoking user's -- and then reported
   #     "stopped ... (best effort)" anyway, asserting an outcome about the
