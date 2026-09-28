@@ -612,18 +612,59 @@ export function ShellDetailBody({
   wide: boolean;
   onVerb: (verb: ShellVerb) => void;
 }) {
+  // TWO DIFFERENT QUESTIONS that happen to share an answer today, kept apart on
+  // purpose rather than collapsed into one flag:
+  //
+  //   isInteractiveCapable — can the user TYPE into this session? A `shell` is the
+  //       only kind with an interactive form; a run/server pane is a read-only view
+  //       of a process nobody is at the keyboard of.
+  //   isCaptureless (below) — does a tee'd output log exist for it AT ALL?
+  //
+  // These are independent properties of a kind, and `shell` is simply the one kind
+  // that is currently both. An interactive REPL the bridge tees would be interactive
+  // and NOT captureless; a captureless non-interactive kind would be the reverse.
+  // Collapsed into a single `isShell`, either addition would have to rename a concept
+  // instead of adding a value — so the duplication is the cheaper of the two.
   const isInteractiveCapable = record.kind === 'shell';
   const isRunning = record.status === 'running' || record.status === 'starting';
 
-  const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(
-    isInteractiveCapable && isRunning ? 'terminal' : 'log',
-  );
+  // REQ-SHELL-6A AC4. A `shell` has NO OUTPUT CAPTURE AT ALL — the bridge tees
+  // nothing for it, and `shell log` on one answers internal_error rather than an
+  // empty log. So the log pane is not merely empty for this kind, it is a pane for
+  // something that does not exist: its own helper text promises "the session's
+  // stdout as the bridge tees it", which for a shell is a claim about nothing.
+  //
+  // Hence no tab pair and no ShellLogViewer for a shell, ever. Before this the pair
+  // was offered unconditionally, and the effect below actively FORCED a terminated
+  // shell into the log tab — so the one state where the user is most likely to go
+  // looking (the session is over, what happened?) was exactly the state that showed
+  // them the broken pane.
+  //
+  // `run` and `server` are unchanged: both capture, both keep both tabs.
+  const isCaptureless = record.kind === 'shell';
 
+  // ONE PLACE decides the default pane, so the FIRST render and every later
+  // record change cannot disagree about it. They did: the guard for a captureless
+  // session lived only in the effect, while the useState initializer still fell
+  // through to 'log' for a TERMINATED shell. That is not a cosmetic one-frame flash
+  // — ShellLogViewer's useGetShellLogQuery has no `skip`, so it fires on mount, and
+  // a log request for a `shell` is one the bridge can only refuse. Opening a
+  // finished shell session therefore issued a guaranteed-failing request every time.
+  //
+  // A captureless session stays on the terminal whatever its status: there is no log
+  // to fall back to when it stops, only the scrollback already on screen.
+  const defaultViewMode: 'log' | 'terminal' =
+    isCaptureless || (isInteractiveCapable && isRunning) ? 'terminal' : 'log';
+
+  const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(defaultViewMode);
+
+  // session_id is a dep in its own right: switching to a different session of the
+  // same kind and status must still reset a pane the user had switched by hand.
   React.useEffect(() => {
-    setViewMode(isInteractiveCapable && isRunning ? 'terminal' : 'log');
-  }, [record.session_id, isInteractiveCapable, isRunning]);
+    setViewMode(defaultViewMode);
+  }, [record.session_id, defaultViewMode]);
 
-  const outputAction = (
+  const outputAction = isCaptureless ? null : (
     <div
       className="flex items-center gap-1 bg-neutral-soft p-0.5 rounded-[var(--radius-sm)] border border-subtle"
       data-debug-id="shell-view-output-tabs"
@@ -662,9 +703,11 @@ export function ShellDetailBody({
       <Card
         title={viewMode === 'terminal' ? 'Terminal' : 'Output'}
         helper={
-          viewMode === 'terminal'
-            ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support.'
-            : "Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
+          isCaptureless
+            ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support. A shell session keeps no output log — what you see here is all there is.'
+            : viewMode === 'terminal'
+              ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support.'
+              : "Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
         }
         action={outputAction}
         debugId="shell-view-output-card"
