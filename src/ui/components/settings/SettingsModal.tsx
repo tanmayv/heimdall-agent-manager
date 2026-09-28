@@ -13,7 +13,6 @@ import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { withApiBase } from '../../api/apiBase';
 
-import GeneralSettingsPanel from './GeneralSettingsPanel';
 import AppearanceSettings from './AppearanceSettings';
 import NotificationsPanel from './NotificationsPanel';
 import { ProvidersPanel } from './ProvidersPanel';
@@ -32,12 +31,6 @@ export interface SettingsCategory {
 }
 
 export const SETTINGS_CATEGORIES: SettingsCategory[] = [
-  {
-    id: 'general',
-    label: 'General',
-    title: 'General',
-    description: 'Configure agent execution, queued message delivery, and permissions.',
-  },
   {
     id: 'appearance',
     label: 'Appearance',
@@ -116,7 +109,7 @@ export const EXTRA_SECTIONS: Record<string, { title: string; description: string
 };
 
 export function normalizeSettingsTab(tab?: string): string {
-  if (!tab) return 'general';
+  if (!tab || tab === 'general') return 'appearance';
   if (tab === 'bridges') return 'workspace';
   if (tab === 'providers') return 'models';
   if (tab === 'labs') return 'experimental';
@@ -306,7 +299,7 @@ export function SettingsModal({
   className,
 }: SettingsModalProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [activeTab, setActiveTab] = useState<string>(() => initialTab || 'general');
+  const [activeTab, setActiveTab] = useState<string>(() => initialTab || 'appearance');
   const [mobileSection, setMobileSection] = useState<string | null>(() => initialTab || null);
   const [currentUser, setCurrentUser] = useState<SettingsUser | null>(() => user || null);
 
@@ -384,13 +377,6 @@ export function SettingsModal({
   function renderTabContent(tabId: string) {
     const effectiveTab = normalizeSettingsTab(tabId);
     switch (effectiveTab) {
-      case 'general':
-        return (
-          <GeneralSettingsPanel
-            className="[&>div:first-child]:hidden"
-            onClose={close}
-          />
-        );
       case 'appearance':
         return (
           <div className="[&>div>div:first-child]:hidden">
@@ -410,7 +396,13 @@ export function SettingsModal({
       case 'vault':
         return <VaultPanel />;
       case 'lsp':
-        return lspEnabled ? <LspPanel /> : <GeneralSettingsPanel className="[&>div:first-child]:hidden" onClose={close} />;
+        return lspEnabled ? (
+          <LspPanel />
+        ) : (
+          <div className="[&>div>div:first-child]:hidden">
+            <AppearanceSettings />
+          </div>
+        );
       case 'user-tokens':
         return <UserTokensPanel />;
       case 'templates':
@@ -424,10 +416,9 @@ export function SettingsModal({
         return <FeedbackSettingsPlaceholder />;
       default:
         return (
-          <GeneralSettingsPanel
-            className="[&>div:first-child]:hidden"
-            onClose={close}
-          />
+          <div className="[&>div>div:first-child]:hidden">
+            <AppearanceSettings />
+          </div>
         );
     }
   }

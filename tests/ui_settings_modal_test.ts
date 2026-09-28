@@ -177,9 +177,8 @@ test('SettingsModal desktop sidebar renders canonical categories and footer', ()
   // Header
   assert.ok(content.includes('Settings'), 'Must have Settings header');
 
-  // Canonical categories (Projects is excluded per user directive: dedicated primary nav)
+  // Canonical categories (Projects is excluded per user directive: dedicated primary nav; General removed per REQ-SET-FIX-5)
   const categories = [
-    'General',
     'Appearance',
     'Notifications',
     'Models',
@@ -220,8 +219,19 @@ test('SettingsModal desktop sidebar renders canonical categories and footer', ()
     "SETTINGS_CATEGORIES must not include label: 'Projects'",
   );
 
-  // Removed obsolete category IDs and labels (REQ-SET-FIX-4)
+  // General must NOT be in SETTINGS_CATEGORIES (REQ-SET-FIX-5)
+  assert.ok(
+    !content.includes("id: 'general'"),
+    "SETTINGS_CATEGORIES must not include id: 'general'",
+  );
+  assert.ok(
+    !content.includes("label: 'General'"),
+    "SETTINGS_CATEGORIES must not include label: 'General'",
+  );
+
+  // Removed obsolete category IDs and labels (REQ-SET-FIX-4, REQ-SET-FIX-5)
   const removedCategoryIds = [
+    'general',
     'best-of-n',
     'jetski-chat',
     'labs',
@@ -236,6 +246,7 @@ test('SettingsModal desktop sidebar renders canonical categories and footer', ()
   }
 
   const removedCategories = [
+    'General',
     'Best of N',
     'Jetski Chat',
     'Labs',
@@ -360,10 +371,10 @@ test('SettingsModal embeds all required panels', () => {
   assert.ok(!content.includes("import ProjectsPanel from './ProjectsPanel'"), 'ProjectsPanel must not be imported in SettingsModal');
   assert.ok(content.includes("import ExperimentalPanel from './ExperimentalPanel'"), 'Must import ExperimentalPanel');
 
-  // GeneralSettingsPanel
+  // GeneralSettingsPanel must NOT be imported or rendered in SettingsModal (REQ-SET-FIX-5)
   assert.ok(
-    content.includes('<GeneralSettingsPanel'),
-    'Must embed GeneralSettingsPanel',
+    !content.includes('GeneralSettingsPanel'),
+    'GeneralSettingsPanel must not be imported or rendered in SettingsModal',
   );
 
   // AppearanceSettings
@@ -428,71 +439,35 @@ test('SettingsModal embeds all required panels', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. GeneralSettingsPanel Rendering & Sections (REQ-SET-3, REQ-SET-6 item 2)
+// 6. SettingsModal Excision of General Section & Default Tab (REQ-SET-FIX-5)
 // ---------------------------------------------------------------------------
 
-test('GeneralSettingsPanel.tsx source file exists and exports GeneralSettingsPanel', () => {
-  assert.ok(fs.existsSync(GENERAL_SETTINGS_PATH), 'GeneralSettingsPanel.tsx must exist');
-
-  const content = fs.readFileSync(GENERAL_SETTINGS_PATH, 'utf-8');
+test('SettingsModal defaults activeTab to appearance when initialTab is not provided', () => {
+  const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
   assert.ok(
-    content.includes('export function GeneralSettingsPanel') ||
-      content.includes('export const GeneralSettingsPanel'),
-    'Must export GeneralSettingsPanel',
-  );
-  assert.ok(
-    content.includes('export default GeneralSettingsPanel'),
-    'Must provide default export',
+    content.includes("initialTab || 'appearance'"),
+    "activeTab state must default to initialTab || 'appearance'",
   );
 });
 
-test('GeneralSettingsPanel.tsx satisfies design token conventions', () => {
-  const content = fs.readFileSync(GENERAL_SETTINGS_PATH, 'utf-8');
-
-  // Must use design tokens
-  assert.ok(content.includes('border-subtle'), 'Must use border-subtle');
-  assert.ok(content.includes('bg-surface'), 'Must use bg-surface');
-  assert.ok(content.includes('text-primary'), 'Must use text-primary');
-  assert.ok(content.includes('text-muted'), 'Must use text-muted');
-  assert.ok(content.includes('rounded-xl'), 'Must use rounded-xl for cards');
+test('GeneralSettingsPanel is not imported or rendered in SettingsModal.tsx', () => {
+  const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
+  assert.ok(
+    !content.includes('GeneralSettingsPanel'),
+    'GeneralSettingsPanel must not be imported or rendered in SettingsModal.tsx',
+  );
 });
 
-test('GeneralSettingsPanel renders Execution, Global Permissions, Agent Behavior, Browser, and Terminal sections', () => {
-  const content = fs.readFileSync(GENERAL_SETTINGS_PATH, 'utf-8');
-
-  // 1. Header
-  assert.ok(content.includes('General'), 'Must contain General header title');
+test('SETTINGS_CATEGORIES does not include general section', () => {
+  const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
   assert.ok(
-    content.includes('Configure agent execution, queued message delivery, and permissions.'),
-    'Must contain General header description',
+    !content.includes("id: 'general'"),
+    "SETTINGS_CATEGORIES must not include id: 'general'",
   );
-
-  // 2. Execution (Queued Messages toggle)
-  assert.ok(content.includes('Execution'), 'Must contain Execution section title');
-  assert.ok(content.includes('Queued Messages'), 'Must contain Queued Messages card title');
-  assert.ok(content.includes('toggle-queued-messages-queue'), 'Must contain Queue toggle button');
-  assert.ok(content.includes('toggle-queued-messages-send-immediately'), 'Must contain Send Immediately toggle button');
-
-  // 3. Global Permissions
-  assert.ok(content.includes('Global Permissions'), 'Must contain Global Permissions title');
-  assert.ok(content.includes('Permission Preset'), 'Must contain Permission Preset row');
-  assert.ok(content.includes('Tool Permissions'), 'Must contain Tool Permissions row');
-  assert.ok(content.includes('Network Access Rules'), 'Must contain Network Access Rules row');
-
-  // 4. Agent Behavior
-  assert.ok(content.includes('Agent Behavior'), 'Must contain Agent Behavior section');
-  assert.ok(content.includes('Plan Review Policy'), 'Must contain Plan Review Policy');
-
-  // 5. Browser
-  assert.ok(content.includes('Browser'), 'Must contain Browser section');
-  assert.ok(content.includes('Browser Javascript Execution Policy'), 'Must contain Browser Javascript Execution Policy');
-  assert.ok(content.includes('Browser Actuation Rules'), 'Must contain Browser Actuation Rules');
-
-  // 6. Advanced Terminal setup script
-  assert.ok(content.includes('Advanced'), 'Must contain collapsible Advanced trigger');
-  assert.ok(content.includes('Terminal'), 'Must contain Terminal sub-section');
-  assert.ok(content.includes('Command Setup Script'), 'Must contain Command Setup Script card');
-  assert.ok(content.includes('source ~/.jetski_shell_setup'), 'Must contain setup script example');
+  assert.ok(
+    !content.includes("label: 'General'"),
+    "SETTINGS_CATEGORIES must not include label: 'General'",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -575,8 +550,10 @@ test('AppShell routing integration ensures settings routes resolve without crash
     'SettingsModal must receive initialTab={settingsModalTab}',
   );
 
-  // Deep link route resolution
-  assert.equal(resolveSettingsTab('/settings'), 'general');
+  // Deep link route resolution (REQ-SET-FIX-5: /settings and /settings/general default to appearance)
+  assert.equal(resolveSettingsTab('/settings'), 'appearance');
+  assert.equal(resolveSettingsTab('/settings/'), 'appearance');
+  assert.equal(resolveSettingsTab('/settings/general'), 'appearance');
   assert.equal(resolveSettingsTab('/settings/appearance'), 'appearance');
   assert.equal(resolveSettingsTab('/settings/bridges'), 'bridges');
   assert.equal(resolveSettingsTab('/settings/notifications'), 'notifications');
@@ -594,7 +571,7 @@ test('AppShell routing integration ensures settings routes resolve without crash
   assert.equal(resolveSettingsTab('#/settings/projects'), 'projects');
   assert.equal(resolveSettingsTab('#/settings/experimental'), 'experimental');
 
-  // Alias normalization
+  // Alias normalization (REQ-SET-FIX-5: general and empty normalize to appearance)
   assert.equal(normalizeSettingsTab('bridges'), 'workspace');
   assert.equal(normalizeSettingsTab('providers'), 'models');
   assert.equal(normalizeSettingsTab('labs'), 'experimental');
@@ -604,6 +581,8 @@ test('AppShell routing integration ensures settings routes resolve without crash
   assert.equal(normalizeSettingsTab('user-tokens'), 'user-tokens');
   assert.equal(normalizeSettingsTab('templates'), 'templates');
   assert.equal(normalizeSettingsTab('projects'), 'projects');
+  assert.equal(normalizeSettingsTab('general'), 'appearance');
+  assert.equal(normalizeSettingsTab(), 'appearance');
 
   // Command palette integration
   const settingsNav = DEFAULT_NAV.find((item) => item.label === 'Settings');

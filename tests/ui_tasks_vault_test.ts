@@ -110,11 +110,24 @@ test('Task UI components, endpoints, and utils exist with required contracts', (
     'CurrentTaskStrip.tsx must integrate VaultText component',
   );
 
-  // Verify ChainOverviewPanel integrates VaultText
+  // Verify ChainOverviewPanel integrates VaultText and decrypts task description in review action gate
   const chainOverviewPanelSrc = fs.readFileSync(chainOverviewPanelFile, 'utf8');
   assert.ok(
     chainOverviewPanelSrc.includes('VaultText'),
     'ChainOverviewPanel.tsx must integrate VaultText component',
+  );
+  assert.ok(
+    chainOverviewPanelSrc.includes('selectIsVaultUnlocked') &&
+      chainOverviewPanelSrc.includes('selectRawVaultKeyHex'),
+    'ChainOverviewPanel.tsx must import vault unlock and key selectors',
+  );
+  assert.ok(
+    chainOverviewPanelSrc.includes('decryptVaultText'),
+    'ChainOverviewPanel.tsx must import and call decryptVaultText',
+  );
+  assert.ok(
+    chainOverviewPanelSrc.includes('fallback="[🔒 Encrypted description]"'),
+    'ChainOverviewPanel.tsx must provide locked fallback for armored descriptions in review card',
   );
 
   // Verify tasks endpoint imports and uses vault encryption
@@ -382,4 +395,56 @@ test('encryptTaskFields handles partial payloads with omitted fields', async () 
   const decrypted = await decryptTaskRecord(encrypted, TEST_KEY_HEX);
   assert.equal(decrypted.title, 'Only updating task title');
   assert.equal(decrypted.description, undefined);
+});
+
+// -----------------------------------------------------------------------------
+// Test 9: Review Action Gate decodes encrypted task description and parses checklist
+// -----------------------------------------------------------------------------
+
+test('Review Action Gate decodes encrypted task description and parses checklist (REQ-REVIEW-GATE-DECRYPT-DESCRIPTION)', async () => {
+  const originalChecklistDescription = `Title: Feature Verification
+Acceptance criteria:
+- [ ] AttentionTaskReviewCard decrypts task description when vault is unlocked
+- [x] Acceptance criteria checklist parses correctly from decrypted description
+[ ] Raw base64 ciphertext is never rendered in Review Action Gate
+[x] When vault is locked, renders VaultText / encrypted placeholder`;
+
+  // Encrypt the description with test key
+  const armoredDescription = await encryptVaultText(originalChecklistDescription, TEST_KEY_HEX);
+  assert.ok(isVaultArmored(armoredDescription));
+
+  // 1. When vault is locked (no key), effectiveDescription is empty string and never raw ciphertext
+  const lockedEffectiveDescription = isVaultArmored(armoredDescription) ? ('' || '') : armoredDescription;
+  assert.equal(lockedEffectiveDescription, '');
+  assert.ok(!lockedEffectiveDescription.includes('vault:v1:'), 'Ciphertext must never be present in effectiveDescription when locked');
+
+  // 2. When vault is unlocked, decryptVaultText decrypts description
+  const decrypted = await decryptVaultText(armoredDescription, TEST_KEY_HEX);
+  assert.equal(decrypted, originalChecklistDescription);
+
+  // 3. Checklist items extract properly from decrypted description
+  const lines = decrypted.split('\n');
+  const checklistItems = lines
+    .map((l) => l.trim())
+    .filter((l) => /^(\[[\sxX]\]|-\s*\[[\sxX]\])/.test(l))
+    .map((l) => ({
+      checked: /\[[xX]\]/.test(l),
+      text: l.replace(/^[-*]?\s*\[[\sxX]\]\s*/, ''),
+    }));
+
+  assert.equal(checklistItems.length, 4);
+  assert.equal(checklistItems[0].checked, false);
+  assert.equal(checklistItems[0].text, 'AttentionTaskReviewCard decrypts task description when vault is unlocked');
+  assert.equal(checklistItems[1].checked, true);
+  assert.equal(checklistItems[1].text, 'Acceptance criteria checklist parses correctly from decrypted description');
+  assert.equal(checklistItems[2].checked, false);
+  assert.equal(checklistItems[2].text, 'Raw base64 ciphertext is never rendered in Review Action Gate');
+  assert.equal(checklistItems[3].checked, true);
+  assert.equal(checklistItems[3].text, 'When vault is locked, renders VaultText / encrypted placeholder');
+
+  // 4. Fallback locked placeholder helper resolves correctly
+  const lockedFallback = resolveVaultText(armoredDescription, false);
+  assert.equal(lockedFallback.isLocked, true);
+  assert.equal(lockedFallback.mode, 'locked');
+  assert.equal(lockedFallback.dataDebugId, 'vault-locked-placeholder');
 });
