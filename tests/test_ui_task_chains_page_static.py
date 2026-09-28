@@ -39,10 +39,14 @@ for hook in (
 
 # --- Page structure -------------------------------------------------------
 require('data-debug-id="task-chains-page"' in PAGE, "page root marker missing")
-require("TaskChainOverview" in PAGE and "if (selectedChainId)" in PAGE,
-        "must KEEP the chain-detail branch (renders TaskChainOverview for a chainId)")
+require("TaskChainOverview" in PAGE and "selectedChainId ?" in PAGE and "ResourceContainer" in PAGE,
+        "must KEEP the chain-detail branch (REQ-TCUI-1: TaskChainOverview in ResourceContainer's detail slot)")
 require('data-debug-id="task-chains-total-count"' in PAGE, "header count pill missing")
-require('data-debug-id="task-chains-project-filter"' in PAGE and "All projects" in PAGE,
+# The debug id is asserted WITHOUT the `data-debug-id="..."` attribute spelling on purpose:
+# ResourceSearchFilter takes it as DATA (`ResourceFilterSelect.debugId`) and Select spreads it onto
+# the rendered combobox, so the id still reaches the DOM unchanged. Do not "restore" the attribute
+# form — it cannot match once the filter goes through ResourceSearchFilter.
+require("task-chains-project-filter" in PAGE and "All projects" in PAGE,
         "project filter dropdown missing")
 require("useFetchTaskChainGroupsQuery" in PAGE and "useFetchTaskChainProjectPageQuery" in PAGE,
         "page must use both the grouped and per-project hooks")
