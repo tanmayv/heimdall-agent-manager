@@ -2225,6 +2225,74 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 	return strings.to_string(b)
 }
 
+// ---- REQ-SHELL-16 D1a: one rejection path, and it is never silent ----
+
+// bridge_shell_send_error replies to a failed shell_* request AND records the reason
+// on the host. It replaces three byte-identical nested `send_error` helpers (shell_start,
+// shell_logs, shell_capture) that differed only in the `type` string and their
+// zero-valued padding fields, and that shared one defect: none of them logged, so the
+// bridge could refuse a request and leave no trace anywhere. The reason reached the hub
+// in the reply's `error` field, the hub replaced it with a constant (REQ-SHELL-16 D1b),
+// and the cause of a user-visible failure was then recoverable from NOWHERE — not the
+// session row, not the journal, not the hub's error.
+//
+// It is ONE proc rather than three edited copies on purpose. Three bodies carrying the
+// same obligation is how the obligation came to be missing from all three; a caller
+// cannot now add a rejection site that forgets to log, because there is no other way to
+// send one.
+//
+// `extra_json` carries the per-type fields a failed reply must still include so the
+// shape stays uniform for the hub's parser (e.g. `"lines":[],"truncated":false` for
+// logs). Pass "" when the type needs none. It is written raw, so callers pass a
+// literal — never interpolated input.
+//
+// Logged at plain stdout, the bridge's normal journal level (cf. pty_host_runtime.odin
+// child-exit logging), NOT behind a debug flag: a rejection that is only visible when
+// someone thought to turn logging on ahead of time is the exact failure being fixed.
+bridge_shell_send_error :: proc(conn: ^ws.Connection, result_type, session_id, command_id, msg, extra_json: string) {
+	line := bridge_shell_error_log_line(result_type, session_id, command_id, msg)
+	fmt.println(line)
+	delete(line)
+
+	result := bridge_shell_error_result_json(result_type, session_id, command_id, msg, extra_json)
+	defer delete(result)
+	if conn != nil do _ = bridge_hub_send(conn, result)
+}
+
+// bridge_shell_error_log_line formats the host-side record of a refusal. Split out
+// from the print for the same reason the reply body is: this line IS the diagnostic
+// contract REQ-SHELL-16 exists to create, so its shape is pinned by a test rather than
+// by whoever reads it next. A future edit that drops session_id or command_id from it
+// would restore the original defect — a refusal you can see happened but cannot tie to
+// a session — while every other test still passed. Caller owns the result.
+bridge_shell_error_log_line :: proc(result_type, session_id, command_id, msg: string) -> string {
+	return fmt.aprintf(
+		"bridge shell: rejected %s session_id=%s command_id=%s reason=%s",
+		result_type, session_id, command_id, msg,
+	)
+}
+
+// bridge_shell_error_result_json builds the failure reply body. Split out from the
+// send so the wire shape is assertable without a live connection: this refactor
+// collapsed three hand-written builders into one, and the three replies are a
+// CONTRACT the hub parses, so "still byte-identical per type" needs to be a test
+// rather than a careful reading. Caller owns the result.
+bridge_shell_error_result_json :: proc(result_type, session_id, command_id, msg, extra_json: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"")
+	bridge_runtime_write_json_string(&b, result_type)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":false,")
+	strings.write_string(&b, extra_json)
+	strings.write_string(&b, "\"error\":\"")
+	bridge_runtime_write_json_string(&b, msg)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
 // ---- T4: hub→bridge WS runtime command handlers (REQ-SH-CONTRACT §3) ----
 
 // bridge_hub_handle_shell_start handles the "shell_start" command.
@@ -2254,18 +2322,13 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// above. Absent means run 0, the first run.
 	run_seq := extract_json_int(text, "run_seq", 0)
 
+	// REQ-SHELL-16: this is now a two-constant binding over bridge_shell_send_error,
+	// not a body. It stays as a nested proc only so the handler's rejection sites keep
+	// reading `send_error(conn, session_id, command_id, "reason")` and cannot forget
+	// which result type they are answering. The JSON building — and the logging they
+	// were all missing — lives in exactly one place.
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"type\":\"shell_start_result\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"command_id\":\"")
-		bridge_runtime_write_json_string(&b, command_id)
-		strings.write_string(&b, "\",\"ok\":false,\"error\":\"")
-		bridge_runtime_write_json_string(&b, msg)
-		strings.write_string(&b, "\"}")
-		result := strings.to_string(b)
-		if conn != nil do _ = bridge_hub_send(conn, result)
-		delete(result)
+		bridge_shell_send_error(conn, "shell_start_result", session_id, command_id, msg, "")
 	}
 
 	if session_id == "" {
@@ -2944,17 +3007,7 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 	grep       := extract_json_string(text, "grep", "")
 
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"type\":\"shell_logs_result\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"command_id\":\"")
-		bridge_runtime_write_json_string(&b, command_id)
-		strings.write_string(&b, "\",\"ok\":false,\"lines\":[],\"truncated\":false,\"total_lines\":0,\"error\":\"")
-		bridge_runtime_write_json_string(&b, msg)
-		strings.write_string(&b, "\"}")
-		result := strings.to_string(b)
-		if conn != nil do _ = bridge_hub_send(conn, result)
-		delete(result)
+		bridge_shell_send_error(conn, "shell_logs_result", session_id, command_id, msg, "\"lines\":[],\"truncated\":false,\"total_lines\":0,")
 	}
 
 	if session_id == "" {
@@ -3081,17 +3134,7 @@ bridge_hub_handle_shell_capture :: proc(conn: ^ws.Connection, text: string) {
 	command_id := extract_json_string(text, "command_id", "")
 
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"type\":\"shell_capture_result\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"command_id\":\"")
-		bridge_runtime_write_json_string(&b, command_id)
-		strings.write_string(&b, "\",\"ok\":false,\"content\":\"\",\"rows\":0,\"cols\":0,\"error\":\"")
-		bridge_runtime_write_json_string(&b, msg)
-		strings.write_string(&b, "\"}")
-		result := strings.to_string(b)
-		if conn != nil do _ = bridge_hub_send(conn, result)
-		delete(result)
+		bridge_shell_send_error(conn, "shell_capture_result", session_id, command_id, msg, "\"content\":\"\",\"rows\":0,\"cols\":0,")
 	}
 
 	if session_id == "" {

@@ -449,17 +449,34 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 		30_000,
 	)
 
+	// REQ-SHELL-16 D2: a start failure is a TERMINAL row, so it must carry a finish
+	// time. Both branches below set Failed; neither stamped finished_at, which left
+	// exactly one row in the table terminal with no finish time (sh_18d97f993089313f)
+	// and made anything that reasons over terminal rows by finished_at skip it silently.
+	// The clock string is temp-allocated and that is correct here — it is consumed by
+	// the upsert inside this request, the same as last_activity_at a few lines below.
+	//
+	// exit_code IS DELIBERATELY LEFT UNSET, and not as a style preference: this is one
+	// of the SYNTHESIZED terminals that domain/shell_session.odin:356-392 names by name
+	// ("shell_session_create's failure path"). That invariant requires a synthesized
+	// terminal never to set exit_code_set, because shell_session_terminal_is_observed
+	// uses it as the discriminator — stamping a fabricated code here would make the hub
+	// call a guess an observation, and a later real exit from the bridge would stop
+	// being allowed to supersede it, with no test failing. There was no process, so
+	// there is no code to record.
 	if !reply_ok {
-		session.status = domain.Shell_Session_Status_Failed
+		session.status      = domain.Shell_Session_Status_Failed
+		session.finished_at = platform.clock_now(svc.clock)
 		_, _ = iface.shell_session_upsert(svc.repo, session)
 		return session, false, reply_err
 	}
 	defer delete(reply)
 
 	if !_json_bool(reply, "ok") {
-		session.status = domain.Shell_Session_Status_Failed
+		session.status      = domain.Shell_Session_Status_Failed
+		session.finished_at = platform.clock_now(svc.clock)
 		_, _ = iface.shell_session_upsert(svc.repo, session)
-		return session, false, domain.domain_error(.Internal_Error, "bridge failed to start shell session")
+		return session, false, _bridge_failure(reply, "bridge failed to start shell session")
 	}
 
 	session.pid             = _json_int(reply, "pid", 0)
@@ -757,7 +774,7 @@ shell_session_restart :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	if !reply_ok do return session, false, reply_err
 	defer delete(reply)
 
-	if !_json_bool(reply, "ok") do return session, false, domain.domain_error(.Internal_Error, "bridge failed to restart shell session")
+	if !_json_bool(reply, "ok") do return session, false, _bridge_failure(reply, "bridge failed to restart shell session")
 
 	session.status           = domain.Shell_Session_Status_Running
 	session.pid              = _json_int(reply, "pid", session.pid)
@@ -839,15 +856,20 @@ shell_session_set_port :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth
 		// The bridge answers with the shared refusal vocabulary
 		// (session_not_found / session_not_running); surface it rather than a
 		// generic failure, so the reason is the same word end to end.
+		// Boy-scout (REQ-SHELL-16): the delete here was UNCONDITIONAL, which is a bad
+		// free whenever the bridge replies without an `error` field — _json_str returns a
+		// non-allocated "" literal in that case. Guarded, and the generic fallback now
+		// carries the reason like the other four sites instead of dropping a refusal
+		// word this branch simply did not recognise.
 		reason := _json_str(reply, "error")
-		defer delete(reason)
+		defer if reason != "" do delete(reason)
 		if reason == "session_not_running" {
 			return session, false, domain.domain_error(.Conflict, "session has already terminated")
 		}
 		if reason == "session_not_found" {
 			return session, false, domain.domain_error(.Not_Found, "session not found")
 		}
-		return session, false, domain.domain_error(.Internal_Error, "bridge failed to set the shell session port")
+		return session, false, _bridge_failure(reply, "bridge failed to set the shell session port")
 	}
 
 	// Not an upsert: it keeps the existing port when the new one is 0, so
@@ -935,7 +957,7 @@ shell_session_get_log :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	if !reply_ok do return {}, false, reply_err
 	defer delete(reply)
 
-	if !_json_bool(reply, "ok") do return {}, false, domain.domain_error(.Internal_Error, "bridge failed to retrieve shell logs")
+	if !_json_bool(reply, "ok") do return {}, false, _bridge_failure(reply, "bridge failed to retrieve shell logs")
 
 	lines_raw   := _json_array_raw(reply, "lines")
 	truncated   := _json_bool(reply, "truncated")
@@ -969,7 +991,7 @@ shell_session_capture :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	if !reply_ok do return {}, false, reply_err
 	defer delete(reply)
 
-	if !_json_bool(reply, "ok") do return {}, false, domain.domain_error(.Internal_Error, "bridge failed to capture shell session")
+	if !_json_bool(reply, "ok") do return {}, false, _bridge_failure(reply, "bridge failed to capture shell session")
 
 	content := _json_str(reply, "content")
 	rows    := _json_int(reply, "rows", 24)
@@ -1699,6 +1721,31 @@ _json_str :: proc(body, key: string) -> string {
 		strings.write_byte(&b, ch)
 	}
 	return ""
+}
+
+// REQ-SHELL-16 D1b: a bridge refusal must arrive carrying its reason.
+//
+// Every `if !_json_bool(reply, "ok")` site used to answer with a constant string while
+// the bridge's own `error` field sat unread in `reply`. The effect was that the cause of
+// a user-visible failure was recoverable from nowhere: not the session row, not the
+// bridge journal (which logged nothing before D1a), and not the hub's error. The shape
+// here is lifted from the ONE site that already did it right — the set_server_port
+// branch, which maps the shared refusal vocabulary and only then falls back.
+//
+// OWNERSHIP, which this file has already been bitten by twice: `_json_str` returns
+// BUILDER-HEAP memory, and `domain_error` (domain/errors.odin:46) does NOT clone its
+// message — it stores the string it is handed. So the reason is freed here and the
+// returned message lives in the PER-REQUEST TEMP ARENA via fmt.tprintf, the same
+// discipline as the port-conflict error above and the cmd_id note in shell_session_create.
+//
+// The guard on the delete is not defensive noise: `_json_str` returns a non-allocated ""
+// literal when the key is absent, so an unconditional delete is a bad free on exactly the
+// case this proc exists to handle — a bridge reply with no `error` field at all.
+_bridge_failure :: proc(reply, fallback: string) -> domain.Domain_Error {
+	reason := _json_str(reply, "error")
+	if reason == "" do return domain.domain_error(.Internal_Error, fallback)
+	defer delete(reason)
+	return domain.domain_error(.Internal_Error, fmt.tprintf("%s: %s", fallback, reason))
 }
 
 _json_int :: proc(body, key: string, default_value: int) -> int {
