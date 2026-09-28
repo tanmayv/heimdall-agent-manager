@@ -787,6 +787,115 @@ system_unit_dirs() {
                 /lib/systemd/user
 }
 
+# --- REQ-INST-26: the PATH the bridge SERVICE runs with ------------------------
+# The bridge spawns several tools by BARE NAME, and Odin resolves a slashless
+# argv[0] against the spawning process's OWN PATH -- core/os/process_linux.odin
+# (:425-455) reads get_env("PATH"), stats each entry, and returns a hard
+# .Not_Exist on a miss; process_posix.odin does the same on darwin. So whatever
+# PATH this unit sets is the only thing standing between the bridge and a
+# "command not found" it cannot report usefully.
+#
+# Neither service manager's default is enough:
+#   systemd --user : a compiled-in default, typically
+#                    /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+#   launchd        : /usr/bin:/bin:/usr/sbin:/sbin
+# Neither contains $install_dir. And on Apple Silicon launchd's default excludes
+# /opt/homebrew/bin -- which is exactly where `brew install socat` puts socat.
+# That is the load-bearing case: the REQ-INST-14 preflight above runs in the
+# INSTALLER's shell with the user's full PATH, so it could pass while the bridge
+# still cannot spawn socat. A check that validates something other than what it
+# claims to guarantee. Setting PATH here is what makes that preflight BIND.
+#
+# Composition order:
+#   1. $install_dir         -- the binaries this installer just wrote.
+#   2. discovered dirs      -- where THIS host actually keeps the bare-name
+#                              tools, from `command -v`.
+#   3. platform static tail -- the boot-time net for when discovery finds
+#                              nothing.
+#
+# Two deliberate choices, both measured rather than assumed:
+#
+# * The discovered dirs are NOT canonicalised. `command -v` reports the
+#   directory as it appears on the user's PATH, which is the STABLE one -- a
+#   ~/.nix-profile/bin or /opt/homebrew/bin symlink dir. `readlink -f` would
+#   instead bake a garbage-collectable /nix/store/<hash> path into a unit that
+#   outlives it; on the dev host it also renames the target (socat -> socat1),
+#   so the resolved path is not even a drop-in for the name we looked up.
+# * We do NOT bake the installer's whole $PATH. That would capture a venv,
+#   nix-shell or temp-dir entry into a boot unit, and an installer invoked from
+#   cron would bake a PATH narrower than the static tail.
+#
+# A stale entry is harmless, not fatal: the resolver skips a directory whose
+# statx fails and keeps going, so a dead entry costs one failed syscall. What no
+# static tail can do is rescue a tool that only ever lived in a store path that
+# was then collected -- on Nix hosts the published ham-bridge is a wrapProgram
+# script that prepends its own store paths anyway (see the preflight above).
+#
+# DELIBERATELY NOT COVERED: the agent CLIs (`claude`, `codex`, ... --
+# src/bridge/provider_seeds.odin:21 spawns a literal {"claude"}). They never
+# resolve against this PATH. src/lib/tmux/tmux.odin's build_shell_command
+# (:346-376) wraps every agent command in `exec $SHELL -l -c`, a LOGIN shell,
+# specifically so they resolve against the user's own PATH -- which is what
+# wire_path()'s rc lines below provide. Only `tmux` itself has to be reachable
+# from this unit; the pane's login shell does the rest.
+#
+# Emitted from functions rather than pasted into both writers so the test suite
+# can re-derive the set from this single source instead of keeping a hand-typed
+# copy that silently drifts (same reason as system_unit_dirs above).
+
+# The tools the bridge spawns by bare name, so they must resolve on this PATH:
+#   socat   src/lib/ws/ws.odin:341, src/lib/http_client/http_client.odin:468
+#   tmux    src/lib/tmux/tmux.odin (every os.process_exec there)
+#   git     src/lib/vcs/git.odin, src/bridge/vcs_provider.odin
+#   sh      src/bridge/hub_runtime_client.odin:2251/:2529, bridge/shell_cmd.odin:94
+#   setsid  src/bridge/shell_cmd.odin:96 -- linux only; that spawn is guarded by
+#           `when ODIN_OS == .Darwin` (:93-97), which drops setsid on macOS where
+#           it does not exist. Listing it is therefore safe on both: discovery
+#           simply finds nothing to contribute on darwin.
+service_path_tools() {
+  printf '%s\n' socat tmux git sh setsid
+}
+
+# The fallback tail, per platform. Mirrors each service manager's own default
+# plus the prefixes that manager omits (homebrew on darwin, sbin on linux).
+service_path_tail() {
+  if [ "$os" = "darwin" ]; then
+    printf '%s\n' /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin \
+                  /usr/bin /bin /usr/sbin /sbin
+  else
+    printf '%s\n' /usr/local/bin /usr/bin /bin \
+                  /usr/local/sbin /usr/sbin /sbin
+  fi
+}
+
+# The systemd writer QUOTES this value -- Environment="PATH=..." -- because
+# systemd splits an unquoted Environment= on whitespace and discards what
+# follows. With a space in $install_dir, `systemd-analyze verify` on the
+# unquoted form reports:
+#     Invalid environment assignment, ignoring: home/.local/bin:/usr/bin:...
+# i.e. PATH would silently become the fragment before the space. The launchd
+# writer needs no such care: a plist <string> carries spaces literally.
+service_path_value() {
+  service_path_acc="$install_dir"
+  for service_path_tool in $(service_path_tools); do
+    service_path_hit="$(command -v "$service_path_tool" 2>/dev/null || true)"
+    # A shell builtin or function resolves with no slash; only a real file has a
+    # directory to contribute.
+    case "$service_path_hit" in
+      */*) service_path_dir="${service_path_hit%/*}" ;;
+      *)   continue ;;
+    esac
+    [ -n "$service_path_dir" ] || continue
+    case ":$service_path_acc:" in *":$service_path_dir:"*) continue ;; esac
+    service_path_acc="$service_path_acc:$service_path_dir"
+  done
+  for service_path_dir in $(service_path_tail); do
+    case ":$service_path_acc:" in *":$service_path_dir:"*) continue ;; esac
+    service_path_acc="$service_path_acc:$service_path_dir"
+  done
+  printf '%s' "$service_path_acc"
+}
+
 render_systemd_unit() {
   cat <<UNIT
 [Unit]
@@ -800,6 +909,7 @@ ExecStart=$install_dir/ham-bridge \\
     --port 49323 \\
     --local-endpoint-port 49324 \\
     --local-run-dir /tmp/heimdall-bridge-local$(service_hub_flags_systemd)
+Environment="PATH=$(service_path_value)"
 Environment=HEIMDALL_HAM_PTY_HOST_BIN=$install_dir/ham-pty-host
 Environment=HEIMDALL_BRIDGE_PTY_HOST=true
 Environment=HEIMDALL_HAM_CTL_BIN=$install_dir/ham-ctl
@@ -835,6 +945,8 @@ $(service_hub_flags_plist)    <string>--bridge-token-file</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key>
+    <string>$(service_path_value)</string>
     <key>HEIMDALL_HAM_PTY_HOST_BIN</key>
     <string>$install_dir/ham-pty-host</string>
     <key>HEIMDALL_BRIDGE_PTY_HOST</key>

@@ -60,6 +60,7 @@ import http.server
 import json
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -3767,6 +3768,314 @@ def test_install_sh_scans_every_system_unit_dir(ctx):
               f'no safe mount point on this host for: {", ".join(unfakeable)})')
 
 
+
+# --- REQ-INST-26: the PATH the bridge SERVICE runs with ------------------------
+# Every assertion below is on the RENDERED unit -- the text install.sh actually
+# emits -- never on the heredoc source. A template can contain the right literal
+# and still render nothing useful (an unset variable, a $() that failed under
+# `set -e`), which is precisely the class of miss these tests exist to catch.
+
+# The dirs each service manager puts on PATH when the unit says nothing.
+# systemd --user compiles its default in; launchd's is even narrower. Neither
+# contains the installer's $install_dir, and launchd's omits /opt/homebrew/bin,
+# which is where `brew install socat` lands on Apple Silicon.
+SYSTEMD_DEFAULT_PATH_DIRS = ('/usr/local/bin', '/usr/bin', '/bin',
+                             '/usr/local/sbin', '/usr/sbin', '/sbin')
+LAUNCHD_DEFAULT_PATH_DIRS = ('/usr/bin', '/bin', '/usr/sbin', '/sbin')
+
+
+def darwin_uname_shim(base: Path, name: str = 'uname-darwin') -> Path:
+    """A PATH dir whose `uname` reports an Apple Silicon Mac.
+
+    install.sh calls uname exactly twice -- `uname -s` and `uname -m`, at the
+    platform-detection block -- so shadowing that one binary is TOTAL: it moves
+    the whole run onto the darwin branch. This is what lets the launchd
+    assertions below actually EXECUTE on a Linux developer box and in Linux CI,
+    instead of being written here and only ever proven on a Mac we may not
+    reach. Everything else on PATH stays real, and --dry-run writes nothing.
+    """
+    shim = base / name
+    shim.mkdir(parents=True, exist_ok=True)
+    real_uname = shutil.which('uname')
+    assert real_uname, 'uname is required to build the darwin shim'
+    stub = shim / 'uname'
+    stub.write_text(
+        '#!/bin/sh\n'
+        'case "$1" in\n'
+        '  -s) echo Darwin ;;\n'
+        '  -m) echo arm64 ;;\n'
+        f'  *) exec {real_uname} "$@" ;;\n'
+        'esac\n')
+    stub.chmod(0o755)
+    return shim
+
+
+def rendered_systemd_path(res) -> str:
+    """The PATH= value out of a rendered systemd unit, or '' if it sets none."""
+    unit = dry_run_unit_text(res)
+    assert '[Unit]' in unit, f'not a systemd unit:\n{unit}'
+    # systemd accepts Environment=PATH=... and Environment="PATH=..." and the
+    # quoted form is the one install.sh must emit (see the space test below), so
+    # accept both HERE and let that test police the quoting. Unwrapping is done
+    # explicitly rather than by str.strip('"') so a half-quoted line -- which
+    # systemd would parse as a literal quote inside the value -- is reported
+    # instead of being silently tidied into a pass.
+    values = []
+    for line in unit.splitlines():
+        if not line.startswith('Environment='):
+            continue
+        body = line[len('Environment='):]
+        if body.startswith('"'):
+            assert body.endswith('"') and len(body) >= 2, (
+                f'unbalanced quote in {line!r}')
+            body = body[1:-1]
+        elif body.endswith('"'):
+            raise AssertionError(f'unbalanced quote in {line!r}')
+        if body.startswith('PATH='):
+            values.append(body[len('PATH='):])
+    assert len(values) <= 1, f'unit sets PATH more than once: {values}'
+    return values[0] if values else ''
+
+
+def rendered_plist_path(res) -> str:
+    """The PATH out of a rendered launchd plist, PARSED not grepped.
+
+    plistlib is used deliberately: it proves the plist is well-formed XML and
+    that PATH sits under EnvironmentVariables as a real key, which a substring
+    match on '<key>PATH</key>' would assert neither of.
+    """
+    unit = dry_run_unit_text(res)
+    assert '<!DOCTYPE plist' in unit, f'not a plist:\n{unit}'
+    # dry_run_unit_text slices from '<!DOCTYPE', dropping the '<?xml ...?>'
+    # declaration that plistlib requires to recognise the format. Put it back
+    # here rather than widening that shared helper, whose exact slice other
+    # tests assert on.
+    if not unit.lstrip().startswith('<?xml'):
+        unit = '<?xml version="1.0" encoding="UTF-8"?>\n' + unit
+    parsed = plistlib.loads(unit.encode('utf-8'))
+    return parsed.get('EnvironmentVariables', {}).get('PATH', '')
+
+
+def assert_service_path_is_sane(value: str, install_dir: str, default_dirs, label: str):
+    assert value, (
+        f'{label}: the rendered unit sets NO PATH. The bridge spawns socat, tmux, '
+        f'git and sh by BARE NAME and Odin resolves a slashless argv[0] against '
+        f'the spawning process own PATH (core/os/process_linux.odin:425-455), so '
+        f'an unset PATH here means the service manager narrow default decides '
+        f'whether the bridge can reach its hub at all.')
+    entries = value.split(':')
+    assert '' not in entries, (
+        f'{label}: PATH has an empty component ({value!r}) -- an empty entry means '
+        f'"the current directory" to a PATH resolver, which is not something a '
+        f'boot service should search.')
+    assert entries[0] == install_dir, (
+        f'{label}: $install_dir must be the FIRST PATH entry so the binaries this '
+        f'installer just wrote win over any older copy elsewhere; got {entries[0]!r} '
+        f'first in {value!r}')
+    for d in default_dirs:
+        assert d in entries, (
+            f'{label}: static fallback dir {d} missing from {value!r} -- the tail is '
+            f'the boot-time net for when discovery finds nothing.')
+
+
+def test_service_units_set_path_for_both_writers(ctx):
+    """REQ-INST-26. BOTH writers, together, asserted on rendered output.
+
+    A systemd-only fix would leave macOS broken, and macOS is where this is
+    worst: launchd's default PATH excludes /opt/homebrew/bin, which is exactly
+    where `brew install socat` puts the binary the bridge spawns by bare name.
+    So the launchd half is not a courtesy -- it is the load-bearing platform.
+    """
+    base = ctx['work'] / 'service-path'
+    base.mkdir(parents=True, exist_ok=True)
+    env = dry_run_env(ctx)
+    install_dir = str(Path(env['HOME']) / '.local' / 'bin')
+
+    # --- linux / systemd ------------------------------------------------------
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+              timeout=60, env=env)
+    assert res.returncode == 0, f'linux dry-run failed:\n{res.stderr}'
+    assert 'platform: linux/' in res.stdout, (
+        f'expected the linux branch on this host:\n{res.stdout[:400]}')
+    systemd_path = rendered_systemd_path(res)
+    assert_service_path_is_sane(systemd_path, install_dir,
+                                SYSTEMD_DEFAULT_PATH_DIRS, 'systemd unit')
+
+    # --- darwin / launchd, forced with the uname shim -------------------------
+    shim = darwin_uname_shim(base)
+    denv = {**env, 'PATH': f'{shim}:{env["PATH"]}'}
+    dres = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+               timeout=60, env=denv)
+    assert dres.returncode == 0, f'darwin dry-run failed:\n{dres.stderr}'
+    assert 'platform: darwin/arm64' in dres.stdout, (
+        'the uname shim did not move the run onto the darwin branch; the plist '
+        f'assertions would silently test nothing:\n{dres.stdout[:400]}')
+    plist_path = rendered_plist_path(dres)
+    assert_service_path_is_sane(plist_path, install_dir,
+                                LAUNCHD_DEFAULT_PATH_DIRS, 'launchd plist')
+    assert '/opt/homebrew/bin' in plist_path.split(':'), (
+        'the launchd plist PATH must include /opt/homebrew/bin: launchd default '
+        'PATH omits it, and `brew install socat` puts socat there on Apple '
+        f'Silicon. got {plist_path!r}')
+
+
+def test_service_path_reaches_a_socat_outside_the_default_dirs(ctx):
+    """REQ-INST-26/REQ-INST-14: the preflight must BIND.
+
+    The REQ-INST-14 preflight resolves socat in the INSTALLER's shell. If the
+    generated unit then ships a PATH that cannot see that same socat, the
+    preflight guarantees something other than what it claims -- it passes, the
+    install reports success, and the bridge still cannot reach a wss:// hub.
+
+    _shim_dir + stub_env put socat in a hermetic directory that is NOT any
+    service-manager default dir (that is the whole point of stub_env setting
+    PATH to the shim ALONE), so this is the real 'socat lives somewhere the
+    service manager would never look' case rather than a simulation of it.
+    """
+    base = ctx['work'] / 'service-path-socat'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = _shim_dir(base, 'shim-socat-elsewhere')
+    assert (shim / 'socat').exists(), 'the shim must supply socat'
+    shim_str = str(shim)
+    for default_dir in set(SYSTEMD_DEFAULT_PATH_DIRS) | set(LAUNCHD_DEFAULT_PATH_DIRS):
+        assert shim_str != default_dir, 'the shim must not BE a default dir'
+
+    home = base / 'home'
+    runtime = base / 'runtime'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    res = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--dry-run', '--version', 'v0.1.0'],
+        stub_env(home, runtime, shim), timeout=90)
+    assert res.returncode == 0, (
+        f'hermetic dry-run failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
+
+    rendered = rendered_systemd_path(res)
+    entries = rendered.split(':')
+    assert shim_str in entries, (
+        f'socat lives in {shim_str}, which no service manager default PATH '
+        f'contains, and the rendered unit PATH does not include it: {rendered!r}. '
+        f'The REQ-INST-14 preflight would pass and the bridge would still fail '
+        f'to spawn socat.')
+    # Prove the claim the assertion rests on rather than asserting around it:
+    # no OTHER entry in the rendered PATH could have supplied socat, so the shim
+    # dir is genuinely load-bearing here.
+    others = [d for d in entries if d != shim_str]
+    assert shutil.which('socat', path=':'.join(others)) is None, (
+        f'this test is not proving what it claims: socat is also reachable via '
+        f'{others} on this host, so the assertion above would pass even without '
+        f'the discovered entry. Harden the shim.')
+
+
+def test_service_path_tool_inventory_does_not_desync(ctx):
+    """REQ-INST-26: the tool list must be re-derivable, not a hand-typed mirror.
+
+    service_path_tools() exists so this single source can be checked against the
+    bridge's actual bare-name spawns. A literal list pasted into the writers
+    would drift the moment someone adds a spawn, and the drift would be
+    invisible -- the same failure the REQ-INST-19 rc tripwire and
+    system_unit_dirs() were both built to prevent.
+    """
+    # Sourcing install.sh would run main(); read the function body instead.
+    text = INSTALL_SCRIPT.read_text(encoding='utf-8')
+    body = text.split('service_path_tools() {', 1)[1].split('}', 1)[0]
+    tools = body.replace("printf '%s\\n'", '').split()
+    assert tools, f'could not re-derive service_path_tools() from:\n{body}'
+
+    # Each declared tool must correspond to a real bare-name spawn in the Odin
+    # sources: a vector whose argv[0] is that literal with no slash.
+    src = ROOT / 'src'
+    missing = []
+    for tool in tools:
+        lit = re.escape(tool)
+        # Two spawn spellings in this codebase, and a pattern that knew only the
+        # first silently reported socat missing:
+        #   composite literal -- []string{"tmux", "has-session", ...}
+        #   incremental append -- append(&cmd, "socat")   (ws.odin:341)
+        pats = (re.compile(r'(\{|,)\s*"' + lit + r'"\s*(,|\})'),
+                re.compile(r'append\(\s*&\w+\s*,\s*"' + lit + r'"\s*\)'))
+        found = any(any(pat.search(body) for pat in pats)
+                    for body in (f.read_text(encoding='utf-8', errors='replace')
+                                 for f in src.rglob('*.odin') if 'test' not in f.name))
+        if not found:
+            missing.append(tool)
+    assert not missing, (
+        f'service_path_tools() lists {missing}, which no Odin source spawns by '
+        f'bare name -- either the spawn was removed and the list went stale, or '
+        f'the name is wrong.')
+
+    # And the reverse direction for the tools this task established: every one
+    # of these IS spawned bare, so none may quietly fall out of the list.
+    for required in ('socat', 'tmux', 'git', 'sh'):
+        assert required in tools, (
+            f'{required} is spawned by bare name by the bridge but is no longer '
+            f'in service_path_tools(); the service PATH may no longer reach it.')
+
+
+
+def test_service_path_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-26: systemd Environment= splits on whitespace.
+
+    `Environment=PATH=/home/my user/.local/bin:...` does NOT set that PATH --
+    systemd takes the assignment up to the space and discards the remainder,
+    which `systemd-analyze verify` reports as "Invalid environment assignment,
+    ignoring: user/.local/bin:...". So the unquoted form renders a unit whose
+    PATH is a truncated fragment, and the fix for REQ-INST-26 would itself be
+    broken on any host with a space in $HOME. The quoted form is the fix; this
+    test is what stops it being un-fixed.
+
+    Asserted on the rendered unit AND, where systemd-analyze is available, by
+    systemd's own parser rather than by this file's reading of the manual.
+    """
+    base = ctx['work'] / 'service-path-space'
+    home = base / 'my home'
+    home.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, 'HOME': str(home)}
+    install_dir = str(home / '.local' / 'bin')
+    assert ' ' in install_dir, 'this test is pointless without a space'
+
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+              timeout=60, env=env)
+    assert res.returncode == 0, f'dry-run failed:\n{res.stderr}'
+    unit = dry_run_unit_text(res)
+
+    line = next((l for l in unit.splitlines()
+                 if l.startswith('Environment=') and 'PATH=' in l), None)
+    assert line is not None, f'no PATH line in:\n{unit}'
+    assert line.startswith('Environment="PATH=') and line.endswith('"'), (
+        f'the PATH assignment must be QUOTED or systemd truncates it at the '
+        f'first space in $install_dir; got {line!r}')
+    # The whole install_dir, space included, must survive inside the quotes.
+    assert install_dir in line, (
+        f'{install_dir!r} did not survive into {line!r}')
+
+    # Let systemd judge its own syntax where we can -- but judge OUR line only.
+    #
+    # The whole rendered unit does not verify clean on a space-containing home,
+    # and deliberately so: ExecStart and the two HEIMDALL_*_BIN Environment=
+    # lines have the identical unquoted-whitespace defect, they pre-date
+    # REQ-INST-26, and fixing them is T29 rather than this task. Asserting on the
+    # full unit would therefore fail here for a reason that is not this test's
+    # subject, and relaxing the assertion to tolerate that would also tolerate a
+    # regression in the PATH line itself.
+    #
+    # So the PATH line is lifted into a minimal unit of its own. Any
+    # environment-assignment complaint from systemd is then unambiguously about
+    # the line under test. When T29 lands, this test keeps working unchanged.
+    analyze = shutil.which('systemd-analyze')
+    if analyze is None:
+        raise Skip('systemd-analyze not available; rendered-text assertions above still ran')
+    unit_file = base / 'heimdall-bridge.service'
+    unit_file.write_text(
+        '[Unit]\nDescription=PATH quoting probe\n\n'
+        '[Service]\nType=simple\nExecStart=/bin/true\n'
+        + line + '\n\n[Install]\nWantedBy=default.target\n')
+    vres = run([analyze, 'verify', str(unit_file)], timeout=60)
+    combined = vres.stdout + vres.stderr
+    assert 'Invalid environment assignment' not in combined, (
+        f'systemd rejected the PATH assignment {line!r}:\n{combined}')
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -3864,6 +4173,14 @@ def main() -> int:
         ('storeless execution gate has teeth (REQ-INST-16)', test_storeless_exec_has_teeth),
         ('SELF_HOSTING.md Part 2 installer docs', test_self_hosting_documents_installer),
         ('README installer pointer', test_readme_points_at_installer),
+        ('service units set PATH, both writers (REQ-INST-26)',
+         test_service_units_set_path_for_both_writers),
+        ('service PATH reaches a socat outside the default dirs (REQ-INST-26)',
+         test_service_path_reaches_a_socat_outside_the_default_dirs),
+        ('service PATH tool inventory does not desync (REQ-INST-26)',
+         test_service_path_tool_inventory_does_not_desync),
+        ('service PATH survives a space in install_dir (REQ-INST-26)',
+         test_service_path_survives_a_space_in_the_install_dir),
     ]
 
     ctx = {}
