@@ -41,9 +41,9 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "start-success": ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return
 	case "bridge":        ctl_v2_bridge(endpoint, token, rest, args); return
 	case "agents":        ctl_v2_agents(endpoint, token, rest, args); return
-	case "task-chain", "task-chains": ctl_v2_task_chain(endpoint, token, rest, args); return
+	case "task-chain", "task-chains", "chain", "chains": ctl_v2_task_chain(endpoint, token, rest, args); return
 	case "task", "tasks": ctl_v2_task(endpoint, token, rest, args); return
-	case "chat", "chats": ctl_v2_chat(endpoint, token, rest, args); return
+	case "chat", "chats", "conversation", "conversations": ctl_v2_chat(endpoint, token, rest, args); return
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
@@ -254,6 +254,12 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		if has_flag(args, "--pinned") do append(&fields, json_kv_raw("pinned", "true"))
 		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
 		ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]), args)
+	case "create":
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" { print_agent_help([]string{"task-chain"}); return }
+		params := ctl_agentmode_task_chain_create_params(args, pos(tokens, 1))
+		defer delete(params)
+		ctl_agent_call(endpoint, token, "agent.task_chain.create", params)
 	case "show":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid != "" { ctl_agent_call_and_decrypt(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid)), args) }
@@ -319,6 +325,16 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
 		ctl_agent_call(endpoint, token, "agent.task_chain.publish", json_object(json_kv("chain_id", cid)))
+	case "subscribe":
+		cid := option_value(args, "--chain", option_value(args, "--chain-id", pos(tokens, 1)))
+		events := option_value(args, "--events", option_value(args, "--event-type", "all"))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.subscribe", ctl_agentmode_chain_subscribe_params(cid, events))
+	case "unsubscribe":
+		cid := option_value(args, "--chain", option_value(args, "--chain-id", pos(tokens, 1)))
+		events := option_value(args, "--events", option_value(args, "--event-type", ""))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.unsubscribe", ctl_agentmode_chain_unsubscribe_params(cid, events))
 	case "pin":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -488,6 +504,16 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		params := ctl_agentmode_task_update_params(tid, args)
 		ctl_agent_call(endpoint, token, "agent.task.update", params)
+	case "subscribe":
+		tid := option_value(args, "--task", option_value(args, "--task-id", pos(tokens, 1)))
+		events := option_value(args, "--events", option_value(args, "--event-type", "all"))
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.subscribe", ctl_agentmode_task_subscribe_params(tid, events))
+	case "unsubscribe":
+		tid := option_value(args, "--task", option_value(args, "--task-id", pos(tokens, 1)))
+		events := option_value(args, "--events", option_value(args, "--event-type", ""))
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.unsubscribe", ctl_agentmode_task_unsubscribe_params(tid, events))
 	case:
 		print_agent_help([]string{"task"})
 	}
@@ -1184,6 +1210,65 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	return json_object_from_slice(fields[:])
 }
 
+ctl_agentmode_task_chain_create_params :: proc(args: []string, positional_title: string = "") -> string {
+	title := option_value(args, "--title", positional_title)
+	desc := option_value(args, "--description", "")
+	if has_flag(args, "--stdin") {
+		data, err := os.read_entire_file("/dev/stdin", context.allocator)
+		if err == nil do desc = string(data)
+	}
+	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
+	if key_ok {
+		if title != "" && !is_vault_armored(title) {
+			if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
+				title = enc
+			}
+		}
+		if desc != "" && !is_vault_armored(desc) {
+			if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {
+				desc = enc
+			}
+		}
+	}
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("title", title))
+	if desc != "" do append(&fields, json_kv("description", desc))
+	append(&fields, json_kv("kind", option_value(args, "--kind", "team_work")))
+	if coord := option_value(args, "--coordinator", option_value(args, "--coordinator-agent-id", "")); coord != "" {
+		append(&fields, json_kv("coordinator_agent_id", coord))
+	}
+	if bridge := option_value(args, "--bridge", option_value(args, "--bridge-id", "")); bridge != "" {
+		append(&fields, json_kv("bridge_id", bridge))
+	}
+	if project := option_value(args, "--project", option_value(args, "--project-id", "")); project != "" {
+		append(&fields, json_kv("project_id", project))
+	}
+	if provider := option_value(args, "--provider", ""); provider != "" {
+		append(&fields, json_kv("provider", provider))
+	}
+	if tier := option_value(args, "--tier", ""); tier != "" {
+		append(&fields, json_kv("tier", tier))
+	}
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_chain_subscribe_params :: proc(cid, events: string) -> string {
+	return json_object(json_kv("chain_id", cid), json_kv("events", events))
+}
+
+ctl_agentmode_chain_unsubscribe_params :: proc(cid, events: string) -> string {
+	return json_object(json_kv("chain_id", cid), json_kv("events", events))
+}
+
+ctl_agentmode_task_subscribe_params :: proc(tid, events: string) -> string {
+	return json_object(json_kv("task_id", tid), json_kv("events", events))
+}
+
+ctl_agentmode_task_unsubscribe_params :: proc(tid, events: string) -> string {
+	return json_object(json_kv("task_id", tid), json_kv("events", events))
+}
+
 ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	title := option_value(args, "--title", "")
 	desc := option_value(args, "--description", "")
@@ -1524,7 +1609,7 @@ print_agent_help :: proc(cmd: []string) {
 	switch resource {
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
-	case "task-chain", "task-chains":
+	case "task-chain", "task-chains", "chain", "chains":
 		if sub == "fleet" || sub == "fleets" {
 			print_help_task_chain_fleet()
 			return
@@ -1532,7 +1617,7 @@ print_agent_help :: proc(cmd: []string) {
 		print_help_task_chain()
 		return
 	case "task", "tasks": print_help_task(); return
-	case "chat", "chats": print_help_chat(); return
+	case "chat", "chats", "conversation", "conversations": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
@@ -1661,6 +1746,9 @@ print_help_task_chain :: proc() {
 	fmt.println("VERBS")
 	fmt.println("  list [--mine] [--pinned] [--project <id>]   List chains (--mine = ones you coordinate, --pinned = pinned).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
+	fmt.println("  create --title <title>              Create a task chain.")
+	fmt.println("      [--description <text>] [--kind <kind>] [--coordinator <id>]")
+	fmt.println("      [--bridge <id>] [--project <id>] [--provider <p>] [--tier <t>]")
 	fmt.println("  pin <chain-id>                      Pin a task chain to the top of the sidebar.")
 	fmt.println("  unpin <chain-id>                    Unpin a task chain.")
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
@@ -1672,6 +1760,8 @@ print_help_task_chain :: proc() {
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
 	fmt.println("                                      published to its tasks — until then nothing in the")
 	fmt.println("                                      chain promotes or can be nudged.")
+	fmt.println("  subscribe <chain-id> [--events <events>]  Subscribe to task chain status events.")
+	fmt.println("  unsubscribe <chain-id> [--events <events>] Unsubscribe from task chain status events.")
 	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
 	fmt.println("  fleet <list|set>                    Manage chain fleet capacities and active workers.")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
@@ -1681,6 +1771,9 @@ print_help_task_chain :: proc() {
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task-chain list --mine")
 	fmt.println("  ham-ctl task-chain show chain_abc")
+	fmt.println("  ham-ctl task-chain create --title 'Build feature' --coordinator agt_coord")
+	fmt.println("  ham-ctl task-chain subscribe chain_abc --events all")
+	fmt.println("  ham-ctl task-chain unsubscribe chain_abc")
 	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain set-description 'Harden auth: rotate tokens, add tests.'")
 	fmt.println("  ham-ctl task-chain fleet list chain_abc")
@@ -1735,9 +1828,13 @@ print_help_task :: proc() {
 	fmt.println("  set-current <task-id>                   Mark this task as your current task.")
 	fmt.println("  depend <task-id> --on <task-id>         Add a single dependency (use `update --depends-on`")
 	fmt.println("                                          to replace the whole dependency list).")
+	fmt.println("  subscribe <task-id> [--events <events>] Subscribe to task status events.")
+	fmt.println("  unsubscribe <task-id> [--events <events>] Unsubscribe from task status events.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task show inst_task_1")
+	fmt.println("  ham-ctl task subscribe inst_task_1 --events all")
+	fmt.println("  ham-ctl task unsubscribe inst_task_1")
 	fmt.println("  ham-ctl task update inst_task_1 --assignee inst_worker --reviewer inst_a,inst_b")
 	fmt.println("  ham-ctl task update inst_task_1 --priority p0 --description 'urgent: fix regression'")
 	fmt.println("  ham-ctl task comment inst_task_1 --body 'pushed fix' --notify inst_rev")

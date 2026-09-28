@@ -430,6 +430,9 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if save_ok && status_closed {
 		broadcast_chain_closed(service, auth, saved, closed_status)
 	}
+	if save_ok && input.status != "" {
+		fanout_chain_status_changed(service, auth, saved)
+	}
 	return saved, save_ok, save_err
 }
 
@@ -535,6 +538,9 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	// long-running loops/tasks halt.
 	if save_ok && (next == .Completed || next == .Cancelled || next == .Archived) {
 		broadcast_chain_closed(service, auth, saved, next)
+	}
+	if save_ok {
+		fanout_chain_status_changed(service, auth, saved)
 	}
 	return saved, save_ok, save_err
 }
@@ -676,6 +682,7 @@ sync_chain_status_from_tasks :: proc(service: ^Taskchain_Service, chain_id: doma
 			defer delete(summary)
 			events.publish_resource_changed(service.event_bus, string(chain.owner_user_id), "task_chain", string(chain.chain_id), "updated", summary)
 		}
+		fanout_chain_status_changed(service, contracts.Auth_Context{kind = .None}, chain)
 	}
 
 	return chain, true, domain.Domain_Error{}
@@ -932,6 +939,7 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 		// MEM-6 #6/#7: paused/cancelled/validated_good policy wakes (not covered by
 		// the CT-6 work/review gate above).
 		notify_status_policy(service, auth, task_ret, chain)
+		fanout_task_status_changed(service, auth, task_ret, chain)
 		// REPORT THE ROW, NOT OUR INTENTION.
 		//
 		// recompute_chain_promotions above is allowed to change this task's status
@@ -2214,7 +2222,10 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 		if ok && updated_status != task.status {
 			_, _, _ = sync_chain_status_from_tasks(service, saved.chain_id, saved.owner_user_id)
 			chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, saved.chain_id)
-			if chain_ok do _ = recompute_chain_promotions(service, chain)
+			if chain_ok {
+				_ = recompute_chain_promotions(service, chain)
+				fanout_task_status_changed(service, contracts.Auth_Context{kind = .None}, saved, chain)
+			}
 		}
 	}
 }

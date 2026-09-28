@@ -98,6 +98,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		}
 
 	// ---- task-chain -------------------------------------------------------
+	case "agent.task_chain.create":
+		return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = "/api/v1/task-chains", send_body = true}
 	case "agent.task_chain.list":
 		// coordinated_by_me -> chains this agent coordinates (hub defaults the
 		// coordinator to the caller's own instance from the instance token).
@@ -143,6 +145,10 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/pin"}), send_body = true}
 		}
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain pin requires a chain id: pass <chain-id> (or --chain <id>)"}
+	case "agent.task_chain.subscribe":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/subscribe"}
+	case "agent.task_chain.unsubscribe":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/unsubscribe"}
 
 	// ---- task -------------------------------------------------------------
 	case "agent.task.list":
@@ -171,6 +177,10 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/vote"}
 	case "agent.task.nudge":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/nudge"}
+	case "agent.task.subscribe":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/task/subscribe"}
+	case "agent.task.unsubscribe":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/task/unsubscribe"}
 
 	// ---- chat -------------------------------------------------------------
 	case "agent.chat.send":
@@ -257,12 +267,14 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_start", "agent.agents.instance_restart",
 	     "agent.agents.instance_stop",
 	     // task-chain + task
-	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
+	     "agent.task_chain.create", "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.set_description", "agent.task_chain.set_status", "agent.task_chain.reconcile",
 	     "agent.task_chain.publish", "agent.task_chain.pin",
+	     "agent.task_chain.subscribe", "agent.task_chain.unsubscribe",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",
+	     "agent.task.subscribe", "agent.task.unsubscribe",
 	     // chat + self/misc
 	     "agent.chat.send", "agent.chat.read",
 	     "agent.context.get", "agent.conversation.set_title",

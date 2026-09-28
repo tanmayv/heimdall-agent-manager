@@ -53,6 +53,12 @@ Task_Chain_Fleet_Ensure_Proc :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet
 Task_Chain_Fleet_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error)
 Task_Chain_Fleet_Delete_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 
+Task_Subscription_Save_Proc :: proc(ctx: rawptr, sub: domain.Task_Subscription) -> (domain.Task_Subscription, bool, domain.Domain_Error)
+Task_Subscription_Remove_Proc :: proc(ctx: rawptr, subscription_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
+Task_Subscription_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error)
+Task_Subscription_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error)
+Task_Subscription_List_By_Instance_Proc :: proc(ctx: rawptr, subscriber_agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error)
+
 Taskchain_Repository :: struct {
 	ctx: rawptr,
 	get_chain: Task_Chain_Get_Proc,
@@ -86,6 +92,11 @@ Taskchain_Repository :: struct {
 	ensure_fleet: Task_Chain_Fleet_Ensure_Proc,
 	list_fleets_by_chain: Task_Chain_Fleet_List_By_Chain_Proc,
 	delete_fleet: Task_Chain_Fleet_Delete_Proc,
+	save_subscription: Task_Subscription_Save_Proc,
+	remove_subscription: Task_Subscription_Remove_Proc,
+	list_subscriptions_by_chain: Task_Subscription_List_By_Chain_Proc,
+	list_subscriptions_by_task: Task_Subscription_List_By_Task_Proc,
+	list_subscriptions_by_instance: Task_Subscription_List_By_Instance_Proc,
 }
 
 taskchain_get_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -244,5 +255,31 @@ taskchain_delete_fleet :: proc(repo: ^Taskchain_Repository, chain_id: domain.Tas
 	if repo == nil || repo.delete_fleet == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.delete_fleet(repo.ctx, chain_id, agent_id, owner_user_id)
 }
+
+taskchain_save_subscription :: proc(repo: ^Taskchain_Repository, sub: domain.Task_Subscription) -> (domain.Task_Subscription, bool, domain.Domain_Error) {
+	if repo == nil || repo.save_subscription == nil do return domain.Task_Subscription{}, false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.save_subscription(repo.ctx, sub)
+}
+
+taskchain_remove_subscription :: proc(repo: ^Taskchain_Repository, subscription_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.remove_subscription == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.remove_subscription(repo.ctx, subscription_id, owner_user_id)
+}
+
+taskchain_list_subscriptions_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	if repo == nil || repo.list_subscriptions_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_subscriptions_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_list_subscriptions_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	if repo == nil || repo.list_subscriptions_by_task == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_subscriptions_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+taskchain_list_subscriptions_by_instance :: proc(repo: ^Taskchain_Repository, subscriber_agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	if repo == nil || repo.list_subscriptions_by_instance == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_subscriptions_by_instance(repo.ctx, subscriber_agent_instance_id, owner_user_id)
+}
+
 
 
