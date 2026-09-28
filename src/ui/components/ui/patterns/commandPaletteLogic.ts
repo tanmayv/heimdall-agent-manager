@@ -97,6 +97,7 @@ export const DEFAULT_ACTIONS: PaletteAction[] = [
   { id: 'new-agent', label: 'New agent', icon: 'bot', hint: 'Create a durable identity', route: '/agents/new' },
   { id: 'new-chain', label: 'New task chain', icon: 'tasks', hint: 'Start a chain', route: '/chains' },
   { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths', route: '/projects' },
+  { id: 'settings', label: 'Settings', icon: 'gear', hint: 'Settings & preferences', route: '/settings' },
   { id: 'settings-appearance', label: 'Appearance & Themes', icon: 'spark', hint: 'Theme settings', route: '/settings/appearance' },
   ...THEMES.map((t) => ({
     id: `set-theme-${t.id}`,

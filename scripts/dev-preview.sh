@@ -29,17 +29,18 @@ cd "$REPO"
 
 PORT="${HEIMDALL_PREVIEW_PORT:-5173}"
 VITE_PORT="${HEIMDALL_VITE_PORT:-5174}"
-HAM_CTL="${HAM_CTL:-$(which ham-ctl 2>/dev/null || true)}"
-if [[ -z "$HAM_CTL" || ! -x "$HAM_CTL" ]]; then
+if [[ -z "${HAM_CTL:-}" ]]; then
   for candidate in \
+    "$REPO/.heimdall/bin/ham-ctl" \
+    /tmp/heimdall-bridge-local/instances/*/.heimdall/bin/ham-ctl \
     "$HOME/.nix-profile/bin/ham-ctl" \
-    "/usr/local/google/home/tanmayvijay/.nix-profile/bin/ham-ctl" \
-    "$REPO/.heimdall/bin/ham-ctl"; do
+    "/usr/local/google/home/tanmayvijay/.nix-profile/bin/ham-ctl"; do
     if [[ -x "$candidate" ]]; then
       HAM_CTL="$candidate"
       break
     fi
   done
+  HAM_CTL="${HAM_CTL:-$(which ham-ctl 2>/dev/null || true)}"
 fi
 LABEL="heimdall-ui-live-preview"
 STATE="$REPO/.dev-preview-session"
@@ -107,6 +108,11 @@ if [[ -n "${HEIMDALL_PREVIEW_CHAIN:-}" ]]; then
   EXTRA+=(--chain "$HEIMDALL_PREVIEW_CHAIN")
 fi
 
+PROD_FLAG="--prod"
+if [[ "${*:-}" =~ "--no-prod" ]] || [[ "${HEIMDALL_PREVIEW_PROD:-1}" == "0" ]]; then
+  PROD_FLAG=""
+fi
+
 START_RESPONSE="$("$HAM_CTL" shell start \
   --bridge "$BRIDGE" \
   ${EXTRA[@]+"${EXTRA[@]}"} \
@@ -114,7 +120,7 @@ START_RESPONSE="$("$HAM_CTL" shell start \
   --port "$PORT" \
   --label "$LABEL" \
   --cwd "$REPO" \
-  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\"")"
+  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" ${PROD_FLAG}")"
 
 SID="$(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("session_id",""))')"
 [[ -n "$SID" ]] || die "shell start returned no session_id. Response was: $START_RESPONSE"
