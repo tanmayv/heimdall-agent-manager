@@ -230,6 +230,43 @@ agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
+agent_action_chain_subscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	events_val := json_string(params, "events")
+	if events_val == "" do events_val = json_string(params, "event_type")
+	sub, saved, err := taskchain_service.subscribe_taskchain(h.taskchains, auth, domain.Task_Chain_ID(chain_id), events_val)
+	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_subscribe", fmt.tprintf("subscribed to chain %s", chain_id))
+	publish_chain_event(h.event_bus, string(sub.owner_user_id), string(sub.chain_id), "updated")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	write_subscription_json(&b, sub)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_chain_unsubscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	events_val := json_string(params, "events")
+	if events_val == "" do events_val = json_string(params, "event_type")
+	removed, err := taskchain_service.unsubscribe_taskchain(h.taskchains, auth, domain.Task_Chain_ID(chain_id), events_val)
+	if err.code != .None do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_unsubscribe", fmt.tprintf("unsubscribed from chain %s", chain_id))
+	publish_chain_event(h.event_bus, auth.user_id, chain_id, "updated")
+	return respond_success(fmt.tprintf("{{\"removed\":%s}}", "true" if removed else "false"), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return process_agent_chat_fetch_or_read(ctx, req, false)
 }
@@ -781,6 +818,40 @@ agent_action_task_vote_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	b := strings.builder_make()
 	write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_task_subscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := strings.trim_space(json_string(params, "task_id"))
+	if task_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	events_val := json_string(params, "events")
+	if events_val == "" do events_val = json_string(params, "event_type")
+	sub, saved, err := taskchain_service.subscribe_task(h.taskchains, auth, domain.Task_ID(task_id), events_val)
+	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_subscribe", fmt.tprintf("subscribed to task %s", task_id))
+	publish_task_event(h.event_bus, string(sub.owner_user_id), string(sub.task_id), string(sub.chain_id), "updated")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	write_subscription_json(&b, sub)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_task_unsubscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := strings.trim_space(json_string(params, "task_id"))
+	if task_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	events_val := json_string(params, "events")
+	if events_val == "" do events_val = json_string(params, "event_type")
+	removed, err := taskchain_service.unsubscribe_task(h.taskchains, auth, domain.Task_ID(task_id), events_val)
+	if err.code != .None do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_unsubscribe", fmt.tprintf("unsubscribed from task %s", task_id))
+	return respond_success(fmt.tprintf("{{\"removed\":%s}}", "true" if removed else "false"), req.request_id, auth_ctx_server_time(req), 200)
 }
 
 

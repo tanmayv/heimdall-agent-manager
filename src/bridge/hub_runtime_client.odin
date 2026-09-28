@@ -375,6 +375,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		task_id := extract_json_string(text, "task_id", "")
+		fmt.println("bridge hub runtime command notify_task_nudge", instance_id, command_id)
 		if bridge_should_debounce_nudge(instance_id, task_id) {
 			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
 			return

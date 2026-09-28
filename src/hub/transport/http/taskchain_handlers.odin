@@ -696,6 +696,63 @@ pin_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+task_chain_subscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	if auth_ctx.agent_instance_id == "" {
+		if inst_id := json_string(req.body, "agent_instance_id"); inst_id != "" {
+			auth_ctx.agent_instance_id = inst_id
+		} else if inst_id2 := json_string(req.body, "subscriber_agent_instance_id"); inst_id2 != "" {
+			auth_ctx.agent_instance_id = inst_id2
+		} else if inst_id3 := query_value(req.query, "agent_instance_id"); inst_id3 != "" {
+			auth_ctx.agent_instance_id = inst_id3
+		} else if inst_id4 := query_value(req.query, "subscriber_agent_instance_id"); inst_id4 != "" {
+			auth_ctx.agent_instance_id = inst_id4
+		}
+	}
+	events_val := json_string(req.body, "events")
+	if events_val == "" do events_val = json_string(req.body, "event_type")
+	if events_val == "" do events_val = query_value(req.query, "events")
+	if events_val == "" do events_val = query_value(req.query, "event_type")
+	sub, saved, err := taskchain_service.subscribe_taskchain(h.taskchains, auth_ctx, chain_id, events_val)
+	if !saved do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(sub.owner_user_id), string(sub.chain_id), "updated")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	write_subscription_json(&b, sub)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+task_chain_unsubscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	if auth_ctx.agent_instance_id == "" {
+		if inst_id := json_string(req.body, "agent_instance_id"); inst_id != "" {
+			auth_ctx.agent_instance_id = inst_id
+		} else if inst_id2 := json_string(req.body, "subscriber_agent_instance_id"); inst_id2 != "" {
+			auth_ctx.agent_instance_id = inst_id2
+		} else if inst_id3 := query_value(req.query, "agent_instance_id"); inst_id3 != "" {
+			auth_ctx.agent_instance_id = inst_id3
+		} else if inst_id4 := query_value(req.query, "subscriber_agent_instance_id"); inst_id4 != "" {
+			auth_ctx.agent_instance_id = inst_id4
+		}
+	}
+	events_val := json_string(req.body, "events")
+	if events_val == "" do events_val = json_string(req.body, "event_type")
+	if events_val == "" do events_val = query_value(req.query, "events")
+	if events_val == "" do events_val = query_value(req.query, "event_type")
+	removed, err := taskchain_service.unsubscribe_taskchain(h.taskchains, auth_ctx, chain_id, events_val)
+	if err.code != .None do return respond_error(err, req.request_id)
+	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
+	return respond_success(fmt.tprintf("{{\"removed\":%s}}", "true" if removed else "false"), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -994,6 +1051,85 @@ vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	b := strings.builder_make(); write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+task_subscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	task_id: domain.Task_ID
+	if path_part(req.path, 3) == "task-chains" && path_part(req.path, 5) == "tasks" {
+		chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+		task_id = domain.Task_ID(path_part(req.path, 6))
+		if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	} else if path_part(req.path, 3) == "tasks" {
+		task_id = domain.Task_ID(path_part(req.path, 4))
+	} else {
+		task_id = domain.Task_ID(path_part(req.path, 6))
+	}
+	if task_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	if auth_ctx.agent_instance_id == "" {
+		if inst_id := json_string(req.body, "agent_instance_id"); inst_id != "" {
+			auth_ctx.agent_instance_id = inst_id
+		} else if inst_id2 := json_string(req.body, "subscriber_agent_instance_id"); inst_id2 != "" {
+			auth_ctx.agent_instance_id = inst_id2
+		} else if inst_id3 := query_value(req.query, "agent_instance_id"); inst_id3 != "" {
+			auth_ctx.agent_instance_id = inst_id3
+		} else if inst_id4 := query_value(req.query, "subscriber_agent_instance_id"); inst_id4 != "" {
+			auth_ctx.agent_instance_id = inst_id4
+		}
+	}
+	events_val := json_string(req.body, "events")
+	if events_val == "" do events_val = json_string(req.body, "event_type")
+	if events_val == "" do events_val = query_value(req.query, "events")
+	if events_val == "" do events_val = query_value(req.query, "event_type")
+	sub, saved, err := taskchain_service.subscribe_task(h.taskchains, auth_ctx, task_id, events_val)
+	if !saved do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(sub.owner_user_id), string(sub.task_id), string(sub.chain_id), "updated")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	write_subscription_json(&b, sub)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+task_unsubscribe_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	task_id: domain.Task_ID
+	chain_for_pub: domain.Task_Chain_ID = ""
+	if path_part(req.path, 3) == "task-chains" && path_part(req.path, 5) == "tasks" {
+		chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+		task_id = domain.Task_ID(path_part(req.path, 6))
+		chain_for_pub = chain_id
+		if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	} else if path_part(req.path, 3) == "tasks" {
+		task_id = domain.Task_ID(path_part(req.path, 4))
+	} else {
+		task_id = domain.Task_ID(path_part(req.path, 6))
+	}
+	if task_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	if auth_ctx.agent_instance_id == "" {
+		if inst_id := json_string(req.body, "agent_instance_id"); inst_id != "" {
+			auth_ctx.agent_instance_id = inst_id
+		} else if inst_id2 := json_string(req.body, "subscriber_agent_instance_id"); inst_id2 != "" {
+			auth_ctx.agent_instance_id = inst_id2
+		} else if inst_id3 := query_value(req.query, "agent_instance_id"); inst_id3 != "" {
+			auth_ctx.agent_instance_id = inst_id3
+		} else if inst_id4 := query_value(req.query, "subscriber_agent_instance_id"); inst_id4 != "" {
+			auth_ctx.agent_instance_id = inst_id4
+		}
+	}
+	events_val := json_string(req.body, "events")
+	if events_val == "" do events_val = json_string(req.body, "event_type")
+	if events_val == "" do events_val = query_value(req.query, "events")
+	if events_val == "" do events_val = query_value(req.query, "event_type")
+	removed, err := taskchain_service.unsubscribe_task(h.taskchains, auth_ctx, task_id, events_val)
+	if err.code != .None do return respond_error(err, req.request_id)
+	if chain_for_pub != "" {
+		publish_chain_changed(h, auth_ctx.user_id, string(chain_for_pub), "updated")
+	}
+	return respond_success(fmt.tprintf("{{\"removed\":%s}}", "true" if removed else "false"), req.request_id, auth_ctx_server_time(req), 200)
 }
 
 list_chain_members_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -1389,6 +1525,17 @@ delete_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
 	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\",\"is_pinned\":"); strings.write_string(b, "true" if c.is_pinned else "false"); strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, c.pinned_at); strings.write_string(b, "\"}")
+}
+
+write_subscription_json :: proc(b: ^strings.Builder, s: domain.Task_Subscription) {
+	strings.write_string(b, "{\"subscription_id\":\""); write_handler_json_string(b, s.subscription_id)
+	strings.write_string(b, "\",\"owner_user_id\":\""); write_handler_json_string(b, string(s.owner_user_id))
+	strings.write_string(b, "\",\"subscriber_agent_instance_id\":\""); write_handler_json_string(b, s.subscriber_agent_instance_id)
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(s.chain_id))
+	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(s.task_id))
+	strings.write_string(b, "\",\"event_type\":\""); write_handler_json_string(b, s.event_type)
+	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, s.created_at)
+	strings.write_string(b, "\"}")
 }
 
 // requested_status is OBSERVATIONAL and optional: pass it only when the caller asked

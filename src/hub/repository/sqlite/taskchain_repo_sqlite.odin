@@ -44,6 +44,11 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		ensure_fleet = taskchain_ensure_fleet_sqlite,
 		list_fleets_by_chain = taskchain_list_fleets_by_chain_sqlite,
 		delete_fleet = taskchain_delete_fleet_sqlite,
+		save_subscription = taskchain_save_subscription_sqlite,
+		remove_subscription = taskchain_remove_subscription_sqlite,
+		list_subscriptions_by_chain = taskchain_list_subscriptions_by_chain_sqlite,
+		list_subscriptions_by_task = taskchain_list_subscriptions_by_task_sqlite,
+		list_subscriptions_by_instance = taskchain_list_subscriptions_by_instance_sqlite,
 	}
 }
 
@@ -499,6 +504,97 @@ taskchain_delete_fleet_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_I
 	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to delete fleet")
 	changes := int(sqlite3_changes(impl.conn.db))
 	return changes > 0, domain.Domain_Error{}
+}
+
+taskchain_save_subscription_sqlite :: proc(ctx: rawptr, sub: domain.Task_Subscription) -> (domain.Task_Subscription, bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "INSERT INTO task_subscriptions (subscription_id, owner_user_id, subscriber_agent_instance_id, chain_id, task_id, event_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(subscriber_agent_instance_id, chain_id, task_id, event_type) DO UPDATE SET subscription_id=excluded.subscription_id, owner_user_id=excluded.owner_user_id, created_at=excluded.created_at;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task_Subscription{}, false, domain.domain_error(.Internal_Error, "failed to prepare subscription save")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, sub.subscription_id)
+	bind_text(stmt, 2, string(sub.owner_user_id))
+	bind_text(stmt, 3, sub.subscriber_agent_instance_id)
+	bind_text(stmt, 4, string(sub.chain_id))
+	bind_text(stmt, 5, string(sub.task_id))
+	bind_text(stmt, 6, sub.event_type)
+	bind_text(stmt, 7, sub.created_at)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Subscription{}, false, domain.domain_error(.Conflict, "subscription could not be saved")
+	return sub, true, domain.Domain_Error{}
+}
+
+taskchain_remove_subscription_sqlite :: proc(ctx: rawptr, subscription_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM task_subscriptions WHERE subscription_id = ? AND (? = '' OR owner_user_id = ?);"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare subscription deletion")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, subscription_id)
+	bind_text(stmt, 2, string(owner_user_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to delete subscription")
+	changes := int(sqlite3_changes(impl.conn.db))
+	return changes > 0, domain.Domain_Error{}
+}
+
+taskchain_list_subscriptions_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT subscription_id, owner_user_id, subscriber_agent_instance_id, chain_id, task_id, event_type, created_at FROM task_subscriptions WHERE chain_id = ? AND (? = '' OR owner_user_id = ?) ORDER BY created_at ASC, subscription_id ASC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare subscription list by chain")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id))
+	bind_text(stmt, 2, string(owner_user_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Subscription)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, subscription_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
+taskchain_list_subscriptions_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT subscription_id, owner_user_id, subscriber_agent_instance_id, chain_id, task_id, event_type, created_at FROM task_subscriptions WHERE task_id = ? AND (? = '' OR owner_user_id = ?) ORDER BY created_at ASC, subscription_id ASC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare subscription list by task")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(task_id))
+	bind_text(stmt, 2, string(owner_user_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Subscription)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, subscription_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
+taskchain_list_subscriptions_by_instance_sqlite :: proc(ctx: rawptr, subscriber_agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Subscription, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT subscription_id, owner_user_id, subscriber_agent_instance_id, chain_id, task_id, event_type, created_at FROM task_subscriptions WHERE subscriber_agent_instance_id = ? AND (? = '' OR owner_user_id = ?) ORDER BY created_at ASC, subscription_id ASC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare subscription list by instance")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, subscriber_agent_instance_id)
+	bind_text(stmt, 2, string(owner_user_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Subscription)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, subscription_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
+subscription_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Subscription {
+	return domain.Task_Subscription{
+		subscription_id              = strings.clone(column_text_unowned(stmt, 0)),
+		owner_user_id                = domain.User_ID(strings.clone(column_text_unowned(stmt, 1))),
+		subscriber_agent_instance_id = strings.clone(column_text_unowned(stmt, 2)),
+		chain_id                     = domain.Task_Chain_ID(strings.clone(column_text_unowned(stmt, 3))),
+		task_id                      = domain.Task_ID(strings.clone(column_text_unowned(stmt, 4))),
+		event_type                   = strings.clone(column_text_unowned(stmt, 5)),
+		created_at                   = strings.clone(column_text_unowned(stmt, 6)),
+	}
 }
 
 directory_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Chain_Directory {

@@ -155,9 +155,11 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|fleet|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin|subscribe|unsubscribe>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 	fmt.println("  fleet <list|set>                        manage chain fleet capacities")
+	fmt.println("  subscribe <chain-id> [--events <events>] subscribe to chain status events")
+	fmt.println("  unsubscribe <chain-id> [--events <events>] unsubscribe from chain status events")
 }
 
 ctl_task_chains_fleet_command :: proc(transport: Ctl_Transport, tokens: []string, args: []string) {
@@ -221,7 +223,9 @@ is_destructive_chain_verb :: proc(action: string) -> bool {
 
 print_tasks_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge>")
+	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge|subscribe|unsubscribe>")
+	fmt.println("  subscribe <task-id> [--chain <id>] [--events <events>]   subscribe to task status events")
+	fmt.println("  unsubscribe <task-id> [--chain <id>] [--events <events>] unsubscribe from task status events")
 }
 
 ctl_task_chain_request_and_decrypt :: proc(transport: Ctl_Transport, method, path, body_json: string, args: []string = nil) {
@@ -237,6 +241,26 @@ ctl_task_chain_request_and_decrypt :: proc(transport: Ctl_Transport, method, pat
 	decrypted_json := ctl_decrypt_vault_json(resp_str, key_hex, key_ok)
 	defer delete(decrypted_json)
 	fmt.println(decrypted_json)
+}
+
+ctl_user_chain_subscribe_body :: proc(events, agent_instance_id: string) -> string {
+	if agent_instance_id != "" {
+		return json_object(json_kv("events", events), json_kv("agent_instance_id", agent_instance_id))
+	}
+	return json_object(json_kv("events", events))
+}
+
+ctl_user_chain_unsubscribe_body :: proc(events, agent_instance_id: string) -> string {
+	if events != "" && agent_instance_id != "" {
+		return json_object(json_kv("events", events), json_kv("agent_instance_id", agent_instance_id))
+	}
+	if events != "" {
+		return json_object(json_kv("events", events))
+	}
+	if agent_instance_id != "" {
+		return json_object(json_kv("agent_instance_id", agent_instance_id))
+	}
+	return "{}"
 }
 
 ctl_task_chains_command :: proc(cmd: []string, args: []string) {
@@ -322,12 +346,26 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		chain_id = cmd[idx + 1]
 	}
 	if chain_id == "" {
-		fmt.println("usage: ham-ctl task-chains <show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive> --chain <id>")
+		fmt.println("usage: ham-ctl task-chains <show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive|subscribe|unsubscribe> --chain <id>")
 		return
 	}
 
 	if action == "show" {
 		ctl_task_chain_request_and_decrypt(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), "", args)
+		return
+	}
+
+	if action == "subscribe" {
+		events := option_value(args, "--events", option_value(args, "--event-type", "all"))
+		inst := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/subscriptions", safe_path_part(chain_id)), ctl_user_chain_subscribe_body(events, inst))
+		return
+	}
+
+	if action == "unsubscribe" {
+		events := option_value(args, "--events", option_value(args, "--event-type", ""))
+		inst := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
+		ctl_tasks_request(transport, "DELETE", fmt.tprintf("/api/v1/task-chains/%s/subscriptions", safe_path_part(chain_id)), ctl_user_chain_unsubscribe_body(events, inst))
 		return
 	}
 
@@ -506,7 +544,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|archive|unarchive|pin|unpin|subscribe|unsubscribe>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {
@@ -650,8 +688,42 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	}
 
 	task_id := resolve_task_id(transport, args)
+	if task_id == "" && idx + 1 < len(cmd) && !strings.has_prefix(cmd[idx + 1], "--") {
+		task_id = cmd[idx + 1]
+	}
+
+	if action == "subscribe" {
+		if task_id == "" {
+			fmt.println("usage: ham-ctl tasks subscribe <task-id> [--chain <id>] [--events <events>]")
+			return
+		}
+		events := option_value(args, "--events", option_value(args, "--event-type", "all"))
+		inst := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
+		path := fmt.tprintf("/api/v1/tasks/%s/subscriptions", safe_path_part(task_id))
+		if chain_id != "" {
+			path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/subscriptions", safe_path_part(chain_id), safe_path_part(task_id))
+		}
+		ctl_tasks_request(transport, "POST", path, ctl_user_chain_subscribe_body(events, inst))
+		return
+	}
+
+	if action == "unsubscribe" {
+		if task_id == "" {
+			fmt.println("usage: ham-ctl tasks unsubscribe <task-id> [--chain <id>] [--events <events>]")
+			return
+		}
+		events := option_value(args, "--events", option_value(args, "--event-type", ""))
+		inst := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
+		path := fmt.tprintf("/api/v1/tasks/%s/subscriptions", safe_path_part(task_id))
+		if chain_id != "" {
+			path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/subscriptions", safe_path_part(chain_id), safe_path_part(task_id))
+		}
+		ctl_tasks_request(transport, "DELETE", path, ctl_user_chain_unsubscribe_body(events, inst))
+		return
+	}
+
 	if chain_id == "" || task_id == "" {
-		fmt.println("usage: ham-ctl tasks <update|status|done|depend|cancel|comment|comments|vote|votes|nudge> --chain <id> --task <id>")
+		fmt.println("usage: ham-ctl tasks <update|status|done|depend|cancel|comment|comments|vote|votes|nudge|subscribe|unsubscribe> --chain <id> --task <id>")
 		return
 	}
 
@@ -846,5 +918,5 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge>")
+	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge|subscribe|unsubscribe>")
 }

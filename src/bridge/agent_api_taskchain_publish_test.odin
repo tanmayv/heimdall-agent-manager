@@ -37,5 +37,14 @@ bridge_task_chain_publish_method_allowed :: proc(t: ^testing.T) {
 	// Guard the neighbours: adding publish must not disturb the existing verbs.
 	testing.expect(t, bridge_agent_method_allowed("agent.task_chain.reconcile"), "reconcile still allowed")
 	testing.expect(t, bridge_agent_method_allowed("agent.task_chain.set_status"), "set_status still allowed")
-	testing.expect(t, !bridge_agent_method_allowed("agent.task_chain.create"), "create is still NOT exposed (tracked separately)")
+	testing.expect(t, bridge_agent_method_allowed("agent.task_chain.create"), "create is in the agent method allowlist")
+}
+
+@(test)
+bridge_task_chain_create_routes_raw_post :: proc(t: ^testing.T) {
+	r := bridge_agent_route("agent.task_chain.create", `{"title":"test chain"}`)
+	testing.expect(t, r.kind == .Raw, "create routes .Raw (plain hub route, not an agent-actions envelope)")
+	testing.expect(t, r.http_method == "POST", "create is a POST")
+	testing.expect_value(t, r.path, "/api/v1/task-chains")
+	testing.expect(t, r.send_body, "create takes a request body")
 }
