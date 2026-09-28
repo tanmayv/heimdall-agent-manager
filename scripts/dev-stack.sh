@@ -25,14 +25,17 @@ cd "$ROOT"
 RUN_DIR="$ROOT/.run-logs"
 mkdir -p "$RUN_DIR/bridge"
 
-HUB_ADDR="127.0.0.1:8081"
-PROXY_ADDR="127.0.0.1:8080"
-BRIDGE_PORT="49327"
-BRIDGE_LOCAL_ENDPOINT_PORT="49328"
-HUB_DB="$ROOT/hub.db"
+# Ports are env-overridable so a second stack can run beside an existing one, and
+# so the stack can dodge a port already taken by an unrelated service on the host.
+# Defaults are unchanged.
+HUB_ADDR="${HAM_DEV_HUB_ADDR:-127.0.0.1:8081}"
+PROXY_ADDR="${HAM_DEV_PROXY_ADDR:-127.0.0.1:8080}"
+BRIDGE_PORT="${HAM_DEV_BRIDGE_PORT:-49327}"
+BRIDGE_LOCAL_ENDPOINT_PORT="${HAM_DEV_BRIDGE_LOCAL_ENDPOINT_PORT:-49328}"
+HUB_DB="${HAM_DEV_HUB_DB:-$ROOT/hub.db}"
 MIGRATIONS="$ROOT/src/hub/repository/sqlite/migrations"
 BRIDGE_CONFIG="$RUN_DIR/bridge/bridge-config-full.toml"
-BRIDGE_RUN_DIR="/tmp/heimdall-bridge-dev"
+BRIDGE_RUN_DIR="${HAM_DEV_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-dev}"
 
 build() {
   echo "[dev-stack] building fresh binaries via nix..."
@@ -175,6 +178,19 @@ start() {
   echo $! > "$(_pidfile hub)"
   sleep 2
 
+  # Fail loudly if the hub did not actually come up. Without this the stack
+  # carries on and the health probe below can report OK from an UNRELATED process
+  # that already owns the port (e.g. hub.log "listen failed ... Address_In_Use"),
+  # so the bridge is pointed at a foreign service and every observation taken
+  # from the stack is worthless. Better to stop here than to emit false evidence.
+  if ! _running "$(_pidfile hub)"; then
+    echo "[dev-stack] ERROR: hub failed to start. Last lines of $RUN_DIR/hub.log:" >&2
+    tail -5 "$RUN_DIR/hub.log" >&2
+    echo "[dev-stack]        if this says Address_In_Use, the port is taken by another" >&2
+    echo "[dev-stack]        process; re-run with HAM_DEV_HUB_ADDR=127.0.0.1:<free-port>" >&2
+    exit 1
+  fi
+
   echo "[dev-stack] starting dev-proxy on $PROXY_ADDR -> hub"
   nohup ./result-devproxy/bin/ham-dev-proxy \
     --listen "$PROXY_ADDR" --hub-url "http://$HUB_ADDR" \
@@ -224,7 +240,7 @@ status() {
     if _running "$f"; then echo "  $s: RUNNING (pid $(cat "$f"))"; else echo "  $s: stopped"; fi
   done
   echo "--- listeners ---"
-  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E "8080|8081|$BRIDGE_PORT|$BRIDGE_LOCAL_ENDPOINT_PORT" | awk '{print "  "$1, $9}' || true
+  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -E "${PROXY_ADDR##*:}|${HUB_ADDR##*:}|$BRIDGE_PORT|$BRIDGE_LOCAL_ENDPOINT_PORT" | awk '{print "  "$1, $9}' || true
   echo "--- health ---"
   curl -s -m 3 "http://$HUB_ADDR/api/v1/health" >/dev/null 2>&1 && echo "  hub /api/v1/health: OK" || echo "  hub health: (check log)"
   echo "NOTE: mundus bridge (hub.mundus.in) is intentionally left untouched."
