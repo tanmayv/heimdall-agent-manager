@@ -4349,21 +4349,9 @@ def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
 
     This is a REAL install into a sandboxed spaced HOME -- the rc file on disk
     is the artifact asserted on, because the printed fallback snippet and the
-    written line are two different code paths and only the written one decides
-    a user's PATH.
-
-    SCOPE OF THIS TEST, stated because a first draft of it overclaimed: the
-    quoted form is written by wire_path(), whose own re-run check is
-    `grep -Fqx "$path_line"` against the SAME variable it writes, so the write
-    and the re-run check cannot desync. The second run below pins that.
-
-    It does NOT cover do_uninstall()'s awk matcher, which carries an
-    INDEPENDENT hand-typed copy of the same line (`fish_line=`). That copy had
-    to be quoted in lockstep or --uninstall would stop recognising the line the
-    installer had just written and would silently leave it behind. Mutation-
-    tested and found NOT to bind here: unquoting that mirror alone leaves this
-    test green. It is reported as an uncovered path rather than left to look
-    covered.
+    written line are two different code paths. The second install binds
+    wire_path()'s duplicate guard. The independent do_uninstall() matcher is
+    exercised by test_fish_uninstall_removes_quoted_spaced_install_dir below.
     """
     need_tool('curl')
     target = host_target()
@@ -4415,6 +4403,56 @@ def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
     assert rewritten.count('fish_add_path') == 1, (
         f'a re-run must not append a second PATH line -- wire_path no longer '
         f'recognises the exact line it writes:\n{rewritten}')
+
+
+def test_fish_uninstall_removes_quoted_spaced_install_dir(ctx):
+    """REQ-INST-28: do_uninstall must match the exact Fish line wire_path writes."""
+    need_tool('curl')
+    target = host_target()
+    if target is None:
+        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
+    base = ctx['work'] / 'fish-space-uninstall'
+    home = base / SPACED_HOME_DIRNAME
+    runtime = base / 'xdg-runtime'
+    runtime.mkdir(parents=True, exist_ok=True)
+    config_fish = home / '.config' / 'fish' / 'config.fish'
+    config_fish.parent.mkdir(parents=True)
+    unrelated = '# user fish config\nset -gx EDITOR vi\n'
+    config_fish.write_text(unrelated)
+
+    packaged, tarball = package_tarball(base, target=target)
+    assert packaged.returncode == 0, f'packaging failed:\n{packaged.stderr}'
+    hub = make_hub_mirror(base, tarball, target)
+    env = {**sandbox_install_env(home, runtime), 'SHELL': '/usr/bin/fish'}
+    install_dir = home / '.local' / 'bin'
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+
+    installed = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert installed.returncode == 0, (
+        f'install into a spaced HOME failed:\nstdout:\n{installed.stdout}\n'
+        f'stderr:\n{installed.stderr}')
+    quoted_line = f'fish_add_path "{install_dir}"'
+    before_uninstall = config_fish.read_text()
+    assert '# Added by heimdall install.sh' in before_uninstall
+    assert quoted_line in before_uninstall
+
+    assert_bridge_isolated(env, ctx['work'])
+    removed = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--uninstall'], env, cwd=ROOT, timeout=120)
+    assert removed.returncode == 0, (
+        f'uninstall from a spaced HOME failed:\nstdout:\n{removed.stdout}\n'
+        f'stderr:\n{removed.stderr}')
+    after_uninstall = config_fish.read_text()
+    assert '# Added by heimdall install.sh' not in after_uninstall, (
+        f'uninstall left its marker in config.fish:\n{after_uninstall}')
+    assert quoted_line not in after_uninstall, (
+        f'do_uninstall no longer matches the quoted Fish line it must remove:\n'
+        f'{after_uninstall}')
+    assert '# user fish config' in after_uninstall, (
+        f'uninstall removed unrelated Fish configuration:\n{after_uninstall}')
+    assert 'set -gx EDITOR vi' in after_uninstall, (
+        f'uninstall removed an unrelated Fish setting:\n{after_uninstall}')
 
 
 # --- REQ-INST-27: the socat probe's own assertion must BIND --------------------
@@ -4662,6 +4700,8 @@ def main() -> int:
          test_launchd_plist_survives_a_space_in_the_install_dir),
         ('fish rc line quotes a spaced install_dir (REQ-INST-28)',
          test_fish_rc_line_quotes_a_spaced_install_dir),
+        ('fish uninstall removes quoted spaced install_dir (REQ-INST-28)',
+         test_fish_uninstall_removes_quoted_spaced_install_dir),
         ('socat probe assertion binds: mutation + control (REQ-INST-27)',
          test_socat_probe_assertion_binds),
     ]
