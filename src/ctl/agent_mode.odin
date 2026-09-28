@@ -1627,6 +1627,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "shell":     print_help_shell(); return
 	case "issue", "issues": print_issues_help(); return
 	case "project", "projects": print_projects_help(); return
+	case "vault": print_vault_help(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1654,6 +1655,7 @@ print_help_overview :: proc() {
 	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
+	fmt.println("  vault       Manage the local zero-knowledge vault key (status, set-key, show, clear)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")

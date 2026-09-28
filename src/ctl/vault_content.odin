@@ -118,8 +118,16 @@ vault_decrypt_text_hex :: proc(armored: string, key_hex: string, allocator := co
 	return vault_decrypt_text(armored, raw_key, allocator)
 }
 
+// Remedy hints appended after the '[Encrypted: ...]' fallback so a reader learns both the
+// cause and the next step (REQ-VAULT-3). They are additive: everything up to and including
+// the closing bracket keeps the exact historical shape '[Encrypted: <armored>]'.
+VAULT_HINT_NO_KEY   :: "(vault key not configured — see `ham-ctl vault status`)"
+VAULT_HINT_BAD_KEY  :: "(configured vault key cannot decrypt this value — see `ham-ctl vault status`)"
+
 // Decrypt an armored field if key is configured, or return fallback formatted string:
-// '[Encrypted: vault:v1:...]' if key is unconfigured or decryption fails.
+// '[Encrypted: vault:v1:...] (<remedy hint>)' if key is unconfigured or decryption fails.
+// The hint distinguishes the two causes: an unconfigured key needs `vault set-key`, whereas a
+// configured-but-wrong key would be actively misdiagnosed by a "not configured" message.
 ctl_decrypt_or_fallback_armored :: proc(val: string, key_hex: string, key_configured: bool, allocator := context.allocator) -> string {
 	if !is_vault_armored(val) {
 		return strings.clone(val, allocator)
@@ -130,8 +138,10 @@ ctl_decrypt_or_fallback_armored :: proc(val: string, key_hex: string, key_config
 			return decrypted
 		}
 	}
-	// Missing key or decryption failure (e.g. truncated preview or tampered): graceful fallback
-	return fmt.aprintf("[Encrypted: %s]", val, allocator = allocator)
+	// Missing key or decryption failure (e.g. wrong key, truncated preview or tampered):
+	// graceful fallback that names the cause and the remedy.
+	hint := key_configured ? VAULT_HINT_BAD_KEY : VAULT_HINT_NO_KEY
+	return fmt.aprintf("[Encrypted: %s] %s", val, hint, allocator = allocator)
 }
 
 Json_Field_Update :: struct {
