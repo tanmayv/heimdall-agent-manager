@@ -39,6 +39,7 @@ import { VaultText } from '../../vault/VaultText';
 import { Icon, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
+import { THEMES } from '../../../theme/registry';
 import {
   type PaletteConversation,
   type PaletteConversationGroup,
@@ -66,6 +67,7 @@ export {
   optionId,
   DEFAULT_NAV,
   DEFAULT_ACTIONS,
+  THEMES,
 };
 
 export type CommandPaletteProps = {

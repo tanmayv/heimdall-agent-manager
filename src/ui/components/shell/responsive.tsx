@@ -41,6 +41,8 @@ export type MobileTabBarProps = {
   activePath: string;
   onNavigate: (route: string) => void;
   onOpenPalette: () => void;
+  onOpenSettings?: () => void;
+  isSettingsOpen?: boolean;
   chatBadge?: number;
   chainsBadge?: number;
   // The center palette button's debug-id is owned by the shell so the palette
@@ -95,7 +97,17 @@ function useBottomChromeVar(ref: { current: HTMLElement | null }) {
   }, [ref]);
 }
 
-export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button', className = '' }: MobileTabBarProps) {
+export function MobileTabBar({
+  activePath,
+  onNavigate,
+  onOpenPalette,
+  onOpenSettings,
+  isSettingsOpen = false,
+  chatBadge = 0,
+  chainsBadge = 0,
+  paletteDebugId = 'shell-mobile-palette-button',
+  className = '',
+}: MobileTabBarProps) {
   const isActive = (route: string) => {
     if (route === '/home') {
       return activePath === '/home' || activePath.startsWith('/home/') || activePath === '/cards' || activePath.startsWith('/cards/');
@@ -132,7 +144,19 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
         </button>
       </div>
       {TABS.slice(2).map((tab) => (
-        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chats' ? chatBadge : 0} onClick={() => onNavigate(tab.route)} />
+        <MobileTabButton
+          key={tab.id}
+          tab={tab}
+          active={tab.id === 'settings' ? (isSettingsOpen || isActive(tab.route)) : isActive(tab.route)}
+          badge={tab.id === 'chats' ? chatBadge : 0}
+          onClick={() => {
+            if (tab.id === 'settings' && onOpenSettings) {
+              onOpenSettings();
+            } else {
+              onNavigate(tab.route);
+            }
+          }}
+        />
       ))}
     </nav>
   );

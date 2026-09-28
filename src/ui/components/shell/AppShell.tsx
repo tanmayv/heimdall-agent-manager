@@ -58,6 +58,7 @@ import NotificationsPanel from '../settings/NotificationsPanel';
 import ExperimentalPanel from '../settings/ExperimentalPanel';
 import VaultPanel from '../settings/VaultPanel';
 import VaultOnboardingModal from '../settings/VaultOnboardingModal';
+import SettingsModal from '../settings/SettingsModal';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
@@ -301,6 +302,14 @@ const SETTINGS_NAV = [
   { path: '/settings/defaults', label: 'Defaults' },
   { path: '/settings/experimental', label: 'Experimental' },
 ];
+
+export function resolveSettingsTab(path: string): string {
+  const clean = (path.startsWith('#') ? path.slice(1) : path).split('?')[0];
+  if (!clean.startsWith('/settings')) return 'general';
+  const sub = clean.slice('/settings'.length).replace(/^\//, '').split('/')[0] || '';
+  if (!sub) return 'general';
+  return sub;
+}
 
 function decodeSegment(value: string): string {
   try { return decodeURIComponent(value); } catch (_err) { return value; }
@@ -855,7 +864,7 @@ function ProjectGroupItem({
 }
 
 
-function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number }) {
+function NavItem({ item, active, collapsed, badge = 0, onClick }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number; onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void }) {
   const activeClass = active
     ? 'bg-neutral-soft text-primary font-semibold'
     : 'text-muted hover:bg-neutral-soft hover:text-primary';
@@ -863,6 +872,7 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
     <a
       data-debug-id={`shell-nav-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
       href={shellHash(item.path)}
+      onClick={onClick}
       aria-label={collapsed ? item.label : undefined}
       title={collapsed ? item.label : item.description}
       className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
@@ -1126,10 +1136,13 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
             : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-0 py-2 sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
         }
       >
-        {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
+        {/* Do not render SettingsSubNav when SettingsModal is active */}
+        {!path.startsWith('/settings') && path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
         {lspFlagPending ? (
           <p data-debug-id="settings-lsp-gate-pending" className="text-sm text-muted">Loading…</p>
+        ) : path.startsWith('/settings') ? (
+          <HomePage />
         ) : path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards') ? (
           <HomePage />
         ) : path === '/conversations' ? (
@@ -1257,6 +1270,27 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
   const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
+  const [settingsModalOpen, setSettingsModalOpenState] = useState<boolean>(() => routeFromLocation().startsWith('/settings'));
+  const [settingsModalTab, setSettingsModalTab] = useState<string>(() => resolveSettingsTab(routeFromLocation()));
+
+  const setSettingsModalOpen = useCallback((open: boolean) => {
+    setSettingsModalOpenState(open);
+    if (!open) {
+      const currentPath = routeFromLocation();
+      if (currentPath.startsWith('/settings')) {
+        if (window.history.length > 1) {
+          window.history.back();
+          setTimeout(() => {
+            if (routeFromLocation().startsWith('/settings')) {
+              window.location.hash = buildRouteHash('/home', '');
+            }
+          }, 150);
+        } else {
+          window.location.hash = buildRouteHash('/home', '');
+        }
+      }
+    }
+  }, []);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
   const dispatch = useDispatch();
@@ -1469,6 +1503,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   // Palette navigation: convert a logical route into a hash location.
   const handlePaletteNavigate = (route: string) => {
+    if (route.startsWith('/settings')) {
+      const tab = resolveSettingsTab(route);
+      setSettingsModalTab(tab);
+      setSettingsModalOpenState(true);
+      return;
+    }
     window.location.hash = buildRouteHash(route, '');
   };
 
@@ -1486,9 +1526,15 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       case 'new-project':
         handlePaletteNavigate('/projects');
         break;
+      case 'settings':
+      case 'settings-modal':
+        setSettingsModalTab('general');
+        setSettingsModalOpenState(true);
+        break;
       case 'settings-appearance':
       case 'change-theme':
-        handlePaletteNavigate('/settings/appearance');
+        setSettingsModalTab('appearance');
+        setSettingsModalOpenState(true);
         break;
       default:
         if (actionId.startsWith('set-theme-')) {
@@ -1516,9 +1562,15 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   useEffect(() => {
     const update = () => {
-      setPath(routeFromLocation());
+      const current = routeFromLocation();
+      setPath(current);
       setFocusMessageId(focusMessageFromLocation());
       setScrollChromeSuppressed(false);
+      if (current.startsWith('/settings')) {
+        const tab = resolveSettingsTab(current);
+        setSettingsModalTab(tab);
+        setSettingsModalOpenState(true);
+      }
     };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
@@ -1628,7 +1680,23 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
         <div className="border-t border-subtle p-3">
           <nav data-debug-id="shell-secondary-nav" className="mb-2 space-y-0.5" aria-label="Settings destinations">
-            {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
+            {secondary.map((item) => (
+              <NavItem
+                key={item.path}
+                item={item}
+                active={settingsModalOpen || isRouteActive(path, item.path)}
+                collapsed={collapsed}
+                onClick={
+                  item.path.startsWith('/settings')
+                    ? (e) => {
+                        e.preventDefault();
+                        setSettingsModalTab('general');
+                        setSettingsModalOpen(true);
+                      }
+                    : undefined
+                }
+              />
+            ))}
           </nav>
           <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
             <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-neutral-soft text-caption font-bold text-muted`}>
@@ -1673,8 +1741,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       {!hideMobileShellChrome ? (
         <MobileTabBar
           activePath={path}
-          onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); }}
+          onNavigate={(route) => {
+            if (route.startsWith('/settings')) {
+              const tab = resolveSettingsTab(route);
+              setSettingsModalTab(tab);
+              setSettingsModalOpen(true);
+            } else {
+              window.location.hash = buildRouteHash(route, '');
+            }
+          }}
           onOpenPalette={() => setPaletteOpen(true)}
+          onOpenSettings={() => {
+            setSettingsModalTab('general');
+            setSettingsModalOpen(true);
+          }}
+          isSettingsOpen={settingsModalOpen}
           chatBadge={totalUnread}
           className={scrollChromeSuppressed ? 'translate-y-full pointer-events-none' : 'translate-y-0 pointer-events-auto'}
         />
@@ -1693,6 +1774,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       <VaultOnboardingModal
         open={isOnboardingModalOpen}
         onOpenChange={setIsOnboardingModalOpen}
+      />
+      <SettingsModal
+        open={settingsModalOpen}
+        onOpenChange={setSettingsModalOpen}
+        initialTab={settingsModalTab}
+        user={user}
       />
     </div>
   );
