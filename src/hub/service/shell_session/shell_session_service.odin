@@ -505,6 +505,23 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 		_, _ = content_service.record_shell_run_marker(svc.content, session.conversation_id, session_id, session.agent_instance_id)
 	}
 
+	// THE CREATION PUSH. Placed here for the same reasons as the marker directly above,
+	// and deliberately for ALL THREE KINDS rather than runs only: the marker is a
+	// transcript entry (runs only), this is a cache invalidation, and a `server` must
+	// reach the chain summary and a `shell` the session list just as promptly.
+	//
+	// BEFORE the bridge round trip, so the row becomes visible while it is starting
+	// rather than only once the bridge has confirmed it. A start that is then REFUSED
+	// is corrected by the exit event on the same channel, which is the ordering
+	// REQ-SHELL-16 already settled for the marker: a trace first, corrected after, in
+	// preference to a silent gap.
+	if svc.events != nil {
+		evt := _shell_session_started_event_json(session_id, session.kind, session.status, session.chain_id)
+		// `owner` is a User_ID here, unlike the exited path where it has already been
+		// read back out of svc.session_owners as a plain string.
+		events.publish_owned(svc.events, string(owner), evt)
+	}
+
 	// Send shell_start to bridge and wait for reply.
 	// cmd_id is NOT freed here, and must not be. platform.generate_id returns
 	// fmt.tprintf memory — the PER-THREAD TEMP ALLOCATOR — so delete()ing it is a bad
@@ -2052,6 +2069,39 @@ _json_array_raw :: proc(body, key: string) -> string {
 		}
 	}
 	return strings.clone("[]")
+}
+
+// _shell_session_started_event_json builds the CREATION counterpart of
+// _shell_exited_event_json. REQ-SHELL-6 §6 removed every poller and made the shell UI
+// purely push-driven, but the only publish in this file was the terminal one below —
+// so a session existed in the DB from the moment it was created and the UI heard about
+// it for the first time when it DIED. A foreground run was therefore invisible for its
+// whole life and then appeared already-terminal, which also hid the live-only controls
+// (the spinner and the §3 Background toggle) for the entire window in which they are
+// the only thing that can be clicked.
+//
+// `chain_id` is carried because the client invalidates by session AND by chain
+// (wsInvalidation.ts, invalidateShellSession) so that a `server` repaints the chain
+// summary's active-server list on the same frame. It is omitted when empty rather than
+// sent as "" to match the exited event's treatment of an absent exit_code.
+_shell_session_started_event_json :: proc(session_id, kind, status, chain_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_session_started\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"kind\":\"")
+	contracts.write_json_string(&b, kind)
+	strings.write_string(&b, "\",\"status\":\"")
+	contracts.write_json_string(&b, status)
+	strings.write_string(&b, "\"")
+	if chain_id != "" {
+		strings.write_string(&b, ",\"chain_id\":\"")
+		contracts.write_json_string(&b, chain_id)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, ",\"ts\":")
+	strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now()) / 1_000_000))
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
 }
 
 _shell_exited_event_json :: proc(session_id, status: string, exit_code: int, exit_code_set: bool) -> string {
