@@ -20,7 +20,8 @@ Conventions used below:
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `artifact`,
-`shell`, `shell-cmd`, `context`, `start-success`.
+`shell`, `context`, `start-success`. (`shell-cmd` still exists but is DEPRECATED —
+superseded by `shell run`; do not use it for new work.)
 
 ---
 
@@ -335,13 +336,34 @@ ham-ctl issue update iss_18d7a123bc45de67 --status fixed
 - `chat set-title <title>` — rename THIS conversation (the chat thread shown in the UI).
   Distinct from `task-chain set-title`, which renames the chain board.
 
-## shell — long-lived PTY/shell sessions on the Bridge host
-Distinct from `shell-cmd`: `shell-cmd` runs one command and returns its output; `shell`
-creates a NAMED, durable session (a process that keeps running) you can later signal,
-log, or reach over HTTP. Authenticates with your agent token, same as `shell-cmd`.
-- `shell start --bridge <id> [--kind interactive|server|command] [--cmd <cmd>]
+## shell — run commands and long-lived sessions on the Bridge host
+THE THREE KINDS, enforced by the hub:
+- `run` — a one-shot command with captured output. **AGENT ONLY.** FOREGROUND by default:
+  it BLOCKS until the command exits and prints the output inline, and sends NO
+  notification because you already hold the result. A run is NEVER moved to the
+  background on its own, however long it takes. Bounded by a 30-minute cap.
+- `server` — a long-running process with captured output and an OPTIONAL port. Startable
+  by an agent or a user. Returns as soon as it is up. NOT subject to the 30-minute cap.
+- `shell` — an interactive terminal. **USER ONLY**, no output capture.
+
+The retired spellings `interactive`, `command` and `agent` are REJECTED by the hub, not
+aliased. `ham-ctl shell-cmd` is DEPRECATED and superseded by `shell run`.
+
+- `shell run --cmd <command> [--cwd <dir>] [--label <lbl>] [--bg]` — run a command and
+  WAIT for it. `--bg` instead returns a session id immediately and notifies you on
+  completion; only backgrounded runs notify. Ctrl-C does not stop a run — it keeps going
+  and stays reachable with `shell log` and `shell kill`. Bridge, agent, conversation and
+  project come from your own context; the conversation cannot be overridden.
+- `shell serve --cmd <command> [--port <n>] [--cwd <dir>] [--label <lbl>]` — start a
+  long-running process. `--port` is OPTIONAL; a portless server is valid and simply
+  exposes nothing. Two live sessions cannot hold the same port on one bridge — the second
+  is refused, naming the holder.
+- `shell background <session_id>` — move a running FOREGROUND run to the background.
+  Releases whoever is waiting on it and notifies on completion from then on. One-way.
+- `shell start --bridge <id> [--kind run|shell|server] [--cmd <cmd>]
   [--cwd <dir>] [--label <lbl>] [--port <n>] [--project <id>] [--chain <id>]` — launch a
-  session. Returns `{session_id, status, pid}`.
+  session explicitly. Scope is per kind and enforced by the hub: `server` needs `--chain`,
+  `run` needs `--agent`, `shell` needs neither. Returns `{session_id, status, pid}`.
   - `--port <n>` declares the port the process binds. A declared port is what makes the
     session reachable over HTTP (see below), whatever its `--kind`. It does not have to
     be declared at start — see `shell set-port`.
@@ -478,34 +500,19 @@ the prefix. That asymmetry is behind every problem below.
   reach your dev server at all. Use the relative `../<session_id>/` form above to address
   a session deliberately.
 
-## shell-cmd — run a shell command on your local Bridge host
-- `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a shell command locally on the
-  Bridge. Runs synchronously if it finishes in <15s (the response carries `status`,
-  `exit_code`, `output`, and `exec_id`); if it runs >=15s it switches to async and
-  returns immediately with `status:"running"` and an `exec_id` (see below).
-  - `--cwd <dir>` — working directory for the command; a leading `~` is expanded and
-    the directory must exist. If omitted, the command inherits the Bridge service's
-    working directory (typically `$HOME`), NOT the project — so for build/test either
-    pass `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`.
-  - The command runs via `sh -c` with no interactive stdin, so it must be
-    non-interactive (a command that waits for input will block until it is killed).
-- `shell-cmd read <exec-id> [--offset <N>] [--limit <N>] [--grep <pattern>]` — fetch
-  the status/output of a previously submitted exec (works while it is still running).
-  - Default (no flags) returns the last 100 lines (tail), matching `exec`.
-  - `--offset <N>` skips the first N lines of the output (0-indexed; default 0).
-  - `--limit <N>` returns at most N lines (default 100).
-  - `--grep <pattern>` returns only lines containing `<pattern>`, each prefixed with
-    its original line number. Combine with `--offset`/`--limit` to page the matches.
+## shell-cmd — DEPRECATED, superseded by `shell run`
+Retained only so existing references still resolve. Use `ham-ctl shell run` for new work:
+it captures output the same way, blocks in the foreground, and backgrounds only when you
+ask with `--bg`. The 15-second auto-background behaviour described historically for this
+command NO LONGER EXISTS anywhere in the shell surface.
+- `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a command on the Bridge.
+- `shell-cmd read <exec-id> [--offset <N>] [--limit <N>] [--grep <pattern>]` — fetch the
+  status/output of a previously submitted exec.
 
-### Async model + output truncation
-- A command running >=15s returns right away with `status:"running"` and an `exec_id`;
-  the Bridge keeps running it in the background and the Hub posts a chat notification
-  to your conversation when it finishes. Retrieve the output any time with
-  `shell-cmd read <exec_id>`.
-- Output longer than 200 lines is truncated to the last 100 lines by default, with
-  `truncated:true` in the response. The full, untruncated output is always on the
-  Bridge filesystem at the `raw_output_location` path in the response — reach earlier
-  lines with `shell-cmd read <id> --offset/--limit/--grep`.
+The historical "runs synchronously under 15 seconds, switches to async at or above 15
+seconds" rule DOES NOT EXIST ANY MORE — it was removed from the shell surface, and no
+command auto-backgrounds on a timer. Use `shell run` (foreground, blocking) and
+`shell run --bg` (explicit background) instead; read output with `shell log`.
 
 ## memory — durable memories
 - `memory list [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>] [--status <s>] [--type <t>] [--limit <n>]` — list memories (metadata only).

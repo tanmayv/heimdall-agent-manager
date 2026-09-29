@@ -119,40 +119,62 @@ Strict rules (do not skip):
   to the coordinator; do not take over the implementation.
 {{/is_reviewer}}
 
-### Shell Command Execution (MANDATORY for all agents)
+### Running shell commands (MANDATORY for all agents)
 
-Use `ham-ctl shell-cmd` for any command that could take longer than a few seconds, or when in doubt. Direct shell execution (Bash tool, os.execute, subprocess) is reserved ONLY for trivially fast read-only one-liners (e.g. a single grep, wc -l). When unsure — use ham-ctl.
+Use `ham-ctl shell` for any command that could take more than a moment, or when in doubt.
+Direct shell execution (Bash tool, os.execute, subprocess) is reserved ONLY for trivially
+fast read-only one-liners (e.g. a single grep, wc -l).
 
-**Why:**
-- Output is tracked by the hub shell_jobs system and visible in the UI Background Jobs panel.
-- Long-running commands (>=15s) run asynchronously — the agent is NOT blocked and the bridge continues in background.
-- Output is automatically truncated (>200 lines -> last 100 lines) preventing agent context window exhaustion.
-- Completion is reported to the hub, which posts a chat notification to the agent conversation.
+**THE THREE KINDS.** Which one you get is decided by the verb, and the hub enforces it:
+
+- **`run`** — a one-shot command with its output captured. **AGENT ONLY**, and the kind you
+  want almost every time. **FOREGROUND by default: it BLOCKS until the command exits and
+  prints the output inline.** No notification is sent, because you are already holding the
+  result. **A run is NEVER moved to the background on its own, however long it takes.**
+- **`server`** — a long-running process with captured output and an OPTIONAL port. Started by
+  an agent or a user. Returns as soon as it is up rather than waiting for it to exit.
+- **`shell`** — an interactive terminal. **USER ONLY**; not available to you.
 
 **Commands:**
 
 ```bash
-# Run a shell command (sync if <15s, async if >=15s)
-ham-ctl shell-cmd exec --cmd 'your command here'
+# Run a command and WAIT for it. Output is printed inline when it finishes.
+ham-ctl shell run --cmd 'odin build src/bridge' --cwd ~/heimdall-agent-manager
 
-# Run a command in a specific working directory (recommended for build/test)
-ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd 'odin build src/bridge'
+# Explicitly background it instead: returns a session id AT ONCE, and you are
+# notified when it completes. Only backgrounded runs notify.
+ham-ctl shell run --cmd 'long-running-thing' --bg
 
-# Read output of a completed or in-progress background job
-ham-ctl shell-cmd read <exec-id>
+# Start a long-running process. --port is OPTIONAL; with one it becomes reachable.
+ham-ctl shell serve --cmd 'npm run dev' --port 5173
+
+# Read a session's output. Supports paging and filtering; never poll this in a loop.
+ham-ctl shell log <session_id> [--offset N] [--limit N] [--grep <pattern>]
+
+# Stop a session. Convert a live foreground run to background (one-way).
+ham-ctl shell kill <session_id>
+ham-ctl shell background <session_id>
 ```
 
-If `--cwd` is omitted, the command inherits the bridge service's working directory
-(typically `$HOME`), NOT the project directory — so for build/test commands either
-pass `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`. The
-`--cwd` value may start with `~` (expanded to `$HOME`) and must be an existing
-directory, otherwise the exec is rejected.
+**Rules worth knowing before you are surprised by them:**
 
-**Async pattern:**
-When a command runs longer than 15 seconds, shell-cmd exec returns immediately with status=running and an exec_id. The bridge continues the job in background. When it finishes, the hub posts a chat notification to the agent conversation. Use `ham-ctl shell-cmd read <exec_id>` to retrieve output at any time.
+- A foreground `run` blocks and does NOT notify. A `--bg` run returns immediately and DOES
+  notify on completion. Nothing in between happens automatically.
+- Ctrl-C does not stop a run. It keeps going, and you can still reach it with
+  `shell log <id>` and `shell kill <id>`.
+- A `run` is bounded by a 30-minute cap. A `server` is not — use `serve` for anything
+  expected to outlive that.
+- Two live sessions cannot hold the same port on one bridge; the second is refused and
+  names the session holding it.
+- `shell log` pages and filters, so read output with it rather than polling in a loop.
+- If `--cwd` is omitted the command inherits the bridge service's working directory
+  (typically `$HOME`), **NOT** the project directory — so for build and test commands pass
+  `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`. `--cwd` may start
+  with `~`. Check the path yourself: a `run` does not currently report a bad `--cwd` back to
+  you.
 
-**Output truncation:**
-If output exceeds 200 lines, only the last 100 lines are returned. The truncated=true field in the response signals this. The full output is available on the bridge filesystem at `<data_dir>/shell_jobs/<exec_id>.out`.
+**`ham-ctl shell-cmd` is DEPRECATED.** It still exists, but it is superseded by
+`ham-ctl shell run` and is being retired. Do not use it for new work.
 
 ## Skills index (load on demand)
 These skills carry the procedures and exact command syntax — load the one you need
