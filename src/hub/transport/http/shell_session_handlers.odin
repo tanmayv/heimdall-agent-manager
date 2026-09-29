@@ -90,7 +90,18 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	}
 
 	session, found, repo_err := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
-	if !found || repo_err.code != .None {
+	// A REPOSITORY ERROR IS NOT A MISSING SESSION (REQ-SHELL-12). This used to collapse
+	// both into Not_Found, which was survivable while the only error was Internal_Error
+	// but is actively misleading now that the read can refuse an AMBIGUOUS id: "no such
+	// session" tells the operator to stop looking, when the true answer is that the
+	// database holds two rows for this id and the hub will not guess between them.
+	// Surfacing repo_err verbatim gives that case its own 409 (respond.odin:46) and
+	// leaves the genuine miss below as the only thing reported as Not_Found.
+	if repo_err.code != .None {
+		write_stream_error(client, respond_error(repo_err, req.request_id))
+		return
+	}
+	if !found {
 		write_stream_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return
 	}
@@ -174,7 +185,13 @@ shell_session_input_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
 
-	session, found, _ := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
+	// REQ-SHELL-12: propagate the repository error instead of discarding it. An
+	// ambiguous session id must not read as "no such session" here either — see the
+	// stream handler above for the argument, which does not depend on which route it is.
+	session, found, repo_err := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
+	if repo_err.code != .None {
+		return respond_error(repo_err, req.request_id)
+	}
 	if !found {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
@@ -205,7 +222,13 @@ shell_session_resize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
 
-	session, found, _ := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
+	// REQ-SHELL-12: propagate the repository error instead of discarding it. An
+	// ambiguous session id must not read as "no such session" here either — see the
+	// stream handler above for the argument, which does not depend on which route it is.
+	session, found, repo_err := iface.shell_session_get(h.shell_repo, auth_ctx.user_id, session_id)
+	if repo_err.code != .None {
+		return respond_error(repo_err, req.request_id)
+	}
 	if !found {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
@@ -256,7 +279,13 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: n
 	// deliberately NOT part of this decision: any session that declared a port at start
 	// is reachable, so an interactive shell started with --port 3000 works too.  The port
 	// still comes from the SESSION RECORD, never the request, which is the SSRF fence.
-	session, found, _ := iface.shell_session_get(h.shell_repo, string(auth_ctx.user_id), session_id)
+	// REQ-SHELL-12: as above — a repository error is not a missing session, and on this
+	// path the distinction decides whether an operator goes looking at the database.
+	session, found, repo_err := iface.shell_session_get(h.shell_repo, string(auth_ctx.user_id), session_id)
+	if repo_err.code != .None {
+		write_upgrade_error(client, respond_error(repo_err, req.request_id))
+		return
+	}
 	if !found {
 		write_upgrade_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return

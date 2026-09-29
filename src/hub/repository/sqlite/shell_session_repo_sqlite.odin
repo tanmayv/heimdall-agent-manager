@@ -190,21 +190,68 @@ shell_session_upsert_sqlite :: proc(ctx: rawptr, session: domain.Shell_Session) 
 	return true, domain.Domain_Error{}
 }
 
+// shell_session_get_sqlite is the OWNER-scoped read behind every user-facing shell
+// route — kill, attach, signal, restart, set_port and log (app/wiring.odin:591,
+// 604-607, 612) all resolve the session through this one query.
+//
+// IT REFUSES TO GUESS (REQ-SHELL-12). The query asks for TWO rows and returns a
+// .Conflict when it gets them, rather than taking `LIMIT 1` and handing back
+// whichever row SQLite happened to visit first. An arbitrary pick here is not a
+// cosmetic wrong answer: these six routes MUTATE the session they are given, so
+// the failure mode is signalling, restarting or killing the WRONG process while
+// reporting success. A read that cannot identify its row has no safe answer, and
+// "no answer" is the only honest one.
+//
+// BE PRECISE ABOUT WHAT THIS IS: DEFENCE IN DEPTH, NOT A LIVE BUG FIX. Migration
+// 048 (048_shell_sessions_kind_and_key.sql:83) carries
+// `CREATE UNIQUE INDEX shell_sessions_owner_session ON shell_sessions(owner_user_id,
+// session_id)`, so a second matching row CANNOT be inserted through any normal path
+// and this branch is unreachable today. It exists for the states that index does not
+// cover — a hand-edited database, a future migration that rebuilds the table and
+// forgets to recreate the index, or a bug that drops it. (A PARTIALLY APPLIED 048
+// used to belong on that list and no longer does: REQ-SHELL-13 made the migration
+// guard key on 048's LAST object, so an interrupted apply is now detected and
+// re-run rather than reported complete.)
+//
+// The chain's core invariant is that unreconcilable state is a defect rather than an
+// acceptable transient. A read that silently picks one of two candidates is exactly
+// that defect, so it is spelled out here instead of being left to the index.
+//
+// WHY .Conflict AND NOT Not_Found: the caller must be able to tell "this session is
+// gone" from "this session is ambiguous and I refuse to act on it". The first is
+// routine; the second is an operator alert about a corrupt database. .Conflict maps
+// to 409 at transport/http/respond.odin:46, so all six routes surface it distinctly
+// without a per-route mapping.
 shell_session_get_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := strings.concatenate({"SELECT ", shell_session_select_cols, " FROM shell_sessions WHERE owner_user_id = ? AND session_id = ? LIMIT 1;"}, context.temp_allocator)
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+	// LIMIT 2, not LIMIT 1: one row to return and one row to DETECT. The bound stays
+	// so a pathologically duplicated table cannot make this read walk the whole table.
+	query := strings.concatenate({"SELECT ", shell_session_select_cols, " FROM shell_sessions WHERE owner_user_id = ? AND session_id = ? LIMIT 2;"}, context.temp_allocator)
+	// clone_to_cstring, not cstring(raw_data(query)), for the reason spelled out at the
+	// upsert above: strings.concatenate allocates exactly len bytes and appends no NUL,
+	// while the -1 below tells prepare_v2 to read to one — so the old spelling scanned
+	// past the allocation. The temp allocator is reclaimed wholesale; nothing to free.
+	c_query := strings.clone_to_cstring(query, context.temp_allocator)
+	if sqlite3_prepare_v2(impl.conn.db, c_query, -1, &stmt, nil) != SQLITE_OK {
 		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "failed to prepare shell session get")
 	}
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, owner_user_id)
 	bind_text(stmt, 2, session_id)
 	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Session{}, false, domain.Domain_Error{}
-	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
+	// Materialise the first row BEFORE stepping again — the column pointers belong to
+	// the statement and the next step invalidates them. It is destroyed on the
+	// ambiguous path so the refusal does not leak the row it declined to return.
+	session := shell_session_from_stmt(stmt)
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		domain.shell_session_destroy(session)
+		return domain.Shell_Session{}, false, domain.domain_error(.Conflict, "shell session id is ambiguous for this owner: refusing to act on an arbitrary match")
+	}
+	return session, true, domain.Domain_Error{}
 }
 
 // shell_session_get_by_id_sqlite resolves a session without an owner, for the
@@ -756,8 +803,22 @@ shell_session_set_kill_requested_sqlite :: proc(ctx: rawptr, owner_user_id, sess
 	// Re-read rather than trusting the change count, so an already-pending session
 	// (the idempotent second kill) reports success and a session that does not exist
 	// for this owner reports false.
+	//
+	// LIMIT 2 and the ambiguity refusal below are the same REQ-SHELL-12 rule the
+	// owner-scoped get applies, for the same reason: this is an owner-scoped read that
+	// was relying on LIMIT 1 for a uniqueness the query itself does not guarantee.
+	//
+	// BE HONEST ABOUT WHAT THIS ONE FIXES, BECAUSE IT IS NARROWER THAN THE GET'S. The
+	// BOOLEAN here was already invariant under ambiguity: the UPDATE above hits EVERY
+	// matching row, so whichever row the read-back landed on, a non-empty
+	// kill_requested_at was true of all of them. This never returned a wrong answer.
+	// What it did do is report SUCCESS for a session it could not identify — and the
+	// caller then believes it has killed one specific shell when it has in fact
+	// signalled an unknown number of them. The reap path (shell_session_reap.odin:202)
+	// reaches this without going through the get above, so the get's refusal does not
+	// already cover it.
 	read: sqlite3_stmt = nil
-	check := `SELECT kill_requested_at FROM shell_sessions WHERE owner_user_id = ? AND session_id = ? LIMIT 1;`
+	check := `SELECT kill_requested_at FROM shell_sessions WHERE owner_user_id = ? AND session_id = ? LIMIT 2;`
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(check)), -1, &read, nil) != SQLITE_OK {
 		return false, domain.domain_error(.Internal_Error, "failed to prepare shell session kill intent read-back")
 	}
@@ -765,7 +826,13 @@ shell_session_set_kill_requested_sqlite :: proc(ctx: rawptr, owner_user_id, sess
 	bind_text(read, 1, owner_user_id)
 	bind_text(read, 2, session_id)
 	if sqlite3_step(read) != SQLITE_ROW do return false, domain.Domain_Error{}
-	return column_text_unowned(read, 0) != "", domain.Domain_Error{}
+	// column_text_unowned borrows from the statement, so read the value out before the
+	// next step invalidates it.
+	pending := column_text_unowned(read, 0) != ""
+	if sqlite3_step(read) == SQLITE_ROW {
+		return false, domain.domain_error(.Conflict, "shell session id is ambiguous for this owner: refusing to confirm a kill intent")
+	}
+	return pending, domain.Domain_Error{}
 }
 
 // shell_session_list_pending_kills_sqlite lists one bridge's OUTSTANDING kill
