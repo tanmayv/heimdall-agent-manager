@@ -41,15 +41,21 @@ export const MOBILE_TAB_BAR_HEIGHT_PX = 56;
 
 /**
  * `MobileTabBar` publishes its REAL measured height on the document root as
- * `--ui-bottom-chrome` — safe-area padding INCLUDED, because the bar itself carries
- * `ui-safe-bottom` (`padding-bottom: env(safe-area-inset-bottom)`, styles.css). The composer
- * was clearing a hardcoded 56 against a bar that measures 53, leaving a 3px strip of
- * transcript at the seam; reading the variable closes that and follows the bar through any
+ * `--ui-bottom-chrome`. That height does NOT include the safe area in this tree today: the bar
+ * carries `ui-safe-bottom`, but that class is declared TWICE in styles.css — the working
+ * `env(safe-area-inset-bottom)` rule inside `@supports` (:69) is overridden by a later, equal-
+ * specificity `var(--ui-safe-bottom, 0px)` rule (:84), and `--ui-safe-bottom` is never set
+ * anywhere, so the padding resolves to 0px on every device. Tracked as iss_18d9ba8109e2c28b.
+ * The composer was clearing a hardcoded 56 against a bar that measures 53, leaving a 3px strip
+ * of transcript at the seam; reading the variable closes that and follows the bar through any
  * future height change.
  *
- * No `max(…, env(safe-area-inset-bottom))` wrapper here, unlike the fifteen other consumers
- * of this variable: this row is the one where the bar IS mounted, so its published height
- * already contains the inset, and the `56px` fallback exceeds any home indicator anyway.
+ * No `max(…, env(safe-area-inset-bottom))` wrapper here, unlike the fifteen other consumers of
+ * this variable — and the reason is testability, NOT inset coverage. Keeping this a bare `var()`
+ * is what lets `keyboardAwareBottomPx` be asserted in node, where `max(var, env)` cannot be
+ * resolved. The `56px` fallback does exceed a home indicator, but only the fallback; once the bar
+ * publishes its real height this row clears the bar and nothing more, until
+ * iss_18d9ba8109e2c28b is fixed.
  */
 export const MOBILE_BOTTOM_CHROME_VAR = `var(--ui-bottom-chrome, ${MOBILE_TAB_BAR_HEIGHT_PX}px)`;
 
@@ -94,8 +100,12 @@ export type KeyboardAwareBottomInput = {
  *                                 literal `0` here puts the send button inside the strip iOS
  *                                 owns the swipe in.
  *   keyboard down, no focus    -> the tab bar's own measured height (`--ui-bottom-chrome`).
- *                                 The ordinary resting state; the bar's height already
- *                                 includes the safe area, because the bar carries it.
+ *                                 The ordinary resting state. NOTE: that height does not
+ *                                 currently include the safe area — `ui-safe-bottom` resolves to
+ *                                 0px tree-wide (iss_18d9ba8109e2c28b) — so the bar's own tabs
+ *                                 sit in the home-indicator strip. The composer clears the bar,
+ *                                 which is correct either way: once that issue is fixed the
+ *                                 published height grows and this row follows it.
  *   keyboard up,   no focus    -> `${inset}px`  should not occur here (this app only raises the
  *                                 keyboard by focusing the composer), but if it does, sitting
  *                                 under the keyboard is the worse failure, so the inset wins.
