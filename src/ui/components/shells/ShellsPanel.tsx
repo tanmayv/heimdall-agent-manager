@@ -582,6 +582,9 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
           <div className="mt-3">
             {activePane.type === 'terminal' && activePaneSession && (
               <ShellTerminalPane
+                // REQ-SHELL-18: see BottomDock — clicking a different row swaps this prop without
+                // remounting, so the pane needs the session id as its key.
+                key={activePaneSession.session_id}
                 session={activePaneSession}
                 onClose={() => setActivePane(null)}
               />

@@ -462,6 +462,10 @@ export default function BottomDock({
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden bg-canvas">
           {activeSession && !isViewedInMainView ? (
             <ShellTerminalPane
+              // REQ-SHELL-18: keyed by session so switching tabs in this strip REMOUNTS the pane.
+              // Without it the xterm instance is reused and the previous session's scrollback stays
+              // on screen, which is the bleed the user reported switching shells in the bottom bar.
+              key={activeSession.session_id}
               session={activeSession}
               isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
               onClose={() => handleKillSession(activeSession.session_id)}

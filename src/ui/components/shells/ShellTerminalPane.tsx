@@ -26,6 +26,27 @@ interface ShellTerminalPaneProps {
   onClose?: () => void;
 }
 
+/**
+ * CALLERS MUST KEY THIS BY SESSION ID: `<ShellTerminalPane key={s.session_id} session={s} />`
+ * (REQ-SHELL-18)
+ *
+ * The xterm `Terminal` is built in a mount effect with an EMPTY dependency array, so swapping the
+ * `session` prop switches the STREAM while leaving the previous session's scrollback on screen —
+ * the bleed the user reported when switching tabs in the bottom dock. A `key` makes a session
+ * change a remount, which is what this component needs rather than a targeted reset: it owns five
+ * mutable refs (terminalRef, fitAddonRef, sessionIdRef, lastWrittenOutputRef, userScrolledUpRef)
+ * that must all agree with the new session, and a remount cannot forget one of them.
+ *
+ * A remount also re-runs the initial fit, which is the only thing that pushes geometry to a
+ * freshly-selected session: geometry is sent from just two places, `term.onResize` (which fires
+ * only when xterm's own dimensions CHANGE — switching sessions does not resize the pane) and
+ * `dispatchResize` (mount-effect only). Without the remount, a switched-to PTY is never told its
+ * size at all.
+ *
+ * tests/ui_shell_streaming_test.ts asserts every call site passes the key, because a fourth call
+ * site that forgets it reintroduces the bleed silently.
+ */
+
 export function ShellTerminalPane({
   session,
   isBridgeUnreachable: propIsBridgeUnreachable,
@@ -60,6 +81,17 @@ export function ShellTerminalPane({
   } = useShellStream({
     sessionId: paneSessionId,
     enabled: isStreamingExperimentEnabled && !fallbackToPolling,
+    // REQ-SHELL-18 — read back by the hook from inside the socket's `onopen`, and again on every
+    // reconnect. The mount-time fit below computes the right geometry and pushes it, but the
+    // socket is not open yet at that point, so that frame is dropped; this is what makes the PTY
+    // learn the pane's real size on create instead of sitting at its 80x24 default until the user
+    // happens to resize the window. Floors applied here too, for the same reason handleResize
+    // applies them.
+    getGeometry: () => {
+      const term = terminalRef.current;
+      if (!term) return null;
+      return { rows: Math.max(term.rows, 24), cols: Math.max(term.cols, 80) };
+    },
     onOutput: (bytes) => {
       const term = terminalRef.current;
       if (!term) return;
@@ -149,6 +181,17 @@ export function ShellTerminalPane({
   );
 
   // Unified resize handler routing between streaming and legacy polling
+  //
+  // The 80x24 floors are a DELIBERATE MINIMUM, kept on purpose (REQ-SHELL-18 AC4), not a
+  // workaround for a mis-measured fit. They pair with `overflow-x-auto` on the xterm container
+  // below: on a phone-width pane, keep 80 usable columns and let the user scroll sideways, rather
+  // than hand a TUI 30 columns and have it reflow into unreadability.
+  //
+  // They are also provably innocent of "the new terminal does not fill the pane width":
+  // `Math.max(n, 80)` is monotonic and binds ONLY below 80, so if the fit proposes 200 columns it
+  // stays 200. No value of the floor can make a WIDE pane render narrow, which means the floor
+  // cannot have been masking the geometry bug and changing it would not have fixed anything. That
+  // bug was the dropped resize frame (see getGeometry below), and it is fixed there.
   const handleResize = useCallback(
     (rows: number, cols: number) => {
       const effectiveCols = Math.max(cols, 80);

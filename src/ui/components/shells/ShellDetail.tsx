@@ -731,7 +731,11 @@ export function ShellDetailBody({
       >
         {viewMode === 'terminal' ? (
           <div data-debug-id="shell-view-terminal" className="mt-1">
-            <ShellTerminalPane session={record} />
+            {/* REQ-SHELL-18: keyed, because this pane is NOT single-session by construction.
+                In the desktop two-pane layout ShellListPage renders <ShellDetailPane
+                sessionId={selectedId}> unkeyed, so selecting a different row swaps `record`
+                through this component instead of remounting it. */}
+            <ShellTerminalPane key={record.session_id} session={record} />
           </div>
         ) : (
           /* showSessionVerbs={false}: this page's header already carries Restart and
