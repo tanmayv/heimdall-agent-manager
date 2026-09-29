@@ -170,8 +170,9 @@ ham-ctl shell background <session_id>
 - If `--cwd` is omitted the command inherits the bridge service's working directory
   (typically `$HOME`), **NOT** the project directory — so for build and test commands pass
   `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`. `--cwd` may start
-  with `~`. Check the path yourself: a `run` does not currently report a bad `--cwd` back to
-  you.
+  with `~`. A `--cwd` that does not exist, or that exists but is not a directory, is
+  REJECTED before the command runs and the error names the offending path — it is never
+  silently replaced by another directory.
 
 **`ham-ctl shell-cmd` is DEPRECATED.** It still exists, but it is superseded by
 `ham-ctl shell run` and is being retired. Do not use it for new work.

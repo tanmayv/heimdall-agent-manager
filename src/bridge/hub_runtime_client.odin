@@ -2399,6 +2399,31 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
+	// REQ-SHELL-20: REFUSE A CWD THAT DOES NOT EXIST OR IS NOT A DIRECTORY, before any
+	// daemon work. Until this guard, such a cwd was SILENTLY DISCARDED inside the
+	// vendored portable-pty crate (0.9.0, src/cmdbuilder.rs:501-507,
+	// `.filter(|dir| Path::new(dir).is_dir()).unwrap_or(home)`) and the command ran in
+	// $HOME reporting exit 0 — see src/bridge/shell_cwd.odin for the full mechanism and
+	// for why /root already failed loudly while /nonexistent did not.
+	//
+	// This RESTORES A CONTRACT THE PRODUCT ALREADY MADE rather than inventing one: the
+	// shell-cmd surface this replaced validated the same two cases
+	// (src/bridge/shell_cmd.odin:106-108, "the directory must exist"), so callers moving
+	// to `shell run` had lost a check.
+	//
+	// BEFORE bridge_pty_host_ensure_daemon deliberately: a doomed request should not
+	// start a daemon. `cwd` itself is left as the caller wrote it — the session row and
+	// the hub row then spell it the same way — and only the spawn uses the resolved
+	// form.
+	cwd_resolved, cwd_verdict := bridge_shell_cwd_resolve(cwd)
+	defer delete(cwd_resolved)
+	if cwd_verdict != .Ok {
+		msg := bridge_shell_cwd_reject_message(cwd_verdict, cwd_resolved)
+		defer delete(msg)
+		send_error(conn, session_id, command_id, msg)
+		return
+	}
+
 	// EVERY kind spawns under session_id as the daemon key (REQ-SHELL-1 §2). The
 	// old kind=Agent branch that keyed the daemon by agent_instance_id instead is
 	// gone with the kind itself: agent terminal panes never came through here, they
@@ -2488,8 +2513,11 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(spawn_instance),
 		argv             = cloned_argv,
-		has_cwd          = cwd != "",
-		cwd              = strings.clone(cwd),
+		// THE RESOLVED FORM, not the raw one: expansion and validation happen together
+		// (REQ-SHELL-20), so spawning with the raw value would spawn something other
+		// than what was checked.
+		has_cwd          = cwd_resolved != "",
+		cwd              = strings.clone(cwd_resolved),
 		env              = nil,
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
@@ -2504,7 +2532,21 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 
 	pid, ok := bridge_pty_host_spawn(socket, req)
 	if !ok {
-		send_error(conn, session_id, command_id, "spawn failed")
+		// "spawn failed" is GENERIC — a missing binary, a resource limit, the daemon
+		// refusing, or EACCES on an existing-but-unenterable cwd like /root all land
+		// here. So the cwd is appended as STATE, never as a diagnosis: it is the one
+		// piece of context the reader cannot otherwise recover, and naming it as the
+		// CAUSE would be wrong most of the times this fires. With no cwd requested the
+		// message is unchanged.
+		// (Propagating pty-host's ACTUAL error instead of this string is REQ-SHELL-16's
+		// territory, not this task's.)
+		if cwd_resolved != "" {
+			msg := strings.concatenate({"spawn failed (cwd: ", cwd_resolved, ")"})
+			defer delete(msg)
+			send_error(conn, session_id, command_id, msg)
+		} else {
+			send_error(conn, session_id, command_id, "spawn failed")
+		}
 		return
 	}
 
@@ -2956,7 +2998,21 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 	// Close the existing child.
 	_ = bridge_pty_host_close(socket, shell_id)
 
-	// Re-spawn with same cmd/cwd/label.
+	// REQ-SHELL-20: the stored cwd is the caller's spelling, so a restart must resolve
+	// it the same way the original start did — spawning the raw value here would hand a
+	// literal `~/x` back to portable-pty's silent is_dir filter and restart the session
+	// in $HOME. A directory that has since been deleted is refused rather than silently
+	// relocated; this path's failure reply carries no message, so the refusal reads as
+	// the spawn failure it is.
+	cwd_resolved, cwd_verdict := bridge_shell_cwd_resolve(sess.cwd)
+	defer delete(cwd_resolved)
+	if cwd_verdict != .Ok {
+		send_result(conn, session_id, command_id, false, 0)
+		return
+	}
+
+	// Re-spawn with same cmd/cwd/label. AFTER the cwd check, so the refusal above
+	// cannot leak this argv — only `req` has a deferred delete.
 	argv: []string
 	argv = []string{"sh", "-c", sess.cmd}
 	cloned_argv := make([]string, len(argv))
@@ -2965,8 +3021,8 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(shell_id),
 		argv             = cloned_argv,
-		has_cwd          = sess.cwd != "",
-		cwd              = strings.clone(sess.cwd),
+		has_cwd          = cwd_resolved != "",
+		cwd              = strings.clone(cwd_resolved),
 		env              = nil,
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
