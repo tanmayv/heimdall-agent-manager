@@ -108,6 +108,13 @@ export function useShellStream({
     reconnectTimerRef.current = undefined;
   };
 
+  // REQ-SHELL-6 §6 — JUSTIFIED EXCEPTION 1 of 2 to the no-polling rule, and the one
+  // that requirement explicitly told us to check for rather than pattern-match on
+  // `setInterval`. This is a WEBSOCKET KEEPALIVE, not a poller: it sends a heartbeat
+  // frame on an ALREADY-OPEN socket and closes it if the send fails. It fetches
+  // nothing, invalidates no cache tag, and produces no UI update — deleting it would
+  // not remove a poll, it would let idle sockets be reaped by the first intermediary
+  // with a read timeout. KEEP.
   const startHeartbeat = (socket: WebSocket) => {
     clearHeartbeat();
     heartbeatRef.current = window.setInterval(() => {

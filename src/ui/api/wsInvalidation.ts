@@ -12,6 +12,7 @@ import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
 import { taskEventReceived } from '../store/taskSlice';
+import { shellSessionEventReceived } from '../store/shellSlice';
 import { agentActionReceived } from '../store/agentActivitySlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
 import { upsertChainTitle, upsertConversationTitle } from '../store/searchTitleSlice';
@@ -584,6 +585,34 @@ function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
 // RTK Query refetches only entries with an active subscriber, so this scopes the
 // refetch to whatever the UI is currently showing.
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+/**
+ * Repaint everything that reads a shell session, from one event.
+ *
+ * Three tags, because three different consumers cache a session and REQ-SHELL-6 §6
+ * leaves no poller to catch whichever one is missed:
+ *   ShellSession:<id>   the detail view, the run indicator and the log viewer
+ *   ShellSessions:<chain>  the chain-scoped lists, including the active-servers panel
+ *   ShellSessions:LIST  the owner-wide list page and the tab badge
+ *
+ * `chainId` is OPTIONAL and usually absent: the hub's shell_session_exited frame
+ * carries only session_id/status/exit_code/ts (_shell_exited_event_json,
+ * shell_session_service.odin:1993). That is not a gap to work around — `listShells`
+ * provides BOTH its chain tag and `LIST` (endpoints/shells.ts), so invalidating `LIST`
+ * already refetches every chain-scoped list. The chain tag is invalidated as well only
+ * when an event happens to name a chain, which costs nothing and keeps the helper
+ * correct if a producer starts including it.
+ */
+function invalidateShellSession(dispatch: any, sessionId: string, chainId?: string): void {
+  const tags: any[] = [{ type: 'ShellSessions' as const, id: 'LIST' }];
+  if (chainId) tags.push({ type: 'ShellSessions' as const, id: chainId });
+  if (sessionId) tags.push({ type: 'ShellSession' as const, id: sessionId });
+  dispatch(heimdallApi.util.invalidateTags(tags));
+  // ...and tick the non-RTK consumers. The Shells list page pages through
+  // `useInfiniteList` with its own fetch promise, so no tag above can reach it; see
+  // shellSlice.ts for why that page needs a separate signal rather than a poller.
+  dispatch(shellSessionEventReceived({ sessionId }));
+}
+
 function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
   const resource = String(payload.resource || '');
   const resourceId = String(payload.resource_id || '');
@@ -681,6 +710,15 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       }
       return;
     }
+    // REQ-SHELL-6 §6. The convergence path reports adopt/correct as a GENERIC
+    // resource_changed (shell_session_inventory.odin:427) rather than as an exit,
+    // because those are not exits — see the comment at that call site. Without this
+    // case the payload fell through to `default: return` below and the correction was
+    // silently dropped, which is precisely the class of update the deleted pollers
+    // were papering over.
+    case 'shell_session':
+      invalidateShellSession(dispatch, resourceId, String(payload?.chain_id || ''));
+      return;
     case 'agent_instance':
     case 'agent_id':
     case 'agent': {
@@ -769,19 +807,20 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
     case 'resource_changed':
       handleResourceChanged(dispatch, payload, ctx);
       return;
-    case 'shell_status': {
-      // Invalidate the shell sessions list for the chain so status dots update in real time.
-      const chainId = String(payload?.chain_id || '');
-      if (chainId) {
-        dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSessions' as const, id: chainId }]));
-      }
-      dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSessions' as const, id: 'LIST' }]));
-      const sessionId = String(payload?.session_id || '');
-      if (sessionId) {
-        dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSession' as const, id: sessionId }]));
-      }
+    // REQ-SHELL-6 §6 — the shell UI is driven by PUSH, with no poller anywhere behind
+    // it, so these two cases are the only thing that repaints a status now.
+    //
+    // `shell_session_exited` is what the hub actually emits when a session reaches a
+    // terminal status (shell_session_service.odin:1342). `shell_status` was the type
+    // this switch used to handle and NOTHING on the user bus has ever produced it: the
+    // only `shell_status` frame in the hub is written by shell_session_broadcast_status
+    // (shell_session_service.odin:240), which fans out to the per-session STREAM
+    // sockets, not to this bus. It is kept as a co-case rather than deleted so that a
+    // client attached to both channels behaves identically on either frame.
+    case 'shell_status':
+    case 'shell_session_exited':
+      invalidateShellSession(dispatch, String(payload?.session_id || ''), String(payload?.chain_id || ''));
       return;
-    }
     default:
       return;
   }

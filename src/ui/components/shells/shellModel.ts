@@ -87,6 +87,190 @@ export function statusTone(status: ShellSessionStatus): Tone {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * REQ-SHELL-6 §2/§4 — which sessions a surface may show
+ * ------------------------------------------------------------------ *
+ * Both predicates below are pure and live here rather than inside their components, so
+ * the decisions they encode can be tested as REAL CODE over a matrix instead of being
+ * read and believed. That distinction is not academic in this file: the row-predicate
+ * truth table exists because a render gap once survived review by looking right in
+ * isolation.
+ */
+
+/** A run's marker message, reduced to what the pin decision needs. */
+export interface ShellRunMarker {
+  messageId: string;
+  sessionId: string;
+  /** When the marker was posted; the fallback for a session with no finished_at. */
+  createdUnixMs: number;
+}
+
+/**
+ * REQ-SHELL-6 §4 — the ACTIVE servers of a chain-scoped page of sessions.
+ *
+ * This is NOT the scope filter. Scope is enforced server-side: `chain` is in the scope
+ * key of SERVER alone (shell_session.odin:87-91), so a chain-narrowed query cannot
+ * return a run or a shell in the first place, and re-filtering by kind here would
+ * imply the query was untrustworthy.
+ *
+ * What this DOES is drop the terminal rows, for a reason the server cannot cover: the
+ * cached page and the live rows can legitimately disagree for one render, when a session
+ * exits between the fetch and the repaint. §4 requires a terminal server to drop OFF the
+ * panel, so the guard closes that window.
+ */
+export function activeServersOf(sessions: ShellSession[]): ShellSession[] {
+  return sessions.filter((session) => !isTerminal(session));
+}
+
+/**
+ * REQ-SHELL-6 §2 — which runs are PINNED above the composer.
+ *
+ * The user's sequencing is easy to implement backwards, so it is spelled out:
+ *
+ *   "the pinned indicator should disappear once new message from user/agent comes in
+ *    IF ITS NOT RUNNING ANYMORE"
+ *
+ * So a finished run does NOT vanish when it exits. It stays on screen, now past tense,
+ * until the NEXT user or agent message arrives — meaning a run that finishes while
+ * nobody is talking remains readable instead of disappearing before it can be noticed.
+ *
+ * Hence the comparison is against `finished_at` and NOT against the marker's own
+ * timestamp: a message that arrived while the run was still going must not unpin it,
+ * because at that moment the run was still running and the user's condition was unmet.
+ *
+ * A session that is not terminal always pins — status_unknown included, since "the
+ * bridge is gone" is not the same claim as "the run is over".
+ */
+export function pinnedRunSessions(
+  sessions: ShellSession[],
+  markers: ShellRunMarker[],
+  lastMessageUnixMs: number,
+): ShellSession[] {
+  const markerBySession = new Map(markers.map((m) => [m.sessionId, m]));
+  return sessions.filter((session) => {
+    const marker = markerBySession.get(session.session_id);
+    // No marker means no run marker in THIS conversation — the chain's CONVERSATION
+    // SCOPE decision says a run appears only where it was triggered.
+    if (!marker) return false;
+    if (!isTerminal(session)) return true;
+    const parsed = session.finished_at ? Date.parse(session.finished_at) : NaN;
+    const finishedMs = Number.isFinite(parsed) ? parsed : marker.createdUnixMs;
+    return finishedMs > lastMessageUnixMs;
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * REQ-SHELL-6 §8 / REQ-SHELL-10 — the bridge-offline session state
+ * ------------------------------------------------------------------ *
+ * REQ-SHELL-10 deliberately did NOT add a sixth status value; a stored status would
+ * have been a durable write triggered by a bare WS disconnect. Instead the API reports
+ * two DERIVED booleans alongside the verbatim `status`:
+ *
+ *   status_unknown  the owning bridge is gone, so this row's status cannot be vouched
+ *                   for until it returns. A TERMINAL session is never status_unknown —
+ *                   a finished job's status is a fact about the past and needs no bridge
+ *                   to confirm it.
+ *   bridge_online   the raw fact the above derives from, so the UI can say WHY.
+ *
+ * They QUALIFY status and never replace it, so nothing below branches on a status enum
+ * value that does not exist. §8 is explicit about what must not happen: this state may
+ * be rendered neither as plain `running` (which asserts something we do not know to be
+ * true) nor as `failed`/`killed` (which assert something we know to be false).
+ */
+
+/** What to actually show for a session's state, status_unknown included. */
+export interface ShellStatusPresentation {
+  label: string;
+  tone: Tone;
+  /** Hover text explaining the state; always says WHY when the status is unknown. */
+  title: string;
+  /** True when the bridge is gone and the stored status cannot be trusted. */
+  unknown: boolean;
+}
+
+export function statusPresentation(session: ShellSession): ShellStatusPresentation {
+  if (session.status_unknown) {
+    return {
+      // Its own word, not one of the five statuses. "Unknown" is the honest claim: we
+      // are not asserting it died and not asserting it lives.
+      label: 'Status unknown',
+      // `warning`, not `danger`: danger would read as a failure, which is precisely the
+      // thing we do not know.
+      tone: 'warning',
+      title:
+        `The bridge hosting this session is offline, so its status cannot be confirmed. ` +
+        `It was last known to be ${statusLabel(session.status).toLowerCase()}; that will be ` +
+        `re-confirmed or corrected when the bridge reconnects.`,
+      unknown: true,
+    };
+  }
+  return {
+    label: statusLabel(session.status),
+    tone: statusTone(session.status),
+    title: statusLabel(session.status),
+    unknown: false,
+  };
+}
+
+/**
+ * How to describe a kill on this session, honestly (§8 + REQ-SHELL-3).
+ *
+ * `offered` is false only where a kill is genuinely meaningless: a session already
+ * terminal has no process left and the hub 409s.
+ *
+ * ON THE OFFLINE WORDING — this states §8 AT FULL STRENGTH: the kill is DURABLE and
+ * WILL be carried out when the bridge returns.
+ *
+ * It did not always say that. This copy was deliberately softened on 2026-09-28
+ * (coordinator ruling) because the delivery half genuinely did not happen: a kill
+ * accepted while the bridge was offline was still pending after the bridge reconnected
+ * — process alive, row still `running`, intent still stamped. The hub answered 202 with
+ * a promise it did not keep, so the UI refused to repeat it.
+ *
+ * REQ-SHELL-23 fixed that, and the wording is restored as its AC6. Verified on an
+ * isolated stack across TWO disconnect/reconnect cycles: the process is gone, the row is
+ * terminal, the intent is cleared, and shell_session_exited lands on the user bus.
+ *
+ * WHAT THE COPY MUST GET RIGHT NOW IS TIMING, WHICH IS THE OTHER WAY TO LIE. Delivery
+ * happens ON RECONNECT, not immediately, and the bridge may be gone for a long time.
+ * So the wording commits to the OUTCOME while being explicit that it is pending until
+ * the bridge is back — it must not imply the process dies the moment the user clicks.
+ * The old failure was under-promising; the tempting new one is over-promising.
+ */
+export interface ShellKillAffordance {
+  offered: boolean;
+  label: string;
+  title: string;
+  /** Set when accepting the kill will queue rather than deliver it. */
+  queuedNote?: string;
+}
+
+export function killAffordance(session: ShellSession): ShellKillAffordance {
+  if (isTerminal(session)) {
+    return {
+      offered: false,
+      label: 'Kill',
+      title: `Already ${session.status} — nothing to kill`,
+    };
+  }
+  if (!session.bridge_online) {
+    return {
+      offered: true,
+      // Commits to the OUTCOME, explicit that it is pending until the bridge is back.
+      label: 'Queue kill',
+      title:
+        'The bridge hosting this session is offline, so this kill will not take effect yet. ' +
+        'It is queued and will be carried out as soon as the bridge reconnects.',
+      queuedNote: 'Queued. This session will be killed when the bridge reconnects.',
+    };
+  }
+  return {
+    offered: true,
+    label: 'Kill',
+    title: 'Terminate this session',
+  };
+}
+
 export function kindLabel(kind: ShellSessionKind): string {
   switch (kind) {
     case 'run': return 'Run';
@@ -96,6 +280,17 @@ export function kindLabel(kind: ShellSessionKind): string {
   }
 }
 
+/**
+ * The kind FILTER, which deliberately includes `run` even though AC1 says a user can
+ * never start one. Filtering is not starting: a user who can SEE run rows (the owner-wide
+ * listing returns them) must be able to narrow to them, and removing the option would
+ * only make those rows harder to find, not harder to create.
+ *
+ * The line AC1 actually draws is in `verbsForSession`, which withholds every start-shaped
+ * verb from a run — restart included — so no run ROW offers a way to start one. Keep the
+ * two apart when editing: adding `run` here is correct, offering it in `NewShellDialog`
+ * or handing a run row a restart is not.
+ */
 export const KIND_FILTER_OPTIONS: { value: ShellSessionKind; label: string }[] = [
   { value: 'run', label: 'Run' },
   { value: 'shell', label: 'Shell' },
@@ -187,16 +382,41 @@ export function canPreview(session: ShellSession): boolean {
 /**
  * Offer only the verbs that mean something in this state — see the header for the
  * hub citation behind every exclusion.
+ *
+ * RESTART IS GATED ON KIND, AND IT IS AN AC1 CONTROL, NOT A COSMETIC ONE.
+ * AC1 is "a user cannot start a run from the UI by ANY path". Fixing the picker closes
+ * the obvious path; Restart is the second one, and it was open. The owner-wide shells
+ * list is deliberately UNSCOPED (per the chain description, "nothing may hide a user's
+ * own runs"), so a user's `run` rows really do appear in this UI — and restart respawns
+ * with run_seq+1, which is starting a run. A run is a one-shot command owned by the
+ * agent that triggered it; re-running it is that agent's call.
+ *
+ * This is a UI gate and is NOT the enforcement point. shell_session_restart checks
+ * ownership and nothing else — no starter rule, no kind branch — so the hub-side
+ * backstop is still missing; that is REQ-SHELL-24, deliberately not fixed here. The
+ * start path's own comment says why this matters: the rule "must be enforced at the API,
+ * not only in the UI". Do not let this gate's existence read as that job being done.
+ *
+ * A TERMINAL RUN THEREFORE HAS NO VERBS AT ALL, and the empty array is the correct
+ * answer rather than an oversight: kill 409s, a signal reaches no pid, a port cannot be
+ * declared, there is nothing to preview, and restart belongs to the agent. Both call
+ * sites already guard on `.length` (ShellRow.tsx:78, ShellDetail.tsx:287), so an empty
+ * list renders no menu rather than an empty one.
  */
 export function verbsForSession(session: ShellSession): ShellVerb[] {
+  const mayRestart = session.kind !== 'run';
   if (isTerminal(session)) {
     // Restart is the only verb a dead session can still honour. Kill 409s, a signal
     // reaches no pid, a port cannot be declared, and there is nothing to preview.
-    return ['restart'];
+    return mayRestart ? ['restart'] : [];
   }
   const verbs: ShellVerb[] = [];
   if (canPreview(session)) verbs.push('preview', 'copy-url');
-  verbs.push('set-port', 'interrupt', 'restart', 'kill');
+  verbs.push('set-port', 'interrupt');
+  if (mayRestart) verbs.push('restart');
+  // A LIVE run keeps kill: §8 depends on the user being able to stop a run, and stopping
+  // one is not starting one. Only restart is withheld.
+  verbs.push('kill');
   return verbs;
 }
 
@@ -211,6 +431,24 @@ export function verbsForSession(session: ShellSession): ShellVerb[] {
  */
 export function hasPreviewAffordance(session: ShellSession): boolean {
   return session.server_port > 0 || !isTerminal(session);
+}
+
+/**
+ * REQ-SHELL-6 §5 — does this session SUPPORT live preview at all?
+ *
+ * Distinct from `canPreview`, and the difference is the point. `canPreview` asks whether
+ * a preview can be opened RIGHT NOW (running, with a port). This asks whether preview is
+ * a property of the session at all, which is what an INDICATOR claims — a server that
+ * declares a port supports preview even while it is still starting, and saying so is
+ * useful rather than misleading.
+ *
+ * Keyed on kind AND port. A server with no port is explicitly valid per the redesign
+ * (the port is OPTIONAL), and §5 requires it to show NO indicator: a preview affordance
+ * for a session with nothing to serve would be a dead control. `run` and `shell` never
+ * support preview — a run has no port at all, and a shell is a terminal.
+ */
+export function supportsLivePreview(session: ShellSession): boolean {
+  return session.kind === 'server' && session.server_port > 0;
 }
 
 export function previewUnavailableReason(session: ShellSession): string {

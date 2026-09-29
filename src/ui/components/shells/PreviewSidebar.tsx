@@ -45,18 +45,17 @@ function readStoredWidth(): number {
 
 // Watches one open tab's session and closes the tab once the session stops running.
 //
-// The task sketched this as a WS subscription inside previewTabsSlice, but the hub
-// emits no shell_status event today (it exists only as a *field* on agent_action
-// events), so a WS-only implementation would never fire. Polling the session query
-// works now and still reacts within a frame if the hub starts emitting shell_status
-// later, because wsInvalidation already invalidates the ShellSession tag for that
-// session id — the invalidation forces this very query to refetch.
+// REQ-SHELL-6 §6: no pollingInterval. The comment that used to sit here was correct at
+// the time — it said a WS-only implementation "would never fire" because the hub emits
+// no event this UI listens for, and that the poll could be dropped once the
+// invalidation path worked. That is now the case: the hub DOES publish
+// `shell_session_exited` on every terminal status (shell_session_service.odin:1342),
+// and wsInvalidation handles it and invalidates the `ShellSession` tag for that id,
+// which forces this very query to refetch. The gap was never the event; it was that
+// the UI listened for a type nothing produced.
 function usePreviewTabLiveness(sessionId: string) {
   const dispatch = useDispatch();
-  const { data: session } = useGetShellSessionQuery(
-    { sessionId },
-    { pollingInterval: 3000, skipPollingIfUnfocused: true },
-  );
+  const { data: session } = useGetShellSessionQuery({ sessionId });
   const status = session?.status;
 
   useEffect(() => {

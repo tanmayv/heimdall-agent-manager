@@ -396,9 +396,13 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
   const [showNewShell, setShowNewShell] = useState(false);
   const [activePane, setActivePane] = useState<ActivePane>(null);
 
+  // REQ-SHELL-6 §6: no pollingInterval. Shell events invalidate the ShellSessions
+  // tag this query provides (wsInvalidation.ts, invalidateShellSession), which
+  // refetches this entry. `refetch` is KEPT for the explicit manual refresh control —
+  // that is a user action, not a timer.
   const { data, isFetching, refetch } = useListShellsQuery(
     { chainId: chainId || undefined },
-    { pollingInterval: 5000, refetchOnMountOrArgChange: true },
+    { refetchOnMountOrArgChange: true },
   );
 
   const sessions = data?.sessions ?? [];

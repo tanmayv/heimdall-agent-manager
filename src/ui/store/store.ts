@@ -19,6 +19,7 @@ import themeReducer from './themeSlice';
 import previewTabsReducer from './previewTabsSlice';
 import vaultReducer from './vaultSlice';
 import searchTitleReducer from './searchTitleSlice';
+import shellReducer from './shellSlice';
 
 export const priorUserClientStateCleared = createAction('heimdall/priorUserClientStateCleared');
 
@@ -36,6 +37,9 @@ const appReducer = combineReducers({
   theme: themeReducer,
   vault: vaultReducer,
   searchTitle: searchTitleReducer,
+  // REQ-SHELL-6 §6: a push-only tick for the shell consumers that are not RTK
+  // Query caches, so no shell view needs a poller. See shellSlice.ts.
+  shells: shellReducer,
   // T11-UI-5: open Preview Sidebar tabs (server shell sessions being previewed).
   previewTabs: previewTabsReducer,
   // Ephemeral, non-cache agent activity (push-only bubbles). Reset with the rest

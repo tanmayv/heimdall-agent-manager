@@ -63,6 +63,7 @@ import {
 } from '../../utils/bridgeLaunchOptions';
 import { taskBridgeDisplay, taskBridgeOptions } from '../../utils/taskBridgePin';
 import { useIsMobile } from '../shell/responsive';
+import ChainActiveServersPanel from '../shells/ChainActiveServersPanel';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 
 interface TaskChainOverviewProps {
@@ -1824,6 +1825,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       </div>
 
+      {/* REQ-SHELL-6 §4 — ACTIVE SERVERS for this chain, whoever started them.
+          Placed in the chain summary because `server` is CHAIN + BRIDGE scoped and chain
+          appears in no other kind's scope key (shell_session.odin:87-91), making this the
+          only mounted surface whose scope matches the content. This deliberately
+          revisits REQ-UI-REMOVE-SHELLS-FROM-CHAIN-VIEW, which removed the GENERIC
+          all-kinds session table from this page; see the note in
+          tests/test_ui_chain_overview_no_shells_static.py for where the line now sits. */}
+      <div className="px-4 pb-4 sm:px-6">
+        <ChainActiveServersPanel chainId={chainId} />
+      </div>
 
       {/* Task List Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">

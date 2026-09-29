@@ -5,6 +5,7 @@ import {
   useRestartShellMutation,
 } from '../../api/endpoints/shells';
 import type { ShellLogResponse, ShellSession } from '../../api/endpoints/shells';
+import { ShellOutputEmpty, ShellOutputUnavailable, shellLogFailure } from './ShellOutputStates';
 import { IconButton } from '@ui';
 
 interface ShellLogViewerProps {
@@ -85,9 +86,15 @@ export function ShellLogViewer({ session, onClose, showSessionVerbs = true }: Sh
   const followLimit = grep ? GREP_FOLLOW_LIMIT : FOLLOW_LIMIT;
   const reqLimit = follow ? (settled ? followLimit : PROBE_LIMIT) : PAGE_SIZE;
 
-  const { data, isFetching, refetch } = useGetShellLogQuery(
+  // REQ-SHELL-6 §6: no pollingInterval. This one was the 1/second log poll, and unlike
+  // the status pollers it has NO push replacement — a shell session's OUTPUT is never
+  // in the hub (the chain's output rule: it is streamed or read on demand from the
+  // bridge, shell_session_service.odin:569), so no hub event can carry a new line. The
+  // consequence is deliberate and must not be papered over with a timer: a live log
+  // advances when the reader asks it to, via the Refresh control in the header, and the
+  // continuous view is the WS stream path (useShellStream) rather than a refetch loop.
+  const { data, isFetching, refetch, error } = useGetShellLogQuery(
     { sessionId: session.session_id, offset: reqOffset, limit: reqLimit, grep: grep || undefined },
-    { pollingInterval: isRunning ? 1000 : 0 },
   );
 
   const [killShell, killState] = useKillShellMutation();
@@ -134,6 +141,23 @@ export function ShellLogViewer({ session, onClose, showSessionVerbs = true }: Sh
       if (desired !== tailOffset) setTailOffset(desired);
     }
   }, [data, follow, grep, settled, tailOffset]);
+
+  /* REQ-SHELL-6 §7 — THREE DISTINCT OUTPUT STATES, never one blank pane.
+   *
+   * The distinction is NOT derivable from emptiness, which is the trap this requirement
+   * exists to close: "no lines" is the same pixel for a reclaimed log, an unreachable
+   * bridge and a command that printed nothing. The hub keeps them apart by ERROR CODE
+   * (shell_session_service.odin:1037-1046) and `getShellLog` now carries that code
+   * through as `reason` instead of flattening it to a message string:
+   *
+   *   bridge_offline (409)  unavailable RIGHT NOW, may return       -> transient
+   *   gone           (410)  reclaimed by retention (REQ-SHELL-8)    -> permanent
+   *   no error, 0 lines     the command genuinely produced nothing  -> success
+   *
+   * `logFailure` is undefined in the third case, which is what keeps "printed nothing"
+   * from being rendered as a failure.
+   */
+  const logFailure = shellLogFailure(error);
 
   // The probe's single line is never shown; everything else is worth keeping on screen.
   const isProbeResponse = data != null && data.limit === PROBE_LIMIT;
@@ -226,6 +250,23 @@ export function ShellLogViewer({ session, onClose, showSessionVerbs = true }: Sh
           {!follow && (
             <span className="rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning">
               paused
+            </span>
+          )}
+          {/* REQ-SHELL-6 §6 consequence, made VISIBLE rather than left implicit.
+              With the 1/second poll gone this pane is a SNAPSHOT, and a live session's
+              stale output that looks current is worse than one plainly marked stale —
+              somebody debugging a server would otherwise read an old tail as the
+              present. Shown only while the session is live: once it is terminal the
+              output is final and "snapshot" would be a distinction without a
+              difference. Note the wording avoids "following" and "streaming" for the
+              same reason. */}
+          {isRunning && (
+            <span
+              data-debug-id={`shell-log-snapshot-${session.session_id}`}
+              title="Output is read from the bridge on demand, not streamed. Use Refresh to read the latest."
+              className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-semibold text-muted"
+            >
+              snapshot · refresh to update
             </span>
           )}
         </div>
@@ -326,14 +367,33 @@ export function ShellLogViewer({ session, onClose, showSessionVerbs = true }: Sh
           </button>
         )}
 
-        {!ready && (
+        {/* REQ-SHELL-6 §7 states 1 and 2 of 3. The panes live in ShellOutputStates so
+            this viewer and the run indicator cannot drift into two wordings for the same
+            outcome — see the header there. */}
+        {logFailure && (
+          <ShellOutputUnavailable
+            failure={logFailure}
+            onRetry={() => refetch()}
+            isFetching={isFetching}
+            debugPrefix={`shell-log-${session.session_id}`}
+          />
+        )}
+
+        {/* `logFailure` suppresses the spinner: a first request that FAILS never settles
+            the follow offset, so `ready` stays false forever and this would otherwise
+            sit on "Loading…" instead of showing the state above. */}
+        {!ready && !logFailure && (
           <div className="text-xs text-faint italic">Loading…</div>
         )}
 
-        {ready && visible.length === 0 && !isFetching && (
-          <div className="text-xs text-faint italic">
-            {grep ? 'No matching lines.' : 'No log output yet.'}
-          </div>
+        {/* State 3 of 3 — GENUINELY EMPTY. A SUCCESS, not a failure: the request
+            answered 200 with zero lines, so the command really did print nothing. Gated
+            on `!logFailure` so it can never stand in for either state above. The live
+            wording stays distinct from the terminal one, because "nothing yet" and
+            "nothing at all" are different facts. */}
+        {/* State 3 of 3, gated on `!logFailure` so it can never stand in for a failure. */}
+        {ready && !logFailure && visible.length === 0 && !isFetching && (
+          <ShellOutputEmpty isRunning={isRunning} grep={grep} debugPrefix={`shell-log-${session.session_id}`} />
         )}
 
         {visible.map((line, i) => (

@@ -62,6 +62,7 @@ import {
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
+import { PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
 import { type TaskLike } from './chainTaskInference';
 import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
@@ -957,6 +958,66 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       .filter((message) => message.messageType !== 'system'),
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
+  /* REQ-SHELL-6 §2 — THE RUN INDICATOR's three derived values.
+   *
+   * REQ-SHELL-5 posts one lean marker per run, message_type="shell_run", carrying ONLY
+   * {"session_id": …}. Status is deliberately absent from it, so the marker tells us
+   * WHICH runs belong in this thread and the shell_sessions row tells us everything
+   * about their state. */
+  const runMarkers: ShellRunMarker[] = useMemo(
+    () => chatMessages
+      .filter((message) => message.messageType === 'shell_run')
+      .map((message) => ({
+        messageId: message.messageId,
+        sessionId: String(message.metadata?.session_id || message.metadata?.sessionId || ''),
+        createdUnixMs: message.createdUnixMs || 0,
+      }))
+      .filter((marker) => Boolean(marker.sessionId)),
+    [chatMessages],
+  );
+
+  /* The newest message that is NOT a run marker — i.e. the last time a user or an agent
+   * actually said something. This is what UNPINS a finished run, per the user's
+   * sequencing: a run that has stopped stays on screen until the next such message
+   * arrives, so one finishing while nobody is talking remains readable. Markers are
+   * excluded because a run must not unpin itself (or its siblings) merely by existing. */
+  const lastConversationMessageMs = useMemo(
+    () => chatMessages.reduce(
+      (newest, message) => (message.messageType === 'shell_run' ? newest : Math.max(newest, message.createdUnixMs || 0)),
+      0,
+    ),
+    [chatMessages],
+  );
+
+  const conversationRuns = useConversationRuns(agentInstanceId, conversationId);
+  const pinnedRuns = useMemo(
+    () => pinnedRunSessions(conversationRuns, runMarkers, lastConversationMessageMs),
+    [conversationRuns, runMarkers, lastConversationMessageMs],
+  );
+  const runBySessionId = useMemo(
+    () => new Map(conversationRuns.map((session) => [session.session_id, session])),
+    [conversationRuns],
+  );
+
+  /* A pinned run is rendered ABOVE THE COMPOSER, so its marker must not ALSO render at
+   * its chronological place — the row would appear twice. Dropping it from the list
+   * rather than rendering an empty body matters: ChatMessageList wraps every message in
+   * a bubble with a timestamp and a hover-copy control, so a null body would leave a
+   * visible empty row behind. Once the run unpins, the marker comes back here and the
+   * transcript keeps its permanent record of the run where it happened. */
+  const pinnedSessionIds = useMemo(
+    () => new Set(pinnedRuns.map((session) => session.session_id)),
+    [pinnedRuns],
+  );
+  const transcriptMessages = useMemo(
+    () => chatMessages.filter((message) => {
+      if (message.messageType !== 'shell_run') return true;
+      const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
+      return !pinnedSessionIds.has(sessionId);
+    }),
+    [chatMessages, pinnedSessionIds],
+  );
+
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
@@ -1318,6 +1379,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   };
 
   function renderConversationMessageBody(message: ChatMessage) {
+    /* REQ-SHELL-6 §2. A marker reaching this point is NOT pinned (pinned ones are
+       filtered out of `transcriptMessages`), so it always renders the finished,
+       collapsed form. Resolved from the live session row — never from the message, which
+       carries no status by design. If the row is not loaded yet there is nothing
+       truthful to say about the run, so the marker renders nothing rather than guessing
+       a state. */
+    if (message.messageType === 'shell_run') {
+      const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
+      const session = sessionId ? runBySessionId.get(sessionId) : undefined;
+      if (!session) return null;
+      return <ShellRunRow session={session} />;
+    }
     if (message.messageType === 'pane_capture') {
       const metadata = message.metadata || {};
       const status = message.messageStatus || 'complete';
@@ -1742,6 +1815,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
               above the composer (co-located with the working indicator). */}
           <AgentActivityBubbles instanceId={agentInstanceId} />
+          {/* REQ-SHELL-6 §2/§3: every RUNNING run, and every just-finished one, sits at
+              the END of the conversation directly above the composer — the user's
+              explicit placement. Concurrent runs stack; finished ones collapse into a
+              single "Ran N commands" row. */}
+          <PinnedShellRuns sessions={pinnedRuns} />
           {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
           {attachments.length > 0 && (
             <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary">
@@ -1955,7 +2033,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <div data-debug-id="conversation-thread-transcript" className="w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
       <ChatMessageList
         conversationKey={conversationId}
-        messages={chatMessages}
+        messages={transcriptMessages}
         debugPrefix="conversation-thread"
         focusMessageId={focusMessageId}
         hasMore={olderHasMore && Boolean(olderCursor)}

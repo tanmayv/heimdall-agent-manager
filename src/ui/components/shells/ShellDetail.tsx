@@ -83,7 +83,8 @@ import {
   shellTitle,
   shellViewHref,
   statusLabel,
-  statusTone,
+  statusPresentation,
+  supportsLivePreview,
   verbsForSession,
   type ShellVerb,
 } from './shellModel';
@@ -124,7 +125,9 @@ export interface PendingConfirm {
  * pill and the output it explains never disagree by more than a second.
  */
 export function useShellDetail(sessionId: string, onAfterVerb?: (verb: ShellVerb) => void) {
-  const query = useGetShellSessionQuery({ sessionId }, { skip: !sessionId, pollingInterval: 2000 });
+  // REQ-SHELL-6 §6: no pollingInterval. Repaints when a shell event invalidates this
+  // session's `ShellSession` tag (wsInvalidation.ts, invalidateShellSession).
+  const query = useGetShellSessionQuery({ sessionId }, { skip: !sessionId });
   const [killShell] = useKillShellMutation();
   const [restartShell] = useRestartShellMutation();
   const [signalShell] = useSignalShellMutation();
@@ -327,16 +330,23 @@ export function ShellDetailActions({
 
 /** The meta line under the title: status · kind · port · pid · time. */
 export function ShellDetailMeta({ record }: { record: ShellSession }) {
+  const presentation = statusPresentation(record);
   const time = shellTimeLabel(record);
   const exit = exitLabel(record);
   return (
     <div className="flex flex-wrap items-center gap-2" data-debug-id="shell-view-meta">
-      <StatusPill tone={statusTone(record.status)} data-debug-id="shell-view-status">
-        {statusLabel(record.status)}
+      <StatusPill tone={presentation.tone} title={presentation.title} data-debug-id="shell-view-status">
+        {presentation.label}
       </StatusPill>
       <Badge data-debug-id="shell-view-kind">{kindLabel(record.kind)}</Badge>
       {record.server_port > 0 ? (
         <Badge data-debug-id="shell-view-port">:{record.server_port}</Badge>
+      ) : null}
+      {/* REQ-SHELL-6 §5: only a server WITH a port advertises live preview. */}
+      {supportsLivePreview(record) ? (
+        <Badge data-debug-id="shell-view-live-preview" title={`Supports live preview — serves on port ${record.server_port}`}>
+          preview
+        </Badge>
       ) : null}
       {exit ? (
         <StatusPill tone={exitTone(record)} data-debug-id="shell-view-exit">{exit}</StatusPill>
@@ -362,6 +372,7 @@ export function ShellDetailHeader({
   alert?: React.ReactNode;
 }) {
   const title = shellTitle(record);
+  const presentation = statusPresentation(record);
   const time = shellTimeLabel(record);
   const exit = exitLabel(record);
 
@@ -379,13 +390,18 @@ export function ShellDetailHeader({
       }
       id={record.session_id}
       status={
-        <StatusPill tone={statusTone(record.status)} data-debug-id="shell-view-status">
-          {statusLabel(record.status)}
+        <StatusPill tone={presentation.tone} title={presentation.title} data-debug-id="shell-view-status">
+          {presentation.label}
         </StatusPill>
       }
       badges={
         <>
           <Badge data-debug-id="shell-view-kind">{kindLabel(record.kind)}</Badge>
+          {supportsLivePreview(record) ? (
+            <Badge data-debug-id="shell-view-live-preview" title={`Supports live preview — serves on port ${record.server_port}`}>
+              preview
+            </Badge>
+          ) : null}
           {record.server_port > 0 ? (
             <Badge data-debug-id="shell-view-port">:{record.server_port}</Badge>
           ) : null}
@@ -612,6 +628,7 @@ export function ShellDetailBody({
   wide: boolean;
   onVerb: (verb: ShellVerb) => void;
 }) {
+  const presentation = statusPresentation(record);
   // TWO DIFFERENT QUESTIONS that happen to share an answer today, kept apart on
   // purpose rather than collapsed into one flag:
   //
@@ -747,7 +764,16 @@ export function ShellDetailBody({
             </Text>
           </DetailRow>
           <DetailRow label="Status">
-            <Text as="div" role="body-sm">{statusLabel(record.status)}</Text>
+            {/* REQ-SHELL-6 §8: the derived state leads, and the STORED status is still
+                shown beside it as "last known" rather than being hidden. The detail view
+                is the one place both belong — the pill has to pick one word, but here
+                there is room to say we cannot confirm it AND what it was. */}
+            <Text as="div" role="body-sm" data-debug-id="shell-view-status-detail">
+              {presentation.label}
+              {presentation.unknown ? (
+                <span className="text-muted"> · last known {statusLabel(record.status).toLowerCase()}</span>
+              ) : null}
+            </Text>
           </DetailRow>
           {record.pid > 0 ? (
             <DetailRow label="PID">

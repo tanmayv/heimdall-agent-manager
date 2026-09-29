@@ -26,6 +26,33 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+# ---------------------------------------------------------------------------
+# SUPERSEDED IN PART BY REQ-SHELL-6 (2026-09-28). Read this before "fixing" a
+# failure here, and before widening the assertions below.
+#
+# REQ-UI-REMOVE-SHELLS-FROM-CHAIN-VIEW removed the GENERIC, ALL-KINDS shells panel
+# from the chain overview, and that removal STANDS. What remains forbidden on this
+# page is exactly what was taken away:
+#   - ShellsPanel itself, in any form (the assertions below still enforce this);
+#   - a table of every session of every KIND for the chain;
+#   - per-row action menus, bulk selection/actions, and an embedded terminal pane.
+#
+# What REQ-SHELL-6 §4 now PERMITS, and deliberately adds, is narrower:
+#   - ChainActiveServersPanel: a list of the ACTIVE SERVERS of this chain only,
+#     with two affordances per row (stream stdout on demand; open live preview when
+#     the server declares a port), plus a visible empty state.
+#
+# WHY THE EXCEPTION IS PRINCIPLED RATHER THAN A LOOPHOLE. `server` is CHAIN + BRIDGE
+# scoped and `chain` is in NO other kind's scope key
+# (src/hub/domain/shell_session.odin:87-91), so a chain-narrowed query can only
+# return servers, and the chain summary is the only mounted surface whose scope
+# matches that content. The panel is therefore not the removed panel under a new
+# name: it is a different, chain-scoped thing that could not correctly live anywhere
+# else. The assertions below intentionally continue to name ShellsPanel and nothing
+# broader, so that reintroducing the all-kinds table still fails here.
+# ---------------------------------------------------------------------------
+
+
 def test_task_chain_overview_no_shells() -> None:
     require(TASK_CHAIN_OVERVIEW.is_file(), f"TaskChainOverview.tsx must exist at {TASK_CHAIN_OVERVIEW}")
     src = TASK_CHAIN_OVERVIEW.read_text(encoding="utf-8")

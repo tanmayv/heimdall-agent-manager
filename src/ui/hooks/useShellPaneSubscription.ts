@@ -215,6 +215,22 @@ export function useShellPaneSubscription({
     }
   }, [isExpanded, sessionId, status, isActiveTab, isDocumentHidden]);
 
+  // REQ-SHELL-6 §6 — JUSTIFIED EXCEPTION 2 of 2, kept by explicit coordinator ruling
+  // rather than by my own judgement. This timer is NOT a status poller: it is the
+  // LEGACY TRANSPORT that paints the interactive terminal SCREEN, and the no-polling
+  // decision is about how STATUS reaches the UI.
+  //
+  // It cannot be deleted in this task because its replacement is gated server-side:
+  // ShellTerminalPane uses the WebSocket path (useShellStream) only when the
+  // `streaming_terminal_pane` experiment is enabled, and the hub REFUSES the stream
+  // route with 403 for anyone else — shell_stream_experiment_enabled defaults to false
+  // (shell_session_handlers.odin:32-44, :80-83). Removing this timer would therefore
+  // leave every user without that flag with a `shell` session whose terminal never
+  // paints, which is a worse regression than the polling.
+  //
+  // Retiring it is REQ-SHELL-19, deliberately sequenced: prove the WS path works with
+  // the experiment OFF, then remove the hub gate, then delete this transport and the
+  // fallback branch. Do not delete it ahead of step 1.
   useEffect(() => {
     if (interval <= 0 || !sessionId) {
       return;
