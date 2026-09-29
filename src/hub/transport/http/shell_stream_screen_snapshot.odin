@@ -36,10 +36,45 @@ import shell_session_svc "odin_test:hub/service/shell_session"
 // the snapshot idempotent against anything already rendered — see the ordering note above.
 SHELL_SCREEN_REPAINT_PREFIX :: "\x1b[2J\x1b[H"
 
+// _shell_screen_lf_to_crlf rewrites the pane's bare row separators into CRLF.
+// Caller owns the result.
+//
+// WHY THIS IS NEEDED (REQ-SHELL-30). The pane text arrives as one string PER GRID ROW joined
+// with a bare LF — bridge_pty_host_screen_to_output in src/bridge/pty_host_runtime.odin. For
+// the polling pane, which paints into the DOM, bare LF is correct. For a VT it is not: LF drops
+// one row and KEEPS the column, so the repaint drew every row starting where the previous one
+// ended — a diagonal staircase on a viewer's FIRST render.
+//
+// WHY THE FIX LIVES HERE AND NOT AT THE JOIN. bridge_pty_host_screen_to_output is also the input
+// to bridge_pty_host_pane_hash (the very next statement in bridge_pty_host_evaluate_pane), so
+// changing the join would not merely alter the poller's text — it would invalidate every stored
+// since_hash at once and cost every client a full repaint. This builder is the WS/terminal-only
+// seam, and it is already the thing that speaks VT: it prepends erase-screen + cursor-home.
+//
+// An LF that ALREADY has a CR in front of it is passed through untouched, so this can never
+// produce "\r\r\n" should a pane source ever start sending CRLF itself.
+//
+// NOTHING here measures width. vt.rs capture() writes SGR runs INLINE into each row, so a row's
+// byte length is not its display width and must never be used as one. The separator is decided
+// per LF byte, never per length.
+_shell_screen_lf_to_crlf :: proc(s: string) -> string {
+	b := strings.builder_make()
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == '\n' && (i == 0 || s[i - 1] != '\r') {
+			strings.write_byte(&b, '\r')
+		}
+		strings.write_byte(&b, c)
+	}
+	return strings.to_string(b)
+}
+
 // shell_stream_screen_payload_b64 builds the base64 body of a `screen` frame: the repaint
-// prefix followed by the captured pane text. Caller owns the result.
+// prefix followed by the captured pane text with CRLF row separators. Caller owns the result.
 shell_stream_screen_payload_b64 :: proc(pane_output: string) -> string {
-	joined := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, pane_output})
+	body := _shell_screen_lf_to_crlf(pane_output)
+	defer delete(body)
+	joined := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, body})
 	defer delete(joined)
 	return base64.encode(transmute([]byte)joined)
 }
