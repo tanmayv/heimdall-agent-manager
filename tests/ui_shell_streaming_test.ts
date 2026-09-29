@@ -225,14 +225,57 @@ test('REQ-SHELL-18: every ShellTerminalPane call site is keyed by session id', (
     [SHELL_DETAIL, 'key={record.session_id}', 'ShellDetail.tsx (unkeyed ShellDetailPane swaps record)'],
   ];
 
+  // Per-CALL-SITE, not per-file. A second <ShellTerminalPane> added to a file that already
+  // keys its first one would leave `src.includes(expectedKey)` true, the enumeration below
+  // unchanged, and the suite green while the bleed is back — a silent path to a regression of
+  // the exact bug this test exists to catch. So every opening tag is checked on its own.
+  const openingTags = (src: string): string[] => {
+    const tags: string[] = [];
+    let i = src.indexOf('<ShellTerminalPane');
+    while (i !== -1) {
+      let depth = 0;
+      let end = i;
+      while (end < src.length) {
+        const ch = src[end];
+        if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+        else if (ch === '>' && depth === 0) break;
+        end += 1;
+      }
+      tags.push(src.slice(i, end + 1));
+      i = src.indexOf('<ShellTerminalPane', end);
+    }
+    return tags;
+  };
+
   for (const [file, expectedKey, label] of sites) {
     const src = fs.readFileSync(file, 'utf8');
-    assert.ok(src.includes('<ShellTerminalPane'), `${label} must render ShellTerminalPane`);
+    const tags = openingTags(src);
+    assert.ok(tags.length > 0, `${label} must render ShellTerminalPane`);
     assert.ok(src.includes(expectedKey), `${label} must key ShellTerminalPane with ${expectedKey}`);
+    tags.forEach((tag, n) => {
+      assert.match(
+        tag,
+        /\skey=\{/,
+        `${label}: <ShellTerminalPane> occurrence #${n + 1} has no key= of its own. Every call `
+          + 'site needs its own key={...session_id}; a sibling having one does not cover it.'
+      );
+    });
   }
 
   // Guard against a FOURTH call site appearing without a key. Counted across the
   // whole UI tree so this fails on the new file, not silently after it ships.
+  //
+  // KNOWN LIMITS OF THIS ENUMERATION, analysed and deliberately NOT closed — recorded so the
+  // next reader inherits the decision instead of re-deriving it (REQ-SHELL-18 review):
+  //   - An ALIASED import (`import { ShellTerminalPane as Pane }`) would render as `<Pane` and
+  //     not be seen. Nothing in this tree aliases it and the repo has no such idiom.
+  //   - The walk covers src/ui only. Complete today: `find src -name '*.tsx' -not -path 'src/ui/*'`
+  //     returns nothing, so every .tsx in the repo is already inside the walk.
+  //   - A call built with React.createElement rather than JSX would not be seen. The tree is
+  //     uniformly JSX.
+  // Each costs more than it buys today. If one of the three premises above stops holding, the
+  // corresponding limit becomes real and this test should be tightened then.
   const uiRoot = path.join(REPO_ROOT, 'src/ui');
   const walk = (dir: string, out: string[] = []): string[] => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
