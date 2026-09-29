@@ -2062,16 +2062,29 @@ _json_int :: proc(body, key: string, default_value: int) -> int {
 	return int(v)
 }
 
+// DELEGATES to _inventory_value, the package's one string-aware key scan, rather than
+// carrying its own `strings.index`. That plain index was the whole defect: it matched the
+// needle ANYWHERE, string literals included, so the FIRST `"key"`-looking run of bytes in
+// the body won — and in the shell inventory frame the sessions array is written BEFORE
+// `"truncated"` (shell_inventory.odin:143 then :156), which puts attacker-influenced cmd
+// text ahead of the real flag.
+//
+// IT WAS NOT EXPLOITABLE, and that was checked rather than assumed: the bridge writes
+// every value through bridge_local_write_json_string (wrapper_endpoint.odin:692), which
+// turns `"` into `\"`, so a cmd of `"truncated":false` lands in the frame as
+// `\"truncated\":false` and the 11-byte needle `"truncated"` cannot match it — its
+// closing quote would have to fall where a backslash is.
+//
+// FIXED ANYWAY, because the guard is load-bearing and its safety lived somewhere else.
+// `truncated` false on a PARTIAL list makes the caller reap by absence over an incomplete
+// inventory and land a terminal status on HEALTHY sessions. That the read was safe
+// depended on an escaping invariant enforced in a different module, in a different
+// binary, with nothing near the read to say so. Now the read is self-contained, and the
+// four `ok` reads in this file get the same protection for free.
 _json_bool :: proc(body, key: string) -> bool {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return false
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return false
-	rest = strings.trim_space(rest[colon + 1:])
-	return strings.has_prefix(rest, "true")
+	value_start, ok := _inventory_value(body, key)
+	if !ok do return false
+	return strings.has_prefix(body[value_start:], "true")
 }
 
 // _json_array_raw returns the raw JSON array value for a key as a heap-allocated string

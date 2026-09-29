@@ -1070,7 +1070,6 @@ bridge_shell_session_reconcile_now :: proc() {
 
 	bridge_shell_session_reconcile(&bridge_shell_session_map, reply.agents, data_dir)
 
-
 	// REQ-SHELL-10: hand the hub this bridge's WHOLE live truth, so it can diff its
 	// rows against it instead of waiting for an event per divergence.
 	//
@@ -1490,12 +1489,18 @@ bridge_shell_session_kind_str :: proc(k: Bridge_Shell_Session_Kind) -> string {
 	return "run"
 }
 
-// An unrecognised spelling falls back to .Run, the kind with no scope
-// prerequisites of its own. The hub validates kind before it ever reaches the
-// wire (domain.shell_session_validate_scope), so this is a defensive default for
-// a malformed frame rather than a parsing policy — in particular it does NOT
-// accept any retired spelling, it merely
-// does not crash on them.
+// Every unrecognised spelling is COERCED to .Run, the kind with no scope prerequisites
+// of its own. Be precise about what that means: this is silent coercion, not rejection.
+// The retired vocabulary — "agent", "command", "interactive" — takes the same default as
+// genuine garbage would, so nothing here distinguishes a stale client from a malformed
+// frame, and nothing here reports either.
+//
+// That is acceptable only because the real gate is upstream: the hub validates kind
+// before it ever reaches the wire (domain.shell_session_validate_scope), so a retired
+// spelling cannot arrive on this path in the first place. This default exists so a
+// malformed frame does not crash the bridge, and for no other reason. It is not a
+// parsing policy, and it must not be read as one — in particular it is NOT a
+// bridge-side check on the kind vocabulary.
 bridge_shell_session_kind_from_str :: proc(s: string) -> Bridge_Shell_Session_Kind {
 	switch s {
 	case "shell":  return .Shell

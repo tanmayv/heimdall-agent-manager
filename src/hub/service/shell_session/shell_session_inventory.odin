@@ -590,7 +590,25 @@ _inventory_objects :: proc(body: string) -> [][]u8 {
 			if depth == 0 do start = i
 			depth += 1
 		case '}':
-			depth -= 1
+			// GUARDED, so a stray top-level `}` cannot drive depth NEGATIVE. Unguarded,
+			// one extra brace left depth at -1, every subsequent `{` opened at a depth
+			// that never returned to 0, and every remaining entry was dropped with no
+			// signal — an inventory that looks exactly like sessions having ended, which
+			// is the worst way for this to fail. With the guard a stray brace is skipped
+			// and the entries after it are still parsed.
+			//
+			// NOT reachable from session content: values go through the bridge's
+			// bridge_local_write_json_string, which escapes `"` and `\`, so a cmd cannot
+			// break out of its string and contribute a structural brace. This is
+			// robustness against our OWN bridge emitting a malformed frame.
+			//
+			// AND IT DELIBERATELY DOES NOT FAIL THE WHOLE PARSE. Returning nothing on a
+			// malformed frame would be worse, not safer: the caller reaps by ABSENCE when
+			// `truncated` is false (see shell_session_inventory_apply), so an empty result
+			// from a frame that merely had a stray brace would terminate every live
+			// session on the bridge. Recovering as many entries as the frame actually
+			// contains is the conservative direction here.
+			if depth > 0 do depth -= 1
 			if depth == 0 && start >= 0 {
 				append(&out, transmute([]u8)body[start:i + 1])
 				start = -1
@@ -603,11 +621,24 @@ _inventory_objects :: proc(body: string) -> [][]u8 {
 }
 
 // _inventory_str reads a string field of one object, returning a SLICE of the input
-// (no allocation, no ownership). Values are written by the bridge's
-// bridge_local_write_json_string, which escapes `"` and `\`, so a value containing
-// either is read back correctly here; it returns "" for a value that needs unescaping
-// beyond that rather than allocating a decoded copy, since no field the diff acts on
-// (ids, kinds, statuses, paths) can legitimately contain one.
+// (no allocation, no ownership).
+//
+// IT RETURNS THE RAW, STILL-ESCAPED SPAN, and does not decode. It finds the value's true
+// end — the escape-aware scan below means a `\"` inside the value does not terminate it
+// early — but what it hands back is the bytes as they sit in the frame. A cmd the bridge
+// wrote from `echo "hi"` therefore reads back as `echo \"hi\"`, with the backslashes.
+//
+// THIS COMMENT USED TO CLAIM IT RETURNED "" for a value needing unescaping. It never did,
+// and the claim was the thing worth fixing rather than the behaviour: returning "" would
+// DISCARD the cmd of any adopted session whose command line contains a quote, a backslash
+// or a newline, which is a normal shell command and not an edge case. A cmd rendered with
+// visible backslashes is a display-fidelity wart on the adopt path; a cmd silently
+// emptied is a lost record. The fields the diff actually BRANCHES on — session_id, kind,
+// status, cwd — cannot legitimately carry an escape, so no decision is affected either
+// way, and nothing here needs a decoded copy to be correct.
+//
+// If display fidelity on the adopt path ever matters enough, the fix is an unescaping
+// variant used by the adopt path alone, not a change to this one.
 @(private = "file")
 _inventory_str :: proc(obj: []u8, key: string) -> string {
 	body := string(obj)
@@ -651,7 +682,14 @@ _inventory_raw_is_true :: proc(obj: []u8, key: string) -> bool {
 // _inventory_value returns the index at which `key`'s value begins, matching the key
 // only OUTSIDE string literals so a value containing `"pid":` cannot be read as the
 // field itself.
-@(private = "file")
+//
+// Package-scoped, not file-private, for the same reason _inventory_find_array is:
+// _json_bool in shell_session_service.odin reads flags out of frames and bridge replies
+// that carry arbitrary process output, and needs exactly this scan. One string-aware key
+// scan serves the package — three subtly different ones is how this bug class keeps
+// reappearing, each author writing a more careful parser rather than fixing the one they
+// found.
+@(private)
 _inventory_value :: proc(body, key: string) -> (int, bool) {
 	needle := strings.concatenate({"\"", key, "\""})
 	defer delete(needle)

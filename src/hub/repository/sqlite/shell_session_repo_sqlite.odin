@@ -234,20 +234,28 @@ shell_session_get_by_id_sqlite :: proc(ctx: rawptr, bridge_id, session_id: strin
 	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
 }
 
-// The three scoped list routes. Each passes the SCOPE COLUMN it narrows on, so
-// shell_session_list_generic can add the matching per-kind restriction from the
-// domain's scope rules. project_id is not a scope column — it is an annotation
-// every kind may carry — so the by-project route narrows on kind not at all.
+// The three scoped list routes, kept ADJACENT on purpose: each passes the per-kind
+// restriction it wants, and the one that passes NONE is visibly the odd one out rather
+// than quietly different. project_id is not a scope column — it is an annotation every
+// kind may carry — so the by-project route narrows on kind not at all, and says so by
+// passing `nil`.
+//
+// `nil` HERE MEANS NOTHING, which is the point of spelling it as a slice. This used to be
+// a `domain.Shell_Session_Scope_Column` plus a parallel `is_scope_column: bool`, and the
+// by-project caller passed `nil, false` — where `nil` on an enum is the zero value, i.e.
+// secretly `.Bridge`, reachable the moment anyone dropped the bool. Two correlated values
+// encoding one fact. An empty slice cannot be misread that way and needs no second
+// parameter to disarm it.
 shell_session_list_by_bridge_sqlite :: proc(ctx: rawptr, owner_user_id, bridge_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "bridge_id", .Bridge, true, owner_user_id, bridge_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "bridge_id", {shell_session_kind_scope_clause(.Bridge)}, owner_user_id, bridge_id, status_filter, cursor, limit)
 }
 
 shell_session_list_by_project_sqlite :: proc(ctx: rawptr, owner_user_id, project_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "project_id", nil, false, owner_user_id, project_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "project_id", nil, owner_user_id, project_id, status_filter, cursor, limit)
 }
 
 shell_session_list_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
-	return shell_session_list_generic(ctx, "chain_id", .Chain, true, owner_user_id, chain_id, status_filter, cursor, limit)
+	return shell_session_list_generic(ctx, "chain_id", {shell_session_kind_scope_clause(.Chain)}, owner_user_id, chain_id, status_filter, cursor, limit)
 }
 
 // shell_session_list_by_owner_sqlite lists every session the owner has, across
@@ -277,10 +285,15 @@ shell_session_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, f
 }
 
 // shell_session_list_generic is the one scoped list. `scope_col` is the column to
-// narrow on; when `is_scope_column` it is also a domain scope column, and
-// `scope_kind_col` says which — so the query additionally restricts to the kinds
-// that key on it.
-shell_session_list_generic :: proc(ctx: rawptr, scope_col: string, scope_kind_col: domain.Shell_Session_Scope_Column, is_scope_column: bool, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+// narrow on. `kind_clauses` carries the per-kind restriction when `scope_col` is also a
+// domain scope column, and is EMPTY when it is not — one value, so there is no way to
+// say "restrict to these kinds" and "this is not a scope column" at the same time.
+//
+// Each clause is still built by shell_session_kind_scope_clause from
+// domain.SHELL_SESSION_SCOPE_RULES, so the narrowing remains STRUCTURAL — a WHERE clause
+// the database applies — and not a client-side filter (REQ-SHELL-9 AC3). The callers
+// choose WHETHER to narrow; they do not get to spell out WHICH kinds.
+shell_session_list_generic :: proc(ctx: rawptr, scope_col: string, kind_clauses: []Shell_Session_Where_Clause, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	// The scope clause is UNCONDITIONAL, including when scope_val is "". These
 	// three lists are scoped by construction, and an empty scope value means
 	// "the sessions whose column is empty" — dropping the clause instead would
@@ -292,7 +305,7 @@ shell_session_list_generic :: proc(ctx: rawptr, scope_col: string, scope_kind_co
 	// with an empty chain_id — i.e. all the agent-scoped runs and bridge-scoped
 	// shells — to a caller asking about a chain. Restricting to the kinds that key
 	// on the column closes that: a by-chain listing can only ever return servers.
-	if is_scope_column do append(&clauses, shell_session_kind_scope_clause(scope_kind_col))
+	for c in kind_clauses do append(&clauses, c)
 	// Through the same translator as the owner-wide list, so `status=live` and
 	// `status=finished` work identically on all four list routes.
 	if status_filter != "" do append(&clauses, shell_session_status_clause(status_filter))

@@ -223,7 +223,7 @@ reaper_reap_gone_bridges :: proc(
 ) -> int {
 	if bridges == nil || sessions == nil || sessions.repo == nil do return 0
 	if now_str == "" do return 0
-	now_ms, now_ok := agent_service.rfc3339_to_unix_ms(now_str)
+	now_ms, now_ok := platform.rfc3339_to_unix_ms(now_str)
 	if !now_ok do return 0
 
 	ids, err := iface.shell_session_list_live_bridge_ids(sessions.repo, REAPER_LIVE_BRIDGE_IDS_MAX)
@@ -261,7 +261,7 @@ reaper_reap_gone_bridges :: proc(
 // A FUTURE-DATED last_seen_at is also NOT gone, which falls out of the signed
 // comparison: clock skew between hub and bridge should never manufacture absence.
 reaper_bridge_absence_is_terminal :: proc(now_ms: i64, last_seen_at: string) -> bool {
-	seen_ms, ok := agent_service.rfc3339_to_unix_ms(last_seen_at)
+	seen_ms, ok := platform.rfc3339_to_unix_ms(last_seen_at)
 	if !ok do return false
 	return now_ms - seen_ms >= REAPER_BRIDGE_GONE_MS
 }

@@ -358,11 +358,25 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// Skip-guard keyed on the NEW index rather than on a column: 048 changes the
+		// Skip-guard keyed on a NEW index rather than on a column: 048 changes the
 		// primary key and the kind vocabulary without adding or removing a column, so
 		// table_column_exists cannot tell a migrated table from an unmigrated one.
-		// shell_sessions_agent is created only by 048.
-		if name == "048_shell_sessions_kind_and_key.sql" && sqlite_object_exists(conn, "shell_sessions_agent") {
+		//
+		// KEYED ON THE LAST OBJECT 048 CREATES, which is shell_sessions_owner_session
+		// (048 line 83), NOT the earlier shell_sessions_agent (line 70). run_migrations
+		// is not transactional -- there is no BEGIN/COMMIT around the apply loop -- so a
+		// failure part-way through 048 leaves whatever it had already created in place.
+		// Guarding on an EARLY object would then mark 048 applied while the UNIQUE index
+		// shell_sessions_owner_session was missing, and that index is the constraint that
+		// makes the owner-scoped by-session-id read single-row by construction rather than
+		// by LIMIT 1 choosing arbitrarily between duplicates. Keying on the last object
+		// means a partial apply cannot look complete. Same reasoning, same shape, as 050's
+		// guard below. sqlite_object_exists queries sqlite_master by name with no type
+		// filter, so it matches an index exactly as it matches a table.
+		//
+		// This is robustness against a FUTURE partial failure, not a live bug: no
+		// reachable database today has 048 half-applied.
+		if name == "048_shell_sessions_kind_and_key.sql" && sqlite_object_exists(conn, "shell_sessions_owner_session") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -546,7 +560,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 		return sqlite_object_exists(conn, "task_subscriptions")
 	}
 	if version == "048_shell_sessions_kind_and_key.sql" {
-		return sqlite_object_exists(conn, "shell_sessions_agent")
+		// The LAST object 048 creates, matching its skip guard above — a partial apply
+		// that stopped before the UNIQUE index must not read back as applied.
+		return sqlite_object_exists(conn, "shell_sessions_owner_session")
 	}
 	if version == "049_shell_sessions_background_and_conversation.sql" {
 		return table_column_exists(conn, "shell_sessions", "background")
@@ -930,10 +946,14 @@ upgrade_user_vaults_schema :: proc(conn: ^Conn) -> bool {
 // (or was bootstrapped from a stale embedded copy). It re-runs the migration's
 // SQL, which is written to be safe on an already-migrated table: the UPDATEs and
 // the DELETE match nothing once the vocabulary is collapsed, and the rebuild is
-// skipped entirely when shell_sessions_agent already exists.
+// skipped entirely when shell_sessions_owner_session already exists.
+//
+// KEYED ON THE SAME LAST OBJECT as the skip guard, deliberately. This twin is the
+// path that REPAIRS a database 048 did not fully reach, so it is the last place that
+// should refuse to run because an EARLY object of 048 happens to be present.
 upgrade_shell_sessions_kind_and_key_schema :: proc(conn: ^Conn) -> bool {
 	if !sqlite_object_exists(conn, "shell_sessions") do return true
-	if sqlite_object_exists(conn, "shell_sessions_agent") do return true
+	if sqlite_object_exists(conn, "shell_sessions_owner_session") do return true
 	return exec(conn, MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY)
 }
 

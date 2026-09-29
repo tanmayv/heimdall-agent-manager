@@ -67,7 +67,15 @@ pub struct SpawnRequest {
     pub cols: u16,
     /// Human-readable agent display name (e.g. "default-agent #20").
     pub display_name: Option<String>,
-    /// Session kind: "agent" | "interactive" | "server" | "command".
+    /// Session kind: "run" | "shell" | "server".
+    ///
+    /// PURE PASSTHROUGH. The daemon never branches on this value — the only use of the
+    /// field in the whole Rust tree is the `put_opt_str` that re-serializes it — so
+    /// nothing about PTY-vs-pipe behaviour depends on it. Kept as a free-form
+    /// `Option<String>` rather than an enum for exactly that reason: the hub owns the
+    /// vocabulary and validates it, and this side must not acquire a second opinion that
+    /// could drift. The spellings above are documentation of what the hub currently sends,
+    /// not a contract enforced here.
     pub kind: Option<String>,
     /// Human label for the session.
     pub label: Option<String>,
@@ -1000,7 +1008,7 @@ mod tests {
             rows: 40,
             cols: 120,
             display_name: Some("default-agent #20".into()),
-            kind: Some("agent".into()),
+            kind: Some("run".into()),
             label: Some("my-worker".into()),
             meta: Some(serde_json::json!({"project": "acme", "priority": 1})),
             tee_path: Some("/var/log/agent_abc.log".into()),

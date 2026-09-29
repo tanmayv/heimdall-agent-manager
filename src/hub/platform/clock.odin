@@ -68,6 +68,14 @@ format_rfc3339_utc :: proc(t: time.Time) -> string {
 // imports. Both are now one-line delegations to this, and REQ-SHELL-9's age reap uses it
 // rather than adding a third copy.
 //
+// IF YOU UNIFY DUPLICATE PROCS ANYWHERE IN THIS CODEBASE, DIFF THE BODIES FIRST and
+// enumerate every divergence in the commit message. Consolidating two copies silently
+// picks ONE spelling of every difference between them, and only the differences someone
+// thinks to diff get announced. This proc is the worked example: its two copies were
+// handed off as byte-identical and differed in at least TWO ways -- the length check
+// below, and the month shift in days_from_civil. Both benign; neither was noticed by
+// the author.
+//
 // The two copies had DIVERGED, which is the argument for unifying them rather than
 // living with the duplication: agent's required at least 20 characters, content's only
 // 19, so a timestamp missing its trailing Z parsed in one service and not the other.

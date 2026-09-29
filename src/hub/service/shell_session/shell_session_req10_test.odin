@@ -54,6 +54,15 @@ import project_service "odin_test:hub/service/project"
 Repo10 :: struct {
 	stored: map[string]domain.Shell_Session, // "<bridge_id>\x00<session_id>" -> row
 	writes: int,
+	// When set, r10_list_pending_kills scopes by bridge_id ONLY and does not apply
+	// domain.shell_session_kill_intent_pending itself. It models a repository whose
+	// QUERY failed to encode the rule — which is the exact situation the service's
+	// re-check exists for: "this re-asks with the domain's own predicate so the rule is
+	// enforced by the definition rather than by trusting the SQL to have encoded it"
+	// (shell_session_service.odin:826). With the fake applying the predicate too, a
+	// spent row never reaches the service and that re-check cannot be observed at all.
+	// Default false, so every other test still exercises the faithful query.
+	pending_kills_unfiltered: bool,
 }
 
 @(private = "file")
@@ -163,7 +172,7 @@ r10_list_pending_kills :: proc(ctx: rawptr, bridge_id: string, limit: int) -> ([
 	out := make([dynamic]domain.Shell_Session)
 	for _, s in r.stored {
 		if s.bridge_id != bridge_id do continue
-		if !domain.shell_session_kill_intent_pending(s) do continue
+		if !r.pending_kills_unfiltered && !domain.shell_session_kill_intent_pending(s) do continue
 		append(&out, r10_clone(s))
 	}
 	return out, domain.Domain_Error{}
@@ -825,9 +834,26 @@ t23_clean_inventory_with_no_intent_sends_nothing :: proc(t: ^testing.T) {
 // it even though kill_requested_at is still stamped — the pid it names may since have been
 // recycled. Without this, running the replay on every inventory would turn a stale
 // timestamp into a signal against an unrelated process.
+//
+// IT TESTS THE SERVICE'S RE-CHECK, which took a deliberate fix to be true (REQ-SHELL-13).
+// This test used to set `pending_kills_unfiltered` not at all, and was VACUOUS as a result:
+// the fake applied domain.shell_session_kill_intent_pending in its own query, so the spent
+// row never reached the service and the re-check at shell_session_service.odin:829 never
+// ran. The test passed with that line deleted outright — which is worse than no test,
+// because it licenses deleting the real guard and seeing green.
+//
+// With the flag set, the fake returns the spent row and the SERVICE's re-check is the only
+// thing that can exclude it. Verified by deleting that line and watching this test fail.
+//
+// The other AC5 coverage — that a spent row is excluded from the OUTSTANDING count as well
+// as from delivery — lives in test_req3_replay_delivers_outstanding_kills_on_reconnect
+// (req3_test.odin:110), whose fake filters by bridge_id only for the same reason.
 @(test)
 t23_ungated_replay_never_redelivers_a_spent_intent :: proc(t: ^testing.T) {
 	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
+	// The whole point of the test: let the spent row PAST the fake's query so the
+	// service's own predicate is what refuses it.
+	fx.r.pending_kills_unfiltered = true
 	fx10_seed(&fx, Seed10{
 		session_id    = "sh_spent",
 		bridge_id     = "brg_1",

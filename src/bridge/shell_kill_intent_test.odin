@@ -22,14 +22,18 @@ import "core:testing"
 import "core:time"
 
 @(private = "file")
-intent_session :: proc(session_id: string, status: Bridge_Shell_Session_Status, pid: int) -> Bridge_Shell_Session {
+// shell_id defaults to session_id, which is what most tests want and what the pre-existing
+// callers got. It is a PARAMETER because a test that asserts the resolver arms with the
+// correct shell_id cannot do so while the two ids are equal — any mix-up would still
+// compare equal. Pass a distinct value there.
+intent_session :: proc(session_id: string, status: Bridge_Shell_Session_Status, pid: int, shell_id := "") -> Bridge_Shell_Session {
 	return Bridge_Shell_Session{
 		session_id = bridge_shell_test_session_str(session_id),
 		kind       = .Run,
 		cmd        = bridge_shell_test_session_str("sleep 600"),
 		status     = status,
 		pid        = pid,
-		shell_id   = bridge_shell_test_session_str(session_id),
+		shell_id   = bridge_shell_test_session_str(shell_id if shell_id != "" else session_id),
 		started_at = bridge_shell_test_session_str("2026-09-28T09:00:00Z"),
 		pty_host   = true,
 		pty_host_provenance_known = true,
@@ -211,8 +215,12 @@ bridge_shell3_a_kill_without_a_session_id_records_nothing :: proc(t: ^testing.T)
 // they are simply about the other reason a session can be missing from the map, and that
 // difference is the whole point of the age gate below.
 @(private = "file")
+// Both values are recorded, not just the session id. A resolver that armed the right
+// session with the WRONG shell_id passed every test in this file while `shell_ids` did not
+// exist — arm_record simply dropped its second parameter (REQ-SHELL-13 follow-up).
 Arm_Recorder :: struct {
-	calls: [dynamic]string,
+	calls:     [dynamic]string,
+	shell_ids: [dynamic]string,
 }
 
 @(private = "file")
@@ -221,12 +229,15 @@ arm_rec: Arm_Recorder
 @(private = "file")
 arm_record :: proc(session_id: string, shell_id: string) {
 	append(&arm_rec.calls, strings.clone(session_id))
+	append(&arm_rec.shell_ids, strings.clone(shell_id))
 }
 
 @(private = "file")
 arm_rec_reset :: proc() {
 	for c in arm_rec.calls do delete(c)
 	if arm_rec.calls == nil { arm_rec.calls = make([dynamic]string) } else { clear(&arm_rec.calls) }
+	for c in arm_rec.shell_ids do delete(c)
+	if arm_rec.shell_ids == nil { arm_rec.shell_ids = make([dynamic]string) } else { clear(&arm_rec.shell_ids) }
 }
 
 // A session the roster brought back is STILL LIVE and carries a parked kill: reconcile
@@ -246,7 +257,10 @@ bridge_shell23_reconcile_arms_a_parked_kill_for_an_adopted_session :: proc(t: ^t
 
 	// Now reconcile repopulates the map from the roster, as bridge_shell_session_reconcile
 	// does for a session the daemon still reports alive.
-	sess := intent_session("sh_adopted", .Running, 4242)
+	// A shell_id DELIBERATELY DIFFERENT from the session_id, so the assertion below can
+	// tell the two apart. With the default (shell_id == session_id) a resolver that armed
+	// with the wrong one would still compare equal and the check would prove nothing.
+	sess := intent_session("sh_adopted", .Running, 4242, shell_id = "shell_abc")
 	bridge_shell_session_register(&bridge_shell_session_map, &sess)
 
 	// Resolve against a roster captured AFTER the intent was recorded.
@@ -256,6 +270,9 @@ bridge_shell23_reconcile_arms_a_parked_kill_for_an_adopted_session :: proc(t: ^t
 	testing.expect_value(t, discarded, 0)
 	testing.expect_value(t, len(arm_rec.calls), 1)
 	if len(arm_rec.calls) == 1 do testing.expect_value(t, arm_rec.calls[0], "sh_adopted")
+	// The resolver must arm with the session's OWN shell_id, looked up from the roster.
+	testing.expect_value(t, len(arm_rec.shell_ids), 1)
+	if len(arm_rec.shell_ids) == 1 do testing.expect_value(t, arm_rec.shell_ids[0], "shell_abc")
 	testing.expect(t, !bridge_shell_kill_intent_pending("sh_adopted"),
 		"the intent is consumed, so a later redelivery goes through the normal kill path")
 }
