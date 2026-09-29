@@ -289,10 +289,19 @@ shell_session_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, f
 // domain scope column, and is EMPTY when it is not — one value, so there is no way to
 // say "restrict to these kinds" and "this is not a scope column" at the same time.
 //
-// Each clause is still built by shell_session_kind_scope_clause from
-// domain.SHELL_SESSION_SCOPE_RULES, so the narrowing remains STRUCTURAL — a WHERE clause
-// the database applies — and not a client-side filter (REQ-SHELL-9 AC3). The callers
-// choose WHETHER to narrow; they do not get to spell out WHICH kinds.
+// Every clause the three callers pass is built by shell_session_kind_scope_clause from
+// domain.SHELL_SESSION_SCOPE_RULES, so the narrowing is STRUCTURAL — a WHERE clause the
+// database applies — and not a client-side filter (REQ-SHELL-9 AC3). As written, the
+// callers choose WHETHER to narrow and never spell out WHICH kinds.
+//
+// BE PRECISE ABOUT WHAT ENFORCES THAT, because it is weaker than it looks: it is CALL-SITE
+// DISCIPLINE, not the type. The parameter this replaced was a Shell_Session_Scope_Column,
+// an enum from which a caller COULD NOT express an arbitrary kind set. A
+// []Shell_Session_Where_Clause can be hand-built with any kind strings at all, this proc
+// is package-visible, and the loop below appends whatever it is handed. So a fourth caller
+// that composed its own kind clause would compile and would bypass the domain table.
+// Today there are three callers, all adjacent above, and none does that. If that ceases to
+// be obvious at a glance, narrow the type rather than trusting this paragraph.
 shell_session_list_generic :: proc(ctx: rawptr, scope_col: string, kind_clauses: []Shell_Session_Where_Clause, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	// The scope clause is UNCONDITIONAL, including when scope_val is "". These
 	// three lists are scoped by construction, and an empty scope value means

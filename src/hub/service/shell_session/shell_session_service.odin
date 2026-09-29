@@ -2080,7 +2080,8 @@ _json_int :: proc(body, key: string, default_value: int) -> int {
 // inventory and land a terminal status on HEALTHY sessions. That the read was safe
 // depended on an escaping invariant enforced in a different module, in a different
 // binary, with nothing near the read to say so. Now the read is self-contained, and the
-// four `ok` reads in this file get the same protection for free.
+// FIVE `ok` reads in this file (:573, :951, :1029, :1146, :1187) get the same protection
+// for free, along with the second `truncated` read at :1156.
 _json_bool :: proc(body, key: string) -> bool {
 	value_start, ok := _inventory_value(body, key)
 	if !ok do return false
