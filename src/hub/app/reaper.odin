@@ -149,14 +149,31 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 // between a constant and a WHERE clause.
 //
 // MEMORY: this runs on the process-scoped reaper thread, which has NO per-request arena,
-// so every allocation here is freed explicitly — the bridge id list and each id in it,
-// and each cloned last_seen_at. Nothing is left for a later pass to tidy, because there
-// is no later pass; a leak here would accumulate every 20 seconds forever.
+// so every HEAP allocation here is freed explicitly — the bridge id list and each id in
+// it, and each cloned last_seen_at. Nothing is left for a later pass to tidy, because
+// there is no later pass; a leak here would accumulate every 20 seconds forever.
+// The word HEAP is load-bearing: the one value on this path that is NOT a heap block is
+// the clock_now timestamp, and freeing it is a crash rather than a tidy-up. See below.
 reaper_sweep_gone_bridges :: proc(graph: ^App_Graph) -> int {
 	if graph == nil do return 0
-	// clock_now allocates, and this thread has no arena to sweep it up later.
+	// BORROWED, NEVER DELETED. platform.clock_now bottoms out in fmt.tprintf
+	// (platform/clock.odin:format_rfc3339_utc), so what it returns lives in the TEMP
+	// allocator's arena and was never a heap block. Handing it to delete() frees a
+	// non-heap pointer through the heap allocator — an invalid free, not a tidy-up.
+	// shell_session_apply_inventory carries the same comment because it made exactly
+	// this mistake once, and there bridge RECONNECT was the trigger; here it would be
+	// every 20 seconds, forever.
+	//
+	// So this is the one clock_now on this path that must NOT be freed, and it is the
+	// exception to the free-everything rule the rest of this sweep follows: the rule is
+	// about HEAP allocations, and this is not one. Nothing below needs `now` to outlive
+	// the call — reaper_reap_gone_bridges only parses it to an i64.
+	//
+	// The temp arena itself is never reset on this thread. That is a real, separate
+	// concern (it predates this code: shell_session_delete_terminal_before_sqlite has
+	// done the same since REQ-SHELL-8), filed as its own issue — but a 20-byte string
+	// left in an arena is a leak, while delete() on it is a crash.
 	now_str := platform.clock_now(&graph.clock)
-	defer delete(now_str)
 	return reaper_reap_gone_bridges(&graph.bridges, &graph.shell_session_service, now_str)
 }
 
