@@ -817,6 +817,12 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
     // (shell_session_service.odin:240), which fans out to the per-session STREAM
     // sockets, not to this bus. It is kept as a co-case rather than deleted so that a
     // client attached to both channels behaves identically on either frame.
+    // `shell_session_started` is the CREATION counterpart, and without it the push
+    // model had no way to learn a session exists until it exited. A foreground run was
+    // invisible for its entire life and then appeared already-finished, which also meant
+    // the live-only controls — the spinner and the Background toggle — could never be
+    // reached, since they render only while a run is live and foreground.
+    case 'shell_session_started':
     case 'shell_status':
     case 'shell_session_exited':
       invalidateShellSession(dispatch, String(payload?.session_id || ''), String(payload?.chain_id || ''));
