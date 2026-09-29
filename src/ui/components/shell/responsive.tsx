@@ -2,6 +2,14 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Drawer, Icon, Text, type IconName } from '@ui';
 import { TOUCH_TARGET_CLASS } from '@ui/hooks/useViewport';
+// REQ-SHELL-28: mobile-chrome focus rules live in a React-free module so their truth
+// table can be unit-tested; re-exported here so call sites keep one import path.
+export {
+  MOBILE_CHROME_HIDE_ON_FOCUS_SELECTOR,
+  MOBILE_TAB_BAR_HEIGHT_PX,
+  focusSuppressesMobileChrome,
+  keyboardAwareBottomPx,
+} from './mobileChrome';
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
 // >1024px desktop. The desktop "two panes side-by-side" collapses to mobile

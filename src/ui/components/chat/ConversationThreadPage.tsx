@@ -64,7 +64,7 @@ import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
 import { type TaskLike } from './chainTaskInference';
-import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
+import { focusSuppressesMobileChrome, keyboardAwareBottomPx, useIsBelowTailwindSm, useIsMobile, useKeyboardInset } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -647,6 +647,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
   }
   const isMobile = useIsMobile();
+  // REQ-SHELL-28: how much of the viewport the soft keyboard is covering; 0 on desktop
+  // and whenever no keyboard is up. Consumed by the bottom-pinned composer form below.
+  const keyboardInset = useKeyboardInset();
+  // REQ-SHELL-28: is focus in a keyboard-bearing field of the composer? That — and NOT
+  // the keyboard inset — is what AppShell uses to unmount the 56px MobileTabBar, so it is
+  // what decides whether the composer still has to clear a tab bar. Same predicate, from
+  // the same module, so the two cannot drift apart.
+  const [composerHoldsKeyboardFocus, setComposerHoldsKeyboardFocus] = useState(false);
   // REQ-UI-DUP-1: the two right-panel branches below are shown/hidden by `sm:` classes
   // (`sm:hidden` / `hidden sm:flex`). Those are CSS visibility only — React mounts BOTH
   // subtrees at every width, so one opened file produced two ProjectFilesPanel instances,
@@ -1801,9 +1809,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
         data-mobile-shell-chrome="hide-on-focus"
+        onFocus={(event) => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(event.target))}
+        onBlur={() => window.setTimeout(
+          () => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(document.activeElement)),
+          0,
+        )}
+        // REQ-SHELL-28: iOS shrinks the VISUAL viewport for the soft keyboard and leaves the
+        // LAYOUT viewport at full height, so a `fixed bottom-…` bar stays pinned BELOW the
+        // keyboard. `bottom-14` below is the static fallback; this inline style is the live
+        // value, and at rest it clears the tab bar by the bar's OWN measured height
+        // (`--ui-bottom-chrome`) rather than a hardcoded 56. See `keyboardAwareBottomPx` for
+        // the four-row truth table — it is NOT `keyboardInset + 56`.
+        style={isMobile ? { bottom: keyboardAwareBottomPx({ keyboardInset, holdsKeyboardFocus: composerHoldsKeyboardFocus }) } : undefined}
         className={`w-full max-w-full shrink-0 transition-all duration-300 ease-in-out ${
           isMobile
-            ? `fixed bottom-14 inset-x-0 z-20 px-3 pb-2 pt-0 ${
+            ? `fixed bottom-14 inset-x-0 z-20 bg-canvas px-3 pb-2 pt-0 ${
                 !chromeVisible
                   ? 'translate-y-full opacity-0 pointer-events-none'
                   : 'translate-y-0 opacity-100 pointer-events-auto'
@@ -2092,7 +2112,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           data-debug-id="conversation-thread-header"
           className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas/90 backdrop-blur-md ${
+              // REQ-SHELL-28: opaque, not `bg-canvas/90`. Like the composer below, this bar
+              // is `fixed` on mobile only, so the transcript scrolls UNDER it and 10% of a
+              // moving message is legible ghosting through the title. The desktop branch
+              // keeps the frosted look: there the bar is in normal flow with nothing behind
+              // it. The `-bottom-6` gradient fade below stays translucent by design.
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
