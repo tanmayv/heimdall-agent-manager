@@ -30,6 +30,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		list_pending_kills = shell_session_list_pending_kills_sqlite,
 		list_live_by_bridge = shell_session_list_live_by_bridge_sqlite,
 		delete_terminal_before = shell_session_delete_terminal_before_sqlite,
+		list_live_bridge_ids = shell_session_list_live_bridge_ids_sqlite,
 	}
 }
 
@@ -541,6 +542,58 @@ shell_session_delete_terminal_before_sqlite :: proc(ctx: rawptr, cutoff_rfc3339:
 		return 0, domain.domain_error(.Internal_Error, "failed to delete expired shell session rows")
 	}
 	return int(sqlite3_changes(impl.conn.db)), domain.Domain_Error{}
+}
+
+// shell_session_list_live_bridge_ids_sqlite backs REQ-SHELL-14's gone-bridge sweep:
+// the DISTINCT bridges that currently hold at least one live session.
+//
+// The live predicate is built from domain.SHELL_SESSION_TERMINAL_STATUSES, like
+// find_live_by_bridge and the retention delete above, so "live" means one thing
+// across this file.
+//
+// SELECT DISTINCT rather than a full row read, and bridge_id alone rather than
+// shell_session_select_cols: the caller only needs to know WHICH bridges to ask
+// about, and it then re-reads each candidate's sessions itself. Fetching whole rows
+// here would allocate every live session on the host every 20 seconds to answer a
+// question about bridge identity.
+//
+// bridge_id != '' is a guard, not a filter for an expected case — the column backs
+// the primary key for every kind, so an empty one is a corrupt row, and letting it
+// through would hand the sweep a bridge_id that resolves to no bridge.
+//
+// ORDER BY for determinism only: with the limit acting as a runaway backstop, a
+// stable order means a truncated result is the same prefix each sweep rather than an
+// arbitrary subset that rotates, which would make a stuck bridge reachable on some
+// ticks and not others.
+shell_session_list_live_bridge_ids_sqlite :: proc(ctx: rawptr, limit: int) -> ([dynamic]string, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	out := make([dynamic]string)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return out, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	eff_limit := limit
+	if eff_limit <= 0 do eff_limit = 1024
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT DISTINCT bridge_id FROM shell_sessions WHERE bridge_id != '' AND status NOT IN (")
+	strings.write_string(&b, shell_session_terminal_placeholders())
+	strings.write_string(&b, ") ORDER BY bridge_id ASC LIMIT ?;")
+	query := strings.clone_to_cstring(strings.to_string(b), context.temp_allocator)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
+		return out, domain.domain_error(.Internal_Error, "failed to prepare live bridge id listing")
+	}
+	defer sqlite3_finalize(stmt)
+	for st, i in terminal do bind_text(stmt, 1 + i, st)
+	sqlite3_bind_int(stmt, c.int(1 + len(terminal)), c.int(eff_limit))
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		// column_text (owned) rather than column_text_unowned: these ids outlive the
+		// finalize above, and the caller is documented as owning them.
+		append(&out, column_text(stmt, 0))
+	}
+	return out, domain.Domain_Error{}
 }
 
 // shell_session_find_live_by_port_sqlite backs the create-time port conflict check

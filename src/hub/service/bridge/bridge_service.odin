@@ -149,6 +149,41 @@ bridge_owner_user_id :: proc(service: ^Bridge_Service, bridge_id: string) -> str
 	return string(bridge.owner_user_id)
 }
 
+// bridge_absence_marker reports when a bridge was last HEARD FROM, and whether it is
+// eligible to be judged absent at all. Unauthenticated and internal, like
+// bridge_owner_user_id above and for the same reason: the caller is the hub's own
+// periodic sweep, which acts for no user.
+//
+// WHY last_seen_at IS THE RIGHT CLOCK, and it is not obvious from the column name.
+// It is refreshed on EVERY heartbeat, ~45s: the bridge writes "capabilities" into
+// every bridge_heartbeat frame unconditionally (bridge/hub_runtime_client.odin), the
+// heartbeat handler therefore always calls update_runtime_capabilities, and that
+// proc sets last_seen_at unconditionally. So it tracks LIVENESS, not the moment the
+// connection was established.
+// And mark_bridge_offline deliberately does NOT touch it, which is what makes it an
+// absence clock rather than a proxy for one: on disconnect the value FREEZES at the
+// last heartbeat and nothing moves it until the bridge genuinely returns. `now` minus
+// this is therefore "how long since we last had this bridge".
+//
+// eligible is false for a REVOKED bridge: revocation is an administrative end, its
+// sessions are not "maybe still running somewhere", and aging out a revoked bridge
+// would be a second mechanism acting on a decision already taken.
+// THE RETURNED STRING IS A CLONE AND THE CALLER OWNS IT. The repository's row reader
+// hands back thirteen owned strings; this proc destroys the bridge before returning, so
+// the one value that escapes cannot alias freed memory. That matters more than usual
+// here because the caller runs on the reaper's process-scoped thread with no
+// per-request arena — returning a borrowed field, as bridge_owner_user_id does, would
+// leak the other twelve on every sweep.
+bridge_absence_marker :: proc(service: ^Bridge_Service, bridge_id: string) -> (last_seen_at: string, eligible: bool) {
+	if service == nil || service.repo == nil || bridge_id == "" do return "", false
+	bridge, ok, _ := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !ok do return "", false
+	defer { b := bridge; domain.bridge_destroy(&b) }
+	if bridge.status == .Revoked do return "", false
+	if bridge.last_seen_at == "" do return "", false
+	return strings.clone(bridge.last_seen_at), true
+}
+
 rename_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, label: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err

@@ -145,6 +145,33 @@ Shell_Session_List_Live_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string, l
 // however old its row is.
 Shell_Session_Delete_Terminal_Before_Proc :: proc(ctx: rawptr, cutoff_rfc3339: string) -> (int, domain.Domain_Error)
 
+// Shell_Session_List_Live_Bridge_Ids_Proc returns the DISTINCT bridge_ids that
+// currently hold at least one LIVE session. REQ-SHELL-14 needs it to answer "which
+// bridges could possibly have sessions to reap" before asking how old each bridge is.
+//
+// OWNER-UNSCOPED, like get_by_id, find_live_by_port and delete_terminal_before, and
+// for the same reason as the last of those: the caller is the hub's own periodic
+// sweep, which acts for no user and has no auth context to scope by. It is a
+// maintenance read over the whole table and is not reachable from any request
+// handler.
+//
+// IT RETURNS BRIDGES, NOT AGES. The staleness test deliberately does NOT live in this
+// query: the reaper applies it in Odin against a named constant, mirroring
+// Agent_List_Active_Runtime_Instances_Proc, which likewise returns the candidate set
+// and leaves reap_stale_instances to judge age. That keeps "how old is too old" and
+// the reasoning for the number in one readable place instead of half of it in SQL.
+//
+// Narrowing to bridges WITH LIVE SESSIONS rather than listing every bridge is the
+// point: a bridge with nothing running costs nothing, which matters for a read on a
+// 20-second loop, and the candidate set is bounded by what can actually need reaping
+// rather than by every bridge ever enrolled.
+//
+// "Live" is domain.SHELL_SESSION_TERMINAL_STATUSES inverted, the same definition
+// list_live_by_bridge and find_live_by_port build from, so a session is live by one
+// rule everywhere. Unpaged, like its neighbours; `limit` is a runaway backstop.
+// Caller owns the returned strings.
+Shell_Session_List_Live_Bridge_Ids_Proc :: proc(ctx: rawptr, limit: int) -> ([dynamic]string, domain.Domain_Error)
+
 Shell_Session_Repository :: struct {
 	ctx:             rawptr,
 	upsert:          Shell_Session_Upsert_Proc,
@@ -162,6 +189,7 @@ Shell_Session_Repository :: struct {
 	list_pending_kills: Shell_Session_List_Pending_Kills_Proc,
 	list_live_by_bridge: Shell_Session_List_Live_By_Bridge_Proc,
 	delete_terminal_before: Shell_Session_Delete_Terminal_Before_Proc,
+	list_live_bridge_ids:   Shell_Session_List_Live_Bridge_Ids_Proc,
 }
 
 shell_session_upsert :: proc(repo: ^Shell_Session_Repository, session: domain.Shell_Session) -> (bool, domain.Domain_Error) {
@@ -215,6 +243,13 @@ shell_session_delete :: proc(repo: ^Shell_Session_Repository, owner_user_id, ses
 shell_session_delete_terminal_before :: proc(repo: ^Shell_Session_Repository, cutoff_rfc3339: string) -> (int, domain.Domain_Error) {
 	if repo == nil || repo.delete_terminal_before == nil do return 0, domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.delete_terminal_before(repo.ctx, cutoff_rfc3339)
+}
+
+// shell_session_list_live_bridge_ids is the sweep-side read described on
+// Shell_Session_List_Live_Bridge_Ids_Proc. Caller owns the returned strings.
+shell_session_list_live_bridge_ids :: proc(repo: ^Shell_Session_Repository, limit: int) -> ([dynamic]string, domain.Domain_Error) {
+	if repo == nil || repo.list_live_bridge_ids == nil do return nil, domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.list_live_bridge_ids(repo.ctx, limit)
 }
 
 shell_session_set_server_port :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error) {

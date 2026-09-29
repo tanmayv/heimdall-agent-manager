@@ -432,6 +432,45 @@ _reap_inventory_absent :: proc(
 	}
 }
 
+// shell_session_reap_gone_bridge lands an unobserved terminal status on EVERY live row
+// of one bridge — invariant (b) for the NEVER-CAME-BACK case (REQ-SHELL-14).
+//
+// IT IS DELIBERATELY A THIN CALL INTO _reap_inventory_absent WITH NO ENTRIES, and lives
+// in this file rather than in the reaper or the service, for three reasons:
+//
+//  1. THE ROW WORK IS IDENTICAL AND MUST STAY IDENTICAL. "Sessions this bridge is not
+//     reporting" is the same claim whether the silence is one inventory that omitted
+//     them or an absence long enough to call the bridge gone. An inventory naming
+//     nothing and no inventory at all are the same evidence about the rows. Passing no
+//     entries means nothing is "named", so every live row of the bridge is reaped — and
+//     it reuses the `failed` spelling, the untouched exit_code, and the existing event
+//     pair rather than restating any of them.
+//  2. THE REASONING IS HERE. SHELL_SESSION_INVENTORY_UNOBSERVED_TERMINAL's comment
+//     instructs this task to reuse its spelling, and the header's compose note explains
+//     how a synthesized terminal is corrected if the bridge returns. A copy in another
+//     package would drift from both.
+//  3. exit_code_set STAYS FALSE, which is a condition on the whole mechanism rather
+//     than a preference: it is what domain.shell_session_terminal_is_observed reads to
+//     tell a guess from an observation. Fabricating a code here would make this guess
+//     outrank ground truth, breaking REQ-SHELL-4's supersession AND the revive below.
+//
+// THE CALLER OWNS THE "IS IT GONE" JUDGEMENT. This proc does not look at a clock or a
+// threshold; it is told to reap and it reaps. Age lives in the sweep (app/reaper.odin)
+// next to the constant that justifies it, so this stays testable by calling it directly.
+//
+// WHY BEING EARLY IS SURVIVABLE: if the bridge returns with the process still alive, its
+// inventory revives the row (`revived`, and _apply_inventory_entry's terminal-vs-running
+// branch). That is not a nicety — it is what makes a time-based judgement about a remote
+// machine acceptable at all, so it is asserted by test, not assumed.
+//
+// Returns how many rows were moved, for the sweep's logging and for tests.
+shell_session_reap_gone_bridge :: proc(svc: ^Shell_Session_Service, bridge_id: string, now: string) -> int {
+	if svc == nil || svc.repo == nil || bridge_id == "" do return 0
+	result: Shell_Session_Inventory_Result
+	_reap_inventory_absent(svc, bridge_id, nil, now, &result)
+	return result.terminated
+}
+
 // _publish_inventory_change announces an adopt/correct/revive.
 //
 // resource_changed, the bus's existing generic shape, rather than a new event type:
