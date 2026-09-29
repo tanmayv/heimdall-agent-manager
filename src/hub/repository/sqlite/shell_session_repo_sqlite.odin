@@ -31,6 +31,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		list_live_by_bridge = shell_session_list_live_by_bridge_sqlite,
 		delete_terminal_before = shell_session_delete_terminal_before_sqlite,
 		list_live_bridge_ids = shell_session_list_live_bridge_ids_sqlite,
+		list_live_by_kind    = shell_session_list_live_by_kind_sqlite,
 	}
 }
 
@@ -804,6 +805,54 @@ shell_session_list_pending_kills_sqlite :: proc(ctx: rawptr, bridge_id: string, 
 // by session_id so a diff over a bridge is deterministic run to run, which is what
 // makes "applying the same inventory twice changes nothing" testable rather than
 // merely true in practice.
+// shell_session_list_live_by_kind_sqlite is REQ-SHELL-9's age-reap candidate read:
+// every live session of one kind, across all owners and bridges, OLDEST FIRST.
+//
+// Deliberately shaped like shell_session_list_live_by_bridge_sqlite directly below it
+// rather than routed through shell_session_list_generic: that helper is the OWNER-SCOPED
+// list path (it binds an owner and supports cursors), and this read has no owner. Reusing
+// it would have meant teaching it an unscoped mode, i.e. giving the user-facing list
+// routes a code path that can ignore the owner. The duplication here is four lines of
+// query building; the alternative is a tenant-isolation hazard in the routes.
+//
+// The age cutoff is NOT in this query — see Shell_Session_List_Live_By_Kind_Proc for why
+// the window stays in Odin next to the constant that justifies it.
+shell_session_list_live_by_kind_sqlite :: proc(ctx: rawptr, kind: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	// An empty kind would match no row anyway, but returning early says so rather than
+	// leaving a caller to read an empty result as "nothing to reap".
+	if kind == "" do return nil, domain.Domain_Error{}
+	lim := limit
+	if lim <= 0 do lim = 100
+
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT ")
+	strings.write_string(&b, shell_session_select_cols)
+	strings.write_string(&b, " FROM shell_sessions WHERE kind = ? AND status NOT IN (")
+	strings.write_string(&b, shell_session_terminal_placeholders())
+	strings.write_string(&b, ") ORDER BY started_at ASC, session_id ASC LIMIT ?;")
+	query := strings.clone_to_cstring(strings.to_string(b), context.temp_allocator)
+
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
+		return nil, domain.domain_error(.Internal_Error, "failed to prepare shell session live-by-kind listing")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, kind)
+	for st, i in terminal do bind_text(stmt, 2 + i, st)
+	sqlite3_bind_int(stmt, c.int(2 + len(terminal)), c.int(lim))
+
+	out := make([dynamic]domain.Shell_Session)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, shell_session_from_stmt(stmt))
+	}
+	return out, domain.Domain_Error{}
+}
+
 shell_session_list_live_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {

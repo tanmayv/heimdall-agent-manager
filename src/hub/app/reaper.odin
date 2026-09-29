@@ -52,6 +52,27 @@ DEFAULT_REAPER_INTERVAL_SECONDS :: 20
 // It is asserted by test for exactly that reason.
 REAPER_BRIDGE_GONE_MS :: 60 * 60 * 1000
 
+// REAPER_SERVER_MAX_AGE_MS is how old a `server` may get before it is killed regardless
+// of chain state (REQ-SHELL-9 trigger B). The user's words: "kill all servers once task
+// chain completes OR are older than 1 day".
+//
+// AGE IS MEASURED FROM started_at, NOT created_at. created_at is when the hub wrote the
+// row; started_at is when the process began. The requirement is about a process that has
+// been running too long, so the process's own clock answers it — see
+// shell_session_reap_aged_servers, which also documents why an unparseable or empty
+// started_at is skipped rather than treated as infinitely old.
+//
+// WHY 24 HOURS IS NOT A THRESHOLD TO TUNE. Unlike REAPER_BRIDGE_GONE_MS above, this
+// number was not chosen by weighing failure costs — it was GIVEN. Anyone tempted to
+// lower it should understand that it is not a heuristic about when a server is probably
+// abandoned; it is the product decision about how long a server is allowed to live.
+// Changing it changes the promise, not the accuracy of a guess.
+//
+// IT IS ONLY A BACKSTOP. The chain-completion trigger is the one that normally ends a
+// server's life, and it is immediate. This catches the cases that trigger cannot see: a
+// chain that never closes, and a server started outside any chain's lifetime.
+REAPER_SERVER_MAX_AGE_MS :: 24 * 60 * 60 * 1000
+
 // REAPER_LIVE_BRIDGE_IDS_MAX bounds the candidate listing, a runaway backstop rather
 // than pagination — mirroring SHELL_SESSION_INVENTORY_MAX_ROWS. The query already
 // narrows to bridges HOLDING LIVE SESSIONS, which is small; this only stops a
@@ -109,6 +130,13 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	// exists to remove. Like retention, a failure is swallowed rather than allowed to
 	// abort the stale-instance reap below, which is the safety net this loop is for.
 	reaper_sweep_gone_bridges(graph)
+
+	// REQ-SHELL-9 trigger B: servers older than a day. Rides THIS sweep for the reason
+	// the task requires and the two passes above already demonstrate — the loop exists,
+	// and a second timer walking the same table would be the polling the shells redesign
+	// removes. The no-polling rule is about STATUS PROPAGATION, which must be pushed; an
+	// age reap is not a status, and nothing here asks a bridge how it is doing.
+	reaper_sweep_aged_servers(graph)
 
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	defer domain.agent_instances_destroy(reaped)
@@ -236,4 +264,29 @@ reaper_bridge_absence_is_terminal :: proc(now_ms: i64, last_seen_at: string) -> 
 	seen_ms, ok := agent_service.rfc3339_to_unix_ms(last_seen_at)
 	if !ok do return false
 	return now_ms - seen_ms >= REAPER_BRIDGE_GONE_MS
+}
+
+// reaper_sweep_aged_servers kills every live server older than REAPER_SERVER_MAX_AGE_MS
+// (REQ-SHELL-9 trigger B), through the REQ-SHELL-3 durable kill intent so a server on a
+// disconnected bridge still dies when its bridge returns.
+//
+// Split from the service proc it calls for the same reason reaper_sweep_gone_bridges is:
+// the graph wrapper reads the clock, and the proc that decides anything takes `now` as a
+// parameter, so AC2 is tested by placing a server 25 hours in the past instead of by
+// sleeping for 25 hours.
+//
+// THIS THREE-LINE WRAPPER IS UNCOVERED BY TESTS, and that is now a known cost rather than
+// an assumption: the same seam in reaper_sweep_gone_bridges is where a `defer
+// delete(now_str)` on a temp-arena string shipped (fixed in 1ba0d4ba). Which is exactly
+// why clock_now is BORROWED here and not freed — it is an fmt.tprintf temp allocation
+// (platform/clock.odin format_rfc3339_utc), so delete() on it is an invalid free, not a
+// tidy-up. Nothing below needs it to outlive this call; it is parsed to an i64 and
+// discarded.
+reaper_sweep_aged_servers :: proc(graph: ^App_Graph) -> int {
+	if graph == nil do return 0
+	now_str := platform.clock_now(&graph.clock)
+	if now_str == "" do return 0
+	now_ms, ok := agent_service.rfc3339_to_unix_ms(now_str)
+	if !ok do return 0
+	return shell_session_svc.shell_session_reap_aged_servers(&graph.shell_session_service, now_ms, REAPER_SERVER_MAX_AGE_MS)
 }

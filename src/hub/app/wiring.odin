@@ -198,6 +198,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		// conversation. graph.content is constructed above, so the order holds.
 		content             = &graph.content,
 	)
+	// REQ-SHELL-9 trigger A: a closed chain reaps its servers. Assigned HERE, after the
+	// shell-session service is constructed, rather than next to the other two taskchain
+	// dependencies at their construction above — graph.taskchains is built before this
+	// service exists, so wiring it there would store a pointer to a zero value.
+	graph.taskchains.shell_sessions = &graph.shell_session_service
 	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
 		auth                = &graph.auth,
 		ws_tickets          = &graph.user_handlers.ws_tickets,

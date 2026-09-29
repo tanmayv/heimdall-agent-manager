@@ -705,19 +705,45 @@ shell_session_kill :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Con
 	if !found do return .Queued, false, domain.domain_error(.Not_Found, "session not found")
 	if domain.shell_session_is_terminal(session) do return .Queued, false, domain.domain_error(.Conflict, "session has already terminated")
 
-	// Persist first. A kill that is not on the row is not durable, whatever the
-	// dispatch below reports.
-	//
-	// The bool is checked, not discarded: it reports that the row exists for this owner
-	// and now carries an intent. It can be false even though the read above succeeded —
-	// the row can be deleted between the two — and returning success then would be the
-	// exact lie this whole change exists to remove: an accepted kill with nothing
-	// persisted and nothing to replay.
-	pending, intent_err := iface.shell_session_set_kill_requested(svc.repo, string(owner), session_id, platform.clock_now(svc.clock))
+	// RE-DISPATCH ON AN ALREADY-PENDING INTENT IS DELIBERATE HERE, and is the one
+	// behaviour this path does NOT share with the REQ-SHELL-9 reaps that call the same
+	// helper below. A human clicking kill a second time means "try again"; a sweep
+	// running for the 4320th time today means nothing new. Same recording, different
+	// skip rule — see shell_session_reap.odin, which states the other half.
+	return _shell_session_record_and_dispatch_kill(svc, string(owner), session_id, session.bridge_id)
+}
+
+// _shell_session_record_and_dispatch_kill is the REQ-SHELL-3 sequence itself: make the
+// intent durable, then try to deliver it. It is the ONE definition of that order, shared
+// by the user-facing accept path above and by the REQ-SHELL-9 chain and age reaps, so a
+// reap cannot drift back into the fire-and-forget send REQ-SHELL-3 exists to replace.
+//
+// It takes an OWNER STRING rather than an Auth_Context on purpose: the reaps have no
+// authenticated user at all (the age sweep runs on the reaper thread), and the owner they
+// pass comes off the row or the chain they already read. Authorisation is the caller's —
+// this proc records an already-decided kill and must not be reached from a handler that
+// has not established who is asking.
+//
+// The `pending` bool is checked, not discarded: it reports that the row exists for this
+// owner and now carries an intent. It can be false even though the caller's read
+// succeeded — the row can be deleted between the two — and returning success then would
+// be the exact lie this whole change exists to remove: an accepted kill with nothing
+// persisted and nothing to replay.
+//
+// clock_now is BORROWED, not freed: it is a temp allocation (platform/clock.odin
+// format_rfc3339_utc -> fmt.tprintf), and set_kill_requested binds it as SQLite text,
+// which copies at bind time. Nothing here needs it to outlive the call.
+_shell_session_record_and_dispatch_kill :: proc(
+	svc:        ^Shell_Session_Service,
+	owner:      string,
+	session_id: string,
+	bridge_id:  string,
+) -> (Shell_Session_Kill_Outcome, bool, domain.Domain_Error) {
+	pending, intent_err := iface.shell_session_set_kill_requested(svc.repo, owner, session_id, platform.clock_now(svc.clock))
 	if intent_err.code != .None do return .Queued, false, intent_err
 	if !pending do return .Queued, false, domain.domain_error(.Not_Found, "session not found")
 
-	outcome := _shell_session_dispatch_kill(svc, session.bridge_id, session_id)
+	outcome := _shell_session_dispatch_kill(svc, bridge_id, session_id)
 	return outcome, true, domain.Domain_Error{}
 }
 

@@ -172,6 +172,36 @@ Shell_Session_Delete_Terminal_Before_Proc :: proc(ctx: rawptr, cutoff_rfc3339: s
 // Caller owns the returned strings.
 Shell_Session_List_Live_Bridge_Ids_Proc :: proc(ctx: rawptr, limit: int) -> ([dynamic]string, domain.Domain_Error)
 
+// Shell_Session_List_Live_By_Kind_Proc lists every LIVE session of one kind, across
+// all owners and all bridges, oldest first. It is the candidate read for REQ-SHELL-9's
+// age reap.
+//
+// OWNER-UNSCOPED, like delete_terminal_before and list_live_bridge_ids and for the
+// same reason: the caller is the hub's own 20-second sweep, which acts for no user and
+// has no auth context to scope by. It is not reachable from any request handler, and a
+// handler that wants an owner's sessions has four scoped lists to choose from.
+//
+// KIND IS A PARAMETER RATHER THAN HARDCODED TO server, even though only the age reap
+// uses it today: the kind belongs to the CALLER's rule ("only servers age out"), not to
+// the repository, and the caller passes domain.Shell_Session_Kind_Server so the
+// spelling still comes from the domain's own table rather than a literal here.
+//
+// ORDER BY started_at ASC IS LOAD-BEARING, not cosmetic. `limit` is a runaway backstop,
+// so a pathological table truncates the result — and oldest-first guarantees that what
+// survives the truncation is exactly the set most likely to be reapable. Newest-first
+// would let a cap starve the oldest servers forever, which is the one thing an age reap
+// must not do. Rows with an empty started_at sort first under SQLite's ordering and are
+// harmless: the caller's age test rejects an unparseable timestamp rather than treating
+// it as infinitely old.
+//
+// The age cutoff itself is NOT in this query. It stays in Odin next to the named
+// constant that justifies the window, exactly as list_live_bridge_ids leaves age to
+// reaper_bridge_absence_is_terminal and reap_stale_instances.
+//
+// "Live" is domain.SHELL_SESSION_TERMINAL_STATUSES inverted, the same definition every
+// other live read here builds from.
+Shell_Session_List_Live_By_Kind_Proc :: proc(ctx: rawptr, kind: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error)
+
 Shell_Session_Repository :: struct {
 	ctx:             rawptr,
 	upsert:          Shell_Session_Upsert_Proc,
@@ -190,6 +220,7 @@ Shell_Session_Repository :: struct {
 	list_live_by_bridge: Shell_Session_List_Live_By_Bridge_Proc,
 	delete_terminal_before: Shell_Session_Delete_Terminal_Before_Proc,
 	list_live_bridge_ids:   Shell_Session_List_Live_Bridge_Ids_Proc,
+	list_live_by_kind:      Shell_Session_List_Live_By_Kind_Proc,
 }
 
 shell_session_upsert :: proc(repo: ^Shell_Session_Repository, session: domain.Shell_Session) -> (bool, domain.Domain_Error) {
@@ -290,4 +321,11 @@ shell_session_list_pending_kills :: proc(repo: ^Shell_Session_Repository, bridge
 shell_session_list_live_by_bridge :: proc(repo: ^Shell_Session_Repository, bridge_id: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
 	if repo == nil || repo.list_live_by_bridge == nil do return nil, domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.list_live_by_bridge(repo.ctx, bridge_id, limit)
+}
+
+// shell_session_list_live_by_kind is REQ-SHELL-9's age-reap candidate read. Owner-
+// unscoped and oldest-first; see Shell_Session_List_Live_By_Kind_Proc.
+shell_session_list_live_by_kind :: proc(repo: ^Shell_Session_Repository, kind: string, limit: int) -> ([dynamic]domain.Shell_Session, domain.Domain_Error) {
+	if repo == nil || repo.list_live_by_kind == nil do return nil, domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.list_live_by_kind(repo.ctx, kind, limit)
 }

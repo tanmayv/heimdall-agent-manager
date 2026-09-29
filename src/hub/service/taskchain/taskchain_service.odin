@@ -16,6 +16,7 @@ import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
 import agent "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
+import shell_session "odin_test:hub/service/shell_session"
 
 Nudge_Target :: enum {
 	None,
@@ -46,6 +47,12 @@ Taskchain_Service :: struct {
 	bridge_command_sink: project.Bridge_Command_Sink,
 	agent_service: ^agent.Agent_Service,
 	event_bus: ^events.User_Event_Bus,
+	// shell_sessions backs REQ-SHELL-9 trigger A: a closed chain's servers are
+	// killed. Optional, like agent_service and event_bus above and set the same way
+	// (set_shell_session_service) — a service constructed without it simply does not
+	// reap, which keeps every existing test that builds a bare Taskchain_Service
+	// working unchanged.
+	shell_sessions: ^shell_session.Shell_Session_Service,
 	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
 	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
 	// set on every connect. Guarded by replay_mutex.
@@ -157,6 +164,54 @@ set_agent_service :: proc(service: ^Taskchain_Service, agent_svc: ^agent.Agent_S
 set_event_bus :: proc(service: ^Taskchain_Service, bus: ^events.User_Event_Bus) {
 	if service == nil do return
 	service.event_bus = bus
+}
+
+set_shell_session_service :: proc(service: ^Taskchain_Service, shell_svc: ^shell_session.Shell_Session_Service) {
+	if service == nil do return
+	service.shell_sessions = shell_svc
+}
+
+// reap_chain_servers_on_close kills every live SERVER of a chain that has just reached a
+// terminal status (REQ-SHELL-9 trigger A). It is a no-op for any other status and for a
+// service with no shell-session service wired.
+//
+// WHY THIS PROC EXISTS RATHER THAN THREE INLINE CALLS: there are THREE paths that close a
+// chain, and no single choke point that sees all three.
+//   taskchain_service.odin:402  update_chain          — an explicit status in a PATCH
+//   taskchain_service.odin:529  change_chain_status   — the dedicated verb
+//   taskchain_service.odin:685  sync_chain_status_from_tasks — THE AUTO-COMPLETE
+// The third is the one that matters: it is how a chain finishes in the normal case, when
+// the last task reaches a terminal status. Hooking only the two manual paths — which is
+// what REQ-SHELL-9's description originally prescribed — would have produced a feature
+// that passes its tests and reaps nothing in production.
+//
+// CALLING ONE IDEMPOTENT PROC FROM EVERY CLOSE PATH IS NOT THE SAME AS HOPING PARTIAL
+// COVERAGE ADDS UP. The reap refuses a server that is already terminal or already carries
+// a kill intent (shell_session_reap.odin, _reap_kill_if_eligible), so running it twice is
+// defined behaviour, not luck. That property is required by the task in its own right;
+// this call pattern only depends on it.
+//
+// THE TERMINAL SET IS {Completed, Cancelled, Archived} — deliberately the SAME set
+// broadcast_chain_closed uses below and fanout_chain_status_changed uses at
+// subscription.odin:240, rather than a new narrower one. The user asked for "completes";
+// cancelled must reap too, because the hub already tells every member "All task
+// activities halted" on a cancel and a surviving server would make that a lie; archived
+// must reap because valid_chain_transition allows Active -> Archived directly, so it is a
+// real close path for a chain that was never completed. Reusing the existing set means
+// this cannot drift from the hub's own notion of a closed chain.
+//
+// REOPENING (Completed -> Active) DOES NOT RESTART ANYTHING. The processes are gone and
+// the hub cannot restart what it did not keep; whoever reopens a chain starts what they
+// still need.
+//
+// Deliberately NOT hooked into fanout_chain_status_changed, which IS called by all three
+// paths and already has the terminal test: it early-returns at subscription.odin:229 when
+// no bridge command sink is configured, which would silently condition a lifecycle
+// guarantee on a NOTIFICATION concern.
+reap_chain_servers_on_close :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
+	if service == nil || service.shell_sessions == nil do return
+	if next != .Completed && next != .Cancelled && next != .Archived do return
+	_ = shell_session.shell_session_reap_chain_servers(service.shell_sessions, string(chain.owner_user_id), string(chain.chain_id))
 }
 
 // is_instance_member_or_coordinator: membership OR coordinator authority, read
@@ -428,6 +483,9 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	chain.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
 	if save_ok && status_closed {
+		// REQ-SHELL-9 trigger A. Before the broadcast rather than after, so the servers
+		// are already dying by the time members are told the chain closed.
+		reap_chain_servers_on_close(service, saved, closed_status)
 		broadcast_chain_closed(service, auth, saved, closed_status)
 	}
 	if save_ok && input.status != "" {
@@ -537,6 +595,9 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
 	// long-running loops/tasks halt.
 	if save_ok && (next == .Completed || next == .Cancelled || next == .Archived) {
+		// REQ-SHELL-9 trigger A — see reap_chain_servers_on_close for why all three
+		// close paths call it and why that is safe.
+		reap_chain_servers_on_close(service, saved, next)
 		broadcast_chain_closed(service, auth, saved, next)
 	}
 	if save_ok {
@@ -699,6 +760,12 @@ sync_chain_status_from_tasks :: proc(service: ^Taskchain_Service, chain_id: doma
 			defer delete(summary)
 			events.publish_resource_changed(service.event_bus, string(chain.owner_user_id), "task_chain", string(chain.chain_id), "updated", summary)
 		}
+		// REQ-SHELL-9 trigger A, and THE ONE THAT MATTERS: this is the auto-complete,
+		// reached when the last task of a chain goes terminal. It is how a chain closes
+		// in the normal case, and it is the path REQ-SHELL-9's description did not name.
+		// `chain.status` rather than a `next` parameter because this block also handles
+		// the reopen (.Active at :679), which the reap refuses.
+		reap_chain_servers_on_close(service, chain, chain.status)
 		fanout_chain_status_changed(service, contracts.Auth_Context{kind = .None}, chain)
 	}
 
