@@ -123,6 +123,57 @@ bridge_pty_stream_worker_detach :: proc(session_id: string) -> bool {
 	return true
 }
 
+// _bridge_pty_stream_lf_to_crlf rewrites bare row separators into CRLF.
+// Caller owns the result.
+//
+// WHY THIS IS NEEDED (REQ-SHELL-31). This is the SECOND staircase producer; REQ-SHELL-30 fixed
+// the hub's snapshot builder and the terminal still staircased, because the bridge emits a
+// catch-up paint of its own. The pty-host delivers a captured screen as one string PER GRID ROW
+// (tools/pty_host/src/vt.rs capture()), and bridge_pty_host_screen_to_output joins those rows
+// with a bare LF. A VT drops one row on LF and KEEPS the column, so every row began where the
+// previous one ended.
+//
+// WHY THE RAW-BYTE DISTINCTION IS THE WHOLE POINT. The joiner has four non-test callers and only
+// this one is wrong, which is why the join itself must not change. The decisive difference is
+// xterm's `convertEol` option (ShellTerminalPane.tsx:229/349, AgentPaneComposerPanel.tsx:263/390):
+// it is TRUE on the polled paths, where xterm converts LF->CRLF itself and bare LF is therefore
+// correct, and FALSE while streaming. The .Screen frame below travels as `shell_pty_output`
+// data_b64 — raw bytes on the streaming path — so it is the one place the conversion must happen
+// in Odin. Fixing the shared joiner would instead rewrite the poller's text AND invalidate every
+// stored since_hash (bridge_pty_host_pane_hash consumes it on the very next statement of
+// bridge_pty_host_evaluate_pane), costing every client a full repaint.
+//
+// An LF that ALREADY has a CR before it is passed through untouched, so this can never produce
+// "\r\r\n" should the pty-host ever start sending CRLF itself.
+//
+// NOTHING here measures width. vt.rs capture() writes SGR runs INLINE into each row, so a row's
+// byte length is not its display width and must never be used as one. The separator is decided
+// per LF byte, never per length.
+_bridge_pty_stream_lf_to_crlf :: proc(s: string) -> string {
+	b := strings.builder_make()
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == '\n' && (i == 0 || s[i - 1] != '\r') {
+			strings.write_byte(&b, '\r')
+		}
+		strings.write_byte(&b, c)
+	}
+	return strings.to_string(b)
+}
+
+// bridge_pty_stream_screen_payload builds the byte payload of the bridge's catch-up screen
+// frame: the captured rows joined, with CRLF row separators. Caller owns the result.
+//
+// This exists as a named seam rather than two statements inlined in the .Screen case so that
+// the conversion is covered in the SAME composition the emit site uses. A test that called
+// _bridge_pty_stream_lf_to_crlf directly would stay green if someone dropped the call from the
+// emit site — it would guard the helper without detecting the regression this task fixes.
+bridge_pty_stream_screen_payload :: proc(lines: []string) -> string {
+	joined, _, _ := bridge_pty_host_screen_to_output(lines, 0)
+	defer delete(joined)
+	return _bridge_pty_stream_lf_to_crlf(joined)
+}
+
 // bridge_pty_stream_reader_worker runs on a dedicated background thread per active stream.
 // It loops reading CtlReply frames from the dedicated UNIX socket and emits shell_pty_output.
 bridge_pty_stream_reader_worker :: proc(data: rawptr) {
@@ -148,8 +199,12 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 		case .Output:
 			bridge_pty_stream_emit_frame(worker, local_session_id, reply.data)
 		case .Screen:
-			// Initial catchup snapshot delivered immediately upon Attach
-			content, _, _ := bridge_pty_host_screen_to_output(reply.screen.lines, 0)
+			// Initial catchup snapshot delivered immediately upon Attach.
+			// REQ-SHELL-31: the joiner separates rows with a bare LF, which is correct for the
+			// polled panes (xterm's convertEol is on there) but not here — this frame reaches the
+			// terminal as raw bytes, where a bare LF keeps the column and staircases the paint.
+			// Converted at the emit site, never in the shared joiner: see the note above.
+			content := bridge_pty_stream_screen_payload(reply.screen.lines)
 			if len(content) > 0 {
 				bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content)
 			}

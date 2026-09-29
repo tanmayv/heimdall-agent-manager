@@ -40,10 +40,25 @@ SHELL_SCREEN_REPAINT_PREFIX :: "\x1b[2J\x1b[H"
 // Caller owns the result.
 //
 // WHY THIS IS NEEDED (REQ-SHELL-30). The pane text arrives as one string PER GRID ROW joined
-// with a bare LF — bridge_pty_host_screen_to_output in src/bridge/pty_host_runtime.odin. For
-// the polling pane, which paints into the DOM, bare LF is correct. For a VT it is not: LF drops
-// one row and KEEPS the column, so the repaint drew every row starting where the previous one
-// ended — a diagonal staircase on a viewer's FIRST render.
+// with a bare LF — bridge_pty_host_screen_to_output in src/bridge/pty_host_runtime.odin. A VT
+// drops one row on LF and KEEPS the column, so the repaint drew every row starting where the
+// previous one ended — a diagonal staircase on a viewer's FIRST render.
+//
+// WHY THE POLLED PANE IS SAFE ON THE SAME TEXT — CORRECTED BY REQ-SHELL-31. This comment used
+// to say the polling pane "paints into the DOM, where bare LF is correct". THAT IS FALSE: the
+// poller writes into xterm too (ShellTerminalPane.tsx:300 and :333,
+// `term.write('\x1b[?25l' + output)`, fed by REST GET /shells/{id}/pane, which returns the
+// bridge reply verbatim). Both paths feed a terminal. The poller is safe because xterm's OWN
+// `convertEol` option performs the LF->CRLF conversion, and the code deliberately turns it OFF
+// while streaming: `convertEol: !isStreamingActive` (ShellTerminalPane.tsx:229, kept in sync at
+// :349; AgentPaneComposerPanel.tsx:263/:390 is the identical pair).
+//
+// The invariant is therefore about convertEol, NOT about "terminal vs DOM": the bare-LF text is
+// safe in any consumer with convertEol ON and unsafe exactly where it is OFF. Anyone auditing
+// for further instances should grep for the streaming paths / convertEol:false. The original
+// framing sent two agents hunting for a non-terminal consumer that does not exist, and it missed
+// the bridge's own catch-up emit (pty_host_stream_worker.odin), which REQ-SHELL-31 then had to
+// fix as the SECOND staircase producer.
 //
 // WHY THE FIX LIVES HERE AND NOT AT THE JOIN. bridge_pty_host_screen_to_output is also the input
 // to bridge_pty_host_pane_hash (the very next statement in bridge_pty_host_evaluate_pane), so
