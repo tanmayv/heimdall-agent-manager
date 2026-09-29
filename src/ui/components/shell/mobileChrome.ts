@@ -14,7 +14,7 @@ export const MOBILE_CHROME_HIDE_ON_FOCUS_SELECTOR = '[data-mobile-shell-chrome="
  * (requiring a second tap).
  *
  * REQ-SHELL-28: shared with the bottom-pinned composer, which has to know whether the
- * 56px tab bar it normally clears is still mounted underneath it. Both the shell that
+ * tab bar it normally clears is still mounted underneath it. Both the shell that
  * unmounts the bar and the bar-clearing element must read the SAME predicate, or they
  * disagree about the bottom of the screen.
  */
@@ -35,19 +35,39 @@ export function focusSuppressesMobileChrome(target: EventTarget | null): boolean
 
 /**
  * Static fallback for the tab bar's height — the `bottom-14` utility the composer was
- * written against. Only used when the bar has not published its real height.
+ * written against. Only used when the bar has not published its real height yet.
  */
 export const MOBILE_TAB_BAR_HEIGHT_PX = 56;
 
 /**
- * `MobileTabBar` publishes its REAL measured height (safe-area padding included) on the
- * document root as `--ui-bottom-chrome`, precisely so bottom-docking surfaces can sit above
- * it, and clears it when it unmounts. The composer was clearing a hardcoded 56px against a
- * bar that measures 53px on a 390x844 viewport, leaving a 3px strip of the transcript
- * visible between the two; reading the variable closes that and follows the bar through any
+ * `MobileTabBar` publishes its REAL measured height on the document root as
+ * `--ui-bottom-chrome` — safe-area padding INCLUDED, because the bar itself carries
+ * `ui-safe-bottom` (`padding-bottom: env(safe-area-inset-bottom)`, styles.css). The composer
+ * was clearing a hardcoded 56 against a bar that measures 53, leaving a 3px strip of
+ * transcript at the seam; reading the variable closes that and follows the bar through any
  * future height change.
+ *
+ * No `max(…, env(safe-area-inset-bottom))` wrapper here, unlike the fifteen other consumers
+ * of this variable: this row is the one where the bar IS mounted, so its published height
+ * already contains the inset, and the `56px` fallback exceeds any home indicator anyway.
  */
 export const MOBILE_BOTTOM_CHROME_VAR = `var(--ui-bottom-chrome, ${MOBILE_TAB_BAR_HEIGHT_PX}px)`;
+
+/**
+ * What is left to clear once the tab bar has unmounted: the device's home-indicator strip,
+ * and nothing else. `0px` on any device without one.
+ *
+ * Deliberately a LONE `env(...)` rather than the tree's usual
+ * `max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px))`, and the reason is a
+ * dependency worth naming: `useBottomChromeVar`'s cleanup (responsive.tsx) calls
+ * `root.style.removeProperty('--ui-bottom-chrome')` when the bar unmounts, so in this row the
+ * variable is GONE and there is nothing left to max against. Wrapping it would be equivalent
+ * today — and would quietly depend on that cleanup continuing to run. Keeping the two rows as
+ * two distinct strings is also what keeps `keyboardAwareBottomPx` node-testable: `max(var, env)`
+ * cannot be resolved without a layout engine, so collapsing them would move the decision out of
+ * the tests and into CSS that nothing here can check.
+ */
+export const SAFE_AREA_BOTTOM_CSS = 'env(safe-area-inset-bottom, 0px)';
 
 export type KeyboardAwareBottomInput = {
   /** `useKeyboardInset()` — how much of the viewport the soft keyboard covers. */
@@ -57,27 +77,30 @@ export type KeyboardAwareBottomInput = {
 };
 
 /**
- * REQ-SHELL-28: where a bottom-pinned composer's bottom edge belongs, in px.
+ * REQ-SHELL-28: where a bottom-pinned composer's bottom edge belongs, as a CSS length.
  *
  * Two independent signals decide it, and the naive `keyboardInset + tab bar height` is
- * wrong in every row but one. Do NOT "simplify" this back to a sum.
+ * wrong in every row but one. Do NOT "simplify" this back to a sum, and do NOT collapse
+ * the two zero-ish rows into a literal `0` — one of them is a home indicator.
  *
- *   keyboard up,   focus held  -> keyboardInset  the tab bar is unmounted, so the inset is
- *                                                the whole distance; adding 56 would leave a
- *                                                56px gap above the keyboard.
- *   keyboard down, focus held  -> 0              iOS lets the keyboard be dismissed (swipe-down,
- *                                                or the dismiss key) WITHOUT blurring the field.
- *                                                Focus still suppresses the tab bar, so there is
- *                                                nothing underneath to clear.
- *   keyboard down, no focus    -> the tab bar's own measured height: the ordinary resting
-                                 state. `var(--ui-bottom-chrome, 56px)` rather than a
-                                 hardcoded 56, which left a 3px transcript strip showing.
- *   keyboard up,   no focus    -> keyboardInset  should not occur here (this app only raises the
- *                                                keyboard by focusing the composer), but if it
- *                                                does, sitting under the keyboard is the worse
- *                                                failure, so the inset still wins.
+ *   keyboard up,   focus held  -> `${inset}px`  the tab bar is unmounted, so the inset is the
+ *                                 whole distance; adding the bar's height would leave a gap
+ *                                 above the keyboard. No safe-area term: the keyboard is
+ *                                 drawn OVER the home indicator, so the inset already spans it.
+ *   keyboard down, focus held  -> the safe area. iOS lets the keyboard be dismissed
+ *                                 (swipe-down, or the dismiss key) WITHOUT blurring the field,
+ *                                 so focus still suppresses the tab bar and there is no bar to
+ *                                 clear — but the home indicator does not leave with it. A
+ *                                 literal `0` here puts the send button inside the strip iOS
+ *                                 owns the swipe in.
+ *   keyboard down, no focus    -> the tab bar's own measured height (`--ui-bottom-chrome`).
+ *                                 The ordinary resting state; the bar's height already
+ *                                 includes the safe area, because the bar carries it.
+ *   keyboard up,   no focus    -> `${inset}px`  should not occur here (this app only raises the
+ *                                 keyboard by focusing the composer), but if it does, sitting
+ *                                 under the keyboard is the worse failure, so the inset wins.
  */
 export function keyboardAwareBottomPx(input: KeyboardAwareBottomInput): string {
   if (input.keyboardInset > 0) return `${input.keyboardInset}px`;
-  return input.holdsKeyboardFocus ? '0px' : MOBILE_BOTTOM_CHROME_VAR;
+  return input.holdsKeyboardFocus ? SAFE_AREA_BOTTOM_CSS : MOBILE_BOTTOM_CHROME_VAR;
 }

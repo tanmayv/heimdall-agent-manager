@@ -1819,7 +1819,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         // keyboard. `bottom-14` below is the static fallback; this inline style is the live
         // value, and at rest it clears the tab bar by the bar's OWN measured height
         // (`--ui-bottom-chrome`) rather than a hardcoded 56. See `keyboardAwareBottomPx` for
-        // the four-row truth table — it is NOT `keyboardInset + 56`.
+        // the four-row truth table — it is NOT `keyboardInset + 56`, and the two zero-ish rows
+        // are not the same value: one is a mounted tab bar, the other a home indicator.
+        // `transition-all` below now also eases `bottom`, so the bar slides up with the
+        // keyboard over 300ms rather than jumping. That is intentional.
         style={isMobile ? { bottom: keyboardAwareBottomPx({ keyboardInset, holdsKeyboardFocus: composerHoldsKeyboardFocus }) } : undefined}
         className={`w-full max-w-full shrink-0 transition-all duration-300 ease-in-out ${
           isMobile
@@ -2324,7 +2327,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </button>
       ) : null}
 
-      {/* Subtle Bottom Floating Pills */}
+      {/* Subtle Bottom Floating Pills.
+
+          REQ-SHELL-28 — why this bottom-pinned surface deliberately does NOT take the
+          keyboard inset the composer above takes, so the next reader inherits the argument
+          instead of re-deriving it or "fixing" it blind:
+
+          The gate below is `!chromeVisible`, i.e. the user is SCROLLING. In that state the
+          composer is translated off-screen and unfocused, and the composer's textarea is the
+          only thing on this route that raises a soft keyboard. So "pills rendered AND keyboard
+          up" needs the keyboard to outlive the composer being hidden — which is the iOS
+          dismiss-without-blur case, and there the keyboard is DOWN. The state could not be
+          constructed in the harness, and it cannot be proved unreachable on real iOS either;
+          adding a defensive `style={{ bottom: keyboardAwareBottomPx(...) }}` here would be an
+          UNTESTED branch guarding a state neither side can produce. Each pill already carries
+          its own opaque-enough background, so the transparency half does not apply. */}
       {isMobile && !chromeVisible && rightPanel === 'closed' ? (
         <div className="fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none">
           <button

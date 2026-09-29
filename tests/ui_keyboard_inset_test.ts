@@ -10,6 +10,7 @@ import {
   MOBILE_CHROME_HIDE_ON_FOCUS_SELECTOR,
   MOBILE_BOTTOM_CHROME_VAR,
   MOBILE_TAB_BAR_HEIGHT_PX,
+  SAFE_AREA_BOTTOM_CSS,
   focusSuppressesMobileChrome,
   keyboardAwareBottomPx,
 } from '../src/ui/components/shell/mobileChrome.ts';
@@ -86,10 +87,16 @@ test('keyboardAwareBottomPx: keyboard up + focus held -> the inset alone, never 
   assert.notEqual(bottom, `${336 + MOBILE_TAB_BAR_HEIGHT_PX}px`, 'summing would leave a 56px gap above the keyboard');
 });
 
-test('keyboardAwareBottomPx: keyboard dismissed WITHOUT blur (iOS swipe-down) -> flush to 0', () => {
-  // The divergent row: focus still suppresses the tab bar, so there is nothing to clear.
-  // Falling back to the `bottom-14` class here would strand the composer 56px up.
-  assert.equal(keyboardAwareBottomPx({ keyboardInset: 0, holdsKeyboardFocus: true }), '0px');
+test('keyboardAwareBottomPx: keyboard dismissed WITHOUT blur (iOS swipe-down) -> flush to the SAFE AREA, not to 0', () => {
+  // The divergent row: focus still suppresses the tab bar, so there is no bar left to clear —
+  // but the home indicator does not leave with it. The tab bar was the thing carrying
+  // `ui-safe-bottom` (env(safe-area-inset-bottom)) on this edge, so when it unmounts the
+  // composer inherits that job. A literal `0` here puts the send button inside the ~34px strip
+  // iOS owns the swipe in. Falling back to the `bottom-14` class would strand it 56px up.
+  const bottom = keyboardAwareBottomPx({ keyboardInset: 0, holdsKeyboardFocus: true });
+  assert.equal(bottom, SAFE_AREA_BOTTOM_CSS);
+  assert.equal(bottom, 'env(safe-area-inset-bottom, 0px)');
+  assert.notEqual(bottom, '0px', 'a literal 0 drops the home indicator on the device this task came from');
 });
 
 test('keyboardAwareBottomPx: resting state clears the tab bar by its MEASURED height', () => {
@@ -97,6 +104,10 @@ test('keyboardAwareBottomPx: resting state clears the tab bar by its MEASURED he
   // a 53px bar is what left a 3px strip of transcript showing between the two.
   assert.equal(keyboardAwareBottomPx({ keyboardInset: 0, holdsKeyboardFocus: false }), MOBILE_BOTTOM_CHROME_VAR);
   assert.equal(MOBILE_BOTTOM_CHROME_VAR, 'var(--ui-bottom-chrome, 56px)', 'the fallback is the old `bottom-14` value');
+  // The two zero-ish rows must stay DISTINCT strings: this one is a mounted bar, the other is
+  // a home indicator. Collapsing them into one `max(var, env)` would make them
+  // indistinguishable to every test in this file.
+  assert.notEqual(MOBILE_BOTTOM_CHROME_VAR, SAFE_AREA_BOTTOM_CSS);
 });
 
 test('keyboardAwareBottomPx: keyboard up with no focus held still lifts above the keyboard', () => {
@@ -134,7 +145,9 @@ test('focusSuppressesMobileChrome: only for keyboard-bearing fields', () => {
   assert.equal(focusSuppressesMobileChrome(node({ tagName: 'INPUT', type: 'search' })), true);
   // The narrowing that keeps a tap on the model switcher from eating the first click.
   assert.equal(focusSuppressesMobileChrome(node({ tagName: 'BUTTON' })), false);
-  assert.equal(focusSuppressesMobileChrome(node({ tagName: 'INPUT', type: 'button' })), false);
-  assert.equal(focusSuppressesMobileChrome(node({ tagName: 'INPUT', type: 'file' })), false);
-  assert.equal(focusSuppressesMobileChrome(node({ tagName: 'INPUT', type: 'checkbox' })), false);
+  // All EIGHT excluded input types, so a future edit that drops one from the list fails here
+  // rather than shipping the two-tap bug the predicate's own comment warns about.
+  for (const type of ['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'file', 'color']) {
+    assert.equal(focusSuppressesMobileChrome(node({ tagName: 'INPUT', type })), false, `input[type=${type}] must not hide the chrome`);
+  }
 });

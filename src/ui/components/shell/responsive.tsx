@@ -6,7 +6,9 @@ import { TOUCH_TARGET_CLASS } from '@ui/hooks/useViewport';
 // table can be unit-tested; re-exported here so call sites keep one import path.
 export {
   MOBILE_CHROME_HIDE_ON_FOCUS_SELECTOR,
+  MOBILE_BOTTOM_CHROME_VAR,
   MOBILE_TAB_BAR_HEIGHT_PX,
+  SAFE_AREA_BOTTOM_CSS,
   focusSuppressesMobileChrome,
   keyboardAwareBottomPx,
 } from './mobileChrome';
