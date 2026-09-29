@@ -18,6 +18,7 @@ import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
+import ws "odin_test:lib/ws"
 
 // Preview_Tunnel_Stream is an in-flight hub-side tunnel stream.
 // Chunks are signalled via cond as they arrive; the proxy handler wakes and relays them.
@@ -32,6 +33,10 @@ Shell_Session_Service :: struct {
 	// WS fan-out registry (T7) — protected by mu.
 	mu:      sync.Mutex,
 	viewers: map[string][dynamic]net.TCP_Socket, // session_id → attached WS client sockets
+	// One write lock per session, guarding the VIEWER SOCKETS of that session against
+	// interleaved writes — see shell_session_viewer_write_lock. The map itself is
+	// protected by mu; the mutexes it holds are taken WITHOUT mu.
+	viewer_write_mu: map[string]^sync.Mutex,
 	// CRUD layer (T5) — session_owners and session_bridges also protected by mu.
 	repo:                ^iface.Shell_Session_Repository,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
@@ -61,6 +66,7 @@ new_shell_session_service :: proc(
 	heap := runtime.heap_allocator()
 	return Shell_Session_Service{
 		viewers        = make(map[string][dynamic]net.TCP_Socket, heap),
+		viewer_write_mu = make(map[string]^sync.Mutex, heap),
 		repo            = repo,
 		bridge_command_sink = bridge_command_sink,
 		events          = event_bus,
@@ -83,6 +89,23 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 		delete(viewers)
 	}
 	delete(svc.viewers)
+	// The per-session viewer write locks share the viewers map's lifetime.
+	//
+	// WARNING TO THE NEXT READER (REQ-SHELL-33). This map grows with sessions EVER
+	// CREATED, not sessions currently live, and is freed only here. That looks like a
+	// leak and the obvious fix — delete the entry when the last viewer detaches — is
+	// NOT SAFE: a writer may be holding that mutex at the moment the last viewer
+	// detaches, so freeing it there is a use-after-free on the very lock whose job is
+	// to make concurrent writes safe. It would be intermittent and crash-shaped, and
+	// far worse than the growth it removed. Doing it correctly needs a refcount or a
+	// generation guard; that was deliberately not done because the growth is bounded
+	// and small (a cloned session_id plus a sync.Mutex per session, well under a
+	// megabyte for ~10k sessions) and is reclaimed on every hub restart.
+	for k, write_mu in svc.viewer_write_mu {
+		delete(k, heap)
+		free(write_mu, heap)
+	}
+	delete(svc.viewer_write_mu)
 	for k, v in svc.session_owners { delete(k, heap); delete(v, heap) }
 	delete(svc.session_owners)
 	for k, v in svc.session_bridges { delete(k, heap); delete(v, heap) }
@@ -227,6 +250,79 @@ shell_session_viewer_count :: proc(svc: ^Shell_Session_Service, session_id: stri
 	return 0
 }
 
+// shell_session_viewer_write_lock returns the write lock for a session's viewer sockets,
+// creating it on first use. Hold it across EVERY frame written to a viewer of that
+// session — and, for a multi-frame sequence, across the WHOLE sequence.
+//
+// WHY THIS EXISTS (REQ-SHELL-33). Two independent threads write a viewer's socket: the
+// bridge-push path through shell_session_broadcast_output, and the stream handler's
+// late-join screen snapshot (shell_stream_screen_snapshot.odin). Nothing serialised them.
+// That was survivable only while the snapshot was a single frame — the original design
+// note argues exactly that, and it was right: one absolute repaint either lands whole or
+// not at all, and in-flight output is simply painted over.
+//
+// It stops being survivable the moment the snapshot spans several frames. The chunks after
+// the first carry no erase+home and no absolute positioning: they continue from wherever
+// the previous chunk left the cursor. An `output` frame delivered BETWEEN two chunks goes
+// into the same terminal sink, moves the cursor, and every remaining chunk then paints from
+// the wrong place — the staircase REQ-SHELL-30 and REQ-SHELL-31 removed, reintroduced
+// intermittently. Ordering on the socket does not help: the guarantee the repaint needs is
+// ATOMICITY against the other writer, not FIFO.
+//
+// Concurrent writes were in fact never safe here even at one frame each: two threads in
+// net.send_tcp on the same socket can interleave at the BYTE level if the send buffer fills
+// mid-copy, which corrupts the frame itself rather than merely the cursor. The lock closes
+// both. (bridge_handlers.write_ws_text_frame_locked and the LSP registry lock are the same
+// measure on their own sockets.)
+//
+// The lock is PER SESSION, not global: only writers to the same viewer socket can corrupt
+// each other, and every writer to a socket writes it as a viewer of one session. A global
+// lock would let a slow viewer of one session stall an unrelated one.
+//
+// LIFETIME — the entry is NOT freed when the session ends, and that is deliberate.
+// Freeing it at the last detach would be a use-after-free: a writer takes the pointer,
+// releases svc.mu, and only then blocks on the mutex, so a concurrent detach could free a
+// lock another thread is about to take or is already holding. Making that safe needs
+// refcounting, which buys nothing here — the entry is a pointer, an 8-byte mutex and a
+// cloned key, it sits beside a `viewers` entry already retained for the same key on the
+// same terms, and the growth is bounded by the number of DISTINCT session ids this process
+// has seen. Both are freed together in shell_session_service_free.
+// (The zero-growth alternative is a fixed array of striped locks hashed by session id. It
+// was rejected because it reintroduces exactly what per-session locking is for: two
+// unrelated sessions sharing a stripe, one able to stall the other.)
+//
+// This is NOT a bound on a WEDGED viewer. No send
+// timeout is set on these sockets, so a viewer that stops draining already blocks the
+// fan-out thread inside net.send_tcp; the lock extends that stall to the snapshot writer
+// for the same session. Bounding it is the REQ-LSP-RLY-2 measure (SO_SNDTIMEO) and is not
+// this ticket.
+shell_session_viewer_write_lock :: proc(svc: ^Shell_Session_Service, session_id: string) -> ^sync.Mutex {
+	if svc == nil || session_id == "" do return nil
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&svc.mu)
+	defer sync.mutex_unlock(&svc.mu)
+	if existing, ok := svc.viewer_write_mu[session_id]; ok do return existing
+	created := new(sync.Mutex, heap)
+	svc.viewer_write_mu[strings.clone(session_id, heap)] = created
+	return created
+}
+
+// shell_session_write_viewer_frame writes ONE frame to one viewer socket under that
+// session's write lock. Use it for any single frame; for a multi-frame sequence take
+// shell_session_viewer_write_lock yourself and hold it across the whole sequence.
+shell_session_write_viewer_frame :: proc(
+	svc: ^Shell_Session_Service,
+	session_id: string,
+	socket: net.TCP_Socket,
+	text: string,
+) -> ws.Text_Write_Result {
+	write_mu := shell_session_viewer_write_lock(svc, session_id)
+	if write_mu == nil do return _write_ws_text(socket, text)
+	sync.mutex_lock(write_mu)
+	defer sync.mutex_unlock(write_mu)
+	return _write_ws_text(socket, text)
+}
+
 // shell_session_broadcast_output fans PTY output (already base64-encoded by the bridge)
 // to all WS clients attached to session_id.
 shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, data_b64: string) {
@@ -237,8 +333,13 @@ shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, 
 	frame := _output_frame_json(data_b64)
 	defer delete(frame)
 	for sock in sockets {
-		if !_write_ws_text(sock, frame) {
+		// The write happens under the session write lock; the detach deliberately does
+		// NOT — it takes svc.mu, and nothing may hold the write lock while doing that.
+		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		if _viewer_write_ends_session(result) {
 			shell_session_detach(svc, session_id, sock)
+		} else {
+			_log_viewer_write("output", session_id, result, len(frame))
 		}
 	}
 }
@@ -252,8 +353,11 @@ shell_session_broadcast_status :: proc(svc: ^Shell_Session_Service, session_id, 
 	frame := _status_frame_json(status, exit_code, exit_code_set)
 	defer delete(frame)
 	for sock in sockets {
-		if !_write_ws_text(sock, frame) {
+		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		if _viewer_write_ends_session(result) {
 			shell_session_detach(svc, session_id, sock)
+		} else {
+			_log_viewer_write("status", session_id, result, len(frame))
 		}
 	}
 }
@@ -1656,24 +1760,52 @@ _status_frame_json :: proc(status: string, exit_code: int, exit_code_set: bool) 
 	return strings.to_string(b)
 }
 
-_write_ws_text :: proc(socket: net.TCP_Socket, text: string) -> bool {
-	n := len(text)
-	if n > 65535 do return false
-	header_len := 2
-	if n > 125 do header_len = 4
-	frame := make([]byte, header_len + n)
-	defer delete(frame)
-	frame[0] = 0x81
-	if n <= 125 {
-		frame[1] = byte(n)
-	} else {
-		frame[1] = 126
-		frame[2] = byte((n >> 8) & 0xff)
-		frame[3] = byte(n & 0xff)
+// _write_ws_text writes one frame to a VIEWER socket. Every peer on this registry is a
+// browser, so the 64-bit length arm is correct here — see write_server_text for why the
+// bridge channel gets the opposite answer.
+//
+// It returns the typed result rather than a bool on purpose (REQ-SHELL-33): its callers
+// decide whether to DETACH the viewer, and a bool made "I could not encode this frame"
+// indistinguishable from "this socket is dead". See _viewer_write_ends_session.
+_write_ws_text :: proc(socket: net.TCP_Socket, text: string) -> ws.Text_Write_Result {
+	return ws.write_server_text(socket, text, true)
+}
+
+// _viewer_write_ends_session answers the only question the broadcast loop actually asks:
+// is this VIEWER finished? A frame the hub could not encode says nothing about the socket
+// — not one byte of it was written — so the viewer stays attached and the session goes on.
+//
+// This is the (b) half of REQ-SHELL-33, and it is why the result is a type and not a bool.
+// The old code detached on every falsey return, so one oversized frame SILENTLY
+// UNSUBSCRIBED a live, healthy viewer, which then saw nothing further and had no way to
+// find out. A dropped frame costs one repaint; a detach costs the session.
+//
+// Desynchronised DOES end it: half a frame is already on the wire and that client will
+// misparse every byte after it. Ending a corrupt stream is the recovery, not the failure.
+_viewer_write_ends_session :: proc(result: ws.Text_Write_Result) -> bool {
+	switch result {
+	case .Ok, .Too_Large:
+		return false
+	case .Peer_Gone, .Desynchronised:
+		return true
 	}
-	copy(frame[header_len:], transmute([]byte)text)
-	_, err := net.send_tcp(socket, frame)
-	return err == nil
+	return true
+}
+
+// _log_viewer_write reports the non-Ok outcomes that do NOT end the session, because those
+// are the ones that otherwise leave no trace anywhere — the session stays up, the viewer
+// stays attached, and a frame simply never arrives. REQ-SHELL-16 settled the principle:
+// a refusal must never be silent.
+_log_viewer_write :: proc(kind, session_id: string, result: ws.Text_Write_Result, size: int) {
+	if result == .Too_Large {
+		fmt.eprintfln(
+			"ham-hub WARN shell ws %s frame too large to encode session=%s bytes=%d limit=%d (viewer KEPT attached)",
+			kind,
+			session_id,
+			size,
+			ws.WS_MAX_SERVER_PAYLOAD,
+		)
+	}
 }
 
 // _shell_session_check_cap enforces the per-kind live-session cap. Returns the

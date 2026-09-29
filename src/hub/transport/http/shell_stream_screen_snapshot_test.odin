@@ -60,7 +60,7 @@ test_req29_empty_pane_output_writes_no_frame :: proc(t: ^testing.T) {
 	reply := "{\"ok\":true,\"status\":\"exited\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}"
 	testing.expect(
 		t,
-		!_shell_stream_write_screen_frame(net.TCP_Socket(0), reply),
+		!_shell_stream_write_screen_frame(nil, "", net.TCP_Socket(0), reply),
 		"an empty pane must write nothing at all",
 	)
 }
@@ -137,7 +137,7 @@ test_req29_screen_frame_is_written_to_the_given_socket :: proc(t: ^testing.T) {
 	defer net.close(hub)
 
 	reply := "{\"ok\":true,\"unchanged\":false,\"hash\":\"abc\",\"output\":\"hello pane\"}"
-	testing.expect(t, _shell_stream_write_screen_frame(hub, reply), "write must succeed on a live socket")
+	testing.expect(t, _shell_stream_write_screen_frame(nil, "", hub, reply), "write must succeed on a live socket")
 
 	buf: [512]byte
 	n, recv_err := net.recv_tcp(client, buf[:])

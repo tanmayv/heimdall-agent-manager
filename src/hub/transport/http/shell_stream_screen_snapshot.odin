@@ -26,8 +26,10 @@ package http
 // prompt — no output is in flight, so the repaint is exact.
 
 import base64 "core:encoding/base64"
+import "core:fmt"
 import "core:net"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 import agent_service "odin_test:hub/service/agent"
 import shell_session_svc "odin_test:hub/service/shell_session"
@@ -84,14 +86,47 @@ _shell_screen_lf_to_crlf :: proc(s: string) -> string {
 	return strings.to_string(b)
 }
 
-// shell_stream_screen_payload_b64 builds the base64 body of a `screen` frame: the repaint
-// prefix followed by the captured pane text with CRLF row separators. Caller owns the result.
-shell_stream_screen_payload_b64 :: proc(pane_output: string) -> string {
+// _shell_screen_repaint_text builds the DECODED repaint: the erase+home prefix followed by
+// the captured pane text with CRLF row separators. Caller owns the result.
+//
+// Split out from shell_stream_screen_payload_b64 because the chunked writer needs the
+// repaint as bytes it can cut before encoding — base64 of the whole thing cannot be cut,
+// since each frame must decode on its own.
+_shell_screen_repaint_text :: proc(pane_output: string) -> string {
 	body := _shell_screen_lf_to_crlf(pane_output)
 	defer delete(body)
-	joined := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, body})
+	return strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, body})
+}
+
+// shell_stream_screen_payload_b64 builds the base64 body of a single-frame `screen` payload.
+// Caller owns the result.
+shell_stream_screen_payload_b64 :: proc(pane_output: string) -> string {
+	joined := _shell_screen_repaint_text(pane_output)
 	defer delete(joined)
 	return base64.encode(transmute([]byte)joined)
+}
+
+// SHELL_SCREEN_CHUNK_DECODED_BYTES is how much DECODED repaint text one `screen` frame
+// carries. 32 KiB encodes to ~43.7 KB of base64 — base64's alphabet needs no JSON escaping,
+// so the frame lands well inside even the 16-bit WebSocket length (65535). That is
+// deliberate: a snapshot of any size now travels in frames that would survive a 16-bit-only
+// writer, so this path can never again depend on a length arm being present to paint.
+SHELL_SCREEN_CHUNK_DECODED_BYTES :: 32 * 1024
+
+// _shell_screen_chunk_end picks where the chunk starting at `start` ends, preferring a ROW
+// boundary (just past a '\n') so a chunk never splits an SGR escape run or a multi-byte
+// rune. A single row longer than the budget — pathological, but a wide pane full of colour
+// runs is what this ticket is about — falls back to the hard byte boundary, which is safe
+// because xterm's parser is a STREAM parser: it carries escape and UTF-8 state across
+// writes, and consecutive `screen` frames feed the same sink as incremental output
+// (useShellStream.ts:221).
+_shell_screen_chunk_end :: proc(s: string, start: int) -> int {
+	if len(s) - start <= SHELL_SCREEN_CHUNK_DECODED_BYTES do return len(s)
+	hard := start + SHELL_SCREEN_CHUNK_DECODED_BYTES
+	for i := hard - 1; i > start; i -= 1 {
+		if s[i] == '\n' do return i + 1
+	}
+	return hard
 }
 
 // shell_stream_screen_frame_json wraps a base64 payload in the frame both consumers parse.
@@ -105,19 +140,83 @@ shell_stream_screen_frame_json :: proc(screen_b64: string) -> string {
 	return strings.to_string(b)
 }
 
-// _shell_stream_write_screen_frame turns a pane reply into a `screen` frame on ONE socket.
-// An empty `output` writes nothing: a terminal session answers locally with output:"" and
-// has no screen worth repainting.
-_shell_stream_write_screen_frame :: proc(client: net.TCP_Socket, pane_reply: string) -> bool {
+// _shell_stream_write_screen_frame turns a pane reply into one or more `screen` frames on
+// ONE socket. An empty `output` writes nothing: a terminal session answers locally with
+// output:"" and has no screen worth repainting.
+//
+// WHY THIS CHUNKS (REQ-SHELL-33). This is the one caller on this socket whose payload can
+// exceed a WebSocket length arm: vt.rs's capture() writes SGR colour runs INLINE into every
+// row, so a wide, fully-coloured pane produces a repaint far larger than its display area.
+// Before this change that frame was silently dropped and the viewer saw a BLANK PANE —
+// exactly the late-join repaint REQ-SHELL-29 exists to provide, failing where it matters
+// most. A 64-bit length arm alone would not settle it: any cap, however generous, would
+// turn the same case back into a blank pane, only with a log line. Cutting the repaint into
+// ordered frames means a snapshot of ANY size paints.
+//
+// This is sound because the repaint is ABSOLUTE and SEQUENTIAL. The erase+home prefix leads
+// the first chunk only; the rest continue where it left off, on the same socket, written in
+// order by this proc, into a client that feeds every `screen` frame to the same terminal
+// sink. Re-prefixing later chunks would erase the part already painted.
+//
+// ATOMICITY, not merely ordering. Chunking is only sound if NOTHING ELSE writes this
+// socket mid-sequence. It is not enough that the chunks leave in order: the bridge-push
+// path (shell_session_broadcast_output) writes the same viewer socket from another thread,
+// and an `output` frame between two chunks moves the cursor, after which every remaining
+// chunk — none of which carries erase+home or absolute positioning — paints from the wrong
+// place. The whole sequence is therefore written under that session's viewer-write lock;
+// see shell_session_viewer_write_lock for why the lock is per session and why concurrent
+// writes were in fact never safe on this socket even at one frame each.
+//
+// A partial paint on a mid-sequence failure is deliberate and is not a regression: the
+// alternative is the blank pane this replaces, and the next output or snapshot repaints
+// absolutely.
+// `sessions`/`stream_id` name the viewer-write lock this sequence must hold — see the
+// ATOMICITY note above. They may be nil/"" only where there is no fan-out to race with,
+// which in practice means tests; production callers always have both.
+_shell_stream_write_screen_frame :: proc(
+	sessions: ^shell_session_svc.Shell_Session_Service,
+	stream_id: string,
+	client: net.TCP_Socket,
+	pane_reply: string,
+) -> bool {
 	output := json_string(pane_reply, "output")
 	defer delete(output)
 	if output == "" do return false
 
-	payload := shell_stream_screen_payload_b64(output)
-	defer delete(payload)
-	frame := shell_stream_screen_frame_json(payload)
-	defer delete(frame)
-	return write_ws_text_frame(client, frame)
+	repaint := _shell_screen_repaint_text(output)
+	defer delete(repaint)
+
+	// Held across EVERY chunk, not per chunk: an `output` frame landing between two
+	// chunks would move the cursor and misposition all of them.
+	// NOTE the shape. `defer` in Odin runs at the end of its ENCLOSING SCOPE, so putting
+	// the unlock inside the `if` block releases the lock immediately — which is exactly
+	// the bug req33_output_cannot_interleave_with_a_chunked_snapshot caught here. The
+	// guarded `defer if` keeps the release at proc exit.
+	write_mu := shell_session_svc.shell_session_viewer_write_lock(sessions, stream_id)
+	if write_mu != nil do sync.mutex_lock(write_mu)
+	defer if write_mu != nil do sync.mutex_unlock(write_mu)
+
+	offset := 0
+	for offset < len(repaint) {
+		end := _shell_screen_chunk_end(repaint, offset)
+		payload := base64.encode(transmute([]byte)repaint[offset:end])
+		frame := shell_stream_screen_frame_json(payload)
+		result := write_ws_text_frame_browser(client, frame)
+		delete(payload)
+		delete(frame)
+		if result != .Ok {
+			fmt.eprintfln(
+				"ham-hub WARN shell screen snapshot frame not delivered result=%v offset=%d chunk_bytes=%d total_bytes=%d",
+				result,
+				offset,
+				end - offset,
+				len(repaint),
+			)
+			return false
+		}
+		offset = end
+	}
+	return true
 }
 
 // shell_stream_send_shell_screen_snapshot serves the shells terminal pane.
@@ -135,15 +234,19 @@ shell_stream_send_shell_screen_snapshot :: proc(
 	reply, ok, err := shell_session_svc.shell_session_get_pane(svc, auth, session_id, "", cols, rows)
 	if !ok || err.code != .None do return false
 	defer delete(reply)
-	return _shell_stream_write_screen_frame(client, reply)
+	return _shell_stream_write_screen_frame(svc, session_id, client, reply)
 }
 
 // shell_stream_send_agent_screen_snapshot serves the agent pane. Same frame, same
 // contract; only the pane source differs, because an agent instance has no shell_sessions
 // row — agent_service.get_instance_pane is the twin of shell_session_get_pane and returns
 // the identical payload shape.
+// `sessions` is the shell-session service, NOT the pane source: an agent stream attaches
+// its viewer socket through shell_session_attach exactly like a shell does
+// (agent_instance_handlers.odin), so its writes share the same lock and the same fan-out.
 shell_stream_send_agent_screen_snapshot :: proc(
 	svc: ^agent_service.Agent_Service,
+	sessions: ^shell_session_svc.Shell_Session_Service,
 	auth: contracts.Auth_Context,
 	instance_id: string,
 	client: net.TCP_Socket,
@@ -153,5 +256,5 @@ shell_stream_send_agent_screen_snapshot :: proc(
 	reply, ok, err := agent_service.get_instance_pane(svc, auth, instance_id, "", cols, rows)
 	if !ok || err.code != .None do return false
 	defer delete(reply)
-	return _shell_stream_write_screen_frame(client, reply)
+	return _shell_stream_write_screen_frame(sessions, instance_id, client, reply)
 }

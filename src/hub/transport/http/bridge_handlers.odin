@@ -18,6 +18,7 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
+import ws "odin_test:lib/ws"
 import shell_session_svc "odin_test:hub/service/shell_session"
 
 Bridge_Handlers :: struct {
@@ -2248,18 +2249,42 @@ read_ws_text_blocking :: proc(reader: ^Bridge_WS_Reader, timeout: time.Duration)
 	}
 }
 
+// write_ws_text_frame writes one text frame on a socket that must stay within the
+// 16-bit WebSocket length. REQ-SHELL-33 moved the framing itself into ws.write_server_text
+// (three length arms, short-write loop, typed result); what stays here is the CHOICE.
+//
+// THE 16-BIT BOUND ON THIS WRITER IS DELIBERATE, NOT A MISSING FEATURE. Its callers
+// include the BRIDGE command socket (the hello/error payloads at :1196-:1199 and every
+// write_ws_text_frame_locked send), and our own bridge readers treat a 64-bit length as
+// FATAL — src/lib/ws/ws.odin:200 drops the connection, bridge_ws_take_frame below returns
+// fatal=true. Emitting one toward a bridge would turn a dropped frame into a killed bridge
+// connection. That channel already chunks at the application level (kind:"chunk") so that
+// no frame reaches the cap; this bound is the other half of that contract.
+//
+// Browser-facing callers whose payload can actually be large must use
+// write_ws_text_frame_browser instead. Every caller left on THIS proc sends a small,
+// fixed-shape control payload — a ready, an ack, an error — so Too_Large here means a bug,
+// which is why it is logged rather than passed on: the bool tells the caller whether the
+// frame arrived, and no caller of this one can do anything different about why.
 write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
-	n := len(text)
-	if n > 65535 do return false
-	header_len := 2
-	if n > 125 do header_len = 4
-	frame := make([]byte, header_len + n)
-	defer delete(frame)
-	frame[0] = 0x81
-	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
-	copy(frame[header_len:], transmute([]byte)text)
-	_, err := net.send_tcp(client, frame)
-	return err == nil
+	result := ws.write_server_text(client, text, false)
+	if result == .Too_Large {
+		fmt.eprintfln(
+			"ham-hub WARN ws control frame exceeds the 16-bit length and was NOT sent bytes=%d limit=%d",
+			len(text),
+			ws.WS_16BIT_MAX_PAYLOAD,
+		)
+	}
+	return result == .Ok
+}
+
+// write_ws_text_frame_browser writes one text frame to a BROWSER socket, where the 64-bit
+// length arm is both correct and safe (the browser WebSocket stack parses it; see
+// write_ws_text_frame for why the bridge channel cannot). It returns the typed result
+// because its callers — the screen snapshot above all — must distinguish a frame they could
+// not encode from a peer that is gone.
+write_ws_text_frame_browser :: proc(client: net.TCP_Socket, text: string) -> ws.Text_Write_Result {
+	return ws.write_server_text(client, text, true)
 }
 
 // write_ws_text_frame_locked serializes a write to the bridge command socket with
