@@ -318,8 +318,16 @@ bridge_shell_wait_rpc :: proc(request_id, params: string, rec: Bridge_Local_Agen
 		output_str, out_state := bridge_shell_output_read(session_id)
 		defer if out_state == .Available do delete(output_str)
 		if out_state == .Reclaimed do return bridge_local_response_error(request_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
-		output_size := len(output_str)
-		tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+		// Sanitised before measuring and before tailing, identically to the live
+		// path in bridge_shell_run_wait_response — see the full reasoning there.
+		// Both render the same response shape for the same caller, so they must
+		// agree byte for byte on what a finished run's output looks like; a wait
+		// that arrived a second late must not return different text from one that
+		// arrived a second early (REQ-SHELL-27).
+		sanitized := bridge_shell_sanitize_output(output_str)
+		defer delete(sanitized)
+		output_size := len(sanitized)
+		tail, truncated := bridge_shell_tail(sanitized, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 		bridge_shell_write_session_json(&b, &sess, tail, truncated, output_size, true)
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	case .Running, .Starting:

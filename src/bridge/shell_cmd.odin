@@ -314,8 +314,28 @@ bridge_shell_run_wait_response :: proc(request_id, session_id: string, timeout_m
 	output_str, out_state := bridge_shell_output_read(session_id)
 	defer if out_state == .Available do delete(output_str)
 	if out_state == .Reclaimed do return bridge_local_response_error(request_id, BRIDGE_SHELL_OUTPUT_RECLAIMED_CODE, BRIDGE_SHELL_OUTPUT_RECLAIMED_MESSAGE)
-	output_size := len(output_str)
-	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+
+	// SANITISE BEFORE MEASURING AND BEFORE TAILING (REQ-SHELL-27). This is the
+	// inline output of a FOREGROUND run — the default, and the most-read output
+	// surface there is — so it carries the same PTY escapes and CRLF endings the
+	// log path does. Read-time only; the tee file keeps the raw bytes.
+	//
+	// Before tailing, for the same reason grep is stripped before matching: the
+	// 200-line threshold and the 100-line keep must count the lines a human sees
+	// (CRLF and bare-\r redraws resolved), and a tail boundary must not be able to
+	// land in the middle of an escape sequence and emit a `[0;32m` fragment.
+	//
+	// output_size_bytes is therefore the SANITISED length. The decision, since
+	// either was defensible: that field sits in the same JSON object as the output
+	// it describes, and its only consumer is whoever reads that response — grep
+	// shows no comparison against a retention or truncation threshold anywhere, so
+	// nothing depends on it matching the file on disk. A size that did not describe
+	// the text actually delivered would be a wrong answer to the only question the
+	// field is asked. Its contract is unchanged: full output vs. a truncated tail.
+	sanitized := bridge_shell_sanitize_output(output_str)
+	defer delete(sanitized)
+	output_size := len(sanitized)
+	tail, truncated := bridge_shell_tail(sanitized, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 
 	b := strings.builder_make()
 	bridge_shell_write_session_json(&b, &snap, tail, truncated, output_size, true)

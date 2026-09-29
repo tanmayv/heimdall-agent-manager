@@ -3179,10 +3179,30 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 		// Served below — including a zero-byte file, which is a real empty log.
 	}
 
-	total_lines := 0
-	for i in 0..<len(output_str) { if output_str[i] == '\n' do total_lines += 1 }
+	// SANITISE FIRST — BEFORE counting, BEFORE grep, BEFORE offset/limit (REQ-SHELL-27).
+	// The ordering IS the requirement, not a tidiness preference:
+	//   - `--grep error` must match a word the compiler wrapped in SGR red. Against raw
+	//     text it cannot, and that is a silent wrong ANSWER, not a cosmetic blemish.
+	//   - total_lines and offset/limit must count the lines a human sees, so CRLF and
+	//     bare-\r progress redraws have to be resolved before anything counts them.
+	//   - a limit boundary must not be able to land mid-escape and emit `[0;32m`.
+	// Read-time only: bridge_shell_output_read's string is a copy, the tee file on disk
+	// keeps the raw bytes, and nothing here writes back (AC5).
+	//
+	// NOT gated on session kind, deliberately. What is protected is the TRANSPORT, not
+	// the kind: this command answers with a JSON array of text lines that no one renders
+	// into a terminal. The live terminal is served by bridge_hub_handle_shell_capture and
+	// bridge_hub_handle_shell_get_pane, which are untouched and must stay byte-exact. A
+	// `shell` is tee'd like any other kind (see the unconditional tee_path at the spawn
+	// site), so gating would only ever mis-serve someone reading an interactive session's
+	// scrollback back as text.
+	sanitized := bridge_shell_sanitize_output(output_str)
+	defer delete(sanitized)
 
-	lines_str, truncated := bridge_shell_page(output_str, offset, limit, grep)
+	total_lines := 0
+	for i in 0..<len(sanitized) { if sanitized[i] == '\n' do total_lines += 1 }
+
+	lines_str, truncated := bridge_shell_page(sanitized, offset, limit, grep)
 	defer delete(lines_str)
 
 	b := strings.builder_make()
