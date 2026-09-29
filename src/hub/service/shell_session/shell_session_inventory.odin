@@ -116,9 +116,16 @@ Shell_Session_Inventory_Result :: struct {
 	kills_replayed: int,
 }
 
-// shell_session_inventory_changed answers whether a diff wrote anything. Used to
-// decide the kill replay below, and it is the honest form of "did this matter" —
-// `ignored` is deliberately excluded, since refusing an entry changes no row.
+// shell_session_inventory_changed answers whether a diff wrote anything, and it is the
+// honest form of "did this matter" — `ignored` is deliberately excluded, since refusing
+// an entry changes no row.
+//
+// IT NO LONGER GATES THE KILL REPLAY, and must not be wired back to it (REQ-SHELL-23).
+// Whether an inventory found discrepancies and whether a durable kill is outstanding
+// are unrelated facts; joining them disabled the replay in exactly the case it exists
+// for, since a clean inventory is the case where the outstanding kill is the ONLY thing
+// wrong. Its remaining use is what it is actually for: asserting the idempotency of
+// apply_inventory in tests.
 shell_session_inventory_changed :: proc(r: Shell_Session_Inventory_Result) -> bool {
 	return r.adopted > 0 || r.terminated > 0 || r.corrected > 0 || r.revived > 0
 }
@@ -178,15 +185,30 @@ shell_session_apply_inventory :: proc(svc: ^Shell_Session_Service, bridge_id, fr
 	// Re-running in full is safe and is not a special case: the replay is documented
 	// as idempotent because the bridge no-ops a kill against a session it has already
 	// marked terminal, which is exactly why it can be re-issued without tracking what
-	// was delivered before. Conditioned on the diff having CHANGED something so a
-	// no-op inventory stays a no-op end to end.
+	// was delivered before.
+	//
+	// UNCONDITIONAL, AND THE GATE THAT USED TO BE HERE WAS THE SECOND HALF OF
+	// REQ-SHELL-23. This read `if shell_session_inventory_changed(result)`, so the one
+	// path that could deliver a kill AFTER the bridge had rebuilt its session map ran
+	// only when the diff had also found something else wrong. In the reproduction that
+	// exposed this, the row already agreed with the roster in every field — status
+	// running, correct pid — so the diff was a clean no-op, the gate was false, and the
+	// outstanding kill was skipped precisely BECAUSE nothing else was broken. The
+	// healthier the rest of the state, the more reliably the kill was dropped.
+	//
+	// The "a no-op inventory is a no-op end to end" promise in this procedure's header
+	// is unchanged in the sense that matters and narrowed in the sense that does not:
+	// it was always a promise about WRITES and PUBLISHES, and those are still gated by
+	// the per-branch divergence checks above. What is no longer gated is one
+	// bridge-scoped indexed SELECT (migration 050's partial index) that returns the
+	// empty set on every reconnect where no kill is pending — which is every reconnect
+	// in normal operation. Paying for one empty read per inventory to stop silently
+	// discarding a durable kill is not a close trade.
 	//
 	// No intent handling of our own lives here, deliberately: REQ-SHELL-3 owns the
 	// intent, and its structural auto-clear retires one the moment any terminal status
 	// lands — including the ones written above.
-	if shell_session_inventory_changed(result) {
-		result.kills_replayed = shell_session_replay_kill_intents(svc, bridge_id)
-	}
+	result.kills_replayed, _ = shell_session_replay_kill_intents(svc, bridge_id)
 	return result
 }
 

@@ -393,9 +393,11 @@ test_req3_replay_delivers_outstanding_kills_on_reconnect :: proc(t: ^testing.T) 
 		kill_requested_at = "2026-09-28T07:00:00Z"}
 	append(&fx.r.pending_list, pending_a, pending_b, spent, elsewhere)
 
-	delivered := shell_session_replay_kill_intents(&fx.svc, "brg_1")
+	delivered, outstanding := shell_session_replay_kill_intents(&fx.svc, "brg_1")
 
 	testing.expect_value(t, delivered, 2)
+	// Two rows passed the domain predicate; the spent one and the other bridge's did not.
+	testing.expect_value(t, outstanding, 2)
 	testing.expect_value(t, s3_count(&fx.sink, "shell_kill"), 2)
 	testing.expect_value(t, fx.r.list_bridge, "brg_1")
 	for b in fx.sink.bodies {
@@ -412,7 +414,13 @@ test_req3_replay_with_nothing_outstanding_sends_nothing :: proc(t: ^testing.T) {
 	fx3_make(&fx, online = true)
 	defer fx3_free(&fx)
 
-	testing.expect_value(t, shell_session_replay_kill_intents(&fx.svc, "brg_1"), 0)
+	delivered, outstanding := shell_session_replay_kill_intents(&fx.svc, "brg_1")
+	testing.expect_value(t, delivered, 0)
+	// The pair is the point (REQ-SHELL-23 AC3): nothing delivered BECAUSE nothing was
+	// outstanding is the healthy reconnect, and it must be distinguishable from the
+	// production failure asserted in the next test — same `delivered`, different
+	// `outstanding`.
+	testing.expect_value(t, outstanding, 0)
 	testing.expect_value(t, len(fx.sink.bodies), 0)
 }
 
@@ -428,7 +436,12 @@ test_req3_replay_reports_nothing_delivered_when_the_bridge_drops_again :: proc(t
 		bridge_id = "brg_1", kind = domain.Shell_Session_Kind_Shell,
 		status = domain.Shell_Session_Status_Running, kill_requested_at = "2026-09-28T09:00:00Z"})
 
-	testing.expect_value(t, shell_session_replay_kill_intents(&fx.svc, "brg_1"), 0)
+	delivered, outstanding := shell_session_replay_kill_intents(&fx.svc, "brg_1")
+	testing.expect_value(t, delivered, 0)
+	// delivered==0 with outstanding==1 is the SHORTFALL the bridge-WS call site now
+	// logs. Before REQ-SHELL-23 this call returned a bare 0, indistinguishable from the
+	// healthy no-work reconnect above, and that ambiguity is what hid a live failure.
+	testing.expect_value(t, outstanding, 1)
 }
 
 // --- §5b: KILL BEFORE START ---------------------------------------------------

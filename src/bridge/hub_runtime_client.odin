@@ -2680,11 +2680,23 @@ bridge_shell_kill_worker :: proc(data: rawptr) {
 	ctx := (^Bridge_Shell_Kill_Ctx)(data)
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if ok {
-		_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 15)
+		// The signal results ARE checked now (REQ-SHELL-23). Both were `_ =`, so a kill
+		// that reached the daemon and was refused by it — an unknown shell_id, a killpg
+		// that failed — completed silently and looked exactly like a successful kill. A
+		// kill this bridge could not execute must say so: the hub's row still carries the
+		// intent, so the next reconnect retries, but an operator needs to be able to see
+		// that it is retrying rather than succeeding.
+		if !bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 15) {
+			fmt.println("bridge shell_kill: SIGTERM was REFUSED by the pty-host daemon", ctx.shell_id)
+		}
 		time.sleep(5 * time.Second)
 		if bridge_shell_kill_shell_is_alive(socket, ctx.shell_id) {
-			_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 9)
+			if !bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 9) {
+				fmt.println("bridge shell_kill: SIGKILL was REFUSED by the pty-host daemon; the session is still alive", ctx.shell_id)
+			}
 		}
+	} else {
+		fmt.println("bridge shell_kill: pty-host daemon unreachable; kill not executed", ctx.shell_id)
 	}
 	delete(ctx.session_id)
 	delete(ctx.shell_id)
@@ -2709,12 +2721,23 @@ bridge_hub_handle_shell_kill :: proc(text: string) {
 		// that does not exist yet — there is no pid to signal and nothing to mark. This
 		// used to return silently and the process leaked the instant it spawned.
 		//
-		// Record the intent instead; bridge_hub_handle_shell_start applies it as soon as
-		// the spawn yields a pid. Recording is also the right answer for a kill naming a
-		// session this bridge will never start (a stale id, a session belonging to a
-		// previous bridge life): the entry is inert, because it can only ever be consumed
-		// by a spawn of that same session_id.
+		// Record the intent instead. It now has TWO consumers, and that is the whole of
+		// REQ-SHELL-23 (see bridge_shell_kill_intent_resolve):
+		//   bridge_hub_handle_shell_start — applies it the moment a spawn yields a pid;
+		//   reconcile's resolver          — applies it to a session this bridge ADOPTED
+		//                                   from the surviving pty-host daemon after a
+		//                                   restart, which is never re-spawned and so was
+		//                                   never reached by the first consumer.
+		// That second case is why this branch is no longer a dead end. The old comment
+		// here read "the entry is inert, because it can only ever be consumed by a spawn
+		// of that same session_id" — true as written, and describing the reconnect replay's
+		// kills without realising it: EVERY durable kill landed here and stopped.
 		bridge_shell_kill_intent_record(session_id)
+		// LOGGED, because the silence here is what let REQ-SHELL-23 ship. This branch and
+		// the success path below were both wordless, so a kill that arrived and was parked
+		// as an intent looked, in every log on the host, identical to a kill that never
+		// arrived at all — and the reconnect replay's kills landed here every time.
+		fmt.println("bridge shell_kill: session not in map; parked as a kill intent", session_id)
 		return
 	}
 
@@ -2760,6 +2783,10 @@ bridge_hub_handle_shell_kill :: proc(text: string) {
 // fallback that used to be spelled out here). The four statements below are otherwise
 // unchanged, ordering included.
 bridge_shell_kill_arm :: proc(session_id: string, shell_id: string) {
+	// One line at the one place that decides what killing a session means, so "the kill
+	// was actioned" is positively observable rather than inferred from the absence of
+	// the not-in-map line above (REQ-SHELL-23 AC3).
+	fmt.println("bridge shell_kill: arming kill", session_id, "shell_id", shell_id)
 	// Mark intent to kill immediately so ChildExited can report status="killed".
 	bridge_shell_session_update_status(&bridge_shell_session_map, session_id, .Killed, -1, false)
 

@@ -572,22 +572,36 @@ t10_kill_intent_replayed_for_revived_session :: proc(t: ^testing.T) {
 	testing.expect_value(t, res.kills_replayed, 1)
 }
 
-// A diff that changed nothing must not re-issue kills either — the replay is
-// conditioned on convergence so a no-op inventory stays a no-op end to end.
+// A diff that changed nothing writes nothing and publishes nothing.
+//
+// THIS TEST USED TO ASSERT THE DEFECT, and the change is worth recording rather than
+// quietly editing. It seeded a row CARRYING AN OUTSTANDING KILL INTENT, applied a clean
+// inventory, and asserted that no shell_kill was sent — locking in the exact production
+// failure of REQ-SHELL-23 as if it were the specification. Its rationale ("the replay is
+// conditioned on convergence so a no-op inventory stays a no-op end to end") was the
+// gate's own self-justification promoted to an invariant; whether an inventory found
+// discrepancies and whether a durable kill is outstanding are unrelated facts.
+//
+// What survives is the part that was always true and is still enforced: a no-op diff
+// performs no WRITES and no PUBLISHES. The seed no longer carries an intent, because
+// "clean inventory + outstanding intent" has the opposite expected outcome and now lives
+// in t23_clean_inventory_still_replays_an_outstanding_kill. The no-intent case — a clean
+// inventory must not start inventing kills — is t23_clean_inventory_with_no_intent_sends_nothing.
 @(test)
 t10_noop_inventory_replays_no_kills :: proc(t: ^testing.T) {
 	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
 	fx10_seed(&fx, Seed10{
 		session_id = "sh_1", bridge_id = "brg_1",
 		status = domain.Shell_Session_Status_Running,
-		kill_at = "2026-09-28T11:00:00Z",
 	})
 
 	e := entry10(Entry10{session_id = "sh_1"}); defer delete(e)
 	frame := inv10({e}); defer delete(frame)
+	writes_before := fx.r.writes
 	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
 
 	testing.expect(t, !shell_session_inventory_changed(res), "nothing diverged, so nothing should be written")
+	testing.expect_value(t, fx.r.writes, writes_before)
 	testing.expect_value(t, s10_count(&fx.sink, "shell_kill"), 0)
 }
 
@@ -745,4 +759,90 @@ t10_apply_does_not_free_the_clock_string :: proc(t: ^testing.T) {
 	testing.expect_value(t, adopted.created_at, NOW10)
 	reaped, _ := fx10_row(&fx, "sh_gone")
 	testing.expect_value(t, reaped.finished_at, NOW10)
+}
+
+// --- REQ-SHELL-23: a CLEAN inventory must still deliver an outstanding kill -----
+//
+// THIS IS THE TEST THAT WOULD HAVE CAUGHT REQ-SHELL-23 ON THE HUB SIDE, and it is
+// deliberately not the shape of the REQ-SHELL-3 replay tests, which all call
+// shell_session_replay_kill_intents DIRECTLY. Calling it directly proves it works when
+// it is called; it cannot prove it is REACHED. This test asserts reachability through
+// apply_inventory, which is the only thing the production failure disagreed with.
+//
+// WHY IT FAILS BEFORE THE FIX, precisely: the replay used to be guarded by
+// `if shell_session_inventory_changed(result)`. The row seeded below already agrees with
+// the inventory entry in every field the diff inspects — same session, running, same pid,
+// same run_seq — so nothing is adopted, corrected, terminated or revived, the guard is
+// false, and the kill is never re-issued. kills_replayed comes back 0 and no shell_kill
+// reaches the sink. The healthier the rest of the state, the more reliably the kill was
+// dropped, which is why a no-op inventory is the exact case worth pinning down.
+@(test)
+t23_clean_inventory_still_replays_an_outstanding_kill :: proc(t: ^testing.T) {
+	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
+	// Running, correct pid, and carrying a durable kill intent the bridge never got.
+	fx10_seed(&fx, Seed10{
+		session_id = "sh_live",
+		bridge_id  = "brg_1",
+		status     = domain.Shell_Session_Status_Running,
+		kill_at    = "2026-09-28T11:00:00Z",
+	})
+
+	// An inventory that agrees with the row completely, so the diff is a clean no-op.
+	e := entry10(Entry10{session_id = "sh_live", status = domain.Shell_Session_Status_Running})
+	defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect(t, !shell_session_inventory_changed(res),
+		"the inventory must be a genuine no-op, or this test is not exercising the gate that was removed")
+	testing.expect_value(t, res.kills_replayed, 1)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_kill"), 1)
+}
+
+// The other half of the same rule: ungating the replay must not make a reconnect with
+// NOTHING outstanding start sending kills. A clean inventory over rows carrying no intent
+// costs one empty query and sends nothing — which is what makes removing the gate a free
+// trade rather than a louder bridge.
+@(test)
+t23_clean_inventory_with_no_intent_sends_nothing :: proc(t: ^testing.T) {
+	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
+	fx10_seed(&fx, Seed10{session_id = "sh_live", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+
+	e := entry10(Entry10{session_id = "sh_live", status = domain.Shell_Session_Status_Running})
+	defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect(t, !shell_session_inventory_changed(res), "still a no-op diff")
+	testing.expect_value(t, res.kills_replayed, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_kill"), 0)
+}
+
+// AC5, on the path this task changed: a SPENT intent is never re-delivered by the newly
+// ungated replay. The row is terminal, so domain.shell_session_kill_intent_pending refuses
+// it even though kill_requested_at is still stamped — the pid it names may since have been
+// recycled. Without this, running the replay on every inventory would turn a stale
+// timestamp into a signal against an unrelated process.
+@(test)
+t23_ungated_replay_never_redelivers_a_spent_intent :: proc(t: ^testing.T) {
+	fx: Fx10; fx10_make(&fx); defer fx10_free(&fx)
+	fx10_seed(&fx, Seed10{
+		session_id    = "sh_spent",
+		bridge_id     = "brg_1",
+		status        = domain.Shell_Session_Status_Killed,
+		exit_code_set = true,
+		kill_at       = "2026-09-28T11:00:00Z",
+	})
+	// A live session so the diff has something to adopt, proving the replay really ran.
+	e := entry10(Entry10{session_id = "sh_new", status = domain.Shell_Session_Status_Running})
+	defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect(t, shell_session_inventory_changed(res), "sh_new must be adopted, so the replay is reached")
+	testing.expect_value(t, res.kills_replayed, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_kill"), 0)
 }

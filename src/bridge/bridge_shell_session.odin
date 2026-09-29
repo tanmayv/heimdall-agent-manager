@@ -569,9 +569,10 @@ bridge_shell_session_map_destroy :: proc(m: ^Bridge_Shell_Session_Map) {
 // row and then sends shell_start, so a kill accepted in between is dispatched
 // against a session_id that is not in the map: before this, that kill was dropped on
 // the floor and the process leaked the moment it spawned (the task's edge case C).
-// The intent is recorded here instead and applied by bridge_hub_handle_shell_start
-// the moment the spawn produces a pid — a session that starts while carrying a kill
-// intent is killed immediately, never left running.
+// The intent is recorded here instead and applied by one of its two consumers — the
+// spawn path, the moment a spawn produces a pid, or reconcile's resolver, for a session
+// adopted rather than spawned. A session that starts while carrying a kill intent is
+// killed immediately, never left running.
 //
 // IN MEMORY, NOT ON DISK, and that is deliberate. The DURABLE store for a kill
 // intent is the hub's shell_sessions.kill_requested_at column, and the hub re-issues
@@ -580,28 +581,103 @@ bridge_shell_session_map_destroy :: proc(m: ^Bridge_Shell_Session_Map) {
 // source of truth for the same fact, with its own staleness and its own clearing
 // rule, to cover a window the hub already covers.
 //
-// The set is therefore SMALL and SHORT-LIVED: one entry between a kill and the start
-// it raced, consumed by that start. An entry for a session that never starts (the
-// start failed, or the hub gave up) is a bounded leak of one map key, cleared by a
-// bridge restart; it cannot cause a wrong kill, because it is only ever consumed by
-// a spawn of that same session_id.
+// AN ENTRY IS A CANDIDATE, NOT A DECISION (REQ-SHELL-23). The recording site cannot
+// tell the two reasons a session is missing from the map apart:
+//
+//   NOT STARTED YET  — the hub wrote its row and the spawn has not landed. The intent
+//                      is meaningful and shell_start consumes it.
+//   ALREADY GONE, or ADOPTED-BUT-NOT-YET-KNOWN — a stale id, a session from a previous
+//                      bridge life, or (the REQ-SHELL-23 case) a session that is alive
+//                      in the surviving pty-host daemon while this freshly restarted
+//                      bridge has not yet rebuilt its map from the roster.
+//
+// Distinguishing them needs the pty-host roster, and the recording site runs on the
+// hub-WS loop thread, where a daemon round-trip (up to 5s on a cold daemon) would stall
+// heartbeats and every other command. So this site does not try: it records a candidate
+// and RECONCILE resolves it, because reconcile is the one place that already holds the
+// authoritative roster. See bridge_shell_kill_intent_resolve.
+//
+// THAT ALSO GIVES EVERY ENTRY AN OWNER THAT FREES IT. Before REQ-SHELL-23 the only
+// consumer was the spawn path, so an intent for a session that never spawns — a stale
+// id, or the reconnect case above — leaked one key for the life of the process, for any
+// session id the hub ever named. The resolver retires those.
+//
+// recorded_at is a MONOTONIC instant and it is load-bearing, not diagnostics: the
+// resolver must not judge an intent that was recorded AFTER it captured its roster,
+// because such an intent may be about a spawn that has not happened yet, and discarding
+// it would reintroduce exactly the leak the kill-before-start path exists to prevent.
 @(private = "file")
-_bridge_shell_pending_kills: map[string]bool
+_bridge_shell_pending_kills: map[string]time.Tick
 @(private = "file")
 _bridge_shell_pending_kills_mu: sync.Mutex
 
 // bridge_shell_kill_intent_record notes that a kill arrived for a session that is
-// not in the map yet. Idempotent: the set holds an intent, not a count.
+// not in the map yet. Idempotent: the set holds an intent, not a count — and a repeat
+// keeps the ORIGINAL instant, so a kill the hub redelivers every reconnect can never
+// keep outrunning the resolver's roster and postpone its own retirement forever.
 bridge_shell_kill_intent_record :: proc(session_id: string) {
+	bridge_shell_kill_intent_record_at(session_id, time.tick_now())
+}
+
+// bridge_shell_kill_intent_record_at is bridge_shell_kill_intent_record with the instant
+// supplied. It exists so the resolver's age gate can be tested at all: the gate's whole
+// point is that an intent younger than a start round-trip is left alone, and a test that
+// had to wait BRIDGE_SHELL_KILL_INTENT_GARBAGE_AGE in real time to check the other side of
+// it would be a test nobody runs.
+bridge_shell_kill_intent_record_at :: proc(session_id: string, at: time.Tick) {
 	if session_id == "" do return
 	sync.mutex_lock(&_bridge_shell_pending_kills_mu)
 	defer sync.mutex_unlock(&_bridge_shell_pending_kills_mu)
 	if _bridge_shell_pending_kills == nil {
-		_bridge_shell_pending_kills = make(map[string]bool, allocator = runtime.default_allocator())
+		_bridge_shell_pending_kills = make(map[string]time.Tick, allocator = runtime.default_allocator())
 	}
 	if session_id in _bridge_shell_pending_kills do return
-	_bridge_shell_pending_kills[strings.clone(session_id, runtime.default_allocator())] = true
+	_bridge_shell_pending_kills[strings.clone(session_id, runtime.default_allocator())] = at
 }
+
+// Bridge_Shell_Kill_Intent is one parked intent as the resolver sees it: which session,
+// and when it was recorded. The instant travels with the id because the resolver needs it
+// for the age gate below, and re-reading it later would mean retaking the intent lock.
+Bridge_Shell_Kill_Intent :: struct {
+	session_id:  string,
+	recorded_at: time.Tick,
+}
+
+// bridge_shell_kill_intent_ids_before returns every intent recorded STRICTLY BEFORE
+// `cutoff`, with owned session_id clones the caller frees. It exists so the resolver can
+// iterate without holding the intent lock across the kill work it then does — which takes
+// the session-map lock and starts a worker that dials the daemon.
+bridge_shell_kill_intent_ids_before :: proc(cutoff: time.Tick, allocator := context.allocator) -> []Bridge_Shell_Kill_Intent {
+	sync.mutex_lock(&_bridge_shell_pending_kills_mu)
+	defer sync.mutex_unlock(&_bridge_shell_pending_kills_mu)
+	if _bridge_shell_pending_kills == nil do return nil
+	out := make([dynamic]Bridge_Shell_Kill_Intent, allocator)
+	for id, recorded_at in _bridge_shell_pending_kills {
+		// Strictly before: an intent recorded at or after the roster snapshot describes a
+		// world the roster cannot speak for.
+		if time.tick_diff(recorded_at, cutoff) > 0 {
+			append(&out, Bridge_Shell_Kill_Intent{session_id = strings.clone(id, allocator), recorded_at = recorded_at})
+		}
+	}
+	return out[:]
+}
+
+// BRIDGE_SHELL_KILL_INTENT_GARBAGE_AGE is how old an intent naming a session the roster
+// does not know must be before the resolver will discard it.
+//
+// IT IS A SAFETY MARGIN AGAINST A SPAWN STILL IN FLIGHT, not a tidiness interval, and the
+// number is chosen against the longest window in which a start could still land and
+// consume the intent legitimately (REQ-SHELL-3 work item 5b: the hub writes its row and
+// may send a kill BEFORE the shell_start it raced):
+//   - the hub's own bridge-command wait is 30s, so it will not still be expecting a start
+//     to complete beyond that;
+//   - a spawn onto a COLD daemon absorbs up to 5s inside bridge_pty_host_ensure_daemon
+//     before it even begins.
+// Five minutes is an order of magnitude above both. Being LATE to discard costs one map
+// key; being EARLY costs a live process surviving a kill the hub already promised the
+// user, which is the core invariant this task exists to restore. The asymmetry is the
+// whole reason this is minutes and not seconds.
+BRIDGE_SHELL_KILL_INTENT_GARBAGE_AGE :: 5 * time.Minute
 
 // bridge_shell_kill_intent_take consumes a pending intent, reporting whether one was
 // there. CONSUMING rather than peeking is what makes applying it a one-shot: the
@@ -633,6 +709,101 @@ bridge_shell_kill_intent_pending :: proc(session_id: string) -> bool {
 		if k == session_id do return true
 	}
 	return false
+}
+
+// bridge_shell_kill_intent_resolve settles every kill intent the roster can speak for,
+// and it is the second consumer the intent set never had (REQ-SHELL-23).
+//
+// THE DEFECT IT FIXES. A kill accepted while the bridge was offline is redelivered by the
+// hub on reconnect, and it arrives BEFORE reconcile has rebuilt the session map from the
+// pty-host roster — the hub replays inline on its WS accept path, while the bridge
+// repopulates on a background thread whose first act can block for up to 5s spawning the
+// daemon. The kill therefore always found an empty map, was parked as an intent, and was
+// never consumed, because the only consumer was the spawn path and an adopted session is
+// never re-spawned. The process survived a kill the hub had already promised the user,
+// and nothing anywhere said so.
+//
+// CALLED FROM RECONCILE, with the roster already applied to the map, because that is the
+// only place in the bridge that knows which sessions actually exist. `cutoff` is the
+// instant the roster was captured: intents recorded at or after it are LEFT ALONE, since
+// they may name a spawn that has not happened yet and discarding one would reintroduce
+// the kill-before-start leak (REQ-SHELL-3 work item 5b). Taking that snapshot BEFORE the
+// roster read, not after, is what makes the guard conservative in the safe direction.
+//
+// Each resolved intent ends in exactly one of three states, and all three FREE the entry:
+//   in the map, still live     -> take + arm the kill. The REQ-SHELL-23 case.
+//   in the map, terminal       -> take + drop. Already dead; re-signalling a terminal
+//                                 session is the PID-reuse hazard the kill path refuses.
+//   not in the map, and OLD    -> take + drop as garbage. See the age gate's reasoning.
+//   not in the map, and young  -> LEFT PARKED, untouched, for the spawn path.
+//
+// WHY THE UNKNOWN CASE NEEDS AN AGE GATE AND NOT JUST `cutoff`. The cutoff orders an
+// intent against the ROSTER, but the hazard is an intent racing a FUTURE SPAWN, which the
+// roster cannot see:
+//     intent recorded at T-1 (kill-before-start: the hub sent the kill before the start)
+//     roster captured at T; the intent is older, so it is judged
+//     not in the map -> discarded as garbage
+//     shell_start lands at T+1 -> spawns -> nothing left to consume -> the process runs on
+// That is exactly the leak work item 5b exists to prevent, reintroduced by a cleanup. So
+// "not in the roster" is NOT sufficient grounds to discard; only "not in the roster AND too
+// old for any start to still be in flight" is.
+//
+// Returns (armed, discarded) for the caller to log; a resolver that silently found work and
+// did nothing with it is the shape of bug this task exists to remove.
+//
+// `arm` is a parameter so this is testable without starting a real kill worker, which
+// would dial (and possibly spawn) the pty-host daemon. Production callers take the
+// default; tests pass a recorder. It is the ONLY seam — the decision logic under test is
+// the same code either way.
+bridge_shell_kill_intent_resolve :: proc(
+	m: ^Bridge_Shell_Session_Map,
+	cutoff: time.Tick,
+	arm: proc(session_id: string, shell_id: string) = bridge_shell_kill_arm,
+) -> (armed: int, discarded: int) {
+	// Snapshot the intents and release the intent lock before doing any work: arming takes
+	// the session-map lock and starts a worker that dials the daemon, and holding both
+	// locks across that is how a deadlock gets written.
+	intents := bridge_shell_kill_intent_ids_before(cutoff)
+	defer {
+		for it in intents do delete(it.session_id)
+		delete(intents)
+	}
+
+	now := time.tick_now()
+	for it in intents {
+		id := it.session_id
+		sc, known := bridge_shell_session_scalars(m, id)
+		if !known {
+			// The roster does not know it. Only discard once no start could still be in
+			// flight; until then it stays parked for bridge_hub_handle_shell_start.
+			if time.tick_diff(it.recorded_at, now) < BRIDGE_SHELL_KILL_INTENT_GARBAGE_AGE do continue
+			if bridge_shell_kill_intent_take(id) {
+				discarded += 1
+				// LOGGED: discarding a kill intent is a decision to stop trying to kill
+				// something, and an unlogged one is how this class of bug hides.
+				fmt.println("bridge shell kill intent discarded: no such session on this host", id)
+			}
+			continue
+		}
+		if bridge_shell_session_status_is_terminal(sc.status) {
+			if bridge_shell_kill_intent_take(id) do discarded += 1
+			continue
+		}
+		// TAKE FIRST, then arm. The take is what makes this one-shot, and doing it before
+		// the arm means a concurrent second resolver (or a redelivery racing in) cannot
+		// arm the same session twice.
+		if !bridge_shell_kill_intent_take(id) do continue
+		shell_id, have_key := bridge_shell_session_shell_id(m, id)
+		if !have_key {
+			// Removed between the two reads; the intent is spent either way.
+			discarded += 1
+			continue
+		}
+		defer bridge_shell_session_str_delete(m, shell_id)
+		arm(id, shell_id)
+		armed += 1
+	}
+	return armed, discarded
 }
 
 // bridge_shell_kill_intent_reset clears the set (for tests), freeing its keys.
@@ -865,11 +1036,40 @@ bridge_shell_session_reconcile_now :: proc() {
 
 	socket, sock_ok := bridge_pty_host_ensure_daemon()
 	if !sock_ok do return
+
+	// SUBSCRIBE TO THE DAEMON'S EVENT STREAM ON EVERY RECONNECT, not only after a spawn
+	// (REQ-SHELL-23).
+	//
+	// EVERY MECHANISM THAT CONVERGES AN ADOPTED SESSION WAS KEYED TO A SPAWN THAT, AFTER A
+	// RESTART, NEVER HAPPENS. That one sentence describes all three faces of this defect:
+	// the kill intent whose only consumer was the spawn path, the inventory replay gated on
+	// a diff that a healthy adopted session does not produce, and this subscription. A
+	// bridge that restarts does not spawn the sessions it inherits — it adopts them — so
+	// anything hung off spawn is simply absent on the path that matters most.
+	//
+	// bridge_pty_host_events_ensure had exactly two callers, both spawn
+	// paths, so a bridge that restarted and ADOPTED the surviving sessions below was not
+	// watching the daemon at all: their ChildExited was broadcast to nobody, no
+	// shell_exited was enqueued, and the hub row stayed `running` — with its kill intent
+	// still stamped — until some later reconnect's inventory reaped it by ABSENCE. That is
+	// how a kill this bridge had successfully executed still left the hub lying about the
+	// session. Idempotent by contract ("Safe to call repeatedly"), and placed after
+	// ensure_daemon so there is something to attach to, which is the precondition its own
+	// comment names.
+	bridge_pty_host_events_ensure()
+
+	// CAPTURED BEFORE THE ROSTER READ, deliberately. This is the cutoff handed to
+	// bridge_shell_kill_intent_resolve, which may only judge intents older than the world
+	// the roster describes. Taking it early makes the guard err toward leaving a young
+	// intent for the spawn path — the safe direction; taking it after the read would let
+	// an intent recorded DURING the read be judged against a roster that predates it.
+	roster_at := time.tick_now()
 	reply, list_ok := bridge_pty_host_list(socket)
 	if !list_ok do return
 	defer pty_host_reply_delete(reply)
 
 	bridge_shell_session_reconcile(&bridge_shell_session_map, reply.agents, data_dir)
+
 
 	// REQ-SHELL-10: hand the hub this bridge's WHOLE live truth, so it can diff its
 	// rows against it instead of waiting for an event per divergence.
@@ -890,6 +1090,26 @@ bridge_shell_session_reconcile_now :: proc() {
 	frame := bridge_shell_inventory_build(&bridge_shell_session_map)
 	defer delete(frame)
 	bridge_shell_inventory_enqueue(frame)
+
+	// NOW the map reflects the roster, so a parked kill intent can finally be judged
+	// (REQ-SHELL-23). AFTER the inventory is enqueued, and the ordering is not arbitrary —
+	// I had it the other way first and it was wrong in a way worth recording.
+	//
+	// Arming a kill marks the session .Killed, and bridge_shell_inventory_build EXCLUDES
+	// terminal sessions. Resolving first therefore produced an inventory that omitted a
+	// session which was still very much alive, the hub reasoned from that absence
+	// (_reap_inventory_absent), and every durable kill published a synthesized
+	// shell_session_exited{status:"failed"} ~16ms before the real {status:"killed"} — a
+	// visible wrong status on the user bus, fixed only because an observed exit outranks a
+	// synthesized one. Measured on the isolated stack, both rounds.
+	//
+	// An inventory must describe the world the ROSTER showed, not anticipate a kill this
+	// pass is about to perform. Resolving after it means the session is reported live,
+	// which is true at that instant, and the single terminal status the hub ever sees for
+	// it is the observed exit.
+	if armed, discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, roster_at); armed > 0 || discarded > 0 {
+		fmt.println("bridge shell kill intents resolved: armed", armed, "discarded", discarded)
+	}
 }
 
 // Bridge_Shell_Orphan_Kill_Ctx carries state for the orphan-kill background

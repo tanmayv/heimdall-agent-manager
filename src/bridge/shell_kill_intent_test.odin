@@ -19,6 +19,7 @@ package main
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 
 @(private = "file")
 intent_session :: proc(session_id: string, status: Bridge_Shell_Session_Status, pid: int) -> Bridge_Shell_Session {
@@ -191,4 +192,170 @@ bridge_shell3_a_kill_without_a_session_id_records_nothing :: proc(t: ^testing.T)
 
 	bridge_hub_handle_shell_kill(`{"type":"shell_kill"}`)
 	testing.expect(t, !bridge_shell_kill_intent_pending(""), "no intent under an empty key")
+}
+
+// --- REQ-SHELL-23: reconcile is the intent's SECOND consumer --------------------
+//
+// THE DEFECT THESE PIN DOWN. A kill accepted while the bridge was offline is redelivered
+// by the hub on reconnect, and it arrives BEFORE reconcile has rebuilt the session map
+// from the surviving pty-host daemon's roster. It therefore always found an empty map,
+// took the kill-before-start branch above, and was parked as an intent — which nothing
+// ever consumed, because the only consumer was the spawn path and a bridge that restarts
+// does not SPAWN the sessions it inherits, it ADOPTS them. The process outlived a kill the
+// hub had already promised the user, and no log on the host said so.
+//
+// WHY THEY FAIL BEFORE THE FIX. Not by a changed assertion but by a missing mechanism:
+// before REQ-SHELL-23 nothing outside bridge_hub_handle_shell_start consumed an intent at
+// all, so "the adopted, still-live session is armed from its parked intent" was unreachable
+// by any path. The pre-existing §5b tests above still pass unchanged and are still right —
+// they are simply about the other reason a session can be missing from the map, and that
+// difference is the whole point of the age gate below.
+@(private = "file")
+Arm_Recorder :: struct {
+	calls: [dynamic]string,
+}
+
+@(private = "file")
+arm_rec: Arm_Recorder
+
+@(private = "file")
+arm_record :: proc(session_id: string, shell_id: string) {
+	append(&arm_rec.calls, strings.clone(session_id))
+}
+
+@(private = "file")
+arm_rec_reset :: proc() {
+	for c in arm_rec.calls do delete(c)
+	if arm_rec.calls == nil { arm_rec.calls = make([dynamic]string) } else { clear(&arm_rec.calls) }
+}
+
+// A session the roster brought back is STILL LIVE and carries a parked kill: reconcile
+// must arm it. This is the production failure, inverted into an assertion.
+@(test)
+bridge_shell23_reconcile_arms_a_parked_kill_for_an_adopted_session :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
+	arm_rec_reset()
+	defer arm_rec_reset()
+
+	// The kill arrives while the map is empty — exactly the reconnect ordering.
+	bridge_hub_handle_shell_kill(`{"type":"shell_kill","session_id":"sh_adopted"}`)
+	testing.expect(t, bridge_shell_kill_intent_pending("sh_adopted"), "parked, as the reconnect replay always was")
+
+	// Now reconcile repopulates the map from the roster, as bridge_shell_session_reconcile
+	// does for a session the daemon still reports alive.
+	sess := intent_session("sh_adopted", .Running, 4242)
+	bridge_shell_session_register(&bridge_shell_session_map, &sess)
+
+	// Resolve against a roster captured AFTER the intent was recorded.
+	armed, discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+
+	testing.expect_value(t, armed, 1)
+	testing.expect_value(t, discarded, 0)
+	testing.expect_value(t, len(arm_rec.calls), 1)
+	if len(arm_rec.calls) == 1 do testing.expect_value(t, arm_rec.calls[0], "sh_adopted")
+	testing.expect(t, !bridge_shell_kill_intent_pending("sh_adopted"),
+		"the intent is consumed, so a later redelivery goes through the normal kill path")
+}
+
+// AC5. The same resolve against an ALREADY-TERMINAL session arms nothing. Re-signalling a
+// terminal session is the PID-reuse hazard the kill path refuses outright: its pid may by
+// now belong to an unrelated process.
+@(test)
+bridge_shell23_reconcile_discards_a_parked_kill_for_a_terminal_session :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
+	arm_rec_reset()
+	defer arm_rec_reset()
+
+	bridge_hub_handle_shell_kill(`{"type":"shell_kill","session_id":"sh_dead"}`)
+	sess := intent_session("sh_dead", .Exited, 4243)
+	bridge_shell_session_register(&bridge_shell_session_map, &sess)
+
+	armed, discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+
+	testing.expect_value(t, armed, 0)
+	testing.expect_value(t, discarded, 1)
+	testing.expect_value(t, len(arm_rec.calls), 0)
+	testing.expect(t, !bridge_shell_kill_intent_pending("sh_dead"), "and the spent intent is retired, not left to leak")
+}
+
+// THE GUARD THAT MATTERS MOST, and the one the coordinator caught me getting wrong: a
+// YOUNG intent naming a session the roster does not know must be LEFT PARKED. It may be a
+// kill-before-start whose spawn is still in flight (REQ-SHELL-3 §5b), and discarding it
+// would let that spawn produce a process nothing kills — reintroducing the exact leak 5b
+// exists to prevent, by way of a cleanup. Ordering the intent against the roster is NOT
+// sufficient grounds; the roster cannot see a future spawn.
+@(test)
+bridge_shell23_a_young_unknown_intent_is_left_for_the_spawn_path :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
+	arm_rec_reset()
+	defer arm_rec_reset()
+
+	// Recorded now; the session is not in the map and its start has not landed.
+	bridge_hub_handle_shell_kill(`{"type":"shell_kill","session_id":"sh_inflight"}`)
+
+	armed, discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+
+	testing.expect_value(t, armed, 0)
+	testing.expect_value(t, discarded, 0)
+	testing.expect(t, bridge_shell_kill_intent_pending("sh_inflight"),
+		"a young unknown intent must survive reconcile so the spawn can still consume it")
+}
+
+// The other side of the age gate: an intent that has outlived any plausible start
+// round-trip names a session that does not exist on this host, and is retired. This is
+// what stops a stale id parking a key for the life of the process — the pre-existing leak
+// the old comment accepted as "bounded, cleared by a bridge restart".
+@(test)
+bridge_shell23_an_old_unknown_intent_is_retired :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
+	arm_rec_reset()
+	defer arm_rec_reset()
+
+	// Recorded well beyond the garbage age, without waiting for it in real time.
+	old := time.Tick{_nsec = time.tick_now()._nsec - i64(2 * BRIDGE_SHELL_KILL_INTENT_GARBAGE_AGE)}
+	bridge_shell_kill_intent_record_at("sh_stale", old)
+	testing.expect(t, bridge_shell_kill_intent_pending("sh_stale"), "seeded")
+
+	armed, discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+
+	testing.expect_value(t, armed, 0)
+	testing.expect_value(t, discarded, 1)
+	testing.expect(t, !bridge_shell_kill_intent_pending("sh_stale"), "every recorded intent now has an owner that frees it")
+}
+
+// A second resolve is a no-op: the take is what makes arming one-shot, so two reconnects
+// racing cannot arm the same session twice and start two SIGTERM/SIGKILL pairs against one
+// pid — the hazard the redelivery guard in bridge_hub_handle_shell_kill also refuses.
+@(test)
+bridge_shell23_resolve_is_one_shot :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
+	arm_rec_reset()
+	defer arm_rec_reset()
+
+	bridge_hub_handle_shell_kill(`{"type":"shell_kill","session_id":"sh_once"}`)
+	sess := intent_session("sh_once", .Running, 4244)
+	bridge_shell_session_register(&bridge_shell_session_map, &sess)
+
+	first_armed, _ := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+	second_armed, second_discarded := bridge_shell_kill_intent_resolve(&bridge_shell_session_map, time.tick_now(), arm_record)
+
+	testing.expect_value(t, first_armed, 1)
+	testing.expect_value(t, second_armed, 0)
+	testing.expect_value(t, second_discarded, 0)
+	testing.expect_value(t, len(arm_rec.calls), 1)
 }

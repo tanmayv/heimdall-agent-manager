@@ -743,25 +743,37 @@ SHELL_SESSION_KILL_REPLAY_MAX :: 256
 // the bridge already marked terminal and is a no-op there. Replaying a kill the bridge
 // already actioned is therefore harmless, which is what makes it safe to replay the
 // whole outstanding set on every reconnect without tracking what was delivered before.
-shell_session_replay_kill_intents :: proc(svc: ^Shell_Session_Service, bridge_id: string) -> int {
-	if svc == nil || svc.repo == nil || bridge_id == "" do return 0
+//
+// IT REPORTS OUTSTANDING AS WELL AS DELIVERED (REQ-SHELL-23 AC3), and the second
+// number is the one that matters. This procedure used to return only `delivered`, and
+// both call sites had no use for it — the bridge-WS one discarded it outright
+// (`_ = ...`). A replay that found work and delivered NONE of it was therefore
+// indistinguishable, at every call site and in every log, from a reconnect with
+// nothing to do. That silence is why REQ-SHELL-3 shipped accepting kills it never
+// delivered and why it took a hand-run reproduction to notice: the one place that
+// knew a kill was outstanding threw the number away. `outstanding` is the count that
+// passed the domain predicate, i.e. the kills this call was obliged to deliver, so
+// `delivered < outstanding` at a call site is exactly the condition worth shouting
+// about.
+shell_session_replay_kill_intents :: proc(svc: ^Shell_Session_Service, bridge_id: string) -> (delivered: int, outstanding: int) {
+	if svc == nil || svc.repo == nil || bridge_id == "" do return 0, 0
 
 	// Owner-unscoped, bridge-scoped: this runs from the bridge-WS accept path, which
 	// authenticates a BRIDGE and has no authenticated user to scope by.
 	sessions, list_err := iface.shell_session_list_pending_kills(svc.repo, bridge_id, SHELL_SESSION_KILL_REPLAY_MAX)
-	if list_err.code != .None do return 0
+	if list_err.code != .None do return 0, 0
 	defer domain.shell_sessions_destroy(sessions)
 
-	delivered := 0
 	for session in sessions {
 		// The repository query already excludes terminal rows; this re-asks with the
 		// domain's own predicate so the rule is enforced by the definition rather than
 		// by trusting the SQL to have encoded it. A spent intent must never be
 		// re-delivered — the pid it named may since have been recycled.
 		if !domain.shell_session_kill_intent_pending(session) do continue
+		outstanding += 1
 		if _shell_session_dispatch_kill(svc, bridge_id, session.session_id) == .Delivered do delivered += 1
 	}
-	return delivered
+	return delivered, outstanding
 }
 
 // shell_session_signal sends shell_signal to the bridge (fire-and-forget).

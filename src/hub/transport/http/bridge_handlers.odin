@@ -1224,8 +1224,22 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// Inline, not on a thread, unlike the bridge-side reconcile: this is a repository
 	// read plus N non-blocking sends on an already-registered socket, with no daemon
 	// spawn to wait on.
+	//
+	// THE RESULT IS LOGGED, NOT DISCARDED (REQ-SHELL-23 AC3). This call site read
+	// `_ = shell_session_replay_kill_intents(...)`, so a replay that found outstanding
+	// kills and delivered none of them produced no row, no event and no log line
+	// anywhere — which is how REQ-SHELL-3 came to return a 202 promising delivery that
+	// never happened, on a live host, for a day, without leaving a trace. Delivering
+	// nothing when nothing is outstanding is the normal case and stays quiet; a
+	// shortfall is the anomaly and must be loud.
 	if h.shell_sessions != nil {
-		_ = shell_session_svc.shell_session_replay_kill_intents(h.shell_sessions, bridge.bridge_id)
+		delivered, outstanding := shell_session_svc.shell_session_replay_kill_intents(h.shell_sessions, bridge.bridge_id)
+		if outstanding > 0 {
+			fmt.println("shell kill replay", "bridge=", bridge.bridge_id, "outstanding=", outstanding, "delivered=", delivered)
+		}
+		if delivered < outstanding {
+			fmt.println("shell kill replay SHORTFALL: outstanding kills were not delivered to the bridge", "bridge=", bridge.bridge_id, "undelivered=", outstanding - delivered)
+		}
 	}
 	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader)
 }
