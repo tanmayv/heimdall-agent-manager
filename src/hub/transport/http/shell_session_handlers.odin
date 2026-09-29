@@ -118,8 +118,12 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	}
 	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) do return
 
-	shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client, session.bridge_id)
+	// REQ-SHELL-29: a viewer joining a session that already had viewers triggers no bridge
+	// attach, so the pty-host's catchup screen never fires for it. Remember that here and
+	// repaint it from a pane capture on its first resize frame (below).
+	late_join := shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client, session.bridge_id)
 	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client, session.bridge_id)
+	screen_sent := false
 
 	// Send ready frame.
 	ready_b := strings.builder_make()
@@ -164,6 +168,13 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 			cols := json_int(text, "cols", 0)
 			if rows >= 1 && cols >= 1 {
 				bridge_service.send_shell_resize(h.bridges, auth_ctx, session.bridge_id, session_id, rows, cols, sink_override)
+				// REQ-SHELL-29: capture on the FIRST resize, not on `ready` — this frame
+				// carries the viewer's real geometry (useShellStream.ts:202), and a capture
+				// rendered at a guessed 80 columns would re-wrap the screen.
+				if late_join && !screen_sent {
+					screen_sent = true
+					_ = shell_stream_send_shell_screen_snapshot(h.shell_sessions, auth_ctx, session_id, client, rows, cols)
+				}
 			}
 		}
 		delete(frame_type)

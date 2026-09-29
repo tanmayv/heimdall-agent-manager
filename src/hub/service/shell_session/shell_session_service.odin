@@ -100,8 +100,14 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 
 // --- WS attach/detach (Attach-gated streaming, REQ-STREAM-IMPL-2) ---
 
-shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") {
-	if svc == nil || session_id == "" do return
+// Returns late_join: whether this socket joined a session that ALREADY had viewers.
+// REQ-SHELL-29 uses it to decide who needs a screen snapshot. The 0->1 viewer is served
+// by the bridge's existing pty-host catchup (pty_host_stream_worker.odin:149-156) and is
+// deliberately left alone; a late joiner triggers no bridge attach, so nothing repaints
+// it. Reported from under the lock rather than inferred from a later viewer count, which
+// would race a second viewer attaching concurrently.
+shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") -> (late_join: bool) {
+	if svc == nil || session_id == "" do return false
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	if _, ok := svc.viewers[session_id]; !ok {
@@ -160,6 +166,7 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 			},
 		)
 	}
+	return prev_count > 0
 }
 
 shell_session_detach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") {
