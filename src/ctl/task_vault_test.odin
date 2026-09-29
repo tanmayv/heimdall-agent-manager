@@ -65,6 +65,8 @@ test_task_create_encryption_with_vault_key :: proc(t: ^testing.T) {
 test_task_create_without_vault_key_leaves_plaintext :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("task-create-without-vault-key-leaves-plaintext")
+	defer ctl_vault_test_sandbox_close(&sb)
 	orig_title := "Plaintext Task Title"
 	orig_desc := "Plaintext Task Description"
 
@@ -112,6 +114,8 @@ test_task_comment_encryption_with_vault_key :: proc(t: ^testing.T) {
 test_task_comment_without_vault_key_leaves_plaintext :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("task-comment-without-vault-key-leaves-plaintext")
+	defer ctl_vault_test_sandbox_close(&sb)
 	orig_body := "Regular plaintext comment body with no vault key."
 	args := []string{}
 

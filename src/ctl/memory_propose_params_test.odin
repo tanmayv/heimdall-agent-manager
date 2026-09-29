@@ -15,6 +15,8 @@ import "core:testing"
 test_memory_params_zero_ids_omits_target_arrays :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-zero-ids-omits-target-arrays")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{"--type", "fact", "--title", "T", "--body", "B"}
 	out := ctl_agentmode_memory_propose_params(args)
 	testing.expect(t, strings.contains(out, `"type":"fact"`), "type present")
@@ -33,6 +35,8 @@ test_memory_params_zero_ids_omits_target_arrays :: proc(t: ^testing.T) {
 test_memory_params_single_id_per_dimension :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-single-id-per-dimension")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{
 		"--type", "fact", "--title", "T", "--body", "B",
 		"--agent-id", "agt_a", "--project-id", "proj_1",
@@ -49,6 +53,8 @@ test_memory_params_single_id_per_dimension :: proc(t: ^testing.T) {
 test_memory_params_two_ids_via_csv :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-two-ids-via-csv")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{"--type", "fact", "--title", "T", "--body", "B", "--agent-ids", "agt_a,agt_b"}
 	out := ctl_agentmode_memory_propose_params(args)
 	testing.expect(t, strings.contains(out, `"agent_ids":["agt_a","agt_b"]`), out)
@@ -58,6 +64,8 @@ test_memory_params_two_ids_via_csv :: proc(t: ^testing.T) {
 test_memory_params_two_ids_via_repeated_flags :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-two-ids-via-repeated-flags")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{"--type", "fact", "--title", "T", "--body", "B", "--agent", "agt_a", "--agent", "agt_b"}
 	out := ctl_agentmode_memory_propose_params(args)
 	testing.expect(t, strings.contains(out, `"agent_ids":["agt_a","agt_b"]`), out)
@@ -67,6 +75,8 @@ test_memory_params_two_ids_via_repeated_flags :: proc(t: ^testing.T) {
 test_memory_params_csv_and_repeated_combine_and_trim :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-csv-and-repeated-combine-and-trim")
+	defer ctl_vault_test_sandbox_close(&sb)
 	// Mixed repeated + CSV with surrounding spaces; blanks are skipped.
 	args := []string{"--type", "fact", "--title", "T", "--body", "B", "--project-ids", "proj_1, proj_2", "--project", "proj_3", "--project-ids", ""}
 	out := ctl_agentmode_memory_propose_params(args)
@@ -87,6 +97,8 @@ test_json_string_array_field_escapes_values :: proc(t: ^testing.T) {
 test_memory_params_description_handling :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-params-description-handling")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args_with := []string{"--type", "fact", "--title", "T", "--description", "Desc text", "--body", "B"}
 	out_with := ctl_agentmode_memory_propose_params(args_with)
 	testing.expect(t, strings.contains(out_with, `"description":"Desc text"`), out_with)

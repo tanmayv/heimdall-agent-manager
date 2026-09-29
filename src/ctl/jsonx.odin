@@ -184,3 +184,46 @@ json_write_string :: proc(builder: ^strings.Builder, value: string) {
 		}
 	}
 }
+
+// extract_json_object_raw returns the raw text of an OBJECT-valued member,
+// braces included, e.g. `{"configured":true}` for key "data". It is string-aware,
+// so braces and escaped quotes inside string values do not end the object early.
+//
+// Returning raw text rather than parsed fields lets a caller forward a nested
+// object through verbatim without needing a typed decoder for every field in it.
+extract_json_object_raw :: proc(body, key: string) -> (raw: string, ok: bool) {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return "", false
+
+	i := idx + len(pattern)
+	for i < len(body) && (body[i] == ' ' || body[i] == '\t' || body[i] == '\n' || body[i] == '\r') do i += 1
+	if i >= len(body) || body[i] != '{' do return "", false
+
+	start := i
+	depth := 0
+	in_string := false
+	escaped := false
+	for i < len(body) {
+		ch := body[i]
+		if in_string {
+			if escaped {
+				escaped = false
+			} else if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				in_string = false
+			}
+		} else {
+			switch ch {
+			case '"': in_string = true
+			case '{': depth += 1
+			case '}':
+				depth -= 1
+				if depth == 0 do return body[start:i + 1], true
+			}
+		}
+		i += 1
+	}
+	return "", false
+}
