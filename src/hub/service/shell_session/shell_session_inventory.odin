@@ -494,7 +494,10 @@ shell_session_inventory_parse :: proc(frame_json: string) -> []Shell_Session_Inv
 // _inventory_find_array returns the index of the '[' opening `key`'s array value, or
 // -1. It scans for the key OUTSIDE string literals, so a session whose cmd contains
 // `"sessions":` cannot be mistaken for the array itself.
-@(private = "file")
+// Package-scoped, not file-private: _json_array_raw in shell_session_service.odin
+// extracts the bridge reply's "lines" array out of arbitrary process stdout and needs
+// exactly this scan. One string-aware key scan serves the package.
+@(private)
 _inventory_find_array :: proc(body, key: string) -> int {
 	needle := strings.concatenate({"\"", key, "\""})
 	defer delete(needle)
