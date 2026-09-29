@@ -622,6 +622,23 @@ validate_task_bridge :: proc(service: ^Taskchain_Service, owner: domain.User_ID,
 	return domain.Domain_Error{}
 }
 
+// validate_task_assignee_bridge_match (REQ-TB-HUB-1):
+// Rejects task creation or update with Conflict if a concrete assignee instance
+// is specified and its bridge_id does not match the task's non-empty bridge_id.
+validate_task_assignee_bridge_match :: proc(service: ^Taskchain_Service, task_bridge_id: string, assignee_ref_json: string) -> (bool, domain.Domain_Error) {
+	if task_bridge_id == "" || service == nil || service.agents == nil do return true, domain.Domain_Error{}
+	instances := extract_instances_from_ref_blob(assignee_ref_json)
+	defer delete(instances)
+	for inst_id in instances {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, inst_id); ok {
+			if inst.bridge_id != "" && inst.bridge_id != task_bridge_id {
+				return false, domain.domain_error(.Conflict, "assignee instance bridge does not match task bridge")
+			}
+		}
+	}
+	return true, domain.Domain_Error{}
+}
+
 // sync_chain_status_from_tasks (REQ-CHAIN-AUTO-STATUS-1):
 // Synchronizes the parent task chain's status based on the lifecycle of its tasks:
 // - Transitions a Completed chain to Active when a task is created or moved to non-terminal status.
@@ -716,6 +733,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, assignee_ref); norm_ok { assignee_ref = norm } else { return domain.Task{}, false, norm_err }
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, reviewer_refs); norm_ok { reviewer_refs = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, assignee_ref, reviewer_refs); !refs_ok do return domain.Task{}, false, refs_err
+	if bm_ok, bm_err := validate_task_assignee_bridge_match(service, input.bridge_id, assignee_ref); !bm_ok do return domain.Task{}, false, bm_err
 	now := platform.clock_now(service.clock)
 	task := domain.Task{
 		task_id = domain.Task_ID(platform.generate_id(service.ids, "task_")),
@@ -802,6 +820,7 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.assignee_ref_json); norm_ok { task.assignee_ref_json = norm } else { return domain.Task{}, false, norm_err }
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.reviewer_refs_json); norm_ok { task.reviewer_refs_json = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, task.assignee_ref_json, task.reviewer_refs_json); !refs_ok do return domain.Task{}, false, refs_err
+	if bm_ok, bm_err := validate_task_assignee_bridge_match(service, task.bridge_id, task.assignee_ref_json); !bm_ok do return domain.Task{}, false, bm_err
 	task.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if !save_ok do return domain.Task{}, false, save_err

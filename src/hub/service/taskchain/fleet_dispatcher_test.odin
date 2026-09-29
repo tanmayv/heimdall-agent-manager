@@ -939,3 +939,507 @@ test_stopped_warm_instance_reuse_and_auto_start :: proc(t: ^testing.T) {
 	testing.expect_value(t, saved_r_inst.current_task_id, "task_rev_1")
 	testing.expect_value(t, saved_r_inst.current_task_role, domain.Current_Task_Role.Review)
 }
+
+@(test)
+test_dynamic_fleet_schedule_bridge_pinning_and_live_count_scope :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_bridge_pinning_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, _ := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	defer sqlite.close(&conn)
+
+	mig_ok, _ := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	pr_impl := sqlite.Project_Repo_SQLite{conn = &conn}
+	pr_repo := sqlite.new_project_repository(&pr_impl, &conn)
+
+	co_impl := sqlite.Content_Repo_SQLite{conn = &conn}
+	co_repo := sqlite.new_content_repository(&co_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	owner := domain.User_ID("user_pin_test")
+	chain_id := domain.Task_Chain_ID("chain_pin_test")
+
+	// Set up two online bridges
+	brg_dawnstar := domain.Bridge{
+		bridge_id         = "brg_dawnstar",
+		owner_user_id     = owner,
+		machine_hostname  = "dawnstar-host",
+		status            = .Online,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, brg_dawnstar)
+
+	brg_riverwood := domain.Bridge{
+		bridge_id         = "brg_riverwood",
+		owner_user_id     = owner,
+		machine_hostname  = "riverwood-host",
+		status            = .Online,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, brg_riverwood)
+
+	// Set up Project
+	pin_project := domain.Project{
+		project_id    = domain.Project_ID("prj_pin"),
+		owner_user_id = owner,
+		name          = "Pin Project",
+		slug          = "pin-project",
+		default_path  = "/srv/pin/default",
+		state         = .Active,
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.project_save(&pr_repo, pin_project)
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = pin_project.project_id,
+		bridge_id     = "brg_dawnstar",
+		owner_user_id = owner,
+		path          = "/srv/pin/dawnstar",
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	})
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = pin_project.project_id,
+		bridge_id     = "brg_riverwood",
+		owner_user_id = owner,
+		path          = "/srv/pin/riverwood",
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	})
+
+	// Set up Agent in repo
+	worker_agent := domain.Agent{
+		agent_id         = "agt_pinned_worker",
+		owner_user_id    = owner,
+		name             = "Pinned Worker",
+		slug             = "pinned-worker",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, worker_agent)
+
+	// Set up Agent Bridge Support for both bridges
+	_, _, _ = iface.agent_save_support(&ag_repo, domain.Agent_Bridge_Support{
+		agent_id      = "agt_pinned_worker",
+		bridge_id     = "brg_dawnstar",
+		owner_user_id = owner,
+		enabled       = true,
+	})
+	_, _, _ = iface.agent_save_support(&ag_repo, domain.Agent_Bridge_Support{
+		agent_id      = "agt_pinned_worker",
+		bridge_id     = "brg_riverwood",
+		owner_user_id = owner,
+		enabled       = true,
+	})
+
+	registry := project_service.Bridge_Runtime_Registry{}
+	project_service.bridge_runtime_registry_mark_live(&registry, "brg_dawnstar", false, "")
+	project_service.bridge_runtime_registry_mark_live(&registry, "brg_riverwood", false, "")
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+	ag_service := agent_service.new_agent_service_with_runtime(&ag_repo, &br_repo, &pr_repo, &co_repo, &tc_repo, sink, &registry, &clock, &ids)
+	svc.agent_service = &ag_service
+
+	// Create chain with coordinator on brg_dawnstar
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Bridge Pinning Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_pin",
+		created_at                    = "2026-09-23T10:00:00Z",
+		updated_at                    = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord_pin",
+		owner_user_id     = owner,
+		agent_id          = "agt_coordinator",
+		bridge_id         = "brg_dawnstar",
+		project_id        = domain.Project_ID("prj_pin"),
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	// Pre-create an IDLE instance on brg_dawnstar of agt_pinned_worker
+	dawnstar_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_dawnstar",
+		owner_user_id     = owner,
+		agent_id          = "agt_pinned_worker",
+		bridge_id         = "brg_dawnstar",
+		project_id        = domain.Project_ID("prj_pin"),
+		display_name      = "dawnstar worker",
+		runtime_status    = "idle",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, dawnstar_inst)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker_dawnstar",
+		agent_id          = "agt_pinned_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-09-23T10:00:00Z",
+	})
+
+	// Fleet capacity = 1 for agt_pinned_worker.
+	// Note: inst_worker_dawnstar already exists, so if capacity were global, capacity=1 would be reached.
+	// But because the task is pinned to brg_riverwood, live_count is scoped to brg_riverwood (which is 0),
+	// allowing JIT provisioning on brg_riverwood.
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_pinned_worker",
+		capacity         = 1,
+		min_warm         = 0,
+		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "normal",
+		created_at       = "2026-09-23T10:00:00Z",
+		updated_at       = "2026-09-23T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, fleet)
+
+	// Create Task pinned to brg_riverwood
+	task1 := domain.Task{
+		task_id            = "task_riverwood_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Riverwood Task",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_pinned_worker"}`,
+		reviewer_refs_json = "[]",
+		bridge_id          = "brg_riverwood",
+		created_at         = "2026-09-23T10:01:00Z",
+		updated_at         = "2026-09-23T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task1)
+
+	// Run reconcile_chain
+	promoted := reconcile_chain(&svc, chain)
+	testing.expect_value(t, promoted, 1)
+
+	// Verify Task 1 was NOT assigned to inst_worker_dawnstar (which was idle on brg_dawnstar)
+	saved_t1, _, _ := iface.taskchain_get_task(&tc_repo, "task_riverwood_1")
+	testing.expect(t, !strings.contains(saved_t1.assignee_ref_json, "inst_worker_dawnstar"), "pinned task must NOT be assigned to idle instance on wrong bridge")
+
+	// Verify Task 1 was assigned to a JIT provisioned instance on brg_riverwood
+	assignee_id := primary_assignee_instance(saved_t1.assignee_ref_json)
+	defer delete(assignee_id)
+	testing.expect(t, assignee_id != "", "task must have an assignee instance")
+	testing.expect(t, assignee_id != "inst_worker_dawnstar", "assignee must be the newly provisioned instance")
+
+	jit_inst, j_ok, _ := iface.agent_get_instance(&ag_repo, assignee_id)
+	testing.expect(t, j_ok, "JIT instance must exist in agent repo")
+	testing.expect_value(t, jit_inst.bridge_id, "brg_riverwood")
+
+	// Verify inst_worker_dawnstar current task remains empty
+	dawnstar_check, _, _ := iface.agent_get_instance(&ag_repo, "inst_worker_dawnstar")
+	testing.expect_value(t, dawnstar_check.current_task_id, "")
+}
+
+@(test)
+test_reconcile_chain_focus_selection_skips_mismatched_bridge :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_focus_bridge_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, _ := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	defer sqlite.close(&conn)
+
+	mig_ok, _ := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
+
+	owner := domain.User_ID("user_focus_test")
+	chain_id := domain.Task_Chain_ID("chain_focus_test")
+
+	chain := domain.Task_Chain{
+		chain_id      = chain_id,
+		owner_user_id = owner,
+		title         = "Focus Bridge Chain",
+		publish_state = .Published,
+		status        = .Active,
+		kind          = "test",
+		created_at    = "2026-09-23T10:00:00Z",
+		updated_at    = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	// Instance on brg_dawnstar
+	inst := domain.Agent_Instance{
+		agent_instance_id = "inst_on_dawnstar",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_dawnstar",
+		display_name      = "worker",
+		runtime_status    = "idle",
+		chain_id          = string(chain_id),
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, inst)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_on_dawnstar",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-09-23T10:00:00Z",
+	})
+
+	// Task 1: assigned to inst_on_dawnstar, but pinned to brg_riverwood!
+	// It is In_Progress.
+	t1 := domain.Task{
+		task_id           = "task_pinned_riverwood",
+		chain_id          = chain_id,
+		owner_user_id     = owner,
+		title             = "Pinned Task",
+		publish_state     = .Published,
+		status            = .In_Progress,
+		priority          = .P0,
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_on_dawnstar"}`,
+		bridge_id         = "brg_riverwood",
+		created_at        = "2026-09-23T10:00:00Z",
+		updated_at        = "2026-09-23T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t1)
+
+	// Task 2: assigned to inst_on_dawnstar, unpinned (bridge_id = "")
+	// It is Assigned.
+	t2 := domain.Task{
+		task_id           = "task_unpinned_local",
+		chain_id          = chain_id,
+		owner_user_id     = owner,
+		title             = "Unpinned Task",
+		publish_state     = .Published,
+		status            = .Assigned,
+		priority          = .P1,
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_on_dawnstar"}`,
+		bridge_id         = "",
+		created_at        = "2026-09-23T10:01:00Z",
+		updated_at        = "2026-09-23T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t2)
+
+	_ = reconcile_chain(&svc, chain)
+
+	// 1. Task 1 (pinned to brg_riverwood) must NOT be selected as focus for inst_on_dawnstar
+	// and must be demoted to Queued because it's not the chosen work task.
+	saved_t1, _, _ := iface.taskchain_get_task(&tc_repo, "task_pinned_riverwood")
+	testing.expect_value(t, saved_t1.status, domain.Task_Status.Queued)
+
+	// 2. Task 2 (unpinned) is selected and promoted to In_Progress.
+	saved_t2, _, _ := iface.taskchain_get_task(&tc_repo, "task_unpinned_local")
+	testing.expect_value(t, saved_t2.status, domain.Task_Status.In_Progress)
+
+	// 3. inst_on_dawnstar focus is Task 2.
+	saved_inst, _, _ := iface.agent_get_instance(&ag_repo, "inst_on_dawnstar")
+	testing.expect_value(t, saved_inst.current_task_id, "task_unpinned_local")
+	testing.expect_value(t, saved_inst.current_task_role, domain.Current_Task_Role.Work)
+}
+
+@(test)
+test_create_and_update_task_rejects_mismatched_agent_instance_bridge :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_crud_bridge_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, _ := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	defer sqlite.close(&conn)
+
+	mig_ok, _ := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	ag_svc := agent_service.new_agent_service(&ag_repo, &br_repo, &clock, &ids)
+	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
+	svc.agent_service = &ag_svc
+
+	owner := domain.User_ID("user_crud_bridge")
+	cid := domain.Task_Chain_ID("chain_crud_bridge")
+
+	// Bridges
+	_, _, _ = iface.bridge_save_bridge(&br_repo, domain.Bridge{
+		bridge_id        = "brg_dawnstar",
+		owner_user_id    = owner,
+		machine_hostname = "dawnstar",
+		status           = .Online,
+		created_at       = "2026-09-25T10:00:00Z",
+		updated_at       = "2026-09-25T10:00:00Z",
+	})
+	_, _, _ = iface.bridge_save_bridge(&br_repo, domain.Bridge{
+		bridge_id        = "brg_riverwood",
+		owner_user_id    = owner,
+		machine_hostname = "riverwood",
+		status           = .Online,
+		created_at       = "2026-09-25T10:00:00Z",
+		updated_at       = "2026-09-25T10:00:00Z",
+	})
+
+	// Chain
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, domain.Task_Chain{
+		chain_id      = cid,
+		owner_user_id = owner,
+		title         = "CRUD Bridge Chain",
+		publish_state = .Published,
+		status        = .Active,
+		kind          = "test",
+		created_at    = "2026-09-25T10:00:00Z",
+		updated_at    = "2026-09-25T10:00:00Z",
+	})
+
+	// Instances
+	inst_dawnstar := domain.Agent_Instance{
+		agent_instance_id = "inst_dawnstar_1",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_dawnstar",
+		chain_id          = string(cid),
+		created_at        = "2026-09-25T10:00:00Z",
+		updated_at        = "2026-09-25T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, inst_dawnstar)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = cid,
+		agent_instance_id = "inst_dawnstar_1",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-09-25T10:00:00Z",
+	})
+
+	inst_riverwood := domain.Agent_Instance{
+		agent_instance_id = "inst_riverwood_1",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_riverwood",
+		chain_id          = string(cid),
+		created_at        = "2026-09-25T10:00:00Z",
+		updated_at        = "2026-09-25T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, inst_riverwood)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = cid,
+		agent_instance_id = "inst_riverwood_1",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-09-25T10:00:00Z",
+	})
+
+	auth := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+
+	// 1. Create task with bridge_id="brg_riverwood" and assignee="inst_dawnstar_1": REJECT with Conflict
+	_, c_err_ok, c_err := create_task(&svc, auth, Create_Task_Input{
+		chain_id          = cid,
+		title             = "Mismatched Task",
+		bridge_id         = "brg_riverwood",
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_dawnstar_1"}`,
+	})
+	testing.expect(t, !c_err_ok, "create_task with mismatched bridge must fail")
+	testing.expect_value(t, c_err.code, domain.Error_Code.Conflict)
+
+	// 2. Create task with bridge_id="brg_riverwood" and matching assignee="inst_riverwood_1": SUCCESS
+	task_created, c_ok, _ := create_task(&svc, auth, Create_Task_Input{
+		chain_id          = cid,
+		title             = "Matching Task",
+		bridge_id         = "brg_riverwood",
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_riverwood_1"}`,
+	})
+	testing.expect(t, c_ok, "create_task with matching bridge must succeed")
+	testing.expect_value(t, task_created.bridge_id, "brg_riverwood")
+
+	// 3. Update task to reassign to inst_dawnstar_1 (bridge mismatch): REJECT with Conflict
+	_, u_err_ok, u_err := update_task(&svc, auth, task_created.task_id, Update_Task_Input{
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_dawnstar_1"}`,
+	})
+	testing.expect(t, !u_err_ok, "update_task reassigning to mismatched bridge instance must fail")
+	testing.expect_value(t, u_err.code, domain.Error_Code.Conflict)
+
+	// 4. Update task to repin bridge to "brg_dawnstar" (while assignee is inst_riverwood_1): REJECT with Conflict
+	repin_dawnstar := "brg_dawnstar"
+	_, u_repin_ok, u_repin_err := update_task(&svc, auth, task_created.task_id, Update_Task_Input{
+		bridge_id = &repin_dawnstar,
+	})
+	testing.expect(t, !u_repin_ok, "update_task repinning to mismatched bridge must fail")
+	testing.expect_value(t, u_repin_err.code, domain.Error_Code.Conflict)
+
+	// 5. Update task to clear bridge pin (bridge_id = ""): SUCCESS
+	clear_bridge := ""
+	cleared_task, u_clear_ok, _ := update_task(&svc, auth, task_created.task_id, Update_Task_Input{
+		bridge_id = &clear_bridge,
+	})
+	testing.expect(t, u_clear_ok, "update_task clearing bridge pin must succeed")
+	testing.expect_value(t, cleared_task.bridge_id, "")
+}
+

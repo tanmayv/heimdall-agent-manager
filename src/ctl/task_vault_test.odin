@@ -241,3 +241,42 @@ test_legacy_plaintext_tasks_unaltered :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(decrypted, `"description":"Legacy Plain Description"`), "description preserved")
 	testing.expect(t, strings.contains(decrypted, `"priority":"p2"`), "priority preserved")
 }
+
+@(test)
+test_task_create_and_update_bridge_pinning_params :: proc(t: ^testing.T) {
+	// 1. Task create with --bridge
+	create_args_with_bridge := []string{
+		"--title", "Pinned task",
+		"--bridge", "brg_18d03379a7d6d47b",
+	}
+	out_create := ctl_agentmode_task_create_params(create_args_with_bridge)
+	testing.expect(t, strings.contains(out_create, `"bridge_id":"brg_18d03379a7d6d47b"`), "create params must serialize bridge_id when --bridge provided")
+
+	// 2. Task create without --bridge
+	create_args_no_bridge := []string{
+		"--title", "Unpinned task",
+	}
+	out_create_no_bridge := ctl_agentmode_task_create_params(create_args_no_bridge)
+	testing.expect(t, !strings.contains(out_create_no_bridge, `"bridge_id"`), "create params must omit bridge_id when --bridge absent")
+
+	// 3. Task update with --bridge
+	update_args_with_bridge := []string{
+		"--bridge", "brg_18c67a924477af3b",
+	}
+	out_update_bridge := ctl_agentmode_task_update_params("task_123", update_args_with_bridge)
+	testing.expect(t, strings.contains(out_update_bridge, `"bridge_id":"brg_18c67a924477af3b"`), "update params must serialize bridge_id when --bridge provided")
+
+	// 4. Task update clearing bridge with ""
+	update_args_clear_bridge := []string{
+		"--bridge", "",
+	}
+	out_update_clear := ctl_agentmode_task_update_params("task_123", update_args_clear_bridge)
+	testing.expect(t, strings.contains(out_update_clear, `"bridge_id":""`), "update params must serialize bridge_id=\"\" when --bridge \"\" provided")
+
+	// 5. Task update without --bridge
+	update_args_no_bridge := []string{
+		"--title", "Updated title only",
+	}
+	out_update_no_bridge := ctl_agentmode_task_update_params("task_123", update_args_no_bridge)
+	testing.expect(t, !strings.contains(out_update_no_bridge, `"bridge_id"`), "update params must omit bridge_id when --bridge absent")
+}

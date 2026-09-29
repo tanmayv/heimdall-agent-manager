@@ -1293,6 +1293,7 @@ ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
 	if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
+	if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
 	return json_object_from_slice(fields[:])
 }
 
@@ -1338,6 +1339,7 @@ ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string 
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
 	if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
+	if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
 	return json_object_from_slice(fields[:])
 }
 
@@ -1813,11 +1815,12 @@ print_help_task :: proc() {
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
 	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>]")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
 	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>]  --reviewer/--depends-on REPLACE the")
-	fmt.println("      whole list (pass \"\" to clear). Only the fields you pass change.")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]")
+	fmt.println("      --reviewer/--depends-on REPLACE the whole list (pass \"\" to clear); --bridge \"\" clears")
+	fmt.println("      the pin. Only the fields you pass change.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
 	fmt.println("      [--notify <id,id>]")
 	fmt.println("  status <task-id> --status <s>           Change status; use in_validation to submit for")
