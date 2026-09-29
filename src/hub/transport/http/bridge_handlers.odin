@@ -1315,6 +1315,47 @@ Bridge_Chunk_Reassembly :: struct {
 	received_chunks: int,
 	received_bytes:  int,
 	fragments:       []string,
+	// REQ-SHELL-32: when the first chunk of this stream arrived (unix nanos). An
+	// incomplete stream is abandoned after BRIDGE_WS_REASSEMBLY_TTL; without this
+	// the MAX_REASSEMBLIES bound below is not a bound at all, it is a countdown.
+	started_at_ns:   i64,
+}
+
+// BRIDGE_WS_REASSEMBLY_TTL bounds how long an INCOMPLETE chunk stream is kept, measured
+// from its FIRST chunk (started_at_ns is set at creation and no later chunk refreshes
+// it). So this is an age limit on the stream, NOT an idle timeout: a stream still
+// arriving steadily but taking longer than the TTL overall IS expired mid-flight, and
+// its remaining chunks then open a fresh partial entry that never completes.
+//
+// That is tolerable only because the bridge writes one frame's chunks back to back on a
+// single connection, so a stream this old has almost certainly been abandoned. It is a
+// real if narrow gap, deliberately left rather than overlooked: refreshing the timestamp
+// per chunk is the more correct clock but is a behaviour change needing its own test
+// round. REQ-SHELL-32 review finding N1; filed as a follow-up.
+BRIDGE_WS_REASSEMBLY_TTL :: 30 * time.Second
+
+// bridge_chunk_reassembly_sweep drops every stream past its TTL and returns how many
+// it dropped. Swept LAZILY, at the admission gate, rather than by a background thread:
+// `reassemblies` is per-connection state reached only from that connection's own read
+// loop, so a lazy sweep needs no lock and cannot outlive the buffer it walks.
+bridge_chunk_reassembly_sweep :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, now_ns: i64) -> int {
+	dropped := 0
+	for i := len(reassemblies) - 1; i >= 0; i -= 1 {
+		if now_ns - reassemblies[i].started_at_ns >= i64(BRIDGE_WS_REASSEMBLY_TTL) {
+			bridge_chunk_reassembly_remove(reassemblies, i)
+			dropped += 1
+		}
+	}
+	return dropped
+}
+
+// bridge_chunk_reassembly_oldest_index returns the index of the oldest stream, or -1.
+bridge_chunk_reassembly_oldest_index :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) -> int {
+	idx := -1
+	for i in 0 ..< len(reassemblies) {
+		if idx < 0 || reassemblies[i].started_at_ns < reassemblies[idx].started_at_ns do idx = i
+	}
+	return idx
 }
 
 // bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
@@ -1359,12 +1400,46 @@ bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassemb
 	}
 	if idx < 0 {
 		// Bound concurrent reassemblies per connection.
-		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES do return "", false, false
+		//
+		// REQ-SHELL-32: this gate used to REFUSE the new stream once the array was
+		// full, and nothing ever removed an incomplete entry — it was freed only when
+		// the whole connection ended. So the cap was not a bound on concurrency, it
+		// was a countdown: 64 abandoned streams over a connection's life and every
+		// subsequent CHUNKED frame was refused forever, silently. Because chunking
+		// only applies above BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES, that left the
+		// connection looking perfectly healthy — small frames (heartbeats, inventory,
+		// acks) never touch this path — while every large frame was dropped.
+		//
+		// Expire first, and only then fall back to evicting the oldest. Evicting is
+		// the lesser evil versus refusing (refusing is what made the deafness
+		// permanent) but it is not free: under genuine concurrent load it can drop a
+		// stream that was still legitimately in flight, so it is the fallback, not the
+		// first response — and it is logged differently, because "stale" and "still
+		// arriving" mean different things.
+		now_ns := time.to_unix_nanoseconds(time.now())
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
+			expired := bridge_chunk_reassembly_sweep(reassemblies, now_ns)
+			if expired > 0 {
+				fmt.eprintfln(
+					"ham-hub WARN bridge ws chunk reassembly expired streams=%d ttl=%v (admission gate)",
+					expired, BRIDGE_WS_REASSEMBLY_TTL)
+			}
+		}
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
+			oldest := bridge_chunk_reassembly_oldest_index(reassemblies)
+			if oldest < 0 do return "", false, false
+			fmt.eprintfln(
+				"ham-hub WARN bridge ws chunk reassembly full in_flight=%d none_expired evicting_oldest chunk_id=%s progress=%d/%d to_admit=%s",
+				len(reassemblies), reassemblies[oldest].chunk_id,
+				reassemblies[oldest].received_chunks, reassemblies[oldest].chunk_count, chunk_id)
+			bridge_chunk_reassembly_remove(reassemblies, oldest)
+		}
 		append(reassemblies, Bridge_Chunk_Reassembly{
-			chunk_id    = strings.clone(chunk_id),
-			chunk_count = chunk_count,
-			total_bytes = total_bytes,
-			fragments   = make([]string, chunk_count),
+			chunk_id      = strings.clone(chunk_id),
+			chunk_count   = chunk_count,
+			total_bytes   = total_bytes,
+			fragments     = make([]string, chunk_count),
+			started_at_ns = now_ns,
 		})
 		idx = len(reassemblies) - 1
 	}
@@ -1462,7 +1537,17 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			delete(type)
 			assembled, complete, cok := bridge_ws_reassemble_chunk(reassemblies, text)
 			delete(text)
-			if !cok || !complete do return true
+			// REQ-SHELL-32: a refused chunk used to vanish here without a word, which is
+			// why a defect that made the hub totally deaf to every large frame on a
+			// connection went unnoticed. `complete=false` is the normal "still
+			// buffering" case and stays quiet; `ok=false` means the frame was DROPPED.
+			if !cok {
+				fmt.eprintfln(
+					"ham-hub WARN bridge ws chunk frame DROPPED bridge=%s (malformed, over-cap, or admission refused)",
+					bridge_id)
+				return true
+			}
+			if !complete do return true
 			text = assembled
 			type = json_string(text, "type")
 		} else {

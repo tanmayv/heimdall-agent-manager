@@ -5,6 +5,7 @@ import "core:net"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import "core:time"
 
 WS_KEY :: "dGhlIHNhbXBsZSBub25jZQ=="
@@ -18,6 +19,20 @@ Connection :: struct {
 	connected: bool,
 	pending_texts: [dynamic]string,
 	pending_bytes: [dynamic]byte,
+
+	// REQ-SHELL-32: serialises WRITES on this connection. It lives here, with the
+	// socket it protects, rather than at a caller, because caller-side discipline is
+	// exactly what failed: the bridge added a send mutex inside bridge_hub_send
+	// (src/bridge/main.odin) for its background PTY stream threads, but the
+	// hub-runtime loop thread kept calling send_text directly
+	// (hub_runtime_client.odin:252/281/3391/3412). A lock only one party takes
+	// serialises nothing, so a loop-thread heartbeat could land its bytes inside a
+	// stream worker's half-written frame and desync the peer's WS reader.
+	//
+	// Guarding the write here cannot be bypassed by a future caller. Note the mutex
+	// is zero-valued and Connection is returned BY VALUE from connect() — copying an
+	// unlocked mutex is fine; do not copy a Connection once writers are running.
+	send_mu: sync.Mutex,
 }
 
 connect :: proc(ws_url: string) -> (Connection, bool) {
@@ -227,10 +242,29 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 	return first_text, true
 }
 
+// send_text writes one WS text frame. SERIALISED per connection (see send_mu):
+// concurrent callers may not interleave their bytes on the wire.
+//
+// BOUNDED (REQ-SHELL-32): the lock is held across the write, so a writer that cannot
+// make progress must not hold it forever or it starves every other writer on the
+// socket — including the bridge's hub heartbeats, whose loss would make the hub
+// declare the bridge offline and reconnect, a more visible failure than the one this
+// serialisation fixes. The bound is send_all_tcp's WRITE_DEADLINE (5s). The socat/TLS
+// path (send_all_file) writes a BLOCKING fd with no retry loop, so it cannot spin; it
+// can only block on a peer that has stopped draining, which is already bounded by the
+// hub's 120s read deadline.
+//
+// A timeout is OBSERVABLE, not silent: it increments send_timeouts. This whole defect
+// survived because a drop said nothing.
 send_text :: proc(conn: ^Connection, text: string) -> bool {
 	if !conn.connected do return false
 	n := len(text)
 	if n > 65535 do return false
+	sync.mutex_lock(&conn.send_mu)
+	defer sync.mutex_unlock(&conn.send_mu)
+	// Re-check under the lock: a writer that blocked here may have been waiting on a
+	// peer another writer has since found dead.
+	if !conn.connected do return false
 	header_len := 2
 	if n > 125 do header_len = 4
 	frame := make([]byte, header_len + n)
@@ -247,11 +281,46 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 	return send_all_tcp(conn.socket, frame)
 }
 
+// WRITE_DEADLINE caps ONE send_text call, and therefore caps how long one stuck
+// writer can hold send_mu. See the note on send_text for why an unbounded retry here
+// would trade a byte-interleaving bug for a heartbeat-starvation bug.
+WRITE_DEADLINE :: 5 * time.Second
+
+// send_timeouts counts writes abandoned at WRITE_DEADLINE. A nonzero value means
+// frames were dropped.
+//
+// >>> IT IS STRUCTURALLY ALWAYS ZERO ON ANY TLS DEPLOYMENT. DO NOT READ ZERO AS HEALTH. <<<
+// It is incremented only in send_all_tcp, and send_text reaches send_all_tcp only when
+// conn.secure == false — i.e. plain ws:// only. BOTH TLS backends (socat by default,
+// openssl s_client when HAM_TLS_BACKEND=s_client) go through connect_tls_with_bearer,
+// which returns secure=true with a PIPE to a child process, so they write via
+// send_all_file — which has no deadline, and therefore nothing to count. Every real
+// deployment is wss.
+//
+// So on the transport that matters this counter cannot observe anything, and a reader
+// who calls it and gets 0 learns nothing while appearing to learn that no writes were
+// abandoned. A metric that is guaranteed uninformative is worse than an absent one,
+// because zero looks like evidence. Write-abandonment observability on the pipe path
+// would have to be instrumented in send_all_file and needs a deadline to abandon at
+// first: that is a design question, not plumbing. REQ-SHELL-41 owns it.
+@(private)
+_send_timeouts: u64
+
+send_timeouts :: proc() -> u64 { return sync.atomic_load(&_send_timeouts) }
+
+// @(private): send_text is the ONLY door to this socket, and F1's whole thesis is
+// that a second unlocked door is what produced REQ-SHELL-32. Unexported so the
+// bypass is unrepresentable rather than merely absent today — anything reaching a
+// Connection's fd without taking send_mu reintroduces the byte-interleaving bug.
+@(private)
 send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte) -> bool {
 	sent := 0
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
+	deadline := time.to_unix_nanoseconds(time.now()) + i64(WRITE_DEADLINE)
 	for sent < len(bytes) {
-		if time.to_unix_nanoseconds(time.now()) > deadline do return false
+		if time.to_unix_nanoseconds(time.now()) > deadline {
+			sync.atomic_add(&_send_timeouts, 1)
+			return false
+		}
 		n, err := net.send_tcp(socket, bytes[sent:])
 		if err != nil {
 			if err == .Would_Block { time.sleep(10 * time.Millisecond); continue }
@@ -263,6 +332,10 @@ send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte) -> bool {
 	return true
 }
 
+// @(private) for the same reason as send_all_tcp. NOTE the asymmetry: this path has
+// NO deadline and no retry arm, because the fd is BLOCKING — it cannot spin, it can
+// only block on a peer that has stopped draining. See the bound note on send_text.
+@(private)
 send_all_file :: proc(file: ^os.File, bytes: []byte) -> bool {
 	sent := 0
 	for sent < len(bytes) {
