@@ -422,12 +422,25 @@ export function verbsForSession(session: ShellSession): ShellVerb[] {
 
 /**
  * Whether the preview affordance applies to this session at all, as distinct from
- * whether it can be used right now. Inherited from `ShellsPanel` (:53-57) with its
- * reasoning intact: a LIVE session without a port is transiently unreachable — the
- * port can still be declared, and the verb that declares it sits in the same menu —
- * so the control is shown disabled with the reason. A TERMINAL portless session is
- * permanently unreachable, and a permanently disabled control would lie about being
- * actionable, so nothing is rendered.
+ * whether it can be used right now.
+ *
+ * The split turns on TRANSIENT vs PERMANENT unreachability, and the rule is not
+ * arbitrary. XM-8 rendered nothing for a running portless session, on the premise that
+ * a port could only be set at start and so such a session could never become
+ * reachable. XM-9 falsified that premise: a port CAN be declared after start. So a
+ * LIVE session without a port is only transiently unreachable — the port can still be
+ * declared, and the verb that declares it (`set-port`) sits in the same menu as the
+ * control itself — and it gets a DISABLED control carrying the reason, the same
+ * rendering as a session whose port is declared but which has not finished starting.
+ *
+ * A TERMINAL portless session stays unrendered, because that case really is permanent:
+ * the hub refuses set-port on it with 409 and the bridge holds no live record to
+ * update, so nothing about it can ever become reachable, and a permanently disabled
+ * control would lie about being actionable.
+ *
+ * (Originally written for the `ShellsPanel` component; that file was unmounted dead
+ * code and was deleted under REQ-SHELL-22, so the reasoning lives here now. The live
+ * caller is `PreviewCard` in ShellDetail.tsx, which renders the card this gates.)
  */
 export function hasPreviewAffordance(session: ShellSession): boolean {
   return session.server_port > 0 || !isTerminal(session);

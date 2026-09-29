@@ -163,7 +163,6 @@ test('ShellTerminalPane.tsx disables convertEol in streaming mode, enforces >=80
 import { shellResizeFrame } from '../src/ui/components/shells/shellStreamFrames.ts';
 
 const BOTTOM_DOCK = path.join(REPO_ROOT, 'src/ui/components/shell/BottomDock.tsx');
-const SHELLS_PANEL = path.join(REPO_ROOT, 'src/ui/components/shells/ShellsPanel.tsx');
 const SHELL_DETAIL = path.join(REPO_ROOT, 'src/ui/components/shells/ShellDetail.tsx');
 
 test('REQ-SHELL-18: shellResizeFrame sends real geometry and refuses the rest', () => {
@@ -221,7 +220,6 @@ test('REQ-SHELL-18: every ShellTerminalPane call site is keyed by session id', (
   // the Terminal is built in a mount effect with an empty dependency array.
   const sites: Array<[string, string, string]> = [
     [BOTTOM_DOCK, 'key={activeSession.session_id}', 'BottomDock.tsx (the bottom bar the user reported)'],
-    [SHELLS_PANEL, 'key={activePaneSession.session_id}', 'ShellsPanel.tsx'],
     [SHELL_DETAIL, 'key={record.session_id}', 'ShellDetail.tsx (unkeyed ShellDetailPane swaps record)'],
   ];
 
@@ -297,7 +295,6 @@ test('REQ-SHELL-18: every ShellTerminalPane call site is keyed by session id', (
     [
       'src/ui/components/shell/BottomDock.tsx',
       'src/ui/components/shells/ShellDetail.tsx',
-      'src/ui/components/shells/ShellsPanel.tsx',
     ],
     'a new ShellTerminalPane call site must be added to this test AND keyed by session id'
   );
