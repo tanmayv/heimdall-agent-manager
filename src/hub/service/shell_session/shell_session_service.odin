@@ -271,6 +271,20 @@ Shell_Session_Create_Input :: struct {
 	background:        bool,
 }
 
+// _shell_session_starter_from_auth derives WHO is asking to start a process, for
+// the domain.SHELL_SESSION_STARTER_RULES check. It is shared by every entry point
+// that spawns one — shell_session_create and shell_session_restart (REQ-SHELL-24)
+// — so the two cannot drift: if the rules table gains a kind or changes a
+// permission, both paths follow it without being edited.
+//
+// The starter is read from the AUTH KIND and from nothing else. An Instance_Token
+// is an agent; everything else that authenticates is a user. Deriving it from a
+// request body field instead would let a user simply claim to be an agent.
+_shell_session_starter_from_auth :: proc(auth: contracts.Auth_Context) -> domain.Shell_Session_Starter {
+	if auth.kind == .Instance_Token do return .Agent
+	return .User
+}
+
 // shell_session_create creates a hub row with status=starting, sends shell_start to
 // the bridge, and updates the row to running/failed based on the bridge reply.
 shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, input: Shell_Session_Create_Input) -> (domain.Shell_Session, bool, domain.Domain_Error) {
@@ -306,11 +320,11 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	// through. The REST handler is not the gate; it cannot be, because the same
 	// service backs any other caller that is added later.
 	//
-	// The starter is read from the AUTH KIND, not from anything the caller puts in
-	// the body: an Instance_Token is an agent, everything else that reaches this
-	// point is a user. A body field would let a user claim to be an agent.
-	starter := domain.Shell_Session_Starter.User
-	if auth.kind == .Instance_Token do starter = .Agent
+	// shell_session_restart applies this SAME rule (REQ-SHELL-24) — a restart is a
+	// start — which is why the starter derivation lives in the shared helper rather
+	// than here. See _shell_session_starter_from_auth for why it reads the auth kind
+	// and nothing the caller can put in a body.
+	starter := _shell_session_starter_from_auth(auth)
 	if !domain.shell_session_kind_may_start(kind_enum, starter) {
 		return {}, false, domain.domain_error(.Forbidden, fmt.tprintf(
 			"a %q session may only be started by %s", kind, domain.shell_session_starters_string(kind_enum)))
@@ -817,6 +831,44 @@ shell_session_restart :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	session, found, repo_err := iface.shell_session_get(svc.repo, string(owner), session_id)
 	if repo_err.code != .None do return {}, false, repo_err
 	if !found do return {}, false, domain.domain_error(.Not_Found, "session not found")
+
+	// REQ-SHELL-24: WHO MAY START THIS KIND, enforced here too.
+	//
+	// A restart spawns a fresh OS process, so it is a start and carries the same
+	// authorization as one. Ownership — the only check above — cannot catch this:
+	// a user legitimately OWNS their own agent's run row (per-kind scope is
+	// structural, not authz, and nothing may hide a user's own runs from them), so
+	// the one check that passed is the one that could never have refused. Without
+	// this gate a user-authenticated restart of an AGENT-ONLY `run` respawned it,
+	// with the UI's verb gate as the only thing standing in the way — and the start
+	// path's own comment says why that is not enough: the rule "must be enforced at
+	// the API, not only in the UI".
+	//
+	// The rule itself is NOT restated here. It is read from
+	// domain.SHELL_SESSION_STARTER_RULES through shell_session_kind_may_start, the
+	// same table and predicate shell_session_start uses, via the same
+	// _shell_session_starter_from_auth helper. One source of truth: a second
+	// hardcoded `kind == .Run` list here is precisely how the two entry points
+	// would drift apart.
+	//
+	// Note the parse: start gets its enum from the caller's INPUT, but a restart
+	// has only the STORED row, whose kind is a string. An unparseable kind FAILS
+	// CLOSED. A row whose kind the hub cannot name is not a row it can authorize a
+	// respawn of, and the alternative — treating unknown as permitted — would
+	// reintroduce this hole for exactly the rows that are already malformed.
+	//
+	// Placed above next_run_seq and above every bridge send on purpose: a refusal
+	// that still delivered shell_restart would be a worse bug than the one this
+	// fixes, and gating here leaves REQ-SHELL-4's run_seq ordering untouched.
+	kind_enum, kind_known := domain.shell_session_kind_from_string(session.kind)
+	if !kind_known {
+		return {}, false, domain.domain_error(.Forbidden, fmt.tprintf(
+			"session %q has unknown kind %q and cannot be restarted", session_id, session.kind))
+	}
+	if !domain.shell_session_kind_may_start(kind_enum, _shell_session_starter_from_auth(auth)) {
+		return {}, false, domain.domain_error(.Forbidden, fmt.tprintf(
+			"a %q session may only be restarted by %s", session.kind, domain.shell_session_starters_string(kind_enum)))
+	}
 
 	// REQ-SHELL-4: a restart begins a NEW RUN, and the new run's number is sent to the
 	// bridge before it is persisted here — but ADOPTED BY NEITHER SIDE unless the
