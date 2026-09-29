@@ -57,6 +57,23 @@ package main
 // see a spurious disagreement. Residual, already true of every cwd we store and not
 // this procedure's to fix: `~` resolves against THE BRIDGE's HOME, so the stored string
 // is only unambiguous on that host.
+//
+// A BARE `~` IS A CASE OF ITS OWN, and getting it wrong is how the first cut of this
+// guard NARROWED a working input (review B1). The shared bridge_expand_home
+// (src/bridge/provider_store.odin:166-173) expands only on a `~/` PREFIX, so a lone `~`
+// fell through unexpanded, was stat()ed literally, and was refused with "does not
+// exist: ~" — a refusal that is FALSE about the world, since the directory `~` names
+// exists on every host we run on. It is also the one input where the pre-fix fallback to
+// $HOME was RIGHT, and right for the right reason: $HOME is exactly what `~` denotes. So
+// `~` and `~/…` are BOTH expanded here.
+//
+// EXPANDED HERE, NOT BY WIDENING bridge_expand_home: that helper is shared with the
+// provider store and the data dir, and changing shared expansion semantics is out of
+// this contract's scope. Doing it locally also makes the HOME-UNSET branch explicit
+// rather than a silent fall-through — with no HOME there is no answer, so both `~` and
+// `~/x` are refused saying THAT, instead of claiming a path does not exist. A `~user`
+// form is deliberately NOT expanded: nothing in this product has ever resolved one, so
+// it is checked literally and refused naming what was checked.
 
 import "core:os"
 import "core:strings"
@@ -67,6 +84,10 @@ Bridge_Shell_Cwd_Verdict :: enum {
 	Ok,
 	Missing,
 	Not_Directory,
+	// `~`/`~/…` was requested and HOME is unset, so there is nothing to expand against.
+	// Its own verdict rather than folding into .Missing: the path is not known to be
+	// absent, it is unresolvable, and the two want different messages.
+	Home_Unset,
 }
 
 // bridge_shell_cwd_resolve trims and ~-expands `cwd` and reports whether the result is
@@ -78,19 +99,39 @@ Bridge_Shell_Cwd_Verdict :: enum {
 // whitespace-only `cwd` means "no cwd requested" and yields ("", .Ok), which callers
 // pass through as has_cwd=false to keep today's inherit-the-bridge's-cwd default.
 bridge_shell_cwd_resolve :: proc(cwd: string, allocator := context.allocator) -> (resolved: string, verdict: Bridge_Shell_Cwd_Verdict) {
+	return bridge_shell_cwd_resolve_with_home(cwd, os.get_env("HOME", context.temp_allocator), allocator)
+}
+
+// bridge_shell_cwd_resolve_with_home is the whole of the logic, with HOME PASSED IN.
+//
+// The seam exists for the tests, and for a specific reason rather than as a reflex: the
+// HOME-unset branch can only be exercised by removing HOME, and doing that to the
+// PROCESS would race every other test in this package that reads it (see
+// data_dir_expand_test.odin) under the parallel test runner. Passing it makes the branch
+// deterministic and leaves the process environment alone. An empty `home` means HOME is
+// unset — the caller above supplies whatever the environment actually holds, which is
+// the one thing a test still asserts through the wrapper.
+bridge_shell_cwd_resolve_with_home :: proc(cwd, home: string, allocator := context.allocator) -> (resolved: string, verdict: Bridge_Shell_Cwd_Verdict) {
 	trimmed := strings.trim_space(cwd)
 	if trimmed == "" do return strings.clone("", allocator), .Ok
 
-	// bridge_expand_home ALIASES its input when there is nothing to expand, so the
-	// free is guarded on identity rather than on content.
-	expanded := bridge_expand_home(trimmed)
-	defer if raw_data(expanded) != raw_data(trimmed) do delete(expanded)
+	if trimmed == "~" || strings.has_prefix(trimmed, "~/") {
+		if strings.trim_space(home) == "" {
+			// NOT .Missing. "does not exist: ~" would be a false claim about the world;
+			// the truth is that the bridge cannot resolve `~` at all.
+			return strings.clone(trimmed, allocator), .Home_Unset
+		}
+		// trimmed[1:] keeps the separator, so `~/x` becomes HOME + "/x" and a bare `~`
+		// becomes HOME itself.
+		resolved = trimmed == "~" ? strings.clone(home, allocator) : strings.concatenate({home, trimmed[1:]}, allocator)
+	} else {
+		resolved = strings.clone(trimmed, allocator)
+	}
 
-	resolved = strings.clone(expanded, allocator)
 	// Missing before non-directory: os.is_dir is false for a missing path too, so the
 	// order is what makes the caller's two messages distinguishable.
-	if !os.exists(expanded) do return resolved, .Missing
-	if !os.is_dir(expanded) do return resolved, .Not_Directory
+	if !os.exists(resolved) do return resolved, .Missing
+	if !os.is_dir(resolved) do return resolved, .Not_Directory
 	return resolved, .Ok
 }
 
@@ -104,6 +145,9 @@ bridge_shell_cwd_reject_message :: proc(verdict: Bridge_Shell_Cwd_Verdict, resol
 	switch verdict {
 	case .Missing:       return strings.concatenate({"shell --cwd does not exist: ", resolved}, allocator)
 	case .Not_Directory: return strings.concatenate({"shell --cwd is not a directory: ", resolved}, allocator)
+	// Says the thing that IS true. Claiming the path does not exist here is the mistake
+	// this verdict exists to avoid.
+	case .Home_Unset:    return strings.concatenate({"shell --cwd cannot be expanded because HOME is not set: ", resolved}, allocator)
 	case .Ok:            return strings.clone("", allocator)
 	}
 	return strings.clone("", allocator)
