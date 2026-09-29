@@ -117,6 +117,14 @@ rfc3339_to_unix_ms :: proc(s: string) -> (i64, bool) {
 
 // days_from_civil returns days since 1970-01-01 for a proleptic Gregorian date.
 // Based on Howard Hinnant's well-known constant-time algorithm.
+//
+// m MUST be 1..12. rfc3339_to_unix_ms is the only caller and it rejects any month
+// outside that range before calling, so the requirement holds by construction today.
+// It is written down because the month shift below has no modulo: the two unified
+// copies of this proc spelled it differently — agent's used `(m + 9) %% 12`, which
+// wraps, and this one does not — so the two agree for every m in 1..12 and diverge
+// from m >= 15 upward. Unreachable, not harmless: anyone making this proc callable
+// from somewhere that does not pre-validate the month must add the range check here.
 days_from_civil :: proc(y_in, m, d: int) -> int {
 	y := y_in
 	if m <= 2 do y -= 1

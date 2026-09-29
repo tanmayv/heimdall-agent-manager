@@ -286,7 +286,7 @@ reaper_sweep_aged_servers :: proc(graph: ^App_Graph) -> int {
 	if graph == nil do return 0
 	now_str := platform.clock_now(&graph.clock)
 	if now_str == "" do return 0
-	now_ms, ok := agent_service.rfc3339_to_unix_ms(now_str)
+	now_ms, ok := platform.rfc3339_to_unix_ms(now_str)
 	if !ok do return 0
 	return shell_session_svc.shell_session_reap_aged_servers(&graph.shell_session_service, now_ms, REAPER_SERVER_MAX_AGE_MS)
 }

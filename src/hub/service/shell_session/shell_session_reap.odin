@@ -80,7 +80,7 @@ shell_session_reap_chain_servers :: proc(svc: ^Shell_Session_Service, owner_user
 		"",
 		SHELL_SESSION_REAP_MAX_ROWS,
 	)
-	delete(next_cursor)
+	defer delete(next_cursor)
 	// The listing returns owned rows. This runs on a request thread via the chain hook,
 	// which has an arena, but the rows are freed explicitly anyway: the same proc is one
 	// refactor away from the reaper thread, which has none, and a page of 512 rows is not
