@@ -161,11 +161,11 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
 
           {/* Command */}
           <div className="mb-3">
-            <label htmlFor="new-shell-cmd" className="mb-1 block font-semibold text-muted">
+            <label htmlFor="new-shell-command" className="mb-1 block font-semibold text-muted">
               Command {kind === 'shell' ? '(optional — default shell)' : ''}
             </label>
             <input
-              id="new-shell-cmd"
+              id="new-shell-command"
               type="text"
               placeholder={kind === 'shell' ? 'e.g. bash' : kind === 'server' ? 'e.g. python -m http.server' : 'e.g. npm test'}
               value={cmd}

@@ -1,7 +1,9 @@
 package domain
 
 // Shell_Session is the hub-side record for a bridge-managed shell session.
-// Replaces Shell_Job as the unified session concept per REQ-SH-CONTRACT §1.
+// It is THE unified session concept per REQ-SH-CONTRACT §1. (It superseded a
+// Shell_Job record, whose stack REQ-SHELL-7 deleted outright — named here only so
+// the lineage is not a mystery, not as a type you can still find.)
 //
 // REQ-SHELL-1 collapsed the model to exactly THREE kinds, sharing ONE lifecycle:
 //

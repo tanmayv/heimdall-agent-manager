@@ -4,9 +4,10 @@ package main
 //
 // Bridge_Shell_Session_Map owns the live session registry, mints session IDs,
 // persists spawn specs to disk for crash-recovery, and reconciles with the
-// daemon on reconnect. shell_cmd.odin uses this as the backing store for
-// shell-cmd exec/read (kind=Command); T4 WS handlers will add Agent/Interactive/
-// Server kinds on top.
+// daemon on reconnect. It is the backing store for EVERY kind — run, shell and
+// server — all of which are spawned through the pty-host path in
+// hub_runtime_client.odin. The shared constants and output helpers live alongside it
+// in shell_common.odin.
 
 import json "core:encoding/json"
 import "base:runtime"
@@ -47,11 +48,11 @@ Bridge_Shell_Session_Status :: enum {
 // session. All string fields are owned (cloned) so they outlive the request
 // that created them.
 //
-// started_unix_ms / finished_unix_ms are implementation-only timing fields
-// used by the shell-cmd exec response (execution_time_ms). They are NOT
-// persisted in the spec JSON; they default to 0 after a crash-recovery load.
+// started_unix_ms / finished_unix_ms are implementation-only timing fields behind
+// the response's execution_time_ms. They are NOT persisted in the spec JSON; they
+// default to 0 after a crash-recovery load.
 Bridge_Shell_Session :: struct {
-	session_id:        string, // hub-minted "sh_<...>", or bridge-minted "shl_<unixnano>_<seq>"
+	session_id:        string, // hub-minted "sh_<...>"; the hub is the only minter
 	kind:              Bridge_Shell_Session_Kind,
 	label:             string,
 	cmd:               string,
@@ -82,15 +83,17 @@ Bridge_Shell_Session :: struct {
 	background:        bool,
 	// pty_host — HOW this session was spawned, which is what reconcile must branch
 	// on. A session started through the hub path is spawned by the pty-host daemon
-	// and therefore APPEARS IN ITS ROSTER; a session started by the legacy
-	// shell-cmd path is a direct os.process_start child of the bridge and NEVER
-	// appears there, however alive it is.
+	// and therefore APPEARS IN ITS ROSTER. The retired bridge-local exec path spawned
+	// a direct os.process_start child instead, which NEVER appears there however alive
+	// it is.
 	//
-	// This is deliberately not derived from `kind`. kind=run arrives by BOTH
-	// mechanisms today (the hub create path, and shell-cmd exec which REQ-SHELL-7
-	// retires later), so kind cannot answer "should the daemon roster know about
-	// this?" — and reconcile asking the roster about a process that can never be
-	// in it is exactly the bug that killed healthy runs.
+	// REQ-SHELL-7 DELETED THAT PRODUCER, so every session this code now creates is
+	// pty_host=true. THE FLAG STAYS, and so does the branch that reads it: a bridge
+	// upgraded past that commit still finds direct-child specs on disk from before it,
+	// and reconcile asking the roster about a process that can never be in it is
+	// exactly the bug that killed healthy runs. It is deliberately not derived from
+	// `kind` — kind=run once arrived by both mechanisms, so kind never could answer
+	// "should the daemon roster know about this?"
 	pty_host:          bool,
 	// pty_host_provenance_known distinguishes "pty_host is false" from "nobody said".
 	// A spec written BEFORE REQ-SHELL-2 has no pty_host key at all, and it may
@@ -137,22 +140,12 @@ bridge_shell_session_map_allocator :: proc(m: ^Bridge_Shell_Session_Map) -> runt
 }
 
 // ---- ID generator --------------------------------------------------------
-
-@(private = "file")
-_bridge_shell_session_seq:    i64
-@(private = "file")
-_bridge_shell_session_seq_mu: sync.Mutex
-
-// bridge_shell_session_next_id mints a unique "shl_<unixnano>_<seq>" session
-// id. The seq is a monotonically increasing counter guarded by a mutex,
-// matching the pattern of the old bridge_shell_next_exec_id in shell_cmd.odin.
-bridge_shell_session_next_id :: proc() -> string {
-	sync.mutex_lock(&_bridge_shell_session_seq_mu)
-	_bridge_shell_session_seq += 1
-	seq := _bridge_shell_session_seq
-	sync.mutex_unlock(&_bridge_shell_session_seq_mu)
-	return strings.clone(fmt.tprintf("shl_%x_%d", time.to_unix_nanoseconds(time.now()), seq))
-}
+//
+// THERE ISN'T ONE ANY MORE. The bridge used to mint "shl_<unixnano>_<seq>" ids for
+// sessions it created itself, which was only ever the bridge-local exec path
+// REQ-SHELL-7 deleted. Every session now arrives with a hub-minted session_id in its
+// spawn request, and the hub is the single minter — the same "hub assigns, bridge
+// stores THAT" rule that already governs started_at and run_seq (REQ-SHELL-1 §8).
 
 // ---- CRUD ----------------------------------------------------------------
 //
@@ -1250,13 +1243,18 @@ bridge_shell_session_pid_is_plausible :: proc(pid: int, cmd: string, started_at:
 // That is TRUE ONLY FOR PTY-HOST-SPAWNED SESSIONS, and REQ-SHELL-2 made the
 // difference load-bearing by persisting specs for direct-child runs as well.
 //
-// THE BUG THIS BRANCH FIXES (C5). A run spawned by the legacy shell-cmd path is a
-// direct os.process_start child. It is never in the pty-host roster, so
+// THE BUG THIS BRANCH FIXES (C5). The retired bridge-local exec path spawned a run as
+// a direct os.process_start child. It is never in the pty-host roster, so
 // `found_alive` can never be set for it, and it fell straight through to the
 // "not found -> pid is plausible -> kill it" branch below — on every hub WS
 // reconnect, against a run that was perfectly alive and still tracked in this
 // bridge's own memory. Persisting run specs is what exposed it; before that,
 // reconcile simply never saw these sessions.
+//
+// REQ-SHELL-7 deleted that producer, so nothing running this code creates a
+// direct-child session any more. THE BRANCH IS STILL LIVE AND STILL TESTED: a bridge
+// upgraded past that commit reads specs written before it, and those describe direct
+// children. Deleting the producer does not delete the reader.
 //
 // So the roster question is asked ONLY of sessions that can answer it
 // (s.pty_host), and a direct child is resolved by the three-way rule in
@@ -1531,8 +1529,10 @@ bridge_shell_session_status_from_str :: proc(s: string) -> Bridge_Shell_Session_
 }
 
 // bridge_shell_session_exec_status_str maps the internal session status to the
-// "running" | "completed" | "failed" vocabulary the shell-cmd exec/read API
-// exposes (backward-compatible with the old Bridge_Shell_Job.status strings).
+// "running" | "completed" | "failed" vocabulary the run RESPONSE exposes — the shape
+// bridge_shell_write_session_json renders for a finished run. It is a narrower
+// vocabulary than the internal status on purpose: a caller holding a result cares
+// whether the command worked, not which flavour of not-running it reached.
 bridge_shell_session_exec_status_str :: proc(s: ^Bridge_Shell_Session) -> string {
 	switch s.status {
 	case .Starting, .Running: return "running"

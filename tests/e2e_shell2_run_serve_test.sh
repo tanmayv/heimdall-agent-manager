@@ -85,7 +85,7 @@ trap cleanup EXIT
 # threshold should fail this suite immediately rather than after a five-minute
 # bring-up.
 # Count only CODE references. The constant's name survives in prose — the header
-# comment in shell_cmd.odin explains that it was deleted and must not return, and
+# comment in shell_common.odin explains that it was deleted and must not return, and
 # these tests name it too — so a bare grep would report its own documentation as a
 # violation. Comment lines and test files are therefore excluded, and what is left
 # is any line that actually uses the identifier.

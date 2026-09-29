@@ -174,9 +174,6 @@ ham-ctl shell background <session_id>
   REJECTED before the command runs and the error names the offending path — it is never
   silently replaced by another directory.
 
-**`ham-ctl shell-cmd` is DEPRECATED.** It still exists, but it is superseded by
-`ham-ctl shell run` and is being retired. Do not use it for new work.
-
 ## Skills index (load on demand)
 These skills carry the procedures and exact command syntax — load the one you need
 rather than guessing:

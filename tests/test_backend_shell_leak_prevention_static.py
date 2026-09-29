@@ -13,10 +13,15 @@ Requirements covered:
      - pty_host_daemon_socket is cached under mutex to prevent repeated socket path allocations across polled calls.
   4. src/bridge/pty_host_events.odin:
      - bridge_pty_host_events_worker frees socket string in reconnection loop with `delete(socket)`.
-  5. src/bridge/shell_cmd.odin:
-     - bridge_shell_cmd_exec frees session_id, output_path, and start_time via defer delete.
-     - bridge_shell_jobs_dir deallocates expanded data_dir.
-     - bridge_shell_output_path deallocates jobs_dir.
+  5. src/bridge/shell_common.odin:
+     - bridge_shell_output_path deallocates the output dir it resolves.
+     - bridge_shell_write_session_json deallocates the output path it resolves.
+     - bridge_shell_data_dir returns an owned string (it clones when there is no ~).
+     This section was src/bridge/shell_cmd.odin and asserted on the bridge-local exec
+     path, which REQ-SHELL-7 deleted along with the file's old name. It had ALREADY
+     been failing before then, on `bridge_shell_jobs_dir` — a symbol renamed to
+     bridge_shell_output_dir well before this task — so the checks are restated here
+     against the symbols that actually exist.
   6. src/bridge/wrapper_endpoint.odin:
      - bridge_local_extract_json_object frees needle string.
      - unix and tcp client loops free resp and resp_line strings on every iteration.
@@ -31,7 +36,7 @@ SHELL_SESSION_HANDLERS_FILE = ROOT / "src" / "hub" / "transport" / "http" / "she
 SHELL_SESSION_SERVICE_FILE = ROOT / "src" / "hub" / "service" / "shell_session" / "shell_session_service.odin"
 PTY_HOST_RUNTIME_FILE = ROOT / "src" / "bridge" / "pty_host_runtime.odin"
 PTY_HOST_EVENTS_FILE = ROOT / "src" / "bridge" / "pty_host_events.odin"
-SHELL_CMD_FILE = ROOT / "src" / "bridge" / "shell_cmd.odin"
+SHELL_COMMON_FILE = ROOT / "src" / "bridge" / "shell_common.odin"
 WRAPPER_ENDPOINT_FILE = ROOT / "src" / "bridge" / "wrapper_endpoint.odin"
 BRIDGE_HUB_RUNTIME_FILE = ROOT / "src" / "bridge" / "hub_runtime_client.odin"
 
@@ -98,25 +103,25 @@ def test_bridge_pty_host_events():
             "bridge_pty_host_events_worker must delete socket string in reconnection loop")
 
 
-def test_bridge_shell_cmd():
-    require(SHELL_CMD_FILE.is_file(), f"File missing: {SHELL_CMD_FILE}")
-    src = SHELL_CMD_FILE.read_text(encoding="utf-8")
+def test_bridge_shell_common():
+    require(SHELL_COMMON_FILE.is_file(), f"File missing: {SHELL_COMMON_FILE}")
+    src = SHELL_COMMON_FILE.read_text(encoding="utf-8")
 
-    # Defer cleanup of strings in exec
-    require("defer delete(session_id)" in src,
-            "bridge_shell_cmd_exec must defer delete(session_id)")
-    require("defer delete(output_path)" in src,
-            "bridge_shell_cmd_exec must defer delete(output_path)")
-    require("defer delete(start_time)" in src,
-            "bridge_shell_cmd_exec must defer delete(start_time)")
+    # The output-dir helper is the one every other path resolves through, so its
+    # callers are where a per-call leak would accumulate.
+    require("bridge_shell_output_dir" in src,
+            "shell_common.odin must have bridge_shell_output_dir")
+    require("bridge_shell_output_path" in src,
+            "shell_common.odin must have bridge_shell_output_path")
+    require("dir := bridge_shell_output_dir()\n\tdefer delete(dir)" in src,
+            "bridge_shell_output_path must free the dir it resolves")
+    require("output_path := bridge_shell_output_path(s.session_id)\n\tdefer delete(output_path)" in src,
+            "bridge_shell_write_session_json must free the output path it resolves")
 
-    # Data dir & output path cleanup
-    require("bridge_shell_jobs_dir" in src,
-            "shell_cmd.odin must have bridge_shell_jobs_dir")
-    require("delete(data_dir)" in src,
-            "bridge_shell_jobs_dir must deallocate expanded data_dir")
-    require("defer delete(jobs_dir)" in src,
-            "bridge_shell_output_path must deallocate jobs_dir")
+    # bridge_shell_data_dir's contract is that the result is ALWAYS owned, so callers
+    # get one unconditional delete rather than a guarded one.
+    require("return strings.clone(expanded)" in src,
+            "bridge_shell_data_dir must clone when bridge_expand_home aliased its input")
 
 
 def test_bridge_wrapper_endpoint():
@@ -153,7 +158,7 @@ def main():
     test_hub_shell_session_service()
     test_bridge_pty_host_runtime()
     test_bridge_pty_host_events()
-    test_bridge_shell_cmd()
+    test_bridge_shell_common()
     test_bridge_wrapper_endpoint()
     test_bridge_hub_runtime_socket_invariants()
     print("PASS: test_backend_shell_leak_prevention_static")

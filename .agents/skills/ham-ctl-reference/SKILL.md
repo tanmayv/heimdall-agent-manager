@@ -1,6 +1,6 @@
 ---
 name: ham-ctl-reference
-description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, issue, chat, memory, artifact, shell, shell-cmd, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
+description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, issue, chat, memory, artifact, shell, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
 ---
 
 # ham-ctl command reference
@@ -20,8 +20,7 @@ Conventions used below:
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `artifact`,
-`shell`, `context`, `start-success`. (`shell-cmd` still exists but is DEPRECATED —
-superseded by `shell run`; do not use it for new work.)
+`shell`, `context`, `start-success`.
 
 ---
 
@@ -347,7 +346,8 @@ THE THREE KINDS, enforced by the hub:
 - `shell` — an interactive terminal. **USER ONLY**, no output capture.
 
 The retired spellings `interactive`, `command` and `agent` are REJECTED by the hub, not
-aliased. `ham-ctl shell-cmd` is DEPRECATED and superseded by `shell run`.
+aliased. There is no separate command-execution group any more: `shell run` is how an agent
+runs a command, and it is the only way.
 
 - `shell run --cmd <command> [--cwd <dir>] [--label <lbl>] [--bg]` — run a command and
   WAIT for it. `--bg` instead returns a session id immediately and notifies you on
@@ -372,7 +372,9 @@ aliased. `ham-ctl shell-cmd` is DEPRECATED and superseded by `shell run`.
   `chain_id query parameter is required`. Columns: session_id, kind, label, status, pid,
   server_port, uptime.
 - `shell log <session_id> [--offset N] [--limit N] [--grep <pattern>]` — returns
-  `{lines, truncated, total_lines}`. Same paging shape as `shell-cmd read`.
+  `{lines, truncated, total_lines}`. `--offset` skips lines from the HEAD of the log and
+  `--limit` caps how many come back; there is no tail mode, so "the end of the log" is an
+  explicit offset.
 - `shell capture <session_id>` — snapshot of the current terminal screen.
 - `shell signal <session_id> --signal <int>` — send a POSIX signal (e.g. 2 = SIGINT).
 - `shell restart <session_id>` — stop then start; returns `{session_id, pid, status}`.
@@ -499,20 +501,6 @@ the prefix. That asymmetry is behind every problem below.
   and not through any proxy your dev server configures, because those requests never
   reach your dev server at all. Use the relative `../<session_id>/` form above to address
   a session deliberately.
-
-## shell-cmd — DEPRECATED, superseded by `shell run`
-Retained only so existing references still resolve. Use `ham-ctl shell run` for new work:
-it captures output the same way, blocks in the foreground, and backgrounds only when you
-ask with `--bg`. The 15-second auto-background behaviour described historically for this
-command NO LONGER EXISTS anywhere in the shell surface.
-- `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a command on the Bridge.
-- `shell-cmd read <exec-id> [--offset <N>] [--limit <N>] [--grep <pattern>]` — fetch the
-  status/output of a previously submitted exec.
-
-The historical "runs synchronously under 15 seconds, switches to async at or above 15
-seconds" rule DOES NOT EXIST ANY MORE — it was removed from the shell surface, and no
-command auto-backgrounds on a timer. Use `shell run` (foreground, blocking) and
-`shell run --bg` (explicit background) instead; read output with `shell log`.
 
 ## memory — durable memories
 - `memory list [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>] [--status <s>] [--type <t>] [--limit <n>]` — list memories (metadata only).

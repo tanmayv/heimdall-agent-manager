@@ -545,7 +545,6 @@ function handleAgentActionEvent(dispatch: any, payload: any) {
     action: String(payload?.action || ''),
     summary,
     ts: Number(payload?.ts) || Date.now(),
-    shellStatus: String(payload?.shell_status || ''),
   }));
 }
 

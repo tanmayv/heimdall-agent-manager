@@ -29,7 +29,7 @@ interface ShellLogViewerProps {
 const PAGE_SIZE = 100;
 
 // GET /shells/{id}/log pages from the HEAD of the file: `offset` skips lines and
-// `limit` caps how many come back (bridge_shell_page, src/bridge/shell_cmd.odin). There
+// `limit` caps how many come back (bridge_shell_page, src/bridge/shell_common.odin). There
 // is no tail mode, so "show me the end of the log" has to be expressed as an offset.
 // Note that bridge_shell_page's documented "limit <= 0 means no cap" escape hatch is NOT
 // reachable from here: shell_session_get_log rewrites a non-positive limit to 100

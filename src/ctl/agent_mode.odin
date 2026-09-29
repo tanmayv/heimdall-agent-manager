@@ -48,7 +48,6 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
-	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
 	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	case "issue", "issues": ctl_issues_command(cmd[idx:], args); return
 	case "vault":           ctl_vault_command(cmd[idx:], args); return
@@ -94,44 +93,6 @@ ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
 	if v := option_value(args, "--not-in-conversation-ids", ""); v != "" do append(&fields, json_kv("not_in_conversation_ids", v))
 	if v := option_value(args, "--exclude", ""); v != "" do append(&fields, json_kv("exclude", v))
 	ctl_agent_call(endpoint, token, "agent.search", json_object_from_slice(fields[:]))
-}
-
-// ---- shell-cmd ----------------------------------------------------------
-// Agents run shell commands on their local Bridge host via two RPCs:
-//   exec  — submit a command line for the Bridge to run locally
-//   read  — fetch the status/output of a previously submitted exec by id
-// This is the CTL-side dispatch only; the Bridge handler is REQ-14. Output is
-// the raw JSON envelope from the local endpoint (curators consume it
-// programmatically). The non-agent user-mode path is unaffected.
-ctl_agentmode_shell_cmd :: proc(endpoint, token: string, tokens, args: []string) {
-	verb := pos(tokens, 0)
-	switch verb {
-	case "exec":
-		cmd := option_value(args, "--cmd", "")
-		if strings.trim_space(cmd) == "" {
-			print_agent_help([]string{"shell-cmd"})
-			return
-		}
-		// --cwd is optional; empty is sent through and the Bridge treats it as
-		// "inherit my working directory" (REQ-24).
-		cwd := option_value(args, "--cwd", "")
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd), json_kv("cwd", cwd)))
-	case "read":
-		id := pos(tokens, 1)
-		if strings.trim_space(id) == "" {
-			print_agent_help([]string{"shell-cmd"})
-			return
-		}
-		// Optional paging (REQ-25). Defaults (offset 0, limit 100, no grep)
-		// reproduce the historic tail-100 output. offset/limit are validated as
-		// non-negative integers so a malformed flag can never emit invalid JSON.
-		offset := ctl_shell_uint_flag(args, "--offset", "0")
-		limit := ctl_shell_uint_flag(args, "--limit", "100")
-		grep := option_value(args, "--grep", "")
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id), json_kv_raw("offset_lines", offset), json_kv_raw("limit_lines", limit), json_kv("grep_pattern", grep)))
-	case:
-		print_agent_help([]string{"shell-cmd"})
-	}
 }
 
 // ctl_shell_uint_flag returns the value of a non-negative integer flag as a bare
@@ -1623,7 +1584,6 @@ print_agent_help :: proc(cmd: []string) {
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
-	case "shell-cmd": print_help_shell_cmd(); return
 	case "shell":     print_help_shell(); return
 	case "issue", "issues": print_issues_help(); return
 	case "project", "projects": print_projects_help(); return
@@ -1651,7 +1611,6 @@ print_help_overview :: proc() {
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
 	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
-	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
@@ -1672,36 +1631,6 @@ print_help_overview :: proc() {
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body \"Can you LGTM inst_task_1?\"")
 	fmt.println("")
 	fmt.println("  ham-ctl <group> --help    # detailed help for any group")
-}
-
-print_help_shell_cmd :: proc() {
-	fmt.println("ham-ctl shell-cmd — run a shell command on your local Bridge host")
-	fmt.println("")
-	fmt.println("VERBS")
-	fmt.println("  exec --cmd <command>   Submit a shell command for the Bridge to run locally.")
-	fmt.println("                         Returns an exec id; read it back with `shell-cmd read`.")
-	fmt.println("  read <exec-id>         Fetch the status/output of a previously submitted exec.")
-	fmt.println("                         By default returns the last 100 lines; page the full log")
-	fmt.println("                         with --offset/--limit/--grep.")
-	fmt.println("")
-	fmt.println("FLAGS")
-	fmt.println("  --cmd <command>        The command line to run (required for exec).")
-	fmt.println("  --cwd <dir>            Working directory to run the command in (exec, optional).")
-	fmt.println("                         A leading ~ is expanded and the directory must exist.")
-	fmt.println("                         If omitted, the command inherits the Bridge's working")
-	fmt.println("                         directory (typically $HOME).")
-	fmt.println("  --offset <N>           read: skip the first N lines of the output (0-indexed;")
-	fmt.println("                         default 0).")
-	fmt.println("  --limit <N>            read: return at most N lines (default 100).")
-	fmt.println("  --grep <pattern>       read: return only lines containing <pattern>, each")
-	fmt.println("                         prefixed with its original line number.")
-	fmt.println("")
-	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd \"odin build src/bridge\"")
-	fmt.println("  ham-ctl shell-cmd exec --cmd \"nix develop --command bash -c 'odin build src/ctl'\"")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123 --grep error")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123 --offset 200 --limit 100")
 }
 
 print_help_bridge :: proc() {

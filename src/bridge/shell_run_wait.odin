@@ -280,7 +280,7 @@ bridge_shell_wait_outcome_str :: proc(o: Bridge_Shell_Wait_Outcome) -> string {
 // The run itself was created over the hub's normal create endpoint, so by the
 // time this is called the hub row exists, the bridge has spawned the process and
 // registered the session, and the spec is on disk. All this call does is park
-// until that session ends, and render the same response shape `shell-cmd exec`
+// until that session ends, and render the same response shape a finished run
 // returns inline. It CREATES NOTHING and OWNS NOTHING (W2).
 //
 // AUTHORIZATION: a caller may only wait on a session its own agent instance
@@ -398,8 +398,8 @@ Bridge_Shell_Run_Cap_Ctx :: struct {
 // bridge_shell_run_cap_start arms the 30-minute hard cap on a pty-host-spawned
 // RUN (REQ-SHELL-2 §8).
 //
-// WHY THIS EXISTS SEPARATELY. The cap used to live in the shell-cmd reaper, which
-// owns a direct child and can simply bound its wait. A run created through the hub
+// WHY THIS EXISTS SEPARATELY. The cap used to live in the retired bridge-local exec
+// path's reaper, which owned a direct child and could simply bound its wait. A run created through the hub
 // path has no such owner: the process belongs to the pty-host daemon, and nothing
 // on the bridge was watching the clock for it. So `ham-ctl shell run` would have
 // been the one run shape with NO cap at all — the opposite of what §8 asks for.

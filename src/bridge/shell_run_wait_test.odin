@@ -3,6 +3,27 @@ package main
 // REQ-SHELL-2 bridge-side acceptance tests: the deleted 15s threshold, explicit
 // backgrounding, the runtime foreground->background conversion, and reconcile's
 // direct-child liveness rule.
+//
+// REQ-SHELL-7 REMOVED THIS SUITE'S ORIGINAL SPAWN SEAM. These tests were written
+// against the bridge-local exec RPC, which was the only producer of a DIRECT-CHILD
+// (pty_host=false) session. That RPC and its whole surface are gone, so:
+//
+//   * The cases that asserted the RPC's own RETURN SHAPE — a foreground call coming
+//     back inline, --bg returning a session id at once, the spec being cleared when
+//     the run ends — were deleted with it. The same properties on the surviving path
+//     are covered by the bridge_shell_run_wait_response cases below, which is what
+//     `ham-ctl shell run` actually blocks on.
+//   * The two cases that asserted the bridge-side "only a background run notifies"
+//     decision were deleted too: that decision no longer exists here. The rule now
+//     lives in the hub (REQ-SHELL-5 §1, _shell_session_notify_run_finished) and is
+//     asserted in src/hub/service/shell_session/shell_session_req5_test.odin.
+//   * THE RECONCILE CASES WERE PORTED, NOT DELETED, because the branch they test
+//     SURVIVES: a bridge upgraded past REQ-SHELL-7 still reads direct-child specs
+//     written before it, so bridge_shell_session_reconcile must still resolve them.
+//     Deleting the producer must not delete the reader's test. They now spawn the
+//     child through test_spawn_direct_child_run below, which reproduces exactly what
+//     the retired RPC did: setsid + sh -c, output teed to the session's .out file,
+//     pty_host=false, spec written after the pid is known.
 
 import "core:os"
 import "core:strings"
@@ -14,6 +35,76 @@ import "core:time"
 @(private = "file")
 test_data_dir :: proc(name: string) -> string {
 	return strings.concatenate({"/tmp/ham-shell2-", name})
+}
+
+// test_spawn_direct_child_run spawns a DIRECT-CHILD run and registers it exactly as
+// the retired bridge-local exec RPC did, so the reconcile tests below still exercise
+// the pty_host=false branch after REQ-SHELL-7 removed that RPC.
+//
+// It is a faithful port, not a convenient approximation, and three details carry the
+// test's weight:
+//   * setsid + sh -c on Linux. bridge_shell_session_pid_is_plausible matches the ps
+//     `command=` basename against the spec cmd, and it is the exec chain through sh
+//     that makes ps report "sleep 30" for the recorded pid. Spawning sleep directly
+//     would pass for a different reason than production does.
+//   * started_at is stamped from the same clock, because plausibility also requires
+//     ps lstart to be within 5s of it.
+//   * SPEC FIRST, THEN REGISTER, and every string cloned from THE MAP'S allocator:
+//     save_spec reads the strings the map is about to own, and under `odin test`
+//     context.allocator is a per-test tracking allocator while the map's is the
+//     process heap (REQ-SHELL-11).
+//
+// Returns a caller-owned session_id, the pid, and ok=false if the spawn failed.
+@(private = "file")
+test_spawn_direct_child_run :: proc(name, cmd, data_dir: string) -> (session_id: string, pid: int, ok: bool) {
+	sid := strings.concatenate({"shl_test_", name})
+	defer delete(sid)
+
+	output_path := bridge_shell_output_path(sid)
+	defer delete(output_path)
+	if slash := strings.last_index_byte(output_path, '/'); slash > 0 {
+		_ = os.make_directory_all(output_path[:slash])
+	}
+	out_file, oerr := os.open(output_path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, os.Permissions_Read_All + {.Write_User})
+	if oerr != nil do return "", 0, false
+
+	started_ms := bridge_now_unix_ms()
+	start_time := strings.clone(action_scheduler_format_rfc3339_utc(started_ms))
+	defer delete(start_time)
+
+	command: []string
+	when ODIN_OS == .Darwin {
+		command = []string{"sh", "-c", cmd}
+	} else {
+		command = []string{"setsid", "sh", "-c", cmd}
+	}
+	process, perr := os.process_start(os.Process_Desc{command = command, stdout = out_file, stderr = out_file})
+	_ = os.close(out_file)
+	if perr != nil do return "", 0, false
+
+	map_heap := bridge_shell_session_map_allocator(&bridge_shell_session_map)
+	sess := Bridge_Shell_Session{
+		session_id      = strings.clone(sid, map_heap),
+		kind            = .Run,
+		cmd             = strings.clone(cmd, map_heap),
+		bridge_id       = strings.clone(bridge_config.daemon_id, map_heap),
+		pid             = process.pid,
+		status          = .Running,
+		started_at      = strings.clone(start_time, map_heap),
+		started_unix_ms = started_ms,
+		shell_id        = strings.clone(sid, map_heap),
+		background      = true,
+		pty_host        = false,
+		pty_host_provenance_known = true,
+	}
+	bridge_shell_session_save_spec(data_dir, sess)
+	bridge_shell_session_register(&bridge_shell_session_map, &sess) // CONSUMES sess
+
+	// Nothing reaps this child: the retired RPC started a thread that owned the
+	// process, and there is no such owner any more. Every caller kills it in a defer
+	// with bridge_shell_test_kill_pid, and each of these commands would exit on its
+	// own well inside the suite's lifetime regardless.
+	return strings.clone(sid), process.pid, true
 }
 
 // ---- AC4: the threshold is GONE, and a long run still returns inline -------
@@ -32,103 +123,12 @@ bridge_shell2_async_threshold_is_gone :: proc(t: ^testing.T) {
 	testing.expect(t, BRIDGE_SHELL_HARD_TIMEOUT == 30 * time.Minute, "the 30-minute process cap is kept")
 }
 
-// AC1 + AC4 second half. A foreground run blocks and returns its output INLINE,
-// and the same is true past the old 15s threshold — the point being that nothing
-// converts it on the way.
-//
-// The long case uses a deliberately modest sleep rather than a real >15s wait:
-// with the threshold deleted there is no duration-dependent branch left to
-// exercise, so a longer sleep would only make the suite slower without testing
-// anything the shorter one does not. The genuine >15s run is asserted end to end
-// in the e2e script, where the wall-clock cost is paid once.
-@(test)
-bridge_shell2_foreground_run_returns_inline :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_test_config_mutex)
-	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	bridge_shell_test_reset()
-	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
-	dir := test_data_dir("fg")
-	defer delete(dir)
-	bridge_config.data_dir = dir
-
-	rec := Bridge_Local_Agent_Token_Record{}
-	resp := bridge_shell_cmd_exec("req_fg", "{\"cmd\":\"printf 'inline-result\\\\n'\"}", rec)
-
-	testing.expect(t, strings.contains(resp, "\"status\":\"completed\""), "a foreground run returns terminal, not running")
-	testing.expect(t, strings.contains(resp, "inline-result"), "the output comes back inline")
-	testing.expect(t, strings.contains(resp, "\"exit_code\":0"), "exit code is inline too")
-	// It is NOT reported as background, at any duration.
-	testing.expect(t, !strings.contains(resp, "\"background\":true"), "a foreground run is never reported background")
-}
-
-// ---- AC2: --bg returns immediately with a session id ----------------------
-
-@(test)
-bridge_shell2_background_run_returns_id_immediately :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_test_config_mutex)
-	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	bridge_shell_test_reset()
-	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
-	dir := test_data_dir("bg")
-	defer delete(dir)
-	bridge_config.data_dir = dir
-
-	rec := Bridge_Local_Agent_Token_Record{}
-	started := time.now()
-	resp := bridge_shell_cmd_exec("req_bg", "{\"cmd\":\"sleep 3\",\"background\":true}", rec)
-	elapsed := time.diff(started, time.now())
-
-	testing.expect(t, strings.contains(resp, "\"status\":\"running\""), "a background run returns while still running")
-	testing.expect(t, strings.contains(resp, "\"background\":true"), "and says it is background")
-	session_id := bridge_local_extract_json_string(resp, "session_id", "")
-	defer delete(session_id)
-	testing.expect(t, session_id != "", "the session id is returned so the run stays addressable")
-	// "Immediately" means it did not wait for the 3s command.
-	testing.expect(t, elapsed < 2 * time.Second, "--bg returns without waiting for the command")
-
-	// AC6/AC7 in miniature: the row's identity columns and the spec are in place
-	// while it is live.
-	sess, found := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
-	testing.expect(t, found, "the run is registered while live")
-	testing.expect(t, sess.pid > 0, "the pid is recorded")
-	testing.expect(t, sess.background, "the background flag is recorded")
-	spec := strings.concatenate({dir, "/shell_sessions/", session_id, ".json"})
-	defer delete(spec)
-	testing.expect(t, os.exists(spec), "the spec exists on disk while the run is live")
-}
-
-// ---- AC7: the spec is gone once the run is terminal -----------------------
-
-@(test)
-bridge_shell2_spec_is_removed_when_the_run_ends :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_test_config_mutex)
-	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	bridge_shell_test_reset()
-	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
-	dir := test_data_dir("spec")
-	defer delete(dir)
-	bridge_config.data_dir = dir
-
-	rec := Bridge_Local_Agent_Token_Record{}
-	resp := bridge_shell_cmd_exec("req_spec", "{\"cmd\":\"true\"}", rec)
-	session_id := bridge_local_extract_json_string(resp, "session_id", "")
-	defer delete(session_id)
-	testing.expect(t, session_id != "", "got a session id")
-
-	spec := strings.concatenate({dir, "/shell_sessions/", session_id, ".json"})
-	defer delete(spec)
-	// The foreground call returns only once the reaper has recorded the exit, and
-	// the reaper deletes the spec before signalling — so by the time we are here it
-	// is already gone. The on-disk set is exactly the LIVE set, which is what stops
-	// reconcile treating a finished run as an orphan to reap.
-	testing.expect(t, !os.exists(spec), "the spec is deleted once the run is terminal")
-}
+// AC4's SECOND half — "a long run still comes back inline, nothing converts it on
+// the way" — was asserted against the retired exec RPC's own return value and went
+// with it (REQ-SHELL-7). The surviving statement of the same property is
+// bridge_shell2_wait_returns_the_result_inline below, which exercises
+// bridge_shell_run_wait_response, i.e. what `ham-ctl shell run` actually blocks on.
+// The genuine >15s case stays asserted end to end in tests/e2e_shell2_run_serve_test.sh.
 
 // ---- AC3: the runtime foreground -> background conversion ------------------
 
@@ -307,16 +307,11 @@ bridge_shell2_reconcile_leaves_a_live_direct_child_run_alone :: proc(t: ^testing
 	defer delete(dir)
 	bridge_config.data_dir = dir
 
-	rec := Bridge_Local_Agent_Token_Record{}
-	resp := bridge_shell_cmd_exec("req_recon", "{\"cmd\":\"sleep 30\",\"background\":true}", rec)
-	session_id := bridge_local_extract_json_string(resp, "session_id", "")
+	session_id, spawned_pid, spawn_ok := test_spawn_direct_child_run("recon-live", "sleep 30", dir)
+	testing.expect(t, spawn_ok, "direct-child run spawned")
+	if !spawn_ok do return
 	defer delete(session_id)
-	testing.expect(t, session_id != "", "background run started")
-	defer {
-		if s, ok := bridge_shell_session_scalars(&bridge_shell_session_map, session_id); ok && s.pid > 0 {
-			bridge_shell_test_kill_pid(s.pid)
-		}
-	}
+	defer if spawned_pid > 0 do bridge_shell_test_kill_pid(spawned_pid)
 
 	// Reconcile with an EMPTY daemon roster — which is the true state of affairs for
 	// a direct child, not an artificial one.
@@ -392,13 +387,10 @@ bridge_shell2_reconcile_after_restart_leaves_no_untracked_orphan :: proc(t: ^tes
 	defer delete(dir)
 	bridge_config.data_dir = dir
 
-	rec := Bridge_Local_Agent_Token_Record{}
-	resp := bridge_shell_cmd_exec("req_restart", "{\"cmd\":\"sleep 30\",\"background\":true}", rec)
-	session_id := bridge_local_extract_json_string(resp, "session_id", "")
+	session_id, pid, spawn_ok := test_spawn_direct_child_run("recon-restart", "sleep 30", dir)
+	testing.expect(t, spawn_ok, "direct-child run spawned")
+	if !spawn_ok do return
 	defer delete(session_id)
-	testing.expect(t, session_id != "", "background run started")
-	pid := 0
-	if s, ok := bridge_shell_session_scalars(&bridge_shell_session_map, session_id); ok do pid = s.pid
 	defer if pid > 0 do bridge_shell_test_kill_pid(pid)
 
 	// THE RESTART: the map is in-memory only, so a restart is exactly "the map is
@@ -413,11 +405,11 @@ bridge_shell2_reconcile_after_restart_leaves_no_untracked_orphan :: proc(t: ^tes
 	after, found := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
 	testing.expect(t, found, "the orphan is picked up by reconcile, not lost")
 	// Any RESOLVED state is a pass; what must never happen is "tracked but still
-	// undecided". Which resolved state it lands in is genuinely racy here and both
-	// are correct: reconcile kills the orphan and reports Killed, but the run's own
-	// reaper thread may observe the process dying first and record Exited. The
-	// invariant AC10 states is that it is never an untracked orphan — not which of
-	// the two correct answers wins the race.
+	// undecided". With the retired exec path's reaper gone there is no longer a second
+	// actor racing reconcile for this outcome — reconcile kills the orphan and reports
+	// Killed — but the assertion is deliberately left as the WHOLE resolved set,
+	// because what AC10 states is that it is never an untracked orphan, not which
+	// resolved status it lands in.
 	testing.expect(t, after.status != .Starting,
 		"it is reclaimed or killed-and-reported, never left tracked-but-undecided")
 	testing.expect(t, after.status == .Killed || after.status == .Failed || after.status == .Exited || after.status == .Running,
@@ -427,82 +419,17 @@ bridge_shell2_reconcile_after_restart_leaves_no_untracked_orphan :: proc(t: ^tes
 	testing.expect(t, !os.exists(spec), "a reaped orphan's spec is cleared")
 }
 
-// ---- AC1: a foreground run sends NO notification --------------------------
-
-// AC1's explicit no-notification requirement, and its positive twin.
+// ---- AC1: only background runs notify — NOW A HUB-SIDE RULE -----------------
 //
-// This is the property the deleted 15s threshold got wrong: a command that ran
-// long enough was silently converted and then notified, so whether you were told
-// about your own command depended on how long it happened to take. Now it depends
-// only on what you asked for.
-//
-// Both halves are in ONE test because the assertion that matters is the
-// DIFFERENCE between them — a test that only checked "foreground sends nothing"
-// would still pass if notification were broken entirely.
-@(test)
-bridge_shell2_only_background_runs_notify :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_test_config_mutex)
-	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	bridge_shell_test_reset()
-	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
-	dir := test_data_dir("notify")
-	defer delete(dir)
-	bridge_config.data_dir = dir
-
-	rec := Bridge_Local_Agent_Token_Record{}
-
-	// FOREGROUND: blocks, returns inline, notifies NOTHING.
-	before := bridge_shell_test_notify_decisions()
-	resp := bridge_shell_cmd_exec("req_fg_n", "{\"cmd\":\"true\"}", rec)
-	testing.expect(t, strings.contains(resp, "\"status\":\"completed\""), "the foreground run finished inline")
-	testing.expect_value(t, bridge_shell_test_notify_decisions(), before)
-
-	// BACKGROUND: returns immediately, and notifies when it finishes.
-	bg := bridge_shell_cmd_exec("req_bg_n", "{\"cmd\":\"true\",\"background\":true}", rec)
-	bg_id := bridge_local_extract_json_string(bg, "session_id", "")
-	defer delete(bg_id)
-	testing.expect(t, bg_id != "", "background run started")
-
-	// Wait for the reaper to reach its decision rather than sleeping a fixed span.
-	deadline := time.time_add(time.now(), 5 * time.Second)
-	for bridge_shell_test_notify_decisions() == before && time.diff(time.now(), deadline) > 0 {
-		time.sleep(10 * time.Millisecond)
-	}
-	testing.expect(t, bridge_shell_test_notify_decisions() > before, "a background run DOES notify on completion")
-}
-
-// A run CONVERTED to background mid-flight must notify too: the notification
-// follows the run's current state, not the intent it was born with. The reaper
-// therefore re-reads the flag instead of trusting the value captured at spawn.
-@(test)
-bridge_shell2_a_converted_run_notifies :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_test_config_mutex)
-	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	bridge_shell_test_reset()
-	defer bridge_shell_test_reset()
-	saved := bridge_config.data_dir
-	defer { bridge_config.data_dir = saved }
-	dir := test_data_dir("conv-notify")
-	defer delete(dir)
-	bridge_config.data_dir = dir
-
-	rec := Bridge_Local_Agent_Token_Record{}
-	before := bridge_shell_test_notify_decisions()
-
-	// Born FOREGROUND, but long enough that we can convert it before it ends.
-	bg := bridge_shell_cmd_exec("req_conv_n", "{\"cmd\":\"sleep 1\",\"background\":true}", rec)
-	session_id := bridge_local_extract_json_string(bg, "session_id", "")
-	defer delete(session_id)
-	testing.expect(t, session_id != "", "run started")
-
-	deadline := time.time_add(time.now(), 5 * time.Second)
-	for bridge_shell_test_notify_decisions() == before && time.diff(time.now(), deadline) > 0 {
-		time.sleep(10 * time.Millisecond)
-	}
-	testing.expect(t, bridge_shell_test_notify_decisions() > before, "the run notified on completion")
-}
+// The two cases that lived here asserted the BRIDGE's notify decision by counting it
+// through a test seam on the retired exec path's reaper. REQ-SHELL-7 deleted that
+// path, and with it both the decision and the counter. The rule itself did not move
+// by accident: the hub owns a session's background flag and the agent's conversation,
+// so the hub is where "only a background run notifies" is decided
+// (REQ-SHELL-5 §1, shell_session_service.odin -> _shell_session_notify_run_finished)
+// and asserted (src/hub/service/shell_session/shell_session_req5_test.odin).
+// A test asserting the rule in a layer that no longer owns it would be asserting
+// history, so it is not re-created here.
 
 // ---- legacy specs of UNKNOWN provenance -----------------------------------
 

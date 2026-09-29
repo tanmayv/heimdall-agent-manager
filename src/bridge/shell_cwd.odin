@@ -138,8 +138,10 @@ bridge_shell_cwd_resolve_with_home :: proc(cwd, home: string, allocator := conte
 // bridge_shell_cwd_reject_message renders the refusal a rejected cwd reaches the caller
 // with. The PATH IS NAMED: "a bad --cwd" the caller has to guess at is most of what made
 // the silent fallback expensive to diagnose in the first place. Wording deliberately
-// mirrors the legacy shell-cmd surface (src/bridge/shell_cmd.odin:107-108) so the two
-// read alike for as long as both exist (REQ-SHELL-7 deletes that one).
+// mirrors the wording of the retired bridge-local exec surface this replaced, which
+// validated the same two cases — so callers that moved to `shell run` read the same
+// refusal they always did. That surface is now gone (REQ-SHELL-7); this is the only
+// place the contract is stated.
 // Returns an allocated string; .Ok has no message and yields "".
 bridge_shell_cwd_reject_message :: proc(verdict: Bridge_Shell_Cwd_Verdict, resolved: string, allocator := context.allocator) -> string {
 	switch verdict {

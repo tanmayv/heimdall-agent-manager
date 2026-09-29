@@ -233,11 +233,7 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.cards.accept":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/accept"}
 
-	// ---- shell commands (bridge-local subprocess, output stays on this host) ---
-	case "agent.shell_cmd.exec":
-		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.exec"}
-	case "agent.shell_cmd.read":
-		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.read"}
+	// ---- shell sessions -------------------------------------------------------
 	// agent.shell.wait is LOCAL, unlike every other agent.shell.* verb, which is a
 	// REST call relayed to the hub. It has to be: it is the block that makes a
 	// FOREGROUND run foreground, and the hub transport cannot carry a call that
@@ -293,8 +289,8 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // cards
 	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
 	     "agent.cards.discard", "agent.cards.accept",
-	     // shell commands (bridge-local)
-	     "agent.shell_cmd.exec", "agent.shell_cmd.read", "agent.shell.wait",
+	     // shell sessions (bridge-local block on a hub-created run)
+	     "agent.shell.wait",
 	     // vault commands (bridge-local)
 	     "agent.vault.status", "agent.vault.get":
 		return true
@@ -390,8 +386,6 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, "]}")
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
-	if op == "shell_cmd.exec" do return bridge_shell_cmd_exec(request_id, params, rec)
-	if op == "shell_cmd.read" do return bridge_shell_cmd_read(request_id, params, rec)
 	if op == "shell.wait" do return bridge_shell_wait_rpc(request_id, params, rec)
 	if op == "vault.status" {
 		configured, permissions_valid, key_length := bridge_vault_key_status()

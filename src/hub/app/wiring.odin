@@ -516,8 +516,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/create", rawptr(&graph.agent_action_handlers), http.agent_action_card_create_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/list", rawptr(&graph.agent_action_handlers), http.agent_action_card_list_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/report", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_report_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/list", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/show", rawptr(&graph.agent_action_handlers), http.agent_action_card_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)

@@ -2407,9 +2407,9 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// for why /root already failed loudly while /nonexistent did not.
 	//
 	// This RESTORES A CONTRACT THE PRODUCT ALREADY MADE rather than inventing one: the
-	// shell-cmd surface this replaced validated the same two cases
-	// (src/bridge/shell_cmd.odin:106-108, "the directory must exist"), so callers moving
-	// to `shell run` had lost a check.
+	// retired bridge-local exec surface this path replaced validated the same two cases
+	// ("the directory must exist"), so callers moving to `shell run` had lost a check.
+	// The refusal wording now lives once, in bridge_shell_cwd_reject_message.
 	//
 	// BEFORE bridge_pty_host_ensure_daemon deliberately: a doomed request should not
 	// start a daemon. `cwd` itself is left as the caller wrote it — the session row and
@@ -2506,8 +2506,9 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	for a, i in argv { cloned_argv[i] = strings.clone(a) }
 
 	tee_path := bridge_shell_output_path(session_id)
-	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet.
-	// Mirrors the legacy shell_cmd path (src/bridge/shell_cmd.odin).
+	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet. The
+	// path itself comes from bridge_shell_output_path (src/bridge/shell_common.odin),
+	// which is also what the log and retention paths resolve, so the three agree.
 	if slash := strings.last_index_byte(tee_path, '/'); slash > 0 do _ = os.make_directory_all(tee_path[:slash])
 
 	req := Pty_Host_Spawn_Request{
@@ -2581,11 +2582,12 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		shell_id          = strings.clone(spawn_instance, map_heap),
 		started_unix_ms   = now_ms,
 		background        = background,
-		// Spawned BY THE PTY-HOST DAEMON, so this session does appear in its roster
-		// and reconcile resolves it there. The legacy shell-cmd path sets this false
-		// because its child is a direct os.process_start and can never be in the
-		// roster; reconcile branches on this rather than on kind, since kind=run
-		// arrives by both mechanisms today.
+		// Spawned BY THE PTY-HOST DAEMON, so this session does appear in its roster and
+		// reconcile resolves it there. THIS IS NOW THE ONLY SPAWN PATH — REQ-SHELL-7
+		// deleted the bridge-local exec path, whose direct os.process_start child set
+		// this false and could never be in the roster. Reconcile still branches on the
+		// flag rather than on kind, because specs written before that commit describe
+		// such children and are still read back.
 		pty_host          = true,
 		pty_host_provenance_known = true,
 	}
@@ -2613,8 +2615,9 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// REQ-SHELL-2 §8: arm the 30-minute hard cap. Only a RUN is armed — a server is
 	// long-running by definition and must never be capped — see
 	// bridge_shell_run_cap_start for why the cap needs its own watchdog on this path
-	// at all (the shell-cmd reaper that used to enforce it owns a direct child, and
-	// a hub-path run has no such owner).
+	// at all (the retired reaper that used to enforce it owned a direct child it could
+	// simply wait on; a hub-path run's process belongs to the daemon, so nothing here
+	// has a child to wait for).
 	bridge_shell_run_cap_start(session_id, kind)
 
 	b := strings.builder_make()

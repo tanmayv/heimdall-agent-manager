@@ -5,7 +5,9 @@ Static verification suite for Theme Migration B3 & B4:
 
 Validates:
 - REQ-THEME-MIGRATE-B3: TaskChainOverview, TaskChainsPage, TaskCommentsThread, CardsPanel, MemoryDetailPage, MemoryPage, memoryScope migration to semantic tokens.
-- REQ-THEME-MIGRATE-B4: ArtifactViewer, ProjectFilesPanel, InstanceRunDirPanel, ShellJobsPanel migration to semantic tokens.
+- REQ-THEME-MIGRATE-B4: ArtifactViewer, ProjectFilesPanel, InstanceRunDirPanel migration to
+  semantic tokens. (ShellJobsPanel was covered here too; REQ-SHELL-7 deleted the component
+  along with the rest of the shell-jobs stack, so its case went with it.)
 - REQ-THEME-TEST: Static regression test suite asserting zero raw color utilities across all B3 and B4 components.
 """
 
@@ -26,7 +28,6 @@ B3_B4_FILES = [
     "src/ui/components/ArtifactViewer.tsx",
     "src/ui/components/chat/ProjectFilesPanel.tsx",
     "src/ui/components/chat/InstanceRunDirPanel.tsx",
-    "src/ui/components/chat/ShellJobsPanel.tsx",
 ]
 
 RAW_COLOR_PATTERNS = [
@@ -154,15 +155,6 @@ class TestUiThemeTokensStatic(unittest.TestCase):
         self.assertIn("border border-subtle bg-surface-raised", content)
         self.assertIn("text-muted", content)
         self.assertIn("text-primary", content)
-
-    def test_shell_jobs_panel_semantic_tokens(self):
-        """Verify ShellJobsPanel uses semantic design tokens."""
-        content = self.contents["src/ui/components/chat/ShellJobsPanel.tsx"]
-        self.assertIn("border-subtle bg-surface", content)
-        self.assertIn("border border-subtle bg-surface-raised", content)
-        self.assertIn("text-muted", content)
-        self.assertIn("text-primary", content)
-        self.assertIn("text-accent", content)
 
 
 if __name__ == "__main__":

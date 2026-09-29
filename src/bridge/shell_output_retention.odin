@@ -3,7 +3,7 @@ package main
 // REQ-SHELL-8: rolling retention for bridge-side shell output.
 //
 // Output capture is unchanged and stays that way: the child's stdout+stderr are
-// redirected into a file at spawn (shell_cmd.odin for a direct child, the
+// redirected into a file at spawn (shell_common.odin resolves the path, the
 // pty-host tee_path for a server) and read back on demand. What this file adds is
 // the LIFECYCLE that never existed — before it, every .out file written since the
 // feature shipped was still on disk and nothing ever removed one.
