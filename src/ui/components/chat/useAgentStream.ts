@@ -196,6 +196,16 @@ export function useAgentStream({
           const targetRows = rowsRef.current ?? 24;
           const targetCols = colsRef.current ?? 80;
           if (targetCols > 1) {
+            // REQ-SHELL-29: announce the REAL geometry FIRST, before the nudge.
+            // The hub captures the late-join screen snapshot from the FIRST resize frame
+            // it sees (agent_instance_handlers.odin), and the nudge below deliberately
+            // sends a wrong width. Without this line that wrong width is what the capture
+            // wraps at, so a full-width line breaks one column early and every line after
+            // it shifts — and a shell sitting at a prompt never repaints to correct it.
+            // The shells hook already announces honest geometry on open
+            // (useShellStream.ts:202); this makes the agent pane consistent with it.
+            // ORDER IS LOAD-BEARING: keep this call above the cols - 1 nudge.
+            sendResize(targetRows, targetCols);
             sendResize(targetRows, targetCols - 1);
             clearMicroNudgeTimer();
             microNudgeTimerRef.current = window.setTimeout(() => {
