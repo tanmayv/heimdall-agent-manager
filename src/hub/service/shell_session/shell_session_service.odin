@@ -2050,22 +2050,38 @@ _json_bool :: proc(body, key: string) -> bool {
 
 // _json_array_raw returns the raw JSON array value for a key as a heap-allocated string
 // (e.g., ["line1","line2"]). Caller must delete the returned string.
+//
+// String- and escape-aware in both halves, which a bracket counter is not. Its caller
+// shell_session_get_log runs it over the bridge reply's "lines" array — arbitrary
+// process stdout — so a log line carrying a lone `]` (a pretty-printed array's
+// terminator on its own line) or a lone `[` (a truncated line) would otherwise
+// desynchronise the depth count and yield a plausible-looking wrong span, and a line
+// containing `"lines":` would be matched as the field itself. Both failures are silent.
+// The key scan is _inventory_find_array, the package's one such scan.
+//
+// Returns "[]" when the key is absent, its value is not an array, or the array is
+// never terminated.
 _json_array_raw :: proc(body, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return strings.clone("[]")
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return strings.clone("[]")
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '[' do return strings.clone("[]")
+	open_idx := _inventory_find_array(body, key)
+	if open_idx < 0 do return strings.clone("[]")
+	span := body[open_idx:]
 	depth := 0
-	for i := 0; i < len(rest); i += 1 {
-		if rest[i] == '[' do depth += 1
-		else if rest[i] == ']' {
+	in_string := false
+	escaped := false
+	for i := 0; i < len(span); i += 1 {
+		ch := span[i]
+		if in_string {
+			if escaped { escaped = false; continue }
+			if ch == '\\' { escaped = true; continue }
+			if ch == '"' do in_string = false
+			continue
+		}
+		switch ch {
+		case '"': in_string = true
+		case '[': depth += 1
+		case ']':
 			depth -= 1
-			if depth == 0 do return strings.clone(rest[:i + 1])
+			if depth == 0 do return strings.clone(span[:i + 1])
 		}
 	}
 	return strings.clone("[]")

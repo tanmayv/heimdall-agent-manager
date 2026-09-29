@@ -420,6 +420,10 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			if inst.agent_id != target_agent_id do continue
 			if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
 
+			// REQ-TB-HUB-1: when cand.bridge_id != "", filter candidate instances and
+			// scope live_count strictly to the pinned bridge.
+			if cand.bridge_id != "" && inst.bridge_id != cand.bridge_id do continue
+
 			if inst.runtime_status == "stopped" {
 				if warm_stopped_id == "" && !busy_instances[inst.agent_instance_id] {
 					warm_stopped_id = inst.agent_instance_id
@@ -536,6 +540,10 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				if inst.agent_id != rev_agent_id do continue
 				if inst.agent_instance_id == assignee_id do continue
 				if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+
+				// REQ-TB-HUB-1: when t.bridge_id != "", filter candidate reviewer instances and
+				// scope live_count strictly to the pinned bridge.
+				if t.bridge_id != "" && inst.bridge_id != t.bridge_id do continue
 
 				if inst.runtime_status == "stopped" {
 					if warm_stopped_reviewer_id == "" && !busy_instances[inst.agent_instance_id] {
@@ -703,10 +711,15 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 
 	held_instance_ids := make(map[string]bool)
 	defer delete(held_instance_ids)
+	instance_bridge_ids := make(map[string]string)
+	defer delete(instance_bridge_ids)
 	if service.agents != nil {
 		for instance_id in instance_ids {
-			if inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id); inst_ok && offline_task_ids[domain.Task_ID(inst.current_task_id)] {
-				held_instance_ids[instance_id] = true
+			if inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id); inst_ok {
+				instance_bridge_ids[instance_id] = inst.bridge_id
+				if offline_task_ids[domain.Task_ID(inst.current_task_id)] {
+					held_instance_ids[instance_id] = true
+				}
 			}
 		}
 	}
@@ -805,11 +818,15 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			continue
 		}
 
+		inst_bridge := instance_bridge_ids[instance_id]
+
 		// WORK pool: actionable, unblocked tasks assigned to this instance.
 		best_work: domain.Task
 		have_work := false
 		for t in tasks {
 			if offline_task_ids[t.task_id] do continue
+			// REQ-TB-HUB-1: skip tasks whose bridge_id != inst.bridge_id
+			if t.bridge_id != "" && inst_bridge != t.bridge_id do continue
 			a := primary_assignee_instance(t.assignee_ref_json)
 			is_mine := a == instance_id
 			delete(a)
@@ -1383,6 +1400,9 @@ set_instance_current_task :: proc(service: ^Taskchain_Service, auth: contracts.A
 	inst, inst_ok, inst_err := iface.agent_get_instance(service.agents, instance_id)
 	if !inst_ok do return domain.Agent_Instance{}, false, inst_err
 	if inst.owner_user_id != task.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "instance and task belong to different owners")
+	if task.bridge_id != "" && inst.bridge_id != "" && inst.bridge_id != task.bridge_id {
+		return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "instance bridge does not match task bridge")
+	}
 
 	tasks, tasks_err := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if tasks_err.code != .None do return domain.Agent_Instance{}, false, tasks_err
