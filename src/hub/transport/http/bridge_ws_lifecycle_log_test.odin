@@ -29,12 +29,12 @@ masked_text_frame :: proc(text: string) -> [dynamic]byte {
 	return out
 }
 
-@(private = "file")
-reset_log_limiter :: proc() {
-	// The limiter is process-wide and other tests in this package establish bridge
-	// connections, so each test starts from a known table rather than inheriting one.
-	bridge_ws_log_limiter.slots = {}
-}
+// NOTE (REQ-SHELL-59): there used to be a reset_log_limiter() here that cleared the
+// process-wide bridge_ws_log_limiter between tests. It was the BUG, not the isolation:
+// the clear took no lock while bridge_ws_log_admit holds one, so at
+// ODIN_TEST_THREADS>1 one test's reset landed mid-loop in another's and granted it a
+// second burst. Every test below now owns a private Bridge_WS_Log_Limiter and calls the
+// *_in variants, so there is no shared table to reset and no reset to race.
 
 // A close frame is an ORDERLY shutdown, and must not be reported as a desync. The
 // pre-existing bridge_ws_take_frame_flags_nontext_fatal test pins that a close is still
@@ -120,24 +120,24 @@ bridge_ws_reason_strings_are_distinct :: proc(t: ^testing.T) {
 // silent.
 @(test)
 bridge_ws_log_limiter_bounds_a_reconnect_storm :: proc(t: ^testing.T) {
-	reset_log_limiter()
-	defer reset_log_limiter()
+	// Private to this test: nothing else can clear or age it mid-loop.
+	lim := Bridge_WS_Log_Limiter{}
 	now := i64(1_000_000_000_000)
 
 	allowed := 0
 	for i in 0 ..< 200 {
 		// A storm inside a single window: every event at the same instant.
-		if allow, _ := bridge_ws_log_admit("brg_storm", now); allow do allowed += 1
+		if allow, _ := bridge_ws_log_admit_in(&lim, "brg_storm", now); allow do allowed += 1
 	}
 	testing.expect_value(t, allowed, BRIDGE_WS_LOG_BURST)
 
 	// Next window: the first event is allowed again AND reports the backlog.
-	allow, suppressed := bridge_ws_log_admit("brg_storm", now + i64(BRIDGE_WS_LOG_WINDOW))
+	allow, suppressed := bridge_ws_log_admit_in(&lim, "brg_storm", now + i64(BRIDGE_WS_LOG_WINDOW))
 	testing.expect(t, allow)
 	testing.expect_value(t, suppressed, 200 - BRIDGE_WS_LOG_BURST)
 
 	// ...and the backlog is not double-reported.
-	_, again := bridge_ws_log_admit("brg_storm", now + i64(BRIDGE_WS_LOG_WINDOW))
+	_, again := bridge_ws_log_admit_in(&lim, "brg_storm", now + i64(BRIDGE_WS_LOG_WINDOW))
 	testing.expect_value(t, again, 0)
 }
 
@@ -145,14 +145,13 @@ bridge_ws_log_limiter_bounds_a_reconnect_storm :: proc(t: ^testing.T) {
 // not one global one.
 @(test)
 bridge_ws_log_limiter_budgets_are_per_bridge :: proc(t: ^testing.T) {
-	reset_log_limiter()
-	defer reset_log_limiter()
+	lim := Bridge_WS_Log_Limiter{}
 	now := i64(2_000_000_000_000)
 	for i in 0 ..< 50 {
-		_, _ = bridge_ws_log_admit("brg_noisy", now)
+		_, _ = bridge_ws_log_admit_in(&lim, "brg_noisy", now)
 	}
 	// A different bridge's first line is still admitted.
-	allow, suppressed := bridge_ws_log_admit("brg_quiet", now)
+	allow, suppressed := bridge_ws_log_admit_in(&lim, "brg_quiet", now)
 	testing.expect(t, allow)
 	testing.expect_value(t, suppressed, 0)
 }
@@ -161,8 +160,7 @@ bridge_ws_log_limiter_budgets_are_per_bridge :: proc(t: ^testing.T) {
 // refusing to log or by running off the end of the table.
 @(test)
 bridge_ws_log_limiter_survives_more_bridges_than_slots :: proc(t: ^testing.T) {
-	reset_log_limiter()
-	defer reset_log_limiter()
+	lim := Bridge_WS_Log_Limiter{}
 	now := i64(3_000_000_000_000)
 	ids := make([dynamic]string)
 	defer { for s in ids do delete(s); delete(ids) }
@@ -172,7 +170,7 @@ bridge_ws_log_limiter_survives_more_bridges_than_slots :: proc(t: ^testing.T) {
 		id := strings.concatenate({"brg_", num})
 		delete(num)
 		append(&ids, id)
-		allow, _ := bridge_ws_log_admit(id, now + i64(i) * i64(time.Millisecond))
+		allow, _ := bridge_ws_log_admit_in(&lim, id, now + i64(i) * i64(time.Millisecond))
 		testing.expect(t, allow, "a bridge's FIRST lifecycle line must never be suppressed")
 	}
 }

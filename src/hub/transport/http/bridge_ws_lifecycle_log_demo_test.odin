@@ -54,9 +54,13 @@ close_demo_pair :: proc(p: ^Demo_Pair) {
 // with a plausible connection lifetime, so AC6 shows real output rather than a mock.
 @(private = "file")
 emit :: proc(bridge_id: string, reason: Bridge_WS_Disconnect_Reason, duration_ms: i64, cascaded: bool) {
-	bridge_ws_log_limiter.slots = {} // each scenario gets a fresh budget
-	bridge_ws_log_connect(bridge_id, "127.0.0.1:54321", 7, false)
-	bridge_ws_log_disconnect(bridge_id, reason, 7, duration_ms, cascaded)
+	// Each scenario gets a fresh budget from a PRIVATE limiter. This used to be
+	// `bridge_ws_log_limiter.slots = {}` against the process-wide global, which is
+	// REQ-SHELL-59: an unlocked clear that raced the asserting limiter tests and handed
+	// them a second burst at ODIN_TEST_THREADS>1. Output is unchanged.
+	lim := Bridge_WS_Log_Limiter{}
+	bridge_ws_log_connect_in(&lim, bridge_id, "127.0.0.1:54321", 7, false)
+	bridge_ws_log_disconnect_in(&lim, bridge_id, reason, 7, duration_ms, cascaded)
 }
 
 // The bridge sends a WS close frame: an orderly goodbye.
@@ -158,19 +162,21 @@ masked_heartbeat_frame :: proc() -> [dynamic]byte {
 // the log. Prints the admitted lines and the suppression notice.
 @(test)
 demo_reconnect_storm_is_bounded :: proc(t: ^testing.T) {
-	bridge_ws_log_limiter.slots = {}
-	defer bridge_ws_log_limiter.slots = {}
+	// Private limiter (REQ-SHELL-59). This demo previously cleared the process-wide
+	// table twice AND rewrote every slot's window_start_ns in the ageing loop below, all
+	// without the limiter mutex — three unsynchronised writes racing the asserting tests.
+	lim := Bridge_WS_Log_Limiter{}
 	fmt.println("--- REQ-SHELL-41 AC5: 50 reconnects inside one window ---")
 	for i in 0 ..< 50 {
-		bridge_ws_log_connect("brg_demo_flap", "127.0.0.1:54321", i, true)
-		bridge_ws_log_disconnect("brg_demo_flap", .Read_Deadline, i, 1_000, true)
+		bridge_ws_log_connect_in(&lim, "brg_demo_flap", "127.0.0.1:54321", i, true)
+		bridge_ws_log_disconnect_in(&lim, "brg_demo_flap", .Read_Deadline, i, 1_000, true)
 	}
 	fmt.println("--- window rolls over; the backlog is reported, not lost ---")
 	// Simulate the next window by ageing the slot back past the window length.
 	for i in 0 ..< BRIDGE_WS_LOG_SLOTS {
-		s := &bridge_ws_log_limiter.slots[i]
+		s := &lim.slots[i]
 		if s.id_len > 0 do s.window_start_ns -= i64(BRIDGE_WS_LOG_WINDOW)
 	}
-	bridge_ws_log_connect("brg_demo_flap", "127.0.0.1:54321", 99, true)
+	bridge_ws_log_connect_in(&lim, "brg_demo_flap", "127.0.0.1:54321", 99, true)
 	fmt.println("--- end AC5 demonstration ---")
 }
