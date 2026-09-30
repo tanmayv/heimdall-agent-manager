@@ -220,7 +220,10 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 				// REQ-SHELL-29: the agent pane's SIGWINCH micro-nudge (useAgentStream.ts:194-206)
 				// only repaints FULL-SCREEN programs; a shell sitting at a prompt is not
 				// covered by it, so the snapshot is still required here.
-				if late_join && !screen_sent {
+				// REQ-SHELL-61: same gate as the shells pane, and it carried the same defect —
+				// the first viewer got no snapshot. Both panes now share the one predicate so
+				// they cannot drift apart again.
+				if shell_stream_should_send_screen_snapshot(late_join, screen_sent, rows, cols) {
 					screen_sent = true
 					_ = shell_stream_send_agent_screen_snapshot(h.agents, h.shell_sessions, auth_ctx, instance_id, client, rows, cols)
 				}

@@ -140,7 +140,30 @@ bridge_ws_log_limiter: Bridge_WS_Log_Limiter
 // Returns allow=true to log, plus `suppressed` = how many lines were dropped since the
 // last allowed one (report it in the line so the gap is self-describing).
 bridge_ws_log_admit :: proc(bridge_id: string, now_ns: i64) -> (allow: bool, suppressed: int) {
-	lim := &bridge_ws_log_limiter
+	return bridge_ws_log_admit_in(&bridge_ws_log_limiter, bridge_id, now_ns)
+}
+
+// bridge_ws_log_admit_in is the same decision taken against an EXPLICIT limiter.
+// Production always goes through the wrapper above and therefore always uses the
+// process-wide global; the limiter is a parameter here purely so that a TEST can own a
+// private one.
+//
+// WHY THIS EXISTS (REQ-SHELL-59). Three asserting tests and five demos used to clear the
+// single global table with a bare `bridge_ws_log_limiter.slots = {}` — a whole-struct
+// assignment taking NO lock, racing this proc, which holds one for its entire body. At
+// ODIN_TEST_THREADS=1 that is harmless because nothing runs concurrently, and the package
+// was green. At THREADS>1 one test's clear lands mid-loop inside another's, its slot
+// vanishes, the next admit allocates a fresh slot with logged = 1, and the budget
+// restarts. The signature is that `allowed` comes back as an exact multiple of
+// BRIDGE_WS_LOG_BURST — 10 and 15 were both observed against an expected 5, i.e. one and
+// two interfering clears. Giving each test a private limiter removes the sharing outright,
+// which is the only fix that also removes the data race; merely ordering the writes would
+// leave a torn read of a half-cleared slot possible.
+bridge_ws_log_admit_in :: proc(
+	lim: ^Bridge_WS_Log_Limiter,
+	bridge_id: string,
+	now_ns: i64,
+) -> (allow: bool, suppressed: int) {
 	sync.mutex_lock(&lim.mu)
 	defer sync.mutex_unlock(&lim.mu)
 
@@ -194,7 +217,19 @@ bridge_ws_log_admit :: proc(bridge_id: string, now_ns: i64) -> (allow: bool, sup
 // host's. It is still worth logging (it distinguishes a direct connection from a
 // proxied one, and separates proxy instances), but do not read it as the bridge's IP.
 bridge_ws_log_connect :: proc(bridge_id: string, remote: string, generation: int, replaced: bool) {
-	allow, suppressed := bridge_ws_log_admit(bridge_id, time.now()._nsec)
+	bridge_ws_log_connect_in(&bridge_ws_log_limiter, bridge_id, remote, generation, replaced)
+}
+
+// As bridge_ws_log_connect, but against an explicit limiter. See bridge_ws_log_admit_in
+// for why a test needs this.
+bridge_ws_log_connect_in :: proc(
+	lim: ^Bridge_WS_Log_Limiter,
+	bridge_id: string,
+	remote: string,
+	generation: int,
+	replaced: bool,
+) {
+	allow, suppressed := bridge_ws_log_admit_in(lim, bridge_id, time.now()._nsec)
 	if !allow do return
 	// fmt.println with pre-existing strings and ints only: no intermediate string is
 	// built, so there is nothing to free on this path (AC4).
@@ -222,7 +257,21 @@ bridge_ws_log_disconnect :: proc(
 	duration_ms: i64,
 	still_current: bool,
 ) {
-	allow, suppressed := bridge_ws_log_admit(bridge_id, time.now()._nsec)
+	bridge_ws_log_disconnect_in(
+		&bridge_ws_log_limiter, bridge_id, reason, generation, duration_ms, still_current)
+}
+
+// As bridge_ws_log_disconnect, but against an explicit limiter. See
+// bridge_ws_log_admit_in for why a test needs this.
+bridge_ws_log_disconnect_in :: proc(
+	lim: ^Bridge_WS_Log_Limiter,
+	bridge_id: string,
+	reason: Bridge_WS_Disconnect_Reason,
+	generation: int,
+	duration_ms: i64,
+	still_current: bool,
+) {
+	allow, suppressed := bridge_ws_log_admit_in(lim, bridge_id, time.now()._nsec)
 	if !allow do return
 	// still_current=false means a newer connection already replaced this one, so the
 	// durable offline cascade was SKIPPED. Logged because "the bridge disconnected"

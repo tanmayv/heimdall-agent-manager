@@ -124,11 +124,23 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 // --- WS attach/detach (Attach-gated streaming, REQ-STREAM-IMPL-2) ---
 
 // Returns late_join: whether this socket joined a session that ALREADY had viewers.
-// REQ-SHELL-29 uses it to decide who needs a screen snapshot. The 0->1 viewer is served
-// by the bridge's existing pty-host catchup (pty_host_stream_worker.odin:149-156) and is
-// deliberately left alone; a late joiner triggers no bridge attach, so nothing repaints
-// it. Reported from under the lock rather than inferred from a later viewer count, which
-// would race a second viewer attaching concurrently.
+// Equivalently: whether this attach did NOT trigger a bridge attach. Reported from under
+// the lock rather than inferred from a later viewer count, which would race a second
+// viewer attaching concurrently.
+//
+// REQ-SHELL-29 introduced it to decide who needs a screen snapshot, on the reasoning that
+// the 0->1 viewer is already served by the bridge's pty-host catchup
+// (pty_host_stream_worker.odin .Screen case) and could be left alone.
+//
+// REQ-SHELL-61 RETIRED THAT USE AND THE REASONING BEHIND IT: the catchup is not a reliable
+// paint for viewer #1 — it is skipped entirely when the bridge already has a live stream
+// worker for the session (bridge_pty_stream_worker_start returns early without sending a
+// fresh Attach), and a viewer #1 that gets no snapshot then has NO screen source at all.
+// The snapshot is therefore sent to every attaching viewer; see
+// shell_stream_should_send_screen_snapshot for the gate and why serving viewer #1 is safe.
+// The value is still returned and still means exactly what it says — it is a truthful fact
+// about the attach, useful for diagnostics, and its test still holds. It is simply no
+// longer a gate.
 shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") -> (late_join: bool) {
 	if svc == nil || session_id == "" do return false
 	heap := runtime.heap_allocator()
@@ -2214,6 +2226,38 @@ _json_str :: proc(body, key: string) -> string {
 			case 't': strings.write_byte(&b, '\t')
 			case '"': strings.write_byte(&b, '"')
 			case '\\': strings.write_byte(&b, '\\')
+			// REQ-SHELL-60: without this case, '\u' fell to the default below and wrote a
+			// LITERAL 'u', after which 0,0,1,b were consumed as ordinary characters — so every
+			// ESC the bridge sent as \u001b arrived as the 5-character text `u001b`. Captured
+			// output from any full-screen program is almost entirely escapes, so it came back
+			// as visible garbage rather than a rendered screen.
+			//
+			// Deliberately IDENTICAL to json_string_unescaped (transport/http/bridge_handlers
+			// .odin), the sibling unescaper that already had this case, down to the malformed
+			// fallbacks. The two decode the same bridge wire format, so they must not diverge.
+			//
+			// SURROGATE PAIRS ARE NOT JOINED, and that is a deliberate copy of the reference
+			// rather than an oversight: a non-BMP character arrives as '\uD83D' '\uDE00' and
+			// each half is written as its own rune. Joining them HERE only would make the two
+			// unescapers disagree about the same bytes, which is worse than a limitation both
+			// share. Fixing it belongs in one change that touches both.
+			case 'u':
+				if i + 4 < len(rest) {
+					hex_str := rest[i + 1:i + 5]
+					val, ok := strconv.parse_int(hex_str, 16)
+					if ok {
+						if val < 128 {
+							strings.write_byte(&b, byte(val))
+						} else {
+							strings.write_rune(&b, rune(val))
+						}
+						i += 4
+					} else {
+						strings.write_byte(&b, 'u')
+					}
+				} else {
+					strings.write_byte(&b, 'u')
+				}
 			case: strings.write_byte(&b, ch)
 			}
 			escaped = false

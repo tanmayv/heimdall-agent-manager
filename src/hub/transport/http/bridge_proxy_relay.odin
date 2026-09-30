@@ -397,6 +397,14 @@ bridge_proxy_free_record :: proc(rec: ^Hub_Proxy_Stream) {
 
 // bridge_proxy_send_tunnel_bytes chunks bytes into tunnel_data frames toward a bridge,
 // mirroring the preview path's 48KB base64 chunking.
+//
+// CHUNK_SIZE does NOT fit one WS frame, and that is deliberate rather than an oversight.
+// See the long note at the identical constant in shell_session_handlers.odin (the preview
+// request path) for the full reasoning: 49152 raw base64s to exactly 65536 chars against a
+// 65535 cap, which was FATAL before REQ-SHELL-36 and is harmless after it, because
+// write_ws_command now owns framing and re-splits any oversized command at
+// BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES. Do not "fix" the arithmetic here without
+// reading that note; pinned by preview_chunk_size_req54_test.odin (REQ-SHELL-54).
 bridge_proxy_send_tunnel_bytes :: proc(h: ^Bridge_Handlers, bridge_id, stream_id: string, payload: []byte) {
 	CHUNK_SIZE :: 48 * 1024
 	seq := 0

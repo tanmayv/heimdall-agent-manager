@@ -219,6 +219,49 @@ _shell_stream_write_screen_frame :: proc(
 	return true
 }
 
+// shell_stream_should_send_screen_snapshot decides whether an attaching viewer's resize
+// frame must be answered with a screen snapshot. It is THE gate: both stream handlers
+// (shell_session_handlers.odin, agent_instance_handlers.odin) consult it rather than
+// spelling the condition out twice, so the two panes cannot drift apart again.
+//
+// REQ-SHELL-61 — `late_join` IS ACCEPTED AND DELIBERATELY NOT CONSULTED, and that is the
+// whole fix. This gate used to read `late_join && !screen_sent`, which meant THE FIRST
+// VIEWER OF A SESSION NEVER RECEIVED A SNAPSHOT. Viewer #1 was expected to be painted by
+// the pty-host's catch-up that the bridge forwards on the hub's 0->1 transition; when that
+// catch-up carries little or nothing, viewer #1 gets a BLANK PANE, which is the reported
+// neovim defect. A re-render or a tab switch appeared to "fix" it only because it made the
+// viewer a late joiner, where the snapshot did fire.
+//
+// WHY SERVING VIEWER #1 TOO IS SAFE, since the design note at the top of this file is easy
+// to misread as an argument against it. That note explains why the 0->1 catch-up cannot
+// serve viewer #2 — it travels as `shell_pty_output`, which the hub BROADCASTS, so it would
+// repaint viewer #1. That is an argument for ADDING a targeted snapshot for late joiners.
+// It is not an argument for WITHHOLDING one from viewer #1, and the code never had one:
+//   - the snapshot is a TARGETED write. shell_stream_send_shell_screen_snapshot is handed
+//     one `client` socket and _shell_stream_write_screen_frame writes only that socket —
+//     no fan-out, no viewer-list iteration — so it cannot repaint anybody else;
+//   - it is an ABSOLUTE REPAINT (SHELL_SCREEN_REPAINT_PREFIX, erase-screen + cursor-home),
+//     so viewer #1 receiving BOTH the catch-up and the snapshot paints over, it does not
+//     duplicate. The cost is one extra pane capture per attach.
+//
+// `screen_sent` keeps it once-per-stream: a viewer resizes repeatedly and only the first
+// resize earns a capture.
+//
+// THE GEOMETRY GUARD IS PART OF THE GATE, not an incidental caller-side check, because it
+// is a live trap worth seeing in one place: a snapshot is only ever produced from a resize
+// frame carrying real geometry (capturing at a guessed 80 columns would re-wrap the
+// screen), so a client that sends NO resize, or sends 0/0, gets no snapshot at all. Since
+// REQ-SHELL-61 that also means it gets no screen on a first attach beyond whatever the
+// catch-up drew. The shells UI does always send one from inside `onopen`
+// (useShellStream.ts sendGeometry -> shellStreamFrames.ts shellResizeFrame), with 24x80
+// floors applied in ShellTerminalPane.tsx getGeometry — but that helper returns null when
+// the xterm instance does not exist yet, and a null frame is silently not sent.
+shell_stream_should_send_screen_snapshot :: proc(late_join: bool, screen_sent: bool, rows, cols: int) -> bool {
+	if screen_sent do return false
+	if rows < 1 || cols < 1 do return false
+	return true
+}
+
 // shell_stream_send_shell_screen_snapshot serves the shells terminal pane.
 // `cols`/`rows` come from the client's own resize frame so the capture is rendered at the
 // width the viewer actually has; capturing at a guessed 80 would deliver a correct picture
