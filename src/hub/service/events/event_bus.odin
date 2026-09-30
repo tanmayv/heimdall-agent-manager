@@ -169,27 +169,50 @@ _log_publish_write :: proc(result: ws.Text_Write_Result, size: int) {
 // whether it was an everyday occurrence or a rare one. Every publisher into this bus was
 // enumerated and read; the result, so nobody has to redo it:
 //
+// >>> CORRECTION. An earlier version of THIS COMMENT, and the commit message of 19a6acf0,
+// claimed the agent->user chat event was bounded at a 140-rune preview and that the only
+// unbounded field was display_name, with "the largest thing enumerated is ~5 KB". THAT WAS
+// FALSE, in the direction that matters: it made an everyday trigger look exotic. It is
+// corrected here rather than quietly deleted, because the wrong version was written into
+// source as documentation intended to stop anyone re-deriving it. Caught by reviewer #26 on
+// the REQ-SHELL-35 review. <<<
+//
+//   PRIMARY UNBOUNDED FIELD — THE AGENT CHAT BODY. This is the everyday path.
+//     agent_action_handlers.odin:82  builds the event with chat_event_preview(m.body, 140)
+//     agent_action_handlers.odin:99  if strings.contains(trimmed, "vault:v1:") do return collapsed
+//   That early return hands back the WHOLE collapsed body; the rune clip below it is never
+//   reached. And bodies arrive armored by default — ctl_agentmode_chat_send_params
+//   (src/ctl/agent_mode.odin:1307-1317) encrypts every non-armored body whenever a vault key
+//   is configured, producing exactly that `vault:v1:` prefix. So the bound is ~4/3 of the
+//   plaintext (base64) with NO cap: roughly 49 KB of plaintext crossed the old 65535 cliff,
+//   and multi-KB agent messages are routine.
+//
+//   AND THE GUARD IS `strings.contains`, NOT `has_prefix` — which is the more alarming half.
+//   A body that merely MENTIONS the literal `vault:v1:` anywhere takes the uncapped branch
+//   with no encryption involved at all. Discussing the armor prefix in a message is enough.
+//   (The same pattern appears at taskchain_service.odin:1322 and :1361 and at
+//   taskchain_repo_sqlite.odin:220 — those are the notice/persistence paths, not this bus.)
+//
+//   SECONDARY: agent_instance_summary_json embeds display_name verbatim, client-supplied and
+//   stored with NO LENGTH CAP, riding created and every status_changed for that instance.
+//   Real, but second to the chat body and filed separately as REQ-SHELL-51.
+//
 //   BOUNDED, and bounded for a REASON rather than by luck:
-//     - the agent->user chat event carries a 140-RUNE PREVIEW plus fetch_required:true, not
-//       the body, so an arbitrarily long chat message yields a ~400-byte event;
 //     - task / chain / shell_session / bridge events carry IDS and a status, never a
 //       description or a body — a multi-KB chain description never enters an event;
 //     - the activity-bubble summary is rune-clipped at the call site;
 //     - messages_read carries an id array whose producer caps the list at 200 rows.
 //
-//   UNBOUNDED, today, one field: agent_instance_summary_json embeds display_name verbatim,
-//   and display_name is client-supplied, trimmed and stored with NO LENGTH CAP. It rides
-//   every created and status_changed event for that instance, and JSON escaping inflates
-//   control bytes sixfold. That is the path that could actually cross the old cliff.
-//
 // So the size of an event is DATA-DRIVEN and bounded only by how each summary happens to
 // be written today. That is why the fix is not "cap the summaries": a 65535 bound spread
 // across ~30 call sites is a trap, and the one that matters is that crossing it must cost
-// a repaint rather than the client's entire event feed.
+// a repaint rather than the client's entire event feed. The verdict on the task title is
+// therefore EVERYDAY-REACHABLE, not theoretical: the defect this file fixes was being hit
+// by ordinary traffic.
 //
 // WHERE AC2 LANDS — DELIVERY, not a survivable drop. With the 64-bit arm every event up to
-// ws.WS_MAX_SERVER_PAYLOAD (16 MiB) is really sent, so nothing above is at risk any more;
-// the largest thing enumerated is ~5 KB. Above 16 MiB an event IS still dropped, with the
+// ws.WS_MAX_SERVER_PAYLOAD (16 MiB) is really sent. The chat-body path above is the one that
+// makes that arm load-bearing rather than theoretical. Above 16 MiB an event IS still dropped, with the
 // socket kept, counted and logged, and that residual is deliberate: the frame is built in
 // one contiguous allocation, so removing the bound would make a remote-supplied string an
 // unbounded hub-side allocation. Chunking is not the answer either — this bus has no
