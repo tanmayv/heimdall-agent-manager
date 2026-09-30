@@ -41,11 +41,15 @@ package shell_session
 // get_by_id(bridge_id, session_id) (bridge-scoped SQL), so an inventory from bridge A
 // naming bridge B's session resolves to nothing and changes nothing on B.
 
+import "base:runtime"
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import platform "odin_test:hub/platform"
+import project_service "odin_test:hub/service/project"
 import iface "odin_test:hub/repository/iface"
 
 // SHELL_SESSION_INVENTORY_MAX_ROWS bounds the hub side of one diff, mirroring the
@@ -114,6 +118,7 @@ Shell_Session_Inventory_Result :: struct {
 	conflicted:  int, // bridge says running but the hub OBSERVED this run end
 	ignored:     int, // unusable entry (no id, unknown kind/status, bad scope)
 	kills_replayed: int,
+	reattached:  int, // live here, still viewed, stream re-armed on the bridge (REQ-SHELL-40)
 }
 
 // shell_session_inventory_changed answers whether a diff wrote anything, and it is the
@@ -126,6 +131,9 @@ Shell_Session_Inventory_Result :: struct {
 // for, since a clean inventory is the case where the outstanding kill is the ONLY thing
 // wrong. Its remaining use is what it is actually for: asserting the idempotency of
 // apply_inventory in tests.
+// `reattached` is excluded for the same reason as `ignored` and `kills_replayed`: it
+// writes no row. A healthy reconnect with a pane open re-attaches and changes nothing,
+// and the idempotency assertions built on this predicate must keep reading zero there.
 shell_session_inventory_changed :: proc(r: Shell_Session_Inventory_Result) -> bool {
 	return r.adopted > 0 || r.terminated > 0 || r.corrected > 0 || r.revived > 0
 }
@@ -209,7 +217,149 @@ shell_session_apply_inventory :: proc(svc: ^Shell_Session_Service, bridge_id, fr
 	// intent, and its structural auto-clear retires one the moment any terminal status
 	// lands — including the ones written above.
 	result.kills_replayed, _ = shell_session_replay_kill_intents(svc, bridge_id)
+
+	// Pass 3 — REQ-SHELL-40. Re-arm the OUTPUT STREAM of every session that is still
+	// being watched. This is the third leak of core invariant (b), and the only one
+	// that is not about a row.
+	//
+	// THE INVARIANT, then the mechanism, then what breaks without it.
+	//
+	// REQUIREMENT: a session the hub reports as live AND has at least one viewer for
+	// must have a running stream worker on its bridge. Both halves of that are needed;
+	// a row that says "running" while nothing carries its bytes is a lie the UI renders
+	// as a frozen pane.
+	//
+	// MECHANISM: the hub only ever asked the bridge to attach on the 0->1 VIEWER
+	// transition (shell_session_attach). That is edge-triggered on the BROWSER side,
+	// and a bridge reconnect is not an edge on the browser side — from the hub's point
+	// of view no viewer ever left, so no viewer ever arrives, so nothing re-attaches.
+	// The bridge meanwhile comes back with zero stream workers (it tears them down with
+	// the connection they belong to; see bridge_pty_stream_stop_all_for_reconnect).
+	// This pass supplies the missing edge: the reconnect itself.
+	//
+	// CONSEQUENCE IF YOU REMOVE IT: every pane open at the moment of any reconnect — a
+	// WS blip, a deploy, a bridge restart — goes permanently silent, and recovers only
+	// if the user happens to switch tabs, because unmount/remount is the only other
+	// thing in the system that produces a 0->1 transition. Not time, not a heartbeat,
+	// not the next inventory. That is what this pass exists to make impossible, so if
+	// you replace the mechanism, preserve the property: SOMETHING must re-issue attach
+	// for a still-viewed session after the bridge's worker set is emptied.
+	//
+	// WHY IT BELONGS HERE AND NOT ON THE ACCEPT PATH. It must run AFTER both passes
+	// above, because "still live" is a fact those passes may have just changed — Pass 2
+	// can have terminated this very session. Running it on the bridge-WS accept path
+	// (where the kill replay runs) would read rows the inventory had not corrected yet
+	// and could re-attach a session the bridge is about to tell us is dead.
+	//
+	// LIVENESS COMES FROM THE INVENTORY, NOT FROM A ROW READ. `entries` is the bridge's
+	// own observation, which is the rule T10 already applies everywhere else, and it
+	// costs no query. The terminal filter matches _apply_inventory_entry exactly: an
+	// entry with no status, or a terminal one, is not evidence of a live process.
+	_reattach_viewed_sessions(svc, bridge_id, entries[:], &result)
 	return result
+}
+
+// _reattach_viewed_sessions re-issues shell_stream_attach for every session in `entries`
+// that this bridge owns, that the bridge reports live, and that still has a viewer.
+//
+// IDEMPOTENT AT EVERY LAYER, which matters because this fires on every reconnect and a
+// flapping bridge can fire it repeatedly in seconds:
+//   - here: sends are derived from the viewer map, so a session with no viewer is never
+//     touched, and the count of sends per reconnect is bounded by the inventory size;
+//   - on the bridge: bridge_pty_stream_worker_start returns early when a live worker
+//     already exists for that session id, so a duplicate attach CANNOT create a second
+//     worker or a second pty-host socket — a storm costs N no-ops, not N workers;
+//   - against a racing viewer: the decision is made under svc.mu from one consistent
+//     snapshot, so a genuine attach/detach landing concurrently either is already
+//     visible here (and we skip, because the bridge dedupes) or lands after (and does
+//     its own 0->1 attach). Neither ordering yields a session with viewers and no
+//     worker, which is the only outcome that would matter.
+//
+// WHY THE SENDS HAPPEN OUTSIDE THE LOCK. Same discipline as shell_session_attach and
+// shell_session_detach: the command sink writes to a socket, and holding svc.mu across a
+// write would put a viewer-registry lock behind network IO for every attached pane at
+// once. The snapshot is taken under the lock and the IO is done after it.
+@(private = "file")
+_reattach_viewed_sessions :: proc(
+	svc: ^Shell_Session_Service,
+	bridge_id: string,
+	entries: []Shell_Session_Inventory_Entry,
+	result: ^Shell_Session_Inventory_Result,
+) {
+	if svc == nil || bridge_id == "" || len(entries) == 0 do return
+	heap := runtime.heap_allocator()
+
+	// HEAP, NOT TEMP, and this is the same trap bridge_runtime.send_runtime_command_wait
+	// documents. The loop below calls platform.generate_id, which is fmt.tprintf memory
+	// from the per-thread temp allocator ring; ids held in that same ring could be
+	// rewritten IN PLACE underneath us once it wraps, and the symptom would not be a
+	// crash but an attach sent for the wrong session id, intermittently and only under
+	// load. Heap copies make that impossible rather than merely unlikely.
+	targets := make([dynamic]string, 0, len(entries), heap)
+	defer {
+		for t in targets do delete(t, heap)
+		delete(targets)
+	}
+
+	sync.mutex_lock(&svc.mu)
+	for entry in entries {
+		if entry.session_id == "" do continue
+		// Same liveness test as _apply_inventory_entry: the bridge may only assert life
+		// here, and a terminal or empty status asserts nothing.
+		if entry.status == "" || domain.shell_session_status_is_terminal(entry.status) do continue
+		viewers, has_viewers := svc.viewers[entry.session_id]
+		if !has_viewers || len(viewers) == 0 do continue
+		// Bridge-scoped, so an inventory from bridge A can never make the hub send an
+		// attach to bridge B for a session A merely named. The same reasoning as the
+		// row-scoping checks in _apply_inventory_entry, applied to a command instead of
+		// a write.
+		owner_bridge, known := svc.session_bridges[entry.session_id]
+		if !known || owner_bridge != bridge_id do continue
+		append(&targets, strings.clone(entry.session_id, heap))
+	}
+	sync.mutex_unlock(&svc.mu)
+
+	for session_id in targets {
+		cmd_id := ""
+		if svc.ids != nil {
+			cmd_id = platform.generate_id(svc.ids, "cmd_sh_attach_")
+		}
+		cmd_json := _shell_stream_attach_command_json(cmd_id, session_id)
+		defer delete(cmd_json)
+		sent, _ := project_service.bridge_command_send_runtime(
+			svc.bridge_command_sink,
+			project_service.Runtime_Command{
+				bridge_id  = bridge_id,
+				command_id = cmd_id,
+				body_json  = cmd_json,
+			},
+		)
+		// COUNTED ONLY WHEN THE SEND SUCCEEDED. Every defect on this chain survived by
+		// being silent, and a counter that logged an intent rather than a delivery is
+		// how REQ-SHELL-23's dropped kill went unnoticed for a day. A send can fail here
+		// even mid-reconnect: the command socket is registered before the inventory
+		// arrives, but it can drop again between the two.
+		// AC5. LOGGED PER SESSION, WITH THE ID AND THE REASON, and logged HERE rather
+		// than at the transport call site even though the kill replay sets the opposite
+		// precedent (bridge_handlers.odin logs what the service returns). The precedent
+		// works there because a count is the whole story: "N kills outstanding, M
+		// delivered" is actionable on its own. Here it is not — the first question about
+		// a pane that went quiet is WHICH pane, and only this loop holds the session id.
+		// Returning the ids to the transport purely to log them would mean allocating and
+		// handing back a string list on every reconnect to say something this line can
+		// say for free.
+		//
+		// Both outcomes are logged, not just the happy one. A re-attach that failed to
+		// send is precisely the case where a pane stays dead, so it is the line an
+		// operator needs most; logging only successes would recreate the silence this
+		// whole task exists to remove.
+		if sent {
+			result.reattached += 1
+			fmt.println("shell stream re-attach", "session=", session_id, "bridge=", bridge_id, "reason=", "bridge_reconnect")
+		} else {
+			fmt.println("shell stream re-attach FAILED: viewer is attached but the bridge has no stream worker", "session=", session_id, "bridge=", bridge_id, "reason=", "bridge_reconnect")
+		}
+	}
 }
 
 // _apply_inventory_entry converges one session the bridge says is LIVE.

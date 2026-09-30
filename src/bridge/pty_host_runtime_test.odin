@@ -6,7 +6,9 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
+import "core:net"
 import "core:testing"
+import ws "odin_test:lib/ws"
 
 // BR-2 runtime-layer tests: the flag gate, env-pair conversion, and spawn-request
 // assembly. These exercise the mapping logic without a live daemon (control-plane
@@ -542,4 +544,237 @@ bridge_shell_run_notice_rendering :: proc(t: ^testing.T) {
 	blank := bridge_shell_run_notice("", "", "")
 	defer delete(blank)
 	testing.expect(t, strings.contains(blank, "Shell run unknown exited"), "blank session/status defaults")
+}
+
+// =============================================================================
+// REQ-SHELL-40 — the BRIDGE half: no stream worker outlives the hub connection it was
+// created for, and a re-attach for a live worker never creates a second one.
+//
+// NO PTY AND NO DAEMON (AC6). Workers are fabricated over a socketpair and registered
+// directly, exactly as pty_stream_worker_detach_deregisters_immediately does — so these
+// exercise the registry and teardown logic without ham-pty-host running and cannot hang
+// on a dial. The reader thread is deliberately never started, so the tests free the
+// worker structs themselves, which is otherwise the reader's teardown job.
+// =============================================================================
+
+// t40_fake_worker registers an active worker for `sid` over one end of a socketpair.
+// Returns the worker so the caller can free it; the fds are the caller's to close.
+@(private = "file")
+t40_fake_worker :: proc(sid: string, fd: posix.FD) -> ^Bridge_PTY_Stream_Worker {
+	heap := runtime.heap_allocator()
+	worker := new(Bridge_PTY_Stream_Worker, heap)
+	worker.session_id = strings.clone(sid, heap)
+	worker.shell_id = strings.clone(sid, heap)
+	worker.fd = fd
+	worker.active = true
+
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	if bridge_pty_stream_map.workers == nil {
+		bridge_pty_stream_map.workers = make(map[string]^Bridge_PTY_Stream_Worker, allocator = heap)
+	}
+	bridge_pty_stream_map.workers[strings.clone(sid, heap)] = worker
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+	return worker
+}
+
+@(test)
+t40_stop_all_for_reconnect_detaches_every_worker :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	// THE 128B THIS TEST REPORTS AS LEAKED IS THE DYNAMIC ARRAY'S BACKING, AND IT IS
+	// DELIBERATELY NOT FREED. Read this before "fixing" it.
+	//
+	// stop_all frees each queued frame's json — `dropped_bytes` in its log line is the
+	// evidence — but nothing frees the backing of `bridge_pty_stream_outgoing` itself,
+	// because clear() does not and production never needs to: that queue is a global that
+	// lives for the process's lifetime. So the allocation is correct in production and
+	// merely *reported* here.
+	//
+	// I DID free it (delete + re-make under the queue mutex) and then took it back out,
+	// because it is not safe while REQ-SHELL-44 stands. bridge_test_stream_mutex serialises
+	// this test against every other TEST that touches the queue, but it cannot serialise it
+	// against a stray real reader thread: the suite reaches
+	// bridge_pty_host_ensure_daemon and can dial the REAL ham-pty-host, and a worker thread
+	// spawned that way outlives the test that created it and appends to this very array
+	// without holding that mutex. Freeing the backing under it would be a use-after-free,
+	// where merely leaving it allocated is 128 reported bytes. A reported leak I can explain
+	// beats a use-after-free I cannot rule out — pre-existing tests only clear() this array,
+	// which does not free the backing, so freeing it would make this test strictly more
+	// dangerous than its neighbours rather than equally safe.
+	//
+	// Revisit once REQ-SHELL-44 isolates the suite from the live daemon; then the free is
+	// safe and this comment should go with it.
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	fds_a: [2]posix.FD
+	fds_b: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds_a) != .OK {
+		testing.expect(t, false, "socketpair a failed")
+		return
+	}
+	defer posix.close(fds_a[0]); defer posix.close(fds_a[1])
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds_b) != .OK {
+		testing.expect(t, false, "socketpair b failed")
+		return
+	}
+	defer posix.close(fds_b[0]); defer posix.close(fds_b[1])
+
+	// TWO workers, because the defect is that the hub re-attaches PER SESSION while the
+	// teardown is per CONNECTION: one connection drop must take every session's worker
+	// with it, not just the first one found.
+	w_a := t40_fake_worker("sh_recon_a", fds_a[0])
+	w_b := t40_fake_worker("sh_recon_b", fds_b[0])
+	heap := runtime.heap_allocator()
+	defer {
+		delete(w_a.session_id, heap); delete(w_a.shell_id, heap); free(w_a, heap)
+		delete(w_b.session_id, heap); delete(w_b.shell_id, heap); free(w_b, heap)
+	}
+
+	// A frame queued by a worker that is about to be torn down. After the teardown it can
+	// never be delivered to anyone — the deliberate, logged drop.
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = strings.clone(`{"type":"shell_pty_output","session_id":"sh_recon_a","data_b64":"QQ=="}`, heap)})
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+
+	testing.expect(t, bridge_pty_stream_worker_is_active("sh_recon_a"), "worker a starts active")
+	testing.expect(t, bridge_pty_stream_worker_is_active("sh_recon_b"), "worker b starts active")
+
+	stopped := bridge_pty_stream_stop_all_for_reconnect()
+
+	testing.expect_value(t, stopped, 2)
+	testing.expect(t, !bridge_pty_stream_worker_is_active("sh_recon_a"), "worker a must not survive the connection it belonged to")
+	testing.expect(t, !bridge_pty_stream_worker_is_active("sh_recon_b"), "worker b must not survive the connection it belonged to")
+
+	// The registry must be EMPTY, not merely marked inactive. An entry left behind would
+	// make the next worker_start for that session take the not-active fall-through branch
+	// rather than a clean dial.
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	testing.expect_value(t, len(bridge_pty_stream_map.workers), 0)
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+
+	// And the queue is drained, so the reconnect cannot paint pre-outage bytes over the
+	// fresh catch-up snapshot the re-attach earns.
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	testing.expect_value(t, len(bridge_pty_stream_outgoing), 0)
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+}
+
+@(test)
+t40_stop_all_for_reconnect_is_a_noop_with_no_workers :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	// The overwhelmingly common reconnect: nobody had a pane open. This must cost nothing
+	// and must not log, because a line on every reconnect of every idle bridge is how a
+	// useful log becomes one nobody reads.
+	testing.expect_value(t, bridge_pty_stream_stop_all_for_reconnect(), 0)
+	testing.expect_value(t, bridge_pty_stream_stop_all_for_reconnect(), 0)
+}
+
+@(test)
+t40_reattach_of_a_live_worker_creates_no_second_worker :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	// fds[0] is handed to the worker and is closed by bridge_pty_stream_reset below; only
+	// the other end is ours to close.
+	defer posix.close(fds[1])
+
+	// NOT FREED HERE, unlike the two-worker test above. This worker is still REGISTERED
+	// when the test ends — that is the whole point of the assertion — so the deferred
+	// bridge_pty_stream_reset owns it: reset frees session_id, shell_id, the worker and
+	// its map key, and closes its fd. Freeing it here too would be a use-after-free and a
+	// double free, because defers run LIFO and ours would run BEFORE reset walked the map.
+	worker := t40_fake_worker("sh_dup", fds[0])
+
+	// THE LOAD-BEARING IDEMPOTENCE GUARD FOR AC4. The hub sends an attach per reconnect
+	// and cannot know whether the bridge already has a worker, so a reconnect storm — or a
+	// reconnect racing a genuine 0->1 viewer attach — puts several attaches on the wire
+	// for one session. This early return is what makes that cost N no-ops instead of N
+	// workers and N pty-host sockets.
+	//
+	// THIS TEST CANNOT DIAL, AND THAT IS THE ASSERTION, not a limitation. There is no
+	// ham-pty-host running here, so bridge_pty_host_ensure_daemon would fail and
+	// worker_start would return FALSE if it ever reached it. Getting `true` back is
+	// therefore positive proof that the early return fired ahead of the dial — a weaker
+	// test that merely counted map entries would also pass if the dedup were removed and
+	// the dial simply failed.
+	conn: ws.Connection
+	ok := bridge_pty_stream_worker_start("sh_dup", "sh_dup", &conn)
+	testing.expect(t, ok, "a re-attach for a live worker must succeed without dialing the pty-host")
+
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	testing.expect_value(t, len(bridge_pty_stream_map.workers), 1)
+	still_there, found := bridge_pty_stream_map.workers["sh_dup"]
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+	testing.expect(t, found, "the original worker must still be registered")
+	testing.expect(t, still_there == worker, "the registered worker must be the SAME one, not a replacement")
+
+	// And it was rebound to the connection the re-attach arrived on, which is what makes a
+	// re-attach meaningful rather than merely harmless.
+	testing.expect(t, worker.conn == &conn, "the live worker must be rebound to the new connection")
+}
+
+@(test)
+t40_connection_teardown_retires_workers_then_closes :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	// THIS IS THE CALL-SITE TEST, and it exists because the other bridge tests cannot be
+	// it. They assert what the teardown DOES; none of them can assert that it is CALLED on
+	// the way to closing a connection, so before bridge_hub_connection_teardown existed an
+	// edit that dropped or reordered the call kept every test green. Routing both closes
+	// through one procedure is what made that testable without a live WS: the wrapper takes
+	// a Connection, so a fake one is enough.
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	// fds[0] is the worker's; worker_detach only shuts it down, and the reader thread that
+	// would normally close it is never started here, so it is ours to close. fds[1] is the
+	// connection's and ws.close owns it — a REAL fd rather than a zero value, because
+	// ws.close on a non-secure Connection calls net.close(conn.socket) and socket 0 would
+	// close this process's stdin.
+	defer posix.close(fds[0])
+
+	worker := t40_fake_worker("sh_teardown", fds[0])
+	heap := runtime.heap_allocator()
+	defer { delete(worker.session_id, heap); delete(worker.shell_id, heap); free(worker, heap) }
+
+	conn := ws.Connection{connected = true, socket = net.TCP_Socket(fds[1])}
+	testing.expect(t, bridge_pty_stream_worker_is_active("sh_teardown"), "worker starts active")
+
+	bridge_hub_connection_teardown(&conn)
+
+	// BOTH effects from ONE call is the assertion. Either one missing means a connection
+	// was closed with a worker still holding a pointer to it, or a worker was retired
+	// without the connection being closed.
+	testing.expect(t, !bridge_pty_stream_worker_is_active("sh_teardown"), "teardown must retire the worker")
+	testing.expect(t, !conn.connected, "teardown must close the connection")
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	testing.expect_value(t, len(bridge_pty_stream_map.workers), 0)
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+
+	// Idempotent, because the hello-failure path and the shared path both route through
+	// this and a future edit may well call it twice.
+	bridge_hub_connection_teardown(&conn)
+	testing.expect(t, !conn.connected, "a second teardown is harmless")
 }

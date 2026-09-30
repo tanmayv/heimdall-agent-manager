@@ -34,6 +34,7 @@ package shell_session
 
 import "core:fmt"
 import "core:mem"
+import "core:net"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -871,4 +872,259 @@ t23_ungated_replay_never_redelivers_a_spent_intent :: proc(t: ^testing.T) {
 	testing.expect(t, shell_session_inventory_changed(res), "sh_new must be adopted, so the replay is reached")
 	testing.expect_value(t, res.kills_replayed, 0)
 	testing.expect_value(t, s10_count(&fx.sink, "shell_kill"), 0)
+}
+
+// =============================================================================
+// REQ-SHELL-40 — Pass 3: a reconnect re-attaches the OUTPUT STREAM of every
+// still-viewed live session.
+//
+// THEY LIVE IN THIS FILE, not a file of their own, and that is deliberate: the fix is
+// an extension of T10's convergence path (AC3), so it is tested against T10's own fake
+// repository and sink rather than a second fixture that could drift from it. Reusing
+// Fx10 also means these tests exercise the REAL inventory parser via inv10/entry10.
+//
+// NO PTY AND NO BROWSER (AC6). The viewer sockets below are bare net.TCP_Socket
+// descriptor numbers that are never read or written — Pass 3 only ever asks whether the
+// viewer LIST for a session is non-empty, so a fabricated descriptor is a faithful
+// stand-in and the test cannot hang on IO. What is asserted is the COMMAND the hub
+// emits, which is the whole of the hub's half of the protocol.
+//
+// THE FALSE-PASS SHAPE THESE ARE BUILT TO AVOID. shell_session_attach ITSELF sends an
+// attach on the 0->1 transition, so a test that merely counted attaches after
+// attach+apply would read 1 and pass whether or not Pass 3 ran at all. Every test below
+// therefore takes a BASELINE after attaching and asserts the DELTA across
+// apply_inventory. Deleting the Pass 3 call must turn these red; it does.
+// =============================================================================
+
+// t40_baseline captures the attach count after fixture setup so each assertion is about
+// what the INVENTORY caused, never about what attaching a viewer caused.
+@(private = "file")
+t40_baseline :: proc(fx: ^Fx10) -> int {
+	return s10_count(&fx.sink, "shell_stream_attach")
+}
+
+@(test)
+t40_reconnect_reattaches_a_viewed_live_session :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	fx10_seed(&fx, Seed10{session_id = "sh_viewed", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_viewed", net.TCP_Socket(401), "brg_1")
+	testing.expect_value(t, shell_session_viewer_count(&fx.svc, "sh_viewed"), 1)
+	base := t40_baseline(&fx)
+
+	// The reconnect. Nothing about the VIEWER changed — which is exactly why the old
+	// code did nothing here: from the hub's point of view no viewer ever left.
+	e := entry10(Entry10{session_id = "sh_viewed"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 1)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 1)
+	// A clean reconnect must still be a clean reconnect: re-attaching writes no row, so
+	// T10's idempotency predicate must keep reading false.
+	testing.expect(t, !shell_session_inventory_changed(res), "a re-attach writes no row and must not register as a change")
+}
+
+@(test)
+t40_reconnect_does_not_reattach_an_unviewed_session :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// Live on the bridge, live on the hub, and NOBODY IS WATCHING — the common case
+	// (`ham-ctl shell run` with no pane open). Attaching here would spawn a pty-host
+	// socket and a thread on the bridge to carry bytes to no one, which is the leak half
+	// of the invariant in the other direction.
+	fx10_seed(&fx, Seed10{session_id = "sh_unwatched", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	testing.expect_value(t, shell_session_viewer_count(&fx.svc, "sh_unwatched"), 0)
+
+	e := entry10(Entry10{session_id = "sh_unwatched"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach"), 0)
+}
+
+@(test)
+t40_reattach_is_scoped_to_the_bridge_that_sent_the_inventory :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// The session and its viewer belong to brg_1. brg_2 then names it in its own
+	// inventory — which a compromised or simply confused bridge can do, since the frame
+	// is untrusted payload. The attach must not be sent, and must not be sent to EITHER
+	// bridge: brg_2 does not own the session, and an inventory from brg_2 is no evidence
+	// at all about what brg_1 is running.
+	fx10_seed(&fx, Seed10{session_id = "sh_owned_by_1", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_owned_by_1", net.TCP_Socket(402), "brg_1")
+	base := t40_baseline(&fx)
+
+	e := entry10(Entry10{session_id = "sh_owned_by_1"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_2", frame)
+
+	testing.expect_value(t, res.reattached, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 0)
+}
+
+@(test)
+t40_a_terminal_inventory_entry_is_not_reattached :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// The hub still thinks it is running and a pane is still open, but the bridge says
+	// it is over. The bridge wins — the same rule T10 applies to rows, applied to the
+	// command. Re-attaching here would ask the bridge to stream a dead process.
+	fx10_seed(&fx, Seed10{session_id = "sh_done", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_done", net.TCP_Socket(403), "brg_1")
+	base := t40_baseline(&fx)
+
+	e := entry10(Entry10{session_id = "sh_done", status = "exited"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 0)
+}
+
+@(test)
+t40_many_viewers_on_one_session_reattach_once :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// AC4's real hazard, and the likeliest way a fix here becomes a worse bug than the
+	// one it fixes. There is ONE stream worker per SESSION on the bridge, not one per
+	// viewer, so a pass that iterated viewers instead of sessions would ask the bridge
+	// to attach three times for one session on every reconnect. The bridge's early
+	// return would absorb it today, which is precisely why this needs asserting on the
+	// HUB side: a bug the other end silently tolerates is a bug that survives.
+	fx10_seed(&fx, Seed10{session_id = "sh_crowded", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_crowded", net.TCP_Socket(404), "brg_1")
+	shell_session_attach(&fx.svc, "sh_crowded", net.TCP_Socket(405), "brg_1")
+	shell_session_attach(&fx.svc, "sh_crowded", net.TCP_Socket(406), "brg_1")
+	testing.expect_value(t, shell_session_viewer_count(&fx.svc, "sh_crowded"), 3)
+	base := t40_baseline(&fx)
+
+	e := entry10(Entry10{session_id = "sh_crowded"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 1)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 1)
+}
+
+@(test)
+t40_a_reconnect_storm_sends_one_attach_per_reconnect :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// STATING THE IDEMPOTENCE HONESTLY RATHER THAN OVERCLAIMING IT. Three reconnects send
+	// three attaches, and that is correct, not a leak: each reconnect really did empty
+	// the bridge's worker set, so each one really does need an attach. What must NOT
+	// happen is growth — 1 then 3 then 6 — which is what a pass that accumulated state
+	// across applies would produce. The dedup that turns the 2nd and 3rd into no-ops
+	// lives on the bridge (bridge_pty_stream_worker_start returns early for a live
+	// worker), and it is asserted there, in t40_reattach_of_a_live_worker_creates_no_second_worker.
+	fx10_seed(&fx, Seed10{session_id = "sh_flap", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_flap", net.TCP_Socket(407), "brg_1")
+	base := t40_baseline(&fx)
+
+	e := entry10(Entry10{session_id = "sh_flap"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	for i in 1 ..= 3 {
+		res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+		testing.expect_value(t, res.reattached, 1)
+		testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, i)
+	}
+}
+
+@(test)
+t40_a_viewer_that_left_during_the_outage_is_not_reattached :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// The leak direction, from the hub's side. The pane closed while the bridge was away,
+	// so the detach was sent into a dead socket and DROPPED — send_runtime_command is
+	// fire-and-forget and returns .Bridge_Offline without queueing. The hub must not then
+	// re-attach on reconnect and resurrect a stream for a pane that is gone. What reaps
+	// the worker the dropped detach left behind is the bridge's teardown of every worker
+	// on disconnect (bridge_pty_stream_stop_all_for_reconnect), so after this reconnect
+	// there is no worker and no viewer — converged, both directions.
+	fx10_seed(&fx, Seed10{session_id = "sh_left", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	sock := net.TCP_Socket(408)
+	shell_session_attach(&fx.svc, "sh_left", sock, "brg_1")
+	shell_session_detach(&fx.svc, "sh_left", sock, "brg_1")
+	testing.expect_value(t, shell_session_viewer_count(&fx.svc, "sh_left"), 0)
+	base := t40_baseline(&fx)
+
+	e := entry10(Entry10{session_id = "sh_left"}); defer delete(e)
+	frame := inv10({e}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 0)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 0)
+}
+
+@(test)
+t40_one_reconnect_reattaches_every_viewed_session :: proc(t: ^testing.T) {
+	fx: Fx10
+	fx10_make(&fx)
+	defer fx10_free(&fx)
+
+	// EVERY OTHER TEST HERE PUTS EXACTLY ONE SESSION IN THE INVENTORY, so none of them can
+	// tell "re-attaches the viewed sessions" from "re-attaches the FIRST viewed session".
+	// A reconnect on a real bridge carries the whole roster, and a host with three panes
+	// open across two sessions is ordinary — so a loop that broke after the first match, or
+	// that reused one target for all of them, would have passed the entire suite above.
+	//
+	// The unviewed third session is in the same frame deliberately: it proves the loop
+	// SKIPS rather than stops, which is the other way a break-vs-continue slip hides.
+	fx10_seed(&fx, Seed10{session_id = "sh_a", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	fx10_seed(&fx, Seed10{session_id = "sh_b", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	fx10_seed(&fx, Seed10{session_id = "sh_c", bridge_id = "brg_1", status = domain.Shell_Session_Status_Running})
+	shell_session_attach(&fx.svc, "sh_a", net.TCP_Socket(410), "brg_1")
+	shell_session_attach(&fx.svc, "sh_c", net.TCP_Socket(411), "brg_1")
+	// sh_b is live and un-viewed, and sits BETWEEN the two viewed ones in the frame.
+	base := t40_baseline(&fx)
+	// The INDEX of the first body Pass 3 will write, so the per-session assertions below
+	// can look at ONLY what the inventory caused. Scanning the whole sink is contaminated:
+	// the two shell_session_attach calls above each already sent an attach naming sh_a and
+	// sh_c, so "did I see an attach for sh_c" is true no matter what Pass 3 did. That is the
+	// same false-PASS shape the delta assertions exist to avoid, and it defeated this test's
+	// name checks until a red run exposed them as unfalsifiable.
+	sync.mutex_lock(&fx.sink.mu)
+	from := len(fx.sink.bodies)
+	sync.mutex_unlock(&fx.sink.mu)
+
+	ea := entry10(Entry10{session_id = "sh_a"}); defer delete(ea)
+	eb := entry10(Entry10{session_id = "sh_b"}); defer delete(eb)
+	ec := entry10(Entry10{session_id = "sh_c"}); defer delete(ec)
+	frame := inv10({ea, eb, ec}); defer delete(frame)
+	res := shell_session_apply_inventory(&fx.svc, "brg_1", frame)
+
+	testing.expect_value(t, res.reattached, 2)
+	testing.expect_value(t, s10_count(&fx.sink, "shell_stream_attach") - base, 2)
+
+	// Named explicitly rather than counted, so a loop that sent two attaches for the SAME
+	// session would fail here instead of passing on the count alone.
+	sync.mutex_lock(&fx.sink.mu)
+	saw_a, saw_b, saw_c := false, false, false
+	for body in fx.sink.bodies[from:] {
+		if !strings.contains(body, "\"type\":\"shell_stream_attach\"") do continue
+		if strings.contains(body, "\"session_id\":\"sh_a\"") do saw_a = true
+		if strings.contains(body, "\"session_id\":\"sh_b\"") do saw_b = true
+		if strings.contains(body, "\"session_id\":\"sh_c\"") do saw_c = true
+	}
+	sync.mutex_unlock(&fx.sink.mu)
+	testing.expect(t, saw_a, "the first viewed session must be re-attached")
+	testing.expect(t, saw_c, "a viewed session AFTER an unviewed one must also be re-attached")
+	testing.expect(t, !saw_b, "an unviewed session in the same frame must never be re-attached")
 }

@@ -123,6 +123,116 @@ bridge_pty_stream_worker_detach :: proc(session_id: string) -> bool {
 	return true
 }
 
+// bridge_pty_stream_stop_all_for_reconnect detaches EVERY live streaming worker, and is
+// the bridge half of REQ-SHELL-40's convergence: no stream worker may outlive the hub
+// connection it was created for.
+//
+// WHY A BLANKET TEARDOWN RATHER THAN A REAPER. A worker holds `conn`, a POINTER to the
+// `ws.Connection` that `bridge_hub_runtime_worker` declares as a STACK LOCAL INSIDE its
+// reconnect loop (hub_runtime_client.odin). The moment that loop iterates, the pointer is
+// dangling — and worse than merely dangling, because the next iteration refills the same
+// stack slot with the NEW connection, so an orphaned worker silently begins aliasing a
+// socket it was never attached to. Output appearing to survive a WS blip today is that
+// accident, not a design. Nothing here can be made safe by reaping later; the pointer has
+// to stop existing before the slot is reused, which is what this does.
+//
+// IT ALSO CLOSES A REAL UNBOUNDED LEAK. Hub->bridge runtime commands are fire-and-forget
+// over the live socket (bridge_runtime.send_runtime_command returns .Bridge_Offline and
+// DROPS the frame), and the hub replays kill intents on reconnect but not detaches. So a
+// viewer that closed its pane while the bridge was away left its `shell_stream_detach`
+// discarded and its worker running forever, appending every byte the shell produced to the
+// unbounded `bridge_pty_stream_outgoing` queue for a session nobody was watching.
+//
+// WHAT RE-ESTABLISHES THE STREAM. Nothing here — deliberately. The hub re-issues
+// `shell_stream_attach` for every still-viewed live session out of its inventory
+// convergence (shell_session_inventory.odin), and the fresh Attach earns a fresh Screen
+// catch-up frame from the pty-host, so the pane repaints rather than resuming mid-scroll.
+// Losing the bytes produced during the outage is correct: they are off-screen history the
+// viewer never saw, and the repaint shows the screen as it actually is now.
+//
+// CALL IT BEFORE ws.close, NOT AFTER. That ordering is the whole answer to "what happens to
+// a worker that is mid-write when the socket closes". ws.close does not take the send mutex
+// REQ-SHELL-32 added, so a writer CAN be inside bridge_hub_send when the fd goes away; after
+// this returns, no worker is eligible to write at all, so the window shrinks instead of
+// growing. A worker already inside a send finishes against a closing fd, gets false back,
+// and — because `active` is now false — has its frame DELETED by
+// bridge_pty_stream_emit_frame rather than queued, so a wedged writer costs neither a hang
+// nor a queue entry.
+//
+// Detaching is idempotent (bridge_pty_stream_worker_detach returns true for an already
+// detached session), so a reconnect storm running this repeatedly is harmless.
+bridge_pty_stream_stop_all_for_reconnect :: proc() -> int {
+	heap := runtime.heap_allocator()
+
+	// Snapshot the ids under the lock and detach OUTSIDE it: worker_detach takes the
+	// same mutex, and it also writes to the pty-host socket, which must never happen
+	// with the worker map held.
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	ids := make([dynamic]string, 0, len(bridge_pty_stream_map.workers), heap)
+	for k in bridge_pty_stream_map.workers {
+		append(&ids, strings.clone(k, heap))
+	}
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+	defer {
+		for id in ids do delete(id, heap)
+		delete(ids)
+	}
+
+	for id in ids {
+		_ = bridge_pty_stream_worker_detach(id)
+	}
+
+	// Frames queued by workers that are now gone can never be delivered to anyone: the
+	// sessions they belong to have no attachment until the hub re-attaches, and a
+	// re-attach is answered by a fresh Screen frame that supersedes them. Dropping them
+	// here is what keeps the queue from carrying a burst of pre-outage bytes that would
+	// paint over the catch-up snapshot.
+	//
+	// THIS IS A DELIBERATE DROP AND IT IS NOT DATA LOSS, which is the only reason it is
+	// acceptable — the reason is not self-evident, so it is written down rather than
+	// left to a reviewer to reconstruct:
+	//   - The bytes are still on disk. The pty-host tees every chunk to the session's
+	//     tee file INDEPENDENTLY of subscribers — tools/pty_host/src/daemon.rs
+	//     pump_output writes the tee AFTER the subscriber loop and outside it, so a
+	//     session with no attached stream still records everything — and the bridge sets
+	//     has_tee_path unconditionally for shell spawns (hub_runtime_client.odin:2540).
+	//     `shell log` serves that file under REQ-SHELL-8 retention. So this is a
+	//     live-view recovery choice, not a loss of output.
+	//   - For a `server` kind streaming build output, the catch-up repaint shows the
+	//     CURRENT tail, which is what a human watching actually wants — a delayed burst
+	//     of pre-outage scrollback arriving after the reconnect is strictly less useful.
+	//
+	// AND IT IS LOGGED, because this chain has catalogued several defects that survived
+	// only because something was dropped without a word. A deliberate drop must be at
+	// least as visible as an accidental one.
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	dropped_frames := len(bridge_pty_stream_outgoing)
+	dropped_bytes := 0
+	for item in bridge_pty_stream_outgoing {
+		dropped_bytes += len(item.json)
+		delete(item.json, heap)
+	}
+	clear(&bridge_pty_stream_outgoing)
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+
+	if len(ids) > 0 || dropped_frames > 0 {
+		// Session ids in full: a count alone cannot tell an operator WHICH pane went
+		// quiet, which is the first question asked when one does.
+		joined := strings.join(ids[:], ",", context.temp_allocator)
+		fmt.println(
+			"bridge pty stream: detached workers for hub reconnect",
+			"reason=", "hub_ws_reconnect",
+			"workers=", len(ids),
+			"sessions=", joined,
+			"dropped_frames=", dropped_frames,
+			"dropped_bytes=", dropped_bytes,
+			"(bytes remain in the session tee file; the hub re-attach earns a fresh screen repaint)",
+		)
+	}
+
+	return len(ids)
+}
+
 // _bridge_pty_stream_lf_to_crlf rewrites bare row separators into CRLF.
 // Caller owns the result.
 //

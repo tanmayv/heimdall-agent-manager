@@ -165,6 +165,41 @@ bridge_runtime_test_reset :: proc() {
 	clear(&bridge_runtime_status_outgoing)
 }
 
+// bridge_hub_connection_teardown ends one hub connection: it retires every PTY stream
+// worker and THEN closes the socket. It is the ONLY way this file closes a hub
+// connection, and that is the point.
+//
+// WHY A WRAPPER RATHER THAN TWO STATEMENTS AND A COMMENT (REQ-SHELL-40). The ordering
+// is load-bearing: `ws.close` does not take the send mutex REQ-SHELL-32 added, so a
+// stream worker can be inside `bridge_hub_send` at the moment the fd is closed. Running
+// the teardown FIRST means that once it returns no worker is eligible to write at all,
+// which shrinks that window instead of widening it. But an ordering that lives in the
+// sequence of two statements at a call site is only as durable as the next reader's
+// attention — and a reordering would keep every test in the suite green, because the
+// unit tests can assert what the teardown DOES without a live WS and cannot assert WHEN
+// it is called relative to a close.
+//
+// So the ordering is made unrepresentable instead of documented. There is no `ws.close`
+// left in the reconnect path to reorder; both halves sit in one procedure, adjacent, with
+// the reason between them. This is the same conclusion REQ-SHELL-32 reached about its
+// send mutex — the lock belonged inside `ws.send_text` rather than with the callers who
+// had to remember it, because caller-side discipline is exactly what had failed.
+//
+// Safe on every path, including the two that never had a live connection: the teardown
+// returns 0 and logs nothing when there are no workers, and `ws.close` is guarded by
+// `conn.connected` and is therefore idempotent.
+bridge_hub_connection_teardown :: proc(conn: ^ws.Connection) {
+	// FIRST: no worker may outlive the connection it was created for. Each one holds a
+	// pointer to a stack local of bridge_hub_runtime_worker's reconnect loop, which the
+	// next iteration refills — so a survivor would begin writing into a connection it was
+	// never attached to. See bridge_pty_stream_stop_all_for_reconnect for the full
+	// reasoning and for what re-establishes the streams (the hub re-attaches out of its
+	// inventory convergence, REQ-SHELL-40 Pass 3).
+	_ = bridge_pty_stream_stop_all_for_reconnect()
+	// THEN, and only then, the socket.
+	ws.close(conn)
+}
+
 bridge_hub_runtime_worker :: proc() {
 	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
@@ -197,7 +232,7 @@ bridge_hub_runtime_worker :: proc() {
 		hello := bridge_hub_hello_json()
 		if !ws.send_text(&conn, hello) {
 			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)")
-			ws.close(&conn)
+			bridge_hub_connection_teardown(&conn)
 			time.sleep(500 * time.Millisecond)
 			continue
 		}
@@ -222,6 +257,13 @@ bridge_hub_runtime_worker :: proc() {
 			// events it enqueues are drained by the loop started just below.
 			thread.run(bridge_shell_session_reconcile_now)
 			bridge_hub_runtime_loop(&conn)
+			// NOT beside the PTY stream teardown, and not inside
+			// bridge_hub_connection_teardown with it, deliberately: this one has no
+			// before-close requirement. It closes stdin fds, SIGTERMs language servers
+			// and sets statuses, and never touches `conn` — so naming it in a procedure
+			// whose entire purpose is the close ordering would imply a constraint it
+			// does not have, and would additionally start running it on the two paths
+			// below that never had a ready connection.
 			bridge_lsp_stop_all()
 			fmt.println("bridge hub runtime: connection closed, reconnecting…")
 		} else if got_error {
@@ -229,7 +271,7 @@ bridge_hub_runtime_worker :: proc() {
 		} else {
 			log_failure(&last_failure, &attempts, "no bridge_ready within 5s after hello — hub didn't accept the session (slow link over the tunnel, or hub-side rejection)")
 		}
-		ws.close(&conn)
+		bridge_hub_connection_teardown(&conn)
 		time.sleep(500 * time.Millisecond)
 	}
 }
