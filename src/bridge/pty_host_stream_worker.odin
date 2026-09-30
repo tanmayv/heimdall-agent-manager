@@ -35,6 +35,41 @@ bridge_pty_stream_map: Bridge_PTY_Stream_Map
 bridge_pty_stream_outgoing_mu: sync.Mutex
 bridge_pty_stream_outgoing: [dynamic]Bridge_PTY_Stream_Outgoing
 
+// _bridge_pty_stream_outgoing_bind_heap pins the outgoing queue's BACKING ARRAY to the heap
+// allocator, and must be called with bridge_pty_stream_outgoing_mu held before any append.
+//
+// WHY THIS EXISTS — IT IS THE FIX FOR A HARD SEGFAULT, NOT A TIDINESS MEASURE (REQ-SHELL-40).
+// `bridge_pty_stream_outgoing` is a package-level `[dynamic]` declared with NO allocator, so its
+// allocator field is nil until something appends. Odin's __dynamic_array_* then binds it to
+// `context.allocator` AT THE MOMENT OF THE FIRST APPEND and keeps that binding forever.
+//
+// In production that is harmless by luck: the first append happens on a bridge worker whose
+// context carries the default heap allocator, and the queue lives for the process's lifetime.
+//
+// UNDER THE TEST RUNNER IT IS FATAL. Each test runs with its OWN tracking allocator installed in
+// the context, and the runner tears that allocator down when the test ends. So the first test to
+// append bound this global's backing to an allocator that then died, and every later test appended
+// through a DANGLING backing pointer. The reads come back as whatever now occupies that memory —
+// which is how `delete(item.json)` in bridge_pty_stream_stop_all_for_reconnect came to be handed
+// 0x5f68730a00000035, a pointer-shaped view of the ASCII bytes "_hs\n5". Confirmed under gdb:
+//   #3 runtime::delete_string
+//   #4 main::bridge_pty_stream_stop_all_for_reconnect (pty_host_stream_worker.odin)
+//   #5 main::t40_stop_all_for_reconnect_detaches_every_worker
+//
+// It was invisible at the default thread count and DETERMINISTIC at -define:ODIN_TEST_THREADS=1,
+// because what matters is which test appends FIRST and whether its allocator is already dead when
+// the next one appends — test ORDER, not concurrency. More threads reordered it into hiding.
+// REQ-SHELL-48 owns the invocation standard that let that stay hidden.
+//
+// Binding the ALLOCATOR FIELD rather than calling make() is deliberate: it allocates nothing, so it
+// is safe to call on every locked path, and it cannot itself be the first binding done from a
+// transient context.
+_bridge_pty_stream_outgoing_bind_heap :: proc() {
+	if bridge_pty_stream_outgoing.allocator.procedure == nil {
+		bridge_pty_stream_outgoing.allocator = runtime.heap_allocator()
+	}
+}
+
 // bridge_pty_stream_worker_start initiates an Attach-gated dedicated streaming worker.
 // Dials a NEW, DEDICATED socket connection to ham-pty-host, sends CtlMsg::Attach,
 // and spawns a lightweight reader thread that loops on CtlReply frames.
@@ -206,6 +241,7 @@ bridge_pty_stream_stop_all_for_reconnect :: proc() -> int {
 	// only because something was dropped without a word. A deliberate drop must be at
 	// least as visible as an accidental one.
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	dropped_frames := len(bridge_pty_stream_outgoing)
 	dropped_bytes := 0
 	for item in bridge_pty_stream_outgoing {
@@ -371,6 +407,7 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 			delete(frame, heap)
 		} else {
 			sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+			_bridge_pty_stream_outgoing_bind_heap()
 			append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = frame})
 			sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 		}
@@ -383,6 +420,7 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 bridge_pty_stream_drain_outgoing :: proc(conn: ^ws.Connection) {
 	if conn == nil || !conn.connected do return
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	if len(bridge_pty_stream_outgoing) == 0 {
 		sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 		return
@@ -396,7 +434,10 @@ bridge_pty_stream_drain_outgoing :: proc(conn: ^ws.Connection) {
 		_ = bridge_hub_send(conn, item.json)
 		delete(item.json, heap)
 	}
-	delete(items)
+	// `items` aliases the OLD backing array, which the bind above guarantees came from the heap.
+	// Naming the allocator explicitly matters here: a bare delete() would free it through
+	// context.allocator, which is the mismatched-free that made this queue crash in the first place.
+	delete(items, heap)
 }
 
 // bridge_pty_stream_take_outgoing drains all queued outgoing frames without sending (for tests).
@@ -405,6 +446,7 @@ bridge_pty_stream_take_outgoing :: proc() -> [dynamic]string {
 	out := make([dynamic]string, heap)
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
 	defer sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		append(&out, item.json)
 	}
@@ -439,6 +481,7 @@ bridge_pty_stream_reset :: proc() {
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		delete(item.json, heap)
 	}

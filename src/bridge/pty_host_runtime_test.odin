@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
+import "core:mem"
 import "core:net"
 import "core:testing"
 import ws "odin_test:lib/ws"
@@ -459,7 +460,14 @@ pty_stream_worker_emit_frame_encodes_base64_and_queues :: proc(t: ^testing.T) {
 
 	frames := bridge_pty_stream_take_outgoing()
 	defer {
-		for f in frames do delete(f)
+		// EACH STRING IS HEAP-OWNED AND MUST SAY SO. bridge_pty_stream_emit_frame builds these
+		// with runtime.heap_allocator() and bridge_pty_stream_take_outgoing transfers them
+		// unchanged, so a bare delete(f) frees heap memory through the test's tracking
+		// allocator. That is a genuine mismatched free — it showed up as
+		// "+++ bad free" under the memory tracker and was the first corruption in the chain
+		// that ended in the REQ-SHELL-40 segfault. `frames` itself carries its own allocator,
+		// so deleting the array needs no argument.
+		for f in frames do delete(f, runtime.heap_allocator())
 		delete(frames)
 	}
 
@@ -582,29 +590,15 @@ t40_stop_all_for_reconnect_detaches_every_worker :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_stream_mutex)
 	defer sync.mutex_unlock(&bridge_test_stream_mutex)
 
-	// THE 128B THIS TEST REPORTS AS LEAKED IS THE DYNAMIC ARRAY'S BACKING, AND IT IS
-	// DELIBERATELY NOT FREED. Read this before "fixing" it.
-	//
-	// stop_all frees each queued frame's json — `dropped_bytes` in its log line is the
-	// evidence — but nothing frees the backing of `bridge_pty_stream_outgoing` itself,
-	// because clear() does not and production never needs to: that queue is a global that
-	// lives for the process's lifetime. So the allocation is correct in production and
-	// merely *reported* here.
-	//
-	// I DID free it (delete + re-make under the queue mutex) and then took it back out,
-	// because it is not safe while REQ-SHELL-44 stands. bridge_test_stream_mutex serialises
-	// this test against every other TEST that touches the queue, but it cannot serialise it
-	// against a stray real reader thread: the suite reaches
-	// bridge_pty_host_ensure_daemon and can dial the REAL ham-pty-host, and a worker thread
-	// spawned that way outlives the test that created it and appends to this very array
-	// without holding that mutex. Freeing the backing under it would be a use-after-free,
-	// where merely leaving it allocated is 128 reported bytes. A reported leak I can explain
-	// beats a use-after-free I cannot rule out — pre-existing tests only clear() this array,
-	// which does not free the backing, so freeing it would make this test strictly more
-	// dangerous than its neighbours rather than equally safe.
-	//
-	// Revisit once REQ-SHELL-44 isolates the suite from the live daemon; then the free is
-	// safe and this comment should go with it.
+	// THE 128B LEAK THIS TEST USED TO REPORT IS GONE, AND SO IS THE REASONING THAT EXCUSED IT.
+	// The previous version of this test appended to bridge_pty_stream_outgoing directly and then
+	// explained at length why the 128B backing array could not safely be freed. That explanation
+	// was wrong in its premise: the backing was not heap memory being politely left alone, it was
+	// bound to whichever TEST ALLOCATOR appended first, and it outlived that allocator. The
+	// tracker reported it as a leak here because it genuinely belonged to this test. Freeing it
+	// was never the fix; not letting a test allocator own it was.
+	// _bridge_pty_stream_outgoing_bind_heap now pins it to the heap, so the tracker sees nothing
+	// and the dangling-backing use-after-free that segfaulted this test cannot recur.
 
 	bridge_pty_stream_reset()
 	defer bridge_pty_stream_reset()
@@ -635,9 +629,11 @@ t40_stop_all_for_reconnect_detaches_every_worker :: proc(t: ^testing.T) {
 
 	// A frame queued by a worker that is about to be torn down. After the teardown it can
 	// never be delivered to anyone — the deliberate, logged drop.
-	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
-	append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = strings.clone(`{"type":"shell_pty_output","session_id":"sh_recon_a","data_b64":"QQ=="}`, heap)})
-	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	// Queued through the PRODUCTION emit path rather than a raw append. A raw append here was
+	// what bound the queue's backing to this test's allocator; going through emit_frame also
+	// means the frame is heap-owned exactly as it is in production, so the drop in stop_all
+	// frees it with the allocator that really allocated it.
+	bridge_pty_stream_emit_frame(nil, "sh_recon_a", transmute([]byte)string("A"))
 
 	testing.expect(t, bridge_pty_stream_worker_is_active("sh_recon_a"), "worker a starts active")
 	testing.expect(t, bridge_pty_stream_worker_is_active("sh_recon_b"), "worker b starts active")
@@ -660,6 +656,84 @@ t40_stop_all_for_reconnect_detaches_every_worker :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
 	testing.expect_value(t, len(bridge_pty_stream_outgoing), 0)
 	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+}
+
+// t40_outgoing_queue_backing_is_pinned_to_the_heap is the REGRESSION TEST for the segfault that
+// reopened REQ-SHELL-40. It asserts the invariant directly rather than hoping to trip the crash.
+//
+// WHAT WENT WRONG. `bridge_pty_stream_outgoing` is a package-level [dynamic] with no allocator, so
+// Odin bound its backing array to `context.allocator` at the first append and kept that binding.
+// Under the test runner that first append happened inside some test whose TRACKING ALLOCATOR the
+// runner then tore down, leaving the global pointing at freed memory. Every later append wrote
+// through it, and stop_all's `delete(item.json)` was eventually handed a pointer reconstructed from
+// ASCII bytes (0x5f68730a00000035) and segfaulted.
+//
+// WHY IT IS ASSERTED THIS WAY. The obvious test — append under a doomed allocator, destroy it, then
+// append again — reproduces the bug by CRASHING, and a test that segfaults when it fails takes the
+// whole runner down with it instead of reporting a failure. So the arena below establishes the
+// dangerous condition (a transient allocator is in the context at the moment of the very first
+// append) and the assertion then checks the property that makes it survivable: the queue's backing
+// belongs to the HEAP and never to whatever was in the context. Delete
+// _bridge_pty_stream_outgoing_bind_heap and this fails as a plain expectation, not a crash.
+@(test)
+t40_outgoing_queue_backing_is_pinned_to_the_heap :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	heap := runtime.heap_allocator()
+
+	// Drop any binding an earlier test already made, so this test really does own the FIRST append
+	// and the arena below is genuinely the allocator in danger of being captured.
+	bridge_pty_stream_reset()
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	delete(bridge_pty_stream_outgoing)
+	bridge_pty_stream_outgoing = {}
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	defer bridge_pty_stream_reset()
+
+	backing := make([]byte, 8192, heap)
+	defer delete(backing, heap)
+	arena: mem.Arena
+	mem.arena_init(&arena, backing)
+
+	// The first append happens with a SHORT-LIVED arena installed in the context — precisely the
+	// shape that captured a dying test allocator before the fix.
+	{
+		ctx := context
+		ctx.allocator = mem.arena_allocator(&arena)
+		context = ctx
+		bridge_pty_stream_emit_frame(nil, "sh_bind_probe", transmute([]byte)string("A"))
+	}
+
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	bound := bridge_pty_stream_outgoing.allocator
+	queued := len(bridge_pty_stream_outgoing)
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+
+	testing.expect_value(t, queued, 1)
+
+	// THE LOAD-BEARING ASSERTION. The arena must NOT own the queue's backing.
+	testing.expect(
+		t,
+		bound.procedure == heap.procedure,
+		"the outgoing queue's backing must be bound to the heap allocator, never to whatever allocator happened to be in the context at the first append",
+	)
+	testing.expect(
+		t,
+		bound.procedure != mem.arena_allocator(&arena).procedure,
+		"the outgoing queue's backing must not be owned by a transient arena",
+	)
+
+	// And the queue stays usable after that allocator is out of scope: a second append plus the
+	// drop path, which is where the dangling backing used to fault.
+	bridge_pty_stream_emit_frame(nil, "sh_bind_probe_2", transmute([]byte)string("B"))
+	dropped := bridge_pty_stream_stop_all_for_reconnect()
+	testing.expect_value(t, dropped, 0) // no workers, only queued frames
+
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	remaining := len(bridge_pty_stream_outgoing)
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	testing.expect_value(t, remaining, 0)
 }
 
 @(test)
