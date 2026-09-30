@@ -1242,7 +1242,14 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 			fmt.println("shell kill replay SHORTFALL: outstanding kills were not delivered to the bridge", "bridge=", bridge.bridge_id, "undelivered=", outstanding - delivered)
 		}
 	}
-	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader)
+	// REQ-SHELL-41: the connection is fully established here — authenticated, hello
+	// accepted, command socket registered — so this is the point at which "a bridge
+	// connected" becomes true. `replaced_existing` was already computed above for the
+	// bridge_ready payload and was previously discarded; it is the "did this replace an
+	// existing connection for that bridge" fact AC2 asks for.
+	connected_at_ns := time.now()._nsec
+	bridge_ws_log_connect(bridge.bridge_id, req.remote_addr, hello.generation, hello.replaced_existing)
+	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader, connected_at_ns)
 }
 
 // BRIDGE_INSTANCE_STALE_MS: an instance still in an active runtime state whose
@@ -1254,7 +1261,13 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 // bridge_ws_disconnect clears the durable runtime state of a disconnected
 // bridge's instances (registry offline alone leaves them "running" forever) and
 // fans out resource_changed so the UI updates immediately.
-bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int) {
+bridge_ws_disconnect :: proc(
+	h: ^Bridge_Handlers,
+	bridge_id: string,
+	connection_generation: int,
+	reason: Bridge_WS_Disconnect_Reason = .None,
+	connected_at_ns: i64 = 0,
+) {
 	// Only run the cascade if THIS connection generation is still the live one.
 	// registry_mark_offline is generation-guarded (a newer reconnect already
 	// replaced us => it returns without removing the live entry), so gate the
@@ -1270,6 +1283,14 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 		_ = lsp_registry_wake_bridge_sessions(h.lsp_sessions, bridge_id)
 	}
 	still_current := project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) == connection_generation
+	// REQ-SHELL-41: log BEFORE the early return below, so a connection retired by a
+	// newer one is still observable. That case (still_current=false) is the one a
+	// reader most needs to see and the one an after-the-cascade log would miss entirely.
+	// connected_at_ns=0 means the caller had no connect timestamp; report -1 rather
+	// than a duration measured from the epoch.
+	duration_ms := i64(-1)
+	if connected_at_ns > 0 do duration_ms = (time.now()._nsec - connected_at_ns) / 1_000_000
+	bridge_ws_log_disconnect(bridge_id, reason, connection_generation, duration_ms, still_current)
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
 	if !still_current do return
 	// Mark the durable bridge record offline (bridge_runtime_connect set it .Online
@@ -1495,9 +1516,27 @@ bridge_chunk_reassemblies_free :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reas
 	delete(reassemblies^)
 }
 
-bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, reader: ^Bridge_WS_Reader) {
+bridge_ws_runtime_loop :: proc(
+	h: ^Bridge_Handlers,
+	bridge_id: string,
+	connection_generation: int,
+	reader: ^Bridge_WS_Reader,
+	connected_at_ns: i64 = 0,
+) {
 	client := reader.socket
-	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
+	// REQ-SHELL-41: the teardown reason, set on every exit path below and read by the
+	// deferred disconnect. A plain local, so there is nothing allocated and nothing to
+	// free on this loop's heap path (AC4). This relies on Odin evaluating a deferred
+	// call's ARGUMENTS when the defer RUNS, not where it is written (verified
+	// separately) — so the value assigned at the exit path is the one logged.
+	//
+	// Initialised to .None, which renders as "none", rather than to a plausible value
+	// like .Clean_Close. Every exit path below assigns it, so this default is currently
+	// unreachable; if a future exit path forgets to, the log must say "none" and look
+	// WRONG rather than quietly claim an orderly shutdown. A misleading trace is worse
+	// than an obviously-missing one — that is the whole premise of this task.
+	reason := Bridge_WS_Disconnect_Reason.None
+	defer bridge_ws_disconnect(h, bridge_id, connection_generation, reason, connected_at_ns)
 	// Per-connection chunk reassembly buffer. The bridge (bridge_hub_send) splits
 	// any bridge->hub frame larger than the edge proxy's ~16KB per-message cap into
 	// ordered kind:"chunk" frames; we rebuild the original frame here before it is
@@ -1510,9 +1549,17 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 		// (BRIDGE_HUB_HEARTBEAT_INTERVAL = 45s): a single delayed/dropped heartbeat
 		// still leaves a full extra beat of margin before we treat the bridge as
 		// gone, so we never tear down a healthy connection at the cadence edge.
-		text, ok := read_ws_text_blocking(reader, 120 * time.Second)
-		if !ok do return
+		text, ok, read_reason := bridge_ws_read_frame(reader, 120 * time.Second)
+		if !ok {
+			reason = read_reason
+			return
+		}
 		if !bridge_ws_process_frame(h, bridge_id, connection_generation, client, &reassemblies, text) {
+			// process_frame refuses a frame either because a newer connection replaced
+			// this one (it says so on the wire via bridge_connection_replaced_payload)
+			// or because dispatch rejected it. Distinguish the two: a replacement is
+			// routine during a bridge restart, a rejection is not.
+			reason = .Connection_Replaced if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation else .Frame_Rejected
 			return
 		}
 	}
@@ -2263,6 +2310,11 @@ ws_accept_key :: proc(key: string) -> string {
 Bridge_WS_Reader :: struct {
 	socket:  net.TCP_Socket,
 	pending: [dynamic]byte,
+	// REQ-SHELL-41: WHY the last take_frame declared the stream unusable. Carried on
+	// the reader rather than added as a fourth return value so that bridge_ws_take_frame
+	// keeps its (text, ok, fatal) shape and its existing callers and tests are
+	// untouched. Only meaningful when that call returned fatal=true.
+	fatal_reason: Bridge_WS_Disconnect_Reason,
 }
 
 bridge_ws_reader_make :: proc(socket: net.TCP_Socket) -> Bridge_WS_Reader {
@@ -2285,7 +2337,14 @@ bridge_ws_reader_destroy :: proc(reader: ^Bridge_WS_Reader) {
 bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
 	b := reader.pending[:]
 	if len(b) < 2 do return "", false, false
-	if b[0] & 0x0f != 0x1 do return "", false, true // only text frames are expected
+	if b[0] & 0x0f != 0x1 {
+		// REQ-SHELL-41: a CLOSE frame is an orderly shutdown, not a desync. Both end
+		// the connection, but reporting "fatal_frame_desync" for a bridge that simply
+		// said goodbye is precisely the kind of misleading trace this task exists to
+		// remove, so they are separated here at the only place that can tell them apart.
+		reader.fatal_reason = .Clean_Close if b[0] & 0x0f == 0x8 else .Fatal_Frame
+		return "", false, true // only text frames are expected
+	}
 	masked := (b[1] & 0x80) != 0
 	payload_len := int(b[1] & 0x7f)
 	header_len := 2
@@ -2294,6 +2353,7 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 		payload_len = int(b[2]) << 8 | int(b[3])
 		header_len = 4
 	} else if payload_len == 127 {
+		reader.fatal_reason = .Fatal_Frame
 		return "", false, true // 64-bit lengths are not used on this control channel
 	}
 	data_off := header_len
@@ -2315,24 +2375,62 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 	return string(payload), true, false
 }
 
+// read_ws_text_blocking reads one frame, reporting only WHETHER it got one.
+//
+// Kept as a wrapper over bridge_ws_read_frame so the callers that genuinely do not care
+// why a read ended (the hello read, and the agent-instance / shell-session streams) stay
+// exactly as they were. Anything that must REPORT the cause — the bridge runtime loop —
+// calls bridge_ws_read_frame directly.
 read_ws_text_blocking :: proc(reader: ^Bridge_WS_Reader, timeout: time.Duration) -> (string, bool) {
+	text, ok, _ := bridge_ws_read_frame(reader, timeout)
+	return text, ok
+}
+
+// bridge_ws_read_frame reads one frame and, when it cannot, says WHY.
+//
+// REQ-SHELL-41. This proc is the whole reason the task is not a one-line logging change.
+// Its predecessor returned a bare bool, so a desynced frame, a 120s deadline expiry and
+// a graceful peer close were indistinguishable at every call site — the reason was
+// destroyed here, below the layer that needed to log it. The three outcomes are now
+// separated at the exact points where they are still distinguishable:
+//   - fatal from the framer      -> reader.fatal_reason (Clean_Close for a close opcode,
+//                                   Fatal_Frame for a desync)
+//   - recv `0, nil`              -> Clean_Close. core:net documents a graceful close as
+//                                   exactly this, so it must NOT be lumped in with the
+//                                   error arm the way `n <= 0 || err != nil` used to.
+//   - .Would_Block / .Timeout    -> Read_Deadline. A blocking socket with SO_RCVTIMEO
+//                                   reports an expired deadline as EAGAIN, which
+//                                   core:net maps to .Would_Block, so both belong here.
+//   - anything else              -> Recv_Error (ECONNRESET and friends).
+bridge_ws_read_frame :: proc(
+	reader: ^Bridge_WS_Reader,
+	timeout: time.Duration,
+) -> (string, bool, Bridge_WS_Disconnect_Reason) {
 	// A frame may already be buffered from a previous coalesced recv — return it
 	// without blocking on the socket.
+	reader.fatal_reason = .None
 	if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
-		return "", false
+		return "", false, reader.fatal_reason
 	} else if ok {
-		return text, true
+		return text, true, .None
 	}
 	_ = net.set_option(reader.socket, .Receive_Timeout, timeout)
 	buf: [8192]byte
 	for {
 		n, err := net.recv_tcp(reader.socket, buf[:])
-		if err != nil || n <= 0 do return "", false
+		if err != nil {
+			if err == net.TCP_Recv_Error.Would_Block || err == net.TCP_Recv_Error.Timeout {
+				return "", false, .Read_Deadline
+			}
+			return "", false, .Recv_Error
+		}
+		if n <= 0 do return "", false, .Clean_Close
 		append(&reader.pending, ..buf[:n])
+		reader.fatal_reason = .None
 		if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
-			return "", false
+			return "", false, reader.fatal_reason
 		} else if ok {
-			return text, true
+			return text, true, .None
 		}
 	}
 }
