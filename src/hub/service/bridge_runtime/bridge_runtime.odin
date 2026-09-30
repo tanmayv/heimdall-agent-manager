@@ -265,7 +265,7 @@ write_ws_text_frame :: proc(socket: net.TCP_Socket, text: string) -> bool {
 
 // command_write_error maps a write result onto the domain error the API returns.
 //
-// AC1 LIVES HERE. .Too_Large becomes .Validation_Failed, which is HTTP 400 with code
+// AC1 LIVES HERE. .Too_Large becomes .Validation_Failed, which is HTTP 422 with code
 // string "validation_failed"; .Send_Failed keeps .Bridge_Offline, which is HTTP 409 with
 // "bridge_offline". Different status AND different code string, so the two are
 // distinguishable in a log line rather than only in prose — which is the whole point,

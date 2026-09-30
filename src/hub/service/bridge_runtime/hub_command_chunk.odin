@@ -20,9 +20,13 @@ package bridge_runtime
 // THIS IS THE MIRROR OF AN EXISTING PROTOCOL, NOT A NEW ONE. The bridge has chunked
 // bridge->hub since REQ-SHELL-32 (bridge_hub_chunk_frames / bridge_hub_send) and the
 // hub reassembles it (bridge_ws_reassemble_chunk). Only the hub->bridge direction was
-// missing. The frame shape emitted here is byte-for-byte the shape the bridge already
-// emits, so the two directions are one protocol rather than two that resemble each
-// other.
+// missing. The frame shape emitted here is the SUBSET the reassembler reads, and the
+// reassembler accepts both shapes — so the two directions are one protocol rather than
+// two that resemble each other. It is NOT byte-for-byte identical: this emitter writes
+// 8 fields, the bridge's bridge_ws_chunk_json writes 14, omitting frame_id, stream_id,
+// src_daemon_id, dest_daemon_id, original_kind and idempotency_key. That is not a
+// defect — the reassembler is superset-tolerant and the interop test below pins it —
+// but do not read this comment as a promise that a given field is on the wire.
 //
 // >>> THIS FILE MUST NOT TOUCH THE TEMP ALLOCATOR. READ send_runtime_command_wait <<<
 // FIRST. That procedure clones command_id AFTER the frame write, and its comment
@@ -89,8 +93,10 @@ hub_command_chunk_frames :: proc(text: string, payload: int) -> []string {
 	return frames
 }
 
-// hub_command_chunk_json builds one chunk frame. The field set mirrors the bridge's
-// bridge_ws_chunk_json exactly so both directions are the same protocol.
+// hub_command_chunk_json builds one chunk frame. The field set is the SUBSET of the
+// bridge's bridge_ws_chunk_json that the reassembler actually reads — 8 fields here
+// against its 14 — and the reassembler accepts both shapes, so both directions are the
+// same protocol. Not a mirror image; see the header note for the six omitted fields.
 //
 // The fragment needs no JSON escaping: it is base64, whose alphabet contains no quote,
 // no backslash and no control byte. That is a property of the encoding rather than an

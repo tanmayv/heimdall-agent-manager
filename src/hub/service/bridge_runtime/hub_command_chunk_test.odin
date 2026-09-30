@@ -12,6 +12,7 @@ package bridge_runtime
 // round-trip logic is proven with a small payload, and the real constant gets its own
 // single-frame wire-size bound check.
 
+import "core:net"
 import "core:strings"
 import "core:testing"
 import base64 "core:encoding/base64"
@@ -190,7 +191,47 @@ hub_command_chunkability_matches_the_shared_caps :: proc(t: ^testing.T) {
 	defer delete(body)
 	testing.expect(t, hub_command_is_chunkable(body, payload), "a 10-chunk command must be deliverable")
 
-	// The chunk-count cap binds before the byte cap at this payload, and that ordering is
+	// >>> THE FALSE CASES. Without these, hub_command_is_chunkable is only ever <<<
+	// >>> asserted TRUE, and the guard it feeds could be deleted with the suite   <<<
+	// >>> still green -- an over-cap command would then be chunked and written,   <<<
+	// >>> the bridge would reject every frame at reassembly, and the hub would    <<<
+	// >>> report SUCCESS. Each cap is driven past on its own, so neither arm can  <<<
+	// >>> be the only thing refusing.                                             <<<
+	//
+	// BYTE cap, at the live payload. One byte over is enough; the count cap cannot be
+	// what refuses this, because 16 MB at 6000 bytes a chunk is ~2797 chunks, under 4096.
+	over_bytes := strings.repeat("b", contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES + 1)
+	defer delete(over_bytes)
+	testing.expect(
+		t,
+		!hub_command_is_chunkable(over_bytes, payload),
+		"a command past the reassembly BYTE cap must be refused, not chunked",
+	)
+
+	// COUNT cap, ISOLATED with a small payload. At the live payload the byte cap always
+	// binds first (see the ordering note below), so driving the count arm past 4096 while
+	// staying well under 16 MB is the only way to prove the second arm does any work:
+	// 4097 chunks of 100 bytes is 409,700 bytes, ~2.4% of the byte cap.
+	small_payload := 100
+	over_count := strings.repeat("c", small_payload * (contracts.BRIDGE_WS_MAX_CHUNK_COUNT + 1))
+	defer delete(over_count)
+	testing.expect_value(
+		t,
+		hub_command_chunk_count(len(over_count), small_payload),
+		contracts.BRIDGE_WS_MAX_CHUNK_COUNT + 1,
+	)
+	testing.expect(
+		t,
+		len(over_count) < contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES,
+		"this case must be under the byte cap or it proves nothing about the COUNT arm",
+	)
+	testing.expect(
+		t,
+		!hub_command_is_chunkable(over_count, small_payload),
+		"a command past the reassembly CHUNK-COUNT cap must be refused, not chunked",
+	)
+
+	// The BYTE cap binds before the chunk-count cap at this payload, and that ordering is
 	// worth pinning: 4096 * 6000 = 24.5 MB against a 16 MB byte cap, so a command between
 	// those is refused by BYTES. Both are checked, so neither can be the only guard.
 	testing.expect_value(t, hub_command_chunk_count(0, payload), 0)
@@ -200,6 +241,38 @@ hub_command_chunkability_matches_the_shared_caps :: proc(t: ^testing.T) {
 	// A payload of 0 must not divide by zero or claim deliverability.
 	testing.expect_value(t, hub_command_chunk_count(100, 0), 0)
 	testing.expect(t, hub_command_chunk_frames("abc", 0) == nil, "a zero payload must refuse rather than loop")
+}
+
+@(test)
+hub_command_write_refuses_an_over_cap_command_at_the_guard :: proc(t: ^testing.T) {
+	// >>> THIS IS THE TEST THAT KILLS THE MUTATION. Asserting the PREDICATE <<<
+	// >>> false does not: hub_command_is_chunkable keeps returning false with <<<
+	// >>> or without its call site, so deleting the guard in write_ws_command <<<
+	// >>> leaves predicate-only assertions green. Only driving write_ws_command <<<
+	// >>> itself can tell the fix from its absence.                            <<<
+	//
+	// Fd 0 is NOT a socket, and that is what makes this work without any I/O setup --
+	// the same idiom as write_server_text's Too_Large test in src/lib/ws. The guard sits
+	// ABOVE every write, so with it present nothing touches the descriptor and the result
+	// is .Too_Large. Delete the guard and the command gets chunked and written instead,
+	// the first send fails on ENOTSOCK, and the result is .Send_Failed -- a DIFFERENT
+	// value, so this assertion fails. That is the whole point: the two worlds must not
+	// produce the same answer.
+	//
+	// The failure this guards against is worse than the one REQ-SHELL-36 fixes. Without
+	// it, a real socket would accept every frame, the bridge would reject them all at
+	// hub_command_reassembly.odin:179, write_ws_command would return .Ok, and the hub
+	// would report SUCCESS on a command that was silently dropped.
+	over_bytes := strings.repeat("b", contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES + 1)
+	defer delete(over_bytes)
+	testing.expect_value(t, write_ws_command(net.TCP_Socket(0), over_bytes), Command_Write_Result.Too_Large)
+
+	// And the mapping stays honest end to end: this must not surface as an offline bridge.
+	testing.expect_value(
+		t,
+		command_write_error(write_ws_command(net.TCP_Socket(0), over_bytes)).code,
+		domain.Error_Code.Validation_Failed,
+	)
 }
 
 @(test)

@@ -33,8 +33,13 @@ package main
 // bridge_hub_runtime_loop and freed when that loop exits. So a reconnect DISCARDS every
 // partial stream rather than carrying it across, and a chunk sequence cut in half is
 // simply a command that did not arrive — never half a command that did. A stream whose
-// tail never comes is also bounded in TIME, not only in count, so an abandoned stream on
-// a long-lived connection cannot pin memory until the connection ends.
+// tail never comes is bounded by COUNT, NOT by time: hub_command_reassembly_sweep has a
+// single production call site (:212, gated at :211 on len(buf) >= the reassembly cap),
+// and there is no timer anywhere on this path. So under 64 in-flight streams the TTL
+// never runs and
+// ONE abandoned partial IS pinned until the connection ends. That is bounded and
+// deliberate — 64 streams x 16 MiB, evicting oldest rather than refusing — but it is a
+// count bound, and a reader must not expect time alone to reclaim a stalled stream.
 
 import base64 "core:encoding/base64"
 import "core:fmt"

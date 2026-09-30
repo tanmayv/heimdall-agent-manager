@@ -323,7 +323,9 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 			// ws.poll_text returns a strings.clone, so `text` has ALWAYS been leaked
 			// here, once per inbound frame; `assembled` is a string this loop allocates
 			// and is leaked the same way. Both are real leaks and both are filed
-			// (REQ-SHELL-52).
+			// (REQ-SHELL-58 — NOT REQ-SHELL-52, which is scoped to the outbound 0x81
+			// frame-writer census, never covered this inbound clone, and is completed;
+			// citing it pointed a live leak at a closed task).
 			//
 			// They are not fixed HERE because the free is NOT obviously safe and a bad
 			// free in the live bridge is far worse than a leak. bridge_hub_handle_command
