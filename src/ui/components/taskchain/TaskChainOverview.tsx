@@ -168,10 +168,11 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
   }
 
   const displayText = decryptedText ?? rawDescription;
+  const description = displayText;
 
   return (
     <div data-debug-id={`taskchain-task-description-${taskId}`} className="text-[11.5px] leading-5 text-primary">
-      <Markdown source={displayText} compact copyAll={false} />
+      <Markdown source={description} compact copyAll={false} />
     </div>
   );
 };

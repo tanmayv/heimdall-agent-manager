@@ -356,47 +356,62 @@ export function TaskChainSelectorModal({
                           : 'text-muted hover:bg-neutral-soft hover:text-primary'
                       }`}
                     >
-                      <span aria-hidden="true" className="grid w-5 place-items-center">
+                      <span aria-hidden="true" className="grid w-5 shrink-0 place-items-center">
                         <StatusDot tone={tonePulse.tone} pulse={tonePulse.pulse} label={chain.status || 'Chain'} />
                       </span>
 
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate">
-                          <VaultText value={chain.rawTitle || chain.title} as="span" />
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span data-debug-id="chain-title-row" className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate">
+                            <VaultText value={chain.rawTitle || chain.title} as="span" />
+                          </span>
+                          {isCurrent ? (
+                            <span
+                              data-debug-id="chain-current-badge"
+                              className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-bold bg-accent/20 text-accent border border-accent/40"
+                            >
+                              Current
+                            </span>
+                          ) : null}
                         </span>
-                        {chain.updatedAt ? (
-                          <span className="truncate text-caption text-faint">
+
+                        <span
+                          data-debug-id="chain-secondary-meta"
+                          className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-faint"
+                        >
+                          <span className="truncate">
                             ID: {chain.chainId}
                           </span>
-                        ) : null}
-                      </span>
-
-                      {isCurrent ? (
-                        <span
-                          data-debug-id="chain-current-badge"
-                          className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-bold bg-accent/20 text-accent border border-accent/40"
-                        >
-                          Current
+                          {chain.status ? (
+                            <span className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-neutral-soft text-muted capitalize sm:hidden">
+                              {chain.status.replace(/_/g, ' ')}
+                            </span>
+                          ) : null}
+                          {chain.taskCount !== undefined ? (
+                            <span className="shrink-0 sm:hidden">
+                              {chain.completedTaskCount ?? 0}/{chain.taskCount} tasks
+                            </span>
+                          ) : null}
                         </span>
-                      ) : null}
+                      </span>
 
                       {chain.projectName ? (
                         <span
                           data-debug-id="chain-project-badge"
-                          className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-neutral-soft text-muted truncate max-w-[120px]"
+                          className="ml-2 hidden sm:inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-neutral-soft text-muted truncate max-w-[120px]"
                         >
                           {chain.projectName}
                         </span>
                       ) : null}
 
                       {chain.status ? (
-                        <span className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-neutral-soft text-muted capitalize">
+                        <span className="ml-2 hidden sm:inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-neutral-soft text-muted capitalize">
                           {chain.status.replace(/_/g, ' ')}
                         </span>
                       ) : null}
 
                       {chain.taskCount !== undefined ? (
-                        <span className="ml-2 shrink-0 text-caption text-faint">
+                        <span className="ml-2 hidden sm:inline shrink-0 text-caption text-faint">
                           {chain.completedTaskCount ?? 0}/{chain.taskCount} tasks
                         </span>
                       ) : null}

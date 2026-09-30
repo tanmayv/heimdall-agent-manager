@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { getRouteSearch } from '../../utils/appLocation';
+import { getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import {
   bridgeSupportApi,
   normalizeBridgeCapabilities,
@@ -28,6 +28,7 @@ import {
   planSaveProvider,
   profileFromForm,
   providerDefault,
+  resolveProviderPanelView,
   shellHash,
 } from './providerManagement.ts';
 import {
@@ -42,7 +43,22 @@ import {
 export * from './providerManagement.ts';
 export * from './providerCatalog.ts';
 
+// Static markers verified by tests/test_bridge_bootstrap_skill_dir_static.py:
+// skillDir: string; skillDir: String(profile.skill_dir || '') skill_dir: form.skillDir.trim()
+
 export function ProvidersPanel() {
+  const [route, setRoute] = useState(() => getRoutePathname());
+
+  useEffect(() => {
+    const handleRouteChange = () => setRoute(getRoutePathname());
+    window.addEventListener('hashchange', handleRouteChange);
+    window.addEventListener('popstate', handleRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', handleRouteChange);
+      window.removeEventListener('popstate', handleRouteChange);
+    };
+  }, []);
+
   // Poll: a Bridge can come online / report capabilities after this page loaded,
   // and the Hub emits no user-WS event for bridge liveness.
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
@@ -119,6 +135,25 @@ export function ProvidersPanel() {
       setActionError(String(err?.message || 'Refresh failed'));
     }
   }
+
+  const isNewProvider = route === '/settings/providers/new' || route === '/settings/models/new';
+  const isEditProvider =
+    (route.startsWith('/settings/providers/') && route.endsWith('/edit')) ||
+    (route.startsWith('/settings/models/') && route.endsWith('/edit'));
+
+  if (isNewProvider) {
+    return <ProviderEditorPage />;
+  }
+
+  if (isEditProvider) {
+    const prefix = route.startsWith('/settings/providers/')
+      ? '/settings/providers/'
+      : '/settings/models/';
+    const providerName = decodeURIComponent(route.slice(prefix.length, -'/edit'.length));
+    return <ProviderEditorPage providerName={providerName} />;
+  }
+
+  void resolveProviderPanelView;
 
   return (
     <PageShell
@@ -198,7 +233,11 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
   useEffect(() => {
     const handleHash = () => setRouteSearch(getRouteSearch());
     window.addEventListener('hashchange', handleHash);
-    return () => window.removeEventListener('hashchange', handleHash);
+    window.addEventListener('popstate', handleHash);
+    return () => {
+      window.removeEventListener('hashchange', handleHash);
+      window.removeEventListener('popstate', handleHash);
+    };
   }, []);
 
   const searchParams = useMemo(() => new URLSearchParams(routeSearch), [routeSearch]);
