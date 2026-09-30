@@ -171,6 +171,11 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 		should_attach = true
 		target_bridge = strings.clone(resolved_bridge, context.temp_allocator)
 	}
+	// REQ-SHELL-41 (P0 addendum): this is the 0->1 viewer transition, so arm the
+	// first-frame log. The question it answers is "did ANY output actually reach the
+	// browser after it attached" — which is the first thing to establish for a session
+	// that renders nothing, and which no log line could answer before.
+	if prev_count == 0 do shell_first_frame_arm(session_id)
 	sync.mutex_unlock(&svc.mu)
 
 	if should_attach && target_bridge != "" {
@@ -192,7 +197,13 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 	return prev_count > 0
 }
 
-shell_session_detach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") {
+shell_session_detach :: proc(
+	svc: ^Shell_Session_Service,
+	session_id: string,
+	socket: net.TCP_Socket,
+	bridge_id: string = "",
+	reason: Shell_Viewer_Detach_Reason = .Unspecified,
+) {
 	if svc == nil || session_id == "" do return
 	sync.mutex_lock(&svc.mu)
 	viewers, ok := &svc.viewers[session_id]
@@ -220,7 +231,27 @@ shell_session_detach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 		}
 		// No by-session-id DB fallback — see the note in shell_session_attach.
 	}
+	remaining := len(viewers^)
 	sync.mutex_unlock(&svc.mu)
+
+	// REQ-SHELL-41 (P0 addendum): EVERY detach, with the reason. This proc used to say
+	// nothing at all, which is why a silently unsubscribed viewer — the REQ-SHELL-33
+	// failure mode — left no trace whatsoever. Bounded by the viewer count, not by the
+	// frame rate, so it is not per-frame logging.
+	//
+	// `viewer=` is the socket fd: the only stable identifier a viewer has here, and
+	// enough to follow one viewer across its attach/detach pair in a log.
+	// `bridge_detach=` records whether this was the LAST viewer, so the hub also told
+	// the bridge to stop streaming — the difference between one browser tab closing and
+	// the session's output actually being shut off.
+	if removed {
+		fmt.println(
+			"shell viewer detach", "session=", session_id,
+			"viewer=", int(socket),
+			"reason=", shell_viewer_detach_reason_string(reason),
+			"remaining_viewers=", remaining,
+			"bridge_detach=", should_detach)
+	}
 
 	if should_detach && target_bridge != "" {
 		cmd_id := ""
@@ -336,10 +367,20 @@ shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, 
 		// The write happens under the session write lock; the detach deliberately does
 		// NOT — it takes svc.mu, and nothing may hold the write lock while doing that.
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		_log_viewer_write("output", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock)
-		} else {
-			_log_viewer_write("output", session_id, result, len(frame))
+			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+			continue
+		}
+		// REQ-SHELL-41 (P0 addendum): the FIRST frame delivered after this session gained
+		// its first viewer, with its byte count. Fires at most once per 0->1 transition
+		// (shell_first_frame_take is once-only), so it is not per-frame logging — and it
+		// is reported only for a write that actually SUCCEEDED, because "a frame was
+		// emitted" is the claim being made.
+		if result == .Ok && shell_first_frame_take(session_id) {
+			fmt.println(
+				"shell first frame after attach", "session=", session_id,
+				"bytes=", len(frame), "viewer=", int(sock))
 		}
 	}
 }
@@ -354,10 +395,9 @@ shell_session_broadcast_status :: proc(svc: ^Shell_Session_Service, session_id, 
 	defer delete(frame)
 	for sock in sockets {
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		_log_viewer_write("status", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock)
-		} else {
-			_log_viewer_write("status", session_id, result, len(frame))
+			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
 		}
 	}
 }
@@ -1792,12 +1832,31 @@ _viewer_write_ends_session :: proc(result: ws.Text_Write_Result) -> bool {
 	return true
 }
 
-// _log_viewer_write reports the non-Ok outcomes that do NOT end the session, because those
-// are the ones that otherwise leave no trace anywhere — the session stays up, the viewer
-// stays attached, and a frame simply never arrives. REQ-SHELL-16 settled the principle:
-// a refusal must never be silent.
+// _detach_reason_for_write maps a session-ending write result onto the detach reason, so
+// the detach line names the WRITE outcome that forced it rather than just "unspecified".
+_detach_reason_for_write :: proc(result: ws.Text_Write_Result) -> Shell_Viewer_Detach_Reason {
+	switch result {
+	case .Peer_Gone:      return .Peer_Gone
+	case .Desynchronised: return .Desynchronised
+	case .Ok, .Too_Large: return .Unspecified // neither ends the session
+	}
+	return .Unspecified
+}
+
+// _log_viewer_write reports EVERY non-Ok write outcome. Ok is silent, and must stay that
+// way: this path carries PTY output at ~11KB every 25ms, so logging success would be its
+// own defect (REQ-SHELL-41 AC3).
+//
+// IT USED TO REPORT ONLY Too_Large, and the asymmetry was the bug. Too_Large keeps the
+// viewer attached, so it was reasoned to be the case that "otherwise leaves no trace" —
+// but Peer_Gone and Desynchronised DETACH A LIVE VIEWER, and the detach itself logged
+// nothing either, so the two loudest outcomes were the two silent ones. Both are now
+// reported here, and the detach that follows is reported by shell_session_detach.
 _log_viewer_write :: proc(kind, session_id: string, result: ws.Text_Write_Result, size: int) {
-	if result == .Too_Large {
+	switch result {
+	case .Ok:
+		// Deliberately silent — see above.
+	case .Too_Large:
 		fmt.eprintfln(
 			"ham-hub WARN shell ws %s frame too large to encode session=%s bytes=%d limit=%d (viewer KEPT attached)",
 			kind,
@@ -1805,6 +1864,14 @@ _log_viewer_write :: proc(kind, session_id: string, result: ws.Text_Write_Result
 			size,
 			ws.WS_MAX_SERVER_PAYLOAD,
 		)
+	case .Peer_Gone:
+		fmt.eprintfln(
+			"ham-hub WARN shell ws %s write found the peer gone session=%s bytes=%d (viewer WILL BE DETACHED)",
+			kind, session_id, size)
+	case .Desynchronised:
+		fmt.eprintfln(
+			"ham-hub WARN shell ws %s write left a PARTIAL frame on the wire session=%s bytes=%d (stream unparseable; viewer WILL BE DETACHED)",
+			kind, session_id, size)
 	}
 }
 
