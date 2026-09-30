@@ -268,6 +268,9 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 	header_len := 2
 	if n > 125 do header_len = 4
 	frame := make([]byte, header_len + n)
+	// REQ-SHELL-52A: send_all_tcp/send_all_file BORROW this slice and free nothing on any
+	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
+	defer delete(frame)
 	frame[0] = 0x81
 	if n <= 125 {
 		frame[1] = byte(n)

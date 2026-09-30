@@ -679,6 +679,9 @@ write_ws_text :: proc(socket: net.TCP_Socket, text: string) -> bool {
 	header_len := 2
 	if len(text) > 125 do header_len = 4
 	frame := make([]byte, header_len + len(text))
+	// REQ-SHELL-52A: bridge_tcp_send_all BORROWS this slice and frees nothing on either
+	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
+	defer delete(frame)
 	frame[0] = 0x81
 	if len(text) <= 125 {
 		frame[1] = byte(len(text))
