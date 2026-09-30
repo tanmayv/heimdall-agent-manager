@@ -1,5 +1,5 @@
-// REQ-CHAIN-SELECTOR-MODAL-1, REQ-CHAIN-SELECTOR-SCALABILITY-1, REQ-CHAIN-SELECTOR-VAULT-1, REQ-CONVO-CHAIN-CLICK-1, REQ-CHAIN-SELECTOR-TEST-1:
-// Comprehensive unit tests for Dedicated Task Chain Selector Modal with Prepopulated Lists and Scalability.
+// REQ-CHAIN-SELECTOR-MODAL-1, REQ-CHAIN-SELECTOR-SCALABILITY-1, REQ-CHAIN-SELECTOR-VAULT-1, REQ-CONVO-CHAIN-CLICK-1, REQ-CHAIN-SELECTOR-TEST-1, REQ-CHAIN-SELECTOR-MOBILE-1, REQ-CHAIN-SELECTOR-MOBILE-2, REQ-CHAIN-SELECTOR-MOBILE-3, REQ-CHAIN-SELECTOR-MOBILE-4:
+// Comprehensive unit tests for Dedicated Task Chain Selector Modal with Prepopulated Lists, Scalability, and Mobile Responsive Layout.
 //
 // RUN: node --test tests/ui_task_chain_selector_test.ts
 
@@ -107,6 +107,62 @@ test('TaskChainSelectorModal.tsx exists and adheres to Heimdall architecture con
   assert.ok(content.includes('data-debug-id="task-chain-selector-search-input"'), 'Search input debug-id');
   assert.ok(content.includes('data-debug-id="task-chain-selector-list"'), 'List container debug-id');
   assert.ok(content.includes('data-debug-id="chain-current-badge"'), 'Current chain badge debug-id');
+  assert.ok(content.includes('data-debug-id="chain-project-badge"'), 'Project badge debug-id');
+  assert.ok(content.includes('data-debug-id={`chain-selector-item-${chain.chainId}`}'), 'Item debug-id');
+});
+
+test('TaskChainSelectorModal.tsx implements responsive mobile layout and title visibility contracts (REQ-CHAIN-SELECTOR-MOBILE-1..4)', () => {
+  const modalFile = path.join(REPO_ROOT, 'src/ui/components/chains/TaskChainSelectorModal.tsx');
+  const content = fs.readFileSync(modalFile, 'utf8');
+
+  // 1. Primary title row allocates full flexible width (min-w-0 flex-1 truncate) alongside Current badge
+  assert.ok(
+    content.includes('data-debug-id="chain-title-row"'),
+    'Must include chain-title-row container for full-width title and Current badge',
+  );
+  assert.match(
+    content,
+    /data-debug-id="chain-title-row"[\s\S]*?<span className="min-w-0 flex-1 truncate">\s*<VaultText[\s\S]*?data-debug-id="chain-current-badge"/,
+    'Primary title row must allocate min-w-0 flex-1 truncate to title and place chain-current-badge next to it',
+  );
+
+  // 2. Redundant project badge is hidden on mobile (<640px) and shown on sm+
+  assert.match(
+    content,
+    /data-debug-id="chain-project-badge"\s+className="[^"]*hidden sm:inline-flex[^"]*"/,
+    'chain-project-badge must have hidden sm:inline-flex to hide redundant project pill on mobile',
+  );
+
+  // 3. Secondary metadata (ID, mobile status tag, mobile task count) sits on a dedicated secondary line under the title
+  assert.ok(
+    content.includes('data-debug-id="chain-secondary-meta"'),
+    'Must include chain-secondary-meta container under the title row',
+  );
+  assert.match(
+    content,
+    /data-debug-id="chain-secondary-meta"[\s\S]*?ID:\s*\{chain\.chainId\}[\s\S]*?sm:hidden[\s\S]*?\{chain\.completedTaskCount \?\? 0\}\/\{chain\.taskCount\} tasks/,
+    'Secondary metadata line must include chain ID, mobile status badge (sm:hidden), and task count',
+  );
+
+  // 4. Desktop (sm:) trailing badges for status and task count are preserved
+  assert.match(
+    content,
+    /className="[^"]*hidden sm:inline-flex[^"]*capitalize"/,
+    'Desktop trailing status badge must use hidden sm:inline-flex',
+  );
+  assert.match(
+    content,
+    /className="[^"]*hidden sm:inline[^"]*text-caption text-faint"/,
+    'Desktop trailing task count must use hidden sm:inline',
+  );
+
+  // 5. Required ARIA attributes remain intact
+  assert.ok(content.includes('role="dialog"'), 'Dialog role preserved');
+  assert.ok(content.includes('aria-modal="true"'), 'aria-modal preserved');
+  assert.ok(content.includes('role="combobox"'), 'Search combobox role preserved');
+  assert.ok(content.includes('role="listbox"'), 'Listbox role preserved');
+  assert.ok(content.includes('role="option"'), 'Option role preserved');
+  assert.ok(content.includes('aria-selected={active}'), 'Option aria-selected preserved');
 });
 
 test('ConversationThreadPage.tsx wires breadcrumb title and search button to TaskChainSelectorModal', () => {

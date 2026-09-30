@@ -67,6 +67,34 @@ export function shellHash(path: string): string {
   return `#${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+export type ProviderPanelView = {
+  mode: 'list' | 'new' | 'edit';
+  providerName: string;
+};
+
+export function resolveProviderPanelView(route: string): ProviderPanelView {
+  if (route === '/settings/providers/new' || route === '/settings/models/new') {
+    return { mode: 'new', providerName: '' };
+  }
+  if (
+    (route.startsWith('/settings/providers/') && route.endsWith('/edit')) ||
+    (route.startsWith('/settings/models/') && route.endsWith('/edit'))
+  ) {
+    const prefix = route.startsWith('/settings/providers/')
+      ? '/settings/providers/'
+      : '/settings/models/';
+    const rawName = route.slice(prefix.length, -'/edit'.length);
+    let providerName = rawName;
+    try {
+      providerName = decodeURIComponent(rawName);
+    } catch {
+      providerName = rawName;
+    }
+    return { mode: 'edit', providerName };
+  }
+  return { mode: 'list', providerName: '' };
+}
+
 export function asArray(value: any): string[] {
   return Array.isArray(value)
     ? value.map(String).filter(Boolean)
