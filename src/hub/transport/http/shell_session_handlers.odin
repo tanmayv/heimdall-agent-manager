@@ -390,6 +390,31 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: n
 	raw_req := _preview_build_http_request(req.method, forwarded_path, req.query, req.headers, req.body, session.server_port, is_ws_upgrade)
 	defer delete(raw_req)
 	raw_bytes := transmute([]byte)raw_req
+	// CHUNK_SIZE IS A RAW-BYTE FIGURE AND IT DOES *NOT* FIT ONE WS FRAME. THAT IS FINE
+	// NOW, AND IT WAS FATAL BEFORE REQ-SHELL-36 -- READ THIS BEFORE "FIXING" IT.
+	//
+	// The arithmetic looks like a live bug and is not: 49152 is divisible by 3, so base64
+	// adds no padding and expands it to EXACTLY 65536 chars, one byte over the 65535-byte
+	// 16-bit WS frame cap, before _preview_tunnel_data_json adds its wrapper (~65618 on
+	// the wire). Until REQ-SHELL-36 the writer could only emit a single 16-bit frame, so
+	// every FULL chunk was refused and the refusal was reported as Bridge_Offline -- a
+	// size cliff at 48 KiB that blamed a healthy bridge.
+	//
+	// It is harmless now because framing is no longer this loop's concern:
+	// write_ws_command (bridge_runtime.odin:204) splits any command that does not fit,
+	// gating on LENGTH ALONE with nothing keyed off the command type, and it is the only
+	// route to the bridge command socket. So this slice size no longer decides what goes
+	// on the wire -- BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES (6000, contracts/
+	// bridge.odin:120) does, and a 48 KiB slice is simply re-framed into ~11 chunks.
+	//
+	// RESIZING THIS TO "FIT ONE FRAME" WOULD BUY NOTHING: at a 6000-byte chunk payload
+	// anything above 6000 raw is chunked anyway, so there is no value for which this loop
+	// emits exactly one frame and still moves useful volume. Left at 48 KiB deliberately.
+	//
+	// WHAT WOULD MAKE IT MATTER AGAIN: a path to the bridge that writes a command WITHOUT
+	// going through write_ws_command, or a write_ws_command that stops chunking. Either
+	// makes this an over-cap frame again. Pinned by
+	// preview_chunk_size_req54_test.odin (REQ-SHELL-54).
 	CHUNK_SIZE :: 48 * 1024
 	seq := 0
 	off := 0
