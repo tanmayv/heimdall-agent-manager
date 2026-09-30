@@ -121,6 +121,10 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	// REQ-SHELL-29: a viewer joining a session that already had viewers triggers no bridge
 	// attach, so the pty-host's catchup screen never fires for it. Remember that here and
 	// repaint it from a pane capture on its first resize frame (below).
+	// REQ-SHELL-61: `late_join` is now only carried for the record — the snapshot is sent to
+	// EVERY attaching viewer. It is still read from the attach (rather than inferred later)
+	// because it remains the one race-free answer to "did this socket trigger a bridge
+	// attach", which is what the first-frame diagnostic below is interpreted against.
 	late_join := shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client, session.bridge_id)
 	// REQ-SHELL-41: the ORDINARY detach — this viewer's own stream handler is returning.
 	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client, session.bridge_id, .Stream_Closed)
@@ -170,9 +174,12 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 			if rows >= 1 && cols >= 1 {
 				bridge_service.send_shell_resize(h.bridges, auth_ctx, session.bridge_id, session_id, rows, cols, sink_override)
 				// REQ-SHELL-29: capture on the FIRST resize, not on `ready` — this frame
-				// carries the viewer's real geometry (useShellStream.ts:202), and a capture
-				// rendered at a guessed 80 columns would re-wrap the screen.
-				if late_join && !screen_sent {
+				// carries the viewer's real geometry (useShellStream.ts sendGeometry), and a
+				// capture rendered at a guessed 80 columns would re-wrap the screen.
+				// REQ-SHELL-61: the gate lives in shell_stream_should_send_screen_snapshot,
+				// which takes `late_join` and deliberately ignores it — the first viewer of a
+				// session needs the snapshot too. See that proc for why serving it is safe.
+				if shell_stream_should_send_screen_snapshot(late_join, screen_sent, rows, cols) {
 					screen_sent = true
 					_ = shell_stream_send_shell_screen_snapshot(h.shell_sessions, auth_ctx, session_id, client, rows, cols)
 				}

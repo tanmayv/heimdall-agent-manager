@@ -65,8 +65,11 @@ test_req29_empty_pane_output_writes_no_frame :: proc(t: ^testing.T) {
 	)
 }
 
-// The gate itself: viewer #1 is served by the bridge's pty-host catchup and must NOT be
-// reported as a late join; viewer #2 triggers no bridge attach and must be.
+// What shell_session_attach REPORTS: viewer #1 is not a late join, viewer #2 is. This is a
+// fact about the attach and REQ-SHELL-61 did not change it — it only stopped the handlers
+// GATING the snapshot on it (see the req61 tests below). Kept because the value is still
+// returned, still carried by both handlers, and still read when interpreting the
+// REQ-SHELL-41 first-frame diagnostic.
 @(test)
 test_req29_attach_reports_late_join_only_for_extra_viewers :: proc(t: ^testing.T) {
 	ids := platform.real_id_generator()
@@ -285,4 +288,85 @@ test_req30_empty_pane_text_adds_no_separator :: proc(t: ^testing.T) {
 	got := _req30_decoded_payload(t, "")
 	defer delete(got)
 	testing.expect_value(t, got, SHELL_SCREEN_REPAINT_PREFIX)
+}
+
+// ---------------------------------------------------------------------------
+// REQ-SHELL-61: THE FIRST VIEWER OF A STREAM NEVER GOT A SCREEN SNAPSHOT.
+//
+// Both stream handlers gated the snapshot on `late_join && !screen_sent`, so viewer #1 was
+// skipped and left to the bridge's 0->1 pty-host catchup. When that catchup paints little
+// or nothing — it is skipped outright when the bridge already holds a live stream worker
+// for the session — viewer #1 had NO screen source and the pane came up BLANK. That is the
+// reported neovim defect, and it is why a re-render or a tab switch appeared to fix it:
+// either one made the viewer a late joiner, where the snapshot did fire.
+//
+// WHAT THESE TESTS PROVE: the gate in shell_stream_should_send_screen_snapshot answers YES
+// for a first viewer, stays once-per-stream, and requires real geometry.
+//
+// WHAT THEY DO NOT PROVE, stated so it is not read as more than it is: that a browser
+// actually paints. These execute the hub-side decision and, through the existing targeting
+// test above, the frame that decision produces. No browser is driven here. The
+// experiment-ON retest is the user's.
+//
+// MUTATION-VALIDATED. Restoring the old gate — `if !late_join do return false` as the first
+// line of shell_stream_should_send_screen_snapshot — makes
+// test_req61_first_viewer_must_be_offered_a_snapshot FAIL and the other two pass, which is
+// exactly the defect this task fixes. A new test that has never failed proves nothing.
+
+@(test)
+test_req61_first_viewer_must_be_offered_a_snapshot :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		shell_stream_should_send_screen_snapshot(false, false, 50, 200),
+		"the FIRST viewer (late_join=false) must be offered a screen snapshot: the bridge catchup is not a reliable paint for it, and without this it has no screen source at all",
+	)
+	// The late joiner keeps the behaviour REQ-SHELL-29 gave it. The fix ADDS viewer #1; it
+	// does not trade one viewer for the other.
+	testing.expect(
+		t,
+		shell_stream_should_send_screen_snapshot(true, false, 50, 200),
+		"a late joiner must still be offered a snapshot",
+	)
+}
+
+@(test)
+test_req61_snapshot_is_offered_once_per_stream :: proc(t: ^testing.T) {
+	// `screen_sent` is the only thing that closes the gate now, so it carries the whole
+	// once-only property for BOTH viewer positions. A viewer resizes repeatedly — every
+	// later resize must cost no pane capture.
+	testing.expect(
+		t,
+		!shell_stream_should_send_screen_snapshot(false, true, 50, 200),
+		"a first viewer that already received its snapshot must not earn another on a later resize",
+	)
+	testing.expect(
+		t,
+		!shell_stream_should_send_screen_snapshot(true, true, 50, 200),
+		"a late joiner that already received its snapshot must not earn another either",
+	)
+}
+
+// The trap, pinned deliberately rather than left implicit: the snapshot is only ever
+// produced from a resize frame carrying real geometry, because capturing at a guessed 80
+// columns would re-wrap the screen. So a client that sends no resize, or sends 0/0, gets
+// NO snapshot — and since REQ-SHELL-61 made this the first viewer's screen source, that is
+// now a blank first paint rather than a missing repaint. Asserted so that anyone who
+// loosens the geometry rule has to come here and say why.
+@(test)
+test_req61_snapshot_requires_real_geometry :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!shell_stream_should_send_screen_snapshot(false, false, 0, 0),
+		"a 0x0 resize must not trigger a capture: the rendered width would be a guess",
+	)
+	testing.expect(
+		t,
+		!shell_stream_should_send_screen_snapshot(false, false, 50, 0),
+		"zero columns is not real geometry",
+	)
+	testing.expect(
+		t,
+		!shell_stream_should_send_screen_snapshot(false, false, 0, 200),
+		"zero rows is not real geometry",
+	)
 }

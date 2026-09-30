@@ -124,11 +124,23 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 // --- WS attach/detach (Attach-gated streaming, REQ-STREAM-IMPL-2) ---
 
 // Returns late_join: whether this socket joined a session that ALREADY had viewers.
-// REQ-SHELL-29 uses it to decide who needs a screen snapshot. The 0->1 viewer is served
-// by the bridge's existing pty-host catchup (pty_host_stream_worker.odin:149-156) and is
-// deliberately left alone; a late joiner triggers no bridge attach, so nothing repaints
-// it. Reported from under the lock rather than inferred from a later viewer count, which
-// would race a second viewer attaching concurrently.
+// Equivalently: whether this attach did NOT trigger a bridge attach. Reported from under
+// the lock rather than inferred from a later viewer count, which would race a second
+// viewer attaching concurrently.
+//
+// REQ-SHELL-29 introduced it to decide who needs a screen snapshot, on the reasoning that
+// the 0->1 viewer is already served by the bridge's pty-host catchup
+// (pty_host_stream_worker.odin .Screen case) and could be left alone.
+//
+// REQ-SHELL-61 RETIRED THAT USE AND THE REASONING BEHIND IT: the catchup is not a reliable
+// paint for viewer #1 — it is skipped entirely when the bridge already has a live stream
+// worker for the session (bridge_pty_stream_worker_start returns early without sending a
+// fresh Attach), and a viewer #1 that gets no snapshot then has NO screen source at all.
+// The snapshot is therefore sent to every attaching viewer; see
+// shell_stream_should_send_screen_snapshot for the gate and why serving viewer #1 is safe.
+// The value is still returned and still means exactly what it says — it is a truthful fact
+// about the attach, useful for diagnostics, and its test still holds. It is simply no
+// longer a gate.
 shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, socket: net.TCP_Socket, bridge_id: string = "") -> (late_join: bool) {
 	if svc == nil || session_id == "" do return false
 	heap := runtime.heap_allocator()
