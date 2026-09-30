@@ -133,15 +133,8 @@ bridge_shell_exited_outbox_write :: proc(data_dir, session_id, event_json: strin
 	strings.write_string(&b, "{\"session_id\":\"")
 	bridge_local_write_json_string(&b, session_id)
 	strings.write_string(&b, "\",\"enqueued_at_ms\":")
-	// strconv.itoa into a stack buffer rather than bridge_agent_itoa, which allocates
-	// AND is only conditionally owned — it returns the literal "0" for n == 0 and a
-	// clone otherwise (agent_api.odin:414-428), so neither deleting nor dropping its
-	// result is correct for every input. Nothing to own here at all is the better
-	// answer on a path that runs on every exit.
-	{
-		buf: [24]byte
-		strings.write_string(&b, strconv.write_int(buf[:], enqueued_at_ms, 10))
-	}
+	// Allocates nothing, so there is no ownership question on the exit path.
+	bridge_agent_write_int(&b, int(enqueued_at_ms))
 	// The event frame is stored as an opaque STRING, not as a nested object, so the
 	// bytes that go on the wire are exactly the bytes the enqueuing code built. A
 	// re-serialized object would be a second chance to change the frame.

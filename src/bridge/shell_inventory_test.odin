@@ -145,7 +145,8 @@ test_inventory_marks_itself_truncated_at_the_cap :: proc(t: ^testing.T) {
 	defer bridge_shell_session_map_reset(&m)
 
 	for i in 0 ..< BRIDGE_SHELL_INVENTORY_MAX_ENTRIES + 5 {
-		id := strings.concatenate({"sh_", bridge_agent_itoa(i)}, context.temp_allocator)
+		buf: [24]byte
+		id := strings.concatenate({"sh_", bridge_agent_itoa_buf(buf[:], i)}, context.temp_allocator)
 		s := _inv_session(&m, id, .Running, 1000 + i)
 		bridge_shell_session_register(&m, &s)
 	}

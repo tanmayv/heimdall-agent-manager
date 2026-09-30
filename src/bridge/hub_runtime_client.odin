@@ -2277,17 +2277,8 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 	strings.write_string(&b, "{\"type\":\"shell_exited\",\"session_id\":\"")
 	bridge_runtime_write_json_string(&b, session_id)
 	strings.write_string(&b, "\",\"exit_code\":")
-	// Boy-scout: this site used bridge_agent_itoa and DROPPED the result, leaking a
-	// few bytes per exit reported. The obvious fix — deleting it — is WRONG, because
-	// bridge_agent_itoa is only conditionally owned: it returns the literal "0" for
-	// n == 0 and strings.clone otherwise (agent_api.odin:414-428), so a delete is a
-	// bad free for exit_code 0, which is the single most common exit code there is.
-	// Sidestepped rather than papered over: strconv.itoa writes into a stack buffer
-	// and allocates nothing, so there is no ownership question to get wrong.
-	{
-		buf: [24]byte
-		strings.write_string(&b, strconv.write_int(buf[:], i64(exit_code), 10))
-	}
+	// Allocates nothing, so there is no ownership question on the exit path.
+	bridge_agent_write_int(&b, exit_code)
 	strings.write_string(&b, ",\"exit_code_set\":")
 	strings.write_string(&b, "true" if exit_code_set else "false")
 	strings.write_string(&b, ",\"status\":\"")
@@ -2666,7 +2657,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	strings.write_string(&b, "\",\"command_id\":\"")
 	bridge_runtime_write_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"ok\":true,\"pid\":")
-	strings.write_string(&b, bridge_agent_itoa(int(pid)))
+	bridge_agent_write_int(&b, int(pid))
 	strings.write_string(&b, ",\"shell_id\":\"")
 	bridge_runtime_write_json_string(&b, spawn_instance)
 	strings.write_string(&b, "\"}")
@@ -3008,7 +2999,7 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		strings.write_string(&b, "true" if ok else "false")
 		if ok {
 			strings.write_string(&b, ",\"pid\":")
-			strings.write_string(&b, bridge_agent_itoa(pid))
+			bridge_agent_write_int(&b, pid)
 		}
 		strings.write_string(&b, "}")
 		result := strings.to_string(b)
@@ -3149,13 +3140,13 @@ bridge_shell_session_write_json :: proc(b: ^strings.Builder, s: Bridge_Shell_Ses
 	strings.write_string(b, "\",\"owner_user_id\":\"")
 	bridge_runtime_write_json_string(b, s.owner_user_id)
 	strings.write_string(b, "\",\"pid\":")
-	strings.write_string(b, bridge_agent_itoa(s.pid))
+	bridge_agent_write_int(b, s.pid)
 	strings.write_string(b, ",\"server_port\":")
-	strings.write_string(b, bridge_agent_itoa(s.server_port))
+	bridge_agent_write_int(b, s.server_port)
 	strings.write_string(b, ",\"status\":\"")
 	bridge_runtime_write_json_string(b, bridge_shell_session_status_str(s.status))
 	strings.write_string(b, "\",\"exit_code\":")
-	strings.write_string(b, bridge_agent_itoa(s.exit_code))
+	bridge_agent_write_int(b, s.exit_code)
 	strings.write_string(b, ",\"exit_code_set\":")
 	strings.write_string(b, "true" if s.exit_code_set else "false")
 	strings.write_string(b, ",\"started_at\":\"")
@@ -3270,7 +3261,7 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 	strings.write_string(&b, "],\"truncated\":")
 	strings.write_string(&b, "true" if truncated else "false")
 	strings.write_string(&b, ",\"total_lines\":")
-	strings.write_string(&b, bridge_agent_itoa(total_lines))
+	bridge_agent_write_int(&b, total_lines)
 	strings.write_string(&b, "}")
 	result := strings.to_string(b)
 	if conn != nil do _ = bridge_hub_send(conn, result)
@@ -3385,9 +3376,9 @@ bridge_hub_handle_shell_capture :: proc(conn: ^ws.Connection, text: string) {
 	strings.write_string(&b, "\",\"ok\":true,\"content\":\"")
 	bridge_runtime_write_json_string(&b, content)
 	strings.write_string(&b, "\",\"rows\":")
-	strings.write_string(&b, bridge_agent_itoa(int(reply.screen.rows)))
+	bridge_agent_write_int(&b, int(reply.screen.rows))
 	strings.write_string(&b, ",\"cols\":")
-	strings.write_string(&b, bridge_agent_itoa(int(reply.screen.cols)))
+	bridge_agent_write_int(&b, int(reply.screen.cols))
 	strings.write_string(&b, "}")
 	result := strings.to_string(b)
 	if conn != nil do _ = bridge_hub_send(conn, result)

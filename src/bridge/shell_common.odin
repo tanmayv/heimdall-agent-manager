@@ -219,16 +219,16 @@ bridge_shell_write_session_json :: proc(b: ^strings.Builder, s: ^Bridge_Shell_Se
 	strings.write_byte(b, '"')
 	if s.status != .Running && s.status != .Starting {
 		strings.write_string(b, ",\"exit_code\":")
-		strings.write_string(b, bridge_agent_itoa(s.exit_code))
+		bridge_agent_write_int(b, s.exit_code)
 		if s.finished_unix_ms > 0 {
 			strings.write_string(b, ",\"execution_time_ms\":")
-			strings.write_string(b, bridge_agent_itoa(int(s.finished_unix_ms - s.started_unix_ms)))
+			bridge_agent_write_int(b, int(s.finished_unix_ms - s.started_unix_ms))
 		}
 	}
 	strings.write_string(b, ",\"start_time\":\"")
 	bridge_local_write_json_string(b, s.started_at)
 	strings.write_string(b, "\",\"output_size_bytes\":")
-	strings.write_string(b, bridge_agent_itoa(output_size))
+	bridge_agent_write_int(b, output_size)
 	strings.write_string(b, ",\"raw_output_location\":\"")
 	bridge_local_write_json_string(b, output_path)
 	strings.write_byte(b, '"')
