@@ -38,6 +38,7 @@ hub.db-wal
 /sqlite
 /content
 /http
+/ws
 
 # Local-only VPS deployment runbook (not for the repo)
 /deployment.md

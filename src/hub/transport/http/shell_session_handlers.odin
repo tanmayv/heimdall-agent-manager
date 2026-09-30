@@ -122,7 +122,8 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	// attach, so the pty-host's catchup screen never fires for it. Remember that here and
 	// repaint it from a pane capture on its first resize frame (below).
 	late_join := shell_session_svc.shell_session_attach(h.shell_sessions, session_id, client, session.bridge_id)
-	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client, session.bridge_id)
+	// REQ-SHELL-41: the ORDINARY detach — this viewer's own stream handler is returning.
+	defer shell_session_svc.shell_session_detach(h.shell_sessions, session_id, client, session.bridge_id, .Stream_Closed)
 	screen_sent := false
 
 	// Send ready frame.

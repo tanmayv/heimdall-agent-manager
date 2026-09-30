@@ -50,7 +50,6 @@ Bridge_Config :: struct {
 }
 
 bridge_config: Bridge_Config
-bridge_ws_send_mutex: sync.Mutex
 bridge_sequence: i64
 
 main :: proc() {
@@ -343,7 +342,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 }
 
 bridge_runtime_init :: proc() {
-	bridge_ws_send_mutex = sync.Mutex{}
 	bridge_sequence = 0
 }
 
@@ -670,28 +668,6 @@ bridge_ws_chunk_json :: proc(chunk_id: string, chunk_index, chunk_count, total_b
 	strings.write_string(&b, `","end_stream":`); strings.write_string(&b, "true" if chunk_index + 1 == chunk_count else "false")
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
-}
-
-write_ws_text :: proc(socket: net.TCP_Socket, text: string) -> bool {
-	if len(text) > 65535 do return false
-	sync.mutex_lock(&bridge_ws_send_mutex)
-	defer sync.mutex_unlock(&bridge_ws_send_mutex)
-	header_len := 2
-	if len(text) > 125 do header_len = 4
-	frame := make([]byte, header_len + len(text))
-	// REQ-SHELL-52A: bridge_tcp_send_all BORROWS this slice and frees nothing on either
-	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
-	defer delete(frame)
-	frame[0] = 0x81
-	if len(text) <= 125 {
-		frame[1] = byte(len(text))
-	} else {
-		frame[1] = 126
-		frame[2] = byte((len(text) >> 8) & 0xff)
-		frame[3] = byte(len(text) & 0xff)
-	}
-	copy(frame[header_len:], transmute([]byte)text)
-	return bridge_tcp_send_all(socket, frame)
 }
 
 json_write_string :: proc(builder: ^strings.Builder, value: string) {

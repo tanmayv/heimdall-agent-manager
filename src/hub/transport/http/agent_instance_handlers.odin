@@ -157,7 +157,8 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 	}
 	defer {
 		if h.shell_sessions != nil {
-			shell_session_svc.shell_session_detach(h.shell_sessions, instance_id, client, inst.bridge_id)
+			// REQ-SHELL-41: ordinary detach on the stream handler's way out.
+			shell_session_svc.shell_session_detach(h.shell_sessions, instance_id, client, inst.bridge_id, .Stream_Closed)
 		}
 	}
 
