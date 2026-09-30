@@ -97,4 +97,25 @@ BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES :: 6000
 // it there is a separate, explicit rollout step (this constant governs the
 // bridge's own framing).
 BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT :: 45000
+
+// ---- hub->bridge command chunking (REQ-SHELL-36) -------------------------
+// Raw bytes per chunk in the OPPOSITE direction: the hub splitting an oversized
+// command frame for the bridge to reassemble. Deliberately the CONSERVATIVE 6000
+// and NOT the 45000 socat value above, for a reason that is about who knows what
+// rather than about the wire:
+//
+//   The socat figure is selected by the BRIDGE, at runtime, from its own
+//   HAM_TLS_BACKEND env (bridge_hub_runtime_chunk_payload_bytes). The hub cannot
+//   observe that variable — it lives in a different process on a different host.
+//   A transport must not size its frames from a value only its peer can read, so
+//   the hub takes the figure that is safe on BOTH transports and on the
+//   nginx->Caddy edge hop.
+//
+// The cost is stated rather than hidden: 6000 raw base64s to ~8000 chars which,
+// plus the chunk JSON wrapper, is a ~8.2 KiB frame — so a 1 MB LSP didOpen becomes
+// roughly 175 frames instead of roughly 24. That is the price of not guessing at
+// the peer's configuration, and it is the right trade: an over-large guess is not
+// slow, it is SILENTLY DROPPED (this whole defect), while an over-small one is
+// merely more frames on an ordered connection.
+BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES :: 6000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024

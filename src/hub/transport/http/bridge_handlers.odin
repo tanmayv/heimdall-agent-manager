@@ -1360,7 +1360,10 @@ bridge_chunk_reassembly_oldest_index :: proc(reassemblies: ^[dynamic]Bridge_Chun
 
 // bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
 // is complete, returns the reassembled original frame text. Mirrors the bridge's
-// own inbound reassembly (bridge_ws_handle_chunk_skeleton): key by chunk_id;
+// own inbound reassembly (hub_command_reassemble, src/bridge/hub_command_reassembly.odin
+// — this comment previously named bridge_ws_handle_chunk_skeleton, a procedure that
+// existed NOWHERE in the tree: the symmetry was documented for a direction that had no
+// reassembler at all until REQ-SHELL-36 added one): key by chunk_id;
 // validate metadata; enforce the contract caps; ignore duplicate/retransmitted
 // fills; concat fragments in index order. ACK-LESS — the bridge does not wait for
 // an ack on this channel (single ordered connection), so none is sent.

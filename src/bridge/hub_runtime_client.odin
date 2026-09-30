@@ -289,11 +289,57 @@ BRIDGE_HUB_HEARTBEAT_INTERVAL :: 45 * time.Second
 
 bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	last_heartbeat := time.to_unix_nanoseconds(time.now())
+	// PER-CONNECTION inbound chunk reassembly (REQ-SHELL-36). The hub splits any
+	// hub->bridge command larger than one 16-bit WS frame into ordered kind:"chunk"
+	// frames (write_ws_command); we rebuild the original command here before it reaches
+	// the dispatcher. Small commands — the overwhelming majority — never touch this.
+	//
+	// DECLARED HERE, AND THAT IS THE DESIGN, NOT AN ACCIDENT OF SCOPE: its lifetime is
+	// exactly this connection's. When the loop exits on a disconnect the deferred free
+	// below discards every partial stream, so a chunk sequence interrupted by a
+	// reconnect is a command that never arrived rather than half a command that did.
+	// Hoisting this to a global to "keep partials across reconnects" would be a bug: the
+	// hub does not retransmit, so the tail is never coming, and the two ends would then
+	// disagree about an in-flight command — the exact state the core invariant forbids.
+	reassemblies := make([dynamic]Hub_Command_Reassembly)
+	defer hub_command_reassemblies_free(&reassemblies)
 	// Send one heartbeat immediately on connect so the hub gets the initial
 	// instance digest + schedules_version handshake without waiting a full cycle.
 	_ = ws.send_text(conn, bridge_hub_heartbeat_json())
 	for conn.connected {
-		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
+		if text, got := ws.poll_text(conn); got {
+			if hub_command_frame_is_chunk(text) {
+				// A chunk frame is NEVER dispatched as a command. Only a complete
+				// stream is.
+				//
+				// `assembled` IS DELIBERATELY NOT FREED HERE, and that is a considered
+				// decision rather than an oversight — see the note below.
+				assembled, complete, ok := hub_command_reassemble(&reassemblies, text)
+				if ok && complete do bridge_hub_handle_command(conn, assembled)
+			} else {
+				bridge_hub_handle_command(conn, text)
+			}
+			// >>> WHY NEITHER `text` NOR `assembled` IS FREED ON THIS LINE. <<<
+			// ws.poll_text returns a strings.clone, so `text` has ALWAYS been leaked
+			// here, once per inbound frame; `assembled` is a string this loop allocates
+			// and is leaked the same way. Both are real leaks and both are filed
+			// (REQ-SHELL-52).
+			//
+			// They are not fixed HERE because the free is NOT obviously safe and a bad
+			// free in the live bridge is far worse than a leak. bridge_hub_handle_command
+			// is a several-hundred-line dispatcher; its handlers pass `text` onward —
+			// bridge_runtime_launch_agent(command_id, text) among them — and until each
+			// of those is traced for retention (a handler that hands the buffer to a
+			// background thread would turn this delete into a use-after-free on a
+			// SUCCESSFUL path), freeing is a guess. REQ-SHELL-50 records 14 pre-existing
+			// bad frees in this codebase already; adding a fifteenth while fixing a leak
+			// would be a poor trade.
+			//
+			// `assembled` deliberately follows `text`'s existing treatment rather than
+			// being freed on its own: it flows into the SAME dispatcher, so whatever
+			// ownership rule turns out to hold for one holds for the other, and having
+			// the two differ here would encode an ownership claim nobody has verified.
+		}
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
 		bridge_shell_output_drain_outgoing(conn)
