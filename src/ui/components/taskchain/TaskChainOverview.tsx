@@ -1249,43 +1249,64 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <div className="flex flex-wrap items-center gap-1.5">
               {(() => {
                 const status = String(task.status || '').toLowerCase();
-                if (status === 'cancelled') {
-                  return (
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-uncancel-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleStatusChange(taskId, 'assigned');
-                      }}
-                      className="rounded bg-accent/20 px-2 py-0.5 text-xs font-semibold text-accent hover:bg-accent/30"
-                    >
-                      Uncancel
-                    </button>
-                  );
-                }
-                if (status === 'paused') {
-                  return (
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-unpause-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isRoleAssignedWithoutLiveInstance(task, allInstances)) {
-                          void handleStatusChange(taskId, 'queued');
-                        } else {
-                          void handleStatusChange(taskId, 'in_progress');
-                        }
-                      }}
-                      className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
-                    >
-                      Unpause
-                    </button>
-                  );
-                }
-                if (status === 'completed' || status === 'validated_good') {
-                  return (
-                    <>
+                const rawAllowedActions: string[] = Array.isArray(task.allowedActions) && task.allowedActions.length > 0
+                  ? task.allowedActions
+                  : Array.isArray(task.allowed_actions) && task.allowed_actions.length > 0
+                    ? task.allowed_actions
+                    : [];
+                const allowedTransitions: string[] = Array.isArray(task.allowedTransitions) && task.allowedTransitions.length > 0
+                  ? task.allowedTransitions
+                  : Array.isArray(task.allowed_transitions) && task.allowed_transitions.length > 0
+                    ? task.allowed_transitions
+                    : [];
+                const allowedActions: string[] = rawAllowedActions.length > 0
+                  ? rawAllowedActions
+                  : status === 'cancelled'
+                    ? ['uncancel']
+                    : status === 'paused'
+                      ? ['unpause', 'cancel']
+                      : status === 'completed' || status === 'validated_good'
+                        ? ['not_complete', 'revalidate']
+                        : status === 'in_progress'
+                          ? ['validate', 'pause', 'cancel', 'nudge']
+                          : status === 'in_validation'
+                            ? ['lgtm', 'ngtm', 'pause', 'cancel', 'nudge']
+                            : ['start', 'pause', 'cancel', 'nudge'];
+                void allowedTransitions;
+
+                return (
+                  <>
+                    {allowedActions.includes('uncancel') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-uncancel-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'assigned');
+                        }}
+                        className="rounded bg-accent/20 px-2 py-0.5 text-xs font-semibold text-accent hover:bg-accent/30"
+                      >
+                        Uncancel
+                      </button>
+                    )}
+                    {allowedActions.includes('unpause') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-unpause-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isRoleAssignedWithoutLiveInstance(task, allInstances)) {
+                            void handleStatusChange(taskId, 'queued');
+                          } else {
+                            void handleStatusChange(taskId, 'in_progress');
+                          }
+                        }}
+                        className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
+                      >
+                        Unpause
+                      </button>
+                    )}
+                    {allowedActions.includes('not_complete') && (
                       <button
                         type="button"
                         data-debug-id={`taskchain-task-not-complete-btn-${taskId}`}
@@ -1297,6 +1318,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         Not Complete
                       </button>
+                    )}
+                    {allowedActions.includes('revalidate') && (
                       <button
                         type="button"
                         data-debug-id={`taskchain-task-revalidate-btn-${taskId}`}
@@ -1308,128 +1331,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         Re-validate
                       </button>
-                    </>
-                  );
-                }
-                if (status === 'in_progress') {
-                  return (
-                    <>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-validate-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleStatusChange(taskId, 'in_validation');
-                        }}
-                        className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
-                      >
-                        Validate
-                      </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-pause-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleStatusChange(taskId, 'paused');
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                      >
-                        Pause
-                      </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleCancelTask(taskId);
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
-                      >
-                        Cancel
-                      </button>
-                      {hasLiveNudgeTarget(task, allInstances) && (
-                        <button
-                          type="button"
-                          data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleNudge(taskId);
-                          }}
-                          className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                        >
-                          Nudge
-                        </button>
-                      )}
-                    </>
-                  );
-                }
-                if (status === 'in_validation') {
-                  return (
-                    <>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleVote(taskId, 'lgtm');
-                        }}
-                        className="rounded bg-success px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
-                      >
-                        LGTM
-                      </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleVote(taskId, 'ngtm');
-                        }}
-                        className="rounded bg-danger-soft px-2 py-0.5 text-xs font-semibold text-danger hover:opacity-80"
-                      >
-                        NGTM
-                      </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-pause-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleStatusChange(taskId, 'paused');
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                      >
-                        Pause
-                      </button>
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleCancelTask(taskId);
-                        }}
-                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
-                      >
-                        Cancel
-                      </button>
-                      {hasLiveNudgeTarget(task, allInstances) && (
-                        <button
-                          type="button"
-                          data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleNudge(taskId);
-                          }}
-                          className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                        >
-                          Nudge
-                        </button>
-                      )}
-                    </>
-                  );
-                }
-                // default for 'assigned' / 'queued' (and any other pending status):
-                return (
-                  <>
-                    {canStartTask(task, allInstances) && (
+                    )}
+                    {allowedActions.includes('start') && canStartTask(task, allInstances) && (
                       <button
                         type="button"
                         data-debug-id={`taskchain-task-start-btn-${taskId}`}
@@ -1442,29 +1345,72 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         Start
                       </button>
                     )}
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-pause-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleStatusChange(taskId, 'paused');
-                      }}
-                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
-                    >
-                      Pause
-                    </button>
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleCancelTask(taskId);
-                      }}
-                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
-                    >
-                      Cancel
-                    </button>
-                    {hasLiveNudgeTarget(task, allInstances) && (
+                    {allowedActions.includes('validate') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-validate-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'in_validation');
+                        }}
+                        className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
+                      >
+                        Validate
+                      </button>
+                    )}
+                    {allowedActions.includes('lgtm') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleVote(taskId, 'lgtm');
+                        }}
+                        className="rounded bg-success px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
+                      >
+                        LGTM
+                      </button>
+                    )}
+                    {allowedActions.includes('ngtm') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleVote(taskId, 'ngtm');
+                        }}
+                        className="rounded bg-danger-soft px-2 py-0.5 text-xs font-semibold text-danger hover:opacity-80"
+                      >
+                        NGTM
+                      </button>
+                    )}
+                    {allowedActions.includes('pause') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-pause-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'paused');
+                        }}
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    {allowedActions.includes('cancel') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleCancelTask(taskId);
+                        }}
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    {allowedActions.includes('nudge') && hasLiveNudgeTarget(task, allInstances) && (
                       <button
                         type="button"
                         data-debug-id={`taskchain-task-nudge-btn-${taskId}`}

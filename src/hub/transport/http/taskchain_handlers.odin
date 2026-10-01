@@ -1538,6 +1538,27 @@ write_subscription_json :: proc(b: ^strings.Builder, s: domain.Task_Subscription
 	strings.write_string(b, "\"}")
 }
 
+write_task_fsm_fields_json :: proc(b: ^strings.Builder, status: domain.Task_Status) {
+	transitions := domain.task_allowed_transitions(status)
+	actions := domain.task_allowed_actions(status)
+	strings.write_string(b, ",\"allowed_transitions\":[")
+	for st, i in transitions {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "\""); write_handler_json_string(b, task_status_http(st)); strings.write_string(b, "\"")
+	}
+	strings.write_string(b, "],\"next_states\":[")
+	for st, i in transitions {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "\""); write_handler_json_string(b, task_status_http(st)); strings.write_string(b, "\"")
+	}
+	strings.write_string(b, "],\"allowed_actions\":[")
+	for act, i in actions {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "\""); write_handler_json_string(b, act); strings.write_string(b, "\"")
+	}
+	strings.write_byte(b, ']')
+}
+
 // requested_status is OBSERVATIONAL and optional: pass it only when the caller asked
 // for a status the row did not end up holding, and it is emitted alongside the actual
 // one so the response cannot imply a change that did not stick. It is a defaulted
@@ -1548,6 +1569,7 @@ write_task_json :: proc(b: ^strings.Builder, t: domain.Task, requested_status :=
 	if requested_status != "" && requested_status != task_status_http(t.status) {
 		strings.write_string(b, ",\"requested_status\":\""); write_handler_json_string(b, requested_status); strings.write_string(b, "\"")
 	}
+	write_task_fsm_fields_json(b, t.status)
 	strings.write_string(b, "}")
 }
 
@@ -1597,7 +1619,9 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 		write_task_vote_json(b, v)
 	}
 	strings.write_string(b, "],\"created_at\":\""); write_handler_json_string(b, t.created_at)
-	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"")
+	write_task_fsm_fields_json(b, t.status)
+	strings.write_string(b, "}")
 }
 
 write_member_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth: contracts.Auth_Context, m: domain.Task_Chain_Member) {
