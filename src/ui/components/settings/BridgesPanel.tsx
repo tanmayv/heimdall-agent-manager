@@ -279,23 +279,23 @@ export default function BridgesPanel() {
               const latestLabel = formatLatestVersion(bridge);
 
               return (
-                <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
+                <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 p-3 sm:px-3 sm:py-2.5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                         <StatusDot data-debug-id={`settings-bridge-status-${id}`} tone={statusTone(bridge)} label={statusLabel(bridge)} />
                         {isRenaming ? (
                           <Input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={setRenameValue} size="sm" className="min-w-0 flex-1" autoFocus />
                         ) : (
                           <span className="truncate text-sm font-medium text-primary">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
-                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${isReady ? 'border-success/30 bg-success-soft text-success' : status === 'revoked' ? 'border-danger/30 bg-danger-soft text-danger' : 'border-warning/30 bg-warning-soft text-warning'}`}>{isReady ? 'ready' : status}</span>
+                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] whitespace-nowrap ${isReady ? 'border-success/30 bg-success-soft text-success' : status === 'revoked' ? 'border-danger/30 bg-danger-soft text-danger' : 'border-warning/30 bg-warning-soft text-warning'}`}>{isReady ? 'ready' : status}</span>
 
                         {/* Monospace version badge: e.g. v0.1.0 (a57c83d9) */}
                         {hasVersion ? (
                           <span
                             data-debug-id={`settings-bridge-version-${id}`}
-                            className="inline-flex items-center rounded-full border border-subtle bg-surface-raised/60 px-2 py-0.5 font-mono text-[10px] text-primary"
+                            className="inline-flex items-center rounded-full border border-subtle bg-surface-raised/60 px-2 py-0.5 font-mono text-[10px] text-primary whitespace-nowrap"
                             title={bridge?.build_timestamp ? `Built: ${bridge.build_timestamp}` : undefined}
                           >
                             {versionLabel}
@@ -306,7 +306,7 @@ export default function BridgesPanel() {
                         {bridge?.update_available ? (
                           <span
                             data-debug-id={`settings-bridge-update-available-${id}`}
-                            className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent"
+                            className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent whitespace-nowrap"
                           >
                             <Icon name="sparkle" size="sm" />
                             <span>Update available: {latestLabel}</span>
@@ -317,7 +317,7 @@ export default function BridgesPanel() {
                         {isUpdating ? (
                           <span
                             data-debug-id={`settings-bridge-update-progress-${id}`}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent animate-pulse"
+                            className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent animate-pulse whitespace-nowrap"
                           >
                             <Spinner size="sm" />
                             <span>Updating ({bridge.update_status}…)</span>
@@ -325,7 +325,7 @@ export default function BridgesPanel() {
                         ) : bridge?.update_status === 'failed' ? (
                           <span
                             data-debug-id={`settings-bridge-update-failed-${id}`}
-                            className="inline-flex items-center gap-1 rounded-full border border-danger/40 bg-danger-soft px-2 py-0.5 text-[10px] text-danger"
+                            className="inline-flex items-center gap-1 rounded-full border border-danger/40 bg-danger-soft px-2 py-0.5 text-[10px] text-danger whitespace-nowrap"
                             title={bridge?.update_error || 'Update failed'}
                           >
                             <Icon name="alert" size="sm" />
@@ -337,13 +337,13 @@ export default function BridgesPanel() {
                           <a
                             href={`#settings/providers?bridge=${encodeURIComponent(id)}`}
                             data-debug-id={`settings-bridge-no-providers-${id}`}
-                            className="inline-flex items-center gap-1 rounded-full border border-subtle bg-surface-raised/40 px-2 py-0.5 text-[10px] text-muted hover:border-accent hover:text-accent transition-colors"
+                            className="inline-flex items-center gap-1 rounded-full border border-subtle bg-surface-raised/40 px-2 py-0.5 text-[10px] text-muted hover:border-accent hover:text-accent transition-colors whitespace-nowrap"
                           >
                             no providers configured
                           </a>
                         ) : null}
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted">
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-caption text-muted">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-primary">{statusLabel(bridge)}</span></span>
                         <span>host: <span className="text-primary">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
                         <span>os: <span className="text-primary">{bridge?.machine_os || bridge?.os || '—'}</span></span>
@@ -353,7 +353,7 @@ export default function BridgesPanel() {
                         <span>last seen: <span className="text-primary">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0 sm:justify-end">
                       {isRenaming ? (
                         <>
                           <Button variant="primary" size="sm" data-debug-id={`settings-bridge-rename-save-${id}`} onClick={() => void handleSaveRename(id)}>Save</Button>

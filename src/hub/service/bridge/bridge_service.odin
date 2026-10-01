@@ -211,6 +211,7 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	if version != "" do bridge.version = version
 	if commit_sha != "" do bridge.commit_sha = commit_sha
 	if build_timestamp != "" do bridge.build_timestamp = build_timestamp
+	if bridge.update_status == "updating" do bridge.update_status = "idle"
 	now := platform.clock_now(service.clock)
 	bridge.status = .Online
 	bridge.last_seen_at = now
