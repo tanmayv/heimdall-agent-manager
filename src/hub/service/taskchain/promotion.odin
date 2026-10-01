@@ -280,6 +280,166 @@ jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.
 	return strings.clone(inst.agent_instance_id)
 }
 
+instance_is_crashed_or_dead :: proc(service: ^Taskchain_Service, chain_instances: []domain.Agent_Instance, instance_id: string) -> bool {
+	if instance_id == "" do return true
+	for inst in chain_instances {
+		if inst.agent_instance_id == instance_id {
+			return inst.runtime_status == "failed" || inst.runtime_status == "terminated"
+		}
+	}
+	if service != nil && service.agents != nil {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, instance_id); ok {
+			return inst.runtime_status == "failed" || inst.runtime_status == "terminated"
+		}
+		return true // not found in repo -> dead/orphaned
+	}
+	return false
+}
+
+// allocate_or_jit_worker_instance attempts to resolve an idle or warm-stopped instance
+// from the chain, or JIT-provisions a new instance if live count is below fleet capacity.
+allocate_or_jit_worker_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task, target_agent_id: string) -> (string, bool) {
+	if service == nil || service.repo == nil do return "", false
+
+	fleets, ferr := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	defer if ferr.code == .None do delete(fleets)
+
+	chain_instances := make([dynamic]domain.Agent_Instance)
+	defer delete(chain_instances)
+	seen_insts := make(map[string]bool)
+	defer delete(seen_insts)
+
+	add_chain_inst := proc(seen: ^map[string]bool, list: ^[dynamic]domain.Agent_Instance, inst: domain.Agent_Instance) {
+		if inst.agent_instance_id == "" || seen^[inst.agent_instance_id] do return
+		seen^[inst.agent_instance_id] = true
+		append(list, inst)
+	}
+
+	if members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); merr.code == .None {
+		defer delete(members)
+		for m in members {
+			if service.agents != nil {
+				if inst, ok, _ := iface.agent_get_instance(service.agents, m.agent_instance_id); ok {
+					add_chain_inst(&seen_insts, &chain_instances, inst)
+				}
+			}
+		}
+	}
+	if chain.coordinator_agent_instance_id != "" && service.agents != nil {
+		if coord, ok, _ := iface.agent_get_instance(service.agents, chain.coordinator_agent_instance_id); ok {
+			add_chain_inst(&seen_insts, &chain_instances, coord)
+		}
+	}
+	if service.agents != nil {
+		if insts, ierr := iface.agent_list_instances_by_owner(service.agents, chain.owner_user_id, 1000, ""); ierr.code == .None {
+			defer delete(insts)
+			for inst in insts {
+				if inst.chain_id == string(chain.chain_id) {
+					add_chain_inst(&seen_insts, &chain_instances, inst)
+				}
+			}
+		}
+	}
+
+	tasks, terr := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	defer if terr.code == .None do delete(tasks)
+
+	offline_task_ids := make(map[domain.Task_ID]bool)
+	defer delete(offline_task_ids)
+	if terr.code == .None {
+		for t in tasks {
+			bridge_online, _ := task_effective_bridge_is_online(service, chain, t)
+			if !bridge_online {
+				offline_task_ids[t.task_id] = true
+			}
+		}
+	}
+
+	busy_instances := make(map[string]bool)
+	defer delete(busy_instances)
+	busy_keys := make([dynamic]string)
+	defer {
+		for k in busy_keys do delete(k)
+		delete(busy_keys)
+	}
+
+	mark_busy := proc(busy: ^map[string]bool, keys: ^[dynamic]string, id: string) {
+		if id == "" || busy^[id] do return
+		k := strings.clone(id)
+		append(keys, k)
+		busy^[k] = true
+	}
+
+	if terr.code == .None {
+		for t in tasks {
+			if t.task_id == task.task_id do continue
+			if t.status == .In_Progress && !offline_task_ids[t.task_id] {
+				a := primary_assignee_instance(t.assignee_ref_json)
+				if a != "" {
+					if !instance_is_crashed_or_dead(service, chain_instances[:], a) {
+						mark_busy(&busy_instances, &busy_keys, a)
+					}
+					delete(a)
+				}
+			}
+		}
+		for inst in chain_instances {
+			if instance_has_pending_validation(tasks, inst.agent_instance_id, offline_task_ids) {
+				mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
+			}
+		}
+		for t in tasks {
+			if t.status != .In_Validation do continue
+			if offline_task_ids[t.task_id] do continue
+			for inst in chain_instances {
+				if instance_reviews_task(t, chain, inst.agent_instance_id) {
+					mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
+				}
+			}
+		}
+	}
+
+	capacity := fleet_capacity_for_agent(fleets, target_agent_id)
+
+	idle_instance_id := ""
+	warm_stopped_id := ""
+	live_count := 0
+
+	for inst in chain_instances {
+		if inst.agent_id != target_agent_id do continue
+		if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+
+		if task.bridge_id != "" && inst.bridge_id != task.bridge_id do continue
+
+		if inst.runtime_status == "stopped" {
+			if warm_stopped_id == "" && !busy_instances[inst.agent_instance_id] {
+				warm_stopped_id = inst.agent_instance_id
+			}
+			continue
+		}
+
+		live_count += 1
+
+		if idle_instance_id == "" && !busy_instances[inst.agent_instance_id] {
+			idle_instance_id = inst.agent_instance_id
+		}
+	}
+
+	chosen_instance_id := idle_instance_id if idle_instance_id != "" else warm_stopped_id
+
+	if chosen_instance_id != "" {
+		return strings.clone(chosen_instance_id), true
+	} else if live_count < capacity {
+		fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
+		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "worker", fleet_provider, fleet_tier)
+		if new_instance_id != "" {
+			return new_instance_id, true
+		}
+	}
+
+	return "", false
+}
+
 // dynamic_fleet_schedule acts as a dynamic scheduler for tasks with declarative agent_id refs.
 // Actionable tasks targeting agent_id are assigned to idle warm pool instances or JIT-provisioned
 // up to the chain's fleet capacity. Saturated tasks remain queued in FIFO/priority order.
@@ -345,7 +505,9 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 		if t.status == .In_Progress && !offline_task_ids[t.task_id] {
 			a := primary_assignee_instance(t.assignee_ref_json)
 			if a != "" {
-				mark_busy(&busy_instances, &busy_keys, a)
+				if !instance_is_crashed_or_dead(service, chain_instances[:], a) {
+					mark_busy(&busy_instances, &busy_keys, a)
+				}
 				delete(a)
 			}
 		}
@@ -374,17 +536,37 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 
 	for t in tasks {
 		if t.publish_state != .Published do continue
-		if t.status != .Assigned && t.status != .Queued do continue
+		if t.status != .Assigned && t.status != .Queued && t.status != .In_Progress do continue
 		if offline_task_ids[t.task_id] do continue
 		if !deps_satisfied_for_task(tasks, deps, t.task_id) do continue
 
 		inst_id := primary_assignee_instance(t.assignee_ref_json)
+		inst_crashed := false
 		if inst_id != "" {
+			if t.status == .In_Progress && instance_is_crashed_or_dead(service, chain_instances[:], inst_id) {
+				inst_crashed = true
+			} else {
+				delete(inst_id)
+				continue
+			}
 			delete(inst_id)
-			continue
 		}
 
 		agt_id := primary_assignee_agent_id(t.assignee_ref_json)
+		if agt_id == "" && inst_crashed {
+			inst_id_ref := primary_assignee_instance(t.assignee_ref_json)
+			if inst_id_ref != "" {
+				if service.agents != nil {
+					if inst, ok, _ := iface.agent_get_instance(service.agents, inst_id_ref); ok && inst.agent_id != "" {
+						agt_id = strings.clone(inst.agent_id)
+					}
+				}
+				delete(inst_id_ref)
+			}
+			if agt_id == "" && len(fleets) > 0 {
+				agt_id = strings.clone(fleets[0].agent_id)
+			}
+		}
 		if agt_id == "" do continue
 		delete(agt_id)
 
@@ -407,6 +589,20 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 
 	for cand in work_candidates {
 		target_agent_id := primary_assignee_agent_id(cand.assignee_ref_json)
+		if target_agent_id == "" {
+			inst_id_ref := primary_assignee_instance(cand.assignee_ref_json)
+			if inst_id_ref != "" {
+				if service.agents != nil {
+					if inst, ok, _ := iface.agent_get_instance(service.agents, inst_id_ref); ok && inst.agent_id != "" {
+						target_agent_id = strings.clone(inst.agent_id)
+					}
+				}
+				delete(inst_id_ref)
+			}
+			if target_agent_id == "" && len(fleets) > 0 {
+				target_agent_id = strings.clone(fleets[0].agent_id)
+			}
+		}
 		defer delete(target_agent_id)
 		if target_agent_id == "" do continue
 
@@ -443,7 +639,12 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 		if chosen_instance_id != "" {
 			ensure_chain_member(service, chain, chosen_instance_id, target_agent_id)
 
-			bound_ref := bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, chosen_instance_id)
+			bound_ref: string
+			if strings.contains(cand.assignee_ref_json, "\"agent_id\"") {
+				bound_ref = bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, chosen_instance_id)
+			} else {
+				bound_ref = agent_instance_ref_json(chosen_instance_id)
+			}
 			defer delete(bound_ref)
 
 			nt := cand
@@ -469,7 +670,12 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				defer delete(new_instance_id)
 				ensure_chain_member(service, chain, new_instance_id, target_agent_id)
 
-				bound_ref := bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, new_instance_id)
+				bound_ref: string
+				if strings.contains(cand.assignee_ref_json, "\"agent_id\"") {
+					bound_ref = bind_agent_id_to_instance(cand.assignee_ref_json, target_agent_id, new_instance_id)
+				} else {
+					bound_ref = agent_instance_ref_json(new_instance_id)
+				}
 				defer delete(bound_ref)
 
 				nt := cand
@@ -487,7 +693,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 					}
 				}
 			} else {
-				if cand.status == .Assigned {
+				if cand.status == .Assigned || cand.status == .In_Progress {
 					nt := cand
 					nt.status = .Queued
 					nt.updated_at = now
@@ -496,7 +702,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				}
 			}
 		} else {
-			if cand.status == .Assigned {
+			if cand.status == .Assigned || cand.status == .In_Progress {
 				nt := cand
 				nt.status = .Queued
 				nt.updated_at = now
@@ -717,6 +923,9 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		for instance_id in instance_ids {
 			if inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id); inst_ok {
 				instance_bridge_ids[instance_id] = inst.bridge_id
+				if inst.runtime_status == "failed" || inst.runtime_status == "terminated" {
+					held_instance_ids[instance_id] = true
+				}
 				if offline_task_ids[domain.Task_ID(inst.current_task_id)] {
 					held_instance_ids[instance_id] = true
 				}

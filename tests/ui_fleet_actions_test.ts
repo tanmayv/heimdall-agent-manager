@@ -115,6 +115,26 @@ test('canStartTask returns true (shows Start button) for task with live bound in
   assert.equal(canStartTask(task, instances), true);
 });
 
+test('canStartTask returns true for role-assigned task without live instance when allowedActions includes start', () => {
+  const task = {
+    taskId: 'task_103',
+    status: 'assigned',
+    assigneeRef: { type: 'agent_id', agent_id: 'agt_worker' },
+    allowedActions: ['start', 'cancel'],
+  };
+  assert.equal(canStartTask(task), true);
+});
+
+test('canStartTask returns true for role-assigned task without live instance when allowed_actions includes start', () => {
+  const task = {
+    taskId: 'task_104',
+    status: 'queued',
+    assigneeRef: { type: 'agent_id', agent_id: 'agt_worker' },
+    allowed_actions: ['start'],
+  };
+  assert.equal(canStartTask(task), true);
+});
+
 // -----------------------------------------------------------------------------
 // hasLiveNudgeTarget (Nudge button visibility)
 // -----------------------------------------------------------------------------
