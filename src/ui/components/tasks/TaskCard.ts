@@ -48,6 +48,10 @@ export function isRoleAssignedWithoutLiveInstance(task: any, allInstances?: any[
 
 export function canStartTask(task: any, allInstances?: any[]): boolean {
   if (!task) return false;
+  const actions = task.allowedActions || task.allowed_actions;
+  if (Array.isArray(actions) && actions.includes('start')) {
+    return true;
+  }
   return !isRoleAssignedWithoutLiveInstance(task, allInstances);
 }
 

@@ -211,6 +211,8 @@ TASK_TRANSITIONS_PAUSED := [3]Task_Status{.In_Progress, .Assigned, .Cancelled}
 TASK_TRANSITIONS_CANCELLED := [1]Task_Status{.Assigned}
 @(private = "file", rodata)
 TASK_TRANSITIONS_COMPLETED := [3]Task_Status{.Assigned, .In_Progress, .In_Validation}
+@(private = "file", rodata)
+TASK_TRANSITIONS_DEGRADED := [3]Task_Status{.Assigned, .Queued, .Cancelled}
 
 task_allowed_transitions :: proc(status: Task_Status) -> []Task_Status {
 	switch status {
@@ -233,7 +235,7 @@ task_allowed_transitions :: proc(status: Task_Status) -> []Task_Status {
 	case .Completed:
 		return TASK_TRANSITIONS_COMPLETED[:]
 	}
-	return nil
+	return TASK_TRANSITIONS_DEGRADED[:]
 }
 
 @(private = "file", rodata)
@@ -252,6 +254,8 @@ TASK_ACTIONS_PAUSED := [2]string{"unpause", "cancel"}
 TASK_ACTIONS_CANCELLED := [1]string{"uncancel"}
 @(private = "file", rodata)
 TASK_ACTIONS_COMPLETED := [2]string{"not_complete", "revalidate"}
+@(private = "file", rodata)
+TASK_ACTIONS_DEGRADED := [5]string{"restart", "restart_worker", "reset_to_assigned", "retry", "cancel"}
 
 task_allowed_actions :: proc(status: Task_Status) -> []string {
 	switch status {
@@ -272,6 +276,46 @@ task_allowed_actions :: proc(status: Task_Status) -> []string {
 	case .Completed:
 		return TASK_ACTIONS_COMPLETED[:]
 	}
-	return nil
+	return TASK_ACTIONS_DEGRADED[:]
 }
+
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_IN_PROGRESS := [5]string{"restart_worker", "reset_to_assigned", "retry", "pause", "cancel"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_IN_VALIDATION := [5]string{"restart_worker", "reset_to_assigned", "retry", "pause", "cancel"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_STANDARD := [4]string{"restart", "reset_to_assigned", "retry", "cancel"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_PAUSED := [4]string{"unpause", "reset_to_assigned", "retry", "cancel"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_CANCELLED := [3]string{"uncancel", "reset_to_assigned", "retry"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_COMPLETED := [3]string{"revalidate", "not_complete", "reset_to_assigned"}
+
+task_recovery_actions :: proc(status: Task_Status) -> []string {
+	switch status {
+	case .In_Progress:
+		return TASK_RECOVERY_ACTIONS_IN_PROGRESS[:]
+	case .In_Validation:
+		return TASK_RECOVERY_ACTIONS_IN_VALIDATION[:]
+	case .Assigned, .Queued, .Validated_Not_Good, .Validated_Good:
+		return TASK_RECOVERY_ACTIONS_STANDARD[:]
+	case .Paused:
+		return TASK_RECOVERY_ACTIONS_PAUSED[:]
+	case .Cancelled:
+		return TASK_RECOVERY_ACTIONS_CANCELLED[:]
+	case .Completed:
+		return TASK_RECOVERY_ACTIONS_COMPLETED[:]
+	}
+	return TASK_ACTIONS_DEGRADED[:]
+}
+
+task_degraded_recovery_actions :: proc() -> []string {
+	return TASK_ACTIONS_DEGRADED[:]
+}
+
+task_degraded_recovery_transitions :: proc() -> []Task_Status {
+	return TASK_TRANSITIONS_DEGRADED[:]
+}
+
 

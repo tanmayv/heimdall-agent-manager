@@ -13,7 +13,6 @@ import {
   getQueuedWaitingSlotName,
   formatFleetRoleName,
   isRoleAssignedWithoutLiveInstance,
-  canStartTask,
   hasLiveNudgeTarget,
 } from '../tasks/FleetManagementDrawer';
 import {
@@ -235,7 +234,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     try {
       const res: any = await reconcileChain({ chainId }).unwrap();
       const promoted = Number(res?.promoted ?? res?.data?.promoted ?? 0);
-      setReconcileMsg(`Reconciled — ${promoted} task${promoted === 1 ? '' : 's'} promoted.`);
+      setReconcileMsg(`Reconciled — ${promoted} task${promoted === 1 ? '' : 's'} promoted. Reconcile is an automatic self-healing background guarantee.`);
       refetch();
     } catch (e: any) {
       setReconcileMsg(String(e?.error || e?.message || 'Reconcile failed'));
@@ -1332,7 +1331,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         Re-validate
                       </button>
                     )}
-                    {allowedActions.includes('start') && canStartTask(task, allInstances) && (
+                    {allowedActions.includes('start') && (
                       <button
                         type="button"
                         data-debug-id={`taskchain-task-start-btn-${taskId}`}
@@ -1791,21 +1790,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            data-debug-id="taskchain-overview-reconcile-btn"
-            disabled={reconcileState.isLoading || !chainId}
-            onClick={handleReconcile}
-            className="rounded border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/20 disabled:opacity-50"
-            title="Reconcile chain (promote tasks, set current-tasks, nudge idle agents)"
-          >
-            {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
-          </button>
-          <button
-            type="button"
             data-debug-id="taskchain-new-task-btn"
             onClick={() => setShowNewTaskModal(true)}
             className="rounded bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:opacity-90"
           >
             + New task
+          </button>
+          <button
+            type="button"
+            data-debug-id="taskchain-overview-reconcile-btn"
+            disabled={reconcileState.isLoading || !chainId}
+            onClick={handleReconcile}
+            className="rounded border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/20 disabled:opacity-50"
+            title="Manual reconcile (reconcile is an automatic self-healing background guarantee)"
+          >
+            {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
           </button>
         </div>
       </div>

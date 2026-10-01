@@ -1443,3 +1443,785 @@ test_create_and_update_task_rejects_mismatched_agent_instance_bridge :: proc(t: 
 	testing.expect_value(t, cleared_task.bridge_id, "")
 }
 
+@(test)
+test_fsm_unified_atomic_start_and_jit_instance_binding :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fsm_atomic_start_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	pr_impl := sqlite.Project_Repo_SQLite{conn = &conn}
+	pr_repo := sqlite.new_project_repository(&pr_impl, &conn)
+
+	co_impl := sqlite.Content_Repo_SQLite{conn = &conn}
+	co_repo := sqlite.new_content_repository(&co_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	owner := domain.User_ID("user_fsm_atomic")
+	chain_id := domain.Task_Chain_ID("chain_fsm_atomic_test")
+
+	// Set up Bridge in repo
+	bridge := domain.Bridge{
+		bridge_id         = "brg_atomic",
+		owner_user_id     = owner,
+		machine_hostname  = "localhost",
+		status            = .Online,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, bridge)
+
+	project := domain.Project{
+		project_id    = domain.Project_ID("prj_atomic"),
+		owner_user_id = owner,
+		name          = "Atomic Project",
+		slug          = "atomic-project",
+		default_path  = "/srv/atomic/default",
+		state         = .Active,
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.project_save(&pr_repo, project)
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = project.project_id,
+		bridge_id     = "brg_atomic",
+		owner_user_id = owner,
+		path          = "/srv/atomic/primary",
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	})
+
+	// Set up Agent in repo
+	worker_agent := domain.Agent{
+		agent_id         = "agt_fsm_worker",
+		owner_user_id    = owner,
+		name             = "Atomic Worker",
+		slug             = "atomic-worker",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, worker_agent)
+
+	support := domain.Agent_Bridge_Support{
+		agent_id      = "agt_fsm_worker",
+		bridge_id     = "brg_atomic",
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, support)
+
+	registry := project_service.Bridge_Runtime_Registry{}
+	project_service.bridge_runtime_registry_mark_live(&registry, "brg_atomic", false, "")
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+	ag_service := agent_service.new_agent_service_with_runtime(&ag_repo, &br_repo, &pr_repo, &co_repo, &tc_repo, sink, &registry, &clock, &ids)
+	svc.agent_service = &ag_service
+
+	// Create chain
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Atomic Start Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_atomic",
+		created_at                    = "2026-10-01T10:00:00Z",
+		updated_at                    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord_atomic",
+		owner_user_id     = owner,
+		agent_id          = "agt_coordinator",
+		bridge_id         = "brg_atomic",
+		project_id        = domain.Project_ID("prj_atomic"),
+		display_name      = "coordinator #1",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	// Fleet capacity = 2
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_fsm_worker",
+		capacity         = 2,
+		min_warm         = 1,
+		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, fleet)
+
+	// Create an idle worker instance in warm pool
+	w1_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_idle",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_worker",
+		bridge_id         = "brg_atomic",
+		display_name      = "idle worker",
+		runtime_status    = "idle",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, w1_inst)
+	w1_member := domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker_idle",
+		agent_id          = "agt_fsm_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_member(&tc_repo, w1_member)
+
+	auth_user := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+
+	// 1. Create task targeting declarative agent_id
+	t1 := domain.Task{
+		task_id            = "task_role_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Role Task 1",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_fsm_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:01:00Z",
+		updated_at         = "2026-10-01T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t1)
+
+	// Transition t1 to .In_Progress via change_task_status
+	// Acceptance Criterion:
+	// - Automatically allocates idle warm pool instance and binds it to assignee_ref
+	// - Returned task row contains bound agent_instance_id
+	// - No manual reconcile required for instance to be bound and started
+	ret1, ok1, err1 := change_task_status(&svc, auth_user, "task_role_1", .In_Progress)
+	testing.expect(t, ok1, "change_task_status to In_Progress must succeed")
+	testing.expect_value(t, err1.code, domain.Error_Code.None)
+	testing.expect_value(t, ret1.status, domain.Task_Status.In_Progress)
+
+	bound_inst1 := primary_assignee_instance(ret1.assignee_ref_json)
+	defer delete(bound_inst1)
+	testing.expect_value(t, bound_inst1, "inst_worker_idle")
+
+	// Persisted row verification
+	persisted1, p1_ok, _ := iface.taskchain_get_task(&tc_repo, "task_role_1")
+	testing.expect(t, p1_ok, "task 1 must be persisted")
+	testing.expect_value(t, persisted1.status, domain.Task_Status.In_Progress)
+	db_inst1 := primary_assignee_instance(persisted1.assignee_ref_json)
+	defer delete(db_inst1)
+	testing.expect_value(t, db_inst1, "inst_worker_idle")
+
+	// Verify inst_worker_idle focus was automatically updated to task_role_1 without manual reconcile
+	updated_w1, _, _ := iface.agent_get_instance(&ag_repo, "inst_worker_idle")
+	testing.expect_value(t, updated_w1.current_task_id, "task_role_1")
+	testing.expect_value(t, updated_w1.current_task_role, domain.Current_Task_Role.Work)
+
+	// 2. Create second task targeting declarative agent_id while inst_worker_idle is busy
+	t2 := domain.Task{
+		task_id            = "task_role_2",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Role Task 2 (JIT)",
+		publish_state      = .Published,
+		status             = .Assigned,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_fsm_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:02:00Z",
+		updated_at         = "2026-10-01T10:02:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t2)
+
+	// Transition t2 to .In_Progress via change_task_status
+	// Acceptance Criterion:
+	// - Since inst_worker_idle is busy, JIT-provisions new instance (live_count 1 < capacity 2)
+	// - Binds newly provisioned instance to task row and returns it
+	ret2, ok2, err2 := change_task_status(&svc, auth_user, "task_role_2", .In_Progress)
+	testing.expect(t, ok2, "change_task_status for JIT task must succeed")
+	testing.expect_value(t, err2.code, domain.Error_Code.None)
+	testing.expect_value(t, ret2.status, domain.Task_Status.In_Progress)
+
+	bound_inst2 := primary_assignee_instance(ret2.assignee_ref_json)
+	defer delete(bound_inst2)
+	testing.expect(t, bound_inst2 != "", "must bind a provisioned instance")
+	testing.expect(t, bound_inst2 != "inst_worker_idle", "must provision a distinct instance from busy worker")
+
+	persisted2, p2_ok, _ := iface.taskchain_get_task(&tc_repo, "task_role_2")
+	testing.expect(t, p2_ok, "task 2 must be persisted")
+	db_inst2 := primary_assignee_instance(persisted2.assignee_ref_json)
+	defer delete(db_inst2)
+	testing.expect_value(t, db_inst2, bound_inst2)
+
+	jit_inst, j_ok, _ := iface.agent_get_instance(&ag_repo, bound_inst2)
+	testing.expect(t, j_ok, "provisioned JIT instance must exist in agent repository")
+	testing.expect_value(t, jit_inst.current_task_id, "task_role_2")
+	testing.expect_value(t, jit_inst.current_task_role, domain.Current_Task_Role.Work)
+
+	// 3. Dynamic fleet schedule healing test
+	// Create task directly in .In_Progress missing an instance
+	t3 := domain.Task{
+		task_id            = "task_role_3_healed",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Role Task 3 (Orphan Healed)",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P0,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_fsm_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:03:00Z",
+		updated_at         = "2026-10-01T10:03:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t3)
+
+	// Free inst_worker_idle by completing task 1
+	ret1.status = .Completed
+	ret1.completed_at = "2026-10-01T10:04:00Z"
+	_, _, _ = iface.taskchain_save_task(&tc_repo, ret1)
+
+	// Now dynamic_fleet_schedule should heal task_role_3_healed by binding it to inst_worker_idle
+	tasks_all, _ := iface.taskchain_list_tasks_by_chain(&tc_repo, chain_id, owner)
+	defer delete(tasks_all)
+	deps_all, _ := iface.taskchain_list_dependencies_by_chain(&tc_repo, chain_id, owner)
+	defer delete(deps_all)
+	offline_map := make(map[domain.Task_ID]bool)
+	defer delete(offline_map)
+
+	modified := dynamic_fleet_schedule(&svc, chain, tasks_all[:], deps_all[:], offline_map)
+	testing.expect(t, modified, "dynamic_fleet_schedule must heal In_Progress task missing instance")
+
+	persisted3, p3_ok, _ := iface.taskchain_get_task(&tc_repo, "task_role_3_healed")
+	testing.expect(t, p3_ok, "task 3 must exist")
+	testing.expect_value(t, persisted3.status, domain.Task_Status.In_Progress)
+	db_inst3 := primary_assignee_instance(persisted3.assignee_ref_json)
+	defer delete(db_inst3)
+	testing.expect_value(t, db_inst3, "inst_worker_idle")
+}
+
+@(test)
+test_fsm_recovery_matrix_no_dead_ends :: proc(t: ^testing.T) {
+	// Verify that every Task_Status value provides valid allowed_actions and allowed_transitions
+	// ("No Dead-Ends" invariant).
+	all_statuses := []domain.Task_Status{
+		.Assigned,
+		.Queued,
+		.In_Progress,
+		.In_Validation,
+		.Validated_Good,
+		.Validated_Not_Good,
+		.Paused,
+		.Completed,
+		.Cancelled,
+	}
+
+	for status in all_statuses {
+		actions := domain.task_allowed_actions(status)
+		testing.expect(t, len(actions) > 0, fmt.tprintf("allowed_actions must never be empty for status %v", status))
+
+		transitions := domain.task_allowed_transitions(status)
+		testing.expect(t, len(transitions) > 0, fmt.tprintf("allowed_transitions must never be empty for status %v", status))
+
+		recovery := domain.task_recovery_actions(status)
+		testing.expect(t, len(recovery) > 0, fmt.tprintf("recovery_actions must never be empty for status %v", status))
+	}
+
+	// Invariant test: degraded / unknown condition must also return non-empty recovery actions & transitions
+	degraded_status := cast(domain.Task_Status)99
+	degraded_actions := domain.task_allowed_actions(degraded_status)
+	testing.expect(t, len(degraded_actions) > 0, "degraded status must have allowed_actions")
+	testing.expect(t, len(degraded_actions) >= 3, "degraded status must offer multiple recovery actions")
+
+	has_restart := false
+	has_reset := false
+	has_cancel := false
+	for act in degraded_actions {
+		if act == "restart" || act == "restart_worker" do has_restart = true
+		if act == "reset_to_assigned" do has_reset = true
+		if act == "cancel" do has_cancel = true
+	}
+	testing.expect(t, has_restart, "degraded actions must include restart/restart_worker")
+	testing.expect(t, has_reset, "degraded actions must include reset_to_assigned")
+	testing.expect(t, has_cancel, "degraded actions must include cancel")
+
+	degraded_transitions := domain.task_allowed_transitions(degraded_status)
+	testing.expect(t, len(degraded_transitions) > 0, "degraded status must have allowed_transitions")
+
+	direct_degraded_actions := domain.task_degraded_recovery_actions()
+	testing.expect(t, len(direct_degraded_actions) > 0, "task_degraded_recovery_actions must not be empty")
+
+	direct_degraded_transitions := domain.task_degraded_recovery_transitions()
+	testing.expect(t, len(direct_degraded_transitions) > 0, "task_degraded_recovery_transitions must not be empty")
+}
+
+@(test)
+test_fsm_watchdog_auto_recovery_crashed_worker_respawn :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_crashed_respawn_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	pr_impl := sqlite.Project_Repo_SQLite{conn = &conn}
+	pr_repo := sqlite.new_project_repository(&pr_impl, &conn)
+
+	co_impl := sqlite.Content_Repo_SQLite{conn = &conn}
+	co_repo := sqlite.new_content_repository(&co_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	owner := domain.User_ID("user_fsm_recovery")
+	chain_id := domain.Task_Chain_ID("chain_fsm_recovery")
+
+	bridge := domain.Bridge{
+		bridge_id         = "brg_recovery",
+		owner_user_id     = owner,
+		machine_hostname  = "localhost",
+		status            = .Online,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, bridge)
+
+	project := domain.Project{
+		project_id    = domain.Project_ID("prj_recovery"),
+		owner_user_id = owner,
+		name          = "Recovery Project",
+		slug          = "recovery-project",
+		default_path  = "/srv/recovery/default",
+		state         = .Active,
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.project_save(&pr_repo, project)
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = project.project_id,
+		bridge_id     = "brg_recovery",
+		owner_user_id = owner,
+		path          = "/srv/recovery/primary",
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	})
+
+	worker_agent := domain.Agent{
+		agent_id         = "agt_fsm_worker",
+		owner_user_id    = owner,
+		name             = "Recovery Worker",
+		slug             = "recovery-worker",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, worker_agent)
+
+	support := domain.Agent_Bridge_Support{
+		agent_id      = "agt_fsm_worker",
+		bridge_id     = "brg_recovery",
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, support)
+
+	registry := project_service.Bridge_Runtime_Registry{}
+	project_service.bridge_runtime_registry_mark_live(&registry, "brg_recovery", false, "")
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+	ag_service := agent_service.new_agent_service_with_runtime(&ag_repo, &br_repo, &pr_repo, &co_repo, &tc_repo, sink, &registry, &clock, &ids)
+	svc.agent_service = &ag_service
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Watchdog Recovery Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_rec",
+		created_at                    = "2026-10-01T10:00:00Z",
+		updated_at                    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord_rec",
+		owner_user_id     = owner,
+		agent_id          = "agt_coordinator",
+		bridge_id         = "brg_recovery",
+		project_id        = domain.Project_ID("prj_recovery"),
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	// Fleet capacity = 2, so when 1 crashes, another can be JIT provisioned
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_fsm_worker",
+		capacity         = 2,
+		min_warm         = 1,
+		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, fleet)
+
+	// Create crashed worker instance
+	crashed_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_crashed",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_worker",
+		bridge_id         = "brg_recovery",
+		project_id        = domain.Project_ID("prj_recovery"),
+		display_name      = "crashed worker",
+		runtime_status    = "failed",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, crashed_inst)
+
+	// Create an In_Progress task bound to the crashed worker
+	task := domain.Task{
+		task_id            = "task_crashed_recovery",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "In Progress Task on Dead Worker",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_crashed"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:01:00Z",
+		updated_at         = "2026-10-01T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	tasks_all, _ := iface.taskchain_list_tasks_by_chain(&tc_repo, chain_id, owner)
+	defer delete(tasks_all)
+	deps_all, _ := iface.taskchain_list_dependencies_by_chain(&tc_repo, chain_id, owner)
+	defer delete(deps_all)
+	offline_map := make(map[domain.Task_ID]bool)
+	defer delete(offline_map)
+
+	// Run dynamic_fleet_schedule
+	modified := dynamic_fleet_schedule(&svc, chain, tasks_all[:], deps_all[:], offline_map)
+	testing.expect(t, modified, "watchdog must auto-heal In_Progress task on crashed worker")
+
+	// Task must remain In_Progress but be rebound to a new healthy JIT provisioned instance
+	persisted, p_ok, _ := iface.taskchain_get_task(&tc_repo, "task_crashed_recovery")
+	testing.expect(t, p_ok, "task must exist")
+	testing.expect_value(t, persisted.status, domain.Task_Status.In_Progress)
+
+	new_inst_id := primary_assignee_instance(persisted.assignee_ref_json)
+	defer delete(new_inst_id)
+	testing.expect(t, new_inst_id != "", "task must have a new instance assigned")
+	testing.expect(t, new_inst_id != "inst_worker_crashed", "task must NOT be assigned to crashed instance")
+
+	// Verify the new instance is registered in the agent repository
+	jit_inst, j_ok, _ := iface.agent_get_instance(&ag_repo, new_inst_id)
+	testing.expect(t, j_ok, "newly provisioned instance must exist in agent repository")
+	testing.expect(t, jit_inst.runtime_status == "running" || jit_inst.runtime_status == "launching", "newly provisioned instance must be running or launching")
+}
+
+@(test)
+test_fsm_watchdog_auto_recovery_rebind_to_idle_worker :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_crashed_idle_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
+
+	owner := domain.User_ID("user_fsm_idle_rec")
+	chain_id := domain.Task_Chain_ID("chain_fsm_idle_rec")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Watchdog Rebind Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_idle",
+		created_at                    = "2026-10-01T10:00:00Z",
+		updated_at                    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_fsm_worker",
+		capacity         = 2,
+		min_warm         = 1,
+		idle_ttl_seconds = 300,
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, fleet)
+
+	// Idle worker in warm pool
+	idle_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_healthy",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_worker",
+		bridge_id         = "brg_local",
+		display_name      = "healthy worker",
+		runtime_status    = "idle",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, idle_inst)
+
+	// Crashed worker instance
+	crashed_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_dead",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_worker",
+		bridge_id         = "brg_local",
+		display_name      = "dead worker",
+		runtime_status    = "terminated",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, crashed_inst)
+
+	// In_Progress task pointing to dead worker
+	task := domain.Task{
+		task_id            = "task_dead_rebind",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "In Progress Task on Terminated Worker",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P0,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_dead"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:01:00Z",
+		updated_at         = "2026-10-01T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	tasks_all, _ := iface.taskchain_list_tasks_by_chain(&tc_repo, chain_id, owner)
+	defer delete(tasks_all)
+	deps_all, _ := iface.taskchain_list_dependencies_by_chain(&tc_repo, chain_id, owner)
+	defer delete(deps_all)
+	offline_map := make(map[domain.Task_ID]bool)
+	defer delete(offline_map)
+
+	modified := dynamic_fleet_schedule(&svc, chain, tasks_all[:], deps_all[:], offline_map)
+	testing.expect(t, modified, "watchdog must rebind task from dead worker to healthy worker")
+
+	persisted, _, _ := iface.taskchain_get_task(&tc_repo, "task_dead_rebind")
+	testing.expect_value(t, persisted.status, domain.Task_Status.In_Progress)
+	rebound_inst := primary_assignee_instance(persisted.assignee_ref_json)
+	defer delete(rebound_inst)
+	testing.expect_value(t, rebound_inst, "inst_worker_healthy")
+}
+
+@(test)
+test_fsm_watchdog_degraded_capacity_exhausted_surfaces_actionable_recovery :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_crashed_saturated_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
+
+	owner := domain.User_ID("user_fsm_sat")
+	chain_id := domain.Task_Chain_ID("chain_fsm_sat")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Watchdog Saturated Recovery Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_sat",
+		created_at                    = "2026-10-01T10:00:00Z",
+		updated_at                    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	// Capacity is 1, and the only slot is dead, and no JIT provider service configured
+	fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_fsm_worker",
+		capacity         = 1,
+		min_warm         = 1,
+		idle_ttl_seconds = 300,
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, fleet)
+
+	crashed_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_failed",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_worker",
+		bridge_id         = "brg_local",
+		display_name      = "failed worker",
+		runtime_status    = "failed",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, crashed_inst)
+
+	task := domain.Task{
+		task_id            = "task_sat_recovery",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "In Progress Task Needing Recovery",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_failed"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-01T10:01:00Z",
+		updated_at         = "2026-10-01T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	tasks_all, _ := iface.taskchain_list_tasks_by_chain(&tc_repo, chain_id, owner)
+	defer delete(tasks_all)
+	deps_all, _ := iface.taskchain_list_dependencies_by_chain(&tc_repo, chain_id, owner)
+	defer delete(deps_all)
+	offline_map := make(map[domain.Task_ID]bool)
+	defer delete(offline_map)
+
+	modified := dynamic_fleet_schedule(&svc, chain, tasks_all[:], deps_all[:], offline_map)
+	testing.expect(t, modified, "watchdog must surface actionable recovery status")
+
+	// Task must be demoted to Queued (actionable recovery status, not stuck in In_Progress on dead worker)
+	persisted, _, _ := iface.taskchain_get_task(&tc_repo, "task_sat_recovery")
+	testing.expect_value(t, persisted.status, domain.Task_Status.Queued)
+	// Allowed actions for Queued are non-empty and actionable
+	actions := domain.task_allowed_actions(persisted.status)
+	testing.expect(t, len(actions) > 0, "queued status must have allowed actions")
+}
+
+
+

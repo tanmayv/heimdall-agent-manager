@@ -979,10 +979,14 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 		}
 	}
 
+	new_assignee_ref := ""
+	defer if new_assignee_ref != "" do delete(new_assignee_ref)
+
 	// Dependency Gating: reject transition to In_Progress if any dependency is blocked
 	if next == .In_Progress {
 		deps, dep_err := iface.taskchain_list_dependencies_by_chain(service.repo, task.chain_id, task.owner_user_id)
 		if dep_err.code == .None {
+			defer delete(deps)
 			for dep in deps {
 				if dep.task_id == task.task_id {
 					parent_task, p_ok, _ := iface.taskchain_get_task(service.repo, dep.depends_on_task_id)
@@ -992,6 +996,22 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 						}
 					}
 				}
+			}
+		}
+
+		// REQ-FSM-UNIFIED-1: Atomic Start & JIT Agent Instance Binding
+		inst_id := primary_assignee_instance(task.assignee_ref_json)
+		defer if inst_id != "" do delete(inst_id)
+		target_agent_id := primary_assignee_agent_id(task.assignee_ref_json)
+		defer if target_agent_id != "" do delete(target_agent_id)
+
+		if inst_id == "" && target_agent_id != "" {
+			allocated_inst, alloc_ok := allocate_or_jit_worker_instance(service, chain, task, target_agent_id)
+			if alloc_ok {
+				defer delete(allocated_inst)
+				ensure_chain_member(service, chain, allocated_inst, target_agent_id)
+				new_assignee_ref = bind_agent_id_to_instance(task.assignee_ref_json, target_agent_id, allocated_inst)
+				task.assignee_ref_json = new_assignee_ref
 			}
 		}
 	}
@@ -1182,15 +1202,18 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	// promoted back to Assigned/In_Progress when the instance is free, or paused/
 	// cancelled.
 	case .Queued: return next == .Assigned || next == .In_Progress || next == .Paused || next == .Cancelled
-	case .In_Progress: return next == .Queued || next == .In_Validation || next == .Paused || next == .Cancelled
+	case .In_Progress: return next == .Queued || next == .In_Validation || next == .Paused || next == .Cancelled || next == .Assigned
 	// In_Validation -> Completed is legal: it is the quorum auto-finalize path
 	// (evaluate_task_quorum advances a fully-approved task straight to Completed).
-	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled
-	case .Validated_Not_Good: return next == .In_Progress || next == .Paused || next == .Cancelled
-	case .Validated_Good: return next == .Completed || next == .Paused || next == .Cancelled
+	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled || next == .In_Progress || next == .Assigned
+	case .Validated_Not_Good: return next == .In_Progress || next == .Paused || next == .Cancelled || next == .Assigned
+	case .Validated_Good: return next == .Completed || next == .Paused || next == .Cancelled || next == .Assigned
 	case .Paused: return next == .In_Progress || next == .Assigned || next == .Cancelled
-	case .Cancelled: return next == .Assigned
+	case .Cancelled: return next == .Assigned || next == .In_Progress
 	case .Completed: return next == .Assigned || next == .In_Progress || next == .In_Validation
+	}
+	for allowed in domain.task_allowed_transitions(current) {
+		if allowed == next do return true
 	}
 	return false
 }
