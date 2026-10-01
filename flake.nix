@@ -23,7 +23,7 @@
           import nixpkgs { inherit system; };
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
-      appVersion = "0.1.0";
+      appVersion = "0.3.3";
       npmDepsHash = "sha256-CMApf6JvGbGttFTHtNO9lkLToGIpykAEClVQYu8MIMc=";
 
       mkOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
@@ -40,7 +40,7 @@
           # compiling any package that embeds the hub agent service (the golden test
           # imports it). Committed + regenerated-clean so local `odin build` also works.
           ${if name == "ham-bootstrap-golden-test" then "odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin" else ""}
-          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          odin build ${srcDir} -collection:odin_test=src -define:HAM_APP_VERSION=${appVersion} -out:$out/bin/${name}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
@@ -61,7 +61,7 @@
           # the hub compile so the STATIC_SKILLS set can never drift from the folder.
           # Committed to the repo (reviewable) + regenerated here (verify-clean).
           ${if name == "ham-hub" then "odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin" else ""}
-          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          odin build ${srcDir} -collection:odin_test=src -define:HAM_APP_VERSION=${appVersion} -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
           # Bundle the hub migrations SQL into the store output so the apps.hub
           # wrapper can inject an absolute --migrations-dir (NRX-1/NRX-4) and
@@ -86,7 +86,7 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/ctl -collection:odin_test=src -out:$out/bin/ham-ctl
+          odin build src/ctl -collection:odin_test=src -define:HAM_APP_VERSION=${appVersion} -out:$out/bin/ham-ctl
           runHook postBuild
         '';
       };
@@ -114,7 +114,7 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name} \
+          odin build ${srcDir} -collection:odin_test=src -define:HAM_APP_VERSION=${appVersion} -out:$out/bin/${name} \
             ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''-extra-linker-flags:"-static -no-pie -L${pkgs.glibc.static}/lib"''}
           runHook postBuild
         '';

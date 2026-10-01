@@ -85,6 +85,15 @@ jobs:
             exit 2
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "clean_version=${version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp release version into source and flake
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_version="${{ steps.version.outputs.version }}"
+          commit_sha="${GITHUB_SHA:0:8}"
+          scripts/release/bump-version.sh "$raw_version" "$commit_sha"
 
       - name: Build local binaries from flake
         id: nix-build
