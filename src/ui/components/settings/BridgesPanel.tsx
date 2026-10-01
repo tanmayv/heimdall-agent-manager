@@ -361,7 +361,7 @@ export default function BridgesPanel() {
                         </>
                       ) : isRevoking ? (
                         <>
-                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-confirm-${id}`} onClick={() => void handleRevoke(id)}>Confirm revoke</Button>
+                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-confirm-${id}`} onClick={() => void handleRevoke(id)}>Revoke</Button>
                           <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-revoke-cancel-${id}`} onClick={() => setRevokeConfirmId('')}>Cancel</Button>
                         </>
                       ) : (
@@ -378,7 +378,7 @@ export default function BridgesPanel() {
                               setUpdateError('');
                             }}
                           >
-                            Update Bridge
+                            Update
                           </Button>
                           <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-btn-${id}`} onClick={() => { setRenamingId(id); setRenameValue(bridge?.label || ''); }}>Rename</Button>
                           <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-btn-${id}`} onClick={() => setRevokeConfirmId(id)}>Revoke</Button>
@@ -399,7 +399,7 @@ export default function BridgesPanel() {
         <Modal
           open
           onOpenChange={(next) => { if (!next && !updateBusy) setUpdateModalBridge(null); }}
-          title={`Update Bridge: ${updateModalBridge?.label || updateModalBridge?.machine_hostname || updateModalBridge?.hostname || updateModalBridge?.bridge_id || 'Bridge'}`}
+          title={`Update: ${updateModalBridge?.label || updateModalBridge?.machine_hostname || updateModalBridge?.hostname || updateModalBridge?.bridge_id || 'Bridge'}`}
           size="md"
           data-debug-id="settings-bridge-update-modal"
         >
@@ -482,7 +482,7 @@ export default function BridgesPanel() {
               data-debug-id="settings-bridge-update-confirm"
               onClick={() => void handleConfirmUpdate()}
             >
-              {updateForce ? 'Force Update' : 'Update Bridge'}
+              {updateForce ? 'Force' : 'Update'}
             </Button>
           </ModalFooter>
         </Modal>

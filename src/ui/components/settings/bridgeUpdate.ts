@@ -32,7 +32,7 @@ export function formatLatestVersion(bridge: Partial<Bridge> | null | undefined):
  */
 export function isBridgeUpdating(bridge: Partial<Bridge> | null | undefined): boolean {
   if (!bridge?.update_status) return false;
-  return ['downloading', 'validating', 'restarting'].includes(bridge.update_status);
+  return ['updating', 'downloading', 'validating', 'restarting'].includes(bridge.update_status);
 }
 
 /**
