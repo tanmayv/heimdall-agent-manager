@@ -103,15 +103,18 @@ function discoverSessionId(port) {
   }
 
   const hamCtlBins = [
+    argValue('--ham-ctl'),
+    process.env.HAM_CTL,
     'ham-ctl',
     '/usr/local/google/home/tanmayvijay/.nix-profile/bin/ham-ctl',
     path.join(process.env.HOME || '', '.nix-profile/bin/ham-ctl'),
-  ];
+  ].filter(Boolean);
+  const bridgeFlag = process.env.HEIMDALL_BRIDGE_ID ? ` --bridge ${process.env.HEIMDALL_BRIDGE_ID}` : '';
   for (const bin of hamCtlBins) {
     try {
-      const out = execSync(`${bin} shell list --status running`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 });
+      const out = execSync(`${bin} shell list${bridgeFlag} --status running`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 });
       const data = JSON.parse(out);
-      const sessions = data?.data?.data?.sessions || [];
+      const sessions = data?.data?.data?.sessions || data?.data?.sessions || [];
       const match = sessions.find((s) => s.server_port === port && s.status === 'running');
       if (match && match.session_id) {
         return match.session_id;
@@ -195,15 +198,15 @@ process.on('SIGTERM', cleanup);
 
 // Attempt discovery if sessionId was not passed explicitly
 if (!sessionId) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     sessionId = discoverSessionId(PORT);
     if (sessionId) {
       console.log(`[dev-preview] discovered session ID: ${sessionId}`);
       break;
     }
-    // Synchronous sleep 300ms
+    // Synchronous sleep 400ms
     try {
-      const waitTill = new Date(new Date().getTime() + 300);
+      const waitTill = new Date(new Date().getTime() + 400);
       while (waitTill > new Date()) {}
     } catch {}
   }

@@ -120,7 +120,7 @@ START_RESPONSE="$("$HAM_CTL" shell start \
   --port "$PORT" \
   --label "$LABEL" \
   --cwd "$REPO" \
-  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" ${PROD_FLAG}")"
+  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" --ham-ctl \"$HAM_CTL\" ${PROD_FLAG}")"
 
 SID="$(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("session_id",""))')"
 [[ -n "$SID" ]] || die "shell start returned no session_id. Response was: $START_RESPONSE"
