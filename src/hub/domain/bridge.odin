@@ -29,6 +29,11 @@ Bridge :: struct {
 	updated_at: string,
 	last_seen_at: string,
 	revoked_at: string,
+	version: string,
+	commit_sha: string,
+	build_timestamp: string,
+	update_status: string,
+	update_error: string,
 }
 
 // bridge_destroy frees every heap string on a Bridge read from a repository.
@@ -54,6 +59,11 @@ bridge_destroy :: proc(b: ^Bridge) {
 	if len(b.updated_at) > 0 do delete(b.updated_at)
 	if len(b.last_seen_at) > 0 do delete(b.last_seen_at)
 	if len(b.revoked_at) > 0 do delete(b.revoked_at)
+	if len(b.version) > 0 do delete(b.version)
+	if len(b.commit_sha) > 0 do delete(b.commit_sha)
+	if len(b.build_timestamp) > 0 do delete(b.build_timestamp)
+	if len(b.update_status) > 0 do delete(b.update_status)
+	if len(b.update_error) > 0 do delete(b.update_error)
 	b^ = Bridge{}
 }
 

@@ -13,6 +13,7 @@ Error_Code :: enum {
 	Instance_Not_Running,
 	Rate_Limited,
 	Gone,
+	Unprocessable_Entity,
 	Not_Implemented,
 	Internal_Error,
 }
@@ -37,6 +38,7 @@ error_code_string :: proc(code: Error_Code) -> string {
 	case .Instance_Not_Running: return "instance_not_running"
 	case .Rate_Limited: return "rate_limited"
 	case .Gone: return "gone"
+	case .Unprocessable_Entity: return "unprocessable_entity"
 	case .Not_Implemented: return "not_implemented"
 	case .Internal_Error: return "internal_error"
 	}

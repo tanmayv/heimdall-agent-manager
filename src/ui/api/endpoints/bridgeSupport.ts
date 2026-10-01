@@ -11,6 +11,39 @@ export type AgentBridgeSupportEntry = {
   maxInstances?: number;
 };
 
+export interface Bridge {
+  bridge_id?: string;
+  bridgeId?: string;
+  id?: string;
+  label?: string;
+  machine_hostname?: string;
+  hostname?: string;
+  machine_os?: string;
+  os?: string;
+  machine_arch?: string;
+  arch?: string;
+  status?: string;
+  runtime_status?: string;
+  version?: string;
+  commit_sha?: string;
+  build_timestamp?: string;
+  target?: string;
+  update_available?: boolean;
+  latest_version?: string;
+  latest_commit_sha?: string;
+  update_status?: 'idle' | 'downloading' | 'validating' | 'restarting' | 'healthy' | 'complete' | 'failed' | string;
+  update_error?: string;
+  active_instance_count?: number;
+  instance_count?: number;
+  instances?: any[];
+  capabilities?: any[] | BridgeCapability[];
+  provider_capabilities?: any[];
+  provider_profiles?: any[];
+  last_seen_at?: string;
+  updated_at?: string;
+  revoked_at?: string;
+}
+
 export type BridgeCapability = {
   provider: string;
   tiers: string[];
@@ -138,6 +171,21 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
+    updateBridge: build.mutation<any, { bridgeId: string; targetVersion?: string; force?: boolean; drainTimeoutSeconds?: number }>({
+      queryFn: async ({ bridgeId, targetVersion, force, drainTimeoutSeconds }) => {
+        try {
+          const body: Record<string, any> = {};
+          if (targetVersion !== undefined) body.target_version = targetVersion;
+          if (force !== undefined) body.force = force;
+          if (drainTimeoutSeconds !== undefined) body.drain_timeout_seconds = drainTimeoutSeconds;
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/update`, 'POST', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
     createBridgeEnrollment: build.mutation<any, { label?: string; expiresInSeconds?: number }>({
       queryFn: async ({ label, expiresInSeconds }) => {
         try {
@@ -248,6 +296,7 @@ export const {
   useFetchBridgeDetailQuery,
   useRenameBridgeMutation,
   useRevokeBridgeMutation,
+  useUpdateBridgeMutation,
   useCreateBridgeEnrollmentMutation,
   useListBridgeEnrollmentsQuery,
   useRevokeBridgeEnrollmentMutation,

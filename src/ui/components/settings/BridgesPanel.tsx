@@ -1,19 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  type Bridge,
   normalizeBridgeCapabilities,
   useListBridgesQuery,
   useListBridgeEnrollmentsQuery,
   useRenameBridgeMutation,
   useRevokeBridgeMutation,
+  useUpdateBridgeMutation,
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, FormField, Icon, Input, PageShell, StatusDot, Text } from '@ui';
+import { Button, FormField, Icon, Input, PageShell, StatusDot, Text, Modal, ModalBody, ModalFooter, Spinner } from '@ui';
 import type { Tone } from '@ui';
 import {
   isPendingEnrollment as checkIsPendingEnrollment,
   bridgeReady as checkBridgeReady,
 } from './bridgeEnrollment';
+import {
+  formatBridgeVersion,
+  formatLatestVersion,
+  isBridgeUpdating,
+  getActiveTaskCount,
+} from './bridgeUpdate';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -28,6 +36,7 @@ export default function BridgesPanel() {
   const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
+  const [updateBridge] = useUpdateBridgeMutation();
   const [createEnrollment] = useCreateBridgeEnrollmentMutation();
   const [revokeEnrollment] = useRevokeBridgeEnrollmentMutation();
 
@@ -41,9 +50,16 @@ export default function BridgesPanel() {
   const [actionError, setActionError] = useState('');
   const [copiedToken, setCopiedToken] = useState(false);
 
-  const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked');
+  // Update modal state
+  const [updateModalBridge, setUpdateModalBridge] = useState<Bridge | null>(null);
+  const [updateForce, setUpdateForce] = useState(false);
+  const [updateDrainTimeout, setUpdateDrainTimeout] = useState(60);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState('');
+
+  const bridges: Bridge[] = (bridgesQuery.data?.bridges || []).filter((b: Bridge) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked');
   const enrolledBridgeIds = useMemo(() => new Set<string>(
-    bridges.map((b: any) => String(b?.bridge_id || b?.bridgeId || b?.id || '')).filter(Boolean)
+    bridges.map((b: Bridge) => String(b?.bridge_id || b?.bridgeId || b?.id || '')).filter(Boolean)
   ), [bridges]);
   const enrollments = enrollmentsQuery.data?.enrollments || [];
   const pendingEnrollments = enrollments.filter((enr: any) => isPendingEnrollment(enr));
@@ -57,29 +73,25 @@ export default function BridgesPanel() {
     return checkIsPendingEnrollment(enrollment, enrolledBridgeIds);
   }
 
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  function statusTone(bridge: any): Tone {
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+  function statusTone(bridge: Bridge): Tone {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
     if (status === 'revoked') return 'danger';
     if (status === 'online' || status === 'connected') return 'success';
     return 'neutral';
   }
 
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  function statusLabel(bridge: any): string {
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+  function statusLabel(bridge: Bridge): string {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
     return status || 'offline';
   }
 
-  function capabilitiesLabel(bridge: any): string {
+  function capabilitiesLabel(bridge: Bridge): string {
     const providers = normalizeBridgeCapabilities(bridge);
     return providers.length ? providers.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : ''}`).join(', ') : '—';
   }
 
   // REQ-BRG-1: An enrolled, online bridge is ready regardless of whether provider capabilities are loaded yet.
-  function bridgeReady(bridge: any): boolean {
+  function bridgeReady(bridge: Bridge): boolean {
     return checkBridgeReady(bridge);
   }
 
@@ -150,6 +162,26 @@ export default function BridgesPanel() {
       await revokeEnrollment({ enrollmentId }).unwrap();
     } catch (err: any) {
       setActionError(String(err?.message || 'Revoke enrollment failed'));
+    }
+  }
+
+  async function handleConfirmUpdate() {
+    if (!updateModalBridge) return;
+    const bridgeId = String(updateModalBridge.bridge_id || updateModalBridge.bridgeId || updateModalBridge.id || '');
+    setUpdateBusy(true);
+    setUpdateError('');
+    try {
+      await updateBridge({
+        bridgeId,
+        targetVersion: updateModalBridge.latest_version || 'latest',
+        force: updateForce,
+        drainTimeoutSeconds: updateDrainTimeout,
+      }).unwrap();
+      setUpdateModalBridge(null);
+    } catch (err: any) {
+      setUpdateError(String(err?.data?.error?.message || err?.error || err?.message || 'Failed to trigger bridge update'));
+    } finally {
+      setUpdateBusy(false);
     }
   }
 
@@ -235,27 +267,72 @@ export default function BridgesPanel() {
           <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-subtle bg-surface-raised/30 p-4 text-center text-sm text-muted">No bridges yet. Add one to connect a machine.</div>
         ) : (
           <div className="space-y-2">
-            {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-            {bridges.map((bridge: any) => {
-              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+            {bridges.map((bridge: Bridge) => {
               const id = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
               const isRenaming = renamingId === id;
               const isRevoking = revokeConfirmId === id;
               const isReady = bridgeReady(bridge);
               const status = statusLabel(bridge);
+              const isUpdating = isBridgeUpdating(bridge);
+              const hasVersion = Boolean(bridge?.version || bridge?.commit_sha);
+              const versionLabel = formatBridgeVersion(bridge);
+              const latestLabel = formatLatestVersion(bridge);
+
               return (
                 <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <StatusDot data-debug-id={`settings-bridge-status-${id}`} tone={statusTone(bridge)} label={statusLabel(bridge)} />
                         {isRenaming ? (
                           <Input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={setRenameValue} size="sm" className="min-w-0 flex-1" autoFocus />
                         ) : (
-                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           <span className="truncate text-sm font-medium text-primary">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
                         <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${isReady ? 'border-success/30 bg-success-soft text-success' : status === 'revoked' ? 'border-danger/30 bg-danger-soft text-danger' : 'border-warning/30 bg-warning-soft text-warning'}`}>{isReady ? 'ready' : status}</span>
+
+                        {/* Monospace version badge: e.g. v0.1.0 (a57c83d9) */}
+                        {hasVersion ? (
+                          <span
+                            data-debug-id={`settings-bridge-version-${id}`}
+                            className="inline-flex items-center rounded-full border border-subtle bg-surface-raised/60 px-2 py-0.5 font-mono text-[10px] text-primary"
+                            title={bridge?.build_timestamp ? `Built: ${bridge.build_timestamp}` : undefined}
+                          >
+                            {versionLabel}
+                          </span>
+                        ) : null}
+
+                        {/* Prominent Update Available badge */}
+                        {bridge?.update_available ? (
+                          <span
+                            data-debug-id={`settings-bridge-update-available-${id}`}
+                            className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent"
+                          >
+                            <Icon name="sparkle" size="sm" />
+                            <span>Update available: {latestLabel}</span>
+                          </span>
+                        ) : null}
+
+                        {/* Real-time progress state if update is in progress (downloading, validating, restarting) */}
+                        {isUpdating ? (
+                          <span
+                            data-debug-id={`settings-bridge-update-progress-${id}`}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent animate-pulse"
+                          >
+                            <Spinner size="sm" />
+                            <span>Updating ({bridge.update_status}…)</span>
+                          </span>
+                        ) : bridge?.update_status === 'failed' ? (
+                          <span
+                            data-debug-id={`settings-bridge-update-failed-${id}`}
+                            className="inline-flex items-center gap-1 rounded-full border border-danger/40 bg-danger-soft px-2 py-0.5 text-[10px] text-danger"
+                            title={bridge?.update_error || 'Update failed'}
+                          >
+                            <Icon name="alert" size="sm" />
+                            <span>Update failed{bridge?.update_error ? `: ${bridge.update_error}` : ''}</span>
+                          </span>
+                        ) : null}
+
                         {normalizeBridgeCapabilities(bridge).length === 0 ? (
                           <a
                             href={`#settings/providers?bridge=${encodeURIComponent(id)}`}
@@ -268,11 +345,8 @@ export default function BridgesPanel() {
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-primary">{statusLabel(bridge)}</span></span>
-                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>host: <span className="text-primary">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
-                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>os: <span className="text-primary">{bridge?.machine_os || bridge?.os || '—'}</span></span>
-                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>arch: <span className="text-primary">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
                         <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-primary">{capabilitiesLabel(bridge)}</span></span>
                         <span>instances: <span className="text-primary">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
@@ -292,6 +366,20 @@ export default function BridgesPanel() {
                         </>
                       ) : (
                         <>
+                          <Button
+                            variant={bridge?.update_available ? 'primary' : 'secondary'}
+                            size="sm"
+                            data-debug-id={`settings-bridge-update-btn-${id}`}
+                            disabled={!isReady || isUpdating}
+                            onClick={() => {
+                              setUpdateModalBridge(bridge);
+                              setUpdateForce(false);
+                              setUpdateDrainTimeout(60);
+                              setUpdateError('');
+                            }}
+                          >
+                            Update Bridge
+                          </Button>
                           <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-btn-${id}`} onClick={() => { setRenamingId(id); setRenameValue(bridge?.label || ''); }}>Rename</Button>
                           <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-btn-${id}`} onClick={() => setRevokeConfirmId(id)}>Revoke</Button>
                         </>
@@ -304,6 +392,101 @@ export default function BridgesPanel() {
           </div>
         )}
       </div>
+
+
+      {/* Update Bridge Modal */}
+      {updateModalBridge ? (
+        <Modal
+          open
+          onOpenChange={(next) => { if (!next && !updateBusy) setUpdateModalBridge(null); }}
+          title={`Update Bridge: ${updateModalBridge?.label || updateModalBridge?.machine_hostname || updateModalBridge?.hostname || updateModalBridge?.bridge_id || 'Bridge'}`}
+          size="md"
+          data-debug-id="settings-bridge-update-modal"
+        >
+          <ModalBody className="space-y-4">
+            <div className="flex flex-col gap-2 rounded-xl border border-subtle bg-surface-raised/40 p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Current Version:</span>
+                <span className="font-mono text-primary" data-debug-id="settings-bridge-modal-current-version">
+                  {updateModalBridge.version ? `v${updateModalBridge.version}` : 'unknown'}
+                  {updateModalBridge.commit_sha ? ` (${updateModalBridge.commit_sha.slice(0, 8)})` : ''}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Target Version:</span>
+                <span className="font-mono text-accent font-semibold" data-debug-id="settings-bridge-modal-target-version">
+                  {updateModalBridge.latest_version ? `v${updateModalBridge.latest_version}` : 'latest'}
+                  {updateModalBridge.latest_commit_sha ? ` (${updateModalBridge.latest_commit_sha.slice(0, 8)})` : ''}
+                </span>
+              </div>
+            </div>
+
+            {(updateModalBridge.active_instance_count ?? updateModalBridge.instance_count ?? 0) > 0 ? (
+              <div data-debug-id="settings-bridge-update-warning" className="rounded-xl border border-warning/30 bg-warning-soft p-3 text-xs text-warning">
+                <div className="flex items-center gap-1.5 font-semibold text-warning">
+                  <Icon name="alert" size="sm" />
+                  <span>Active Agent Tasks Running</span>
+                </div>
+                <p className="mt-1 text-primary">
+                  {(updateModalBridge.active_instance_count ?? updateModalBridge.instance_count ?? 0)} agent task{((updateModalBridge.active_instance_count ?? updateModalBridge.instance_count ?? 0) === 1 ? ' is' : 's are')} currently running on this machine. Updating now will wait up to {updateDrainTimeout}s for tasks to complete, or force an immediate restart.
+                </p>
+                <div className="mt-3 space-y-2 text-primary">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="update_strategy"
+                      checked={!updateForce}
+                      onChange={() => setUpdateForce(false)}
+                      data-debug-id="settings-bridge-update-drain-option"
+                      className="text-accent"
+                    />
+                    <span>Wait for tasks to complete (graceful drain, 60s timeout)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="update_strategy"
+                      checked={updateForce}
+                      onChange={() => setUpdateForce(true)}
+                      data-debug-id="settings-bridge-update-force-option"
+                      className="text-accent"
+                    />
+                    <span>Force immediate update (terminate active tasks now)</span>
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-muted">
+                This will stage the latest update bundle on the remote bridge, verify its cryptographic checksum and binary compatibility, and perform an in-situ restart with automated health-checked rollback.
+              </div>
+            )}
+
+            {updateError ? (
+              <div data-debug-id="settings-bridge-update-error" className="rounded-xl border border-danger/30 bg-danger-soft p-2.5 text-xs text-danger">
+                {updateError}
+              </div>
+            ) : null}
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              variant="secondary"
+              data-debug-id="settings-bridge-update-cancel"
+              onClick={() => setUpdateModalBridge(null)}
+              disabled={updateBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={updateBusy}
+              data-debug-id="settings-bridge-update-confirm"
+              onClick={() => void handleConfirmUpdate()}
+            >
+              {updateForce ? 'Force Update' : 'Update Bridge'}
+            </Button>
+          </ModalFooter>
+        </Modal>
+      ) : null}
 
       <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2 text-caption text-muted">
         Backend gap: token rotation (<code>{"POST /bridges/{id}/rotate-token"}</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.

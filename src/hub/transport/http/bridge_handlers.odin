@@ -121,7 +121,7 @@ list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_byte(&b, '[')
 	for bridge, i in bridges {
 		if i > 0 do strings.write_byte(&b, ',')
-		write_bridge_json(&b, bridge, h.agents)
+		write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	}
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
@@ -146,7 +146,7 @@ bridge_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridge, bridge_ok, err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
 	if !bridge_ok do return respond_error(err, req.request_id)
 	b := strings.builder_make()
-	write_bridge_json(&b, bridge, h.agents)
+	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -158,7 +158,7 @@ rename_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridge, rename_ok, err := bridge_service.rename_bridge(h.bridges, auth_ctx, bridge_id, json_string(req.body, "label"))
 	if !rename_ok do return respond_error(err, req.request_id)
 	b := strings.builder_make()
-	write_bridge_json(&b, bridge, h.agents)
+	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -1199,9 +1199,17 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	hostname := json_string(hello_text, "hostname"); defer delete(hostname)
 	os_str := json_string(hello_text, "os"); defer delete(os_str)
 	arch_str := json_string(hello_text, "arch"); defer delete(arch_str)
+	version_str := json_string(hello_text, "version"); defer delete(version_str)
+	commit_sha_str := json_string(hello_text, "commit_sha"); defer delete(commit_sha_str)
+	build_timestamp_str := json_string(hello_text, "built_at")
+	if len(build_timestamp_str) == 0 {
+		delete(build_timestamp_str)
+		build_timestamp_str = json_string(hello_text, "build_timestamp")
+	}
+	defer delete(build_timestamp_str)
 	validation_url := json_string(hello_text, "validation_ws_url"); defer delete(validation_url)
 	body_bridge_id := json_string(hello_text, "bridge_id"); defer delete(body_bridge_id)
-	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text)
+	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text, version_str, commit_sha_str, build_timestamp_str)
 	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
 	if body_bridge_id != "" && body_bridge_id != bridge.bridge_id { _ = write_ws_text_frame(client, bridge_ws_error_payload("bridge_id does not match bearer token")); return }
 	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url)
@@ -1888,8 +1896,63 @@ revoke_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridge, revoke_ok, err := bridge_service.revoke_bridge(h.bridges, auth_ctx, bridge_id)
 	if !revoke_ok do return respond_error(err, req.request_id)
 	b := strings.builder_make()
-	write_bridge_json(&b, bridge, h.agents)
+	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+bridge_update_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+
+	bridge_id := strings.trim_suffix(suffix_after(req.path, "/api/v1/bridges/"), "/update")
+	if strings.trim_space(bridge_id) == "" {
+		return respond_error(domain.domain_error(.Validation_Failed, "bridge_id is required"), req.request_id)
+	}
+
+	bridge, bridge_ok, err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return respond_error(err, req.request_id)
+
+	// Validate bridge state and reject offline or not-live bridges with 422
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
+		return respond_error(domain.domain_error(.Unprocessable_Entity, fmt.tprintf("Bridge %s is not online", bridge.bridge_id)), req.request_id)
+	}
+
+	force := json_bool_value(req.body, "force")
+	drain_timeout := json_int(req.body, "drain_timeout_seconds", 60)
+	target_version_raw := json_string(req.body, "target_version")
+	defer if len(target_version_raw) > 0 do delete(target_version_raw)
+	target_version := target_version_raw if len(target_version_raw) > 0 else "latest"
+
+	active_tasks := agent_service.active_instance_count_for_bridge(h.agents, bridge.bridge_id)
+	if active_tasks > 0 && !force && drain_timeout <= 0 {
+		return respond_error(domain.domain_error(.Conflict, fmt.tprintf("Bridge %s has %d active agent tasks; specify force=true or a positive drain_timeout_seconds", bridge.bridge_id, active_tasks)), req.request_id)
+	}
+
+	cmd_id, send_ok, send_err := bridge_service.send_bridge_update(h.bridges, auth_ctx, bridge.bridge_id, target_version, force, drain_timeout)
+	if !send_ok {
+		if send_err.code == .Bridge_Offline || send_err.code == .Unprocessable_Entity {
+			return respond_error(domain.domain_error(.Unprocessable_Entity, send_err.message), req.request_id)
+		}
+		return respond_error(send_err, req.request_id)
+	}
+	defer delete(cmd_id)
+
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, "{\"command_id\":\"")
+	write_handler_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"bridge_id\":\"")
+	write_handler_json_string(&b, bridge.bridge_id)
+	strings.write_string(&b, "\",\"status\":\"dispatched\",\"target_version\":\"")
+	write_handler_json_string(&b, target_version)
+	strings.write_string(&b, "\",\"active_tasks\":")
+	strings.write_string(&b, fmt.tprintf("%d", active_tasks))
+	strings.write_string(&b, ",\"drain_timeout_seconds\":")
+	strings.write_string(&b, fmt.tprintf("%d", drain_timeout))
+	strings.write_string(&b, "}")
+
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)
 }
 
 bearer_token :: proc(req: Request) -> (string, bool) {
@@ -1913,7 +1976,7 @@ write_enrollment_json :: proc(b: ^strings.Builder, e: domain.Bridge_Enrollment) 
 	strings.write_string(b, "\"}")
 }
 
-write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent_service.Agent_Service) {
+write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent_service.Agent_Service, catalog: ^bridge_service.Bridge_Update_Catalog = nil) {
 	strings.write_string(b, "{\"bridge_id\":\""); write_handler_json_string(b, br.bridge_id)
 	strings.write_string(b, "\",\"label\":\""); write_handler_json_string(b, br.label)
 	strings.write_string(b, "\",\"label_is_user_customized\":"); strings.write_string(b, "true" if br.label_is_user_customized else "false")
@@ -1924,9 +1987,20 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, domain.bridge_status_string(br.status))
 	strings.write_string(b, "\",\"capabilities\":"); strings.write_string(b, bridge_capabilities_json(br))
 	strings.write_string(b, ",\"active_instance_count\":"); strings.write_string(b, fmt.tprintf("%d", agent_service.active_instance_count_for_bridge(agents, br.bridge_id)))
-	strings.write_string(b, ",\"last_seen_at\":\""); write_handler_json_string(b, br.last_seen_at)
+	strings.write_string(b, ",\"version\":\""); write_handler_json_string(b, br.version)
+	strings.write_string(b, "\",\"commit_sha\":\""); write_handler_json_string(b, br.commit_sha)
+	strings.write_string(b, "\",\"build_timestamp\":\""); write_handler_json_string(b, br.build_timestamp)
+	strings.write_string(b, "\",\"update_status\":\""); write_handler_json_string(b, br.update_status if br.update_status != "" else "idle")
+	strings.write_string(b, "\",\"update_error\":\""); write_handler_json_string(b, br.update_error)
+	strings.write_string(b, "\",\"last_seen_at\":\""); write_handler_json_string(b, br.last_seen_at)
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, br.updated_at)
 	strings.write_string(b, "\",\"revoked_at\":\""); write_handler_json_string(b, br.revoked_at)
+	update_info := bridge_service.resolve_bridge_update_info(catalog, br)
+	target := bridge_service.normalize_bridge_target(br.machine_os, br.machine_arch)
+	strings.write_string(b, "\",\"target\":\""); write_handler_json_string(b, target)
+	strings.write_string(b, "\",\"update_available\":"); strings.write_string(b, "true" if update_info.update_available else "false")
+	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
+	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
 	strings.write_string(b, "\"}")
 }
 

@@ -45,6 +45,7 @@ status_for_error :: proc(code: domain.Error_Code) -> int {
 	case .Validation_Failed: return 400
 	case .Conflict: return 409
 	case .Gone: return 410
+	case .Unprocessable_Entity: return 422
 	case .Bridge_Offline: return 409
 	case .Provider_Unavailable: return 503
 	case .Bridge_Revoked: return 403

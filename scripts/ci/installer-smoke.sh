@@ -1080,6 +1080,8 @@ run_installer 0 --help
 assert_contains "usage block printed" "usage: install.sh" "$out"
 assert_contains "macOS named as supported" "Platforms: Linux" "$out"
 assert_contains "socat named as a prerequisite" "Requires socat" "$out"
+assert_contains "--update documented in help" "--update, --apply-update" "$out"
+assert_contains "--check documented in help" "--check" "$out"
 
 # --- 2. socat missing is FATAL before anything is written (REQ-INST-14) -------
 # A PATH shim rather than uninstalling the host's socat: the check has to be
@@ -1234,6 +1236,15 @@ if ls "$service_file".bak-* >/dev/null 2>&1; then
   die "an identical re-run created a backup: $(ls "$service_file".bak-*)"
 fi
 ok "no .bak-* file from an identical re-run"
+
+# --- 5b. --update --check exercises update check mode (REQ-BUPD-6) -----------
+step "--update --check: exit 0 and reports version status"
+run_installer 0 --update --check
+update_check_out="$out"
+assert_contains "update header printed" "Heimdall Cloudtop Update Manager" "$update_check_out"
+assert_contains "reports installed version" "Current Installed Version:" "$update_check_out"
+assert_contains "reports available version" "Latest Available Version:" "$update_check_out"
+assert_contains "reports status" "Status:" "$update_check_out"
 
 # --- 6. --uninstall reverses the install and KEEPS enrollment state ----------
 # The sentinel is what makes the "keeps ~/.config/heimdall" claim provable: an

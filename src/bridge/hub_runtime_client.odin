@@ -1,7 +1,9 @@
 package main
 
 import "base:runtime"
+import "core:crypto/hash"
 import base64 "core:encoding/base64"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:net"
 import "core:os"
@@ -10,7 +12,9 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
+import http "odin_test:lib/http_client"
 import ws "odin_test:lib/ws"
 
 // BRIDGE_WRAPPER_STALE_MS is how long an ACTIVE instance may go without any
@@ -423,6 +427,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_action_scheduler_notify_version(schedules_version)
 		return
 	}
+	if type == "bridge_update" {
+		bridge_hub_handle_update_command(conn, text)
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
@@ -814,6 +822,284 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_lsp_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_update_progress_json :: proc(command_id, bridge_id, stage: string, progress_percent: int, message: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"bridge_update_progress\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"bridge_id\":\"")
+	bridge_runtime_write_json_string(&b, bridge_id)
+	strings.write_string(&b, "\",\"stage\":\"")
+	bridge_runtime_write_json_string(&b, stage)
+	strings.write_string(&b, "\",\"progress_percent\":")
+	strings.write_string(&b, fmt.tprintf("%d", progress_percent))
+	strings.write_string(&b, ",\"message\":\"")
+	bridge_runtime_write_json_string(&b, message)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+bridge_update_copy_file :: proc(src, dest: string) -> bool {
+	src_file, open_err := os.open(src, os.File_Flags{.Read})
+	if open_err != nil do return false
+	defer os.close(src_file)
+	out, create_err := os.open(dest, os.File_Flags{.Write, .Create, .Trunc}, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
+	if create_err != nil do return false
+	defer os.close(out)
+	buf: [65536]byte
+	for {
+		n, rerr := os.read(src_file, buf[:])
+		if n > 0 {
+			written, werr := os.write(out, buf[:n])
+			if werr != nil || written != n do return false
+		}
+		if rerr != nil do return rerr == .EOF
+		if n == 0 do return true
+	}
+}
+
+bridge_hub_handle_update_command :: proc(conn: ^ws.Connection, text: string) {
+	fmt.println("bridge hub runtime command bridge_update")
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	if command_id != "" {
+		accepted := bridge_command_result_json(command_id, "accepted", "")
+		defer delete(accepted)
+		bridge_runtime_cache_command(command_id, accepted)
+		if conn != nil do _ = bridge_hub_send(conn, accepted)
+	}
+
+	target_version := extract_json_string(text, "target_version", "")
+	download_url := extract_json_string(text, "download_url", "")
+	sha256 := extract_json_string(text, "sha256", "")
+	force := bridge_local_extract_json_bool(text, "force", false)
+	drain_timeout := extract_json_int(text, "drain_timeout_seconds", 60)
+
+	ok, detail := bridge_runtime_apply_update(conn, command_id, target_version, download_url, sha256, force, drain_timeout)
+	if !ok {
+		fmt.println("bridge update failed:", detail)
+		fail_progress := bridge_update_progress_json(command_id, bridge_config.daemon_id, "failed", 0, detail)
+		defer delete(fail_progress)
+		if conn != nil do _ = bridge_hub_send(conn, fail_progress)
+
+		if command_id != "" {
+			final := bridge_command_result_json(command_id, "failed", detail)
+			defer delete(final)
+			bridge_runtime_cache_command(command_id, final)
+			if conn != nil do _ = bridge_hub_send(conn, final)
+		}
+		return
+	}
+
+	if command_id != "" {
+		final := bridge_command_result_json(command_id, "succeeded", "restarting")
+		defer delete(final)
+		bridge_runtime_cache_command(command_id, final)
+		if conn != nil do _ = bridge_hub_send(conn, final)
+	}
+}
+
+bridge_runtime_apply_update :: proc(
+	conn: ^ws.Connection,
+	command_id, target_version, download_url, sha256: string,
+	force: bool,
+	drain_timeout_seconds: int,
+) -> (bool, string) {
+	if strings.trim_space(download_url) == "" {
+		return false, "missing download_url"
+	}
+
+	// 1. Drain active tasks if not forced
+	if !force && drain_timeout_seconds > 0 {
+		deadline := time.to_unix_nanoseconds(time.now()) + i64(drain_timeout_seconds) * 1_000_000_000
+		for time.to_unix_nanoseconds(time.now()) < deadline {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			count := len(bridge_runtime_launches)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			if count == 0 do break
+			time.sleep(1000 * time.Millisecond)
+		}
+	}
+
+	// 2. Resolve data and staging directories
+	data_dir := bridge_expand_home(bridge_config.data_dir)
+	if strings.trim_space(data_dir) == "" {
+		data_dir = bridge_expand_home("~/.local/share/heimdall")
+	}
+	updates_dir := fmt.tprintf("%s/updates", data_dir)
+	stage_dir := fmt.tprintf("%s/updates/stage", data_dir)
+	_ = os.remove_all(stage_dir)
+	if os.make_directory_all(stage_dir) != nil {
+		return false, fmt.tprintf("cannot create staging directory %s", stage_dir)
+	}
+
+	// 3. Send downloading progress frame
+	p_dl := bridge_update_progress_json(command_id, bridge_config.daemon_id, "downloading", 20, "Downloading update bundle...")
+	defer delete(p_dl)
+	if conn != nil do _ = bridge_hub_send(conn, p_dl)
+
+	tarball_path := fmt.tprintf("%s/bundle.tar.gz", stage_dir)
+
+	// Stream tarball from download_url
+	resolved_url := download_url
+	if strings.has_prefix(download_url, "/") {
+		hub_base := strings.trim_right(bridge_config.daemon_url, "/")
+		resolved_url = fmt.tprintf("%s%s", hub_base, download_url)
+	}
+
+	if strings.has_prefix(download_url, "file://") || (os.exists(download_url) && !strings.has_prefix(download_url, "http://") && !strings.has_prefix(download_url, "https://")) {
+		local_src := download_url
+		if strings.has_prefix(local_src, "file://") {
+			local_src = local_src[7:]
+		}
+		if !bridge_update_copy_file(local_src, tarball_path) {
+			_ = os.remove_all(stage_dir)
+			return false, fmt.tprintf("failed to copy local bundle from %s", local_src)
+		}
+	} else {
+		status, dl_ok := http.download_to_file(resolved_url, tarball_path, 60000)
+		if !dl_ok || status != 200 {
+			_ = os.remove_all(stage_dir)
+			return false, fmt.tprintf("tarball download failed (HTTP %d)", status)
+		}
+	}
+
+	// 4. Verify SHA-256 hash before extraction
+	tarball_bytes, rerr := os.read_entire_file(tarball_path, context.allocator)
+	if rerr != nil {
+		_ = os.remove_all(stage_dir)
+		return false, "failed to read downloaded tarball"
+	}
+	defer delete(tarball_bytes)
+
+	digest: [32]byte
+	hash.hash_bytes_to_buffer(.SHA256, tarball_bytes, digest[:])
+	hex_bytes := hex.encode(digest[:])
+	defer delete(hex_bytes)
+	actual_sha256 := strings.to_lower(string(hex_bytes), context.allocator)
+	defer delete(actual_sha256)
+
+	if strings.trim_space(sha256) != "" {
+		expected_sha256 := strings.trim_space(sha256)
+		if strings.has_prefix(expected_sha256, "sha256:") {
+			expected_sha256 = expected_sha256[7:]
+		}
+		if !strings.equal_fold(expected_sha256, actual_sha256) {
+			_ = os.remove_all(stage_dir)
+			return false, fmt.tprintf("SHA-256 mismatch for bundle (expected %s, got %s)", expected_sha256, actual_sha256)
+		}
+	}
+
+	// 5. Send validating progress frame
+	p_val := bridge_update_progress_json(command_id, bridge_config.daemon_id, "validating", 60, "Checksum verified. Extracting and validating binaries...")
+	defer delete(p_val)
+	if conn != nil do _ = bridge_hub_send(conn, p_val)
+
+	// Extract tarball
+	tar_argv := []string{"tar", "-xzf", tarball_path, "-C", stage_dir}
+	tar_state, tar_out, tar_err, tar_proc_err := os.process_exec(os.Process_Desc{command = tar_argv}, context.allocator)
+	if len(tar_out) > 0 do delete(tar_out)
+	if len(tar_err) > 0 do delete(tar_err)
+	if tar_proc_err != nil || !tar_state.success {
+		_ = os.remove_all(stage_dir)
+		return false, "tarball extraction failed"
+	}
+
+	// 6. In-situ preflight check: locate ham-bridge and run `./stage/bin/ham-bridge --version`
+	stage_bin_dir := fmt.tprintf("%s/bin", stage_dir)
+	bridge_binary := fmt.tprintf("%s/ham-bridge", stage_bin_dir)
+	if !os.exists(bridge_binary) {
+		candidates := []string{
+			fmt.tprintf("%s/extract/bin/ham-bridge", stage_dir),
+			fmt.tprintf("%s/heimdall-cloudtop/bin/ham-bridge", stage_dir),
+			fmt.tprintf("%s/ham-bridge", stage_dir),
+		}
+		found := false
+		for c in candidates {
+			if os.exists(c) {
+				_ = os.make_directory_all(stage_bin_dir)
+				if bridge_update_copy_file(c, bridge_binary) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			_ = os.remove_all(stage_dir)
+			return false, "ham-bridge executable not found in staged bundle"
+		}
+	}
+
+	_ = os.chmod(bridge_binary, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
+	pf_argv := []string{bridge_binary, "--version"}
+	pf_state, pf_out, pf_err, pf_proc_err := os.process_exec(os.Process_Desc{command = pf_argv}, context.allocator)
+	if len(pf_out) > 0 do delete(pf_out)
+	if len(pf_err) > 0 do delete(pf_err)
+	if pf_proc_err != nil || !pf_state.success {
+		_ = os.remove_all(stage_dir)
+		return false, fmt.tprintf("preflight execution check failed (%s --version)", bridge_binary)
+	}
+
+	// 7. Locate supervisor script scripts/apply-bridge-update.sh
+	_ = os.make_directory_all(updates_dir)
+	supervisor_target := fmt.tprintf("%s/apply-bridge-update.sh", updates_dir)
+	supervisor_found := false
+	script_candidates := []string{
+		fmt.tprintf("%s/scripts/apply-bridge-update.sh", stage_dir),
+		fmt.tprintf("%s/apply-bridge-update.sh", stage_dir),
+		"scripts/apply-bridge-update.sh",
+		fmt.tprintf("%s/scripts/apply-bridge-update.sh", data_dir),
+		"/usr/local/google/home/tanmayvijay/heimdall-cloudtop/scripts/apply-bridge-update.sh",
+	}
+	for sc in script_candidates {
+		if os.exists(sc) {
+			_ = bridge_update_copy_file(sc, supervisor_target)
+			supervisor_found = true
+			break
+		}
+	}
+	if !supervisor_found && os.exists(supervisor_target) {
+		supervisor_found = true
+	}
+	if !supervisor_found {
+		_ = os.remove_all(stage_dir)
+		return false, "supervisor script apply-bridge-update.sh not found"
+	}
+	_ = os.chmod(supervisor_target, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
+
+	// 8. Spawn detached out-of-process supervisor via nohup
+	port_str := fmt.tprintf("%d", bridge_config.port)
+	sup_cmd := fmt.tprintf(
+		"nohup bash \"%s\" --data-dir \"%s\" --stage-dir \"%s\" --bridge-port \"%s\" --hub-url \"%s\" >/tmp/heimdall-update.log 2>&1 &",
+		supervisor_target, data_dir, stage_dir, port_str, bridge_config.daemon_url,
+	)
+	spawn_argv := []string{"bash", "-c", sup_cmd}
+	sp_state, sp_out, sp_err, sp_proc_err := os.process_exec(os.Process_Desc{command = spawn_argv}, context.allocator)
+	if len(sp_out) > 0 do delete(sp_out)
+	if len(sp_err) > 0 do delete(sp_err)
+	if sp_proc_err != nil || !sp_state.success {
+		_ = os.remove_all(stage_dir)
+		return false, "failed to spawn detached supervisor script"
+	}
+
+	// 9. Send restarting progress frame
+	p_rst := bridge_update_progress_json(command_id, bridge_config.daemon_id, "restarting", 90, "Supervisor spawned. Preparing clean bridge shutdown...")
+	defer delete(p_rst)
+	if conn != nil do _ = bridge_hub_send(conn, p_rst)
+
+	// 10. Prepare clean shutdown
+	when !ODIN_TEST {
+		thread.create_and_start(proc() {
+			time.sleep(1500 * time.Millisecond)
+			os.exit(0)
+		})
+	}
+
+	return true, "restarting"
 }
 
 bridge_hub_handle_agent_pty_input :: proc(conn: ^ws.Connection, text: string) {
@@ -2242,11 +2528,43 @@ bridge_runtime_provider_test_int :: proc(json, key: string, fallback, min, max: 
 	return value
 }
 
+bridge_os_string :: proc() -> string {
+	when ODIN_OS == .Linux {
+		return "linux"
+	} else when ODIN_OS == .Darwin {
+		return "darwin"
+	} else {
+		return "unknown"
+	}
+}
+
+bridge_arch_string :: proc() -> string {
+	when ODIN_ARCH == .amd64 {
+		return "amd64"
+	} else when ODIN_ARCH == .arm64 {
+		return "arm64"
+	} else {
+		return "unknown"
+	}
+}
+
+bridge_target_string :: proc() -> string {
+	return fmt.tprintf("%s-%s", bridge_os_string(), bridge_arch_string())
+}
+
 bridge_hub_hello_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
 	features := bridge_runtime_features_json()
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"bootstrap_fragment_cache\":true,\"hostname\":\"")
+	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"version\":\"")
+	bridge_runtime_write_json_string(&b, contracts.APP_VERSION)
+	strings.write_string(&b, "\",\"commit_sha\":\"")
+	bridge_runtime_write_json_string(&b, contracts.GIT_COMMIT)
+	strings.write_string(&b, "\",\"built_at\":\"")
+	bridge_runtime_write_json_string(&b, contracts.BUILD_TIMESTAMP)
+	strings.write_string(&b, "\",\"target\":\"")
+	bridge_runtime_write_json_string(&b, bridge_target_string())
+	strings.write_string(&b, "\",\"bootstrap_fragment_cache\":true,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
 	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)

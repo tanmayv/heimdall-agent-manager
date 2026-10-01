@@ -43,9 +43,9 @@ NET_STALL_BYTES_PER_SEC=1024
 NET_DOWNLOAD_MAX_TIME=600
 
 usage() {
-  cat >&2 <<'USAGE'
+  cat <<'USAGE'
 usage: install.sh [--version <tag>] [--hub <url>] [--dry-run] [--force-service]
-                  [--uninstall]
+                  [--update, --apply-update] [--check] [--bundle <path>] [--uninstall]
 
 Installs prebuilt heimdall binaries (heimdall, ham-bridge, ham-pty-host,
 ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
@@ -66,6 +66,10 @@ ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
                        installer otherwise refuses to shadow -- a user unit of
                        the same name silently takes precedence over the system
                        one, and the breakage only appears at the next restart.
+  --update, --apply-update Update Heimdall binaries and components to latest version
+  --check                  Check for available updates without applying
+  --bundle <path>          Path to update bundle (tarball or directory) or download URL
+  --force, -f              Force apply update and skip warnings
   --uninstall          remove what this installer put in place: stop the
                        service (best effort), remove the heimdall binaries
                        from the install dir, remove the service file, and
@@ -1308,12 +1312,380 @@ EOF
   fi
 }
 
+extract_json_val() {
+  local json_file="$1"
+  local key="$2"
+  if [ -f "$json_file" ]; then
+    sed -n -E "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/p" "$json_file" | head -n 1
+  fi
+}
+
+do_update() {
+  local check_only="${1:-false}"
+  local bundle_arg="${2:-}"
+  local hub_url_arg="${3:-}"
+  local force="${4:-false}"
+
+  local data_dir="${HEIMDALL_DATA_DIR:-$HOME/.local/share/heimdall}"
+  local bin_dir="$data_dir/bin"
+  local lib_dir="$data_dir/lib"
+  local share_dir="$data_dir/share"
+  local local_bin="$HOME/.local/bin"
+
+  echo "========================================================"
+  echo "         Heimdall Cloudtop Update Manager"
+  echo "========================================================"
+
+  # 1. Read current installed metadata
+  local current_version=""
+  local current_commit=""
+  local current_built=""
+
+  if [ -f "$data_dir/METADATA.json" ]; then
+    current_version="$(extract_json_val "$data_dir/METADATA.json" "version")"
+    current_commit="$(extract_json_val "$data_dir/METADATA.json" "commit")"
+    if [ -z "$current_commit" ]; then
+      current_commit="$(extract_json_val "$data_dir/METADATA.json" "commit_sha")"
+    fi
+    current_built="$(extract_json_val "$data_dir/METADATA.json" "built_at")"
+  fi
+
+  if [ -z "$current_version" ] && [ -x "$bin_dir/ham-bridge" ]; then
+    current_version="$("$bin_dir/ham-bridge" --version 2>/dev/null | awk '{print $2}' || true)"
+  fi
+  if [ -z "$current_version" ]; then
+    current_version="unknown"
+  fi
+  if [ -z "$current_commit" ]; then
+    current_commit="unknown"
+  fi
+
+  # 2. Determine Hub URL
+  local resolved_hub_url="$hub_url_arg"
+  if [ -z "$resolved_hub_url" ]; then
+    if [ -f "$data_dir/standalone.env" ]; then
+      # shellcheck source=/dev/null
+      source "$data_dir/standalone.env" 2>/dev/null || true
+      resolved_hub_url="${HEIMDALL_HUB_URL:-}"
+    fi
+    resolved_hub_url="${resolved_hub_url:-http://127.0.0.1:8989}"
+  fi
+  resolved_hub_url="$(echo "$resolved_hub_url" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" -e "s:/*$::")"
+
+  # 3. Determine latest available version from manifest or bundle
+  local latest_version=""
+  local latest_commit=""
+  local latest_built=""
+
+  if [ -n "$bundle_arg" ]; then
+    if [ -f "$bundle_arg" ]; then
+      latest_version="$(tar -zxOf "$bundle_arg" METADATA.json 2>/dev/null | sed -n -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      if [ -z "$latest_version" ]; then
+        latest_version="$(tar -zxOf "$bundle_arg" heimdall-cloudtop/METADATA.json 2>/dev/null | sed -n -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      fi
+      latest_commit="$(tar -zxOf "$bundle_arg" METADATA.json 2>/dev/null | sed -n -E 's/.*"commit"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      if [ -z "$latest_commit" ]; then
+        latest_commit="$(tar -zxOf "$bundle_arg" METADATA.json 2>/dev/null | sed -n -E 's/.*"commit_sha"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      fi
+      if [ -z "$latest_commit" ]; then
+        latest_commit="$(tar -zxOf "$bundle_arg" heimdall-cloudtop/METADATA.json 2>/dev/null | sed -n -E 's/.*"commit"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      fi
+      if [ -z "$latest_commit" ]; then
+        latest_commit="$(tar -zxOf "$bundle_arg" heimdall-cloudtop/METADATA.json 2>/dev/null | sed -n -E 's/.*"commit_sha"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' || true)"
+      fi
+    elif [ -d "$bundle_arg" ] && [ -f "$bundle_arg/METADATA.json" ]; then
+      latest_version="$(extract_json_val "$bundle_arg/METADATA.json" "version")"
+      latest_commit="$(extract_json_val "$bundle_arg/METADATA.json" "commit")"
+      if [ -z "$latest_commit" ]; then
+        latest_commit="$(extract_json_val "$bundle_arg/METADATA.json" "commit_sha")"
+      fi
+      latest_built="$(extract_json_val "$bundle_arg/METADATA.json" "built_at")"
+    fi
+  else
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local root_dir
+    root_dir="$(cd "$script_dir/.." && pwd)"
+    if [ -f "$root_dir/dist/manifest.json" ]; then
+      latest_version="$(extract_json_val "$root_dir/dist/manifest.json" "version")"
+      latest_commit="$(extract_json_val "$root_dir/dist/manifest.json" "commit_sha")"
+      latest_built="$(extract_json_val "$root_dir/dist/manifest.json" "built_at")"
+    elif [ -f "$root_dir/dist/heimdall-cloudtop/METADATA.json" ]; then
+      latest_version="$(extract_json_val "$root_dir/dist/heimdall-cloudtop/METADATA.json" "version")"
+      latest_commit="$(extract_json_val "$root_dir/dist/heimdall-cloudtop/METADATA.json" "commit")"
+      if [ -z "$latest_commit" ]; then
+        latest_commit="$(extract_json_val "$root_dir/dist/heimdall-cloudtop/METADATA.json" "commit_sha")"
+      fi
+      latest_built="$(extract_json_val "$root_dir/dist/heimdall-cloudtop/METADATA.json" "built_at")"
+    else
+      local manifest_raw
+      manifest_raw="$(curl -s --connect-timeout 3 "$resolved_hub_url/api/v1/updates/manifest.json" 2>/dev/null || true)"
+      if [ -n "$manifest_raw" ]; then
+        latest_version="$(echo "$manifest_raw" | sed -n -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
+        latest_commit="$(echo "$manifest_raw" | sed -n -E 's/.*"commit_sha"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
+        latest_built="$(echo "$manifest_raw" | sed -n -E 's/.*"built_at"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
+      fi
+    fi
+    if [ -z "$latest_version" ] && [ -f "$root_dir/package.json" ]; then
+      latest_version="$(extract_json_val "$root_dir/package.json" "version")"
+      if [ -d "$root_dir/.git" ] && command -v git >/dev/null 2>&1; then
+        latest_commit="$(git -C "$root_dir" rev-parse --short HEAD 2>/dev/null || true)"
+      fi
+    fi
+  fi
+
+  latest_version="${latest_version:-unknown}"
+  latest_commit="${latest_commit:-unknown}"
+
+  # 4. Handle --check mode
+  if [ "$check_only" = true ]; then
+    echo ""
+    echo "  Current Installed Version: $current_version ($current_commit)"
+    echo "  Latest Available Version:  $latest_version ($latest_commit)"
+    echo ""
+    if [ "$latest_version" != "unknown" ] && { [ "$current_version" != "$latest_version" ] || [ "$current_commit" != "$latest_commit" ]; }; then
+      echo "  Status: Update available! Run './install.sh --update' to apply."
+    else
+      echo "  Status: Heimdall is up to date."
+    fi
+    echo "========================================================"
+    return 0
+  fi
+
+  # 5. Locate or download bundle for update
+  local stage_dir="$data_dir/updates/stage"
+  rm -rf "$stage_dir"
+  mkdir -p "$stage_dir"
+
+  local target_arch
+  target_arch="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | tr '[:upper:]' '[:lower:]' | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')"
+
+  if [ -n "$bundle_arg" ]; then
+    if [[ "$bundle_arg" =~ ^https?:// ]]; then
+      echo "[update] Downloading update bundle from $bundle_arg..."
+      curl -f -L --progress-bar "$bundle_arg" -o "$stage_dir/bundle.tar.gz" || {
+        echo "[-] Error: Failed to download update bundle from $bundle_arg" >&2
+        rm -rf "$stage_dir"
+        return 1
+      }
+      tar -xzf "$stage_dir/bundle.tar.gz" -C "$stage_dir"
+    elif [ -f "$bundle_arg" ]; then
+      echo "[update] Extracting update bundle from $bundle_arg..."
+      tar -xzf "$bundle_arg" -C "$stage_dir"
+    elif [ -d "$bundle_arg" ]; then
+      echo "[update] Using update bundle from directory $bundle_arg..."
+      cp -R -p "$bundle_arg/"* "$stage_dir/"
+    else
+      echo "[-] Error: Specified bundle $bundle_arg not found." >&2
+      rm -rf "$stage_dir"
+      return 1
+    fi
+  else
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local root_dir
+    root_dir="$(cd "$script_dir/.." && pwd)"
+    if [ -d "$root_dir/dist/heimdall-cloudtop/bin" ]; then
+      echo "[update] Using local build at $root_dir/dist/heimdall-cloudtop..."
+      cp -R -p "$root_dir/dist/heimdall-cloudtop/"* "$stage_dir/"
+    elif [ -f "$root_dir/dist/heimdall-cloudtop-bundle.tar.gz" ]; then
+      echo "[update] Extracting local archive $root_dir/dist/heimdall-cloudtop-bundle.tar.gz..."
+      tar -xzf "$root_dir/dist/heimdall-cloudtop-bundle.tar.gz" -C "$stage_dir"
+    elif [ -f "$root_dir/scripts/package-cloudtop-bundle.sh" ]; then
+      echo "[update] Packaging fresh standalone bundle..."
+      "$root_dir/scripts/package-cloudtop-bundle.sh"
+      cp -R -p "$root_dir/dist/heimdall-cloudtop/"* "$stage_dir/"
+    else
+      local bundle_url="$resolved_hub_url/api/v1/updates/bundle/heimdall-local-${target_arch}.tar.gz"
+      echo "[update] Downloading bundle from Central Hub at $bundle_url..."
+      if curl -f -s -L "$bundle_url" -o "$stage_dir/bundle.tar.gz" 2>/dev/null; then
+        tar -xzf "$stage_dir/bundle.tar.gz" -C "$stage_dir"
+      else
+        echo "[-] Error: Could not locate local bundle or download bundle from Central Hub ($bundle_url)." >&2
+        rm -rf "$stage_dir"
+        return 1
+      fi
+    fi
+  fi
+
+  # 6. Locate staged binaries
+  local update_bin=""
+  local update_root=""
+  if [ -d "$stage_dir/bin" ]; then
+    update_bin="$stage_dir/bin"
+    update_root="$stage_dir"
+  elif [ -d "$stage_dir/heimdall-cloudtop/bin" ]; then
+    update_bin="$stage_dir/heimdall-cloudtop/bin"
+    update_root="$stage_dir/heimdall-cloudtop"
+  elif [ -f "$stage_dir/ham-bridge" ]; then
+    update_bin="$stage_dir"
+    update_root="$stage_dir"
+  fi
+
+  if [ -z "$update_bin" ] || [ ! -d "$update_bin" ]; then
+    echo "[-] Error: Staged update does not contain valid binaries." >&2
+    rm -rf "$stage_dir"
+    return 1
+  fi
+
+  # In-situ binary preflight check
+  if [ -f "$update_bin/ham-bridge" ]; then
+    echo "[update] Preflight verifying new bridge binary ($update_bin/ham-bridge --version)..."
+    chmod +x "$update_bin/ham-bridge"
+    "$update_bin/ham-bridge" --version >/dev/null 2>&1 || {
+      echo "[-] Error: New ham-bridge binary failed preflight execution check." >&2
+      rm -rf "$stage_dir"
+      return 1
+    }
+  fi
+
+  # 7. Backup current binaries to bin.bak
+  echo "[update] Backing up current binaries to $data_dir/bin.bak..."
+  rm -rf "$data_dir/bin.bak"
+  if [ -d "$bin_dir" ]; then
+    cp -R -p "$bin_dir" "$data_dir/bin.bak"
+  fi
+
+  # 8. Atomically swap binaries
+  echo "[update] Atomically replacing binaries in $bin_dir..."
+  rm -rf "$data_dir/bin.new"
+  mkdir -p "$data_dir/bin.new"
+  cp -R -p "$update_bin/"* "$data_dir/bin.new/"
+  chmod u+w "$data_dir/bin.new/"* 2>/dev/null || true
+  chmod +x "$data_dir/bin.new/"*
+
+  rm -rf "$data_dir/bin.old"
+  if [ -d "$bin_dir" ]; then
+    mv "$bin_dir" "$data_dir/bin.old"
+  fi
+  mv "$data_dir/bin.new" "$bin_dir"
+  rm -rf "$data_dir/bin.old"
+
+  # 9. Update supporting runtime components
+  if [ -d "$update_root/lib" ]; then
+    echo "[update] Updating runtime libraries in $lib_dir..."
+    mkdir -p "$lib_dir"
+    cp -R -p "$update_root/lib/"* "$lib_dir/" 2>/dev/null || true
+    chmod -R u+w "$lib_dir/" 2>/dev/null || true
+  fi
+
+  if [ -d "$update_root/share/migrations" ]; then
+    echo "[update] Updating database migrations in $share_dir..."
+    mkdir -p "$share_dir"
+    cp -R -p "$update_root/share/migrations/"* "$share_dir/"
+  fi
+
+  if [ -d "$update_root/ui" ] && [ -f "$update_root/ui/index.html" ]; then
+    echo "[update] Updating static UI assets..."
+    mkdir -p "$data_dir/ui"
+    cp -R -p "$update_root/ui/"* "$data_dir/ui/"
+  fi
+
+  if [ -f "$update_root/METADATA.json" ]; then
+    cp "$update_root/METADATA.json" "$data_dir/METADATA.json"
+  fi
+
+  if [ -f "$update_root/start.sh" ]; then
+    cp "$update_root/start.sh" "$bin_dir/start.sh"
+    cp "$update_root/start.sh" "$data_dir/start.sh"
+    chmod +x "$bin_dir/start.sh" "$data_dir/start.sh"
+  fi
+  if [ -f "$update_root/stop.sh" ]; then
+    cp "$update_root/stop.sh" "$bin_dir/stop.sh"
+    cp "$update_root/stop.sh" "$data_dir/stop.sh"
+    chmod +x "$bin_dir/stop.sh" "$data_dir/stop.sh"
+  fi
+  if [ -f "$update_root/scripts/apply-bridge-update.sh" ]; then
+    mkdir -p "$data_dir/scripts"
+    cp "$update_root/scripts/apply-bridge-update.sh" "$data_dir/scripts/apply-bridge-update.sh"
+    chmod +x "$data_dir/scripts/apply-bridge-update.sh"
+  fi
+
+  # Symlink CLI
+  mkdir -p "$local_bin"
+  if [ -f "$bin_dir/ham-ctl" ]; then
+    ln -sf "$bin_dir/ham-ctl" "$local_bin/ham-ctl"
+  fi
+
+  # Clean up staging
+  rm -rf "$stage_dir"
+
+  # 10. Restart service
+  echo "[update] Restarting Heimdall service..."
+  if command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/heimdall.service" ]; then
+    echo "[update] Reloading systemd user daemon and restarting heimdall.service..."
+    systemctl --user daemon-reload || true
+    systemctl --user restart heimdall.service || systemctl --user start heimdall.service || true
+  elif [ -f "$data_dir/start.sh" ]; then
+    if [ -f "$data_dir/standalone.env" ]; then
+      "$data_dir/start.sh" --standalone ${force:+--force} &
+    else
+      "$data_dir/start.sh" ${force:+--force} &
+    fi
+  fi
+
+  # 11. Health check verification
+  local probe_port="${HEIMDALL_PROBE_PORT:-8989}"
+  if [ -f "$data_dir/standalone.env" ]; then
+    source "$data_dir/standalone.env" 2>/dev/null || true
+    probe_port="${HEIMDALL_PROBE_PORT:-${HEIMDALL_BRIDGE_PORT:-49323}}"
+  fi
+
+  local health_ok=false
+  if [ "${HEIMDALL_SKIP_HEALTH_CHECK:-false}" = "true" ]; then
+    echo "[update] Health check probe skipped (HEIMDALL_SKIP_HEALTH_CHECK=true)."
+    health_ok=true
+  else
+    echo "[update] Verifying service health on port $probe_port..."
+    local deadline=$((SECONDS + 15))
+    while [ $SECONDS -lt $deadline ]; do
+      if curl -s "http://127.0.0.1:$probe_port/api/v1/health" >/dev/null 2>&1 || curl -s -I "http://127.0.0.1:$probe_port/" >/dev/null 2>&1; then
+        health_ok=true
+        break
+      fi
+      sleep 0.5
+    done
+  fi
+
+  if [ "$health_ok" = true ]; then
+    echo "[update] Service health check verified on port $probe_port."
+    rm -rf "$data_dir/bin.bak"
+  else
+    echo "[-] Warning: Health check did not respond on port $probe_port within 15s."
+    if [ -d "$data_dir/bin.bak" ]; then
+      echo "[-] Backup binaries preserved at $data_dir/bin.bak."
+    fi
+  fi
+
+  local updated_ver
+  updated_ver="$(extract_json_val "$data_dir/METADATA.json" "version")"
+  local updated_commit
+  updated_commit="$(extract_json_val "$data_dir/METADATA.json" "commit")"
+  if [ -z "$updated_commit" ]; then
+    updated_commit="$(extract_json_val "$data_dir/METADATA.json" "commit_sha")"
+  fi
+
+  echo ""
+  echo "========================================================"
+  echo "    Heimdall Successfully Updated!"
+  echo "========================================================"
+  echo "  Previous Version: $current_version ($current_commit)"
+  echo "  Updated Version:  ${updated_ver:-$current_version} (${updated_commit:-$current_commit})"
+  echo "  Binaries:         $bin_dir"
+  echo "========================================================"
+  return 0
+}
+
 main() {
   set -euo pipefail
   version=""
   hub_url=""
   dry_run=false
   force_service=false
+  force=false
+  update_mode=false
+  check_only=false
+  bundle_arg=""
   uninstall=false
   # Set by wire_path when no rc file ended up carrying the PATH line, so the
   # final summary can say the install itself succeeded (REQ-INST-5).
@@ -1323,16 +1695,27 @@ main() {
       --version)
         [ "$#" -ge 2 ] || fail "--version requires a value (e.g. v0.1.0)"
         version="$2"; shift 2 ;;
-      --hub)
+      --hub|--hub-url)
         [ "$#" -ge 2 ] || fail "--hub requires a url"
         hub_url="${2%/}"; shift 2 ;;
       --dry-run) dry_run=true; shift ;;
       --force-service) force_service=true; shift ;;
+      --force|-f) force=true; force_service=true; shift ;;
+      --update|--apply-update) update_mode=true; shift ;;
+      --check) check_only=true; update_mode=true; shift ;;
+      --bundle)
+        [ "$#" -ge 2 ] || fail "--bundle requires a path or url"
+        bundle_arg="$2"; update_mode=true; shift 2 ;;
       --uninstall) uninstall=true; shift ;;
       --help|-h) usage; exit 0 ;;
       *) usage; fail "unknown argument: $1" ;;
     esac
   done
+
+  if [ "$update_mode" = true ]; then
+    do_update "$check_only" "$bundle_arg" "$hub_url" "$force"
+    exit 0
+  fi
 
   # --- platform detection -----------------------------------------------------
   uname_s="$(uname -s)"

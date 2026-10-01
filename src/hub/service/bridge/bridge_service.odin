@@ -14,6 +14,7 @@ Bridge_Service :: struct {
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
+	catalog: ^Bridge_Update_Catalog,
 }
 
 Create_Enrollment_Result :: struct {
@@ -194,7 +195,7 @@ rename_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, br
 	return iface.bridge_save_bridge(service.repo, bridge)
 }
 
-bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname, os_name, arch, capabilities_json: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname, os_name, arch, capabilities_json: string, version: string = "", commit_sha: string = "", build_timestamp: string = "") -> (domain.Bridge, bool, domain.Domain_Error) {
 	auth, auth_ok, auth_err := verify_bridge_token(service, token)
 	if !auth_ok do return domain.Bridge{}, false, auth_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.repo, auth.bridge_id)
@@ -207,6 +208,9 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	if os_name != "" do bridge.machine_os = os_name
 	if arch != "" do bridge.machine_arch = arch
 	if capabilities_json != "" && strings.contains(capabilities_json, "\"capabilities\"") do bridge.capabilities_json = capabilities_json
+	if version != "" do bridge.version = version
+	if commit_sha != "" do bridge.commit_sha = commit_sha
+	if build_timestamp != "" do bridge.build_timestamp = build_timestamp
 	now := platform.clock_now(service.clock)
 	bridge.status = .Online
 	bridge.last_seen_at = now
@@ -568,3 +572,87 @@ send_lsp_stop :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, br
 	if !sent do return false, send_err
 	return true, domain.Domain_Error{}
 }
+
+bridge_update_command_json :: proc(cmd_id, target_version, download_url, sha256: string, force: bool, drain_timeout_seconds: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"bridge_update\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"target_version\":\"")
+	contracts.write_json_string(&b, target_version)
+	strings.write_string(&b, "\",\"download_url\":\"")
+	contracts.write_json_string(&b, download_url)
+	strings.write_string(&b, "\",\"sha256\":\"")
+	contracts.write_json_string(&b, sha256)
+	strings.write_string(&b, "\",\"force\":")
+	strings.write_string(&b, "true" if force else "false")
+	strings.write_string(&b, ",\"drain_timeout_seconds\":")
+	strings.write_string(&b, fmt.tprintf("%d", drain_timeout_seconds))
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+send_bridge_update :: proc(
+	service: ^Bridge_Service,
+	auth: contracts.Auth_Context,
+	bridge_id: string,
+	target_version: string = "latest",
+	force: bool = false,
+	drain_timeout_seconds: int = 60,
+	sink_override: project_service.Bridge_Command_Sink = {},
+) -> (string, bool, domain.Domain_Error) {
+	if strings.trim_space(bridge_id) == "" {
+		return "", false, domain.domain_error(.Validation_Failed, "bridge_id is required")
+	}
+	if auth.kind != .User_Token && auth.kind != .Trusted_Proxy {
+		return "", false, domain.domain_error(.Forbidden, "user authentication required to update bridge")
+	}
+	bridge, ok, err := get_bridge(service, auth, bridge_id)
+	if !ok do return "", false, err
+
+	if bridge.status == .Revoked {
+		return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	}
+	if bridge.status != .Online {
+		return "", false, domain.domain_error(.Unprocessable_Entity, fmt.tprintf("Bridge %s is not online", bridge.bridge_id))
+	}
+
+	info := resolve_bridge_update_info(service.catalog, bridge)
+	effective_version := target_version
+	if effective_version == "" || effective_version == "latest" {
+		effective_version = info.latest_version
+	}
+	download_url := info.download_url
+	sha256 := info.sha256
+
+	sink := service.bridge_command_sink
+	if sink.send_runtime_command == nil && sink_override.send_runtime_command != nil {
+		sink = sink_override
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_upd_")
+	} else {
+		cmd_id = "cmd_upd_default"
+	}
+
+	cmd_json := bridge_update_command_json(cmd_id, effective_version, download_url, sha256, force, drain_timeout_seconds)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		sink,
+		project_service.Runtime_Command{
+			bridge_id = bridge.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return "", false, send_err
+
+	bridge.update_status = "updating"
+	bridge.updated_at = platform.clock_now(service.clock)
+	iface.bridge_save_bridge(service.repo, bridge)
+
+	return strings.clone(cmd_id), true, domain.Domain_Error{}
+}
+
