@@ -7,6 +7,7 @@ import bootcache "odin_test:hub/bootcache"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import jsonx "odin_test:lib/jsonx"
 
 Content_Repo_SQLite :: struct { conn: ^Conn }
 
@@ -313,24 +314,10 @@ memory_json_to_project_list :: proc(text: string) -> []domain.Project_ID {
 	delete(ids)
 	return out
 }
-// decode_json_string_array parses a flat JSON array of strings, e.g.
-// ["a","b"]. It ignores structure beyond quoted string elements, which is
-// sufficient for the memory targeting columns (we only ever write flat arrays).
-decode_json_string_array :: proc(text: string) -> []string {
-	out := make([dynamic]string)
-	trimmed := strings.trim_space(text)
-	if len(trimmed) < 2 || trimmed[0] != '[' do return out[:]
-	i := 1
-	for i < len(trimmed) && trimmed[i] != ']' {
-		for i < len(trimmed) && trimmed[i] != '"' && trimmed[i] != ']' do i += 1
-		if i >= len(trimmed) || trimmed[i] == ']' do break
-		start := i + 1
-		j := start
-		for j < len(trimmed) && trimmed[j] != '"' do j += 1
-		if j <= len(trimmed) do append(&out, strings.clone(trimmed[start:j]))
-		i = j + 1
-	}
-	return out[:]
+// decode_json_string_array parses a flat JSON array of strings, e.g. ["a","b"].
+decode_json_string_array :: proc(text: string, allocator := context.allocator) -> []string {
+	dyn := jsonx.decode_string_array(text, allocator = allocator)
+	return dyn[:]
 }
 bind_conversation :: proc(s:sqlite3_stmt,c:domain.Chat_Conversation){ bind_text(s,1,c.conversation_id);bind_text(s,2,string(c.owner_user_id));bind_text(s,3,c.agent_id);bind_text(s,4,c.agent_instance_id);bind_text(s,5,string(c.project_id));bind_text(s,6,c.chain_id);bind_text(s,7,c.title);bind_text(s,8,int_s(c.unread_count));bind_text(s,9,c.last_message_preview);bind_text(s,10,c.last_message_at);bind_text(s,11,c.created_at);bind_text(s,12,c.updated_at);bind_text(s,13,c.last_activity_at);bind_text(s,14,c.last_title_nudge_at);bind_text(s,15,normalize_title_source(c.title_source)) }
 conversation_from_stmt :: proc(s:sqlite3_stmt)->domain.Chat_Conversation { return domain.Chat_Conversation{conversation_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),agent_id=column_text(s,2),agent_instance_id=column_text(s,3),project_id=domain.Project_ID(column_text(s,4)),chain_id=column_text(s,5),title=column_text(s,6),unread_count=int_v(column_text(s,7)),last_message_preview=column_text(s,8),last_message_at=column_text(s,9),created_at=column_text(s,10),updated_at=column_text(s,11),last_activity_at=column_text(s,12),last_title_nudge_at=column_text(s,13),title_source=normalize_title_source(column_text(s,14))} }

@@ -6,6 +6,7 @@ import "core:time"
 import domain "odin_test:hub/domain"
 import project_service "odin_test:hub/service/project"
 import ws "odin_test:lib/ws"
+import jsonx "odin_test:lib/jsonx"
 import "odin_test:contracts"
 
 new_bridge_command_sink :: proc(registry: ^project_service.Bridge_Runtime_Registry) -> project_service.Bridge_Command_Sink {
@@ -133,7 +134,12 @@ send_validate_project_path_command :: proc(ws_url: string, command: project_serv
 	deadline := time.to_unix_nanoseconds(time.now()) + i64(3 * time.Second)
 	for time.to_unix_nanoseconds(time.now()) < deadline {
 		if text, ok := ws.poll_text(&conn); ok {
-			if json_string(text, "type") == "project_path_validation_result" && json_string(text, "command_id") == command.command_id {
+			defer delete(text)
+			msg_type := json_string(text, "type")
+			defer delete(msg_type)
+			cmd_id := json_string(text, "command_id")
+			defer delete(cmd_id)
+			if msg_type == "project_path_validation_result" && cmd_id == command.command_id {
 				return parse_validation_result(command, text), true, domain.Domain_Error{}
 			}
 		}
@@ -150,8 +156,16 @@ parse_validation_result :: proc(command: project_service.Validate_Project_Path_C
 	ok := json_bool(text, "ok")
 	message := json_string(text, "validation_error")
 	error_code := json_string(text, "code")
-	if !ok && message == "" do message = json_string(text, "message")
-	if !ok && error_code == "" do error_code = "validation_failed"
+	if !ok && message == "" {
+		delete(message)
+		message = json_string(text, "message")
+	}
+	if !ok && error_code == "" {
+		delete(error_code)
+		error_code = strings.clone("validation_failed")
+	}
+	defer delete(error_code)
+	defer delete(message)
 	return validation_result(command, ok, error_code, message)
 }
 
@@ -161,7 +175,7 @@ validation_result :: proc(command: project_service.Validate_Project_Path_Command
 	if ok {
 		details = strings.concatenate({"{\"transport\":\"bridge_ws\",\"command\":\"validate_project_path\",\"bridge_id\":\"", command.bridge_id, "\",\"vcs_kind\":\"", command.vcs_kind, "\",\"command_id\":\"", command.command_id, "\"}"})
 	} else {
-		validation_error = message
+		validation_error = strings.clone(message)
 		details = strings.concatenate({"{\"transport\":\"bridge_ws\",\"command\":\"validate_project_path\",\"bridge_id\":\"", command.bridge_id, "\",\"command_id\":\"", command.command_id, "\",\"error\":{\"code\":\"", error_code, "\",\"message\":\"", message, "\"}}"})
 	}
 	return project_service.Project_Path_Validation_Result{type = "project_path_validation_result", command_id = command.command_id, project_id = command.project_id, path = command.path, ok = ok, validation_error = validation_error, details_json = details}
@@ -207,7 +221,7 @@ write_ws_command :: proc(socket: net.TCP_Socket, text: string) -> Command_Write_
 	// overwhelming majority of commands. Same condition hub_command_chunk_frames uses to
 	// return nil, tested here so the two branches below are explicit.
 	if len(text) <= payload {
-		if !write_ws_text_frame(socket, text) do return .Send_Failed
+		if ws.write_server_text(socket, text, false) != .Ok do return .Send_Failed
 		return .Ok
 	}
 	// REFUSED BEFORE THE FRAMES ARE BUILT, and the order is the point: an over-cap
@@ -228,39 +242,15 @@ write_ws_command :: proc(socket: net.TCP_Socket, text: string) -> Command_Write_
 	// A half-sent sequence is a dropped command, not a corrupted one: the bridge holds
 	// an incomplete reassembly that never dispatches and expires on its own.
 	for f in frames {
-		if !write_ws_text_frame(socket, f) do return .Send_Failed
+		if ws.write_server_text(socket, f, false) != .Ok do return .Send_Failed
 	}
 	return .Ok
 }
 
-// write_ws_text_frame writes ONE unmasked FIN+text frame, 16-bit length only.
-//
-// The >65535 refusal is NOT a missing protocol case to be fixed here — see
-// hub_command_chunk.odin. Callers must route through write_ws_command, which keeps
-// every frame reaching this procedure under the cap.
+// write_ws_text_frame writes ONE unmasked FIN+text frame, 16-bit length only,
+// delegating to the unified ws.write_server_text implementation.
 write_ws_text_frame :: proc(socket: net.TCP_Socket, text: string) -> bool {
-	n := len(text)
-	if n > 65535 do return false
-	header_len := 2
-	if n > 125 do header_len = 4
-	frame := make([]byte, header_len + n)
-	// REQ-SHELL-36 AC4: `frame` used to leak on EVERY hub->bridge command. This path is
-	// not an HTTP request thread — it has no per-request virtual arena to reclaim it —
-	// so a persistent-path allocation must be freed explicitly. One defer covers both
-	// leaking exits (the err return and the final return); the >65535 refusal above sits
-	// ABOVE the make and never leaked, so it needs nothing.
-	defer delete(frame)
-	frame[0] = 0x81
-	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
-	copy(frame[header_len:], transmute([]byte)text)
-	sent_bytes := 0
-	for sent_bytes < len(frame) {
-		n_written, err := net.send_tcp(socket, frame[sent_bytes:])
-		if err != nil do return false
-		if n_written == 0 do break
-		sent_bytes += n_written
-	}
-	return sent_bytes == len(frame)
+	return ws.write_server_text(socket, text, false) == .Ok
 }
 
 // command_write_error maps a write result onto the domain error the API returns.
@@ -283,22 +273,9 @@ command_write_error :: proc(result: Command_Write_Result) -> domain.Domain_Error
 }
 
 json_string :: proc(body, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle); if idx < 0 do return ""
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':'); if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:]); if len(rest) == 0 || rest[0] != '"' do return ""
-	for i := 1; i < len(rest); i += 1 { if rest[i] == '"' do return rest[1:i] }
-	return ""
+	return jsonx.extract_string(body, key)
 }
 
 json_bool :: proc(body, key: string) -> bool {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle); if idx < 0 do return false
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':'); if colon < 0 do return false
-	rest = strings.trim_space(rest[colon + 1:])
-	return strings.has_prefix(rest, "true")
+	return jsonx.extract_bool(body, key)
 }

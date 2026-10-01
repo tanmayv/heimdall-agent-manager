@@ -57,8 +57,8 @@ bridge_ws_close_frame_reads_as_clean_close :: proc(t: ^testing.T) {
 bridge_ws_64bit_length_reads_as_fatal_desync :: proc(t: ^testing.T) {
 	reader := Bridge_WS_Reader{}
 	defer bridge_ws_reader_destroy(&reader)
-	// masked text frame claiming a 127 (64-bit) payload length
-	append(&reader.pending, 0x81, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00)
+	// masked text frame claiming an invalid 64-bit length (high bit set, forbidden by RFC 6455 §5.2)
+	append(&reader.pending, 0x81, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00)
 	_, ok, fatal := bridge_ws_take_frame(&reader)
 	testing.expect(t, !ok)
 	testing.expect(t, fatal)

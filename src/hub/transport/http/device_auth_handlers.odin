@@ -15,6 +15,7 @@ import contracts "odin_test:contracts"
 import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
+import jsonx "odin_test:lib/jsonx"
 
 Device_Auth_Handlers :: struct {
 	service: ^device_auth.Device_Auth_Service,
@@ -150,40 +151,12 @@ device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	return respond_success(strings.to_string(data), req.request_id, "", 200)
 }
-// json_bool extracts a boolean field from a JSON body (default false). Tolerates
-// optional whitespace after the colon.
+// json_bool extracts a boolean field from a JSON body (default false).
 json_bool :: proc(body, key: string) -> bool {
-	needle := strings.concatenate({"\"", key, "\":"})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 {
-		needle2 := strings.concatenate({"\"", key, "\": "})
-		defer delete(needle2)
-		idx = strings.index(body, needle2)
-		if idx < 0 do return false
-	}
-	rest := body[idx + len(needle):]
-	rest = strings.trim_space(rest)
-	return strings.has_prefix(rest, "true")
+	return jsonx.extract_bool(body, key, fallback = false)
 }
 
-// json_bool_literal requires the field to be present AND be a JSON boolean literal
-// (exactly `true` or `false`). Returns (value, ok): ok=false if the field is absent
-// or its value is not a boolean literal (e.g. a quoted string "true", a number, or null).
+// json_bool_literal requires the field to be present AND be a JSON boolean literal (true or false).
 json_bool_literal :: proc(body, key: string) -> (value: bool, ok: bool) {
-	needle := strings.concatenate({"\"", key, "\":"})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	needle_len := len(needle)
-	if idx < 0 {
-		needle2 := strings.concatenate({"\"", key, "\": "})
-		defer delete(needle2)
-		idx = strings.index(body, needle2)
-		if idx < 0 do return false, false
-		needle_len = len(needle2)
-	}
-	rest := strings.trim_space(body[idx + needle_len:])
-	if strings.has_prefix(rest, "true")  do return true, true
-	if strings.has_prefix(rest, "false") do return false, true
-	return false, false
+	return jsonx.extract_bool_literal(body, key)
 }

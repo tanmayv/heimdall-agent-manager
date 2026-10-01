@@ -129,7 +129,7 @@ vcs_api_stage_empty_root :: proc(t: ^testing.T) {
 vcs_api_stage_empty_file :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("stage-empty-file", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_stage_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":""}`, repo))
+	out := bridge_vcs_stage_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s","path":""}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "empty file stage ok:false")
 	testing.expect(t, strings.contains(out, `"code":"missing_file"`), "empty file -> missing_file")
@@ -146,7 +146,7 @@ vcs_api_unstage_empty_root :: proc(t: ^testing.T) {
 vcs_api_unstage_not_supported_jj :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("unstage-jj", ".jj")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_unstage_json("u", fmt.tprintf(`{"command_id":"u","root":"%s","path":"f.txt"}`, repo))
+	out := bridge_vcs_unstage_json("u", fmt.tprintf(`{{"command_id":"u","root":"%s","path":"f.txt"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "jj unstage ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
@@ -164,7 +164,7 @@ vcs_api_revert_empty_root :: proc(t: ^testing.T) {
 vcs_api_revert_missing_file :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("revert-missing", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_revert_json("r", fmt.tprintf(`{"command_id":"r","root":"%s","path":""}`, repo))
+	out := bridge_vcs_revert_json("r", fmt.tprintf(`{{"command_id":"r","root":"%s","path":""}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "missing file revert ok:false")
 	testing.expect(t, strings.contains(out, `"code":"missing_file"`), "missing file -> missing_file")
@@ -198,7 +198,7 @@ vcs_api_commit_diff_empty_root :: proc(t: ^testing.T) {
 vcs_api_commit_diff_same_ref :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("commit-diff-same", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD"}`, repo))
+	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "base_ref == head_ref -> ok:true")
 	testing.expect(t, strings.contains(out, `"hunks":[]`), "base_ref == head_ref -> empty hunks")
@@ -239,7 +239,7 @@ vcs_api_commit_diff_hunks_default :: proc(t: ^testing.T) {
 vcs_api_commit_diff_list_files_jj_not_supported :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("commit-diff-files-jj", ".jj")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD~1","list_files":true}`, repo))
+	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD~1","list_files":true}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "jj list_files -> ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
@@ -262,7 +262,7 @@ vcs_api_commit_empty_root :: proc(t: ^testing.T) {
 vcs_api_commit_missing_message :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("commit-missing-msg", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{"command_id":"cm","root":"%s","message":""}`, repo))
+	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{{"command_id":"cm","root":"%s","message":""}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "empty message commit ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"git"`), "provider resolves to git")
@@ -274,7 +274,7 @@ vcs_api_commit_missing_message :: proc(t: ^testing.T) {
 vcs_api_commit_jj_not_supported :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("commit-jj", ".jj")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{"command_id":"cm","root":"%s","message":"hi"}`, repo))
+	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{{"command_id":"cm","root":"%s","message":"hi"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "jj commit ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
@@ -317,7 +317,7 @@ vcs_api_sync_empty_root :: proc(t: ^testing.T) {
 vcs_api_upload_jj_not_supported :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("upload-jj", ".jj")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{{"command_id":"u","root":"%s"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "jj upload ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
@@ -328,7 +328,7 @@ vcs_api_upload_jj_not_supported :: proc(t: ^testing.T) {
 vcs_api_sync_jj_not_supported :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("sync-jj", ".jj")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_sync_json("s", fmt.tprintf(`{"command_id":"s","root":"%s"}`, repo))
+	out := bridge_vcs_sync_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "jj sync ok:false")
 	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
@@ -380,7 +380,7 @@ vcs_api_upload_no_remote_captures_stderr :: proc(t: ^testing.T) {
 	defer vcs_test_rm(repo)
 	if !ok do return
 	if !vcs_test_git("git", "-C", repo, "commit", "--allow-empty", "-m", "init") do return
-	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{{"command_id":"u","root":"%s"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "no-remote upload ok:false")
 	testing.expect(t, strings.contains(out, `"code":"push_failed"`), "no-remote upload code push_failed")
@@ -395,7 +395,7 @@ vcs_api_sync_no_remote_captures_stderr :: proc(t: ^testing.T) {
 	defer vcs_test_rm(repo)
 	if !ok do return
 	if !vcs_test_git("git", "-C", repo, "commit", "--allow-empty", "-m", "init") do return
-	out := bridge_vcs_sync_json("s", fmt.tprintf(`{"command_id":"s","root":"%s"}`, repo))
+	out := bridge_vcs_sync_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "no-upstream sync ok:false")
 	testing.expect(t, strings.contains(out, `"code":"sync_failed"`), "no-upstream sync code sync_failed")
@@ -417,7 +417,7 @@ vcs_api_upload_failure_escapes_stderr :: proc(t: ^testing.T) {
 	if !vcs_test_git("git", "-C", repo, "remote", "add", "origin", bad_remote) do return
 	if !vcs_test_git("git", "-C", repo, "config", "branch.main.remote", "origin") do return
 	if !vcs_test_git("git", "-C", repo, "config", "branch.main.merge", "refs/heads/main") do return
-	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{{"command_id":"u","root":"%s"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "quote-remote upload ok:false")
 	testing.expect(t, strings.contains(out, `\"`), "quote in stderr escaped in the frame")

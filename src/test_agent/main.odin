@@ -7,6 +7,7 @@ import "core:strings"
 import "core:time"
 import contracts "odin_test:contracts"
 import http "odin_test:lib/http_client"
+import jsonx "odin_test:lib/jsonx"
 
 Target :: struct {
 	agent_instance_id: string,
@@ -325,49 +326,12 @@ conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
 	return strings.to_string(builder)
 }
 
-extract_json_string :: proc(body, key, fallback: string) -> string {
-	pattern := fmt.tprintf("\"%s\":\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	escaped := false
-	for end < len(body) {
-		ch := body[end]
-		if escaped {
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else if ch == '"' {
-			return json_unescape(body[start:end])
-		}
-		end += 1
-	}
-	return fallback
+extract_json_string :: proc(body, key, fallback: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, fallback, false, allocator)
 }
 
-json_unescape :: proc(value: string) -> string {
-	builder := strings.builder_make()
-	escaped := false
-	for ch in value {
-		if escaped {
-			switch ch {
-			case 'n': strings.write_rune(&builder, '\n')
-			case 'r': strings.write_rune(&builder, '\r')
-			case 't': strings.write_rune(&builder, '\t')
-			case '"': strings.write_rune(&builder, '"')
-			case '\\': strings.write_rune(&builder, '\\')
-			case: strings.write_rune(&builder, ch)
-			}
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else {
-			strings.write_rune(&builder, ch)
-		}
-	}
-	if escaped do strings.write_rune(&builder, '\\')
-	return strings.to_string(builder)
+json_unescape :: proc(value: string, allocator := context.allocator) -> string {
+	return jsonx.json_unescape_string(value, allocator)
 }
 
 json_escape :: proc(value: string) -> string {

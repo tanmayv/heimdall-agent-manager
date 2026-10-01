@@ -62,7 +62,7 @@ tjson_escaped_quote_does_not_end_the_string :: proc(t: ^testing.T) {
 // not track string state matches the decoy and extracts the decoy's `[999]`.
 @(test)
 tjson_lines_decoy_before_the_real_key :: proc(t: ^testing.T) {
-	body := `{"ok":true,"cmd":"echo "lines":[999] > f","lines":["real","tail"],"truncated":false}`
+	body := `{"ok":true,"cmd":"echo \"lines\":[999] > f","lines":["real","tail"],"truncated":false}`
 	got := _json_array_raw(body, "lines")
 	defer delete(got)
 	testing.expect_value(t, got, `["real","tail"]`)

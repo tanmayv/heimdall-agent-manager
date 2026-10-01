@@ -305,42 +305,23 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	defer hub_command_reassemblies_free(&reassemblies)
 	// Send one heartbeat immediately on connect so the hub gets the initial
 	// instance digest + schedules_version handshake without waiting a full cycle.
-	_ = ws.send_text(conn, bridge_hub_heartbeat_json())
+	init_hb := bridge_hub_heartbeat_json()
+	_ = ws.send_text(conn, init_hb)
+	delete(init_hb)
 	for conn.connected {
 		if text, got := ws.poll_text(conn); got {
+			defer delete(text)
 			if hub_command_frame_is_chunk(text) {
 				// A chunk frame is NEVER dispatched as a command. Only a complete
 				// stream is.
-				//
-				// `assembled` IS DELIBERATELY NOT FREED HERE, and that is a considered
-				// decision rather than an oversight — see the note below.
 				assembled, complete, ok := hub_command_reassemble(&reassemblies, text)
-				if ok && complete do bridge_hub_handle_command(conn, assembled)
+				if ok && complete {
+					defer delete(assembled)
+					bridge_hub_handle_command(conn, assembled)
+				}
 			} else {
 				bridge_hub_handle_command(conn, text)
 			}
-			// >>> WHY NEITHER `text` NOR `assembled` IS FREED ON THIS LINE. <<<
-			// ws.poll_text returns a strings.clone, so `text` has ALWAYS been leaked
-			// here, once per inbound frame; `assembled` is a string this loop allocates
-			// and is leaked the same way. Both are real leaks and both are filed
-			// (REQ-SHELL-58 — NOT REQ-SHELL-52, which is scoped to the outbound 0x81
-			// frame-writer census, never covered this inbound clone, and is completed;
-			// citing it pointed a live leak at a closed task).
-			//
-			// They are not fixed HERE because the free is NOT obviously safe and a bad
-			// free in the live bridge is far worse than a leak. bridge_hub_handle_command
-			// is a several-hundred-line dispatcher; its handlers pass `text` onward —
-			// bridge_runtime_launch_agent(command_id, text) among them — and until each
-			// of those is traced for retention (a handler that hands the buffer to a
-			// background thread would turn this delete into a use-after-free on a
-			// SUCCESSFUL path), freeing is a guess. REQ-SHELL-50 records 14 pre-existing
-			// bad frees in this codebase already; adding a fifteenth while fixing a leak
-			// would be a poor trade.
-			//
-			// `assembled` deliberately follows `text`'s existing treatment rather than
-			// being freed on its own: it flows into the SAME dispatcher, so whatever
-			// ownership rule turns out to hold for one holds for the other, and having
-			// the two differ here would encode an ownership claim nobody has verified.
 		}
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
@@ -368,7 +349,10 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_runtime_drain_status_pushes(conn)
 		now := time.to_unix_nanoseconds(time.now())
 		if now - last_heartbeat >= i64(BRIDGE_HUB_HEARTBEAT_INTERVAL) {
-			_ = ws.send_text(conn, bridge_hub_heartbeat_json())
+			hb := bridge_hub_heartbeat_json()
+			_ = ws.send_text(conn, hb)
+			delete(hb)
+			hub_command_reassembly_sweep(&reassemblies, now)
 			last_heartbeat = now
 		}
 		time.sleep(25 * time.Millisecond)
@@ -414,6 +398,7 @@ bridge_should_debounce_nudge :: proc(instance_id, task_id: string) -> bool {
 
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	type := extract_json_string(text, "type", "")
+	defer delete(type)
 	if type == "bridge_heartbeat_ack" {
 		// H7 cross-bridge reap: the hub tells us which of the instances we reported
 		// active have actually been relaunched on ANOTHER bridge. We hold a stale old
@@ -421,6 +406,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// fails its next wrapper.liveness.ping and self-terminates. Transport/host
 		// independent — no tmux/PID reaping needed.
 		superseded, _ := bridge_provider_json_extract_string_array(text, "superseded_instance_ids")
+		defer {
+			for id in superseded do delete(id)
+			delete(superseded)
+		}
 		for id in superseded {
 			if strings.trim_space(id) == "" do continue
 			n := bridge_agent_token_invalidate_instance(id)
@@ -437,16 +426,22 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
+		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
 		ok, detail := bridge_runtime_launch_agent(command_id, text)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
-		_ = bridge_hub_send(conn, bridge_instance_status_json(instance_id))
+		defer delete(instance_id)
+		st_json := bridge_instance_status_json(instance_id)
+		defer delete(st_json)
+		_ = bridge_hub_send(conn, st_json)
 		final_status := "succeeded" if ok else "failed"
 		final_runtime := "starting" if ok else "failed"
 		final := bridge_command_result_json(command_id, final_status, final_runtime)
+		defer delete(final)
 		if !ok do fmt.println("bridge launch_agent failed", detail)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
@@ -455,47 +450,79 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "stop_agent" {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
+		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		defer delete(instance_id)
 		ok := bridge_runtime_stop_agent(instance_id)
-		_ = bridge_hub_send(conn, bridge_instance_status_json(instance_id))
+		st_json := bridge_instance_status_json(instance_id)
+		defer delete(st_json)
+		_ = bridge_hub_send(conn, st_json)
 		final := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "stopped" if ok else "failed")
+		defer delete(final)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
 		return
 	}
 	if type == "notify_agent_message" {
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		defer delete(instance_id)
 		// Deliver the notice directly to the agent via the daemon (host.input+Enter).
 		sender_dn := extract_json_string(text, "sender_display_name", "")
-		sender_id := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
+		defer delete(sender_dn)
+		sender_user := extract_json_string(text, "sender", "user")
+		defer delete(sender_user)
+		sender_id := extract_json_string(text, "sender_agent_instance_id", sender_user)
+		defer delete(sender_id)
 		sender := sender_dn if sender_dn != "" else sender_id
 		ok := bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" {
+			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
+		}
 		return
 	}
 	if type == "notify_task_nudge" {
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		defer delete(instance_id)
 		task_id := extract_json_string(text, "task_id", "")
+		defer delete(task_id)
 		fmt.println("bridge hub runtime command notify_task_nudge", instance_id, command_id)
 		if bridge_should_debounce_nudge(instance_id, task_id) {
-			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+			if command_id != "" {
+				res := bridge_command_result_json(command_id, "succeeded", "")
+				defer delete(res)
+				_ = bridge_hub_send(conn, res)
+			}
 			return
 		}
 		// Deliver the task-nudge notice straight to the agent via the daemon.
 		// MEM-6: prefer the hub's human_message (verbatim) when present.
 		target_role := extract_json_string(text, "target_role", "participant")
+		defer delete(target_role)
 		human_message := extract_json_string(text, "human_message", "")
-		task_title := extract_json_string(text, "title", extract_json_string(text, "task_title", ""))
+		defer delete(human_message)
+		task_title_fallback := extract_json_string(text, "task_title", "")
+		defer delete(task_title_fallback)
+		task_title := extract_json_string(text, "title", task_title_fallback)
+		defer delete(task_title)
 		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title)
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" {
+			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
+		}
 		return
 	}
 	if type == "notify_shell_run" {
@@ -511,21 +538,34 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// output is carried or fetched here: output stays on this host and is read on
 		// demand.
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		defer delete(instance_id)
 		session_id := extract_json_string(text, "session_id", "")
+		defer delete(session_id)
 		status := extract_json_string(text, "status", "exited")
+		defer delete(status)
 		exit_code := extract_json_string(text, "exit_code", "")
+		defer delete(exit_code)
 		notice := bridge_shell_run_notice(session_id, status, exit_code)
 		defer delete(notice)
 		fmt.println("bridge hub runtime command notify_shell_run", instance_id, session_id, status)
 		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
 			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
-			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+			if command_id != "" {
+				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+				defer delete(res)
+				_ = bridge_hub_send(conn, res)
+			}
 			return
 		}
 		ok := bridge_task_status_notify_wake_local(instance_id)
 		if !ok do fmt.println("bridge notify_shell_run pending/no-daemon", instance_id, command_id)
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" {
+			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
+		}
 		return
 	}
 	if type == "notify_title_nudge" {
@@ -533,41 +573,70 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// path as notify_task_nudge: push to a live wrapper, else wake the local
 		// agent so it picks up the nudge on boot. Never a new notifier.
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		defer delete(instance_id)
 		message := extract_json_string(text, "message", "Please set a short, human-meaningful title for this conversation and its task chain.")
+		defer delete(message)
 		notice := strings.concatenate({"Nudge: ", message})
 		defer delete(notice)
 		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
 			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
-			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+			if command_id != "" {
+				res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+				defer delete(res)
+				_ = bridge_hub_send(conn, res)
+			}
 			return
 		}
 		// Daemon unavailable: wake the local agent so it picks up the nudge on boot.
 		ok := bridge_task_status_notify_wake_local(instance_id)
 		if !ok do fmt.println("bridge notify_title_nudge pending/no-daemon", instance_id, command_id)
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" {
+			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
+		}
 		return
 	}
 	if type == "task_status_changed_notify" {
 		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
 		task_id := extract_json_string(text, "task_id", "")
+		defer delete(task_id)
 		new_status := extract_json_string(text, "new_status", "")
+		defer delete(new_status)
 		actor_agent_instance_id := extract_json_string(text, "actor_agent_instance_id", "")
+		defer delete(actor_agent_instance_id)
 		mutation_id := extract_json_string(text, "mutation_id", "")
+		defer delete(mutation_id)
 		// MEM-6: human_message (verbatim) preferred over the legacy generated notice.
 		human_message := extract_json_string(text, "human_message", "")
+		defer delete(human_message)
 
 		assignees_arr, _ := bridge_provider_json_extract_array(text, "assignee_instance_ids")
+		defer delete(assignees_arr)
 		assignees := bridge_provider_json_parse_string_array(assignees_arr)
-		defer delete(assignees)
+		defer {
+			for s in assignees do delete(s)
+			delete(assignees)
+		}
 		
 		reviewers_arr, _ := bridge_provider_json_extract_array(text, "reviewer_instance_ids")
+		defer delete(reviewers_arr)
 		reviewers := bridge_provider_json_parse_string_array(reviewers_arr)
-		defer delete(reviewers)
+		defer {
+			for s in reviewers do delete(s)
+			delete(reviewers)
+		}
 		
 		def_reviewers_arr, _ := bridge_provider_json_extract_array(text, "default_reviewer_instance_ids")
+		defer delete(def_reviewers_arr)
 		def_reviewers := bridge_provider_json_parse_string_array(def_reviewers_arr)
-		defer delete(def_reviewers)
+		defer {
+			for s in def_reviewers do delete(s)
+			delete(def_reviewers)
+		}
 		
 		targets := make([dynamic]string)
 		defer delete(targets)
@@ -626,13 +695,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = mutation_id
 		
 		if command_id != "" {
+			res := ""
 			if delivered > 0 || len(targets) == 0 {
-				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+				res = bridge_command_result_json(command_id, "succeeded", "")
 			} else if failed > 0 {
-				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "failed", ""))
+				res = bridge_command_result_json(command_id, "failed", "")
 			} else {
-				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "accepted", ""))
+				res = bridge_command_result_json(command_id, "accepted", "")
 			}
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
 		}
 		return
 	}
@@ -1798,7 +1870,7 @@ bridge_runtime_instance_snapshot_locked :: proc(instance_id: string) -> (Bridge_
 
 bridge_instance_status_json :: proc(instance_id: string) -> string {
 	inst, ok := bridge_runtime_instance_snapshot(instance_id)
-	if !ok do return "{}"
+	if !ok do return strings.clone("{}")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"agent_instance_status\",\"protocol_version\":1,\"agent_instance_id\":\"")
 	bridge_runtime_write_json_string(&b, inst.agent_instance_id)
@@ -2033,6 +2105,7 @@ bridge_runtime_drain_status_pushes :: proc(conn: ^ws.Connection) {
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		if id == "" do return
 		payload := bridge_instance_status_json(id)
+		defer delete(payload)
 		if payload == "" || payload == "{}" { delete(id, runtime.default_allocator()); continue }
 		if !bridge_hub_send(conn, payload) {
 			sync.mutex_lock(&bridge_runtime_mutex)
@@ -2239,6 +2312,7 @@ bridge_shell_exited_enqueue :: proc(event_json: string) {
 	if data_dir := bridge_shell_data_dir(); data_dir != "" {
 		defer delete(data_dir)
 		session_id := extract_json_string(event_json, "session_id", "")
+		defer if session_id != "" do delete(session_id)
 		// run_seq is read back OUT of the frame rather than passed in alongside it, so
 		// the envelope's key and the frame's contents cannot disagree: whatever run the
 		// hub will be told about is the run the file is named for.

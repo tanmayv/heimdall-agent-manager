@@ -3,6 +3,7 @@ package router_envelope
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import jsonx "odin_test:lib/jsonx"
 
 router_envelope_to_json :: proc(envelope: Router_Envelope) -> string {
 	builder := strings.builder_make()
@@ -92,64 +93,9 @@ write_json_string :: proc(builder: ^strings.Builder, value: string) {
 }
 
 extract_json_string :: proc(body, key, fallback: string) -> string {
-	pattern := fmt.tprintf("\"%s\":\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	escaped := false
-	for end < len(body) {
-		ch := body[end]
-		if escaped {
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else if ch == '"' {
-			return json_unescape(body[start:end])
-		}
-		end += 1
-	}
-	return fallback
+	return jsonx.extract_string(body, key, fallback)
 }
 
 extract_json_int :: proc(body, key: string, fallback: int) -> int {
-	pattern := fmt.tprintf("\"%s\":", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	for end < len(body) {
-		ch := body[end]
-		if ch < '0' || ch > '9' do break
-		end += 1
-	}
-	if end == start do return fallback
-	if value, ok := strconv.parse_int(body[start:end]); ok {
-		return int(value)
-	}
-	return fallback
-}
-
-json_unescape :: proc(value: string) -> string {
-	builder := strings.builder_make()
-	escaped := false
-	for ch in value {
-		if escaped {
-			switch ch {
-			case 'n': strings.write_rune(&builder, '\n')
-			case 'r': strings.write_rune(&builder, '\r')
-			case 't': strings.write_rune(&builder, '\t')
-			case '"': strings.write_rune(&builder, '"')
-			case '\\': strings.write_rune(&builder, '\\')
-			case: strings.write_rune(&builder, ch)
-			}
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else {
-			strings.write_rune(&builder, ch)
-		}
-	}
-	if escaped do strings.write_rune(&builder, '\\')
-	return strings.to_string(builder)
+	return jsonx.extract_int(body, key, fallback)
 }

@@ -9,6 +9,7 @@ import "core:sync"
 import "core:sys/posix"
 import "core:thread"
 import http "odin_test:lib/http_client"
+import jsonx "odin_test:lib/jsonx"
 
 Bridge_Local_Endpoint_Config :: struct {
 	// Primary v1 transport is unix:${run_dir}/bridge.sock. The current portable
@@ -563,124 +564,22 @@ bridge_local_response_error :: proc(id, code, message: string) -> string {
 	return strings.to_string(b)
 }
 
-bridge_local_extract_json_string :: proc(json, key, fallback: string) -> string {
-	start := bridge_local_json_member_value_start(json, key)
-	if start < 0 do return fallback
-	rest := strings.trim_space(json[start:])
-	if len(rest) == 0 || rest[0] != '"' do return fallback
-	end := 1
-	escaped := false
-	for end < len(rest) {
-		ch := rest[end]
-		if escaped {
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else if ch == '"' {
-			return json_unescape(rest[1:end])
-		}
-		end += 1
-	}
-	return fallback
+bridge_local_extract_json_string :: proc(json, key, fallback: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(json, key, fallback, false, allocator)
 }
 
-bridge_local_json_member_value_start :: proc(json, key: string) -> int {
-	i := 0
-	for i < len(json) {
-		if json[i] != '"' { i += 1; continue }
-		start := i + 1
-		j := start
-		escaped := false
-		for j < len(json) {
-			ch := json[j]
-			if escaped { escaped = false; j += 1; continue }
-			if ch == '\\' { escaped = true; j += 1; continue }
-			if ch == '"' do break
-			j += 1
-		}
-		if j >= len(json) do return -1
-		k := j + 1
-		for k < len(json) && bridge_local_json_is_ws(json[k]) do k += 1
-		if json[start:j] == key && k < len(json) && json[k] == ':' do return k + 1
-		i = j + 1
-	}
-	return -1
+bridge_local_extract_json_object :: proc(json, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_object(json, key, false, allocator)
+	if !ok do return "{}"
+	return res
 }
 
-bridge_local_json_is_ws :: proc(ch: byte) -> bool {
-	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
-}
-
-bridge_local_extract_json_object :: proc(json, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(json, needle)
-	if idx < 0 do return "{}"
-	rest := json[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return "{}"
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '{' do return "{}"
-	depth := 0
-	in_string := false
-	escaped := false
-	for i in 0..<len(rest) {
-		ch := rest[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		if ch == '"' { in_string = true; continue }
-		if ch == '{' do depth += 1
-		if ch == '}' {
-			depth -= 1
-			if depth == 0 do return rest[:i + 1]
-		}
-	}
-	return "{}"
-}
-
-// bridge_local_extract_json_bool reads a JSON boolean by key, completing the
-// bridge_local_extract_json_* trio (string/int/bool) that the local RPC params
-// are parsed with. Matches the key the same way its int sibling does — quoted
-// key, then a colon — so "background" and "is_background" cannot be confused the
-// way a bare substring match would confuse them.
-//
-// Anything that is not literally true or false yields the caller's default,
-// including a missing key. That makes an absent flag and a malformed one behave
-// identically, which is what every caller here wants: an omitted `background` is
-// simply a foreground run.
 bridge_local_extract_json_bool :: proc(json, key: string, default: bool) -> bool {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(json, needle)
-	if idx < 0 do return default
-	rest := json[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return default
-	rest = strings.trim_space(rest[colon + 1:])
-	if strings.has_prefix(rest, "true")  do return true
-	if strings.has_prefix(rest, "false") do return false
-	return default
+	return jsonx.extract_bool(json, key, default)
 }
 
 bridge_local_extract_json_int :: proc(json, key: string, default: int) -> int {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle) // was leaked on every call; one allocation per parsed int
-	idx := strings.index(json, needle)
-	if idx < 0 do return default
-	rest := json[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return default
-	rest = strings.trim_space(rest[colon + 1:])
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
-	if end == 0 do return default
-	value := 0
-	for i in 0..<end do value = value * 10 + int(rest[i] - '0')
-	return value
+	return jsonx.extract_int(json, key, default)
 }
 
 bridge_local_json_escaped :: proc(value: string) -> string {

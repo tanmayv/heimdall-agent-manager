@@ -122,7 +122,7 @@ demo_disconnect_reason_fatal_desync :: proc(t: ^testing.T) {
 	reader := bridge_ws_reader_make(p.hub)
 	defer bridge_ws_reader_destroy(&reader)
 
-	_, _ = net.send_tcp(p.peer, []byte{0x81, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	_, _ = net.send_tcp(p.peer, []byte{0x81, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
 	_, ok, reason := bridge_ws_read_frame(&reader, 2 * time.Second)
 	testing.expect(t, !ok)
 	testing.expect_value(t, reason, Bridge_WS_Disconnect_Reason.Fatal_Frame)

@@ -13,6 +13,7 @@ import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
 import events "odin_test:hub/service/events"
+import jsonx "odin_test:lib/jsonx"
 
 Taskchain_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -1358,27 +1359,7 @@ write_fleet_json :: proc(
 }
 
 json_int_field :: proc(body, key: string, default_value: int) -> int {
-	needle := fmt.tprintf("\"%s\"", key)
-	idx := strings.index(body, needle)
-	if idx < 0 do return default_value
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return default_value
-	rest = strings.trim_space(rest[colon + 1:])
-	if strings.starts_with(rest, "\"") {
-		quote_end := strings.index_byte(rest[1:], '"')
-		if quote_end < 0 do return default_value
-		val_str := rest[1:quote_end + 1]
-		if p, ok := strconv.parse_int(val_str); ok do return int(p)
-		return default_value
-	}
-	end := 0
-	for end < len(rest) && ((rest[end] >= '0' && rest[end] <= '9') || (end == 0 && rest[end] == '-')) {
-		end += 1
-	}
-	if end == 0 do return default_value
-	if p, ok := strconv.parse_int(rest[:end]); ok do return int(p)
-	return default_value
+	return jsonx.extract_int(body, key, default_value)
 }
 
 // fleet_provider_tier_changed reports whether a fleet upsert actually changes the
@@ -2052,21 +2033,9 @@ write_task_comment_response_json :: proc(b: ^strings.Builder, c: domain.Task_Com
 	strings.write_string(b, "]}")
 }
 
-json_array_of_strings_raw :: proc(body: string, key: string) -> []string {
-	raw := json_array_optional(body, key)
-	if raw == "" || raw == "[]" do return nil
-	res := make([dynamic]string)
-	search := 0
-	for search < len(raw) {
-		q1 := strings.index_byte(raw[search:], '"')
-		if q1 < 0 do break
-		q2 := strings.index_byte(raw[search + q1 + 1:], '"')
-		if q2 < 0 do break
-		val := raw[search + q1 + 1 : search + q1 + 1 + q2]
-		if val != "" do append(&res, val)
-		search = search + q1 + 1 + q2 + 1
-	}
-	return res[:]
+json_array_of_strings_raw :: proc(body: string, key: string, allocator := context.allocator) -> []string {
+	dyn := jsonx.extract_string_array(body, key, false, allocator)
+	return dyn[:]
 }
 
 path_part :: proc(path: string, index: int) -> string {
@@ -2083,14 +2052,21 @@ task_status_from_http :: proc(status: string) -> (domain.Task_Status, bool) { if
 
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }
 json_or_empty_object :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "{}"; return value }
-json_array_optional :: proc(body, key: string) -> string { start:=json_member_value_start(body,key); if start<0 do return ""; return json_array_from_value(body[start:]) }
-json_object_or_empty :: proc(body, key: string) -> string { raw := json_object_raw(body, key); if strings.trim_space(raw) == "" do return ""; return raw }
-json_object_raw :: proc(body, key: string) -> string { start:=json_member_value_start(body,key); if start<0 do return ""; return json_object_from_value(body[start:]) }
-json_member_value_start :: proc(body,key:string)->int{ i:=0; for i<len(body){ if body[i]!='"' { i+=1; continue }; start:=i+1; j:=start; escaped:=false; for j<len(body){ ch:=body[j]; if escaped { escaped=false; j+=1; continue }; if ch=='\\' { escaped=true; j+=1; continue }; if ch=='"' do break; j+=1 }; if j>=len(body) do return -1; k:=j+1; for k<len(body)&&json_is_ws(body[k]) do k+=1; if body[start:j]==key && k<len(body) && body[k]==':' do return k+1; i=j+1 }; return -1 }
-json_array_from_value :: proc(value:string)->string{ i:=0; for i<len(value)&&json_is_ws(value[i]) do i+=1; if i>=len(value)||value[i]!='[' do return "[]"; return json_balanced_from(value[i:], '[', ']') }
-json_object_from_value :: proc(value:string)->string{ i:=0; for i<len(value)&&json_is_ws(value[i]) do i+=1; if i>=len(value)||value[i]!='{' do return ""; return json_balanced_from(value[i:], '{', '}') }
-json_is_ws :: proc(ch: byte)->bool{ return ch==' ' || ch=='\t' || ch=='\r' || ch=='\n' }
-json_balanced_from :: proc(value:string, open, close:byte)->string{ depth:=0; in_string:=false; escaped:=false; for i:=0; i<len(value); i+=1{ ch:=value[i]; if in_string { if escaped { escaped=false; continue }; if ch=='\\' { escaped=true; continue }; if ch=='"' do in_string=false; continue }; if ch=='"' { in_string=true; continue }; if ch==open do depth+=1; if ch==close { depth-=1; if depth==0 do return value[:i+1] } }; return "" }
+json_array_optional :: proc(body, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_array(body, key, false, allocator)
+	if !ok do return ""
+	return res
+}
+json_object_or_empty :: proc(body, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_object(body, key, false, allocator)
+	if !ok do return ""
+	return res
+}
+json_object_raw :: proc(body, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_object(body, key, false, allocator)
+	if !ok do return ""
+	return res
+}
 task_matches_query :: proc(task: domain.Task, query: string) -> bool { assignee:=query_value(query,"assignee_agent_instance_id"); if assignee!="" && !strings.contains(task.assignee_ref_json, assignee) do return false; reviewer:=query_value(query,"reviewer_agent_instance_id"); if reviewer!="" && !strings.contains(task.reviewer_refs_json, reviewer) do return false; reviewer_user:=query_value(query,"reviewer_user_id"); if reviewer_user!="" && !strings.contains(task.reviewer_refs_json, reviewer_user) do return false; return true }
 
 // require_task_path_scope validates that the task exists, is owned by the caller,
@@ -2107,19 +2083,13 @@ require_task_path_scope :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth
 	return true, Response{}
 }
 
-json_array_of_strings :: proc(body: string, key: string) -> []domain.Task_ID {
-	raw := json_array_optional(body, key)
-	if raw == "" || raw == "[]" do return nil
-	res := make([dynamic]domain.Task_ID)
-	search := 0
-	for search < len(raw) {
-		q1 := strings.index_byte(raw[search:], '"')
-		if q1 < 0 do break
-		q2 := strings.index_byte(raw[search + q1 + 1:], '"')
-		if q2 < 0 do break
-		val := raw[search + q1 + 1 : search + q1 + 1 + q2]
-		if val != "" do append(&res, domain.Task_ID(val))
-		search = search + q1 + 1 + q2 + 1
+json_array_of_strings :: proc(body: string, key: string, allocator := context.allocator) -> []domain.Task_ID {
+	dyn := jsonx.extract_string_array(body, key, false, allocator)
+	defer delete(dyn)
+	if len(dyn) == 0 do return nil
+	res := make([]domain.Task_ID, len(dyn), allocator)
+	for s, i in dyn {
+		res[i] = domain.Task_ID(s)
 	}
-	return res[:]
+	return res
 }

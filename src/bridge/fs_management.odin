@@ -20,6 +20,7 @@ import "core:c/libc"
 import base64 "core:encoding/base64"
 import json "core:encoding/json"
 import ws "odin_test:lib/ws"
+import jsonx "odin_test:lib/jsonx"
 
 // The resolved (symlink-free, absolute) sandbox root. Set once at startup by
 // bridge_fs_init. Empty means FS management is effectively disabled (deny all).
@@ -1476,13 +1477,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 // bridge_fs_extract_json_bool reads a top-level JSON boolean by key. Returns the
 // fallback when the key is missing or the value is not a clean true/false literal.
 bridge_fs_extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
-	pattern := fmt.tprintf("\"%s\":", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	rest := strings.trim_space(body[idx + len(pattern):])
-	if strings.has_prefix(rest, "true") do return true
-	if strings.has_prefix(rest, "false") do return false
-	return fallback
+	return jsonx.extract_bool(body, key, fallback)
 }
 
 bridge_fs_list_result_json :: proc(command_id: string, r: Bridge_Fs_List_Result) -> string {

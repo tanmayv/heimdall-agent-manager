@@ -13,6 +13,7 @@ import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import project_service "odin_test:hub/service/project"
 import platform "odin_test:hub/platform"
+import jsonx "odin_test:lib/jsonx"
 
 Agent_Service :: struct {
 	agents: ^iface.Agent_Repository,
@@ -1966,35 +1967,9 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	return strings.to_string(b), true, domain.Domain_Error{}
 }
 
-json_string_array :: proc(json, key: string) -> []string {
-	key_pattern := strings.concatenate({"\"", key, "\""})
-	defer delete(key_pattern)
-	idx := strings.index(json, key_pattern)
-	if idx < 0 do return nil
-	rest := json[idx + len(key_pattern):]
-	bracket := strings.index_byte(rest, '[')
-	if bracket < 0 do return nil
-	rest = rest[bracket + 1:]
-	end := strings.index_byte(rest, ']')
-	if end < 0 do return nil
-	arr_text := rest[:end]
-	out := make([dynamic]string)
-	i := 0
-	for i < len(arr_text) {
-		if arr_text[i] != '"' { i += 1; continue }
-		j := i + 1
-		for j < len(arr_text) && arr_text[j] != '"' {
-			if arr_text[j] == '\\' && j + 1 < len(arr_text) do j += 1
-			j += 1
-		}
-		if j < len(arr_text) {
-			append(&out, strings.clone(arr_text[i + 1:j]))
-			i = j + 1
-		} else {
-			break
-		}
-	}
-	return out[:]
+json_string_array :: proc(body, key: string, allocator := context.allocator) -> []string {
+	dyn := jsonx.extract_string_array(body, key, allocator = allocator)
+	return dyn[:]
 }
 
 resolve_blobs_json :: proc(service: ^Agent_Service, request_body: string) -> string {

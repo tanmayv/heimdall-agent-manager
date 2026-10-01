@@ -65,6 +65,7 @@ WS_16BIT_MAX_PAYLOAD :: 65535
 // travels here (a wide, fully-coloured screen capture runs to a few hundred KB),
 // so it is a backstop against the absurd, not a limit anything real meets.
 WS_MAX_SERVER_PAYLOAD :: 16 * 1024 * 1024
+WS_MAX_HEADER_BYTES   :: 10
 
 // Text_Write_Result is what a frame write actually has to say. Only the last two
 // mean the socket is finished; see the note above on why that distinction matters.
@@ -79,17 +80,15 @@ Text_Write_Result :: enum {
 // payload of n bytes.
 server_frame_header_len :: proc(n: int) -> int {
 	switch {
-	case n <= 125:                 return 2
+	case n <= 125:                  return 2
 	case n <= WS_16BIT_MAX_PAYLOAD: return 4
-	case:                          return 10
+	case:                           return 10
 	}
 }
 
-// server_frame_header writes the unmasked FIN+text frame header for a payload of n
-// bytes into out, returning how many bytes it used. Split out from the socket write
-// so all three length encodings are testable without a socket.
-server_frame_header :: proc(out: []byte, n: int) -> int {
-	out[0] = 0x81 // FIN + text opcode
+// server_frame_header_with_opcode writes an unmasked FIN frame header with a specific opcode.
+server_frame_header_with_opcode :: proc(out: []byte, opcode: u8, n: int) -> int {
+	out[0] = 0x80 | (opcode & 0x0f)
 	switch {
 	case n <= 125:
 		out[1] = byte(n)
@@ -110,27 +109,30 @@ server_frame_header :: proc(out: []byte, n: int) -> int {
 	}
 }
 
-// write_server_text writes one text frame and says what happened. It never returns
-// Ok on a partial write.
-//
-// allow_64bit must be true only for peers that parse a 127 length — see the header
-// note. With it false the effective payload bound is WS_16BIT_MAX_PAYLOAD; with it
-// true, WS_MAX_SERVER_PAYLOAD.
-write_server_text :: proc(socket: net.TCP_Socket, text: string, allow_64bit: bool) -> Text_Write_Result {
+// server_frame_header writes the unmasked FIN+text frame header for a payload of n
+// bytes into out, returning how many bytes it used. Split out from the socket write
+// so all three length encodings are testable without a socket.
+server_frame_header :: proc(out: []byte, n: int) -> int {
+	return server_frame_header_with_opcode(out, 0x1, n)
+}
+
+// write_server_opcode_counted writes one frame with a specific opcode and reports
+// both how many bytes went out and the typed result.
+write_server_opcode_counted :: proc(socket: net.TCP_Socket, opcode: u8, text: string, allow_64bit: bool) -> (sent: int, res: Text_Write_Result) {
 	n := len(text)
 	limit := WS_16BIT_MAX_PAYLOAD
 	if allow_64bit do limit = WS_MAX_SERVER_PAYLOAD
 	// Refused before allocating or touching the socket: Too_Large is a statement
 	// about THIS FRAME and never about the connection.
-	if n > limit do return .Too_Large
+	if n > limit do return 0, .Too_Large
 
 	header_len := server_frame_header_len(n)
 	frame := make([]byte, header_len + n)
 	defer delete(frame)
-	server_frame_header(frame[:header_len], n)
+	server_frame_header_with_opcode(frame[:header_len], opcode, n)
 	copy(frame[header_len:], transmute([]byte)text)
 
-	sent := 0
+	sent = 0
 	for sent < len(frame) {
 		written, err := net.send_tcp(socket, frame[sent:])
 		if written > 0 do sent += written
@@ -138,9 +140,32 @@ write_server_text :: proc(socket: net.TCP_Socket, text: string, allow_64bit: boo
 			// sent == 0 means not one byte of this frame reached the peer, so the
 			// stream is still clean and the caller may simply drop the session.
 			// sent > 0 is the corrupting case the type exists to expose.
-			if sent == 0 do return .Peer_Gone
-			return .Desynchronised
+			if sent == 0 do return 0, .Peer_Gone
+			return sent, .Desynchronised
 		}
 	}
-	return .Ok
+	return sent, .Ok
 }
+
+// write_server_opcode writes one frame with a specific opcode and says what happened.
+write_server_opcode :: proc(socket: net.TCP_Socket, opcode: u8, text: string, allow_64bit: bool) -> Text_Write_Result {
+	_, res := write_server_opcode_counted(socket, opcode, text, allow_64bit)
+	return res
+}
+
+// write_server_text_counted writes one text frame and reports how many bytes were written
+// alongside the write result.
+write_server_text_counted :: proc(socket: net.TCP_Socket, text: string, allow_64bit: bool = false) -> (sent: int, res: Text_Write_Result) {
+	return write_server_opcode_counted(socket, 0x1, text, allow_64bit)
+}
+
+// write_server_text writes one text frame and says what happened. It never returns
+// Ok on a partial write.
+//
+// allow_64bit must be true only for peers that parse a 127 length — see the header
+// note. With it false the effective payload bound is WS_16BIT_MAX_PAYLOAD; with it
+// true, WS_MAX_SERVER_PAYLOAD.
+write_server_text :: proc(socket: net.TCP_Socket, text: string, allow_64bit: bool) -> Text_Write_Result {
+	return write_server_opcode(socket, 0x1, text, allow_64bit)
+}
+

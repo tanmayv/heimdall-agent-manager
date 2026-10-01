@@ -43,96 +43,37 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 import "odin_test:contracts"
-
-// _hub_chunk_seq disambiguates two chunk streams started in the same nanosecond.
-// Atomic because several request threads can be writing commands to different
-// bridges at once.
-@(private = "file")
-_hub_chunk_seq: u64
+import ws "odin_test:lib/ws"
 
 // hub_chunk_next_id returns a process-unique chunk stream id. Heap-allocated; the
-// caller owns it. No temp allocator — see the file header.
+// caller owns it.
 hub_chunk_next_id :: proc() -> string {
-	n := sync.atomic_add(&_hub_chunk_seq, 1)
-	ns_buf: [32]byte
-	seq_buf: [32]byte
-	ns := strconv.write_int(ns_buf[:], time.to_unix_nanoseconds(time.now()), 10)
-	seq := strconv.write_int(seq_buf[:], i64(n), 10)
-	return strings.concatenate({"hubcmd", ns, "_", seq})
+	return ws.chunk_next_id("hubcmd")
 }
 
 // hub_command_chunk_count is the number of chunks `total` bytes needs at `payload`
-// bytes each. Split out so the count is testable on its own and so the framing loop
-// and the cap check below cannot disagree about it.
+// bytes each.
 hub_command_chunk_count :: proc(total, payload: int) -> int {
-	if payload <= 0 do return 0
-	return (total + payload - 1) / payload
+	return ws.chunk_count(total, payload)
 }
 
 // hub_command_chunk_frames returns the ordered kind:"chunk" wire frames for `text`,
-// or nil when `text` already fits in one frame (send it whole). Pure and socket-free
-// so the round-trip property — base64-decode each frame's payload_fragment, concat in
-// index order, get `text` back exactly — is unit-testable without a bridge.
-//
-// Caller owns the returned slice AND every string in it.
+// or nil when `text` already fits in one frame (send it whole).
 hub_command_chunk_frames :: proc(text: string, payload: int) -> []string {
-	if payload <= 0 do return nil
-	if len(text) <= payload do return nil
-	chunk_count := hub_command_chunk_count(len(text), payload)
-	chunk_id := hub_chunk_next_id()
-	defer delete(chunk_id)
-	frames := make([]string, chunk_count)
-	for i in 0 ..< chunk_count {
-		start := i * payload
-		end := start + payload
-		if end > len(text) do end = len(text)
-		fragment := base64.encode(transmute([]byte)text[start:end])
-		frames[i] = hub_command_chunk_json(chunk_id, i, chunk_count, len(text), string(fragment))
-		delete(fragment)
-	}
-	return frames
+	return ws.chunk_frames(text, payload)
 }
 
-// hub_command_chunk_json builds one chunk frame. The field set is the SUBSET of the
-// bridge's bridge_ws_chunk_json that the reassembler actually reads — 8 fields here
-// against its 14 — and the reassembler accepts both shapes, so both directions are the
-// same protocol. Not a mirror image; see the header note for the six omitted fields.
-//
-// The fragment needs no JSON escaping: it is base64, whose alphabet contains no quote,
-// no backslash and no control byte. That is a property of the encoding rather than an
-// assumption about the payload, which is why there is no escape pass here — and why
-// the ~4/3 expansion is the ONLY expansion the chunk size has to budget for.
+// hub_command_chunk_json builds one chunk frame.
 hub_command_chunk_json :: proc(chunk_id: string, chunk_index, chunk_count, total_bytes: int, fragment: string) -> string {
-	b := strings.builder_make()
-	ibuf: [32]byte
-	strings.write_string(&b, `{"version":`)
-	strings.write_string(&b, strconv.write_int(ibuf[:], i64(contracts.BRIDGE_WS_FRAME_VERSION), 10))
-	strings.write_string(&b, `,"kind":"`)
-	strings.write_string(&b, contracts.BRIDGE_WS_FRAME_KIND_CHUNK)
-	strings.write_string(&b, `","chunk_id":"`)
-	strings.write_string(&b, chunk_id)
-	strings.write_string(&b, `","chunk_index":`)
-	strings.write_string(&b, strconv.write_int(ibuf[:], i64(chunk_index), 10))
-	strings.write_string(&b, `,"chunk_count":`)
-	strings.write_string(&b, strconv.write_int(ibuf[:], i64(chunk_count), 10))
-	strings.write_string(&b, `,"total_bytes":`)
-	strings.write_string(&b, strconv.write_int(ibuf[:], i64(total_bytes), 10))
-	strings.write_string(&b, `,"payload_fragment":"`)
-	strings.write_string(&b, fragment)
-	strings.write_string(&b, `","end_stream":`)
-	strings.write_string(&b, "true" if chunk_index + 1 == chunk_count else "false")
-	strings.write_string(&b, `}`)
-	return strings.to_string(b)
+	return ws.chunk_json(chunk_id, chunk_index, chunk_count, total_bytes, fragment)
 }
 
-// hub_command_is_chunkable reports whether `text` can be carried at all, i.e. whether
-// it fits inside the reassembly caps the BRIDGE will enforce on the other end. Checked
-// on the hub so an impossible payload is refused with a precise error at the source
-// rather than becoming a stream the bridge silently drops.
-//
-// Both caps are shared constants rather than local numbers precisely so the two ends
-// cannot drift into disagreeing about what is deliverable.
+// hub_command_is_chunkable reports whether `text` can be carried at all.
 hub_command_is_chunkable :: proc(text: string, payload: int) -> bool {
-	if len(text) > contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES do return false
-	return hub_command_chunk_count(len(text), payload) <= contracts.BRIDGE_WS_MAX_CHUNK_COUNT
+	return ws.is_chunkable(text, payload, contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES, contracts.BRIDGE_WS_MAX_CHUNK_COUNT)
+}
+
+// hub_command_frame_is_chunk reports whether a frame is a chunk envelope.
+hub_command_frame_is_chunk :: proc(text: string) -> bool {
+	return ws.frame_is_chunk(text)
 }

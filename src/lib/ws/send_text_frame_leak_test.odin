@@ -179,7 +179,7 @@ test_send_text_allocates_nothing_on_the_pre_allocation_refusals :: proc(t: ^test
 	pair := leak_make_pair(t)
 	defer leak_close_pair(&pair)
 
-	oversized := strings.repeat("z", 65536)
+	oversized := strings.repeat("z", WS_MAX_SERVER_PAYLOAD + 1)
 	defer delete(oversized)
 
 	baseline_allocs := len(track.allocation_map)
@@ -189,7 +189,7 @@ test_send_text_allocates_nothing_on_the_pre_allocation_refusals :: proc(t: ^test
 
 		connected := Connection{socket = pair.hub, secure = false, connected = true}
 		testing.expect(t, !send_text(&connected, oversized),
-			"65536 bytes must be refused on this channel — the 16-bit bound is the deliberate hub<->bridge invariant, see server_frame.odin:28-36")
+			"payloads exceeding WS_MAX_SERVER_PAYLOAD must be refused before allocation")
 	}
 	leak_expect_heap_restored(t, &track, baseline_allocs, "send_text pre-allocation refusals")
 }

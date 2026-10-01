@@ -46,7 +46,7 @@ vcs_api_save_empty_root :: proc(t: ^testing.T) {
 vcs_api_save_missing_file :: proc(t: ^testing.T) {
 	repo := vcs_test_make_marker_repo("save-missing", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_save_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":"","content":"x"}`, repo))
+	out := bridge_vcs_save_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s","path":"","content":"x"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "missing file save ok:false")
 	testing.expect(t, strings.contains(out, `"code":"missing_file"`), "empty path -> missing_file")
@@ -57,7 +57,7 @@ vcs_api_save_writes_file :: proc(t: ^testing.T) {
 	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-write", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_save_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":"hello.txt","content":"hello world"}`, repo))
+	out := bridge_vcs_save_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s","path":"hello.txt","content":"hello world"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "save writes -> ok:true")
 	testing.expect(t, strings.contains(out, `"provider":"git"`), "provider resolves to git")
@@ -73,7 +73,7 @@ vcs_api_save_unescapes_content :: proc(t: ^testing.T) {
 	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-nl", ".git")
 	defer vcs_test_rm(repo)
-	out := bridge_vcs_save_json("s", fmt.tprintf("{\"command_id\":\"s\",\"root\":\"%s\",\"path\":\"nl.txt\",\"content\":\"a\\nb\"}", repo))
+	out := bridge_vcs_save_json("s", fmt.tprintf("{{\"command_id\":\"s\",\"root\":\"%s\",\"path\":\"nl.txt\",\"content\":\"a\\nb\"}}", repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "save (escaped content) -> ok:true")
 	data, rerr := os.read_entire_file_from_path(fmt.tprintf("%s/nl.txt", repo), context.allocator)
@@ -92,7 +92,7 @@ vcs_api_save_rejects_path_traversal :: proc(t: ^testing.T) {
 	// /tmp — outside the repo root, so the containment check must refuse it.
 	escaped := "/tmp/ham-vcs-save-escape-PWNED.txt"
 	_ = os.remove(escaped)
-	out := bridge_vcs_save_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":"../ham-vcs-save-escape-PWNED.txt","content":"pwn"}`, repo))
+	out := bridge_vcs_save_json("s", fmt.tprintf(`{{"command_id":"s","root":"%s","path":"../ham-vcs-save-escape-PWNED.txt","content":"pwn"}}`, repo))
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "traversal save must be rejected")
 	testing.expect(t, strings.contains(out, `"code":"path_outside_root"`), "traversal -> path_outside_root")

@@ -15,6 +15,7 @@ import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
 import http "odin_test:lib/http_client"
 import ws "odin_test:lib/ws"
+import jsonx "odin_test:lib/jsonx"
 
 Bridge_Config :: struct {
 	bind_host: string,
@@ -463,7 +464,7 @@ bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
 	if total_bytes <= 0 do return 0
 	effective_chunk_bytes := chunk_bytes
 	if effective_chunk_bytes <= 0 do effective_chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
-	return (total_bytes + effective_chunk_bytes - 1) / effective_chunk_bytes
+	return ws.chunk_count(total_bytes, effective_chunk_bytes)
 }
 
 read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
@@ -579,19 +580,11 @@ bridge_hub_chunk_frames :: proc(text: string) -> []string {
 // HAM_TLS_BACKEND env (the Odin test runner executes tests concurrently, so env
 // mutation would race other tests' TLS transport selection).
 bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []string {
-	if len(text) <= payload do return nil
-	chunk_count := bridge_ws_chunk_count(len(text), payload)
-	chunk_id := bridge_next_id("hubchunk")
-	frames := make([]string, chunk_count)
-	for i := 0; i < chunk_count; i += 1 {
-		start := i * payload
-		end := start + payload
-		if end > len(text) do end = len(text)
-		fragment := base64.encode(transmute([]byte)text[start:end])
-		frames[i] = bridge_ws_chunk_json(chunk_id, i, chunk_count, len(text), fragment)
-		delete(fragment)
-	}
-	return frames
+	return ws.chunk_frames(text, payload)
+}
+
+bridge_ws_frame_is_chunk :: proc(text: string) -> bool {
+	return ws.frame_is_chunk(text)
 }
 
 // bridge_hub_send writes one outbound frame to the hub-runtime WS, transparently
@@ -654,20 +647,7 @@ bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
 }
 
 bridge_ws_chunk_json :: proc(chunk_id: string, chunk_index, chunk_count, total_bytes: int, fragment: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"version":`); strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_FRAME_VERSION))
-	strings.write_string(&b, `,"kind":"`); json_write_string(&b, contracts.BRIDGE_WS_FRAME_KIND_CHUNK)
-	strings.write_string(&b, `","frame_id":"`); json_write_string(&b, bridge_next_id("frame"))
-	strings.write_string(&b, `","stream_id":"`); json_write_string(&b, chunk_id)
-	strings.write_string(&b, `","src_daemon_id":"`); json_write_string(&b, bridge_config.daemon_id)
-	strings.write_string(&b, `","dest_daemon_id":"","original_kind":"frame","idempotency_key":"","chunk_id":"`); json_write_string(&b, chunk_id)
-	strings.write_string(&b, `","chunk_index":`); strings.write_string(&b, fmt.tprintf("%d", chunk_index))
-	strings.write_string(&b, `,"chunk_count":`); strings.write_string(&b, fmt.tprintf("%d", chunk_count))
-	strings.write_string(&b, `,"total_bytes":`); strings.write_string(&b, fmt.tprintf("%d", total_bytes))
-	strings.write_string(&b, `,"payload_fragment":"`); json_write_string(&b, fragment)
-	strings.write_string(&b, `","end_stream":`); strings.write_string(&b, "true" if chunk_index + 1 == chunk_count else "false")
-	strings.write_string(&b, `}`)
-	return strings.to_string(b)
+	return ws.chunk_json(chunk_id, chunk_index, chunk_count, total_bytes, fragment)
 }
 
 json_write_string :: proc(builder: ^strings.Builder, value: string) {
@@ -688,80 +668,18 @@ json_write_string :: proc(builder: ^strings.Builder, value: string) {
 	}
 }
 
-extract_json_string :: proc(body, key, fallback: string) -> string {
-	pattern := fmt.tprintf("\"%s\":\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	escaped := false
-	for end < len(body) {
-		ch := body[end]
-		if escaped {
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else if ch == '"' {
-			return json_unescape(body[start:end])
-		}
-		end += 1
-	}
-	return fallback
+extract_json_string :: proc(body, key, fallback: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, fallback, false, allocator)
 }
 
-json_unescape :: proc(value: string) -> string {
-	builder := strings.builder_make()
-	i := 0
-	for i < len(value) {
-		ch := value[i]
-		if ch == '\\' {
-			if i + 1 < len(value) {
-				next_ch := value[i + 1]
-				switch next_ch {
-				case 'n': strings.write_byte(&builder, '\n')
-				case 'r': strings.write_byte(&builder, '\r')
-				case 't': strings.write_byte(&builder, '\t')
-				case '"': strings.write_byte(&builder, '"')
-				case '\\': strings.write_byte(&builder, '\\')
-				case 'u':
-					if i + 5 < len(value) {
-						hex_str := value[i + 2 : i + 6]
-						val, ok := strconv.parse_int(hex_str, 16)
-						if ok {
-							strings.write_rune(&builder, rune(val))
-							i += 6
-							continue
-						}
-					}
-					strings.write_byte(&builder, 'u')
-				case:
-					strings.write_byte(&builder, next_ch)
-				}
-				i += 2
-			} else {
-				strings.write_byte(&builder, '\\')
-				i += 1
-			}
-		} else {
-			strings.write_byte(&builder, ch)
-			i += 1
-		}
-	}
-	return strings.to_string(builder)
+json_unescape :: proc(value: string, allocator := context.allocator) -> string {
+	return jsonx.json_unescape_string(value, allocator)
 }
 
 extract_json_int :: proc(body, key: string, fallback: int) -> int {
-	pattern := fmt.tprintf("\"%s\":", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	for start < len(body) && (body[start] == ' ' || body[start] == '\n' || body[start] == '\r' || body[start] == '\t') do start += 1
-	end := start
-	for end < len(body) && ((body[end] >= '0' && body[end] <= '9') || body[end] == '-') do end += 1
-	if end <= start do return fallback
-	if parsed, ok := strconv.parse_int(body[start:end]); ok do return int(parsed)
-	return fallback
+	return jsonx.extract_int(body, key, fallback)
 }
+
 
 option_value :: proc(args: []string, name, fallback: string) -> string {
 	for i in 0..<len(args) {

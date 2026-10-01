@@ -2,6 +2,7 @@ package http
 
 import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
+import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:strconv"
@@ -20,6 +21,7 @@ import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
 import ws "odin_test:lib/ws"
 import shell_session_svc "odin_test:hub/service/shell_session"
+import jsonx "odin_test:lib/jsonx"
 
 Bridge_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -774,15 +776,21 @@ worktree_path_rejected_error :: proc(supplied: string) -> domain.Domain_Error {
 // paths in a vcs_workspaces_result. Each workspace object carries a single "path"
 // member; we scan every one in the workspaces array and compare unescaped values.
 vcs_workspaces_has_path :: proc(ws_reply, target: string) -> bool {
-	arr, ok := json_array_raw_balanced(ws_reply, "workspaces")
+	parsed, err := json.parse_string(ws_reply, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	defer json.destroy_value(parsed, context.temp_allocator)
+	if err != .None do return false
+	val, ok := jsonx.find_value(parsed, "workspaces", false)
 	if !ok do return false
-	needle := "\"path\""
-	off := 0
-	for {
-		idx := strings.index(arr[off:], needle)
-		if idx < 0 do break
-		if json_string_unescaped(arr[off + idx:], "path") == target do return true
-		off += idx + len(needle)
+	arr, is_arr := val.(json.Array)
+	if !is_arr do return false
+	for item in arr {
+		if obj, is_obj := item.(json.Object); is_obj {
+			if path_val, path_ok := obj["path"]; path_ok {
+				if path_str, is_str := path_val.(json.String); is_str {
+					if string(path_str) == target do return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -1329,192 +1337,29 @@ bridge_ws_disconnect :: proc(
 // Bridge_Chunk_Reassembly buffers the fragments of one in-flight chunk stream on
 // the hub-runtime read path, keyed by chunk_id (which equals the frame's
 // stream_id on the wire).
-Bridge_Chunk_Reassembly :: struct {
-	chunk_id:        string,
-	chunk_count:     int,
-	total_bytes:     int,
-	received_chunks: int,
-	received_bytes:  int,
-	fragments:       []string,
-	// REQ-SHELL-32: when the first chunk of this stream arrived (unix nanos). An
-	// incomplete stream is abandoned after BRIDGE_WS_REASSEMBLY_TTL; without this
-	// the MAX_REASSEMBLIES bound below is not a bound at all, it is a countdown.
-	started_at_ns:   i64,
-}
+Bridge_Chunk_Reassembly :: ws.Chunk_Reassembly
+BRIDGE_WS_REASSEMBLY_TTL :: ws.CHUNK_REASSEMBLY_TTL
 
-// BRIDGE_WS_REASSEMBLY_TTL bounds how long an INCOMPLETE chunk stream is kept, measured
-// from its FIRST chunk (started_at_ns is set at creation and no later chunk refreshes
-// it). So this is an age limit on the stream, NOT an idle timeout: a stream still
-// arriving steadily but taking longer than the TTL overall IS expired mid-flight, and
-// its remaining chunks then open a fresh partial entry that never completes.
-//
-// That is tolerable only because the bridge writes one frame's chunks back to back on a
-// single connection, so a stream this old has almost certainly been abandoned. It is a
-// real if narrow gap, deliberately left rather than overlooked: refreshing the timestamp
-// per chunk is the more correct clock but is a behaviour change needing its own test
-// round. REQ-SHELL-32 review finding N1; filed as a follow-up.
-BRIDGE_WS_REASSEMBLY_TTL :: 30 * time.Second
-
-// bridge_chunk_reassembly_sweep drops every stream past its TTL and returns how many
-// it dropped. Swept LAZILY, at the admission gate, rather than by a background thread:
-// `reassemblies` is per-connection state reached only from that connection's own read
-// loop, so a lazy sweep needs no lock and cannot outlive the buffer it walks.
 bridge_chunk_reassembly_sweep :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, now_ns: i64) -> int {
-	dropped := 0
-	for i := len(reassemblies) - 1; i >= 0; i -= 1 {
-		if now_ns - reassemblies[i].started_at_ns >= i64(BRIDGE_WS_REASSEMBLY_TTL) {
-			bridge_chunk_reassembly_remove(reassemblies, i)
-			dropped += 1
-		}
-	}
-	return dropped
+	return ws.chunk_reassembly_sweep(reassemblies, now_ns)
 }
 
-// bridge_chunk_reassembly_oldest_index returns the index of the oldest stream, or -1.
 bridge_chunk_reassembly_oldest_index :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) -> int {
-	idx := -1
-	for i in 0 ..< len(reassemblies) {
-		if idx < 0 || reassemblies[i].started_at_ns < reassemblies[idx].started_at_ns do idx = i
-	}
-	return idx
+	return ws.chunk_reassembly_oldest(reassemblies)
 }
 
-// bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
-// is complete, returns the reassembled original frame text. Mirrors the bridge's
-// own inbound reassembly (hub_command_reassemble, src/bridge/hub_command_reassembly.odin
-// — this comment previously named bridge_ws_handle_chunk_skeleton, a procedure that
-// existed NOWHERE in the tree: the symmetry was documented for a direction that had no
-// reassembler at all until REQ-SHELL-36 added one): key by chunk_id;
-// validate metadata; enforce the contract caps; ignore duplicate/retransmitted
-// fills; concat fragments in index order. ACK-LESS — the bridge does not wait for
-// an ack on this channel (single ordered connection), so none is sent.
-//
-// Returns (assembled, complete, ok):
-//   ok=false       -> malformed or over-cap: caller drops the frame (no dispatch)
-//   complete=false -> buffered, awaiting more chunks: caller continues
-//   complete=true  -> assembled is the full original frame text to dispatch
-bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, text: string) -> (assembled: string, complete: bool, ok: bool) {
-	// json_string returns freshly-allocated strings; free the two transient lookups
-	// here (chunk_id is cloned into the buffer, the fragment is decoded) so chunking
-	// a large read does not leak per chunk on this hot path.
-	chunk_id := json_string(text, "chunk_id")
-	defer delete(chunk_id)
-	fragment_b64 := json_string(text, "payload_fragment")
-	defer delete(fragment_b64)
-	chunk_index := json_int(text, "chunk_index", -1)
-	chunk_count := json_int(text, "chunk_count", 0)
-	total_bytes := json_int(text, "total_bytes", 0)
-	if chunk_id == "" || chunk_index < 0 || chunk_count <= 0 || chunk_index >= chunk_count || total_bytes <= 0 || fragment_b64 == "" {
-		return "", false, false
-	}
-	// Contract caps: reject impossible/oversized streams before allocating.
-	if chunk_count > contracts.BRIDGE_WS_MAX_CHUNK_COUNT || chunk_count > total_bytes || total_bytes > contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES {
-		return "", false, false
-	}
-	decoded, derr := base64.decode(fragment_b64)
-	if derr != nil || len(decoded) == 0 {
-		return "", false, false
-	}
-	defer delete(decoded)
-	decoded_text := string(decoded)
-
-	idx := -1
-	for i in 0 ..< len(reassemblies) {
-		if reassemblies[i].chunk_id == chunk_id { idx = i; break }
-	}
-	if idx < 0 {
-		// Bound concurrent reassemblies per connection.
-		//
-		// REQ-SHELL-32: this gate used to REFUSE the new stream once the array was
-		// full, and nothing ever removed an incomplete entry — it was freed only when
-		// the whole connection ended. So the cap was not a bound on concurrency, it
-		// was a countdown: 64 abandoned streams over a connection's life and every
-		// subsequent CHUNKED frame was refused forever, silently. Because chunking
-		// only applies above BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES, that left the
-		// connection looking perfectly healthy — small frames (heartbeats, inventory,
-		// acks) never touch this path — while every large frame was dropped.
-		//
-		// Expire first, and only then fall back to evicting the oldest. Evicting is
-		// the lesser evil versus refusing (refusing is what made the deafness
-		// permanent) but it is not free: under genuine concurrent load it can drop a
-		// stream that was still legitimately in flight, so it is the fallback, not the
-		// first response — and it is logged differently, because "stale" and "still
-		// arriving" mean different things.
-		now_ns := time.to_unix_nanoseconds(time.now())
-		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
-			expired := bridge_chunk_reassembly_sweep(reassemblies, now_ns)
-			if expired > 0 {
-				fmt.eprintfln(
-					"ham-hub WARN bridge ws chunk reassembly expired streams=%d ttl=%v (admission gate)",
-					expired, BRIDGE_WS_REASSEMBLY_TTL)
-			}
-		}
-		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
-			oldest := bridge_chunk_reassembly_oldest_index(reassemblies)
-			if oldest < 0 do return "", false, false
-			fmt.eprintfln(
-				"ham-hub WARN bridge ws chunk reassembly full in_flight=%d none_expired evicting_oldest chunk_id=%s progress=%d/%d to_admit=%s",
-				len(reassemblies), reassemblies[oldest].chunk_id,
-				reassemblies[oldest].received_chunks, reassemblies[oldest].chunk_count, chunk_id)
-			bridge_chunk_reassembly_remove(reassemblies, oldest)
-		}
-		append(reassemblies, Bridge_Chunk_Reassembly{
-			chunk_id      = strings.clone(chunk_id),
-			chunk_count   = chunk_count,
-			total_bytes   = total_bytes,
-			fragments     = make([]string, chunk_count),
-			started_at_ns = now_ns,
-		})
-		idx = len(reassemblies) - 1
-	}
-	// Conflicting metadata for the same chunk_id: drop this frame, keep the stream.
-	if reassemblies[idx].chunk_count != chunk_count || reassemblies[idx].total_bytes != total_bytes {
-		return "", false, false
-	}
-	// Duplicate/retransmit: only fill an empty slot; never exceed declared total.
-	if reassemblies[idx].fragments[chunk_index] == "" {
-		if reassemblies[idx].received_bytes + len(decoded_text) > reassemblies[idx].total_bytes {
-			return "", false, false
-		}
-		reassemblies[idx].fragments[chunk_index] = strings.clone(decoded_text)
-		reassemblies[idx].received_chunks += 1
-		reassemblies[idx].received_bytes += len(decoded_text)
-	}
-	if reassemblies[idx].received_chunks == reassemblies[idx].chunk_count {
-		if reassemblies[idx].received_bytes != reassemblies[idx].total_bytes {
-			bridge_chunk_reassembly_remove(reassemblies, idx)
-			return "", false, false
-		}
-		b := strings.builder_make()
-		for frag in reassemblies[idx].fragments {
-			strings.write_string(&b, frag)
-		}
-		out := strings.to_string(b)
-		bridge_chunk_reassembly_remove(reassemblies, idx)
-		return out, true, true
-	}
-	return "", false, true
-}
-
-// bridge_chunk_reassembly_remove frees one reassembly's owned strings and removes
-// it from the buffer (order among the remaining streams is irrelevant).
 bridge_chunk_reassembly_remove :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, idx: int) {
-	for frag in reassemblies[idx].fragments do delete(frag)
-	delete(reassemblies[idx].fragments)
-	delete(reassemblies[idx].chunk_id)
-	unordered_remove(reassemblies, idx)
+	ws.chunk_reassembly_free(reassemblies, idx)
 }
 
-// bridge_chunk_reassemblies_free drops every buffered (incomplete) stream when the
-// connection ends, so a bridge that disconnects mid-stream leaks nothing.
 bridge_chunk_reassemblies_free :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) {
-	for i in 0 ..< len(reassemblies) {
-		for frag in reassemblies[i].fragments do delete(frag)
-		delete(reassemblies[i].fragments)
-		delete(reassemblies[i].chunk_id)
-	}
-	delete(reassemblies^)
+	ws.chunk_reassemblies_free(reassemblies)
 }
+
+bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, text: string) -> (assembled: string, complete: bool, ok: bool) {
+	return ws.reassemble_chunk(reassemblies, text)
+}
+
 
 bridge_ws_runtime_loop :: proc(
 	h: ^Bridge_Handlers,
@@ -2085,114 +1930,29 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\"}")
 }
 
-json_string :: proc(body, key: string) -> string {
-	return json_string_unescaped(body, key)
+json_string :: proc(body, key: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, allocator = allocator)
 }
 
-json_string_unescaped :: proc(body, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return ""
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	b := strings.builder_make()
-	escaped := false
-	for i := 1; i < len(rest); i += 1 {
-		ch := rest[i]
-		if escaped {
-			switch ch {
-			case 'n': strings.write_byte(&b, '\n')
-			case 'r': strings.write_byte(&b, '\r')
-			case 't': strings.write_byte(&b, '\t')
-			case '"': strings.write_byte(&b, '"')
-			case '\\': strings.write_byte(&b, '\\')
-			case 'u':
-				if i + 4 < len(rest) {
-					hex_str := rest[i + 1:i + 5]
-					val, ok := strconv.parse_int(hex_str, 16)
-					if ok {
-						if val < 128 {
-							strings.write_byte(&b, byte(val))
-						} else {
-							strings.write_rune(&b, rune(val))
-						}
-						i += 4
-					} else {
-						strings.write_byte(&b, 'u')
-					}
-				} else {
-					strings.write_byte(&b, 'u')
-				}
-			case: strings.write_byte(&b, ch)
-			}
-			escaped = false
-			continue
-		}
-		if ch == '\\' { escaped = true; continue }
-		if ch == '"' do return strings.to_string(b)
-		strings.write_byte(&b,ch)
-	}
-	return ""
+json_string_unescaped :: proc(body, key: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, allocator = allocator)
 }
 
-json_object_raw_balanced :: proc(body, key: string) -> (string, bool) {
-	start := json_member_value_start_bridge(body, key)
-	if start < 0 do return "", false
-	rest := strings.trim_space(body[start:])
-	if len(rest) == 0 || rest[0] != '{' do return "", false
-	return json_balanced_from_bridge(rest, '{', '}')
+json_object_raw_balanced :: proc(body, key: string, allocator := context.allocator) -> (string, bool) {
+	return jsonx.extract_raw_object(body, key, allocator = allocator)
 }
 
-json_array_raw_balanced :: proc(body, key: string) -> (string, bool) {
-	start := json_member_value_start_bridge(body, key)
-	if start < 0 do return "", false
-	rest := strings.trim_space(body[start:])
-	if len(rest) == 0 || rest[0] != '[' do return "", false
-	return json_balanced_from_bridge(rest, '[', ']')
-}
-
-json_member_value_start_bridge :: proc(body, key: string) -> int {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return -1
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return -1
-	return idx + len(needle) + colon + 1
-}
-
-json_balanced_from_bridge :: proc(rest: string, open, close: byte) -> (string, bool) {
-	depth := 0
-	in_string := false
-	escaped := false
-	for i in 0..<len(rest) {
-		ch := rest[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		if ch == '"' { in_string = true; continue }
-		if ch == open do depth += 1
-		if ch == close {
-			depth -= 1
-			if depth == 0 do return rest[:i + 1], true
-		}
-	}
-	return "", false
+json_array_raw_balanced :: proc(body, key: string, allocator := context.allocator) -> (string, bool) {
+	return jsonx.extract_raw_array(body, key, allocator = allocator)
 }
 
 bridge_capabilities_json :: proc(br: domain.Bridge) -> string {
 	if br.capabilities_json == "" || !strings.contains(br.capabilities_json, "capabilities") do return "[]"
 	if caps, ok := json_array_raw_balanced(br.capabilities_json, "capabilities"); ok do return caps
 	provider := json_string(br.capabilities_json, "provider")
+	defer delete(provider)
 	default_tier := json_string(br.capabilities_json, "default_tier")
+	defer delete(default_tier)
 	if provider == "" do return "[]"
 	b := strings.builder_make()
 	strings.write_string(&b, "[{\"provider\":\""); write_handler_json_string(&b, provider)
@@ -2203,9 +1963,7 @@ bridge_capabilities_json :: proc(br: domain.Bridge) -> string {
 }
 
 json_key_present :: proc(body, key: string) -> bool {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	return strings.index(body, needle) >= 0
+	return jsonx.has_key(body, key)
 }
 
 bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool) -> string {
@@ -2308,72 +2066,132 @@ ws_accept_key :: proc(key: string) -> string {
 // out (the size-correlated >16KB failure). Keeping leftover bytes here — mirroring
 // the bridge side's ws.Connection.pending_bytes — means every frame is delivered.
 Bridge_WS_Reader :: struct {
-	socket:  net.TCP_Socket,
-	pending: [dynamic]byte,
-	// REQ-SHELL-41: WHY the last take_frame declared the stream unusable. Carried on
-	// the reader rather than added as a fourth return value so that bridge_ws_take_frame
-	// keeps its (text, ok, fatal) shape and its existing callers and tests are
-	// untouched. Only meaningful when that call returned fatal=true.
-	fatal_reason: Bridge_WS_Disconnect_Reason,
+	socket:            net.TCP_Socket,
+	pending:           [dynamic]byte,
+	fatal_reason:      Bridge_WS_Disconnect_Reason,
+	fragmented:        [dynamic]byte,
+	fragmenting:       bool,
+	fragmented_opcode: u8,
 }
 
 bridge_ws_reader_make :: proc(socket: net.TCP_Socket) -> Bridge_WS_Reader {
-	return Bridge_WS_Reader{socket = socket}
+	return Bridge_WS_Reader{
+		socket     = socket,
+		pending    = make([dynamic]byte),
+		fragmented = make([dynamic]byte),
+	}
 }
 
 bridge_ws_reader_destroy :: proc(reader: ^Bridge_WS_Reader) {
-	if reader != nil do delete(reader.pending)
+	if reader != nil {
+		delete(reader.pending)
+		delete(reader.fragmented)
+		reader.pending = nil
+		reader.fragmented = nil
+		reader.fragmenting = false
+	}
 }
 
-// bridge_ws_take_frame extracts ONE complete masked text frame from the front of
-// reader.pending, consuming its bytes and leaving any trailing (coalesced) bytes
-// for the next call. ok=false with fatal=false means "need more bytes"; fatal=true
-// means the stream is unusable (non-text opcode, or an unsupported 64-bit length) —
-// preserving the previous reader's behavior of ending the connection on those.
-// NOTE: the bridge<->hub chunk protocol (kind:"chunk", reassembled in
-// bridge_ws_runtime_loop) is APPLICATION-LEVEL — each chunk is a self-contained
-// opcode-0x1 JSON text frame under 65535 bytes, NOT a WS continuation/fragmentation
-// frame — so this reader needs no WS-fragmentation path.
+// bridge_ws_take_frame extracts ONE complete text frame or reassembled fragmented
+// message from reader.pending, consuming its bytes and leaving any trailing bytes
+// for the next call.
+//
+// Full RFC 6455 framing support (REQ-WS-FIX-2):
+// - Decodes 64-bit extended payload lengths up to ws.WS_READER_DEFAULT_MAX_BUFFER_BYTES (32 MiB).
+// - Interleaved Ping (0x9) control frames respond with Pong (0x8A 0x00) if socket != 0 and continue.
+// - Interleaved Pong (0xA) control frames are ignored and continue.
+// - Close (0x8) sets reader.fatal_reason = .Clean_Close and returns fatal = true.
+// - Fragmented messages (FIN=0 text frames followed by 0x0 continuation frames up to FIN=1)
+//   are reassembled into reader.fragmented and returned on FIN=1.
 bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
-	b := reader.pending[:]
-	if len(b) < 2 do return "", false, false
-	if b[0] & 0x0f != 0x1 {
-		// REQ-SHELL-41: a CLOSE frame is an orderly shutdown, not a desync. Both end
-		// the connection, but reporting "fatal_frame_desync" for a bridge that simply
-		// said goodbye is precisely the kind of misleading trace this task exists to
-		// remove, so they are separated here at the only place that can tell them apart.
-		reader.fatal_reason = .Clean_Close if b[0] & 0x0f == 0x8 else .Fatal_Frame
-		return "", false, true // only text frames are expected
+	for {
+		op, fin, payload, has_frame, ok_frame := ws.take_one_frame_from_pending(
+			&reader.pending,
+			allow_64bit = true,
+			max_buffer_bytes = ws.WS_READER_DEFAULT_MAX_BUFFER_BYTES,
+		)
+		if !ok_frame {
+			reader.fatal_reason = .Fatal_Frame
+			return "", false, true
+		}
+		if !has_frame {
+			return "", false, false
+		}
+
+		// Control frames ((op & 0x08) != 0)
+		if (op & 0x08) != 0 {
+			if !fin {
+				delete(payload)
+				reader.fatal_reason = .Fatal_Frame
+				return "", false, true
+			}
+			if op == 0x8 {
+				delete(payload)
+				reader.fatal_reason = .Clean_Close
+				return "", false, true
+			}
+			if op == 0x9 {
+				if reader.socket != 0 {
+					pong := [2]u8{0x8A, 0x00}
+					_, _ = net.send_tcp(reader.socket, pong[:])
+				}
+				delete(payload)
+				continue
+			}
+			if op == 0xA {
+				delete(payload)
+				continue
+			}
+			delete(payload)
+			reader.fatal_reason = .Fatal_Frame
+			return "", false, true
+		}
+
+		// Data and continuation frames
+		switch op {
+		case 0x1:
+			if reader.fragmenting {
+				delete(payload)
+				reader.fatal_reason = .Fatal_Frame
+				return "", false, true
+			}
+			if fin {
+				return payload, true, false
+			}
+			reader.fragmenting = true
+			reader.fragmented_opcode = op
+			clear(&reader.fragmented)
+			append(&reader.fragmented, ..transmute([]u8)payload)
+			delete(payload)
+			continue
+		case 0x0:
+			if !reader.fragmenting {
+				delete(payload)
+				reader.fatal_reason = .Fatal_Frame
+				return "", false, true
+			}
+			if len(reader.fragmented) + len(payload) > ws.WS_CONTINUATION_DEFAULT_MAX_BYTES {
+				delete(payload)
+				reader.fatal_reason = .Fatal_Frame
+				return "", false, true
+			}
+			append(&reader.fragmented, ..transmute([]u8)payload)
+			delete(payload)
+			if fin {
+				reader.fragmenting = false
+				assembled := strings.clone(string(reader.fragmented[:]))
+				clear(&reader.fragmented)
+				return assembled, true, false
+			}
+			continue
+		case:
+			delete(payload)
+			reader.fatal_reason = .Fatal_Frame
+			return "", false, true
+		}
 	}
-	masked := (b[1] & 0x80) != 0
-	payload_len := int(b[1] & 0x7f)
-	header_len := 2
-	if payload_len == 126 {
-		if len(b) < 4 do return "", false, false
-		payload_len = int(b[2]) << 8 | int(b[3])
-		header_len = 4
-	} else if payload_len == 127 {
-		reader.fatal_reason = .Fatal_Frame
-		return "", false, true // 64-bit lengths are not used on this control channel
-	}
-	data_off := header_len
-	mask_key: [4]byte
-	if masked {
-		if len(b) < header_len + 4 do return "", false, false
-		mask_key = {b[header_len], b[header_len + 1], b[header_len + 2], b[header_len + 3]}
-		data_off = header_len + 4
-	}
-	frame_end := data_off + payload_len
-	if len(b) < frame_end do return "", false, false
-	payload := make([]byte, payload_len)
-	copy(payload, b[data_off:frame_end])
-	if masked { for i in 0..<payload_len { payload[i] = payload[i] ~ mask_key[i % 4] } }
-	// Consume this frame, compacting any trailing coalesced bytes to the front.
-	remaining := len(reader.pending) - frame_end
-	if remaining > 0 do copy(reader.pending[:], reader.pending[frame_end:])
-	resize(&reader.pending, remaining)
-	return string(payload), true, false
 }
+
 
 // read_ws_text_blocking reads one frame, reporting only WHETHER it got one.
 //
@@ -2484,45 +2302,17 @@ write_ws_text_frame_locked :: proc(h: ^Bridge_Handlers, client: net.TCP_Socket, 
 	return write_ws_text_frame(client, text)
 }
 
-json_string_array :: proc(body, key: string) -> []string {
-	out := make([dynamic]string)
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle); if idx < 0 do return out[:]
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':'); if colon < 0 do return out[:]
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '[' do return out[:]
-	i := 1
-	for i < len(rest) && rest[i] != ']' {
-		for i < len(rest) && rest[i] != '"' && rest[i] != ']' do i += 1
-		if i >= len(rest) || rest[i] == ']' do break
-		start := i + 1
-		i = start
-		for i < len(rest) && rest[i] != '"' do i += 1
-		if i <= len(rest) { append(&out, rest[start:i]) }
-		i += 1
-	}
-	return out[:]
+json_string_array :: proc(body, key: string, allocator := context.allocator) -> []string {
+	dyn := jsonx.extract_string_array(body, key, allocator = allocator)
+	return dyn[:]
 }
 
-json_bool_value :: proc(body,key:string)->bool{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return false; rest:=body[idx+len(needle):]; colon:=strings.index_byte(rest,':'); if colon<0 do return false; rest=strings.trim_space(rest[colon+1:]); return strings.has_prefix(rest,"true") }
+json_bool_value :: proc(body, key: string) -> bool {
+	return jsonx.extract_bool(body, key, fallback = false)
+}
 
 pane_capture_chat_event_json :: proc(c:domain.Chat_Conversation,m:domain.Chat_Message)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"chat_event\",\"event\":\"chat_updated\",\"agent_instance_id\":\""); write_handler_json_string(&b,c.agent_instance_id); strings.write_string(&b,"\",\"conversation_id\":\""); write_handler_json_string(&b,c.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); write_handler_json_string(&b,m.message_id); strings.write_string(&b,"\",\"direction\":\"pane_capture\",\"fetch_required\":true,\"fetch_kind\":\"chat_message\",\"fetch_id\":\""); write_handler_json_string(&b,m.message_id); strings.write_string(&b,"\",\"message_type\":\""); write_handler_json_string(&b,m.message_type); strings.write_string(&b,"\",\"message_status\":\""); write_handler_json_string(&b,m.message_status); strings.write_string(&b,"\"}"); return strings.to_string(b) }
 
 json_int :: proc(body, key: string, default_value: int) -> int {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return default_value
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return default_value
-	rest = strings.trim_space(rest[colon + 1:])
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
-	if end == 0 do return default_value
-	v, ok := strconv.parse_int(rest[:end])
-	if !ok do return default_value
-	return int(v)
+	return jsonx.extract_int(body, key, default_value)
 }

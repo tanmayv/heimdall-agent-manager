@@ -338,7 +338,7 @@ test_lsp_dying_server_reports_error :: proc(t: ^testing.T) {
 
 	session_id := "lsp_test_dying"
 	start := fmt.tprintf(
-		`{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}`,
+		`{{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}}`,
 		session_id, script,
 	)
 	bridge_lsp_handle_start(nil, start)
@@ -390,7 +390,7 @@ test_lsp_garbage_stdout_live_child_does_not_hang :: proc(t: ^testing.T) {
 
 	session_id := "lsp_test_garbage"
 	start := fmt.tprintf(
-		`{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}`,
+		`{{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}}`,
 		session_id, script,
 	)
 	bridge_lsp_handle_start(nil, start)
@@ -400,7 +400,7 @@ test_lsp_garbage_stdout_live_child_does_not_hang :: proc(t: ^testing.T) {
 		"B1: a live child writing garbage must produce lsp_error, not a parked thread")
 	if !got {
 		// Do not leave the child running for the rest of the suite.
-		bridge_lsp_handle_stop(nil, fmt.tprintf(`{"session_id":"%s"}`, session_id))
+		bridge_lsp_handle_stop(nil, fmt.tprintf(`{{"session_id":"%s"}}`, session_id))
 		return
 	}
 	defer delete(frame, lsp_heap())
@@ -437,7 +437,7 @@ test_lsp_stop_all_terminates_and_frees :: proc(t: ^testing.T) {
 
 	session_id := "lsp_test_stopall"
 	start := fmt.tprintf(
-		`{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}`,
+		`{{"type":"lsp_start","session_id":"%s","cmd":"/bin/sh","args":"%s"}}`,
 		session_id, script,
 	)
 	bridge_lsp_handle_start(nil, start)

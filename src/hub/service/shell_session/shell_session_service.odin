@@ -19,6 +19,7 @@ import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
 import ws "odin_test:lib/ws"
+import jsonx "odin_test:lib/jsonx"
 
 // Preview_Tunnel_Stream is an in-flight hub-side tunnel stream.
 // Chunks are signalled via cond as they arrive; the proxy handler wakes and relays them.
@@ -2205,69 +2206,8 @@ _shell_capture_command_json :: proc(cmd_id, session_id: string) -> string {
 
 // --- bridge reply JSON parsers ---
 
-_json_str :: proc(body, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return ""
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	b := strings.builder_make()
-	escaped := false
-	for i := 1; i < len(rest); i += 1 {
-		ch := rest[i]
-		if escaped {
-			switch ch {
-			case 'n': strings.write_byte(&b, '\n')
-			case 'r': strings.write_byte(&b, '\r')
-			case 't': strings.write_byte(&b, '\t')
-			case '"': strings.write_byte(&b, '"')
-			case '\\': strings.write_byte(&b, '\\')
-			// REQ-SHELL-60: without this case, '\u' fell to the default below and wrote a
-			// LITERAL 'u', after which 0,0,1,b were consumed as ordinary characters — so every
-			// ESC the bridge sent as \u001b arrived as the 5-character text `u001b`. Captured
-			// output from any full-screen program is almost entirely escapes, so it came back
-			// as visible garbage rather than a rendered screen.
-			//
-			// Deliberately IDENTICAL to json_string_unescaped (transport/http/bridge_handlers
-			// .odin), the sibling unescaper that already had this case, down to the malformed
-			// fallbacks. The two decode the same bridge wire format, so they must not diverge.
-			//
-			// SURROGATE PAIRS ARE NOT JOINED, and that is a deliberate copy of the reference
-			// rather than an oversight: a non-BMP character arrives as '\uD83D' '\uDE00' and
-			// each half is written as its own rune. Joining them HERE only would make the two
-			// unescapers disagree about the same bytes, which is worse than a limitation both
-			// share. Fixing it belongs in one change that touches both.
-			case 'u':
-				if i + 4 < len(rest) {
-					hex_str := rest[i + 1:i + 5]
-					val, ok := strconv.parse_int(hex_str, 16)
-					if ok {
-						if val < 128 {
-							strings.write_byte(&b, byte(val))
-						} else {
-							strings.write_rune(&b, rune(val))
-						}
-						i += 4
-					} else {
-						strings.write_byte(&b, 'u')
-					}
-				} else {
-					strings.write_byte(&b, 'u')
-				}
-			case: strings.write_byte(&b, ch)
-			}
-			escaped = false
-			continue
-		}
-		if ch == '\\' { escaped = true; continue }
-		if ch == '"' do return strings.to_string(b)
-		strings.write_byte(&b, ch)
-	}
-	return ""
+_json_str :: proc(body, key: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, allocator = allocator)
 }
 
 // REQ-SHELL-16 D1b: a bridge refusal must arrive carrying its reason.
@@ -2296,85 +2236,19 @@ _bridge_failure :: proc(reply, fallback: string) -> domain.Domain_Error {
 }
 
 _json_int :: proc(body, key: string, default_value: int) -> int {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return default_value
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return default_value
-	rest = strings.trim_space(rest[colon + 1:])
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
-	if end == 0 do return default_value
-	v, ok := strconv.parse_int(rest[:end])
-	if !ok do return default_value
-	return int(v)
+	return jsonx.extract_int(body, key, default_value)
 }
 
-// DELEGATES to _inventory_value, the package's one string-aware key scan, rather than
-// carrying its own `strings.index`. That plain index was the whole defect: it matched the
-// needle ANYWHERE, string literals included, so the FIRST `"key"`-looking run of bytes in
-// the body won — and in the shell inventory frame the sessions array is written BEFORE
-// `"truncated"` (shell_inventory.odin:143 then :156), which puts attacker-influenced cmd
-// text ahead of the real flag.
-//
-// IT WAS NOT EXPLOITABLE, and that was checked rather than assumed: the bridge writes
-// every value through bridge_local_write_json_string (wrapper_endpoint.odin:692), which
-// turns `"` into `\"`, so a cmd of `"truncated":false` lands in the frame as
-// `\"truncated\":false` and the 11-byte needle `"truncated"` cannot match it — its
-// closing quote would have to fall where a backslash is.
-//
-// FIXED ANYWAY, because the guard is load-bearing and its safety lived somewhere else.
-// `truncated` false on a PARTIAL list makes the caller reap by absence over an incomplete
-// inventory and land a terminal status on HEALTHY sessions. That the read was safe
-// depended on an escaping invariant enforced in a different module, in a different
-// binary, with nothing near the read to say so. Now the read is self-contained, and the
-// FIVE `ok` reads in this file (:573, :951, :1029, :1146, :1187) get the same protection
-// for free, along with the second `truncated` read at :1156.
 _json_bool :: proc(body, key: string) -> bool {
 	value_start, ok := _inventory_value(body, key)
 	if !ok do return false
 	return strings.has_prefix(body[value_start:], "true")
 }
 
-// _json_array_raw returns the raw JSON array value for a key as a heap-allocated string
-// (e.g., ["line1","line2"]). Caller must delete the returned string.
-//
-// String- and escape-aware in both halves, which a bracket counter is not. Its caller
-// shell_session_get_log runs it over the bridge reply's "lines" array — arbitrary
-// process stdout — so a log line carrying a lone `]` (a pretty-printed array's
-// terminator on its own line) or a lone `[` (a truncated line) would otherwise
-// desynchronise the depth count and yield a plausible-looking wrong span, and a line
-// containing `"lines":` would be matched as the field itself. Both failures are silent.
-// The key scan is _inventory_find_array, the package's one such scan.
-//
-// Returns "[]" when the key is absent, its value is not an array, or the array is
-// never terminated.
-_json_array_raw :: proc(body, key: string) -> string {
-	open_idx := _inventory_find_array(body, key)
-	if open_idx < 0 do return strings.clone("[]")
-	span := body[open_idx:]
-	depth := 0
-	in_string := false
-	escaped := false
-	for i := 0; i < len(span); i += 1 {
-		ch := span[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		switch ch {
-		case '"': in_string = true
-		case '[': depth += 1
-		case ']':
-			depth -= 1
-			if depth == 0 do return strings.clone(span[:i + 1])
-		}
-	}
-	return strings.clone("[]")
+_json_array_raw :: proc(body, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_array(body, key, allocator = allocator)
+	if !ok do return strings.clone("[]", allocator)
+	return res
 }
 
 // _shell_session_started_event_json builds the CREATION counterpart of

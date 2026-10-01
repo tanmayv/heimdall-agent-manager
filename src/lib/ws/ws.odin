@@ -19,6 +19,8 @@ Connection :: struct {
 	connected: bool,
 	pending_texts: [dynamic]string,
 	pending_bytes: [dynamic]byte,
+	fragmented:    [dynamic]byte,
+	fragmenting:   bool,
 
 	// REQ-SHELL-32: serialises WRITES on this connection. It lives here, with the
 	// socket it protects, rather than at a caller, because caller-side discipline is
@@ -120,6 +122,7 @@ connect_tls_with_bearer :: proc(host: string, port: u16, path, bearer_token: str
 	}
 
 	data := make([dynamic]byte)
+	defer delete(data)
 	buf: [4096]byte
 	deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
 	for time.to_unix_nanoseconds(time.now()) < deadline {
@@ -151,6 +154,15 @@ connect_tls_with_bearer :: proc(host: string, port: u16, path, bearer_token: str
 }
 
 close :: proc(conn: ^Connection) {
+	for s in conn.pending_texts do delete(s)
+	delete(conn.pending_texts)
+	conn.pending_texts = nil
+	delete(conn.pending_bytes)
+	conn.pending_bytes = nil
+	delete(conn.fragmented)
+	conn.fragmented = nil
+	conn.fragmenting = false
+
 	if conn.connected {
 		if conn.secure {
 			if conn.stdin_w != nil do _ = os.close(conn.stdin_w)
@@ -203,39 +215,101 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 	append(&conn.pending_bytes, ..buf[:n])
 
 	first_text := ""
-	pos := 0
-	for pos + 2 <= len(conn.pending_bytes) {
-		opcode := conn.pending_bytes[pos] & 0x0f
-		payload_len := int(conn.pending_bytes[pos + 1] & 0x7f)
-		header_len := 2
-		if payload_len == 126 {
-			if pos + 4 > len(conn.pending_bytes) do break
-			payload_len = int(conn.pending_bytes[pos + 2]) << 8 | int(conn.pending_bytes[pos + 3])
-			header_len = 4
-		} else if payload_len == 127 {
+	for {
+		opcode, fin, payload, has_frame, ok := take_one_frame_from_pending(
+			&conn.pending_bytes,
+			allow_64bit = true,
+			max_buffer_bytes = WS_READER_DEFAULT_MAX_BUFFER_BYTES,
+		)
+		if !ok {
+			if first_text != "" do delete(first_text)
 			conn.connected = false
 			return "", false
 		}
-		frame_end := pos + header_len + payload_len
-		if frame_end > len(conn.pending_bytes) do break
-		if opcode == 0x8 {
-			conn.connected = false
-			return "", false
-		}
-		if opcode == 0x1 {
-			frame_text := strings.clone(string(conn.pending_bytes[pos + header_len:frame_end]))
-			if first_text == "" {
-				first_text = frame_text
-			} else {
-				append(&conn.pending_texts, frame_text)
+		if !has_frame do break
+
+		// Control frames ((opcode & 0x08) != 0)
+		if (opcode & 0x08) != 0 {
+			if !fin {
+				delete(payload)
+				if first_text != "" do delete(first_text)
+				conn.connected = false
+				return "", false
 			}
+			if opcode == 0x8 {
+				delete(payload)
+				conn.connected = false
+				return "", false
+			}
+			if opcode == 0x9 {
+				if !conn.secure && conn.socket != 0 {
+					pong := [2]byte{0x8A, 0x00}
+					_, _ = net.send_tcp(conn.socket, pong[:])
+				}
+				delete(payload)
+				continue
+			}
+			if opcode == 0xA {
+				delete(payload)
+				continue
+			}
+			delete(payload)
+			if first_text != "" do delete(first_text)
+			conn.connected = false
+			return "", false
 		}
-		pos = frame_end
-	}
-	if pos > 0 {
-		remaining := make([dynamic]byte)
-		if pos < len(conn.pending_bytes) do append(&remaining, ..conn.pending_bytes[pos:])
-		conn.pending_bytes = remaining
+
+		switch opcode {
+		case 0x1:
+			if conn.fragmenting {
+				delete(payload)
+				if first_text != "" do delete(first_text)
+				conn.connected = false
+				return "", false
+			}
+			if fin {
+				if first_text == "" {
+					first_text = payload
+				} else {
+					append(&conn.pending_texts, payload)
+				}
+			} else {
+				conn.fragmenting = true
+				clear(&conn.fragmented)
+				append(&conn.fragmented, ..transmute([]byte)payload)
+				delete(payload)
+			}
+		case 0x0:
+			if !conn.fragmenting {
+				delete(payload)
+				if first_text != "" do delete(first_text)
+				conn.connected = false
+				return "", false
+			}
+			if len(conn.fragmented) + len(payload) > WS_CONTINUATION_DEFAULT_MAX_BYTES {
+				delete(payload)
+				if first_text != "" do delete(first_text)
+				conn.connected = false
+				return "", false
+			}
+			append(&conn.fragmented, ..transmute([]byte)payload)
+			delete(payload)
+			if fin {
+				conn.fragmenting = false
+				assembled := strings.clone(string(conn.fragmented[:]))
+				clear(&conn.fragmented)
+				if first_text == "" {
+					first_text = assembled
+				} else {
+					append(&conn.pending_texts, assembled)
+				}
+			}
+		case:
+			delete(payload)
+			if first_text != "" do delete(first_text)
+			conn.connected = false
+			return "", false
+		}
 	}
 
 	if first_text == "" do return "", false
@@ -259,26 +333,19 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 send_text :: proc(conn: ^Connection, text: string) -> bool {
 	if !conn.connected do return false
 	n := len(text)
-	if n > 65535 do return false
+	if n > WS_MAX_SERVER_PAYLOAD do return false
 	sync.mutex_lock(&conn.send_mu)
 	defer sync.mutex_unlock(&conn.send_mu)
 	// Re-check under the lock: a writer that blocked here may have been waiting on a
 	// peer another writer has since found dead.
 	if !conn.connected do return false
-	header_len := 2
-	if n > 125 do header_len = 4
+	header: [WS_MAX_HEADER_BYTES]byte
+	header_len := server_frame_header(header[:], n)
 	frame := make([]byte, header_len + n)
 	// REQ-SHELL-52A: send_all_tcp/send_all_file BORROW this slice and free nothing on any
 	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
 	defer delete(frame)
-	frame[0] = 0x81
-	if n <= 125 {
-		frame[1] = byte(n)
-	} else {
-		frame[1] = 126
-		frame[2] = byte((n >> 8) & 0xff)
-		frame[3] = byte(n & 0xff)
-	}
+	copy(frame[:header_len], header[:header_len])
 	copy(frame[header_len:], transmute([]byte)text)
 	if conn.secure do return send_all_file(conn.stdin_w, frame)
 	return send_all_tcp(conn.socket, frame)

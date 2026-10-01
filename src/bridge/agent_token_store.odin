@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import jsonx "odin_test:lib/jsonx"
 
 Bridge_Local_Token_Role :: enum {
 	Agent,
@@ -254,32 +255,12 @@ bridge_agent_token_role_from_string :: proc(value: string) -> Bridge_Local_Token
 	return .Agent
 }
 
-bridge_agent_token_json_string :: proc(body, key, fallback: string) -> string {
-	pattern := fmt.tprintf("\"%s\":\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	escaped := false
-	for end < len(body) {
-		ch := body[end]
-		if escaped { escaped = false } else if ch == '\\' { escaped = true } else if ch == '"' { return json_unescape(body[start:end]) }
-		end += 1
-	}
-	return fallback
+bridge_agent_token_json_string :: proc(body, key, fallback: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, fallback, false, allocator)
 }
 
 bridge_agent_token_json_i64 :: proc(body, key: string, fallback: i64) -> i64 {
-	pattern := fmt.tprintf("\"%s\":", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	for end < len(body) && body[end] >= '0' && body[end] <= '9' do end += 1
-	if end == start do return fallback
-	parsed, ok := strconv_parse_int_bridge_token(body[start:end])
-	if !ok do return fallback
-	return parsed
+	return jsonx.extract_i64(body, key, fallback)
 }
 
 bridge_agent_token_json_write :: proc(b: ^strings.Builder, value: string) {

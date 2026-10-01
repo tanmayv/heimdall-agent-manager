@@ -1,5 +1,6 @@
 package http
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
@@ -8,6 +9,7 @@ import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import auth_service "odin_test:hub/service/auth"
 import card_service "odin_test:hub/service/card"
+import jsonx "odin_test:lib/jsonx"
 
 Card_Handlers :: struct {
 	auth:  ^auth_service.Auth_Service,
@@ -54,85 +56,33 @@ write_card_json :: proc(b: ^strings.Builder, c: domain.Card) {
 }
 
 json_f32 :: proc(body, key: string, fallback: f32) -> f32 {
-	raw := json_string(body, key)
-	if raw == "" {
-		needle := strings.concatenate({"\"", key, "\""})
-		defer delete(needle)
-		idx := strings.index(body, needle)
-		if idx < 0 do return fallback
-		rest := body[idx + len(needle):]
-		colon := strings.index_byte(rest, ':')
-		if colon < 0 do return fallback
-		rest = strings.trim_space(rest[colon + 1:])
-		end := 0
-		for end < len(rest) {
-			ch := rest[end]
-			if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+' || ch == 'e' || ch == 'E' {
-				end += 1
-			} else {
-				break
-			}
-		}
-		if end == 0 do return fallback
-		val, ok := strconv.parse_f32(rest[:end])
-		if !ok do return fallback
-		return val
-	}
-	val, ok := strconv.parse_f32(raw)
+	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	defer json.destroy_value(parsed, context.temp_allocator)
+	if err != .None do return fallback
+	val, ok := jsonx.find_value(parsed, key, false)
 	if !ok do return fallback
-	return val
+	#partial switch v in val {
+	case json.Float:
+		return f32(v)
+	case json.Integer:
+		return f32(v)
+	case json.String:
+		if p, pok := strconv.parse_f32(string(v)); pok do return p
+		return fallback
+	case:
+		return fallback
+	}
 }
 
-json_raw_field :: proc(body, key: string) -> (string, bool) {
-	start := json_member_value_start(body, key)
-	if start < 0 do return "", false
-
-	val := body[start:]
-	i := 0
-	for i < len(val) && json_is_ws(val[i]) do i += 1
-	if i >= len(val) do return "", false
-
-	ch := val[i]
-	if ch == '"' {
-		j := i + 1
-		escaped := false
-		for j < len(val) {
-			c := val[j]
-			if escaped {
-				escaped = false
-				j += 1
-				continue
-			}
-			if c == '\\' {
-				escaped = true
-				j += 1
-				continue
-			}
-			if c == '"' {
-				return val[i : j + 1], true
-			}
-			j += 1
-		}
-		return val[i:], true
-	} else if ch == '[' {
-		raw := json_balanced_from(val[i:], '[', ']')
-		if raw != "" do return raw, true
-		return val[i:], true
-	} else if ch == '{' {
-		raw := json_balanced_from(val[i:], '{', '}')
-		if raw != "" do return raw, true
-		return val[i:], true
-	} else {
-		j := i
-		for j < len(val) {
-			c := val[j]
-			if c == ',' || c == '}' || c == ']' || json_is_ws(c) {
-				break
-			}
-			j += 1
-		}
-		return val[i:j], true
-	}
+json_raw_field :: proc(body, key: string, allocator := context.allocator) -> (string, bool) {
+	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	defer json.destroy_value(parsed, context.temp_allocator)
+	if err != .None do return "", false
+	val, ok := jsonx.find_value(parsed, key, false)
+	if !ok do return "", false
+	bytes, merr := json.marshal(val, json.Marshal_Options{}, allocator)
+	if merr != nil do return "", false
+	return string(bytes), true
 }
 
 list_cards_handler :: proc(ctx: rawptr, req: Request) -> Response {

@@ -17,6 +17,7 @@ import project "odin_test:hub/service/project"
 import agent "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import shell_session "odin_test:hub/service/shell_session"
+import jsonx "odin_test:lib/jsonx"
 
 Nudge_Target :: enum {
 	None,
@@ -2715,7 +2716,28 @@ json_string_value_after :: proc(body: string, key_idx: int) -> string {
 	if colon < 0 do return ""
 	rest = strings.trim_space(rest[colon + 1:])
 	if len(rest) == 0 || rest[0] != '"' do return ""
-	for i := 1; i < len(rest); i += 1 { if rest[i] == '"' do return rest[1:i] }
+	escaped := false
+	has_escapes := false
+	for i := 1; i < len(rest); i += 1 {
+		ch := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			has_escapes = true
+			continue
+		}
+		if ch == '"' {
+			if !has_escapes {
+				return rest[1:i]
+			}
+			str, ok := jsonx.unescape_string(rest[:i + 1], context.temp_allocator)
+			if ok do return str
+			return rest[1:i]
+		}
+	}
 	return ""
 }
 

@@ -11,6 +11,7 @@ import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import content_service "odin_test:hub/service/content"
 import events "odin_test:hub/service/events"
+import jsonx "odin_test:lib/jsonx"
 
 Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus }
 
@@ -321,108 +322,15 @@ json_array_present :: proc(body, key: string) -> ([]string, bool) {
 	if len(rest) == 0 || rest[0] != '[' do return nil, false
 	return json_string_array(body, key), true
 }
-// json_unescape_json_string decodes the bytes BETWEEN the quotes of a JSON string
-// literal, matching json_string_unescaped's escape table exactly (\n \r \t \" \\
-// and \uXXXX; any other escaped byte is written through). A value with no
-// backslash is returned as the original slice, so the common case allocates
-// nothing.
-json_unescape_json_string :: proc(raw: string) -> string {
-	if strings.index_byte(raw, '\\') < 0 do return raw
-	b := strings.builder_make()
-	escaped := false
-	for i := 0; i < len(raw); i += 1 {
-		ch := raw[i]
-		if escaped {
-			switch ch {
-			case 'n': strings.write_byte(&b, '\n')
-			case 'r': strings.write_byte(&b, '\r')
-			case 't': strings.write_byte(&b, '\t')
-			case '"': strings.write_byte(&b, '"')
-			case '\\': strings.write_byte(&b, '\\')
-			case 'u':
-				if i + 4 < len(raw) {
-					if val, ok := strconv.parse_int(raw[i + 1:i + 5], 16); ok {
-						if val < 128 { strings.write_byte(&b, byte(val)) } else { strings.write_rune(&b, rune(val)) }
-						i += 4
-					} else {
-						strings.write_byte(&b, 'u')
-					}
-				} else {
-					strings.write_byte(&b, 'u')
-				}
-			case: strings.write_byte(&b, ch)
-			}
-			escaped = false
-			continue
-		}
-		if ch == '\\' { escaped = true; continue }
-		strings.write_byte(&b, ch)
-	}
-	return strings.to_string(b)
+// json_unescape_json_string decodes the bytes BETWEEN the quotes of a JSON string literal.
+json_unescape_json_string :: proc(raw: string, allocator := context.allocator) -> string {
+	return jsonx.json_unescape_string(raw, allocator = allocator)
 }
 
-// json_property reports whether `key` is present in `body` and returns its value
-// DECODED, so it is interchangeable with json_string except that it can also tell
-// an absent key from one explicitly set to "" (REQ-CLI-8). It must unescape:
-// template_input and memory_update_input feed persona/instructions/body straight
-// into stored domain objects, and those are routinely multi-line. Returning the
-// raw slice here would store a literal backslash-n and re-escape it on every read
-// back out through write_handler_json_string.
-// KNOWN GAP: a non-string value (null, a number, true) reports present-and-empty,
-// which under these semantics CLEARS the field. No current caller sends one; see
-// the REQ-CLI-8 handoff.
-json_property :: proc(body, key: string) -> (value: string, present: bool) {
-	i := 0
-	n := len(body)
-	for i < n {
-		if body[i] == '"' {
-			key_start := i + 1
-			i += 1
-			for i < n {
-				if body[i] == '\\' {
-					i += 2
-					continue
-				}
-				if body[i] == '"' {
-					break
-				}
-				i += 1
-			}
-			if i >= n do return "", false
-			found_key := body[key_start:i]
-			i += 1
-
-			for i < n && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n') {
-				i += 1
-			}
-			if i < n && body[i] == ':' {
-				i += 1
-				for i < n && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n') {
-					i += 1
-				}
-				if found_key == key {
-					if i < n && body[i] == '"' {
-						val_start := i + 1
-						i += 1
-						for i < n {
-							if body[i] == '\\' {
-								i += 2
-								continue
-							}
-							if body[i] == '"' {
-								return json_unescape_json_string(body[val_start:i]), true
-							}
-							i += 1
-						}
-					}
-					return "", true
-				}
-			}
-		} else {
-			i += 1
-		}
-	}
-	return "", false
+// json_property reports whether `key` is present in `body` and returns its value DECODED.
+json_property :: proc(body, key: string, allocator := context.allocator) -> (value: string, present: bool) {
+	if !jsonx.has_key(body, key, top_level_only = true) do return "", false
+	return jsonx.extract_string(body, key, top_level_only = true, allocator = allocator), true
 }
 
 memory_update_input :: proc(body: string) -> (content_service.Memory_Update_Input, bool) {
@@ -715,8 +623,16 @@ query_component_decode :: proc(value:string)->string{
 query_hex_nibble :: proc(ch:byte)->(int,bool){ if ch>='0' && ch<='9' do return int(ch-'0'),true; if ch>='a' && ch<='f' do return int(ch-'a')+10,true; if ch>='A' && ch<='F' do return int(ch-'A')+10,true; return 0,false }
 query_int :: proc(q,key:string,d:int)->int{ v:=query_value(q,key); if p,ok:=strconv.parse_int(v); ok do return int(p); return d }
 query_bool :: proc(q,key:string,d:bool)->bool{ v:=query_value(q,key); if v=="" do return d; return v=="true" || v=="1" || v=="yes" }
-json_body_int :: proc(body,key:string,d:int)->int{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return d; rest:=body[idx+len(needle):]; colon:=strings.index_byte(rest,':'); if colon<0 do return d; rest=strings.trim_space(rest[colon+1:]); end:=0; for end<len(rest)&&rest[end]>='0'&&rest[end]<='9' do end+=1; if end==0 do return d; if p,ok:=strconv.parse_int(rest[:end]); ok do return int(p); return d }
+json_body_int :: proc(body, key: string, d: int) -> int { return jsonx.extract_int(body, key, d) }
 pane_capture_request_id_from_metadata :: proc(metadata:string)->string{ return json_string(metadata,"pane_capture_request_id") }
-json_array_raw :: proc(body,key:string)->string{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return "[]"; rest:=body[idx+len(needle):]; open:=strings.index_byte(rest,'['); if open<0 do return "[]"; close:=strings.index_byte(rest[open:],']'); if close<0 do return "[]"; return rest[open:open+close+1] }
-json_object_string :: proc(body,obj,key:string)->string{ oi:=strings.index(body,strings.concatenate({"\"",obj,"\""})); if oi<0 do return ""; return json_string(body[oi:],key) }
+json_array_raw :: proc(body, key: string, allocator := context.allocator) -> string {
+	res, ok := jsonx.extract_raw_array(body, key, false, allocator)
+	if !ok do return "[]"
+	return res
+}
+json_object_string :: proc(body, obj, key: string, allocator := context.allocator) -> string {
+	raw_obj, ok := jsonx.extract_raw_object(body, obj, false, context.temp_allocator)
+	if !ok do return ""
+	return jsonx.extract_string(raw_obj, key, "", false, allocator)
+}
 artifact_json_or_empty :: proc(v:string)->string{ if strings.trim_space(v)=="" do return "[]"; return v }

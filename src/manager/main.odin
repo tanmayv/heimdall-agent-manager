@@ -16,6 +16,7 @@ import "core:strings"
 import "core:sys/posix"
 import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
+import jsonx "odin_test:lib/jsonx"
 
 // Service identity for the primary bridge, shared with nix/home-manager.nix
 // (serviceName/label at nix/home-manager.nix:94) and scripts/install.sh.
@@ -201,51 +202,12 @@ manager_json_write_string :: proc(builder: ^strings.Builder, value: string) {
 // body. The Hub unescapes the small identity fields this CLI consumes
 // (ids, urls, statuses) as plain ASCII, so only the common escapes are
 // decoded here.
-manager_extract_json_string :: proc(body, key, fallback: string) -> string {
-	pattern := fmt.tprintf("\"%s\":\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return fallback
-	start := idx + len(pattern)
-	end := start
-	escaped := false
-	for end < len(body) {
-		ch := body[end]
-		if escaped {
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
-		} else if ch == '"' {
-			raw := body[start:end]
-			if strings.contains(raw, "\\") do return manager_json_unescape(raw)
-			return raw
-		}
-		end += 1
-	}
-	return fallback
+manager_extract_json_string :: proc(body, key, fallback: string, allocator := context.allocator) -> string {
+	return jsonx.extract_string(body, key, fallback, false, allocator)
 }
 
-manager_json_unescape :: proc(raw: string) -> string {
-	b := strings.builder_make()
-	i := 0
-	for i < len(raw) {
-		ch := raw[i]
-		if ch == '\\' && i+1 < len(raw) {
-			i += 1
-			switch raw[i] {
-			case 'n': strings.write_byte(&b, '\n')
-			case 'r': strings.write_byte(&b, '\r')
-			case 't': strings.write_byte(&b, '\t')
-			case '"': strings.write_byte(&b, '"')
-			case '\\': strings.write_byte(&b, '\\')
-			case '/': strings.write_byte(&b, '/')
-			case: strings.write_byte(&b, raw[i])
-			}
-		} else {
-			strings.write_byte(&b, ch)
-		}
-		i += 1
-	}
-	return strings.to_string(b)
+manager_json_unescape :: proc(raw: string, allocator := context.allocator) -> string {
+	return jsonx.json_unescape_string(raw, allocator)
 }
 
 // ---- subprocess helpers ----

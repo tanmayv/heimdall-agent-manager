@@ -1189,8 +1189,8 @@ bridge_shell_session_parse_lstart :: proc(s: string) -> (i64, bool) {
 bridge_shell_session_pid_is_plausible :: proc(pid: int, cmd: string, started_at: string) -> bool {
 	if pid <= 0 || cmd == "" || started_at == "" do return false
 
-	// Force C locale so lstart format is predictable on both Linux and macOS.
-	ps_cmd := fmt.tprintf("LC_ALL=C ps -p %d -o lstart=,command= 2>/dev/null", pid)
+	// Force C locale and UTC timezone so lstart format is predictable and in UTC on both Linux and macOS.
+	ps_cmd := fmt.tprintf("TZ=UTC LC_ALL=C ps -p %d -o lstart=,command= 2>/dev/null", pid)
 	c_ps_cmd := strings.clone_to_cstring(ps_cmd)
 	defer delete(c_ps_cmd)
 	f := posix.popen(c_ps_cmd, "r")

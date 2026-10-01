@@ -1,12 +1,14 @@
 package main
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
 import cfg_lib "odin_test:lib/config"
 import agent_runtime "odin_test:lib/agent_runtime"
+import jsonx "odin_test:lib/jsonx"
 
 Bridge_Provider_Source :: enum {
 	Seed,
@@ -731,179 +733,53 @@ bridge_provider_json_extract_string :: proc(json, key, fallback: string) -> stri
 	return value
 }
 
-bridge_provider_json_extract_string_set :: proc(json, key: string) -> (string, bool) {
-	start := bridge_provider_json_member_value_start(json, key)
-	if start < 0 do return "", false
-	rest := strings.trim_space(json[start:])
-	if len(rest) == 0 || rest[0] != '"' do return "", false
-	end := 1
-	escaped := false
-	for end < len(rest) {
-		ch := rest[end]
-		if escaped { escaped = false } else if ch == '\\' { escaped = true } else if ch == '"' { return json_unescape(rest[1:end]), true }
-		end += 1
-	}
-	return "", false
+bridge_provider_json_extract_string_set :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
+	return jsonx.extract_string_found(json, key, false, allocator)
 }
 
 bridge_provider_json_extract_bool :: proc(json, key: string) -> (bool, bool) {
-	start := bridge_provider_json_member_value_start(json, key)
-	if start < 0 do return false, false
-	rest := strings.trim_space(json[start:])
-	if strings.has_prefix(rest, "true") do return true, true
-	if strings.has_prefix(rest, "false") do return false, true
-	return false, false
+	return jsonx.extract_bool_found(json, key)
 }
 
 bridge_provider_json_extract_int :: proc(json, key: string) -> (int, bool) {
-	start := bridge_provider_json_member_value_start(json, key)
-	if start < 0 do return 0, false
-	rest := strings.trim_space(json[start:])
-	end := 0
-	if end < len(rest) && rest[end] == '-' do end += 1
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
-	if end == 0 || (end == 1 && rest[0] == '-') do return 0, false
-	if parsed, ok := strconv_parse_int_bridge_provider(rest[:end]); ok do return int(parsed), true
-	return 0, false
+	return jsonx.extract_int_found(json, key)
 }
 
-bridge_provider_json_extract_object :: proc(json, key: string) -> (string, bool) {
-	start := bridge_provider_json_member_value_start(json, key)
-	if start < 0 do return "", false
-	rest := strings.trim_space(json[start:])
-	if len(rest) == 0 || rest[0] != '{' do return "", false
-	if value, ok := bridge_provider_json_balanced(rest, '{', '}'); ok do return value, true
-	return "", false
+bridge_provider_json_extract_object :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
+	return jsonx.extract_raw_object(json, key, false, allocator)
 }
 
-bridge_provider_json_extract_array :: proc(json, key: string) -> (string, bool) {
-	start := bridge_provider_json_member_value_start(json, key)
-	if start < 0 do return "", false
-	rest := strings.trim_space(json[start:])
-	if len(rest) == 0 || rest[0] != '[' do return "", false
-	if value, ok := bridge_provider_json_balanced(rest, '[', ']'); ok do return value, true
-	return "", false
+bridge_provider_json_extract_array :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
+	return jsonx.extract_raw_array(json, key, false, allocator)
 }
 
-bridge_provider_json_extract_string_array :: proc(json, key: string) -> ([]string, bool) {
-	array, ok := bridge_provider_json_extract_array(json, key)
-	if !ok do return nil, false
-	return bridge_provider_json_parse_string_array(array), true
+bridge_provider_json_extract_string_array :: proc(json, key: string, allocator := context.allocator) -> ([]string, bool) {
+	if !jsonx.has_key(json, key) do return nil, false
+	arr := jsonx.extract_string_array(json, key, false, allocator)
+	return arr[:], true
 }
 
-bridge_provider_json_parse_string_array :: proc(array: string) -> []string {
-	out := make([dynamic]string)
-	i := 0
-	for i < len(array) {
-		if array[i] != '"' { i += 1; continue }
-		start := i + 1
-		j := start
-		escaped := false
-		for j < len(array) {
-			ch := array[j]
-			if escaped { escaped = false } else if ch == '\\' { escaped = true } else if ch == '"' { append(&out, json_unescape(array[start:j])); i = j + 1; break }
-			j += 1
-		}
-		if j >= len(array) do break
-	}
-	return out[:]
+bridge_provider_json_parse_string_array :: proc(array: string, allocator := context.allocator) -> []string {
+	arr := jsonx.decode_string_array(array, allocator)
+	return arr[:]
 }
 
-bridge_provider_json_top_level_objects :: proc(array: string) -> []string {
-	out := make([dynamic]string)
-	in_string := false
-	escaped := false
-	depth := 0
-	start := -1
-	for i in 0..<len(array) {
-		ch := array[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		if ch == '"' { in_string = true; continue }
-		if ch == '{' {
-			if depth == 0 do start = i
-			depth += 1
-			continue
-		}
-		if ch == '}' {
-			depth -= 1
-			if depth == 0 && start >= 0 {
-				append(&out, strings.clone(array[start:i + 1]))
-				start = -1
+bridge_provider_json_top_level_objects :: proc(array: string, allocator := context.allocator) -> []string {
+	out := make([dynamic]string, allocator)
+	parsed, err := json.parse_string(array, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	defer json.destroy_value(parsed, context.temp_allocator)
+	if err != .None do return out[:]
+	arr, is_arr := parsed.(json.Array)
+	if !is_arr do return out[:]
+	for elem in arr {
+		if _, is_obj := elem.(json.Object); is_obj {
+			bytes, merr := json.marshal(elem, json.Marshal_Options{}, allocator)
+			if merr == nil {
+				append(&out, string(bytes))
 			}
 		}
 	}
 	return out[:]
-}
-
-bridge_provider_json_balanced :: proc(rest: string, open, close: byte) -> (string, bool) {
-	depth := 0
-	in_string := false
-	escaped := false
-	for i in 0..<len(rest) {
-		ch := rest[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		if ch == '"' { in_string = true; continue }
-		if ch == open do depth += 1
-		if ch == close {
-			depth -= 1
-			if depth == 0 do return rest[:i + 1], true
-		}
-	}
-	return "", false
-}
-
-bridge_provider_json_member_value_start :: proc(json, key: string) -> int {
-	i := 0
-	for i < len(json) {
-		if json[i] != '"' { i += 1; continue }
-		start := i + 1
-		j := start
-		escaped := false
-		for j < len(json) {
-			ch := json[j]
-			if escaped { escaped = false; j += 1; continue }
-			if ch == '\\' { escaped = true; j += 1; continue }
-			if ch == '"' do break
-			j += 1
-		}
-		if j >= len(json) do return -1
-		k := j + 1
-		for k < len(json) && bridge_provider_json_is_ws(json[k]) do k += 1
-		if json[start:j] == key && k < len(json) && json[k] == ':' do return k + 1
-		i = j + 1
-	}
-	return -1
-}
-
-bridge_provider_json_is_ws :: proc(ch: byte) -> bool {
-	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
-}
-
-strconv_parse_int_bridge_provider :: proc(value: string) -> (int, bool) {
-	if value == "" do return 0, false
-	neg := false
-	idx := 0
-	if value[0] == '-' { neg = true; idx = 1 }
-	if idx >= len(value) do return 0, false
-	result := 0
-	for idx < len(value) {
-		ch := value[idx]
-		if ch < '0' || ch > '9' do return 0, false
-		result = result * 10 + int(ch - '0')
-		idx += 1
-	}
-	if neg do result = -result
-	return result, true
 }
 
 bridge_clone_string_slice :: proc(values: []string) -> []string {

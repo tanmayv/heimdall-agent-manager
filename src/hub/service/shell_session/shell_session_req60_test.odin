@@ -112,13 +112,14 @@ req60_json_str_still_decodes_the_simple_escapes :: proc(t: ^testing.T) {
 // of its own to assert on.
 @(test)
 req60_json_str_falls_back_on_a_malformed_unicode_escape :: proc(t: ^testing.T) {
-	// 'zz' are not hex digits, so parse_int fails.
+	// 'zz' are not hex digits, so core:encoding/json rejects the malformed token.
 	bad_hex := _json_str(`{"content":"\u00zzTAIL"}`, "content")
 	defer delete(bad_hex)
-	testing.expectf(t, bad_hex == "u00zzTAIL", "bad-hex fallback is wrong: %q", bad_hex)
+	testing.expectf(t, bad_hex == "", "bad-hex fallback is wrong: %q", bad_hex)
 
-	// A short escape: the 4 characters read are `01"}`, which parse_int also rejects.
+	// A short escape: core:encoding/json rejects the truncated token.
 	truncated := _json_str(`{"content":"\u01"}`, "content")
 	defer delete(truncated)
-	testing.expectf(t, truncated == "u01", "truncated fallback is wrong: %q", truncated)
+	testing.expectf(t, truncated == "", "truncated fallback is wrong: %q", truncated)
 }
+
