@@ -192,3 +192,86 @@ task_status_unblocks_dependents :: proc(status: Task_Status) -> bool {
 task_is_workable :: proc(task: Task) -> bool {
 	return task.publish_state == .Published && task.status != .Completed && task.status != .Cancelled
 }
+
+@(private = "file", rodata)
+TASK_TRANSITIONS_ASSIGNED := [4]Task_Status{.Queued, .In_Progress, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_QUEUED := [4]Task_Status{.Assigned, .In_Progress, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_IN_PROGRESS := [4]Task_Status{.Queued, .In_Validation, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_IN_VALIDATION := [5]Task_Status{.Validated_Good, .Validated_Not_Good, .Completed, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_VALIDATED_NOT_GOOD := [3]Task_Status{.In_Progress, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_VALIDATED_GOOD := [3]Task_Status{.Completed, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_PAUSED := [3]Task_Status{.In_Progress, .Assigned, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_CANCELLED := [1]Task_Status{.Assigned}
+@(private = "file", rodata)
+TASK_TRANSITIONS_COMPLETED := [3]Task_Status{.Assigned, .In_Progress, .In_Validation}
+
+task_allowed_transitions :: proc(status: Task_Status) -> []Task_Status {
+	switch status {
+	case .Assigned:
+		return TASK_TRANSITIONS_ASSIGNED[:]
+	case .Queued:
+		return TASK_TRANSITIONS_QUEUED[:]
+	case .In_Progress:
+		return TASK_TRANSITIONS_IN_PROGRESS[:]
+	case .In_Validation:
+		return TASK_TRANSITIONS_IN_VALIDATION[:]
+	case .Validated_Not_Good:
+		return TASK_TRANSITIONS_VALIDATED_NOT_GOOD[:]
+	case .Validated_Good:
+		return TASK_TRANSITIONS_VALIDATED_GOOD[:]
+	case .Paused:
+		return TASK_TRANSITIONS_PAUSED[:]
+	case .Cancelled:
+		return TASK_TRANSITIONS_CANCELLED[:]
+	case .Completed:
+		return TASK_TRANSITIONS_COMPLETED[:]
+	}
+	return nil
+}
+
+@(private = "file", rodata)
+TASK_ACTIONS_ASSIGNED_OR_QUEUED := [4]string{"start", "pause", "cancel", "nudge"}
+@(private = "file", rodata)
+TASK_ACTIONS_IN_PROGRESS := [4]string{"validate", "pause", "cancel", "nudge"}
+@(private = "file", rodata)
+TASK_ACTIONS_IN_VALIDATION := [5]string{"lgtm", "ngtm", "pause", "cancel", "nudge"}
+@(private = "file", rodata)
+TASK_ACTIONS_VALIDATED_NOT_GOOD := [4]string{"start", "pause", "cancel", "nudge"}
+@(private = "file", rodata)
+TASK_ACTIONS_VALIDATED_GOOD := [3]string{"complete", "pause", "cancel"}
+@(private = "file", rodata)
+TASK_ACTIONS_PAUSED := [2]string{"unpause", "cancel"}
+@(private = "file", rodata)
+TASK_ACTIONS_CANCELLED := [1]string{"uncancel"}
+@(private = "file", rodata)
+TASK_ACTIONS_COMPLETED := [2]string{"not_complete", "revalidate"}
+
+task_allowed_actions :: proc(status: Task_Status) -> []string {
+	switch status {
+	case .Assigned, .Queued:
+		return TASK_ACTIONS_ASSIGNED_OR_QUEUED[:]
+	case .In_Progress:
+		return TASK_ACTIONS_IN_PROGRESS[:]
+	case .In_Validation:
+		return TASK_ACTIONS_IN_VALIDATION[:]
+	case .Validated_Not_Good:
+		return TASK_ACTIONS_VALIDATED_NOT_GOOD[:]
+	case .Validated_Good:
+		return TASK_ACTIONS_VALIDATED_GOOD[:]
+	case .Paused:
+		return TASK_ACTIONS_PAUSED[:]
+	case .Cancelled:
+		return TASK_ACTIONS_CANCELLED[:]
+	case .Completed:
+		return TASK_ACTIONS_COMPLETED[:]
+	}
+	return nil
+}
+

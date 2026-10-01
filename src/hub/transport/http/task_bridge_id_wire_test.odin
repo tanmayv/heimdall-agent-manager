@@ -407,3 +407,85 @@ test_agent_action_task_bridge_id_create_and_update :: proc(t: ^testing.T) {
 	testing.expect_value(t, foreign_resp.status, 404)
 	testing.expect_value(t, wire_persisted_pin(t, f, created_id), f.bridge_pin)
 }
+
+// ------------------------------------ FSM transitions & actions (REQ-FSM-API-1)
+
+@(test)
+test_write_task_json_and_detail_emit_fsm_transitions_and_actions :: proc(t: ^testing.T) {
+	FSM_Wire_Case :: struct {
+		status:        domain.Task_Status,
+		expected_tail: string,
+	}
+
+	cases := []FSM_Wire_Case{
+		{
+			status        = .Assigned,
+			expected_tail = `"allowed_transitions":["queued","in_progress","paused","cancelled"],"next_states":["queued","in_progress","paused","cancelled"],"allowed_actions":["start","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .Queued,
+			expected_tail = `"allowed_transitions":["assigned","in_progress","paused","cancelled"],"next_states":["assigned","in_progress","paused","cancelled"],"allowed_actions":["start","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .In_Progress,
+			expected_tail = `"allowed_transitions":["queued","in_validation","paused","cancelled"],"next_states":["queued","in_validation","paused","cancelled"],"allowed_actions":["validate","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .In_Validation,
+			expected_tail = `"allowed_transitions":["validated_good","validated_not_good","completed","paused","cancelled"],"next_states":["validated_good","validated_not_good","completed","paused","cancelled"],"allowed_actions":["lgtm","ngtm","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .Validated_Not_Good,
+			expected_tail = `"allowed_transitions":["in_progress","paused","cancelled"],"next_states":["in_progress","paused","cancelled"],"allowed_actions":["start","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .Validated_Good,
+			expected_tail = `"allowed_transitions":["completed","paused","cancelled"],"next_states":["completed","paused","cancelled"],"allowed_actions":["complete","pause","cancel"]`,
+		},
+		{
+			status        = .Paused,
+			expected_tail = `"allowed_transitions":["in_progress","assigned","cancelled"],"next_states":["in_progress","assigned","cancelled"],"allowed_actions":["unpause","cancel"]`,
+		},
+		{
+			status        = .Cancelled,
+			expected_tail = `"allowed_transitions":["assigned"],"next_states":["assigned"],"allowed_actions":["uncancel"]`,
+		},
+		{
+			status        = .Completed,
+			expected_tail = `"allowed_transitions":["assigned","in_progress","in_validation"],"next_states":["assigned","in_progress","in_validation"],"allowed_actions":["not_complete","revalidate"]`,
+		},
+	}
+
+	f := wire_setup(t, "fsm_wire")
+	defer wire_teardown(f)
+	owner_auth := contracts.Auth_Context{kind = .User_Token, user_id = string(f.owner)}
+
+	for c in cases {
+		task := domain.Task{
+			task_id            = domain.Task_ID("task_fsm_wire"),
+			chain_id           = f.chain_id,
+			owner_user_id      = f.owner,
+			title              = "FSM Wire Task",
+			description        = "desc",
+			publish_state      = .Published,
+			status             = c.status,
+			priority           = .P2,
+			assignee_ref_json  = "",
+			reviewer_refs_json = "",
+			bridge_id          = "",
+		}
+
+		b1 := strings.builder_make()
+		defer strings.builder_destroy(&b1)
+		write_task_json(&b1, task)
+		out1 := strings.to_string(b1)
+		testing.expectf(t, strings.contains(out1, c.expected_tail), "write_task_json(%v) must emit %s (got %s)", c.status, c.expected_tail, out1)
+
+		b2 := strings.builder_make()
+		defer strings.builder_destroy(&b2)
+		write_task_detail_json(&b2, &f.th, owner_auth, task, nil)
+		out2 := strings.to_string(b2)
+		testing.expectf(t, strings.contains(out2, c.expected_tail), "write_task_detail_json(%v) must emit %s (got %s)", c.status, c.expected_tail, out2)
+	}
+}
+

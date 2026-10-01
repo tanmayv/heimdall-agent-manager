@@ -153,6 +153,12 @@ function normalizeTask(task: any) {
     })),
     unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
     commentIds: task.comment_ids || [],
+    allowedTransitions: task.allowed_transitions || task.allowedTransitions || [],
+    allowed_transitions: task.allowed_transitions || task.allowedTransitions || [],
+    allowedActions: task.allowed_actions || task.allowedActions || [],
+    allowed_actions: task.allowed_actions || task.allowedActions || [],
+    nextStates: task.next_states || task.nextStates || [],
+    next_states: task.next_states || task.nextStates || [],
   };
   if (task.acceptance_criteria !== undefined) {
     result.acceptanceCriteria = task.acceptance_criteria;
