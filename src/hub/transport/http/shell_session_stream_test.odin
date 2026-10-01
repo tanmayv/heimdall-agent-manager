@@ -216,9 +216,11 @@ fake_shell_repo_get :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (
 }
 
 @(private = "file")
-fake_shell_repo_get_by_id :: proc(ctx: rawptr, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+// Bridge-qualified since REQ-SHELL-1 §7: the key is (bridge_id, session_id), so
+// the fake matches on both, exactly as the sqlite repo does.
+fake_shell_repo_get_by_id :: proc(ctx: rawptr, bridge_id, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
 	f := (^Fake_Shell_Repo)(ctx)
-	if f.session.session_id == session_id {
+	if f.session.session_id == session_id && f.session.bridge_id == bridge_id {
 		return clone_shell_session_helper(f.session), true, domain.Domain_Error{}
 	}
 	return domain.Shell_Session{}, false, domain.Domain_Error{}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiAbsoluteUrl } from '../../api/apiBase';
+import { shellResizeFrame } from './shellStreamFrames';
 
 const HEARTBEAT_INTERVAL_MS = 30000;
 const INITIAL_RECONNECT_DELAY_MS = 1000;
@@ -20,6 +21,20 @@ export type UseShellStreamOptions = {
   onStatus?: (status: string) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
+  /**
+   * REQ-SHELL-18 — the pane's CURRENT geometry, read at the moment the socket opens.
+   *
+   * `sendResize` below can only send on an OPEN socket; before that it drops the frame and
+   * returns. The consumer computes its geometry when it mounts and fits, which is BEFORE the
+   * socket is open (`connect()` awaits `shellStreamUrl()`, then constructs the WebSocket, then
+   * waits for the handshake), so that first frame is exactly the one that gets dropped — and
+   * nothing used to re-send it. The PTY then stayed at its 80x24 default for the whole session,
+   * and only a later window resize, which happens to arrive on an open socket, corrected it.
+   *
+   * A pull, not a push: the geometry is read INSIDE `onopen`, so it cannot be stale, and it is
+   * read again on every reconnect — after a backoff reconnect the new PTY needs telling too.
+   */
+  getGeometry?: () => { rows: number; cols: number } | null;
 };
 
 export interface UseShellStreamResult {
@@ -79,6 +94,7 @@ export function useShellStream({
   onStatus,
   onError,
   onClose,
+  getGeometry,
 }: UseShellStreamOptions): UseShellStreamResult {
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
@@ -92,11 +108,13 @@ export function useShellStream({
   const onStatusRef = useRef(onStatus);
   const onErrorRef = useRef(onError);
   const onCloseRef = useRef(onClose);
+  const getGeometryRef = useRef(getGeometry);
 
   useEffect(() => { onOutputRef.current = onOutput; }, [onOutput]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => { getGeometryRef.current = getGeometry; }, [getGeometry]);
 
   const clearHeartbeat = () => {
     if (heartbeatRef.current) window.clearInterval(heartbeatRef.current);
@@ -108,6 +126,13 @@ export function useShellStream({
     reconnectTimerRef.current = undefined;
   };
 
+  // REQ-SHELL-6 §6 — JUSTIFIED EXCEPTION 1 of 2 to the no-polling rule, and the one
+  // that requirement explicitly told us to check for rather than pattern-match on
+  // `setInterval`. This is a WEBSOCKET KEEPALIVE, not a poller: it sends a heartbeat
+  // frame on an ALREADY-OPEN socket and closes it if the send fails. It fetches
+  // nothing, invalidates no cache tag, and produces no UI update — deleting it would
+  // not remove a poll, it would let idle sockets be reaped by the first intermediary
+  // with a read timeout. KEEP.
   const startHeartbeat = (socket: WebSocket) => {
     clearHeartbeat();
     heartbeatRef.current = window.setInterval(() => {
@@ -119,6 +144,23 @@ export function useShellStream({
         }
       }
     }, HEARTBEAT_INTERVAL_MS);
+  };
+
+  /**
+   * REQ-SHELL-18 — tell the PTY its size the instant the socket is usable.
+   *
+   * Sent directly on `socket`, not through `sendResize`, and from inside `onopen` rather than
+   * from an effect reacting to `connected`: `socketRef.current` and the `connected` state are
+   * both a React round-trip behind this moment, and a backoff reconnect can leave `connected`
+   * true throughout, so an effect keyed on it would not fire at all for the reconnect case.
+   */
+  const sendGeometry = (socket: WebSocket) => {
+    const frame = shellResizeFrame(getGeometryRef.current?.());
+    if (!frame) return;
+    if (socket.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(frame);
+    } catch { /* a socket that fails here will surface through onclose */ }
   };
 
   const closeSocket = () => {
@@ -157,6 +199,7 @@ export function useShellStream({
           reconnectAttemptsRef.current = 0;
           setConnected(true);
           startHeartbeat(socket);
+          sendGeometry(socket);
         };
 
         socket.onmessage = (event) => {

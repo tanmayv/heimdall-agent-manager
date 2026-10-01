@@ -35,6 +35,41 @@ bridge_pty_stream_map: Bridge_PTY_Stream_Map
 bridge_pty_stream_outgoing_mu: sync.Mutex
 bridge_pty_stream_outgoing: [dynamic]Bridge_PTY_Stream_Outgoing
 
+// _bridge_pty_stream_outgoing_bind_heap pins the outgoing queue's BACKING ARRAY to the heap
+// allocator, and must be called with bridge_pty_stream_outgoing_mu held before any append.
+//
+// WHY THIS EXISTS — IT IS THE FIX FOR A HARD SEGFAULT, NOT A TIDINESS MEASURE (REQ-SHELL-40).
+// `bridge_pty_stream_outgoing` is a package-level `[dynamic]` declared with NO allocator, so its
+// allocator field is nil until something appends. Odin's __dynamic_array_* then binds it to
+// `context.allocator` AT THE MOMENT OF THE FIRST APPEND and keeps that binding forever.
+//
+// In production that is harmless by luck: the first append happens on a bridge worker whose
+// context carries the default heap allocator, and the queue lives for the process's lifetime.
+//
+// UNDER THE TEST RUNNER IT IS FATAL. Each test runs with its OWN tracking allocator installed in
+// the context, and the runner tears that allocator down when the test ends. So the first test to
+// append bound this global's backing to an allocator that then died, and every later test appended
+// through a DANGLING backing pointer. The reads come back as whatever now occupies that memory —
+// which is how `delete(item.json)` in bridge_pty_stream_stop_all_for_reconnect came to be handed
+// 0x5f68730a00000035, a pointer-shaped view of the ASCII bytes "_hs\n5". Confirmed under gdb:
+//   #3 runtime::delete_string
+//   #4 main::bridge_pty_stream_stop_all_for_reconnect (pty_host_stream_worker.odin)
+//   #5 main::t40_stop_all_for_reconnect_detaches_every_worker
+//
+// It was invisible at the default thread count and DETERMINISTIC at -define:ODIN_TEST_THREADS=1,
+// because what matters is which test appends FIRST and whether its allocator is already dead when
+// the next one appends — test ORDER, not concurrency. More threads reordered it into hiding.
+// REQ-SHELL-48 owns the invocation standard that let that stay hidden.
+//
+// Binding the ALLOCATOR FIELD rather than calling make() is deliberate: it allocates nothing, so it
+// is safe to call on every locked path, and it cannot itself be the first binding done from a
+// transient context.
+_bridge_pty_stream_outgoing_bind_heap :: proc() {
+	if bridge_pty_stream_outgoing.allocator.procedure == nil {
+		bridge_pty_stream_outgoing.allocator = runtime.heap_allocator()
+	}
+}
+
 // bridge_pty_stream_worker_start initiates an Attach-gated dedicated streaming worker.
 // Dials a NEW, DEDICATED socket connection to ham-pty-host, sends CtlMsg::Attach,
 // and spawns a lightweight reader thread that loops on CtlReply frames.
@@ -123,6 +158,168 @@ bridge_pty_stream_worker_detach :: proc(session_id: string) -> bool {
 	return true
 }
 
+// bridge_pty_stream_stop_all_for_reconnect detaches EVERY live streaming worker, and is
+// the bridge half of REQ-SHELL-40's convergence: no stream worker may outlive the hub
+// connection it was created for.
+//
+// WHY A BLANKET TEARDOWN RATHER THAN A REAPER. A worker holds `conn`, a POINTER to the
+// `ws.Connection` that `bridge_hub_runtime_worker` declares as a STACK LOCAL INSIDE its
+// reconnect loop (hub_runtime_client.odin). The moment that loop iterates, the pointer is
+// dangling — and worse than merely dangling, because the next iteration refills the same
+// stack slot with the NEW connection, so an orphaned worker silently begins aliasing a
+// socket it was never attached to. Output appearing to survive a WS blip today is that
+// accident, not a design. Nothing here can be made safe by reaping later; the pointer has
+// to stop existing before the slot is reused, which is what this does.
+//
+// IT ALSO CLOSES A REAL UNBOUNDED LEAK. Hub->bridge runtime commands are fire-and-forget
+// over the live socket (bridge_runtime.send_runtime_command returns .Bridge_Offline and
+// DROPS the frame), and the hub replays kill intents on reconnect but not detaches. So a
+// viewer that closed its pane while the bridge was away left its `shell_stream_detach`
+// discarded and its worker running forever, appending every byte the shell produced to the
+// unbounded `bridge_pty_stream_outgoing` queue for a session nobody was watching.
+//
+// WHAT RE-ESTABLISHES THE STREAM. Nothing here — deliberately. The hub re-issues
+// `shell_stream_attach` for every still-viewed live session out of its inventory
+// convergence (shell_session_inventory.odin), and the fresh Attach earns a fresh Screen
+// catch-up frame from the pty-host, so the pane repaints rather than resuming mid-scroll.
+// Losing the bytes produced during the outage is correct: they are off-screen history the
+// viewer never saw, and the repaint shows the screen as it actually is now.
+//
+// CALL IT BEFORE ws.close, NOT AFTER. That ordering is the whole answer to "what happens to
+// a worker that is mid-write when the socket closes". ws.close does not take the send mutex
+// REQ-SHELL-32 added, so a writer CAN be inside bridge_hub_send when the fd goes away; after
+// this returns, no worker is eligible to write at all, so the window shrinks instead of
+// growing. A worker already inside a send finishes against a closing fd, gets false back,
+// and — because `active` is now false — has its frame DELETED by
+// bridge_pty_stream_emit_frame rather than queued, so a wedged writer costs neither a hang
+// nor a queue entry.
+//
+// Detaching is idempotent (bridge_pty_stream_worker_detach returns true for an already
+// detached session), so a reconnect storm running this repeatedly is harmless.
+bridge_pty_stream_stop_all_for_reconnect :: proc() -> int {
+	heap := runtime.heap_allocator()
+
+	// Snapshot the ids under the lock and detach OUTSIDE it: worker_detach takes the
+	// same mutex, and it also writes to the pty-host socket, which must never happen
+	// with the worker map held.
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	ids := make([dynamic]string, 0, len(bridge_pty_stream_map.workers), heap)
+	for k in bridge_pty_stream_map.workers {
+		append(&ids, strings.clone(k, heap))
+	}
+	sync.mutex_unlock(&bridge_pty_stream_map.mu)
+	defer {
+		for id in ids do delete(id, heap)
+		delete(ids)
+	}
+
+	for id in ids {
+		_ = bridge_pty_stream_worker_detach(id)
+	}
+
+	// Frames queued by workers that are now gone can never be delivered to anyone: the
+	// sessions they belong to have no attachment until the hub re-attaches, and a
+	// re-attach is answered by a fresh Screen frame that supersedes them. Dropping them
+	// here is what keeps the queue from carrying a burst of pre-outage bytes that would
+	// paint over the catch-up snapshot.
+	//
+	// THIS IS A DELIBERATE DROP AND IT IS NOT DATA LOSS, which is the only reason it is
+	// acceptable — the reason is not self-evident, so it is written down rather than
+	// left to a reviewer to reconstruct:
+	//   - The bytes are still on disk. The pty-host tees every chunk to the session's
+	//     tee file INDEPENDENTLY of subscribers — tools/pty_host/src/daemon.rs
+	//     pump_output writes the tee AFTER the subscriber loop and outside it, so a
+	//     session with no attached stream still records everything — and the bridge sets
+	//     has_tee_path unconditionally for shell spawns (hub_runtime_client.odin:2540).
+	//     `shell log` serves that file under REQ-SHELL-8 retention. So this is a
+	//     live-view recovery choice, not a loss of output.
+	//   - For a `server` kind streaming build output, the catch-up repaint shows the
+	//     CURRENT tail, which is what a human watching actually wants — a delayed burst
+	//     of pre-outage scrollback arriving after the reconnect is strictly less useful.
+	//
+	// AND IT IS LOGGED, because this chain has catalogued several defects that survived
+	// only because something was dropped without a word. A deliberate drop must be at
+	// least as visible as an accidental one.
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
+	dropped_frames := len(bridge_pty_stream_outgoing)
+	dropped_bytes := 0
+	for item in bridge_pty_stream_outgoing {
+		dropped_bytes += len(item.json)
+		delete(item.json, heap)
+	}
+	clear(&bridge_pty_stream_outgoing)
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+
+	if len(ids) > 0 || dropped_frames > 0 {
+		// Session ids in full: a count alone cannot tell an operator WHICH pane went
+		// quiet, which is the first question asked when one does.
+		joined := strings.join(ids[:], ",", context.temp_allocator)
+		fmt.println(
+			"bridge pty stream: detached workers for hub reconnect",
+			"reason=", "hub_ws_reconnect",
+			"workers=", len(ids),
+			"sessions=", joined,
+			"dropped_frames=", dropped_frames,
+			"dropped_bytes=", dropped_bytes,
+			"(bytes remain in the session tee file; the hub re-attach earns a fresh screen repaint)",
+		)
+	}
+
+	return len(ids)
+}
+
+// _bridge_pty_stream_lf_to_crlf rewrites bare row separators into CRLF.
+// Caller owns the result.
+//
+// WHY THIS IS NEEDED (REQ-SHELL-31). This is the SECOND staircase producer; REQ-SHELL-30 fixed
+// the hub's snapshot builder and the terminal still staircased, because the bridge emits a
+// catch-up paint of its own. The pty-host delivers a captured screen as one string PER GRID ROW
+// (tools/pty_host/src/vt.rs capture()), and bridge_pty_host_screen_to_output joins those rows
+// with a bare LF. A VT drops one row on LF and KEEPS the column, so every row began where the
+// previous one ended.
+//
+// WHY THE RAW-BYTE DISTINCTION IS THE WHOLE POINT. The joiner has four non-test callers and only
+// this one is wrong, which is why the join itself must not change. The decisive difference is
+// xterm's `convertEol` option (ShellTerminalPane.tsx:229/349, AgentPaneComposerPanel.tsx:263/390):
+// it is TRUE on the polled paths, where xterm converts LF->CRLF itself and bare LF is therefore
+// correct, and FALSE while streaming. The .Screen frame below travels as `shell_pty_output`
+// data_b64 — raw bytes on the streaming path — so it is the one place the conversion must happen
+// in Odin. Fixing the shared joiner would instead rewrite the poller's text AND invalidate every
+// stored since_hash (bridge_pty_host_pane_hash consumes it on the very next statement of
+// bridge_pty_host_evaluate_pane), costing every client a full repaint.
+//
+// An LF that ALREADY has a CR before it is passed through untouched, so this can never produce
+// "\r\r\n" should the pty-host ever start sending CRLF itself.
+//
+// NOTHING here measures width. vt.rs capture() writes SGR runs INLINE into each row, so a row's
+// byte length is not its display width and must never be used as one. The separator is decided
+// per LF byte, never per length.
+_bridge_pty_stream_lf_to_crlf :: proc(s: string) -> string {
+	b := strings.builder_make()
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == '\n' && (i == 0 || s[i - 1] != '\r') {
+			strings.write_byte(&b, '\r')
+		}
+		strings.write_byte(&b, c)
+	}
+	return strings.to_string(b)
+}
+
+// bridge_pty_stream_screen_payload builds the byte payload of the bridge's catch-up screen
+// frame: the captured rows joined, with CRLF row separators. Caller owns the result.
+//
+// This exists as a named seam rather than two statements inlined in the .Screen case so that
+// the conversion is covered in the SAME composition the emit site uses. A test that called
+// _bridge_pty_stream_lf_to_crlf directly would stay green if someone dropped the call from the
+// emit site — it would guard the helper without detecting the regression this task fixes.
+bridge_pty_stream_screen_payload :: proc(lines: []string) -> string {
+	joined, _, _ := bridge_pty_host_screen_to_output(lines, 0)
+	defer delete(joined)
+	return _bridge_pty_stream_lf_to_crlf(joined)
+}
+
 // bridge_pty_stream_reader_worker runs on a dedicated background thread per active stream.
 // It loops reading CtlReply frames from the dedicated UNIX socket and emits shell_pty_output.
 bridge_pty_stream_reader_worker :: proc(data: rawptr) {
@@ -148,8 +345,12 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 		case .Output:
 			bridge_pty_stream_emit_frame(worker, local_session_id, reply.data)
 		case .Screen:
-			// Initial catchup snapshot delivered immediately upon Attach
-			content, _, _ := bridge_pty_host_screen_to_output(reply.screen.lines, 0)
+			// Initial catchup snapshot delivered immediately upon Attach.
+			// REQ-SHELL-31: the joiner separates rows with a bare LF, which is correct for the
+			// polled panes (xterm's convertEol is on there) but not here — this frame reaches the
+			// terminal as raw bytes, where a bare LF keeps the column and staircases the paint.
+			// Converted at the emit site, never in the shared joiner: see the note above.
+			content := bridge_pty_stream_screen_payload(reply.screen.lines)
 			if len(content) > 0 {
 				bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content)
 			}
@@ -206,6 +407,7 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 			delete(frame, heap)
 		} else {
 			sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+			_bridge_pty_stream_outgoing_bind_heap()
 			append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = frame})
 			sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 		}
@@ -218,6 +420,7 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 bridge_pty_stream_drain_outgoing :: proc(conn: ^ws.Connection) {
 	if conn == nil || !conn.connected do return
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	if len(bridge_pty_stream_outgoing) == 0 {
 		sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 		return
@@ -231,7 +434,10 @@ bridge_pty_stream_drain_outgoing :: proc(conn: ^ws.Connection) {
 		_ = bridge_hub_send(conn, item.json)
 		delete(item.json, heap)
 	}
-	delete(items)
+	// `items` aliases the OLD backing array, which the bind above guarantees came from the heap.
+	// Naming the allocator explicitly matters here: a bare delete() would free it through
+	// context.allocator, which is the mismatched-free that made this queue crash in the first place.
+	delete(items, heap)
 }
 
 // bridge_pty_stream_take_outgoing drains all queued outgoing frames without sending (for tests).
@@ -240,6 +446,7 @@ bridge_pty_stream_take_outgoing :: proc() -> [dynamic]string {
 	out := make([dynamic]string, heap)
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
 	defer sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		append(&out, item.json)
 	}
@@ -274,6 +481,7 @@ bridge_pty_stream_reset :: proc() {
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
 	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		delete(item.json, heap)
 	}

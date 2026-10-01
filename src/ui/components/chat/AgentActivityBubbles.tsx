@@ -58,14 +58,10 @@ function prefersReducedMotion(): boolean {
 
 function ActivityBubbleItem({
   bubble,
-  isClickable,
   sharedClassName,
-  onOpenJobs,
 }: {
   bubble: VisibleBubble;
-  isClickable: boolean;
   sharedClassName: string;
-  onOpenJobs?: () => void;
 }) {
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKeyHex = useSelector(selectRawVaultKeyHex);
@@ -105,18 +101,11 @@ function ActivityBubbleItem({
     <span className="truncate">{summary}</span>
   );
 
-  return isClickable ? (
-    <button
-      key={bubble.id}
-      data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
-      title={summary}
-      role="button"
-      onClick={onOpenJobs}
-      className={`${sharedClassName} cursor-pointer`}
-    >
-      {inner}
-    </button>
-  ) : (
+  // A bubble is never clickable. Exactly one action ever was — the background-job
+  // report, which opened a jobs panel — and REQ-SHELL-7 deleted that whole stack; the
+  // panel it opened had already been unmounted before then. Shell sessions are
+  // surfaced by the shells UI (REQ-SHELL-6), not by a chat bubble.
+  return (
     <span
       key={bubble.id}
       data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
@@ -128,7 +117,7 @@ function ActivityBubbleItem({
   );
 }
 
-export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { instanceId: string; onOpenJobs?: () => void }) {
+export default function AgentActivityBubbles({ instanceId }: { instanceId: string }) {
   const dispatch = useDispatch();
   const buffer = useSelector((state: any) => selectAgentActivityBuffer(state, instanceId));
   // Ids already surfaced for this instance, persisted in redux so it survives
@@ -173,7 +162,6 @@ export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { insta
     const isFirst = liveCountRef.current === 0 && !prefersReducedMotion();
     liveCountRef.current += 1;
     const phase: BubblePhase = isFirst ? 'dots' : 'pill';
-    const bubbleLifetimeMs = item.shellStatus === 'running' ? 60000 : BUBBLE_LIFETIME_MS;
     // Prepend so the newest bubble slides in at the left and the rest slide over.
     setVisible((prev) => (prev.some((b) => b.id === item.id) ? prev : [{ ...item, phase }, ...prev]));
 
@@ -189,7 +177,7 @@ export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { insta
       setVisible((prev) => prev.map((b) => (b.id === item.id ? { ...b, phase: 'exiting' } : b)));
       const remove = window.setTimeout(() => removeBubble(item.id), EXIT_ANIM_MS);
       timersRef.current.push(remove);
-    }, lifeDelay + bubbleLifetimeMs);
+    }, lifeDelay + BUBBLE_LIFETIME_MS);
     timersRef.current.push(hide);
   }, [dispatch, instanceId, removeBubble]);
 
@@ -252,15 +240,12 @@ export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { insta
               : bubble.morphed
                 ? 'agent-bubble-morph'
                 : 'agent-bubble-pill-in';
-        const isClickable = bubble.action === 'shell_cmd_report' && !!onOpenJobs;
         const sharedClassName = `inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-subtle bg-surface px-2.5 py-1 text-caption leading-none text-muted ${animClass}`;
         return (
           <ActivityBubbleItem
             key={bubble.id}
             bubble={bubble}
-            isClickable={isClickable}
             sharedClassName={sharedClassName}
-            onOpenJobs={onOpenJobs}
           />
         );
       })}

@@ -31,6 +31,32 @@ Bridge :: struct {
 	revoked_at: string,
 }
 
+// bridge_destroy frees every heap string on a Bridge read from a repository.
+//
+// It exists because the REQ-SHELL-14 sweep reads bridges on the reaper's
+// process-scoped thread, which has no per-request arena: anything allocated there
+// stays allocated. The repository's row reader hands back thirteen owned strings, so a
+// caller that wanted one field and dropped the value leaked the other twelve, every
+// sweep, forever. Mirrors domain.agent_instance_destroy, which exists for the same
+// reason on the same thread.
+bridge_destroy :: proc(b: ^Bridge) {
+	if b == nil do return
+	if len(b.bridge_id) > 0 do delete(b.bridge_id)
+	if len(string(b.owner_user_id)) > 0 do delete(string(b.owner_user_id))
+	if len(b.label) > 0 do delete(b.label)
+	if len(b.machine_hostname) > 0 do delete(b.machine_hostname)
+	if len(b.machine_os) > 0 do delete(b.machine_os)
+	if len(b.machine_arch) > 0 do delete(b.machine_arch)
+	if len(b.capabilities_json) > 0 do delete(b.capabilities_json)
+	if len(b.hub_url) > 0 do delete(b.hub_url)
+	if len(b.bridge_token_hash) > 0 do delete(b.bridge_token_hash)
+	if len(b.created_at) > 0 do delete(b.created_at)
+	if len(b.updated_at) > 0 do delete(b.updated_at)
+	if len(b.last_seen_at) > 0 do delete(b.last_seen_at)
+	if len(b.revoked_at) > 0 do delete(b.revoked_at)
+	b^ = Bridge{}
+}
+
 Bridge_Enrollment :: struct {
 	enrollment_id: string,
 	owner_user_id: User_ID,

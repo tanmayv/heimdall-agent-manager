@@ -18,6 +18,8 @@ ALT_ISSUE_VAULT_KEY  :: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9
 test_ctl_read_vault_key_resolution :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("ctl-read-vault-key-resolution")
+	defer ctl_vault_test_sandbox_close(&sb)
 
 	// 1. CLI flag override (--vault-key)
 	args_flag := [?]string{"ham-ctl", "issue", "list", "--vault-key", TEST_ISSUE_VAULT_KEY}

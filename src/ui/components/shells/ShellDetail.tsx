@@ -83,7 +83,8 @@ import {
   shellTitle,
   shellViewHref,
   statusLabel,
-  statusTone,
+  statusPresentation,
+  supportsLivePreview,
   verbsForSession,
   type ShellVerb,
 } from './shellModel';
@@ -124,7 +125,9 @@ export interface PendingConfirm {
  * pill and the output it explains never disagree by more than a second.
  */
 export function useShellDetail(sessionId: string, onAfterVerb?: (verb: ShellVerb) => void) {
-  const query = useGetShellSessionQuery({ sessionId }, { skip: !sessionId, pollingInterval: 2000 });
+  // REQ-SHELL-6 §6: no pollingInterval. Repaints when a shell event invalidates this
+  // session's `ShellSession` tag (wsInvalidation.ts, invalidateShellSession).
+  const query = useGetShellSessionQuery({ sessionId }, { skip: !sessionId });
   const [killShell] = useKillShellMutation();
   const [restartShell] = useRestartShellMutation();
   const [signalShell] = useSignalShellMutation();
@@ -327,16 +330,23 @@ export function ShellDetailActions({
 
 /** The meta line under the title: status · kind · port · pid · time. */
 export function ShellDetailMeta({ record }: { record: ShellSession }) {
+  const presentation = statusPresentation(record);
   const time = shellTimeLabel(record);
   const exit = exitLabel(record);
   return (
     <div className="flex flex-wrap items-center gap-2" data-debug-id="shell-view-meta">
-      <StatusPill tone={statusTone(record.status)} data-debug-id="shell-view-status">
-        {statusLabel(record.status)}
+      <StatusPill tone={presentation.tone} title={presentation.title} data-debug-id="shell-view-status">
+        {presentation.label}
       </StatusPill>
       <Badge data-debug-id="shell-view-kind">{kindLabel(record.kind)}</Badge>
       {record.server_port > 0 ? (
         <Badge data-debug-id="shell-view-port">:{record.server_port}</Badge>
+      ) : null}
+      {/* REQ-SHELL-6 §5: only a server WITH a port advertises live preview. */}
+      {supportsLivePreview(record) ? (
+        <Badge data-debug-id="shell-view-live-preview" title={`Supports live preview — serves on port ${record.server_port}`}>
+          preview
+        </Badge>
       ) : null}
       {exit ? (
         <StatusPill tone={exitTone(record)} data-debug-id="shell-view-exit">{exit}</StatusPill>
@@ -362,6 +372,7 @@ export function ShellDetailHeader({
   alert?: React.ReactNode;
 }) {
   const title = shellTitle(record);
+  const presentation = statusPresentation(record);
   const time = shellTimeLabel(record);
   const exit = exitLabel(record);
 
@@ -379,13 +390,18 @@ export function ShellDetailHeader({
       }
       id={record.session_id}
       status={
-        <StatusPill tone={statusTone(record.status)} data-debug-id="shell-view-status">
-          {statusLabel(record.status)}
+        <StatusPill tone={presentation.tone} title={presentation.title} data-debug-id="shell-view-status">
+          {presentation.label}
         </StatusPill>
       }
       badges={
         <>
           <Badge data-debug-id="shell-view-kind">{kindLabel(record.kind)}</Badge>
+          {supportsLivePreview(record) ? (
+            <Badge data-debug-id="shell-view-live-preview" title={`Supports live preview — serves on port ${record.server_port}`}>
+              preview
+            </Badge>
+          ) : null}
           {record.server_port > 0 ? (
             <Badge data-debug-id="shell-view-port">:{record.server_port}</Badge>
           ) : null}
@@ -612,18 +628,60 @@ export function ShellDetailBody({
   wide: boolean;
   onVerb: (verb: ShellVerb) => void;
 }) {
-  const isInteractiveCapable = record.kind === 'interactive' || record.kind === 'agent';
+  const presentation = statusPresentation(record);
+  // TWO DIFFERENT QUESTIONS that happen to share an answer today, kept apart on
+  // purpose rather than collapsed into one flag:
+  //
+  //   isInteractiveCapable — can the user TYPE into this session? A `shell` is the
+  //       only kind with an interactive form; a run/server pane is a read-only view
+  //       of a process nobody is at the keyboard of.
+  //   isCaptureless (below) — does a tee'd output log exist for it AT ALL?
+  //
+  // These are independent properties of a kind, and `shell` is simply the one kind
+  // that is currently both. An interactive REPL the bridge tees would be interactive
+  // and NOT captureless; a captureless non-interactive kind would be the reverse.
+  // Collapsed into a single `isShell`, either addition would have to rename a concept
+  // instead of adding a value — so the duplication is the cheaper of the two.
+  const isInteractiveCapable = record.kind === 'shell';
   const isRunning = record.status === 'running' || record.status === 'starting';
 
-  const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(
-    isInteractiveCapable && isRunning ? 'terminal' : 'log',
-  );
+  // REQ-SHELL-6A AC4. A `shell` has NO OUTPUT CAPTURE AT ALL — the bridge tees
+  // nothing for it, and `shell log` on one answers internal_error rather than an
+  // empty log. So the log pane is not merely empty for this kind, it is a pane for
+  // something that does not exist: its own helper text promises "the session's
+  // stdout as the bridge tees it", which for a shell is a claim about nothing.
+  //
+  // Hence no tab pair and no ShellLogViewer for a shell, ever. Before this the pair
+  // was offered unconditionally, and the effect below actively FORCED a terminated
+  // shell into the log tab — so the one state where the user is most likely to go
+  // looking (the session is over, what happened?) was exactly the state that showed
+  // them the broken pane.
+  //
+  // `run` and `server` are unchanged: both capture, both keep both tabs.
+  const isCaptureless = record.kind === 'shell';
 
+  // ONE PLACE decides the default pane, so the FIRST render and every later
+  // record change cannot disagree about it. They did: the guard for a captureless
+  // session lived only in the effect, while the useState initializer still fell
+  // through to 'log' for a TERMINATED shell. That is not a cosmetic one-frame flash
+  // — ShellLogViewer's useGetShellLogQuery has no `skip`, so it fires on mount, and
+  // a log request for a `shell` is one the bridge can only refuse. Opening a
+  // finished shell session therefore issued a guaranteed-failing request every time.
+  //
+  // A captureless session stays on the terminal whatever its status: there is no log
+  // to fall back to when it stops, only the scrollback already on screen.
+  const defaultViewMode: 'log' | 'terminal' =
+    isCaptureless || (isInteractiveCapable && isRunning) ? 'terminal' : 'log';
+
+  const [viewMode, setViewMode] = React.useState<'log' | 'terminal'>(defaultViewMode);
+
+  // session_id is a dep in its own right: switching to a different session of the
+  // same kind and status must still reset a pane the user had switched by hand.
   React.useEffect(() => {
-    setViewMode(isInteractiveCapable && isRunning ? 'terminal' : 'log');
-  }, [record.session_id, isInteractiveCapable, isRunning]);
+    setViewMode(defaultViewMode);
+  }, [record.session_id, defaultViewMode]);
 
-  const outputAction = (
+  const outputAction = isCaptureless ? null : (
     <div
       className="flex items-center gap-1 bg-neutral-soft p-0.5 rounded-[var(--radius-sm)] border border-subtle"
       data-debug-id="shell-view-output-tabs"
@@ -662,16 +720,22 @@ export function ShellDetailBody({
       <Card
         title={viewMode === 'terminal' ? 'Terminal' : 'Output'}
         helper={
-          viewMode === 'terminal'
-            ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support.'
-            : "Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
+          isCaptureless
+            ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support. A shell session keeps no output log — what you see here is all there is.'
+            : viewMode === 'terminal'
+              ? 'Interactive PTY terminal: type directly into the terminal below with input and resize support.'
+              : "Read-only: this is the session's stdout as the bridge tees it. You can follow it, page back through it and filter it — you cannot type into it from here."
         }
         action={outputAction}
         debugId="shell-view-output-card"
       >
         {viewMode === 'terminal' ? (
           <div data-debug-id="shell-view-terminal" className="mt-1">
-            <ShellTerminalPane session={record} />
+            {/* REQ-SHELL-18: keyed, because this pane is NOT single-session by construction.
+                In the desktop two-pane layout ShellListPage renders <ShellDetailPane
+                sessionId={selectedId}> unkeyed, so selecting a different row swaps `record`
+                through this component instead of remounting it. */}
+            <ShellTerminalPane key={record.session_id} session={record} />
           </div>
         ) : (
           /* showSessionVerbs={false}: this page's header already carries Restart and
@@ -704,7 +768,16 @@ export function ShellDetailBody({
             </Text>
           </DetailRow>
           <DetailRow label="Status">
-            <Text as="div" role="body-sm">{statusLabel(record.status)}</Text>
+            {/* REQ-SHELL-6 §8: the derived state leads, and the STORED status is still
+                shown beside it as "last known" rather than being hidden. The detail view
+                is the one place both belong — the pill has to pick one word, but here
+                there is room to say we cannot confirm it AND what it was. */}
+            <Text as="div" role="body-sm" data-debug-id="shell-view-status-detail">
+              {presentation.label}
+              {presentation.unknown ? (
+                <span className="text-muted"> · last known {statusLabel(record.status).toLowerCase()}</span>
+              ) : null}
+            </Text>
           </DetailRow>
           {record.pid > 0 ? (
             <DetailRow label="PID">

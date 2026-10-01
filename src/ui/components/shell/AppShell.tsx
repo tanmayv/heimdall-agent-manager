@@ -7,7 +7,7 @@ import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
 import { Badge, Breadcrumbs as UiBreadcrumbs, CommandPalette, PageShell, StatusDot } from '@ui';
-import { useViewport, MobileTabBar } from './responsive';
+import { useViewport, MobileTabBar, focusSuppressesMobileChrome } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { withApiBase } from '../../api/apiBase';
@@ -1453,26 +1453,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // restore them as soon as focus leaves the composer. Desktop is unaffected.
   useEffect(() => {
     if (!isMobile) { setMobileChromeSuppressed(false); return; }
-    const focusSuppressesChrome = (target: EventTarget | null) => {
-      const node = target as Element | null;
-      if (!node?.closest?.('[data-mobile-shell-chrome="hide-on-focus"]')) return false;
-      // Only suppress chrome for KEYBOARD-BEARING fields (the on-screen keyboard is
-      // what crowds the viewport). Tapping other focusable controls inside the
-      // composer — e.g. the runtime status chip or the model switcher button —
-      // must NOT hide the tab bar, because that reflow moves the element out from
-      // under the tap and eats the first click (requiring a second tap).
-      const el = node as HTMLElement;
-      if (el.isContentEditable) return true;
-      const tag = el.tagName;
-      if (tag === 'TEXTAREA') return true;
-      if (tag === 'INPUT') {
-        const type = (el as HTMLInputElement).type;
-        return !['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'file', 'color'].includes(type);
-      }
-      return false;
-    };
-    const updateFromActiveElement = () => setMobileChromeSuppressed(focusSuppressesChrome(document.activeElement));
-    const onFocusIn = (event: FocusEvent) => setMobileChromeSuppressed(focusSuppressesChrome(event.target));
+    // REQ-SHELL-28: the predicate moved to `./responsive` so the bottom-pinned composer
+    // reads the same rule — it has to know whether the tab bar below it is still mounted.
+    const updateFromActiveElement = () => setMobileChromeSuppressed(focusSuppressesMobileChrome(document.activeElement));
+    const onFocusIn = (event: FocusEvent) => setMobileChromeSuppressed(focusSuppressesMobileChrome(event.target));
     const onFocusOut = () => window.setTimeout(updateFromActiveElement, 0);
     document.addEventListener('focusin', onFocusIn);
     document.addEventListener('focusout', onFocusOut);

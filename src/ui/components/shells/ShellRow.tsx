@@ -34,8 +34,8 @@ import {
   shellBodyLines,
   shellTimeLabel,
   shellTitle,
-  statusLabel,
-  statusTone,
+  statusPresentation,
+  supportsLivePreview,
   verbsForSession,
   type ShellVerb,
 } from './shellModel';
@@ -71,6 +71,7 @@ export function ShellRow({
   const title = shellTitle(row);
   const body = shellBodyLines(row);
   const time = shellTimeLabel(row);
+  const presentation = statusPresentation(row);
   const exit = exitLabel(row);
   const menuVerbs = verbsForSession(row);
 
@@ -148,8 +149,13 @@ export function ShellRow({
         </>
       }
       status={
-        <StatusPill tone={statusTone(row.status)} data-debug-id={`shell-row-status-${sessionId}`}>
-          {statusLabel(row.status)}
+        /* REQ-SHELL-6 §8 / REQ-SHELL-10: `status_unknown` is rendered as its own thing
+           rather than as the stored status. Showing plain "Running" for a session whose
+           bridge has vanished asserts something we do not know; showing Failed/Killed
+           asserts something we know to be false. statusPresentation() owns that choice
+           in one place so no surface can drift — its `title` always says WHY. */
+        <StatusPill tone={presentation.tone} title={presentation.title} data-debug-id={`shell-row-status-${sessionId}`}>
+          {presentation.label}
         </StatusPill>
       }
       badges={
@@ -161,6 +167,18 @@ export function ShellRow({
               title={`This session declares port ${row.server_port}`}
             >
               :{row.server_port}
+            </Badge>
+          ) : null}
+          {/* REQ-SHELL-6 §5: the live-preview indicator, on the shells list as well as
+              the chain summary row. Rendered ONLY for a server that declares a port —
+              a server without one is perfectly valid and gets NO indicator, because a
+              preview affordance pointing at nothing would be a dead control. */}
+          {supportsLivePreview(row) ? (
+            <Badge
+              data-debug-id={`shell-row-live-preview-${sessionId}`}
+              title={`Supports live preview — serves on port ${row.server_port}`}
+            >
+              <Icon name="eye" size={11} /> preview
             </Badge>
           ) : null}
           {exit ? (

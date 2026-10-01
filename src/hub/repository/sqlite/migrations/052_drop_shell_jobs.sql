@@ -1,0 +1,32 @@
+-- REQ-SHELL-7: drop shell_jobs. The table's whole stack is deleted in this commit.
+--
+-- WHY THIS IS A DROP AND NOT A REPAIR. 039_shell_jobs.sql created this table for
+-- REQ-15's background-job list. REQ-SH-CONTRACT §1 replaced the concept with
+-- shell_sessions (041), but that migration only ever gutted the CODE to stubs and
+-- left the table, its routes and its callers wired up. The stubs did not work:
+-- report_shell_job returned Internal_Error unconditionally, so every completion the
+-- bridge reported was rejected, and list_shell_jobs returned an empty slice with no
+-- error, so the list route always yielded []. Nothing has written a meaningful row
+-- here since 041, and nothing can read one back.
+--
+-- WHAT IS LOST, stated rather than assumed. 039 stored exec_id, owner_user_id,
+-- agent_instance_id, cmd, status, exit_code and timestamps — METADATA ONLY. There is
+-- no output column: command output has always lived on the bridge host and was never
+-- stored in the hub (039's own header says so, and the rule survives unchanged in
+-- REQ-SHELL-8's bridge-side retention window). So the drop loses historical job
+-- metadata for a retired feature and nothing a user could ask to have back.
+--
+-- WHY 039 IS NOT EDITED OR DELETED. Migrations are content-addressed and 039 is
+-- already applied on every live database; the ledger keys on the filename and is
+-- append-only. Removing it would rewrite history for any DB that ran it — and the
+-- table_column_exists special case for 039 (migrations.odin) exists precisely to keep
+-- that ledger consistent for databases whose table predates it. Forward-only: 039
+-- still creates the table on a fresh DB and this migration then drops it.
+--
+-- IF EXISTS, so this is idempotent on a database that never had the table — which is
+-- what makes a special case in migrations.odin unnecessary rather than merely absent.
+--
+-- ONE STATEMENT, deliberately: there is no partial-apply window to reason about, and
+-- SQLite drops the table's index (shell_jobs_instance) with it, so naming the index
+-- separately would only add a statement that can fail on its own.
+DROP TABLE IF EXISTS shell_jobs;

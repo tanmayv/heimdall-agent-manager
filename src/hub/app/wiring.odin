@@ -263,7 +263,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		event_bus           = &graph.event_bus,
 		ids                 = &graph.ids,
 		clock               = &graph.clock,
+		// REQ-SHELL-5: writes a run's single `shell_run` marker into the triggering
+		// conversation. graph.content is constructed above, so the order holds.
+		content             = &graph.content,
 	)
+	// REQ-SHELL-9 trigger A: a closed chain reaps its servers. Assigned HERE, after the
+	// shell-session service is constructed, rather than next to the other two taskchain
+	// dependencies at their construction above — graph.taskchains is built before this
+	// service exists, so wiring it there would store a pointer to a zero value.
+	graph.taskchains.shell_sessions = &graph.shell_session_service
 	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
 		auth                = &graph.auth,
 		ws_tickets          = &graph.user_handlers.ws_tickets,
@@ -288,6 +296,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.shell_session_rest_handlers = http.Shell_Session_Rest_Handlers{
 		auth           = &graph.auth,
 		shell_sessions = &graph.shell_session_service,
+		// REQ-SHELL-10 work item 3: read-only, to derive the bridge-offline session
+		// state the serializer reports.
+		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry}
 	graph.agent_handlers = http.Agent_Handlers{
@@ -575,8 +586,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/create", rawptr(&graph.agent_action_handlers), http.agent_action_card_create_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/list", rawptr(&graph.agent_action_handlers), http.agent_action_card_list_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/report", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_report_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/list", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/show", rawptr(&graph.agent_action_handlers), http.agent_action_card_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)
@@ -669,6 +678,10 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/signal", rawptr(&graph.shell_session_rest_handlers), http.shell_session_signal_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/restart", rawptr(&graph.shell_session_rest_handlers), http.shell_session_restart_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/port", rawptr(&graph.shell_session_rest_handlers), http.shell_session_set_port_handler)
+	// REQ-SHELL-2 §3: convert a live FOREGROUND run to background at runtime. The
+	// control REQ-SHELL-6 builds in the UI calls this; it is also the shape the
+	// agent-liveness hook uses, so both go through one transition.
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/background", rawptr(&graph.shell_session_rest_handlers), http.shell_session_background_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/log", rawptr(&graph.shell_session_rest_handlers), http.shell_session_log_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/capture", rawptr(&graph.shell_session_rest_handlers), http.shell_session_capture_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/pane", rawptr(&graph.shell_session_rest_handlers), http.shell_session_pane_handler)

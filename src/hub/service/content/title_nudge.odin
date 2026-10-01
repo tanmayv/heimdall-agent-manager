@@ -154,43 +154,20 @@ deliver_title_nudge :: proc(s: ^Content_Service, c: domain.Chat_Conversation) {
 }
 
 // platform_rfc3339_to_unix_ms parses the hub's canonical "YYYY-MM-DDTHH:MM:SSZ"
-// UTC timestamp into unix milliseconds. Mirrors the agent-service parser; kept
-// local to the content package to avoid a cross-service dependency. Returns
-// ok=false for empty/malformed input so callers treat it as "unknown/never".
+// UTC timestamp into unix milliseconds. Returns ok=false for empty/malformed input
+// so callers treat it as "unknown/never".
+//
+// DELEGATES to platform.rfc3339_to_unix_ms (REQ-SHELL-9 boy-scout). This body was a
+// character-for-character copy of the agent service's, and its own comment explained
+// why — "kept local to the content package to avoid a cross-service dependency". That
+// constraint was real and it is now gone: the parser lives in platform, which this
+// package already imports, so there is no cross-SERVICE dependency to avoid.
+//
+// ONE BEHAVIOUR CHANGE, deliberate: the local copy accepted a 19-character timestamp
+// and the agent service's required 20, so a value missing its trailing Z parsed here
+// and not there. The shared proc takes the stricter reading. Every timestamp this
+// package reads is produced by platform.clock_now and is exactly 20 characters, so the
+// laxer check only ever admitted input the hub does not generate.
 platform_rfc3339_to_unix_ms :: proc(s: string) -> (i64, bool) {
-	t := strings.trim_space(s)
-	if len(t) < 19 do return 0, false
-	if t[4] != '-' || t[7] != '-' || t[10] != 'T' || t[13] != ':' || t[16] != ':' do return 0, false
-	p2 :: proc(str: string) -> (int, bool) {
-		if len(str) < 2 do return 0, false
-		a := int(str[0]) - '0'; b := int(str[1]) - '0'
-		if a < 0 || a > 9 || b < 0 || b > 9 do return 0, false
-		return a*10 + b, true
-	}
-	p4 :: proc(str: string) -> (int, bool) {
-		hi, ok1 := p2(str[0:2]); lo, ok2 := p2(str[2:4])
-		if !ok1 || !ok2 do return 0, false
-		return hi*100 + lo, true
-	}
-	year, y_ok := p4(t[0:4])
-	month, mo_ok := p2(t[5:7])
-	day, d_ok := p2(t[8:10])
-	hour, h_ok := p2(t[11:13])
-	minute, mi_ok := p2(t[14:16])
-	second, s_ok := p2(t[17:19])
-	if !(y_ok && mo_ok && d_ok && h_ok && mi_ok && s_ok) do return 0, false
-	if month < 1 || month > 12 do return 0, false
-	days := days_from_civil_content(year, month, day)
-	total_secs := i64(days) * 86400 + i64(hour) * 3600 + i64(minute) * 60 + i64(second)
-	return total_secs * 1000, true
-}
-
-days_from_civil_content :: proc(y_in, m, d: int) -> int {
-	y := y_in
-	if m <= 2 do y -= 1
-	era := (y if y >= 0 else y - 399) / 400
-	yoe := y - era * 400
-	doy := (153 * (m + (-3 if m > 2 else 9)) + 2) / 5 + d - 1
-	doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
-	return era * 146097 + doe - 719468
+	return platform.rfc3339_to_unix_ms(s)
 }

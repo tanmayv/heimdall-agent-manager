@@ -3,10 +3,15 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 @(test)
 test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("task-chain-create-params-plaintext")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{
 		"--title", "Alpha Task Chain",
 		"--description", "Autonomous task chain for deployment.",
@@ -34,6 +39,10 @@ test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
 
 @(test)
 test_task_chain_create_params_aliases :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("task-chain-create-params-aliases")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{
 		"--title", "Beta Chain",
 		"--coordinator-agent-id", "agt_coord_2",
@@ -53,6 +62,10 @@ test_task_chain_create_params_aliases :: proc(t: ^testing.T) {
 
 @(test)
 test_task_chain_create_params_positional_title :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("task-chain-create-params-positional-title")
+	defer ctl_vault_test_sandbox_close(&sb)
 	args := []string{
 		"--coordinator", "agt_coord_3",
 	}

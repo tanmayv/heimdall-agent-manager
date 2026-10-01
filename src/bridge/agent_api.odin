@@ -19,6 +19,7 @@ package main
 // forwards to hub with the bridge token + X-Heimdall-Instance-Token. Agents
 // never see a hub URL or hub token.
 
+import "core:strconv"
 import "core:strings"
 
 Bridge_Agent_Route_Kind :: enum {
@@ -233,11 +234,15 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.cards.accept":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/accept"}
 
-	// ---- shell commands (bridge-local subprocess, output stays on this host) ---
-	case "agent.shell_cmd.exec":
-		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.exec"}
-	case "agent.shell_cmd.read":
-		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.read"}
+	// ---- shell sessions -------------------------------------------------------
+	// agent.shell.wait is LOCAL, unlike every other agent.shell.* verb, which is a
+	// REST call relayed to the hub. It has to be: it is the block that makes a
+	// FOREGROUND run foreground, and the hub transport cannot carry a call that
+	// lasts as long as the run (see shell_run_wait.odin). The bridge that owns the
+	// process is the only party that can park on it without a hub round trip or a
+	// poller.
+	case "agent.shell.wait":
+		return Bridge_Agent_Route{kind = .Local, local_op = "shell.wait"}
 
 	// ---- vault commands (bridge-local vault key inspection) --------------------
 	case "agent.vault.status":
@@ -285,8 +290,8 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // cards
 	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
 	     "agent.cards.discard", "agent.cards.accept",
-	     // shell commands (bridge-local)
-	     "agent.shell_cmd.exec", "agent.shell_cmd.read",
+	     // shell sessions (bridge-local block on a hub-created run)
+	     "agent.shell.wait",
 	     // vault commands (bridge-local)
 	     "agent.vault.status", "agent.vault.get":
 		return true
@@ -375,7 +380,7 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			strings.write_string(&b, "{\"origin\":\"self\",\"daemon_id\":\"")
 			bridge_local_write_json_string(&b, string(bridge_config.daemon_id))
 			strings.write_string(&b, "\",\"local_endpoint_port\":")
-			strings.write_string(&b, bridge_agent_itoa(int(bridge_config.local_endpoint_port)))
+			bridge_agent_write_int(&b, int(bridge_config.local_endpoint_port))
 			strings.write_string(&b, "}")
 			// configured peers are pruned in single-node Cloudtop model
 		}
@@ -383,8 +388,7 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, "]}")
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
-	if op == "shell_cmd.exec" do return bridge_shell_cmd_exec(request_id, params, rec)
-	if op == "shell_cmd.read" do return bridge_shell_cmd_read(request_id, params, rec)
+	if op == "shell.wait" do return bridge_shell_wait_rpc(request_id, params, rec)
 	if op == "vault.status" {
 		configured, permissions_valid, key_length := bridge_vault_key_status()
 		b := strings.builder_make()
@@ -393,7 +397,7 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, ",\"permissions_valid\":")
 		strings.write_string(&b, "true" if permissions_valid else "false")
 		strings.write_string(&b, ",\"key_length\":")
-		strings.write_string(&b, bridge_agent_itoa(key_length))
+		bridge_agent_write_int(&b, key_length)
 		strings.write_byte(&b, '}')
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
@@ -407,28 +411,34 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, "{\"key\":\"")
 		bridge_local_write_json_string(&b, key)
 		strings.write_string(&b, "\",\"key_length\":")
-		strings.write_string(&b, bridge_agent_itoa(len(key)))
+		bridge_agent_write_int(&b, len(key))
 		strings.write_byte(&b, '}')
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown local op: ", op}))
 }
 
-// bridge_agent_itoa: tiny positive-int to string without importing fmt here.
-bridge_agent_itoa :: proc(n: int) -> string {
-	if n == 0 do return "0"
-	v := n
-	neg := v < 0
-	if neg do v = -v
+// bridge_agent_write_int formats n straight into the builder. Allocates nothing:
+// the digits land in a stack buffer that dies with the call, so there is no
+// ownership question for a caller to get wrong. This is the right helper for the
+// overwhelmingly common case of splicing an int into JSON being built.
+//
+// It replaces the old bridge_agent_itoa, whose ownership depended on its VALUE
+// (the literal "0" for n == 0, a strings.clone otherwise), which made every
+// possible caller wrong: dropping the result leaked for n != 0, and deleting it
+// was a bad free for n == 0 -- and n == 0 is the most common exit code there is.
+bridge_agent_write_int :: proc(b: ^strings.Builder, n: int) {
 	buf: [24]byte
-	i := len(buf)
-	for v > 0 {
-		i -= 1
-		buf[i] = byte('0' + (v % 10))
-		v /= 10
-	}
-	if neg { i -= 1; buf[i] = '-' }
-	return strings.clone(string(buf[i:]))
+	strings.write_string(b, strconv.write_int(buf[:], i64(n), 10))
+}
+
+// bridge_agent_itoa_buf formats n into the CALLER-SUPPLIED buffer and returns a
+// slice of it. The result is never owned by the callee and must never be freed by
+// the caller; it stays valid exactly as long as buf does. Use this when the digits
+// are needed as a string rather than written to a builder. buf should be >= 24
+// bytes to hold any i64 with sign.
+bridge_agent_itoa_buf :: proc(buf: []byte, n: int) -> string {
+	return strconv.write_int(buf, i64(n), 10)
 }
 
 // bridge_agent_json_data_array returns the raw text of the top-level "data"

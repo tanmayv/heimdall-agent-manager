@@ -413,7 +413,7 @@ bridge_lsp_error_frame_json :: proc(session_id, reason: string, exit_code: int) 
 	strings.write_string(&b, "\",\"reason\":\"")
 	bridge_runtime_write_json_string(&b, reason)
 	strings.write_string(&b, "\",\"exit_code\":")
-	strings.write_string(&b, bridge_agent_itoa(exit_code))
+	bridge_agent_write_int(&b, exit_code)
 	strings.write_byte(&b, '}')
 	return strings.to_string(b)
 }

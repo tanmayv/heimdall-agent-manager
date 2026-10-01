@@ -5,7 +5,9 @@
 // several sessions can be open at once, one is focused, and each remembers the path
 // the user navigated to inside it so switching tabs does not reset the iframe URL.
 //
-// Nothing here talks to the network. Tabs are opened from ShellsPanel and closed
+// Nothing here talks to the network. Tabs are opened by the four components that
+// dispatch `openTab` — ShellListPage, ShellDetail, ChainActiveServersPanel and
+// BottomDock — and closed
 // either by the user or automatically once the underlying session stops running —
 // the auto-close lives in PreviewSidebar, which watches each session and dispatches
 // closeTab (see the note there on why it is a per-tab watcher and not a WS

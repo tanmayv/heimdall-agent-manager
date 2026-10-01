@@ -1,0 +1,64 @@
+-- REQ-SHELL-4: run_seq — which RUN of a session an exit report is about.
+--
+-- THE GAP THIS CLOSES. REQ-SHELL-4 makes the bridge's shell_exited queue durable,
+-- so an exit queued while the hub is unreachable survives a bridge restart and is
+-- delivered on reconnect. That is the whole point of the task, and it introduces a
+-- hazard the in-memory queue never had: an exit can now outlive the run it
+-- describes.
+--
+-- A session_id is NOT a run. shell_session_restart re-spawns under the SAME
+-- session_id (service, "shell_session_restart"), the bridge re-spawns under the
+-- same shell_id (bridge_hub_handle_shell_restart), and the row goes back to
+-- 'running'. So: run #1 exits while the bridge is offline and its exit is queued on
+-- disk; the session is later restarted and is genuinely alive; the bridge
+-- reconnects and delivers run #1's exit. Without a way to tell the runs apart the
+-- hub marks a LIVE session terminal on the strength of a stale exit — the exact
+-- "hub says terminal, bridge says running" divergence this chain exists to
+-- eliminate, manufactured by the durability mechanism itself.
+--
+-- WHY A NEW COLUMN, when the row already carries timestamps and a pid.
+--   started_at  — assigned exactly ONCE, in shell_session_create, and re-stamped by
+--                 nothing: neither shell_session_restart nor the bridge's restart
+--                 handler touches it. It is also an INPUT to a safety check —
+--                 bridge_shell_session_pid_is_plausible matches it against
+--                 `ps -o lstart=` within 5s to prove a direct-child run is still
+--                 alive (REQ-SHELL-2 P6) — so re-stamping it would mutate an
+--                 approved liveness guard rather than add a field.
+--   pid         — the hub re-stamps it on restart, but the BRIDGE does not
+--                 (bridge_shell_session_update_status writes status/exit_code/
+--                 exit_code_set and nothing else). The bridge is the side that
+--                 WRITES the envelope, so a discriminator the bridge cannot
+--                 maintain is not a discriminator at all.
+-- Neither can name a run, so run identity is stated explicitly instead of inferred
+-- from a field that means something else.
+--
+-- THE CONTRACT, so no reader has to reconstruct it:
+--   * The HUB is the authority. It follows the precedent REQ-SHELL-1 §8 set for
+--     started_at — the hub assigns, the bridge echoes — rather than inventing a
+--     second mechanism with a second source of truth.
+--   * INCREMENTED ONLY BY shell_session_restart. Nothing else moves it, so its
+--     value is exactly "how many times this session has been restarted", and a run
+--     is (session_id, run_seq).
+--   * Shipped to the bridge in the shell_start / shell_restart spec, persisted by
+--     the bridge on the session and in its on-disk spec, and stamped on every
+--     shell_exited envelope.
+--   * The hub DISCARDS an exit whose run_seq does not match the row's current
+--     value. Discarded, not rejected: a stale envelope is not a failure, it is a
+--     truthful answer about a run that no longer exists, and there is nothing for
+--     the bridge to retry.
+--
+-- 0 IS THE FIRST RUN, and the default is what makes this migration safe on a live
+-- database. Every existing row becomes run 0, every bridge spec written before this
+-- change parses a missing key as 0, and a session that has never been restarted
+-- agrees on 0 from both ends without a backfill.
+--
+-- INTEGER NOT NULL DEFAULT 0 rather than nullable, matching background: the column
+-- is never "unknown", so no reader has to branch on NULL.
+ALTER TABLE shell_sessions ADD COLUMN run_seq INTEGER NOT NULL DEFAULT 0;
+
+-- NO INDEX, deliberately. run_seq is never a lookup key or a filter: it is read
+-- from a row the caller has ALREADY fetched by primary key (shell_session_handle_exited
+-- resolves (bridge_id, session_id) first and only then compares), and it is written
+-- by an owner-scoped upsert of that same row. An index here would be maintained on
+-- every session write to serve no query — the opposite of the reasoning that made
+-- 050's pending-kill index partial.

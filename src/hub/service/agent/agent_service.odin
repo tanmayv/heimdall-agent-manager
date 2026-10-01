@@ -924,23 +924,65 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, active_instance_ids: []string) -> int {
+// reconcile_bridge_heartbeat marks instances the bridge no longer reports active
+// as unreachable, and refreshes last_seen_at for the ones it does.
+//
+// Returns the instances it marked unreachable, so callers can fan out on each one
+// rather than only learning how many changed. That is what the other two
+// liveness paths (mark_bridge_instances_unreachable, reap_stale_instances) already
+// do, and REQ-SHELL-2 §9 needs the identities: this is the only SINGLE-INSTANCE
+// unreachability signal in the hub — the bridge is still connected and reporting,
+// and just this one instance has gone — so it is the most precise trigger for the
+// foreground-run liveness rule. The caller owns the returned slice.
+reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, active_instance_ids: []string) -> []domain.Agent_Instance {
 	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
-	if err.code != .None do return 0
-	defer domain.agent_instances_destroy(instances)
-	changed := 0
+	if err.code != .None do return nil
+	// NO BLANKET `defer agent_instances_destroy(instances)` HERE. The elements this
+	// proc RETURNS must outlive it, and a deferred destroy frees every element on the
+	// way out — handing the caller freed strings, which it then frees again. Ownership
+	// is therefore per element: an instance that escapes into `changed` is the
+	// CALLER'S to destroy, every other one is destroyed here, and only the backing
+	// slice is deleted at the end.
+	//
+	// This mirrors mark_bridge_instances_unreachable and reap_stale_instances exactly,
+	// which is deliberate: all three return instances to a caller that destroys them,
+	// so a third ownership pattern here would be a third thing to get wrong.
+	changed := make([dynamic]domain.Agent_Instance)
 	now := platform.clock_now(service.clock)
 	for i in 0..<len(instances) {
 		inst := instances[i]
 		reported_active := string_slice_contains(active_instance_ids, inst.agent_instance_id)
 		if runtime_expected_active(inst.runtime_status) && !reported_active {
-			to_save := inst
-			to_save.runtime_status = "unreachable"
-			to_save.updated_at = now
-			apply_runtime_startup_projection(&to_save, now)
-			_, saved, _ := iface.agent_save_instance(service.agents, to_save)
-			if saved do changed += 1
-		} else if reported_active {
+			// Mutated IN PLACE rather than through a copy, and every overwritten field
+			// is freed then CLONED. A shallow copy would alias inst's strings, so the
+			// copy could not escape while inst was destroyed; and assigning a literal
+			// ("unreachable") or aliasing `now` would hand the caller static storage and
+			// one shared pointer to free once per instance.
+			//
+			// apply_runtime_startup_projection is deliberately NOT used on this path for
+			// the same reason — it assigns literals and aliases `now`, which is correct
+			// only for a struct that stays local. runtime_status is always "unreachable"
+			// here, so the projection's branch for it is inlined verbatim: startup_status
+			// "stopped", stopped_at now, and the current-task pointer cleared.
+			if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
+			inst.runtime_status = strings.clone("unreachable")
+			if len(inst.updated_at) > 0 do delete(inst.updated_at)
+			inst.updated_at = strings.clone(now)
+			if len(inst.startup_status) > 0 do delete(inst.startup_status)
+			inst.startup_status = strings.clone("stopped")
+			if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
+			inst.stopped_at = strings.clone(now)
+			clear_instance_current_task(&inst)
+			saved, ok, _ := iface.agent_save_instance(service.agents, inst)
+			if ok {
+				// Escapes to the caller, which owns it from here. NOT destroyed below.
+				append(&changed, saved)
+			} else {
+				domain.agent_instance_destroy(&inst)
+			}
+			continue
+		}
+		if reported_active {
 			// The heartbeat's active_instance_ids IS the liveness proof for a running
 			// instance: refresh last_seen_at so the stale reaper (reap_stale_instances,
 			// which checks last_seen_at age) does not falsely mark a steady-state
@@ -948,14 +990,27 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 			// a running-but-idle agent's last_seen_at only advanced on a status change,
 			// so after BRIDGE_INSTANCE_STALE_MS it was reaped despite every heartbeat
 			// reporting it active.
+			//
+			// `to_save` is a local copy that does NOT escape, so aliasing `now` is fine
+			// and nothing is cloned: the repository copies into the DB and returns the
+			// input, and `inst` below still owns its original strings.
 			if inst.last_seen_at != now {
 				to_save := inst
 				to_save.last_seen_at = now
 				_, _, _ = iface.agent_save_instance(service.agents, to_save)
 			}
 		}
+		// Did not escape: this proc owns it.
+		domain.agent_instance_destroy(&inst)
 	}
-	return changed
+	// The backing slice only — its elements have each been destroyed above or handed
+	// to the caller.
+	delete(instances)
+	if len(changed) == 0 {
+		delete(changed)
+		return nil
+	}
+	return changed[:]
 }
 
 // detect_superseded_instances is the H7 cross-bridge reap detector. Given the
@@ -1083,48 +1138,20 @@ reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []
 // rfc3339_to_unix_ms parses the hub's canonical "YYYY-MM-DDTHH:MM:SSZ" UTC
 // timestamps into unix milliseconds. Returns ok=false for empty/malformed input
 // so callers skip rather than misclassify. Only the fixed hub format is handled.
+//
+// DELEGATES to platform.rfc3339_to_unix_ms (REQ-SHELL-9 boy-scout). The body used to
+// live here, duplicated character-for-character in the content package, and a third
+// copy was about to be written for the shell-session age reap. It now sits next to
+// format_rfc3339_utc, the proc that produces the strings it reads. Kept as a named
+// wrapper rather than deleted so this package's callers and tests are unaffected.
 rfc3339_to_unix_ms :: proc(s: string) -> (i64, bool) {
-	t := strings.trim_space(s)
-	if len(t) < 20 do return 0, false
-	if t[4] != '-' || t[7] != '-' || t[10] != 'T' || t[13] != ':' || t[16] != ':' do return 0, false
-	parse2 :: proc(str: string) -> (int, bool) {
-		if len(str) < 2 do return 0, false
-		a := int(str[0]) - '0'; b := int(str[1]) - '0'
-		if a < 0 || a > 9 || b < 0 || b > 9 do return 0, false
-		return a*10 + b, true
-	}
-	parse4 :: proc(str: string) -> (int, bool) {
-		hi, ok1 := parse2(str[0:2]); lo, ok2 := parse2(str[2:4])
-		if !ok1 || !ok2 do return 0, false
-		return hi*100 + lo, true
-	}
-	year, y_ok := parse4(t[0:4])
-	month, mo_ok := parse2(t[5:7])
-	day, d_ok := parse2(t[8:10])
-	hour, h_ok := parse2(t[11:13])
-	minute, mi_ok := parse2(t[14:16])
-	second, s_ok := parse2(t[17:19])
-	if !(y_ok && mo_ok && d_ok && h_ok && mi_ok && s_ok) do return 0, false
-	if month < 1 || month > 12 do return 0, false
-	// Days from the Unix epoch to the first of the given year-month (proleptic
-	// Gregorian), then add day-of-month. Uses a civil-from-date algorithm.
-	days := days_from_civil(year, month, day)
-	total_secs := i64(days) * 86400 + i64(hour) * 3600 + i64(minute) * 60 + i64(second)
-	return total_secs * 1000, true
+	return platform.rfc3339_to_unix_ms(s)
 }
 
 // days_from_civil returns days since 1970-01-01 for a proleptic Gregorian date.
-// Based on Howard Hinnant's well-known constant-time algorithm.
+// Delegates for the same reason as above; the algorithm lives in platform.
 days_from_civil :: proc(y_in, m, d: int) -> int {
-	y := y_in
-	if m <= 2 do y -= 1
-	era := (y if y >= 0 else y - 399) / 400
-	yoe := y - era * 400
-	// month-of-year shifted so March=0 (Jan/Feb belong to the previous year).
-	mp := (m + 9) %% 12
-	doy := (153 * mp + 2) / 5 + d - 1
-	doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
-	return era * 146097 + doe - 719468
+	return platform.days_from_civil(y_in, m, d)
 }
 
 require_enabled_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (bool, domain.Domain_Error) {

@@ -48,7 +48,6 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
-	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
 	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	case "issue", "issues": ctl_issues_command(cmd[idx:], args); return
 	case "vault":           ctl_vault_command(cmd[idx:], args); return
@@ -94,44 +93,6 @@ ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
 	if v := option_value(args, "--not-in-conversation-ids", ""); v != "" do append(&fields, json_kv("not_in_conversation_ids", v))
 	if v := option_value(args, "--exclude", ""); v != "" do append(&fields, json_kv("exclude", v))
 	ctl_agent_call(endpoint, token, "agent.search", json_object_from_slice(fields[:]))
-}
-
-// ---- shell-cmd ----------------------------------------------------------
-// Agents run shell commands on their local Bridge host via two RPCs:
-//   exec  — submit a command line for the Bridge to run locally
-//   read  — fetch the status/output of a previously submitted exec by id
-// This is the CTL-side dispatch only; the Bridge handler is REQ-14. Output is
-// the raw JSON envelope from the local endpoint (curators consume it
-// programmatically). The non-agent user-mode path is unaffected.
-ctl_agentmode_shell_cmd :: proc(endpoint, token: string, tokens, args: []string) {
-	verb := pos(tokens, 0)
-	switch verb {
-	case "exec":
-		cmd := option_value(args, "--cmd", "")
-		if strings.trim_space(cmd) == "" {
-			print_agent_help([]string{"shell-cmd"})
-			return
-		}
-		// --cwd is optional; empty is sent through and the Bridge treats it as
-		// "inherit my working directory" (REQ-24).
-		cwd := option_value(args, "--cwd", "")
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd), json_kv("cwd", cwd)))
-	case "read":
-		id := pos(tokens, 1)
-		if strings.trim_space(id) == "" {
-			print_agent_help([]string{"shell-cmd"})
-			return
-		}
-		// Optional paging (REQ-25). Defaults (offset 0, limit 100, no grep)
-		// reproduce the historic tail-100 output. offset/limit are validated as
-		// non-negative integers so a malformed flag can never emit invalid JSON.
-		offset := ctl_shell_uint_flag(args, "--offset", "0")
-		limit := ctl_shell_uint_flag(args, "--limit", "100")
-		grep := option_value(args, "--grep", "")
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id), json_kv_raw("offset_lines", offset), json_kv_raw("limit_lines", limit), json_kv("grep_pattern", grep)))
-	case:
-		print_agent_help([]string{"shell-cmd"})
-	}
 }
 
 // ctl_shell_uint_flag returns the value of a non-negative integer flag as a bare
@@ -267,6 +228,9 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case "set-title":
 		title := option_value(args, "--title", pos(tokens, 1))
 		if title == "" { print_agent_help([]string{"task-chain"}); return }
+		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
+		// is in the units the caller controls (the Hub only sees ciphertext).
+		if !is_vault_armored(title) && !ctl_check_plaintext_cap("chain title", title, CTL_CHAIN_TITLE_MAX_BYTES) { os.exit(1) }
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 		if key_ok && !is_vault_armored(title) {
 			if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
@@ -282,6 +246,9 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		// coordinator-only; pass "" to clear. --chain defaults to your chain.
 		desc := option_value(args, "--description", pos(tokens, 1))
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
+		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
+		// is in the units the caller controls (the Hub only sees ciphertext).
+		if !is_vault_armored(desc) && !ctl_check_plaintext_cap("chain description", desc, CTL_CHAIN_DESCRIPTION_MAX_BYTES) { os.exit(1) }
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 		if key_ok && desc != "" && !is_vault_armored(desc) {
 			if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {
@@ -1293,6 +1260,7 @@ ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
 	if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
+	if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
 	return json_object_from_slice(fields[:])
 }
 
@@ -1338,6 +1306,7 @@ ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string 
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
 	if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
+	if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
 	return json_object_from_slice(fields[:])
 }
 
@@ -1620,10 +1589,10 @@ print_agent_help :: proc(cmd: []string) {
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
-	case "shell-cmd": print_help_shell_cmd(); return
 	case "shell":     print_help_shell(); return
 	case "issue", "issues": print_issues_help(); return
 	case "project", "projects": print_projects_help(); return
+	case "vault": print_vault_help(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1648,9 +1617,9 @@ print_help_overview :: proc() {
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
 	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
-	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
 	fmt.println("  projects    Manage projects (list, show, create, update)")
+	fmt.println("  vault       Manage the local zero-knowledge vault key (status, set-key, show, clear)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")
@@ -1669,36 +1638,6 @@ print_help_overview :: proc() {
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body \"Can you LGTM inst_task_1?\"")
 	fmt.println("")
 	fmt.println("  ham-ctl <group> --help    # detailed help for any group")
-}
-
-print_help_shell_cmd :: proc() {
-	fmt.println("ham-ctl shell-cmd — run a shell command on your local Bridge host")
-	fmt.println("")
-	fmt.println("VERBS")
-	fmt.println("  exec --cmd <command>   Submit a shell command for the Bridge to run locally.")
-	fmt.println("                         Returns an exec id; read it back with `shell-cmd read`.")
-	fmt.println("  read <exec-id>         Fetch the status/output of a previously submitted exec.")
-	fmt.println("                         By default returns the last 100 lines; page the full log")
-	fmt.println("                         with --offset/--limit/--grep.")
-	fmt.println("")
-	fmt.println("FLAGS")
-	fmt.println("  --cmd <command>        The command line to run (required for exec).")
-	fmt.println("  --cwd <dir>            Working directory to run the command in (exec, optional).")
-	fmt.println("                         A leading ~ is expanded and the directory must exist.")
-	fmt.println("                         If omitted, the command inherits the Bridge's working")
-	fmt.println("                         directory (typically $HOME).")
-	fmt.println("  --offset <N>           read: skip the first N lines of the output (0-indexed;")
-	fmt.println("                         default 0).")
-	fmt.println("  --limit <N>            read: return at most N lines (default 100).")
-	fmt.println("  --grep <pattern>       read: return only lines containing <pattern>, each")
-	fmt.println("                         prefixed with its original line number.")
-	fmt.println("")
-	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd \"odin build src/bridge\"")
-	fmt.println("  ham-ctl shell-cmd exec --cmd \"nix develop --command bash -c 'odin build src/ctl'\"")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123 --grep error")
-	fmt.println("  ham-ctl shell-cmd read exec_abc123 --offset 200 --limit 100")
 }
 
 print_help_bridge :: proc() {
@@ -1812,11 +1751,12 @@ print_help_task :: proc() {
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
 	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>]")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
 	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>]  --reviewer/--depends-on REPLACE the")
-	fmt.println("      whole list (pass \"\" to clear). Only the fields you pass change.")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]")
+	fmt.println("      --reviewer/--depends-on REPLACE the whole list (pass \"\" to clear); --bridge \"\" clears")
+	fmt.println("      the pin. Only the fields you pass change.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
 	fmt.println("      [--notify <id,id>]")
 	fmt.println("  status <task-id> --status <s>           Change status; use in_validation to submit for")

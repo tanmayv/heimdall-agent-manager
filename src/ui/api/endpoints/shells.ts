@@ -1,8 +1,22 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
+import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 
-export type ShellSessionKind = 'agent' | 'interactive' | 'server' | 'command';
+// REQ-SHELL-1 collapsed the model to three kinds: `command` became `run`,
+// `interactive` became `shell`, and `agent` was dropped (agent terminal panes were
+// never shell sessions). Hard rename — the hub rejects the old spellings.
+export type ShellSessionKind = 'run' | 'shell' | 'server';
 export type ShellSessionStatus = 'starting' | 'running' | 'exited' | 'killed' | 'failed';
+
+// The outcome of an accepted kill (REQ-SHELL-3). Both values are successes: a kill is
+// durable once accepted, and these say whether it has been DELIVERED to the bridge or
+// is QUEUED against a bridge that is currently offline.
+export type ShellKillOutcome = 'delivered' | 'queued';
+
+export interface ShellKillResult {
+  outcome: ShellKillOutcome;
+  // The hub's own sentence for the outcome, safe to show verbatim.
+  message: string;
+}
 
 export type ShellSession = {
   session_id: string;
@@ -28,6 +42,24 @@ export type ShellSession = {
   finished_at: string;
   started_at: string;
   last_activity_at: string;
+  // REQ-SHELL-2 §3: a run is foreground until it is explicitly backgrounded, and only
+  // a background run notifies on completion. The UI reads this to decide whether to
+  // offer the convert-to-background control at all.
+  background: boolean;
+  // The conversation a run was triggered from. A run appears ONLY there (the chain's
+  // CONVERSATION SCOPE decision), so the run indicator uses it to refuse to pin a
+  // session that belongs to some other thread.
+  conversation_id: string;
+  // REQ-SHELL-10 §3. Both are DERIVED server-side and never stored; they QUALIFY
+  // `status` and never replace it, so read them ALONGSIDE status rather than
+  // branching on a status enum value that does not exist.
+  //   status_unknown  the owning bridge is gone, so this row's status cannot be
+  //                   vouched for until it returns. A TERMINAL session is never
+  //                   status_unknown — a finished job is a fact about the past.
+  //   bridge_online   the raw fact status_unknown derives from, so the UI can say WHY
+  //                   and can honestly describe a kill as durable-and-queued.
+  status_unknown: boolean;
+  bridge_online: boolean;
 };
 
 export type ShellSessionPage = {
@@ -54,6 +86,48 @@ export type ShellLogResponse = {
 };
 
 /**
+ * Why a log could not be shown. REQ-SHELL-6 §7 requires the three outcomes to render
+ * DISTINCTLY and never collapse into one blank pane, and the hub already keeps them
+ * apart by ERROR CODE rather than by emptiness
+ * (shell_session_service.odin:1037-1046):
+ *
+ *   `bridge_offline`  409 — the bridge owning this session is not connected, so its
+ *                     output cannot be read RIGHT NOW. Transient; it may return.
+ *   `gone`            410 — the retention window reclaimed the output (REQ-SHELL-8).
+ *                     Permanent; it will never come back.
+ *   anything else     an ordinary failure, shown with the hub's own sentence.
+ *
+ * The genuinely-empty case is NOT in this union on purpose: it is a SUCCESS (200 with
+ * zero lines), not an unavailability, and modelling it here would invite a caller to
+ * treat "printed nothing" as an error.
+ */
+export type ShellLogUnavailableReason = 'bridge_offline' | 'gone' | 'error';
+
+export interface ShellLogError {
+  reason: ShellLogUnavailableReason;
+  message: string;
+  /** HTTP status, when the failure reached the hub at all. */
+  status?: number;
+}
+
+// The hub's error code -> the reason the viewer renders. Anything unrecognised is a
+// plain error rather than being guessed into one of the two specific states, because
+// claiming "gone permanently" on an unknown code would be a lie about durability.
+function shellLogReason(err: unknown): ShellLogError {
+  const message = String((err as any)?.message || err || 'Failed to load output');
+  if (err instanceof ApiError) {
+    if (err.code === 'bridge_offline' || err.status === 409) {
+      return { reason: 'bridge_offline', message, status: err.status };
+    }
+    if (err.code === 'gone' || err.status === 410) {
+      return { reason: 'gone', message, status: err.status };
+    }
+    return { reason: 'error', message, status: err.status };
+  }
+  return { reason: 'error', message };
+}
+
+/**
  * `status` accepts an exact Shell_Session_Status OR one of the two composite values
  * the owner-wide list understands: `live` (starting|running) and `finished`
  * (exited|killed|failed). The composites exist because the Shells page's tabs are the
@@ -68,6 +142,12 @@ type ListShellsArgs = {
   chainId?: string;
   bridgeId?: string;
   projectId?: string;
+  // kind=run is AGENT scoped, so a bridge- or chain-narrowed query correctly returns
+  // no runs at all (the repo restricts each narrowing to the kinds that KEY on that
+  // column — shell_session_kinds_scoped_by, shell_session.odin:122). This is the only
+  // way to list an agent's runs by their own scope key. Without it the "Run" filter
+  // is permanently empty in every scoped view.
+  agentInstanceId?: string;
   status?: ShellStatusFilter;
   cursor?: string;
   limit?: number;
@@ -147,6 +227,8 @@ export interface FetchShellPageArgs {
   bridgeId?: string;
   projectId?: string;
   chainId?: string;
+  /** kind=run's scope key — see the note on ListShellsArgs. */
+  agentInstanceId?: string;
 }
 
 export async function fetchShellPage(args: FetchShellPageArgs = {}): Promise<ShellPage> {
@@ -156,6 +238,7 @@ export async function fetchShellPage(args: FetchShellPageArgs = {}): Promise<She
   if (args.bridgeId) params.set('bridge_id', args.bridgeId);
   if (args.projectId) params.set('project_id', args.projectId);
   if (args.chainId) params.set('chain_id', args.chainId);
+  if (args.agentInstanceId) params.set('agent_instance_id', args.agentInstanceId);
   const body = await cookieJsonFetchEnvelope(`/shells?${params.toString()}`, { signal: args.signal });
   const data = body?.data ?? body;
   const items: ShellSession[] = Array.isArray(data)
@@ -174,12 +257,13 @@ export async function fetchShellPage(args: FetchShellPageArgs = {}): Promise<She
 export const shellsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listShells: build.query<ShellSessionPage, ListShellsArgs>({
-      queryFn: async ({ chainId, bridgeId, projectId, status, cursor, limit }) => {
+      queryFn: async ({ chainId, bridgeId, projectId, agentInstanceId, status, cursor, limit }) => {
         try {
           const qs = new URLSearchParams();
           if (chainId) qs.set('chain_id', chainId);
           if (bridgeId) qs.set('bridge_id', bridgeId);
           if (projectId) qs.set('project_id', projectId);
+          if (agentInstanceId) qs.set('agent_instance_id', agentInstanceId);
           if (status) qs.set('status', status);
           if (cursor) qs.set('cursor', cursor);
           if (limit) qs.set('limit', String(limit));
@@ -245,11 +329,45 @@ export const shellsApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: 'ShellSessions' as const, id: 'LIST' }],
     }),
 
-    killShell: build.mutation<void, { sessionId: string }>({
+    // REQ-SHELL-3: a kill is DURABLE, so the answer is two-valued and the caller must
+    // be able to tell the two apart. `delivered` means the bridge has the kill and the
+    // process is being torn down now; `queued` means the bridge is offline, the intent
+    // is recorded durably, and it will be applied when the bridge next connects (the
+    // hub answers 202 for that case). Returning void here — as this did — would throw
+    // the distinction away at the client boundary and let the UI report a still-running
+    // shell as dead. `message` is the hub's own sentence for the outcome, so the UI can
+    // show it without composing a second wording that could drift from the service's.
+    killShell: build.mutation<ShellKillResult, { sessionId: string }>({
       queryFn: async ({ sessionId }) => {
         try {
-          await cookieMutation(`/shells/${encodeURIComponent(sessionId)}`, 'DELETE', undefined);
-          return { data: undefined };
+          const data = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}`, 'DELETE', undefined);
+          const outcome: ShellKillOutcome = data?.outcome === 'queued' ? 'queued' : 'delivered';
+          return { data: { outcome, message: typeof data?.message === 'string' ? data.message : '' } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _err, { sessionId }) => [
+        { type: 'ShellSession' as const, id: sessionId },
+        { type: 'ShellSessions' as const, id: 'LIST' },
+      ],
+    }),
+
+    // REQ-SHELL-2 §3 / REQ-SHELL-6 §3: convert a LIVE FOREGROUND run to a background
+    // one. One-way and only valid while the run is live — the hub answers 409 for a run
+    // that is already background or already terminal
+    // (shell_session_rest_handlers.odin:195-227), so the UI never needs to invent that
+    // rule locally; it only decides whether to OFFER the control.
+    backgroundShell: build.mutation<ShellSession, { sessionId: string }>({
+      queryFn: async ({ sessionId }) => {
+        try {
+          const data = await cookieMutation(
+            `/shells/${encodeURIComponent(sessionId)}/background`,
+            'POST',
+            undefined,
+          );
+          const session: ShellSession = data?.session ?? data;
+          return { data: session };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -402,7 +520,18 @@ export const shellsApi = heimdallApi.injectEndpoints({
             },
           };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          // Carry the CODE through, not just the sentence. `data` is the shape RTK
+          // Query hands back to the component untouched, so the viewer can branch on
+          // `reason` to render §7's three distinct states instead of string-matching a
+          // human message that is free to be reworded.
+          const failure = shellLogReason(error);
+          return {
+            error: {
+              status: 'CUSTOM_ERROR',
+              error: failure.message,
+              data: failure,
+            } as any,
+          };
         }
       },
     }),
@@ -414,6 +543,7 @@ export const {
   useGetShellSessionQuery,
   useCreateShellMutation,
   useKillShellMutation,
+  useBackgroundShellMutation,
   useRestartShellMutation,
   useSetShellPortMutation,
   useSignalShellMutation,

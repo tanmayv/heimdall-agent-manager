@@ -18,11 +18,13 @@ interface NewShellDialogProps {
   onCreated?: (sessionId: string) => void;
 }
 
+// Only the two kinds a USER may start. `agent` is gone with the kind itself, and
+// `run` is agent-only by design (REQ-SHELL-1: "a user can never start a run") —
+// the hub rejects a run with no agent_instance_id, so offering it here would be a
+// button that always 400s. The agent-side entry point for run is REQ-SHELL-2.
 const KIND_OPTIONS: { value: ShellSessionKind; label: string; description: string }[] = [
-  { value: 'interactive', label: 'Interactive', description: 'PTY shell with terminal' },
-  { value: 'command', label: 'Command', description: 'One-shot command with log output' },
+  { value: 'shell', label: 'Shell', description: 'PTY shell with terminal' },
   { value: 'server', label: 'Server', description: 'Long-running server process' },
-  { value: 'agent', label: 'Agent', description: 'Agent PTY session' },
 ];
 
 // The dialog's action row lives in Modal.Footer, outside the <form> element, so
@@ -35,7 +37,7 @@ const FIELD_CLASS =
   'min-h-[44px] w-full rounded border border-subtle bg-surface px-2 py-1.5 text-xs text-primary placeholder:text-faint focus:outline-none focus:ring-1 focus:ring-accent';
 
 export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShellDialogProps) {
-  const [kind, setKind] = useState<ShellSessionKind>('interactive');
+  const [kind, setKind] = useState<ShellSessionKind>('shell');
   const [cmd, setCmd] = useState('');
   const [cwd, setCwd] = useState('');
   const [label, setLabel] = useState('');
@@ -159,13 +161,13 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
 
           {/* Command */}
           <div className="mb-3">
-            <label htmlFor="new-shell-cmd" className="mb-1 block font-semibold text-muted">
-              Command {kind === 'interactive' ? '(optional — default shell)' : ''}
+            <label htmlFor="new-shell-command" className="mb-1 block font-semibold text-muted">
+              Command {kind === 'shell' ? '(optional — default shell)' : ''}
             </label>
             <input
-              id="new-shell-cmd"
+              id="new-shell-command"
               type="text"
-              placeholder={kind === 'interactive' ? 'e.g. bash' : kind === 'server' ? 'e.g. python -m http.server' : 'e.g. npm test'}
+              placeholder={kind === 'shell' ? 'e.g. bash' : kind === 'server' ? 'e.g. python -m http.server' : 'e.g. npm test'}
               value={cmd}
               onChange={(e) => setCmd(e.target.value)}
               className={FIELD_CLASS}

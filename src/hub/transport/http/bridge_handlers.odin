@@ -19,6 +19,7 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
+import ws "odin_test:lib/ws"
 import shell_session_svc "odin_test:hub/service/shell_session"
 
 Bridge_Handlers :: struct {
@@ -1387,7 +1388,46 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	if h.taskchains != nil {
 		_ = taskchain_service.replay_bridge_actionable_notifications(h.taskchains, domain.User_ID(bridge.owner_user_id), bridge.bridge_id)
 	}
-	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader)
+	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
+	// while the bridge was offline is durable on the row and undelivered; this is
+	// where it is re-issued, so "kill it even if the bridge is disconnected; it dies
+	// when the bridge is next connected" holds. Same shape and same placement as the
+	// notification replay above, and for the same reason — after bridge_ready, so the
+	// command socket the send needs is registered.
+	//
+	// PUSHED from here rather than pulled by the bridge's reconcile pass: that pass
+	// returns without touching anything when the pty-host daemon is unreachable, so a
+	// kill riding it would be silently deferred while appearing to work. See
+	// shell_session_replay_kill_intents for the full reasoning.
+	//
+	// Inline, not on a thread, unlike the bridge-side reconcile: this is a repository
+	// read plus N non-blocking sends on an already-registered socket, with no daemon
+	// spawn to wait on.
+	//
+	// THE RESULT IS LOGGED, NOT DISCARDED (REQ-SHELL-23 AC3). This call site read
+	// `_ = shell_session_replay_kill_intents(...)`, so a replay that found outstanding
+	// kills and delivered none of them produced no row, no event and no log line
+	// anywhere — which is how REQ-SHELL-3 came to return a 202 promising delivery that
+	// never happened, on a live host, for a day, without leaving a trace. Delivering
+	// nothing when nothing is outstanding is the normal case and stays quiet; a
+	// shortfall is the anomaly and must be loud.
+	if h.shell_sessions != nil {
+		delivered, outstanding := shell_session_svc.shell_session_replay_kill_intents(h.shell_sessions, bridge.bridge_id)
+		if outstanding > 0 {
+			fmt.println("shell kill replay", "bridge=", bridge.bridge_id, "outstanding=", outstanding, "delivered=", delivered)
+		}
+		if delivered < outstanding {
+			fmt.println("shell kill replay SHORTFALL: outstanding kills were not delivered to the bridge", "bridge=", bridge.bridge_id, "undelivered=", outstanding - delivered)
+		}
+	}
+	// REQ-SHELL-41: the connection is fully established here — authenticated, hello
+	// accepted, command socket registered — so this is the point at which "a bridge
+	// connected" becomes true. `replaced_existing` was already computed above for the
+	// bridge_ready payload and was previously discarded; it is the "did this replace an
+	// existing connection for that bridge" fact AC2 asks for.
+	connected_at_ns := time.now()._nsec
+	bridge_ws_log_connect(bridge.bridge_id, req.remote_addr, hello.generation, hello.replaced_existing)
+	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader, connected_at_ns)
 }
 
 // BRIDGE_INSTANCE_STALE_MS: an instance still in an active runtime state whose
@@ -1399,7 +1439,13 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 // bridge_ws_disconnect clears the durable runtime state of a disconnected
 // bridge's instances (registry offline alone leaves them "running" forever) and
 // fans out resource_changed so the UI updates immediately.
-bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int) {
+bridge_ws_disconnect :: proc(
+	h: ^Bridge_Handlers,
+	bridge_id: string,
+	connection_generation: int,
+	reason: Bridge_WS_Disconnect_Reason = .None,
+	connected_at_ns: i64 = 0,
+) {
 	// Only run the cascade if THIS connection generation is still the live one.
 	// registry_mark_offline is generation-guarded (a newer reconnect already
 	// replaced us => it returns without removing the live entry), so gate the
@@ -1415,6 +1461,14 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 		_ = lsp_registry_wake_bridge_sessions(h.lsp_sessions, bridge_id)
 	}
 	still_current := project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) == connection_generation
+	// REQ-SHELL-41: log BEFORE the early return below, so a connection retired by a
+	// newer one is still observable. That case (still_current=false) is the one a
+	// reader most needs to see and the one an after-the-cascade log would miss entirely.
+	// connected_at_ns=0 means the caller had no connect timestamp; report -1 rather
+	// than a duration measured from the epoch.
+	duration_ms := i64(-1)
+	if connected_at_ns > 0 do duration_ms = (time.now()._nsec - connected_at_ns) / 1_000_000
+	bridge_ws_log_disconnect(bridge_id, reason, connection_generation, duration_ms, still_current)
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
 	if !still_current do return
 	// Mark the durable bridge record offline (bridge_runtime_connect set it .Online
@@ -1432,6 +1486,18 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	cleared := agent_service.mark_bridge_instances_unreachable(h.agents, bridge_id)
 	defer domain.agent_instances_destroy(cleared)
 	for inst in cleared {
+		// REQ-SHELL-2 §9: a FOREGROUND run is bound to its agent's liveness. Its
+		// caller is blocked waiting for a result that will now never be delivered to
+		// it, so the run must not stay a foreground run — convert it to background so
+		// it remains addressable, reapable, capped and notifying, rather than a
+		// foreground run nobody is listening to.
+		//
+		// CONVERT, NOT KILL, and this call site is exactly why. This sweep fires on
+		// BRIDGE disconnect and clears EVERY instance on the bridge at once; the agent
+		// processes are usually alive and only the hub link dropped. Killing here would
+		// destroy in-flight work on a transient blip — and the kill could not be
+		// delivered anyway, to a bridge that has just gone.
+		shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
 		summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 		events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 		delete(summary)
@@ -1448,11 +1514,55 @@ Bridge_Chunk_Reassembly :: struct {
 	received_chunks: int,
 	received_bytes:  int,
 	fragments:       []string,
+	// REQ-SHELL-32: when the first chunk of this stream arrived (unix nanos). An
+	// incomplete stream is abandoned after BRIDGE_WS_REASSEMBLY_TTL; without this
+	// the MAX_REASSEMBLIES bound below is not a bound at all, it is a countdown.
+	started_at_ns:   i64,
+}
+
+// BRIDGE_WS_REASSEMBLY_TTL bounds how long an INCOMPLETE chunk stream is kept, measured
+// from its FIRST chunk (started_at_ns is set at creation and no later chunk refreshes
+// it). So this is an age limit on the stream, NOT an idle timeout: a stream still
+// arriving steadily but taking longer than the TTL overall IS expired mid-flight, and
+// its remaining chunks then open a fresh partial entry that never completes.
+//
+// That is tolerable only because the bridge writes one frame's chunks back to back on a
+// single connection, so a stream this old has almost certainly been abandoned. It is a
+// real if narrow gap, deliberately left rather than overlooked: refreshing the timestamp
+// per chunk is the more correct clock but is a behaviour change needing its own test
+// round. REQ-SHELL-32 review finding N1; filed as a follow-up.
+BRIDGE_WS_REASSEMBLY_TTL :: 30 * time.Second
+
+// bridge_chunk_reassembly_sweep drops every stream past its TTL and returns how many
+// it dropped. Swept LAZILY, at the admission gate, rather than by a background thread:
+// `reassemblies` is per-connection state reached only from that connection's own read
+// loop, so a lazy sweep needs no lock and cannot outlive the buffer it walks.
+bridge_chunk_reassembly_sweep :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, now_ns: i64) -> int {
+	dropped := 0
+	for i := len(reassemblies) - 1; i >= 0; i -= 1 {
+		if now_ns - reassemblies[i].started_at_ns >= i64(BRIDGE_WS_REASSEMBLY_TTL) {
+			bridge_chunk_reassembly_remove(reassemblies, i)
+			dropped += 1
+		}
+	}
+	return dropped
+}
+
+// bridge_chunk_reassembly_oldest_index returns the index of the oldest stream, or -1.
+bridge_chunk_reassembly_oldest_index :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) -> int {
+	idx := -1
+	for i in 0 ..< len(reassemblies) {
+		if idx < 0 || reassemblies[i].started_at_ns < reassemblies[idx].started_at_ns do idx = i
+	}
+	return idx
 }
 
 // bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
 // is complete, returns the reassembled original frame text. Mirrors the bridge's
-// own inbound reassembly (bridge_ws_handle_chunk_skeleton): key by chunk_id;
+// own inbound reassembly (hub_command_reassemble, src/bridge/hub_command_reassembly.odin
+// — this comment previously named bridge_ws_handle_chunk_skeleton, a procedure that
+// existed NOWHERE in the tree: the symmetry was documented for a direction that had no
+// reassembler at all until REQ-SHELL-36 added one): key by chunk_id;
 // validate metadata; enforce the contract caps; ignore duplicate/retransmitted
 // fills; concat fragments in index order. ACK-LESS — the bridge does not wait for
 // an ack on this channel (single ordered connection), so none is sent.
@@ -1492,12 +1602,46 @@ bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassemb
 	}
 	if idx < 0 {
 		// Bound concurrent reassemblies per connection.
-		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES do return "", false, false
+		//
+		// REQ-SHELL-32: this gate used to REFUSE the new stream once the array was
+		// full, and nothing ever removed an incomplete entry — it was freed only when
+		// the whole connection ended. So the cap was not a bound on concurrency, it
+		// was a countdown: 64 abandoned streams over a connection's life and every
+		// subsequent CHUNKED frame was refused forever, silently. Because chunking
+		// only applies above BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES, that left the
+		// connection looking perfectly healthy — small frames (heartbeats, inventory,
+		// acks) never touch this path — while every large frame was dropped.
+		//
+		// Expire first, and only then fall back to evicting the oldest. Evicting is
+		// the lesser evil versus refusing (refusing is what made the deafness
+		// permanent) but it is not free: under genuine concurrent load it can drop a
+		// stream that was still legitimately in flight, so it is the fallback, not the
+		// first response — and it is logged differently, because "stale" and "still
+		// arriving" mean different things.
+		now_ns := time.to_unix_nanoseconds(time.now())
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
+			expired := bridge_chunk_reassembly_sweep(reassemblies, now_ns)
+			if expired > 0 {
+				fmt.eprintfln(
+					"ham-hub WARN bridge ws chunk reassembly expired streams=%d ttl=%v (admission gate)",
+					expired, BRIDGE_WS_REASSEMBLY_TTL)
+			}
+		}
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES {
+			oldest := bridge_chunk_reassembly_oldest_index(reassemblies)
+			if oldest < 0 do return "", false, false
+			fmt.eprintfln(
+				"ham-hub WARN bridge ws chunk reassembly full in_flight=%d none_expired evicting_oldest chunk_id=%s progress=%d/%d to_admit=%s",
+				len(reassemblies), reassemblies[oldest].chunk_id,
+				reassemblies[oldest].received_chunks, reassemblies[oldest].chunk_count, chunk_id)
+			bridge_chunk_reassembly_remove(reassemblies, oldest)
+		}
 		append(reassemblies, Bridge_Chunk_Reassembly{
-			chunk_id    = strings.clone(chunk_id),
-			chunk_count = chunk_count,
-			total_bytes = total_bytes,
-			fragments   = make([]string, chunk_count),
+			chunk_id      = strings.clone(chunk_id),
+			chunk_count   = chunk_count,
+			total_bytes   = total_bytes,
+			fragments     = make([]string, chunk_count),
+			started_at_ns = now_ns,
 		})
 		idx = len(reassemblies) - 1
 	}
@@ -1550,9 +1694,27 @@ bridge_chunk_reassemblies_free :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reas
 	delete(reassemblies^)
 }
 
-bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, reader: ^Bridge_WS_Reader) {
+bridge_ws_runtime_loop :: proc(
+	h: ^Bridge_Handlers,
+	bridge_id: string,
+	connection_generation: int,
+	reader: ^Bridge_WS_Reader,
+	connected_at_ns: i64 = 0,
+) {
 	client := reader.socket
-	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
+	// REQ-SHELL-41: the teardown reason, set on every exit path below and read by the
+	// deferred disconnect. A plain local, so there is nothing allocated and nothing to
+	// free on this loop's heap path (AC4). This relies on Odin evaluating a deferred
+	// call's ARGUMENTS when the defer RUNS, not where it is written (verified
+	// separately) — so the value assigned at the exit path is the one logged.
+	//
+	// Initialised to .None, which renders as "none", rather than to a plausible value
+	// like .Clean_Close. Every exit path below assigns it, so this default is currently
+	// unreachable; if a future exit path forgets to, the log must say "none" and look
+	// WRONG rather than quietly claim an orderly shutdown. A misleading trace is worse
+	// than an obviously-missing one — that is the whole premise of this task.
+	reason := Bridge_WS_Disconnect_Reason.None
+	defer bridge_ws_disconnect(h, bridge_id, connection_generation, reason, connected_at_ns)
 	// Per-connection chunk reassembly buffer. The bridge (bridge_hub_send) splits
 	// any bridge->hub frame larger than the edge proxy's ~16KB per-message cap into
 	// ordered kind:"chunk" frames; we rebuild the original frame here before it is
@@ -1565,9 +1727,17 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 		// (BRIDGE_HUB_HEARTBEAT_INTERVAL = 45s): a single delayed/dropped heartbeat
 		// still leaves a full extra beat of margin before we treat the bridge as
 		// gone, so we never tear down a healthy connection at the cadence edge.
-		text, ok := read_ws_text_blocking(reader, 120 * time.Second)
-		if !ok do return
+		text, ok, read_reason := bridge_ws_read_frame(reader, 120 * time.Second)
+		if !ok {
+			reason = read_reason
+			return
+		}
 		if !bridge_ws_process_frame(h, bridge_id, connection_generation, client, &reassemblies, text) {
+			// process_frame refuses a frame either because a newer connection replaced
+			// this one (it says so on the wire via bridge_connection_replaced_payload)
+			// or because dispatch rejected it. Distinguish the two: a replacement is
+			// routine during a bridge restart, a rejection is not.
+			reason = .Connection_Replaced if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation else .Frame_Rejected
 			return
 		}
 	}
@@ -1595,7 +1765,17 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			delete(type)
 			assembled, complete, cok := bridge_ws_reassemble_chunk(reassemblies, text)
 			delete(text)
-			if !cok || !complete do return true
+			// REQ-SHELL-32: a refused chunk used to vanish here without a word, which is
+			// why a defect that made the hub totally deaf to every large frame on a
+			// connection went unnoticed. `complete=false` is the normal "still
+			// buffering" case and stays quiet; `ok=false` means the frame was DROPPED.
+			if !cok {
+				fmt.eprintfln(
+					"ham-hub WARN bridge ws chunk frame DROPPED bridge=%s (malformed, over-cap, or admission refused)",
+					bridge_id)
+				return true
+			}
+			if !complete do return true
 			text = assembled
 			type = json_string(text, "type")
 		} else {
@@ -1624,13 +1804,26 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		// (via the ack) so the stale old ham-wrapper self-terminates.
 		superseded: []string
 		if h.agents != nil do superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
-		if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+		if h.agents != nil {
+			// The per-instance unreachability signal: the bridge is still connected and
+			// reporting, and these instances are simply no longer among the ones it
+			// reports active. Their foreground runs get the same treatment as on a
+			// bridge-wide disconnect — converted, not killed — deliberately, so there
+			// is no "which signal fired?" branch whose wrong answer destroys work.
+			gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+			defer domain.agent_instances_destroy(gone)
+			for inst in gone {
+				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
+				reconciled += 1
+			}
+		}
 		// Opportunistic time-based reap: catches instances stranded by a
 		// disconnect the hub never observed (hub restart with persisted DB, or a
 		// lost WS close). Request-driven, so no background thread is required.
 		if h.agents != nil {
 			reaped := agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS)
 			for inst in reaped {
+				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
 				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 				delete(summary)
@@ -1755,12 +1948,34 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			if status == "" do status = strings.clone("exited")
 			exit_code := json_int(text, "exit_code", 0)
 			exit_code_set := json_key_present(text, "exit_code")
+			// REQ-SHELL-4: which RUN of the session this exit is about. Absent means
+			// UNSTATED, which handle_exited applies rather than discards — see
+			// SHELL_SESSION_RUN_SEQ_UNSTATED for why that is not spelled 0.
+			run_seq := json_int(text, "run_seq", shell_session_svc.SHELL_SESSION_RUN_SEQ_UNSTATED)
 			if session_id != "" {
-				shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
-				shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, bridge_id, status, exit_code, exit_code_set)
+				// APPLY FIRST, BROADCAST ONLY IF IT APPLIED. The broadcast used to run
+				// unconditionally and ahead of the decision, so an exit the hub then
+				// discarded — a stale run's, or a duplicate replayed from the bridge's
+				// durable outbox — still reached every attached viewer, showing them a
+				// terminal status the row does not have and that nothing later corrects.
+				if shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, bridge_id, status, exit_code, exit_code_set, run_seq) {
+					shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
+				}
 			}
 			delete(session_id)
 			delete(status)
+		}
+	// REQ-SHELL-10: the bridge's FULL LIVE SESSION LIST, sent on every (re)connect.
+	// The whole frame is handed to the service rather than being parsed here, matching
+	// bridge_proxy_handle_open above: the diff's decisions and its parse belong in one
+	// testable place, and this arm has no decision of its own to make.
+	//
+	// bridge_id is the AUTHENTICATED id of the connection this frame arrived on, never
+	// anything the frame itself names — an inventory mutates many rows at once, so the
+	// scope it is confined to must come from the transport, not from its payload.
+	case "shell_inventory":
+		if h.shell_sessions != nil {
+			_ = shell_session_svc.shell_session_apply_inventory(h.shell_sessions, bridge_id, text)
 		}
 	// tunnel_data: bridge→hub direction — response bytes from the dev server.
 	case "tunnel_data":
@@ -2273,6 +2488,11 @@ ws_accept_key :: proc(key: string) -> string {
 Bridge_WS_Reader :: struct {
 	socket:  net.TCP_Socket,
 	pending: [dynamic]byte,
+	// REQ-SHELL-41: WHY the last take_frame declared the stream unusable. Carried on
+	// the reader rather than added as a fourth return value so that bridge_ws_take_frame
+	// keeps its (text, ok, fatal) shape and its existing callers and tests are
+	// untouched. Only meaningful when that call returned fatal=true.
+	fatal_reason: Bridge_WS_Disconnect_Reason,
 }
 
 bridge_ws_reader_make :: proc(socket: net.TCP_Socket) -> Bridge_WS_Reader {
@@ -2295,7 +2515,14 @@ bridge_ws_reader_destroy :: proc(reader: ^Bridge_WS_Reader) {
 bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
 	b := reader.pending[:]
 	if len(b) < 2 do return "", false, false
-	if b[0] & 0x0f != 0x1 do return "", false, true // only text frames are expected
+	if b[0] & 0x0f != 0x1 {
+		// REQ-SHELL-41: a CLOSE frame is an orderly shutdown, not a desync. Both end
+		// the connection, but reporting "fatal_frame_desync" for a bridge that simply
+		// said goodbye is precisely the kind of misleading trace this task exists to
+		// remove, so they are separated here at the only place that can tell them apart.
+		reader.fatal_reason = .Clean_Close if b[0] & 0x0f == 0x8 else .Fatal_Frame
+		return "", false, true // only text frames are expected
+	}
 	masked := (b[1] & 0x80) != 0
 	payload_len := int(b[1] & 0x7f)
 	header_len := 2
@@ -2304,6 +2531,7 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 		payload_len = int(b[2]) << 8 | int(b[3])
 		header_len = 4
 	} else if payload_len == 127 {
+		reader.fatal_reason = .Fatal_Frame
 		return "", false, true // 64-bit lengths are not used on this control channel
 	}
 	data_off := header_len
@@ -2325,40 +2553,102 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 	return string(payload), true, false
 }
 
+// read_ws_text_blocking reads one frame, reporting only WHETHER it got one.
+//
+// Kept as a wrapper over bridge_ws_read_frame so the callers that genuinely do not care
+// why a read ended (the hello read, and the agent-instance / shell-session streams) stay
+// exactly as they were. Anything that must REPORT the cause — the bridge runtime loop —
+// calls bridge_ws_read_frame directly.
 read_ws_text_blocking :: proc(reader: ^Bridge_WS_Reader, timeout: time.Duration) -> (string, bool) {
+	text, ok, _ := bridge_ws_read_frame(reader, timeout)
+	return text, ok
+}
+
+// bridge_ws_read_frame reads one frame and, when it cannot, says WHY.
+//
+// REQ-SHELL-41. This proc is the whole reason the task is not a one-line logging change.
+// Its predecessor returned a bare bool, so a desynced frame, a 120s deadline expiry and
+// a graceful peer close were indistinguishable at every call site — the reason was
+// destroyed here, below the layer that needed to log it. The three outcomes are now
+// separated at the exact points where they are still distinguishable:
+//   - fatal from the framer      -> reader.fatal_reason (Clean_Close for a close opcode,
+//                                   Fatal_Frame for a desync)
+//   - recv `0, nil`              -> Clean_Close. core:net documents a graceful close as
+//                                   exactly this, so it must NOT be lumped in with the
+//                                   error arm the way `n <= 0 || err != nil` used to.
+//   - .Would_Block / .Timeout    -> Read_Deadline. A blocking socket with SO_RCVTIMEO
+//                                   reports an expired deadline as EAGAIN, which
+//                                   core:net maps to .Would_Block, so both belong here.
+//   - anything else              -> Recv_Error (ECONNRESET and friends).
+bridge_ws_read_frame :: proc(
+	reader: ^Bridge_WS_Reader,
+	timeout: time.Duration,
+) -> (string, bool, Bridge_WS_Disconnect_Reason) {
 	// A frame may already be buffered from a previous coalesced recv — return it
 	// without blocking on the socket.
+	reader.fatal_reason = .None
 	if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
-		return "", false
+		return "", false, reader.fatal_reason
 	} else if ok {
-		return text, true
+		return text, true, .None
 	}
 	_ = net.set_option(reader.socket, .Receive_Timeout, timeout)
 	buf: [8192]byte
 	for {
 		n, err := net.recv_tcp(reader.socket, buf[:])
-		if err != nil || n <= 0 do return "", false
+		if err != nil {
+			if err == net.TCP_Recv_Error.Would_Block || err == net.TCP_Recv_Error.Timeout {
+				return "", false, .Read_Deadline
+			}
+			return "", false, .Recv_Error
+		}
+		if n <= 0 do return "", false, .Clean_Close
 		append(&reader.pending, ..buf[:n])
+		reader.fatal_reason = .None
 		if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
-			return "", false
+			return "", false, reader.fatal_reason
 		} else if ok {
-			return text, true
+			return text, true, .None
 		}
 	}
 }
 
+// write_ws_text_frame writes one text frame on a socket that must stay within the
+// 16-bit WebSocket length. REQ-SHELL-33 moved the framing itself into ws.write_server_text
+// (three length arms, short-write loop, typed result); what stays here is the CHOICE.
+//
+// THE 16-BIT BOUND ON THIS WRITER IS DELIBERATE, NOT A MISSING FEATURE. Its callers
+// include the BRIDGE command socket (the hello/error payloads at :1196-:1199 and every
+// write_ws_text_frame_locked send), and our own bridge readers treat a 64-bit length as
+// FATAL — src/lib/ws/ws.odin:200 drops the connection, bridge_ws_take_frame below returns
+// fatal=true. Emitting one toward a bridge would turn a dropped frame into a killed bridge
+// connection. That channel already chunks at the application level (kind:"chunk") so that
+// no frame reaches the cap; this bound is the other half of that contract.
+//
+// Browser-facing callers whose payload can actually be large must use
+// write_ws_text_frame_browser instead. Every caller left on THIS proc sends a small,
+// fixed-shape control payload — a ready, an ack, an error — so Too_Large here means a bug,
+// which is why it is logged rather than passed on: the bool tells the caller whether the
+// frame arrived, and no caller of this one can do anything different about why.
 write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
-	n := len(text)
-	if n > 65535 do return false
-	header_len := 2
-	if n > 125 do header_len = 4
-	frame := make([]byte, header_len + n)
-	defer delete(frame)
-	frame[0] = 0x81
-	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
-	copy(frame[header_len:], transmute([]byte)text)
-	_, err := net.send_tcp(client, frame)
-	return err == nil
+	result := ws.write_server_text(client, text, false)
+	if result == .Too_Large {
+		fmt.eprintfln(
+			"ham-hub WARN ws control frame exceeds the 16-bit length and was NOT sent bytes=%d limit=%d",
+			len(text),
+			ws.WS_16BIT_MAX_PAYLOAD,
+		)
+	}
+	return result == .Ok
+}
+
+// write_ws_text_frame_browser writes one text frame to a BROWSER socket, where the 64-bit
+// length arm is both correct and safe (the browser WebSocket stack parses it; see
+// write_ws_text_frame for why the bridge channel cannot). It returns the typed result
+// because its callers — the screen snapshot above all — must distinguish a frame they could
+// not encode from a peer that is gone.
+write_ws_text_frame_browser :: proc(client: net.TCP_Socket, text: string) -> ws.Text_Write_Result {
+	return ws.write_server_text(client, text, true)
 }
 
 // write_ws_text_frame_locked serializes a write to the bridge command socket with

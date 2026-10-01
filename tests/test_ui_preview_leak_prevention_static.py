@@ -14,16 +14,18 @@ Requirements covered:
   2. useDialogA11y.ts:
      - Removes keydown listener on unmount/close.
      - Restores body overflow and resets restoreRef.current to null to avoid leaking detached DOM nodes.
-  3. ShellsPanel.tsx:
-     - ShellRowMenu copy status timeout is tracked and cleared on unmount.
-  4. previewTabsSlice.ts:
+  3. previewTabsSlice.ts:
      - closeTab evicts tab state from tabs array and updates activeTabId.
+
+REQ-SHELL-22 removed a fourth section covering ShellsPanel.tsx (ShellRowMenu's copy
+timeout). That component was never mounted and the file has been deleted; its check
+asserted the file EXISTED, so it could only ever have failed once the dead code went.
+The three sections above all cover live code.
 """
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIEW_SIDEBAR_FILE = ROOT / "src" / "ui" / "components" / "shells" / "PreviewSidebar.tsx"
-SHELLS_PANEL_FILE = ROOT / "src" / "ui" / "components" / "shells" / "ShellsPanel.tsx"
 USE_DIALOG_A11Y_FILE = ROOT / "src" / "ui" / "components" / "ui" / "composites" / "useDialogA11y.ts"
 PREVIEW_TABS_SLICE_FILE = ROOT / "src" / "ui" / "store" / "previewTabsSlice.ts"
 
@@ -81,16 +83,6 @@ def test_use_dialog_a11y_leaks():
             "useDialogA11y must clear restoreRef.current on cleanup to prevent detached DOM leaks")
 
 
-def test_shells_panel_leaks():
-    require(SHELLS_PANEL_FILE.is_file(), f"ShellsPanel.tsx must exist at {SHELLS_PANEL_FILE}")
-    src = SHELLS_PANEL_FILE.read_text(encoding="utf-8")
-
-    # Copy timeout cleanup
-    require("copyTimerRef" in src, "ShellRowMenu must track copyTimerRef")
-    require("window.clearTimeout(copyTimerRef.current)" in src,
-            "ShellRowMenu must clear copyTimerRef on unmount and before rescheduling")
-
-
 def test_preview_tabs_slice_eviction():
     require(PREVIEW_TABS_SLICE_FILE.is_file(), f"previewTabsSlice.ts must exist at {PREVIEW_TABS_SLICE_FILE}")
     src = PREVIEW_TABS_SLICE_FILE.read_text(encoding="utf-8")
@@ -103,7 +95,6 @@ def test_preview_tabs_slice_eviction():
 def main():
     test_preview_sidebar_leaks()
     test_use_dialog_a11y_leaks()
-    test_shells_panel_leaks()
     test_preview_tabs_slice_eviction()
     print("PASS: test_ui_preview_leak_prevention_static")
 

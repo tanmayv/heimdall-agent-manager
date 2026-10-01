@@ -148,12 +148,17 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 	}
 	if !write_user_ws_upgrade_response(client, user_ws_accept_key(key)) do return
 
+	// REQ-SHELL-29: same late-join hole as the shells pane — both consume the identical
+	// `screen` frame and both funnel through shell_session_attach. See the shells handler.
+	late_join := false
+	screen_sent := false
 	if h.shell_sessions != nil {
-		shell_session_svc.shell_session_attach(h.shell_sessions, instance_id, client, inst.bridge_id)
+		late_join = shell_session_svc.shell_session_attach(h.shell_sessions, instance_id, client, inst.bridge_id)
 	}
 	defer {
 		if h.shell_sessions != nil {
-			shell_session_svc.shell_session_detach(h.shell_sessions, instance_id, client, inst.bridge_id)
+			// REQ-SHELL-41: ordinary detach on the stream handler's way out.
+			shell_session_svc.shell_session_detach(h.shell_sessions, instance_id, client, inst.bridge_id, .Stream_Closed)
 		}
 	}
 
@@ -212,6 +217,16 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 			cols := json_int(text, "cols", 0)
 			if rows >= 1 && cols >= 1 {
 				agent_service.agent_service_send_pty_resize(h.agents, auth_ctx, instance_id, rows, cols)
+				// REQ-SHELL-29: the agent pane's SIGWINCH micro-nudge (useAgentStream.ts:194-206)
+				// only repaints FULL-SCREEN programs; a shell sitting at a prompt is not
+				// covered by it, so the snapshot is still required here.
+				// REQ-SHELL-61: same gate as the shells pane, and it carried the same defect —
+				// the first viewer got no snapshot. Both panes now share the one predicate so
+				// they cannot drift apart again.
+				if shell_stream_should_send_screen_snapshot(late_join, screen_sent, rows, cols) {
+					screen_sent = true
+					_ = shell_stream_send_agent_screen_snapshot(h.agents, h.shell_sessions, auth_ctx, instance_id, client, rows, cols)
+				}
 			}
 		case "heartbeat":
 			// Keepalive

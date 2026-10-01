@@ -25,8 +25,6 @@ export type AgentActionItem = {
   summary: string;
   // Hub unix-ms timestamp; used for the replay window and ordering.
   ts: number;
-  // Shell job status ("running" | "completed" | "failed") — only set for shell_cmd_report actions.
-  shellStatus?: string;
 };
 
 type AgentActivityState = {
@@ -58,7 +56,6 @@ export type AgentActionReceivedPayload = {
   action: string;
   summary: string;
   ts: number;
-  shellStatus?: string;
 };
 
 const agentActivitySlice = createSlice({
@@ -80,7 +77,6 @@ const agentActivitySlice = createSlice({
         action: String(action.payload?.action || ''),
         summary,
         ts,
-        shellStatus: String(action.payload?.shellStatus || ''),
       };
       const buffer = state.byInstance[instanceId] || (state.byInstance[instanceId] = []);
       buffer.push(item);

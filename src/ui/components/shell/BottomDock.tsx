@@ -159,7 +159,7 @@ export default function BottomDock({
     const combined = [...allSessions, ...unconfirmedPending];
     return combined.filter((s) => {
       if (closingSessionIds.has(s.session_id)) return false;
-      const isInteractive = s.kind === 'interactive' || s.kind === 'agent';
+      const isInteractive = s.kind === 'shell';
       const isLive = s.status === 'running' || s.status === 'starting';
       return (isInteractive && isLive) || s.session_id === activeTab;
     });
@@ -462,6 +462,10 @@ export default function BottomDock({
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden bg-canvas">
           {activeSession && !isViewedInMainView ? (
             <ShellTerminalPane
+              // REQ-SHELL-18: keyed by session so switching tabs in this strip REMOUNTS the pane.
+              // Without it the xterm instance is reused and the previous session's scrollback stays
+              // on screen, which is the bleed the user reported switching shells in the bottom bar.
+              key={activeSession.session_id}
               session={activeSession}
               isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
               onClose={() => handleKillSession(activeSession.session_id)}
@@ -513,7 +517,7 @@ export default function BottomDock({
             const placeholder: ShellSession = {
               session_id: sessionId,
               status: 'starting',
-              kind: 'interactive',
+              kind: 'shell',
               label: 'New Shell',
               cmd: '',
               cwd: '',

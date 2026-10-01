@@ -67,6 +67,11 @@ Memory :: struct {
 	updated_at: string,
 }
 
+// CONVERSATION_TITLE_MAX_BYTES bounds the PLAINTEXT conversation title
+// (REQ-VCAP-1); an encrypted title is checked against the inflated armored
+// budget instead — see domain.validate_capped_text in vault_text_caps.odin.
+CONVERSATION_TITLE_MAX_BYTES :: 120
+
 Chat_Conversation :: struct {
 	conversation_id: string,
 	owner_user_id: User_ID,

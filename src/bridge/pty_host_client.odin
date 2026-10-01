@@ -92,7 +92,7 @@ Pty_Host_Spawn_Request :: struct {
 	// T4 fields: kind/tee_path appended after display_name per dproto.rs §T2.
 	// Rust decoder uses backward-compat guard (off < rest.len()), so old senders
 	// that omit these fields still work — just set has_* = false.
-	kind:             string, // "agent"|"interactive"|"server"|"command"
+	kind:             string, // "run"|"shell"|"server"
 	tee_path:         string, // absolute path; "" => None (no tee)
 	has_cwd:          bool,
 	has_detect:       bool,

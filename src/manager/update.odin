@@ -34,10 +34,13 @@ MANAGER_UPDATE_MANIFEST_TIMEOUT_MS :: 20000
 // Binaries every release bundle must ship (package-local-binary-tarball.sh
 // required_entries). ham-pty-host stays optional there (PTYH-4), so a bundle
 // without it updates everything else and leaves the installed PTY host alone.
-// openssl is refreshed only when the bundle ships one, matching install.sh's
-// bundled-openssl install.
+// openssl is deliberately absent: it is a generic name heimdall does not own,
+// and refreshing a bundled copy could clobber a system openssl in a shared
+// install dir. REQ-INST-21 retired the bundled-openssl machinery; the updater
+// leaves any openssl it finds untouched — the optional loop installs only
+// staged files and deletes nothing.
 MANAGER_UPDATE_REQUIRED_BINS :: []string{"ham-bridge", "ham-ctl", "heimdall"}
-MANAGER_UPDATE_OPTIONAL_BINS :: []string{"ham-pty-host", "openssl"}
+MANAGER_UPDATE_OPTIONAL_BINS :: []string{"ham-pty-host"}
 
 Manager_Update_Source_Kind :: enum {
 	GitHub, // api.github.com manifest + versioned release assets

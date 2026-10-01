@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:sys/posix"
 
 // BR-1 unit tests: the bridge-side clean-slate + HEIMDALL_* env map that runs
 // pre-spawn. The hub-backed assembly (bridge_bootstrap_fetch_and_materialize) is
@@ -115,30 +116,147 @@ bridge_prespawn_ctl_bin_path_is_run_dir_relative :: proc(t: ^testing.T) {
 }
 
 @(test)
-bridge_prespawn_env_with_vault_key :: proc(t: ^testing.T) {
+// The prespawn env must NOT carry the vault key. It used to, and because the env is
+// built once at spawn and never refreshed while ctl checks $HEIMDALL_VAULT_KEY
+// (source 2) before the key file (source 3), a rotated key left every running agent
+// authoritatively holding the OLD one — silent decryption failure for the rest of
+// the instance's life. This assertion is deliberately inverted from its original
+// form so that re-adding the bake fails the suite rather than passing it.
+bridge_prespawn_env_omits_vault_key :: proc(t: ^testing.T) {
 	env := bridge_prespawn_env(
 		"/tmp/run/inst_abc",
 		"unix:/tmp/bridge.sock",
 		"hlat_tok_1",
 		"inst_abc",
-		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	)
 	defer { for e in env do delete(e); delete(env) }
 
-	testing.expect_value(t, len(env), 5)
+	testing.expect_value(t, len(env), 4)
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_BRIDGE_ENDPOINT=unix:/tmp/bridge.sock"), "endpoint entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_TOKEN=hlat_tok_1"), "token entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_INSTANCE_ID=inst_abc"), "instance entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_CTL_BIN=/tmp/run/inst_abc/.heimdall/bin/ham-ctl"), "ctl bin entry")
-	testing.expect(
-		t,
-		bridge_prespawn_test_env_has(env, "HEIMDALL_VAULT_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-		"vault key entry",
-	)
+
+	// No HEIMDALL_VAULT_KEY entry under any value: assert on the NAME, so the test
+	// still catches a re-added bake that uses a different key.
+	for e in env {
+		testing.expect(t, !strings.has_prefix(e, "HEIMDALL_VAULT_KEY="), "prespawn env must not carry the vault key")
+	}
 }
 
 // bridge_prespawn_test_env_has reports whether want is present in env.
 bridge_prespawn_test_env_has :: proc(env: []string, want: string) -> bool {
 	for e in env do if e == want do return true
 	return false
+}
+
+// The rendered ham-ctl shim must not bake the vault key either. The shim is written
+// once per spawn from the key as it was AT THAT MOMENT, so a baked `export
+// HEIMDALL_VAULT_KEY` is stale the instant the operator rotates the key — and being
+// an export it then overrides the correct value ctl would otherwise read from the
+// key file. Dropping it is what makes the key resolve live on every invocation.
+//
+// Asserted on the variable NAME so that re-adding the bake under any value fails.
+@(test)
+bridge_bootstrap_shim_omits_vault_key :: proc(t: ^testing.T) {
+	// Point the resolver at a real executable so rendering can succeed; the shim
+	// only embeds this path, it never runs it.
+	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	defer {
+		if had {
+			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+		} else {
+			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+		}
+		delete(prev)
+	}
+	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+
+	// A key IS configured while this renders, which is the whole point: even with a
+	// key available, the shim must not capture it.
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+		delete(prev_key)
+	}
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	script, ok := bridge_bootstrap_render_ham_ctl_shim("unix:/tmp/bridge.sock", "hlat_tok_1", "inst_abc")
+	testing.expect(t, ok, "shim must render when ham-ctl resolves")
+	if !ok do return
+	defer delete(script)
+
+	testing.expect(
+		t,
+		!strings.contains(script, "HEIMDALL_VAULT_KEY"),
+		"the rendered ham-ctl shim must not bake the vault key",
+	)
+
+	// The three the shim legitimately carries must all still be there, so this test
+	// fails loudly if the removal took anything else with it.
+	testing.expect(t, strings.contains(script, "HEIMDALL_BRIDGE_ENDPOINT="), "shim keeps the endpoint")
+	testing.expect(t, strings.contains(script, "HEIMDALL_AGENT_TOKEN="), "shim keeps the agent token")
+	testing.expect(t, strings.contains(script, "HEIMDALL_AGENT_INSTANCE_ID="), "shim keeps the instance id")
+}
+
+// The same guarantee for the wrapper that is actually written to disk. This is the
+// live path — bridge_bootstrap_write_ham_ctl_wrapper is called from
+// bootstrap_service.odin:51 and :89 — so a bake re-added here would reach real
+// agents even if the renderer above stayed clean. Asserted by reading the file back,
+// not the builder, so it also covers the write.
+@(test)
+bridge_bootstrap_written_wrapper_omits_vault_key :: proc(t: ^testing.T) {
+	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	defer {
+		if had {
+			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+		} else {
+			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+		}
+		delete(prev)
+	}
+	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+
+	// A key IS configured while the wrapper is written: that is the condition under
+	// which the old code baked it in.
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+		delete(prev_key)
+	}
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+	run_dir := fmt.aprintf("/tmp/heimdall-bridge-wrapper-test-%d", int(posix.getpid()))
+	defer delete(run_dir)
+	defer _ = os.remove_all(run_dir)
+	_ = os.make_directory_all(run_dir)
+
+	ok := bridge_bootstrap_write_ham_ctl_wrapper(run_dir, "unix:/tmp/bridge.sock", "hlat_tok_1", "inst_abc")
+	testing.expect(t, ok, "wrapper must be written")
+	if !ok do return
+
+	wrapper_path := fmt.aprintf("%s/.heimdall/bin/ham-ctl", run_dir)
+	defer delete(wrapper_path)
+	data, err := os.read_entire_file(wrapper_path, context.allocator)
+	testing.expect(t, err == nil, "wrapper must be readable")
+	if err != nil do return
+	defer delete(data)
+
+	script := string(data)
+	testing.expect(
+		t,
+		!strings.contains(script, "HEIMDALL_VAULT_KEY"),
+		"the written ham-ctl wrapper must not bake the vault key",
+	)
+	testing.expect(t, strings.contains(script, "HEIMDALL_BRIDGE_ENDPOINT="), "wrapper keeps the endpoint")
+	testing.expect(t, strings.contains(script, "HEIMDALL_AGENT_TOKEN="), "wrapper keeps the agent token")
+	testing.expect(t, strings.contains(script, "HEIMDALL_AGENT_INSTANCE_ID="), "wrapper keeps the instance id")
 }

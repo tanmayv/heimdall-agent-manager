@@ -123,11 +123,11 @@ jobs:
 
   # 2. The sudo/SUDO_USER branch (REQ-INST-18), which no test had ever executed
   #    on ANY platform, and whose macOS half -- the `dscl` home lookup at
-  #    install.sh:1224-1225 -- had no executed coverage anywhere at all.
+  #    install.sh:1258-1259 -- had no executed coverage anywhere at all.
   #
   #    Why it needed its own job rather than a step in `smoke`: this branch
   #    CANNOT be sandboxed. When euid is 0 install.sh hardcodes
-  #    install_dir=/usr/local/bin (:1211) and takes the service home from
+  #    install_dir=/usr/local/bin (:1245) and takes the service home from
   #    dscl/getent -- the invoking user's REAL home. Neither is influenced by
   #    HOME or any other variable, so a sudo run makes real writes by
   #    construction. That is exactly why it is CI-only (REQ-INST-13) and why
@@ -135,7 +135,7 @@ jobs:
   #    opt-in AND a clean machine, and asserts afterwards that it left one.
   #
   #    The Linux runner is here as a DIFFERENTIAL, not as padding: the same
-  #    assertions through the getent branch (:1218) demonstrate they bind to the
+  #    assertions through the getent branch (:1252) demonstrate they bind to the
   #    sudo logic rather than to darwin. If only macOS ran, a passing assertion
   #    could not be distinguished from one that happens to hold on a Mac.
   sudo-smoke:
@@ -209,6 +209,8 @@ jobs:
           # here and nowhere else: a developer running the script the ordinary
           # way gets a refusal, which is the intended default.
           INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES: '1'
+          # Exercise byte identity even when the runner image lacks this path.
+          INSTALL_SMOKE_SUDO_SEED_OPENSSL: '1'
           INSTALL_SMOKE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -248,16 +250,32 @@ jobs:
             "no rc file of root's carries the installer marker or PATH line"
             "root's home is clean (both /var/root and /root)"
             "no heimdall service file or binary under any home but"
+            "uninstall DEFERS the stop to the invoking user's own session"
+            "seeded distinguishable pre-existing /usr/local/bin/openssl for the sudo cycle"
+            "shared openssl byte identity verified (REQ-INST-21)"
+            "restored the runner's original openssl state after the seeded sudo cycle"
             "INSTALLER SUDO SMOKE PASSED"
           )
           # The home-lookup assertion is the POINT of this job, and its wording
           # names the tool -- so require the RIGHT tool per platform. Accepting
           # either would let a darwin job pass on a getent line, which is the
           # one outcome that would mean the dscl branch went unexecuted.
+          #
+          # REQ-INST-20 is required per platform for the same reason: the whole
+          # change is that the DARWIN uninstall now defers the stop instead of
+          # claiming it, so the darwin job has to prove the darwin wording. A
+          # shared "defers the stop" entry would go green on the linux job's
+          # line and leave the fixed branch unexecuted -- the same vacuous shape
+          # the dscl split exists to prevent.
           if [ "$(uname -s)" = "Darwin" ]; then
             required+=( "dscl agrees with \$HOME for" )
+            required+=( "the deferred command is the launchd bootout" )
+            required+=( "does NOT claim it stopped the label" )
+            required+=( "does not hand the user a uid resolved AS ROOT" )
           else
             required+=( "getent agrees with \$HOME for" )
+            required+=( "the deferred command is the systemd user stop" )
+            required+=( "does NOT claim it stopped the service" )
           fi
           status=0
           for name in "${required[@]}"; do
@@ -347,7 +365,6 @@ jobs:
             "install.sh full run: service lifecycle (backup/identical/force)"
             "install.sh read-only rc is NOT fatal (REQ-INST-5)"
             "install.sh --uninstall (dry run + real, keeps user state)"
-            "install.sh --uninstall removes the bundled openssl it recorded"
             "socat missing is fatal, unknown hub (REQ-INST-14)"
             "socat missing is fatal for an https:// hub (REQ-INST-14)"
             "socat missing: --uninstall still works (REQ-INST-14)"

@@ -51,7 +51,6 @@ Bridge_Config :: struct {
 }
 
 bridge_config: Bridge_Config
-bridge_ws_send_mutex: sync.Mutex
 bridge_sequence: i64
 
 main :: proc() {
@@ -100,6 +99,12 @@ main :: proc() {
 		return
 	}
 	bridge_runtime_init()
+	// REQ-SHELL-8: reclaim shell output past its retention window. Bridge start is a
+	// trigger rather than a tick — this is the first of three events that already
+	// happen (start, session create, hub reconnect) and between them they age output
+	// out with no poller anywhere. Safe this early because the sweep decides liveness
+	// from the on-disk specs, which is exactly the evidence that survives a restart.
+	bridge_shell_output_sweep_if_due()
 	bridge_agent_token_store_init()
 	// Start the local endpoint at bridge boot, not lazily on launch. Wrappers may
 	// outlive and reconnect after a bridge restart, so recovery requires the local
@@ -433,7 +438,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 }
 
 bridge_runtime_init :: proc() {
-	bridge_ws_send_mutex = sync.Mutex{}
 	bridge_sequence = 0
 }
 
@@ -675,16 +679,40 @@ bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []st
 // ordered kind:"chunk" frames the hub reassembles by chunk_id (see the hub's
 // bridge_ws_reassemble_chunk). Small frames pass through unchanged.
 //
-// ACK-LESS by design: this is a single persistent connection driven by exactly
-// one loop thread (bridge_hub_runtime_loop), so TCP ordering plus that single-
-// writer invariant guarantee the hub sees the chunks in order with no other
-// frame's bytes interleaved within a chunk. (Whole frames — a heartbeat between
-// chunks — are fine: the hub passes non-chunk frames straight through while a
-// reassembly is in flight.) Unlike the federation sender we do NOT wait for a
-// chunk_ack; the hub-runtime channel has no ack path and the ordering guarantee
-// makes per-chunk acks pure latency. INVARIANT: all hub-runtime writes happen on
-// the loop thread — if a background thread is ever handed `conn`, add a send
-// mutex here first, or chunk frames could be byte-interleaved.
+// THE PROPERTY THIS MUST PRESERVE: one chunk SEQUENCE reaches the hub contiguously.
+// The hub reassembles by chunk_id, so another frame's CHUNKS may not appear between
+// this sequence's chunks. (Whole non-chunk frames — a heartbeat between chunks — are
+// fine and always were: the hub passes those straight through while a reassembly is
+// in flight.) That is a coarser requirement than the byte-level one below, and the
+// two are enforced by DIFFERENT locks. REQ-SHELL-32.
+//
+// HOW IT IS ACHIEVED TODAY, and the history that matters:
+// There are TWO writers on this connection, not one. The hub-runtime loop thread
+// (bridge_hub_runtime_loop) writes, AND so does one background stream worker per
+// active PTY stream (pty_host_stream_worker.odin), each handed the same `conn`.
+//   - BYTE-level serialisation — no two writers interleaving bytes WITHIN one frame —
+//     is ws.Connection.send_mu, taken inside ws.send_text itself. It lives with the
+//     socket, so no caller can bypass it.
+//   - SEQUENCE-level serialisation — the property named at the top — is
+//     _bridge_hub_send_mu here, held across the whole multi-frame loop below.
+//
+// This comment previously asserted the opposite: that a single loop thread was the
+// only writer, and that a mutex should be added "here" if that ever changed. Both
+// had already stopped being true. The bug that produced REQ-SHELL-32 was written by
+// satisfying that sentence's letter — a lock was added HERE, in bridge_hub_send — and
+// leaving the loop thread's own four direct ws.send_text calls unlocked. A lock only
+// one party takes serialises nothing. The text is rewritten rather than deleted so
+// that failure is legible to the next reader.
+//
+// >>> DO NOT DELETE EITHER LOCK AS REDUNDANT. <<<
+// They enforce different properties and neither implies the other. Note the honest
+// frequency: the sequence lock only has multi-frame work to do when a frame exceeds
+// bridge_hub_runtime_chunk_payload_bytes() — 45000 on the socat default, so rarely —
+// but "rarely" is not "never", and on the s_client path the threshold is 6000.
+//
+// Still ACK-LESS: unlike the federation sender we do NOT wait for a chunk_ack. The
+// hub-runtime channel has no ack path, and with both locks held in order the hub sees
+// the chunks in order anyway, so per-chunk acks would be pure latency.
 @(private = "file")
 _bridge_hub_send_mu: sync.Mutex
 

@@ -24,12 +24,22 @@ hub.db
 hub.db-shm
 hub.db-wal
 
-# accidental root-level compiled binaries
+# Root-level compiled binaries. `odin test <pkg>` writes its binary to CWD named
+# after the package directory when `-out:` is omitted, and the suites in tests/ run
+# with cwd=repo root, so each one litters a 1.4MB executable here on every run:
+#   tests/test_hub_artifact_api_overhaul.py:117,126,134 -> /sqlite, /content, /http
+#   tests/test_ham_ctl_chat_vault.py:93                 -> /ctl
+# This list is the guard, NOT the fix: the fix is `-out:` on those four invocations.
+# Anything added to it without that is one `git add -A` away from a binary in history.
 /hub
 /bridge
 /ctl
 /wrapper
 /taskchain
+/sqlite
+/content
+/http
+/ws
 
 # Python bytecode and caches
 __pycache__/

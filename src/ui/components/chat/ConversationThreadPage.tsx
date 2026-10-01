@@ -62,8 +62,9 @@ import {
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
+import { PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
 import { type TaskLike } from './chainTaskInference';
-import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
+import { focusSuppressesMobileChrome, keyboardAwareBottomPx, useIsBelowTailwindSm, useIsMobile, useKeyboardInset } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -646,6 +647,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
   }
   const isMobile = useIsMobile();
+  // REQ-SHELL-28: how much of the viewport the soft keyboard is covering; 0 on desktop
+  // and whenever no keyboard is up. Consumed by the bottom-pinned composer form below.
+  const keyboardInset = useKeyboardInset();
+  // REQ-SHELL-28: is focus in a keyboard-bearing field of the composer? That — and NOT
+  // the keyboard inset — is what AppShell uses to unmount the 56px MobileTabBar, so it is
+  // what decides whether the composer still has to clear a tab bar. Same predicate, from
+  // the same module, so the two cannot drift apart.
+  const [composerHoldsKeyboardFocus, setComposerHoldsKeyboardFocus] = useState(false);
   // REQ-UI-DUP-1: the two right-panel branches below are shown/hidden by `sm:` classes
   // (`sm:hidden` / `hidden sm:flex`). Those are CSS visibility only — React mounts BOTH
   // subtrees at every width, so one opened file produced two ProjectFilesPanel instances,
@@ -957,6 +966,66 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       .filter((message) => message.messageType !== 'system'),
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
+  /* REQ-SHELL-6 §2 — THE RUN INDICATOR's three derived values.
+   *
+   * REQ-SHELL-5 posts one lean marker per run, message_type="shell_run", carrying ONLY
+   * {"session_id": …}. Status is deliberately absent from it, so the marker tells us
+   * WHICH runs belong in this thread and the shell_sessions row tells us everything
+   * about their state. */
+  const runMarkers: ShellRunMarker[] = useMemo(
+    () => chatMessages
+      .filter((message) => message.messageType === 'shell_run')
+      .map((message) => ({
+        messageId: message.messageId,
+        sessionId: String(message.metadata?.session_id || message.metadata?.sessionId || ''),
+        createdUnixMs: message.createdUnixMs || 0,
+      }))
+      .filter((marker) => Boolean(marker.sessionId)),
+    [chatMessages],
+  );
+
+  /* The newest message that is NOT a run marker — i.e. the last time a user or an agent
+   * actually said something. This is what UNPINS a finished run, per the user's
+   * sequencing: a run that has stopped stays on screen until the next such message
+   * arrives, so one finishing while nobody is talking remains readable. Markers are
+   * excluded because a run must not unpin itself (or its siblings) merely by existing. */
+  const lastConversationMessageMs = useMemo(
+    () => chatMessages.reduce(
+      (newest, message) => (message.messageType === 'shell_run' ? newest : Math.max(newest, message.createdUnixMs || 0)),
+      0,
+    ),
+    [chatMessages],
+  );
+
+  const conversationRuns = useConversationRuns(agentInstanceId, conversationId);
+  const pinnedRuns = useMemo(
+    () => pinnedRunSessions(conversationRuns, runMarkers, lastConversationMessageMs),
+    [conversationRuns, runMarkers, lastConversationMessageMs],
+  );
+  const runBySessionId = useMemo(
+    () => new Map(conversationRuns.map((session) => [session.session_id, session])),
+    [conversationRuns],
+  );
+
+  /* A pinned run is rendered ABOVE THE COMPOSER, so its marker must not ALSO render at
+   * its chronological place — the row would appear twice. Dropping it from the list
+   * rather than rendering an empty body matters: ChatMessageList wraps every message in
+   * a bubble with a timestamp and a hover-copy control, so a null body would leave a
+   * visible empty row behind. Once the run unpins, the marker comes back here and the
+   * transcript keeps its permanent record of the run where it happened. */
+  const pinnedSessionIds = useMemo(
+    () => new Set(pinnedRuns.map((session) => session.session_id)),
+    [pinnedRuns],
+  );
+  const transcriptMessages = useMemo(
+    () => chatMessages.filter((message) => {
+      if (message.messageType !== 'shell_run') return true;
+      const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
+      return !pinnedSessionIds.has(sessionId);
+    }),
+    [chatMessages, pinnedSessionIds],
+  );
+
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
@@ -1318,6 +1387,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   };
 
   function renderConversationMessageBody(message: ChatMessage) {
+    /* REQ-SHELL-6 §2. A marker reaching this point is NOT pinned (pinned ones are
+       filtered out of `transcriptMessages`), so it always renders the finished,
+       collapsed form. Resolved from the live session row — never from the message, which
+       carries no status by design. If the row is not loaded yet there is nothing
+       truthful to say about the run, so the marker renders nothing rather than guessing
+       a state. */
+    if (message.messageType === 'shell_run') {
+      const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
+      const session = sessionId ? runBySessionId.get(sessionId) : undefined;
+      if (!session) return null;
+      return <ShellRunRow session={session} />;
+    }
     if (message.messageType === 'pane_capture') {
       const metadata = message.metadata || {};
       const status = message.messageStatus || 'complete';
@@ -1728,9 +1809,24 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
         data-mobile-shell-chrome="hide-on-focus"
+        onFocus={(event) => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(event.target))}
+        onBlur={() => window.setTimeout(
+          () => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(document.activeElement)),
+          0,
+        )}
+        // REQ-SHELL-28: iOS shrinks the VISUAL viewport for the soft keyboard and leaves the
+        // LAYOUT viewport at full height, so a `fixed bottom-…` bar stays pinned BELOW the
+        // keyboard. `bottom-14` below is the static fallback; this inline style is the live
+        // value, and at rest it clears the tab bar by the bar's OWN measured height
+        // (`--ui-bottom-chrome`) rather than a hardcoded 56. See `keyboardAwareBottomPx` for
+        // the four-row truth table — it is NOT `keyboardInset + 56`, and the two zero-ish rows
+        // are not the same value: one is a mounted tab bar, the other a home indicator.
+        // `transition-all` below now also eases `bottom`, so the bar slides up with the
+        // keyboard over 300ms rather than jumping. That is intentional.
+        style={isMobile ? { bottom: keyboardAwareBottomPx({ keyboardInset, holdsKeyboardFocus: composerHoldsKeyboardFocus }) } : undefined}
         className={`w-full max-w-full shrink-0 transition-all duration-300 ease-in-out ${
           isMobile
-            ? `fixed bottom-14 inset-x-0 z-20 px-3 pb-2 pt-0 ${
+            ? `fixed bottom-14 inset-x-0 z-20 bg-canvas px-3 pb-2 pt-0 ${
                 !chromeVisible
                   ? 'translate-y-full opacity-0 pointer-events-none'
                   : 'translate-y-0 opacity-100 pointer-events-auto'
@@ -1742,6 +1838,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
               above the composer (co-located with the working indicator). */}
           <AgentActivityBubbles instanceId={agentInstanceId} />
+          {/* REQ-SHELL-6 §2/§3: every RUNNING run, and every just-finished one, sits at
+              the END of the conversation directly above the composer — the user's
+              explicit placement. Concurrent runs stack; finished ones collapse into a
+              single "Ran N commands" row. */}
+          <PinnedShellRuns sessions={pinnedRuns} />
           {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
           {attachments.length > 0 && (
             <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary">
@@ -1955,7 +2056,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <div data-debug-id="conversation-thread-transcript" className="w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
       <ChatMessageList
         conversationKey={conversationId}
-        messages={chatMessages}
+        messages={transcriptMessages}
         debugPrefix="conversation-thread"
         focusMessageId={focusMessageId}
         hasMore={olderHasMore && Boolean(olderCursor)}
@@ -2014,7 +2115,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           data-debug-id="conversation-thread-header"
           className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas/90 backdrop-blur-md ${
+              // REQ-SHELL-28: opaque, not `bg-canvas/90`. Like the composer below, this bar
+              // is `fixed` on mobile only, so the transcript scrolls UNDER it and 10% of a
+              // moving message is legible ghosting through the title. The desktop branch
+              // keeps the frosted look: there the bar is in normal flow with nothing behind
+              // it. The `-bottom-6` gradient fade below stays translucent by design.
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
@@ -2221,7 +2327,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </button>
       ) : null}
 
-      {/* Subtle Bottom Floating Pills */}
+      {/* Subtle Bottom Floating Pills.
+
+          REQ-SHELL-28 — why this bottom-pinned surface deliberately does NOT take the
+          keyboard inset the composer above takes, so the next reader inherits the argument
+          instead of re-deriving it or "fixing" it blind:
+
+          The gate below is `!chromeVisible`, i.e. the user is SCROLLING. In that state the
+          composer is translated off-screen and unfocused, and the composer's textarea is the
+          only thing on this route that raises a soft keyboard. So "pills rendered AND keyboard
+          up" needs the keyboard to outlive the composer being hidden — which is the iOS
+          dismiss-without-blur case, and there the keyboard is DOWN. The state could not be
+          constructed in the harness, and it cannot be proved unreachable on real iOS either;
+          adding a defensive `style={{ bottom: keyboardAwareBottomPx(...) }}` here would be an
+          UNTESTED branch guarding a state neither side can produce. Each pill already carries
+          its own opaque-enough background, so the transparency half does not apply. */}
       {isMobile && !chromeVisible && rightPanel === 'closed' ? (
         <div className="fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none">
           <button

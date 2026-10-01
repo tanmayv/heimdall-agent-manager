@@ -170,12 +170,31 @@ reassemble_rejects_too_many_streams :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, len(reassemblies), contracts.BRIDGE_WS_MAX_REASSEMBLIES)
 
-	// One more distinct stream must be rejected (backpressure), not appended.
+	// REQ-SHELL-32: this used to assert the overflow stream was REFUSED, calling it
+	// backpressure. Refusing is what made the hub permanently deaf: nothing ever
+	// removed an incomplete entry (it was freed only when the connection ended), so
+	// the cap was a countdown rather than a bound, and once it ran out every CHUNKED
+	// frame — i.e. every frame over BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES — was
+	// dropped silently for the life of the connection while small frames flowed on.
+	//
+	// The invariant this test was really protecting is MEMORY, and that still holds:
+	// the array never exceeds the cap. What changed is which stream loses when the
+	// gate is full — the oldest, not the newest.
 	extra := make_chunk_frame("stream_overflow", 0, 2, 8, transmute([]byte)string("abcd"))
 	defer delete(extra)
 	_, _, ok_extra := bridge_ws_reassemble_chunk(&reassemblies, extra)
-	testing.expect(t, !ok_extra)
+	testing.expect(t, ok_extra, "a full gate must admit the new stream by evicting the oldest, not refuse forever")
 	testing.expect_value(t, len(reassemblies), contracts.BRIDGE_WS_MAX_REASSEMBLIES)
+
+	// The newcomer is present and the oldest is the one that went.
+	found_new := false
+	found_oldest := false
+	for r in reassemblies {
+		if r.chunk_id == "stream_overflow" do found_new = true
+		if r.chunk_id == "stream_0" do found_oldest = true
+	}
+	testing.expect(t, found_new, "the admitted stream must be buffered")
+	testing.expect(t, !found_oldest, "the oldest stream must have been evicted to make room")
 }
 
 @(test)

@@ -61,11 +61,23 @@ test('TaskChainsPage.tsx implements status filtering and archive chain card acti
   const content = fs.readFileSync(pageFile, 'utf8');
 
   // Acceptance Criterion 4: TaskChainsPage allows filtering for archived chains
-  assert.match(content, /data-debug-id="task-chains-status-filter"/, 'Status filter Select must have debug id');
-  assert.match(content, /<option\s+value="active">Active<\/option>/, 'Status filter must include Active option');
-  assert.match(content, /<option\s+value="completed">Completed<\/option>/, 'Status filter must include Completed option');
-  assert.match(content, /<option\s+value="archived">Archived<\/option>/, 'Status filter must include Archived option');
-  assert.match(content, /<option\s+value="all">All<\/option>/, 'Status filter must include All option');
+  // REQ-TCUI-2 moved the status filter from a <Select> of literal <option>s onto
+  // ResourceSearchFilter's `tabs`, so the control is now asserted by its per-tab debug ids and
+  // status values instead of the old Select's spelling. Same acceptance criterion: the page can
+  // still filter for archived chains.
+  assert.match(content, /ResourceSearchFilter/, 'Status filter must be rendered via ResourceSearchFilter');
+  for (const status of ['active', 'completed', 'archived', 'all']) {
+    assert.match(
+      content,
+      new RegExp(`task-chains-filter-status-\\$\\{tab\\.value\\}|task-chains-filter-status-${status}`),
+      `Status tabs must carry a debug id for the ${status} tab`,
+    );
+    assert.match(
+      content,
+      new RegExp(`value:\\s*'${status}'`),
+      `Status tabs must include the ${status} status`,
+    );
+  }
 
   // Acceptance Criterion 5: Archive chain option in chain card actions
   assert.match(content, /data-debug-id=\{`task-chains-archive-btn-\$\{chain\.chainId\}`\}/, 'Archive chain button must have debug id');

@@ -146,10 +146,10 @@ assert_no_live_bridge() {
   # Second, independent check, and it is about the SANDBOX env specifically, so
   # it applies to sandbox mode only. Under sudo there is no sandbox env to
   # check: install.sh runs as root, and on linux do_uninstall does not invoke
-  # systemctl at all when service_user is set (install.sh:1033-1035 only PRINTS
+  # systemctl at all when service_user is set (install.sh:1101-1102 only PRINTS
   # the stop advice), so the first check above is the whole defence there.
   if [ "$mode" != "sandbox" ]; then
-    ok "sudo mode: no sandbox env to probe (linux uninstall defers the stop to the user's own session, install.sh:1033-1035)"
+    ok "sudo mode: no sandbox env to probe (linux uninstall defers the stop to the user's own session, install.sh:1101-1102)"
     return 0
   fi
   # The same one the Python suite makes before its own destructive runs: the env
@@ -168,7 +168,20 @@ assert_no_live_bridge() {
 
 # --- sandbox ------------------------------------------------------------------
 sandbox="$(mktemp -d)"
-cleanup() { rm -rf "$sandbox"; }
+cleanup() {
+  exit_status=$?
+  trap - EXIT
+  set +e
+  if [ "${openssl_runner_state_saved:-false}" = true ] && declare -F restore_runner_openssl >/dev/null; then
+    restore_runner_openssl
+    restore_status=$?
+    if [ "$exit_status" -eq 0 ] && [ "$restore_status" -ne 0 ]; then
+      exit_status=$restore_status
+    fi
+  fi
+  rm -rf "$sandbox"
+  exit "$exit_status"
+}
 trap cleanup EXIT
 real_home="$HOME"
 # Captured BEFORE the overrides so assert_no_live_bridge can ask the real
@@ -241,13 +254,13 @@ printf 'mktemp -d with TMPDIR=%s gives: %s\n' \
 # =============================================================================
 # Everything below runs only for INSTALL_SMOKE_MODE=sudo and proves the ONE
 # branch of install.sh that had never executed on any platform: the
-# sudo/SUDO_USER block at install.sh:1207-1233, whose macOS half resolves the
-# invoking user's home with `dscl` (:1224-1225) where Linux uses `getent`
-# (:1218).
+# sudo/SUDO_USER block at install.sh:1241-1267, whose macOS half resolves the
+# invoking user's home with `dscl` (:1258-1259) where Linux uses `getent`
+# (:1252).
 #
 # WHY THIS MODE CANNOT BE SANDBOXED, and why that is a property of install.sh
 # rather than a shortcut here: when euid is 0 the installer HARDCODES
-# install_dir=/usr/local/bin (:1211) and takes service_home from
+# install_dir=/usr/local/bin (:1245) and takes service_home from
 # dscl/getent -- i.e. the invoking user's REAL home. Neither is influenced by
 # HOME, TMPDIR or any other variable this script could set. A sudo run
 # therefore writes to the real /usr/local/bin and a real home BY CONSTRUCTION.
@@ -265,9 +278,9 @@ printf 'mktemp -d with TMPDIR=%s gives: %s\n' \
 #
 # The two REFUSALS are asserted SEPARATELY and deliberately, because they are
 # different code paths and only one of them reaches dscl:
-#   R1 (:1213-1215) SUDO_USER unset, or literally "root" -- fires BEFORE the
+#   R1 (:1247-1249) SUDO_USER unset, or literally "root" -- fires BEFORE the
 #      `[ "$os" = "linux" ]` test, so it never reaches dscl at all.
-#   R2 (:1227-1229) SUDO_USER set and plausible, but dscl/getent yields no home
+#   R2 (:1261-1263) SUDO_USER set and plausible, but dscl/getent yields no home
 #      -- the ONLY path that executes dscl on a FAILING lookup.
 # Asserting only "SUDO_USER unset" would leave dscl's failure path unexecuted
 # while appearing to cover the refusal.
@@ -333,72 +346,182 @@ heimdall_traces_under_home() { # <home>
 
 sudo_install_dir="/usr/local/bin"
 
-# install.sh writes a BUNDLED openssl into $install_dir unconditionally
-# (install.sh:1422-1424: `install -m 0755 ... "$install_dir/openssl"`, with no
-# existence check and no backup -- unlike the service file, which it carefully
-# copies to .bak-* before replacing). Under sudo $install_dir is the SHARED
-# /usr/local/bin, so on any host that already has an openssl there -- an Intel
-# Mac with Homebrew is the ordinary case -- a `curl | sudo bash` silently
-# replaces it, and because install.sh then records ITS OWN copy's checksum as
-# provenance, a later --uninstall DELETES it. Net effect: install followed by
-# uninstall removes the host's openssl.
-# This mode does not fail on that (it is install.sh's documented-nowhere
-# behaviour, not a defect in the branch under test), but it will not let it pass
-# unremarked either: the file is snapshotted, the replacement is REPORTED, and
-# the original bytes are put back during cleanup so a runner is not left
-# without an openssl it arrived with.
+# install.sh once wrote a BUNDLED openssl into $install_dir unconditionally
+# (no existence check, no backup), then recorded ITS OWN copy's checksum as
+# provenance, so a later --uninstall deleted a pre-existing host openssl on
+# the strength of that self-created record. Under sudo $install_dir is the
+# SHARED /usr/local/bin, so on a host that already had an openssl there -- an
+# Intel Mac with Homebrew is the ordinary case -- `curl | sudo bash` followed
+# by --uninstall removed the host's openssl.
+# REQ-INST-21 retired that machinery: current install.sh neither writes nor
+# removes an openssl by any route, and heimdall update leaves one untouched.
+# This mode keeps the guard as the regression detector for exactly that
+# defect: the shared openssl is snapshotted before install, any divergence
+# FAILS the smoke test, and the runner's original state is restored before the
+# process exits.
 openssl_path="$sudo_install_dir/openssl"
 openssl_pre_existed=false
 openssl_pre_sha=""
+openssl_runner_state_saved=false
+openssl_runner_pre_existed=false
 sha_of() { # <path>; empty when it cannot be hashed
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    sha256sum "$1" 2>/dev/null | awk '{print $1}' || true
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || true
+  fi
+}
+remove_current_openssl_entry() {
+  if [ -d "$openssl_path" ] && [ ! -L "$openssl_path" ]; then
+    sudo -n rm -rf "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not remove replacement directory %s\n' "$openssl_path" >&2
+      return 1
+    }
+  elif [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    sudo -n rm -f "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not unlink replacement entry %s\n' "$openssl_path" >&2
+      return 1
+    }
+  fi
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    printf 'REGRESSION CLEANUP ERROR: replacement entry still exists at %s\n' "$openssl_path" >&2
+    return 1
   fi
 }
 snapshot_shared_openssl() {
-  if [ -e "$openssl_path" ]; then
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
     openssl_pre_existed=true
+    sudo -n cp -Pp "$openssl_path" "$sandbox/openssl-before" 2>/dev/null \
+      || die "$openssl_path exists as a path entry but could not be copied without dereferencing for safekeeping; refusing to run a mode that would overwrite it"
     openssl_pre_sha="$(sha_of "$openssl_path")"
-    cp -p "$openssl_path" "$sandbox/openssl-before" 2>/dev/null \
-      || die "$openssl_path exists but could not be copied for safekeeping; refusing to run a mode that would overwrite it"
-    ok "snapshotted the pre-existing $openssl_path (sha ${openssl_pre_sha:-unknown}) so it can be restored"
+    ok "snapshotted the pre-existing $openssl_path entry (sha ${openssl_pre_sha:-unknown}) so it can be restored"
   else
-    ok "no pre-existing $openssl_path to be overwritten on this host"
+    ok "no pre-existing $openssl_path on this host; the guard will verify install.sh does not create one"
   fi
 }
+seed_shared_openssl_for_ci() {
+  if [ "${INSTALL_SMOKE_SUDO_SEED_OPENSSL:-}" != "1" ]; then
+    snapshot_shared_openssl
+    return 0
+  fi
+
+  seed_file="$sandbox/openssl-ci-seed"
+  printf '#!/bin/sh\nprintf "heimdall installer smoke openssl sentinel\\n"\n' >"$seed_file"
+  chmod 0755 "$seed_file"
+  if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    openssl_runner_pre_existed=true
+    sudo -n cp -Pp "$openssl_path" "$sandbox/openssl-runner-before" \
+      || die "$openssl_path exists but its original state could not be preserved before seeding"
+    ok "preserved the runner's original $openssl_path before seeding"
+  else
+    ok "the runner arrived without $openssl_path"
+  fi
+  openssl_runner_state_saved=true
+  remove_current_openssl_entry \
+    || die "could not clear $openssl_path before installing the CI seed"
+  sudo -n install -m 0755 "$seed_file" "$openssl_path" \
+    || die "could not seed $openssl_path for the sudo byte-identity assertion"
+  ok "seeded distinguishable pre-existing $openssl_path for the sudo cycle"
+  snapshot_shared_openssl
+  cmp -s "$seed_file" "$sandbox/openssl-before" \
+    || die "the pre-install $openssl_path snapshot does not contain the CI seed bytes"
+}
+# Proof gate: cmp must establish byte identity and fail closed when it cannot.
 report_shared_openssl() {
   if ! "$openssl_pre_existed"; then
-    ok "nothing to compare: $openssl_path did not pre-exist"
+    if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+      printf '\nREGRESSION (REQ-INST-21): %s did not pre-exist but was CREATED during install+uninstall.\n' "$openssl_path" >&2
+      return 1
+    fi
+    ok "$openssl_path remains absent after install+uninstall"
+    ok "shared openssl absence verified (REQ-INST-21)"
     return 0
   fi
-  if [ ! -e "$openssl_path" ]; then
-    printf '\nNOTED DIVERGENCE: %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path"
+  if [ ! -e "$openssl_path" ] && [ ! -L "$openssl_path" ]; then
+    printf '\nREGRESSION (REQ-INST-21): %s pre-existed and is now GONE after install+uninstall.\n' "$openssl_path" >&2
+    return 1
+  fi
+  if cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    now_sha="$(sha_of "$openssl_path")"
+    ok "$openssl_path remains byte-identical after install+uninstall (sha ${now_sha:-unknown})"
+    ok "shared openssl byte identity verified (REQ-INST-21)"
     return 0
+  else
+    cmp_status=$?
   fi
   now_sha="$(sha_of "$openssl_path")"
-  if [ -n "$openssl_pre_sha" ] && [ -n "$now_sha" ] && [ "$now_sha" != "$openssl_pre_sha" ]; then
-    printf '\nNOTED DIVERGENCE (not a failure of the branch under test, and NOT fixed here):\n  %s was REPLACED by the bundled openssl.\n  before: %s\n  after:  %s\n  install.sh:1422-1424 writes it with no existence check and no .bak-*, unlike the\n  service file. Under sudo that is a shared system path, and --uninstall then\n  deletes it on the strength of the provenance install.sh recorded for its own copy.\n' \
-      "$openssl_path" "$openssl_pre_sha" "$now_sha"
+  if [ "$cmp_status" -eq 1 ]; then
+    printf '\nREGRESSION (REQ-INST-21):\n  %s was REPLACED during install+uninstall.\n  before: %s\n  after:  %s\n  install.sh must not write or remove a shared openssl by any route.\n' \
+      "$openssl_path" "${openssl_pre_sha:-unknown}" "${now_sha:-unknown}" >&2
   else
-    ok "$openssl_path is unchanged (sha ${now_sha:-unknown})"
+    printf '\nREGRESSION (REQ-INST-21): %s could not be compared with its pre-install snapshot (cmp exit %s).\n' \
+      "$openssl_path" "$cmp_status" >&2
   fi
+  return 1
 }
+# Safety path: unlike the proof gate, compare symlink entries without dereferencing them.
 restore_shared_openssl() {
   if ! "$openssl_pre_existed"; then
-    if [ -e "$openssl_path" ]; then
-      sudo -n rm -f "$openssl_path"
+    if [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+      remove_current_openssl_entry || return 1
       ok "removed $openssl_path, which this run introduced"
     fi
     return 0
   fi
-  if [ ! -e "$openssl_path" ] || ! cmp -s "$sandbox/openssl-before" "$openssl_path"; then
-    sudo -n cp -p "$sandbox/openssl-before" "$openssl_path"
-    ok "restored the original $openssl_path this run had replaced"
-  else
-    ok "$openssl_path needs no restoration"
+  if [ -L "$sandbox/openssl-before" ]; then
+    if [ -L "$openssl_path" ] \
+        && [ "$(readlink "$sandbox/openssl-before")" = "$(readlink "$openssl_path")" ]; then
+      ok "$openssl_path needs no pre-install restoration"
+      return 0
+    fi
+  elif [ -f "$openssl_path" ] && [ ! -L "$openssl_path" ] \
+      && cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    ok "$openssl_path needs no pre-install restoration"
+    return 0
   fi
+  remove_current_openssl_entry || return 1
+  sudo -n cp -Pp "$sandbox/openssl-before" "$openssl_path" || {
+    printf 'REGRESSION CLEANUP ERROR: could not recreate the saved pre-install %s\n' "$openssl_path" >&2
+    return 1
+  }
+  if [ -L "$sandbox/openssl-before" ]; then
+    if [ ! -L "$openssl_path" ] \
+        || [ "$(readlink "$sandbox/openssl-before")" != "$(readlink "$openssl_path")" ]; then
+      printf 'REGRESSION CLEANUP ERROR: recreated %s does not match its pre-install symlink\n' "$openssl_path" >&2
+      return 1
+    fi
+  elif [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
+      || ! cmp -s "$sandbox/openssl-before" "$openssl_path"; then
+    printf 'REGRESSION CLEANUP ERROR: recreated %s does not match its pre-install snapshot\n' "$openssl_path" >&2
+    return 1
+  fi
+  ok "restored the pre-install $openssl_path this run had replaced"
+}
+restore_runner_openssl() {
+  [ "$openssl_runner_state_saved" = true ] || return 0
+  remove_current_openssl_entry || return 1
+  if "$openssl_runner_pre_existed"; then
+    sudo -n cp -Pp "$sandbox/openssl-runner-before" "$openssl_path" || {
+      printf 'REGRESSION CLEANUP ERROR: could not restore the runner original %s\n' "$openssl_path" >&2
+      return 1
+    }
+    if [ -L "$sandbox/openssl-runner-before" ]; then
+      if [ ! -L "$openssl_path" ] \
+          || [ "$(readlink "$sandbox/openssl-runner-before")" != "$(readlink "$openssl_path")" ]; then
+        printf 'REGRESSION CLEANUP ERROR: restored %s does not match the runner original symlink\n' "$openssl_path" >&2
+        return 1
+      fi
+    elif [ ! -f "$openssl_path" ] || [ -L "$openssl_path" ] \
+        || ! sudo -n cmp -s "$sandbox/openssl-runner-before" "$openssl_path"; then
+      printf 'REGRESSION CLEANUP ERROR: restored %s does not match the runner original bytes\n' "$openssl_path" >&2
+      return 1
+    fi
+  elif [ -e "$openssl_path" ] || [ -L "$openssl_path" ]; then
+    printf 'REGRESSION CLEANUP ERROR: %s still exists although the runner arrived without it\n' "$openssl_path" >&2
+    return 1
+  fi
+  openssl_runner_state_saved=false
+  ok "restored the runner's original openssl state after the seeded sudo cycle"
 }
 
 # --- the invoking user, resolved WITHOUT asking install.sh ---------------------
@@ -416,14 +539,14 @@ sudo_preconditions() {
   #    home, so it must never be reachable by running the script the ordinary
   #    way. CI sets this; a developer has to mean it.
   if [ "${INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES:-}" != "1" ]; then
-    die "sudo mode makes REAL writes to $sudo_install_dir and to $inv_home (it cannot be sandboxed: uid 0 hardcodes install_dir at install.sh:1211 and takes the home from dscl/getent). Refusing to run without INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1. This is intended for a disposable CI runner, NOT a developer machine or any host with a live bridge."
+    die "sudo mode makes REAL writes to $sudo_install_dir and to $inv_home (it cannot be sandboxed: uid 0 hardcodes install_dir at install.sh:1245 and takes the home from dscl/getent). Refusing to run without INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1. This is intended for a disposable CI runner, NOT a developer machine or any host with a live bridge."
   fi
   ok "explicit opt-in present (INSTALL_SMOKE_SUDO_ALLOW_REAL_WRITES=1)"
 
   # 2. We must NOT already be root: the whole branch under test is reached via
   #    sudo, and SUDO_USER has to name a real invoking user.
   if [ "$inv_uid" -eq 0 ]; then
-    die "run this mode as a NORMAL user — it invokes sudo itself. Running it as root would leave SUDO_USER naming root (or unset), which install.sh:1213-1215 refuses, so the install half of this mode could never execute."
+    die "run this mode as a NORMAL user — it invokes sudo itself. Running it as root would leave SUDO_USER naming root (or unset), which install.sh:1247-1249 refuses, so the install half of this mode could never execute."
   fi
   ok "running as a non-root user ($inv_user, uid $inv_uid) that sudo can name in SUDO_USER"
 
@@ -476,8 +599,10 @@ $pre_existing Refusing to run: --uninstall would remove it."
   #    makes the ordering unambiguous to the next reader.
   ok "live-bridge precondition already passed above (assert_no_live_bridge, unweakened)"
 
-  # 7. Snapshot the one shared file install.sh will overwrite without asking.
-  snapshot_shared_openssl
+  # 7. CI seeds a distinguishable shared openssl before the installer runs so
+  #    the sudo job must execute the byte-identity branch, not merely observe
+  #    that the runner happened to arrive without this path.
+  seed_shared_openssl_for_ci
 }
 
 # --- the rc files we are allowed to touch, and their state BEFORE the run -----
@@ -532,7 +657,7 @@ assert_root_home_clean() { # <label>
     [ -d "$rhome" ] || continue
     while IFS= read -r trace; do
       [ -n "$trace" ] || continue
-      die "$1: found $trace — a sudo install must never write into root's home (install.sh:1214 exists to prevent exactly this)."
+      die "$1: found $trace — a sudo install must never write into root's home (install.sh:1248 exists to prevent exactly this)."
     done <<EOF
 $(heimdall_traces_under_home "$rhome")
 EOF
@@ -594,9 +719,9 @@ sudo_smoke() {
   # -------------------------------------------------------------------------
   # `env -u SUDO_USER` removes the variable sudo itself sets. This is the shape
   # of a root shell that was not reached through sudo at all -- a cron job, or
-  # `su -`. Both refusals precede the socat preflight (:1267-1275) and any
+  # `su -`. Both refusals precede the socat preflight (:1334-1342) and any
   # download, so this needs neither socat nor network and must write nothing.
-  step "R1 SUDO_USER unset: refused, and nothing written (install.sh:1213-1215)"
+  step "R1 SUDO_USER unset: refused, and nothing written (install.sh:1247-1249)"
   run_sudo_installer 1 -u SUDO_USER -- --version "$pin_version"
   assert_contains "refuses to run as root" "refusing to run as root" "$out"
   assert_contains "names SUDO_USER as unset" "SUDO_USER is 'unset'" "$out"
@@ -613,7 +738,7 @@ sudo_smoke() {
   # -------------------------------------------------------------------------
   # `sudo -u root sudo ...` would produce this naturally; injecting it is the
   # same condition without depending on a nested-sudo policy.
-  step "R1 SUDO_USER=root: refused, and nothing written (install.sh:1213-1215)"
+  step "R1 SUDO_USER=root: refused, and nothing written (install.sh:1247-1249)"
   run_sudo_installer 1 SUDO_USER=root -- --version "$pin_version"
   assert_contains "refuses to run as root" "refusing to run as root" "$out"
   assert_contains "names root as the resolved SUDO_USER" "SUDO_USER is 'root'" "$out"
@@ -628,7 +753,7 @@ sudo_smoke() {
   # lookup -- the only assertion on this chain that does. R1 above fires two
   # lines earlier and never reaches it, which is why these are separate steps
   # rather than one "refusal" test.
-  step "R2 SUDO_USER is a nonexistent user: dscl/getent lookup FAILS and the install is refused (install.sh:1227-1229)"
+  step "R2 SUDO_USER is a nonexistent user: dscl/getent lookup FAILS and the install is refused (install.sh:1261-1263)"
   ghost_user="heimdall-no-such-user-t16"
   # Assert the user really is absent, so a pass here cannot be an accident of
   # the name happening to exist on some future runner image.
@@ -673,7 +798,7 @@ sudo_smoke() {
   fi
   [ -n "$resolved_home" ] || die "$lookup_tool returned no home directory for '$inv_user'"
   if [ "$resolved_home" != "$inv_home" ]; then
-    die "$lookup_tool says $inv_user's home is '$resolved_home' but \$HOME is '$inv_home'. install.sh:1224 would write the service file and PATH lines to the former."
+    die "$lookup_tool says $inv_user's home is '$resolved_home' but \$HOME is '$inv_home'. install.sh:1258 would write the service file and PATH lines to the former."
   fi
   ok "$lookup_tool agrees with \$HOME for $inv_user: $resolved_home"
 
@@ -713,7 +838,7 @@ sudo_smoke() {
 
   # 5a. Binaries: in the shared dir, executable, and ROOT-owned. Root ownership
   #     is the correct outcome, not an oversight: /usr/local/bin is a
-  #     system-wide location and take_ownership (install.sh:877-886) is applied
+  #     system-wide location and take_ownership (install.sh:938-946) is applied
   #     to the service file, its directory and the rc files -- never to the
   #     binaries. Asserting it pins the intended split rather than leaving the
   #     question open.
@@ -772,7 +897,7 @@ sudo_smoke() {
     fi
   done
   [ -n "$sudo_rc_hit" ] \
-    || die "no rc file under $inv_home carries 'export PATH=\"$sudo_install_dir:\$PATH\"'. Under sudo the PATH decision must come from the target user's rc files (install.sh:950-1000)."
+    || die "no rc file under $inv_home carries 'export PATH=\"$sudo_install_dir:\$PATH\"'. Under sudo the PATH decision must come from the target user's rc files (install.sh:1010-1060)."
   ok "PATH line written into $sudo_rc_hit"
   assert_root_rc_untouched "no rc file of root's carries the installer marker or PATH line"
   assert_root_home_clean "the real install wrote nothing into root's home"
@@ -818,21 +943,33 @@ sudo_smoke() {
     assert_owner "$rc" "$inv_user" "rc file still belongs to the invoking user after a root-run uninstall"
   done
 
-  # 6b. THE T18 BEHAVIOUR, ASSERTED AS IT IS RATHER THAN AS IT SHOULD BE.
-  #     On darwin do_uninstall (install.sh:1044-1047) has NO service_user guard,
-  #     unlike the linux branch at :1033-1035 which only PRINTS the advice. So
-  #     under sudo it runs `launchctl bootout gui/$(id -u)/...` with id -u == 0
-  #     -- root's GUI domain, NOT the invoking user's -- and then reports
-  #     "stopped ... (best effort)" regardless. It therefore does not stop the
-  #     user's bridge while saying it did. That is filed as T18 and is NOT
-  #     fixed here; this assertion pins the current behaviour so T18 changes it
-  #     against a test that already describes it.
+  # 6b. REQ-INST-20: BOTH PLATFORMS DEFER THE STOP TO THE USER'S OWN SESSION.
+  #     do_uninstall's stop step is now guarded on service_user on darwin as
+  #     well as linux (install.sh:1100-1118), so the one contract its comment
+  #     states at :1090-1099 holds on both. Before T18 the darwin branch had no
+  #     guard: as root it ran `launchctl bootout gui/$(id -u)/...` with id -u
+  #     == 0 -- ROOT's GUI domain, not the invoking user's -- and then reported
+  #     "stopped ... (best effort)" anyway, asserting an outcome about the
+  #     user's bridge that the command could not have produced (REQ-INST-6).
+  #     THE FALSE CLAIM IS ASSERTED ABSENT, not merely the advice asserted
+  #     present: a "fix" that printed the advice and STILL ran the bootout
+  #     would satisfy the presence check and has to fail this one. And the
+  #     printed uid is required to be LITERAL, because resolving it while root
+  #     would hand the user gui/0 -- the same defect moved into the message.
+  assert_contains "uninstall DEFERS the stop to the invoking user's own session" \
+    "service runs as $inv_user — stop it as that user" "$uninstall_out"
   if [ "$os" = "darwin" ]; then
-    assert_contains "darwin uninstall claims it stopped the label (see T18: under sudo it addresses gui/0, not gui/$inv_uid)" \
+    assert_contains 'the deferred command is the launchd bootout, carrying a LITERAL gui/$(id -u) for them to resolve' \
+      'stop it as that user: launchctl bootout gui/$(id -u)/works.earendil.heimdall-bridge' "$uninstall_out"
+    assert_absent "does NOT claim it stopped the label (as root the bootout would address gui/0, not gui/$inv_uid)" \
       "stopped works.earendil.heimdall-bridge" "$uninstall_out"
+    assert_absent "does not hand the user a uid resolved AS ROOT (gui/0)" \
+      "gui/0/works.earendil.heimdall-bridge" "$uninstall_out"
   else
-    assert_contains "linux uninstall correctly DEFERS the stop to the user's own session" \
-      "service runs as $inv_user — stop it as that user" "$uninstall_out"
+    assert_contains "the deferred command is the systemd user stop" \
+      "stop it as that user: systemctl --user stop heimdall-bridge" "$uninstall_out"
+    assert_absent "does NOT claim it stopped the service" \
+      "stopped heimdall-bridge (best effort)" "$uninstall_out"
   fi
 
   # -------------------------------------------------------------------------
@@ -890,10 +1027,14 @@ EOF
   # created are not its to remove. Both are correct installer behaviour and
   # both are OUR debris, so this mode removes them itself rather than leaving a
   # runner (or a developer who opted in) subtly changed.
-  report_shared_openssl
+  openssl_guard_failed=false
+  if ! report_shared_openssl; then
+    openssl_guard_failed=true
+  fi
 
   step "cleanup: remove the residue this mode created, not install.sh's job"
   restore_shared_openssl
+  restore_runner_openssl
   sudo -n rm -rf "$config_dir"
   assert_gone "$config_dir" "removed the enrollment dir this run created"
   for rc in $inv_rc_files; do
@@ -917,6 +1058,9 @@ EOF
       ok "removed $rc, which install.sh created during this run"
     fi
   done
+  if "$openssl_guard_failed"; then
+    die "shared openssl preservation failed (REQ-INST-21); runner cleanup was attempted before failing"
+  fi
 }
 
 assert_no_live_bridge

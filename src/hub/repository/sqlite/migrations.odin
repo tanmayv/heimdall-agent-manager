@@ -200,14 +200,49 @@ MIGRATION_046_TASK_CHAIN_FLEETS :: #load("migrations/046_task_chain_fleets.sql",
 // dual-wrapped vault key envelopes and KDF parameters (REQ-VAULT-DB-SCHEMA-1).
 MIGRATION_047_USER_VAULTS :: #load("migrations/047_user_vaults.sql", string)
 
-// MIGRATION_048_FIG_PROJECTS adds Fig workspace metadata columns to projects (Cloudtop).
-MIGRATION_048_FIG_PROJECTS :: #load("migrations/048_fig_projects.sql", string)
+// MIGRATION_048_TASK_SUBSCRIPTIONS creates task_subscriptions table for
+// reactive status event fanout (REQ-TCC-2).
+MIGRATION_048_TASK_SUBSCRIPTIONS :: #load("migrations/048_task_subscriptions.sql", string)
 
-// MIGRATION_049_TASK_SUBSCRIPTIONS creates the task_subscriptions table for
-// agent task and chain event subscriptions (REQ-TCC-2).
-MIGRATION_049_TASK_SUBSCRIPTIONS :: #load("migrations/049_task_subscriptions.sql", string)
+// MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY collapses shell_sessions.kind to
+// run|shell|server (dropping the dead 'agent' rows) and rebuilds the table with
+// PRIMARY KEY (bridge_id, session_id) so one bridge cannot overwrite another's
+// row (REQ-SHELL-1 §1, §7).
+MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY :: #load("migrations/048_shell_sessions_kind_and_key.sql", string)
 
-migration_order :: [51]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql", "048_fig_projects.sql", "049_task_subscriptions.sql"}
+// MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION adds the two columns
+// explicit backgrounding needs on the row: `background` (REQ-SHELL-2 deletes the
+// implicit 15s rule, so foreground/background becomes a stored property rather
+// than an elapsed-time accident) and `conversation_id` (the TRIGGERING
+// conversation, which REQ-SHELL-5 scopes the completion marker to and REQ-SHELL-6
+// filters on).
+MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION :: #load("migrations/049_shell_sessions_background_and_conversation.sql", string)
+
+// MIGRATION_050_SHELL_SESSIONS_KILL_INTENT adds kill_requested_at (REQ-SHELL-3):
+// the durable record that a kill was ACCEPTED for a session. Before it, a kill
+// requested while the bridge was offline failed and persisted nothing, so nothing
+// re-issued it on reconnect and the process ran forever. With it the accept
+// succeeds, the intent survives the disconnect, and the hub replays outstanding
+// intents when the bridge's WS comes back.
+MIGRATION_050_SHELL_SESSIONS_KILL_INTENT :: #load("migrations/050_shell_sessions_kill_intent.sql", string)
+
+// MIGRATION_051_SHELL_SESSIONS_RUN_SEQ adds run_seq (REQ-SHELL-4): which RUN of a
+// session an exit report is about. A durable exit outbox can deliver an exit after
+// the session has been restarted under the same session_id, and without this the
+// hub would mark a live session terminal on a stale exit. See the migration file.
+MIGRATION_051_SHELL_SESSIONS_RUN_SEQ :: #load("migrations/051_shell_sessions_run_seq.sql", string)
+
+// MIGRATION_052_DROP_SHELL_JOBS drops the shell_jobs table (REQ-SHELL-7). The whole
+// shell_jobs stack — domain type, service, repository, routes and UI — is deleted in
+// the same commit; 039 created the table, 041 replaced the CONCEPT with
+// shell_sessions but left the table behind, and this removes it. Metadata only, no
+// output column, so nothing recoverable is lost. See the migration file.
+MIGRATION_052_DROP_SHELL_JOBS :: #load("migrations/052_drop_shell_jobs.sql", string)
+
+// MIGRATION_053_FIG_PROJECTS adds Fig workspace metadata columns to projects (Cloudtop).
+MIGRATION_053_FIG_PROJECTS :: #load("migrations/053_fig_projects.sql", string)
+
+migration_order :: [56]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql", "048_task_subscriptions.sql", "048_shell_sessions_kind_and_key.sql", "049_shell_sessions_background_and_conversation.sql", "050_shell_sessions_kill_intent.sql", "051_shell_sessions_run_seq.sql", "052_drop_shell_jobs.sql", "053_fig_projects.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -341,7 +376,93 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "049_task_subscriptions.sql" && sqlite_object_exists(conn, "task_subscriptions") {
+		if (name == "048_task_subscriptions.sql" || name == "049_task_subscriptions.sql") && sqlite_object_exists(conn, "task_subscriptions") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if (name == "053_fig_projects.sql" || name == "048_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// Skip-guard keyed on a NEW index rather than on a column: 048 changes the
+		// primary key and the kind vocabulary without adding or removing a column, so
+		// table_column_exists cannot tell a migrated table from an unmigrated one.
+		//
+		// KEYED ON THE LAST OBJECT 048 CREATES, which is shell_sessions_owner_session
+		// (048 line 83), NOT the earlier shell_sessions_agent (line 70). run_migrations
+		// is not transactional -- there is no BEGIN/COMMIT around the apply loop -- so a
+		// failure part-way through 048 leaves whatever it had already created in place.
+		// Guarding on an EARLY object would then mark 048 applied while the UNIQUE index
+		// shell_sessions_owner_session was missing, and that index is the constraint that
+		// makes the owner-scoped by-session-id read single-row by construction rather than
+		// by LIMIT 1 choosing arbitrarily between duplicates. Keying on the last object
+		// means a partial apply cannot look complete. Same reasoning, same shape, as 050's
+		// guard below. sqlite_object_exists queries sqlite_master by name with no type
+		// filter, so it matches an index exactly as it matches a table.
+		//
+		// This is robustness against a FUTURE partial failure, not a live bug: no
+		// reachable database today has 048 half-applied.
+		if name == "048_shell_sessions_kind_and_key.sql" && sqlite_object_exists(conn, "shell_sessions_owner_session") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// 049 only ADDS columns, so the column itself is the honest skip-guard here
+		// (unlike 048, which changes the key without changing the column set).
+		// ALTER TABLE ADD COLUMN is not idempotent in SQLite -- re-running it is a
+		// hard "duplicate column name" error, which would abort startup migrations
+		// on any database that reached 049 through the pre-ledger recovery path.
+		if name == "049_shell_sessions_background_and_conversation.sql" && table_column_exists(conn, "shell_sessions", "background") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// 050 is ALTER TABLE ADD COLUMN too, so it needs a skip guard for the same
+		// reason 049 does: SQLite has no IF NOT EXISTS for ADD COLUMN, and a re-run is
+		// a hard "duplicate column name" that would abort startup migrations on any
+		// database that reached 050 through the pre-ledger recovery path.
+		//
+		// KEYED ON THE LAST OBJECT 050 CREATES (the index), NOT THE FIRST (the column)
+		// — REQ-SHELL-13 N1. 050 creates two objects and run_migrations is not
+		// transactional, so a pass that added the column and died before the index
+		// leaves a database a column-keyed guard would declare finished, with the replay
+		// lookup's index permanently missing. Keying on the LAST object makes the guard
+		// unfakeable by a partial apply: it is satisfied only once every object exists.
+		//
+		// THE PARTIAL APPLY THEN NEEDS ITS OWN BRANCH, and this is the part keying on
+		// the last object alone would get wrong. The self-heal twins all run AFTER this
+		// loop, so falling through on a half-applied 050 would re-exec the migration
+		// file, whose ALTER TABLE ADD COLUMN is a hard "duplicate column name" against
+		// the column that is already there — aborting startup on exactly the state the
+		// guard exists to catch, with the twin that could have repaired it never
+		// reached. So the half-applied case is repaired HERE, by the same per-object
+		// twin, before the ledger is marked.
+		//
+		// Three states, one for each thing that can be true:
+		//   both objects  -> nothing to do; mark and skip.
+		//   column only   -> partial apply; repair the missing half via the twin.
+		//   neither       -> fall through and run the migration file normally.
+		if name == "050_shell_sessions_kill_intent.sql" {
+			if sqlite_object_exists(conn, "shell_sessions_pending_kill") {
+				mark_migration_applied(conn, name)
+				continue
+			}
+			if table_column_exists(conn, "shell_sessions", "kill_requested_at") {
+				if !upgrade_shell_sessions_kill_intent_schema(conn) {
+					return false, domain.domain_error(.Internal_Error, "failed to repair a half-applied 050_shell_sessions_kill_intent")
+				}
+				mark_migration_applied(conn, name)
+				continue
+			}
+		}
+		// 051 adds exactly ONE object — the run_seq column — so unlike 050 there is no
+		// "last object" distinct from the first and no partial-apply state to repair:
+		// the column either exists or the migration never ran. The guard is therefore
+		// the column itself, as it is for 049.
+		//
+		// It still NEEDS a guard for the same reason 049 and 050 do: SQLite has no
+		// IF NOT EXISTS for ADD COLUMN, so a re-run on a database that reached 051
+		// through the pre-ledger recovery path is a hard "duplicate column name" that
+		// would abort startup migrations.
+		if name == "051_shell_sessions_run_seq.sql" && table_column_exists(conn, "shell_sessions", "run_seq") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -380,6 +501,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_task_bridge_schema(conn) do return false, domain.domain_error(.Internal_Error, "task bridge_id schema upgrade failed")
 	if !upgrade_user_vaults_schema(conn) do return false, domain.domain_error(.Internal_Error, "user vaults schema upgrade failed")
 	if !upgrade_task_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "task subscriptions schema upgrade failed")
+	if !upgrade_shell_sessions_kind_and_key_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions kind + key schema upgrade failed")
+	if !upgrade_shell_sessions_background_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions background + conversation schema upgrade failed")
+	if !upgrade_shell_sessions_kill_intent_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions kill intent schema upgrade failed")
+	if !upgrade_shell_sessions_run_seq_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions run_seq schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -438,10 +563,15 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "044_issues.sql" do return strings.clone(MIGRATION_044_ISSUES)
 	if name == "044_lsp_servers.sql" do return strings.clone(MIGRATION_044_LSP_SERVERS)
 	if name == "046_task_chain_fleets.sql" || name == "044_task_chain_fleets.sql" do return strings.clone(MIGRATION_046_TASK_CHAIN_FLEETS)
-	if name == "048_fig_projects.sql" || name == "047_fig_projects.sql" || name == "046_fig_projects.sql" || name == "045_fig_projects.sql" || name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_048_FIG_PROJECTS)
-	if name == "045_lsp_server_patterns.sql" || name == "046_lsp_server_patterns.sql" do return strings.clone(MIGRATION_045_LSP_SERVER_PATTERNS)
 	if name == "047_user_vaults.sql" || name == "048_user_vaults.sql" do return strings.clone(MIGRATION_047_USER_VAULTS)
-	if name == "049_task_subscriptions.sql" do return strings.clone(MIGRATION_049_TASK_SUBSCRIPTIONS)
+	if name == "048_task_subscriptions.sql" || name == "049_task_subscriptions.sql" do return strings.clone(MIGRATION_048_TASK_SUBSCRIPTIONS)
+	if name == "048_shell_sessions_kind_and_key.sql" do return strings.clone(MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY)
+	if name == "049_shell_sessions_background_and_conversation.sql" do return strings.clone(MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION)
+	if name == "050_shell_sessions_kill_intent.sql" do return strings.clone(MIGRATION_050_SHELL_SESSIONS_KILL_INTENT)
+	if name == "051_shell_sessions_run_seq.sql" do return strings.clone(MIGRATION_051_SHELL_SESSIONS_RUN_SEQ)
+	if name == "052_drop_shell_jobs.sql" do return strings.clone(MIGRATION_052_DROP_SHELL_JOBS)
+	if name == "053_fig_projects.sql" || name == "048_fig_projects.sql" || name == "047_fig_projects.sql" || name == "046_fig_projects.sql" || name == "045_fig_projects.sql" || name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_053_FIG_PROJECTS)
+	if name == "045_lsp_server_patterns.sql" || name == "046_lsp_server_patterns.sql" do return strings.clone(MIGRATION_045_LSP_SERVER_PATTERNS)
 	return ""
 }
 
@@ -456,6 +586,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	}
 	if version == "049_task_subscriptions.sql" {
 		return sqlite_object_exists(conn, "task_subscriptions")
+	}
+	if version == "053_fig_projects.sql" {
+		return migration_applied(conn, "048_fig_projects.sql")
 	}
 	if version == "048_fig_projects.sql" {
 		return migration_applied(conn, "047_fig_projects.sql")
@@ -477,6 +610,27 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	}
 	if version == "044_fig_projects.sql" {
 		return migration_applied(conn, "043_fig_projects.sql") || migration_applied(conn, "041_fig_projects.sql") || migration_applied(conn, "040_fig_projects.sql")
+	}
+	if version == "048_task_subscriptions.sql" || version == "049_task_subscriptions.sql" {
+		return sqlite_object_exists(conn, "task_subscriptions")
+	}
+	if version == "048_shell_sessions_kind_and_key.sql" {
+		// The LAST object 048 creates, matching its skip guard above — a partial apply
+		// that stopped before the UNIQUE index must not read back as applied.
+		return sqlite_object_exists(conn, "shell_sessions_owner_session")
+	}
+	if version == "049_shell_sessions_background_and_conversation.sql" {
+		return table_column_exists(conn, "shell_sessions", "background")
+	}
+	if version == "050_shell_sessions_kill_intent.sql" {
+		// The LAST object 050 creates, matching its skip guard — a partial apply that
+		// stopped after the column must not read back as applied.
+		return sqlite_object_exists(conn, "shell_sessions_pending_kill")
+	}
+	if version == "051_shell_sessions_run_seq.sql" {
+		// 051's only object, matching its skip guard. Single-object, so unlike 050
+		// there is no partial apply this could read back as applied.
+		return table_column_exists(conn, "shell_sessions", "run_seq")
 	}
 	return false
 }
@@ -871,3 +1025,76 @@ CREATE INDEX IF NOT EXISTS idx_task_sub_chain ON task_subscriptions(chain_id, ev
 CREATE INDEX IF NOT EXISTS idx_task_sub_task ON task_subscriptions(task_id, event_type);`)
 }
 
+
+// upgrade_shell_sessions_kind_and_key_schema is the idempotent self-heal twin of
+// migration 048, for a database whose ledger says 041 ran but which predates 048
+// (or was bootstrapped from a stale embedded copy). It re-runs the migration's
+// SQL, which is written to be safe on an already-migrated table: the UPDATEs and
+// the DELETE match nothing once the vocabulary is collapsed, and the rebuild is
+// skipped entirely when shell_sessions_owner_session already exists.
+//
+// KEYED ON THE SAME LAST OBJECT as the skip guard, deliberately. This twin is the
+// path that REPAIRS a database 048 did not fully reach, so it is the last place that
+// should refuse to run because an EARLY object of 048 happens to be present.
+upgrade_shell_sessions_kind_and_key_schema :: proc(conn: ^Conn) -> bool {
+	if !sqlite_object_exists(conn, "shell_sessions") do return true
+	if sqlite_object_exists(conn, "shell_sessions_owner_session") do return true
+	return exec(conn, MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY)
+}
+
+// upgrade_shell_sessions_background_schema is the idempotent self-heal twin of
+// migration 049 (REQ-SHELL-2), for the same class of database 048's twin exists
+// for.
+//
+// It is per-COLUMN rather than one exec of the migration file, because 049 is
+// ALTER TABLE ADD COLUMN and SQLite has no IF NOT EXISTS for that: a single
+// re-exec is a hard "duplicate column name" error that would fail startup. The
+// two columns are also checked independently, so a database that somehow got one
+// of them gains the other instead of being stuck.
+upgrade_shell_sessions_background_schema :: proc(conn: ^Conn) -> bool {
+	if !sqlite_object_exists(conn, "shell_sessions") do return true
+	if !table_column_exists(conn, "shell_sessions", "background") {
+		if !exec(conn, "ALTER TABLE shell_sessions ADD COLUMN background INTEGER NOT NULL DEFAULT 0;") do return false
+	}
+	if !table_column_exists(conn, "shell_sessions", "conversation_id") {
+		if !exec(conn, "ALTER TABLE shell_sessions ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';") do return false
+	}
+	return exec(conn, "CREATE INDEX IF NOT EXISTS shell_sessions_conversation ON shell_sessions(owner_user_id, conversation_id);")
+}
+
+// upgrade_shell_sessions_run_seq_schema is the idempotent self-heal twin of
+// migration 051 (REQ-SHELL-4), for the same class of database the three twins above
+// exist for.
+//
+// SINGLE-OBJECT, so it is the simplest of the four: 051 adds one column and creates
+// no index (run_seq is read from a row already fetched by primary key and is never
+// a lookup key — see the migration file), so there is no second half that a
+// non-transactional pass could leave missing. The existence check is still required,
+// because ALTER TABLE ADD COLUMN is not idempotent in SQLite.
+upgrade_shell_sessions_run_seq_schema :: proc(conn: ^Conn) -> bool {
+	if !sqlite_object_exists(conn, "shell_sessions") do return true
+	if table_column_exists(conn, "shell_sessions", "run_seq") do return true
+	return exec(conn, "ALTER TABLE shell_sessions ADD COLUMN run_seq INTEGER NOT NULL DEFAULT 0;")
+}
+
+// upgrade_shell_sessions_kill_intent_schema is the idempotent self-heal twin of
+// migration 050 (REQ-SHELL-3), for the same class of database 048's and 049's
+// twins exist for.
+//
+// PER-OBJECT, and both objects are checked independently — the column AND the
+// partial index. 050 creates two objects and run_migrations is not transactional,
+// so "the column exists" does not imply "the index exists": a pass that died
+// between them leaves exactly that state, and a twin that checked only the column
+// would leave the replay lookup without its index forever. Checking each half
+// separately means a database that somehow got one gains the other instead of
+// being stuck with half a migration.
+upgrade_shell_sessions_kill_intent_schema :: proc(conn: ^Conn) -> bool {
+	if !sqlite_object_exists(conn, "shell_sessions") do return true
+	if !table_column_exists(conn, "shell_sessions", "kill_requested_at") {
+		if !exec(conn, "ALTER TABLE shell_sessions ADD COLUMN kill_requested_at TEXT NOT NULL DEFAULT '';") do return false
+	}
+	// CREATE INDEX IF NOT EXISTS is idempotent on its own, unlike ADD COLUMN, so this
+	// needs no existence check of its own — it is the statement that repairs the
+	// partial-apply case the guards above are keyed on.
+	return exec(conn, "CREATE INDEX IF NOT EXISTS shell_sessions_pending_kill ON shell_sessions(bridge_id) WHERE kill_requested_at != '';")
+}

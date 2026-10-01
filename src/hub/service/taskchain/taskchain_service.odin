@@ -16,6 +16,7 @@ import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
 import agent "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
+import shell_session "odin_test:hub/service/shell_session"
 
 Nudge_Target :: enum {
 	None,
@@ -46,6 +47,12 @@ Taskchain_Service :: struct {
 	bridge_command_sink: project.Bridge_Command_Sink,
 	agent_service: ^agent.Agent_Service,
 	event_bus: ^events.User_Event_Bus,
+	// shell_sessions backs REQ-SHELL-9 trigger A: a closed chain's servers are
+	// killed. Optional, like agent_service and event_bus above and set the same way
+	// (set_shell_session_service) — a service constructed without it simply does not
+	// reap, which keeps every existing test that builds a bare Taskchain_Service
+	// working unchanged.
+	shell_sessions: ^shell_session.Shell_Session_Service,
 	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
 	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
 	// set on every connect. Guarded by replay_mutex.
@@ -157,6 +164,54 @@ set_agent_service :: proc(service: ^Taskchain_Service, agent_svc: ^agent.Agent_S
 set_event_bus :: proc(service: ^Taskchain_Service, bus: ^events.User_Event_Bus) {
 	if service == nil do return
 	service.event_bus = bus
+}
+
+set_shell_session_service :: proc(service: ^Taskchain_Service, shell_svc: ^shell_session.Shell_Session_Service) {
+	if service == nil do return
+	service.shell_sessions = shell_svc
+}
+
+// reap_chain_servers_on_close kills every live SERVER of a chain that has just reached a
+// terminal status (REQ-SHELL-9 trigger A). It is a no-op for any other status and for a
+// service with no shell-session service wired.
+//
+// WHY THIS PROC EXISTS RATHER THAN THREE INLINE CALLS: there are THREE paths that close a
+// chain, and no single choke point that sees all three.
+//   taskchain_service.odin:402  update_chain          — an explicit status in a PATCH
+//   taskchain_service.odin:529  change_chain_status   — the dedicated verb
+//   taskchain_service.odin:685  sync_chain_status_from_tasks — THE AUTO-COMPLETE
+// The third is the one that matters: it is how a chain finishes in the normal case, when
+// the last task reaches a terminal status. Hooking only the two manual paths — which is
+// what REQ-SHELL-9's description originally prescribed — would have produced a feature
+// that passes its tests and reaps nothing in production.
+//
+// CALLING ONE IDEMPOTENT PROC FROM EVERY CLOSE PATH IS NOT THE SAME AS HOPING PARTIAL
+// COVERAGE ADDS UP. The reap refuses a server that is already terminal or already carries
+// a kill intent (shell_session_reap.odin, _reap_kill_if_eligible), so running it twice is
+// defined behaviour, not luck. That property is required by the task in its own right;
+// this call pattern only depends on it.
+//
+// THE TERMINAL SET IS {Completed, Cancelled, Archived} — deliberately the SAME set
+// broadcast_chain_closed uses below and fanout_chain_status_changed uses at
+// subscription.odin:240, rather than a new narrower one. The user asked for "completes";
+// cancelled must reap too, because the hub already tells every member "All task
+// activities halted" on a cancel and a surviving server would make that a lie; archived
+// must reap because valid_chain_transition allows Active -> Archived directly, so it is a
+// real close path for a chain that was never completed. Reusing the existing set means
+// this cannot drift from the hub's own notion of a closed chain.
+//
+// REOPENING (Completed -> Active) DOES NOT RESTART ANYTHING. The processes are gone and
+// the hub cannot restart what it did not keep; whoever reopens a chain starts what they
+// still need.
+//
+// Deliberately NOT hooked into fanout_chain_status_changed, which IS called by all three
+// paths and already has the terminal test: it early-returns at subscription.odin:229 when
+// no bridge command sink is configured, which would silently condition a lifecycle
+// guarantee on a NOTIFICATION concern.
+reap_chain_servers_on_close :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
+	if service == nil || service.shell_sessions == nil do return
+	if next != .Completed && next != .Cancelled && next != .Archived do return
+	_ = shell_session.shell_session_reap_chain_servers(service.shell_sessions, string(chain.owner_user_id), string(chain.chain_id))
 }
 
 // is_instance_member_or_coordinator: membership OR coordinator authority, read
@@ -428,6 +483,9 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	chain.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
 	if save_ok && status_closed {
+		// REQ-SHELL-9 trigger A. Before the broadcast rather than after, so the servers
+		// are already dying by the time members are told the chain closed.
+		reap_chain_servers_on_close(service, saved, closed_status)
 		broadcast_chain_closed(service, auth, saved, closed_status)
 	}
 	if save_ok && input.status != "" {
@@ -472,7 +530,7 @@ set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
 	next := strings.trim_space(title)
 	if next == "" do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is required")
-	if len(next) > 120 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is too long")
+	if err := domain.validate_capped_text("chain title", next, domain.CHAIN_TITLE_MAX_BYTES); err.code != .None do return domain.Task_Chain{}, false, err
 	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{title = next, title_source = "agent"})
 }
 
@@ -482,7 +540,7 @@ set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 set_own_chain_description :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id, description: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
 	next := strings.trim_space(description)
-	if len(next) > 4000 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain description is too long")
+	if err := domain.validate_capped_text("chain description", next, domain.CHAIN_DESCRIPTION_MAX_BYTES); err.code != .None do return domain.Task_Chain{}, false, err
 	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{description = next, has_description = true})
 }
 
@@ -537,6 +595,9 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
 	// long-running loops/tasks halt.
 	if save_ok && (next == .Completed || next == .Cancelled || next == .Archived) {
+		// REQ-SHELL-9 trigger A — see reap_chain_servers_on_close for why all three
+		// close paths call it and why that is safe.
+		reap_chain_servers_on_close(service, saved, next)
 		broadcast_chain_closed(service, auth, saved, next)
 	}
 	if save_ok {
@@ -622,6 +683,23 @@ validate_task_bridge :: proc(service: ^Taskchain_Service, owner: domain.User_ID,
 	return domain.Domain_Error{}
 }
 
+// validate_task_assignee_bridge_match (REQ-TB-HUB-1):
+// Rejects task creation or update with Conflict if a concrete assignee instance
+// is specified and its bridge_id does not match the task's non-empty bridge_id.
+validate_task_assignee_bridge_match :: proc(service: ^Taskchain_Service, task_bridge_id: string, assignee_ref_json: string) -> (bool, domain.Domain_Error) {
+	if task_bridge_id == "" || service == nil || service.agents == nil do return true, domain.Domain_Error{}
+	instances := extract_instances_from_ref_blob(assignee_ref_json)
+	defer delete(instances)
+	for inst_id in instances {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, inst_id); ok {
+			if inst.bridge_id != "" && inst.bridge_id != task_bridge_id {
+				return false, domain.domain_error(.Conflict, "assignee instance bridge does not match task bridge")
+			}
+		}
+	}
+	return true, domain.Domain_Error{}
+}
+
 // sync_chain_status_from_tasks (REQ-CHAIN-AUTO-STATUS-1):
 // Synchronizes the parent task chain's status based on the lifecycle of its tasks:
 // - Transitions a Completed chain to Active when a task is created or moved to non-terminal status.
@@ -682,6 +760,12 @@ sync_chain_status_from_tasks :: proc(service: ^Taskchain_Service, chain_id: doma
 			defer delete(summary)
 			events.publish_resource_changed(service.event_bus, string(chain.owner_user_id), "task_chain", string(chain.chain_id), "updated", summary)
 		}
+		// REQ-SHELL-9 trigger A, and THE ONE THAT MATTERS: this is the auto-complete,
+		// reached when the last task of a chain goes terminal. It is how a chain closes
+		// in the normal case, and it is the path REQ-SHELL-9's description did not name.
+		// `chain.status` rather than a `next` parameter because this block also handles
+		// the reopen (.Active at :679), which the reap refuses.
+		reap_chain_servers_on_close(service, chain, chain.status)
 		fanout_chain_status_changed(service, contracts.Auth_Context{kind = .None}, chain)
 	}
 
@@ -716,6 +800,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, assignee_ref); norm_ok { assignee_ref = norm } else { return domain.Task{}, false, norm_err }
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, reviewer_refs); norm_ok { reviewer_refs = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, assignee_ref, reviewer_refs); !refs_ok do return domain.Task{}, false, refs_err
+	if bm_ok, bm_err := validate_task_assignee_bridge_match(service, input.bridge_id, assignee_ref); !bm_ok do return domain.Task{}, false, bm_err
 	now := platform.clock_now(service.clock)
 	task := domain.Task{
 		task_id = domain.Task_ID(platform.generate_id(service.ids, "task_")),
@@ -802,6 +887,7 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.assignee_ref_json); norm_ok { task.assignee_ref_json = norm } else { return domain.Task{}, false, norm_err }
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.reviewer_refs_json); norm_ok { task.reviewer_refs_json = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, task.assignee_ref_json, task.reviewer_refs_json); !refs_ok do return domain.Task{}, false, refs_err
+	if bm_ok, bm_err := validate_task_assignee_bridge_match(service, task.bridge_id, task.assignee_ref_json); !bm_ok do return domain.Task{}, false, bm_err
 	task.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if !save_ok do return domain.Task{}, false, save_err

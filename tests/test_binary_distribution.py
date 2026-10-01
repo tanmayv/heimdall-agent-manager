@@ -60,6 +60,7 @@ import http.server
 import json
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -75,6 +76,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCRIPT = ROOT / 'scripts' / 'release' / 'package-local-binary-tarball.sh'
 STORELESS_SCRIPT = ROOT / 'scripts' / 'release' / 'storeless-exec.sh'
+INSTALLER_SMOKE_SCRIPT = ROOT / 'scripts' / 'ci' / 'installer-smoke.sh'
 # storeless-exec.sh contract: the static control exits 42, and 70 means no
 # clean-environment mechanism could be validated.
 STORELESS_CONTROL_RC = 42
@@ -310,6 +312,87 @@ def test_install_sh_syntax(ctx):
     assert '\n  set -euo pipefail\n' in text, 'main() must enable set -euo pipefail'
 
 
+def shell_function(script: Path, name: str) -> str:
+    match = re.search(
+        rf'(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n',
+        script.read_text(encoding='utf-8'))
+    assert match, f'{name}() not found in {script}'
+    return match.group(0)
+
+
+def test_report_shared_openssl_guard_has_teeth(ctx):
+    """The CI proof gate must fail closed on every unproven outcome."""
+    base = ctx['work'] / 'report-shared-openssl'
+    base.mkdir(parents=True, exist_ok=True)
+    function = shell_function(INSTALLER_SMOKE_SCRIPT, 'report_shared_openssl')
+    harness = f'''set +e
+ok() {{ :; }}
+sha_of() {{ printf '%s\\n' hash; }}
+cmp() {{
+  if [ "$case_mode" = cmp-error ]; then return 2; fi
+  command cmp "$@"
+}}
+{function}
+run_case() {{
+  label="$1"
+  expected="$2"
+  openssl_pre_existed="$3"
+  case_mode="$4"
+  case_dir={shlex.quote(str(base))}/"$label"
+  sandbox="$case_dir/sandbox"
+  openssl_path="$case_dir/openssl"
+  openssl_pre_sha=before
+  mkdir -p "$sandbox"
+  case "$case_mode" in
+    absent) ;;
+    created) printf created >"$openssl_path" ;;
+    deleted) printf before >"$sandbox/openssl-before" ;;
+    identical)
+      printf same >"$sandbox/openssl-before"
+      printf same >"$openssl_path"
+      ;;
+    replaced)
+      printf before >"$sandbox/openssl-before"
+      printf after >"$openssl_path"
+      ;;
+    cmp-error)
+      printf same >"$sandbox/openssl-before"
+      printf same >"$openssl_path"
+      ;;
+  esac
+  report_shared_openssl >"$case_dir/stdout" 2>"$case_dir/stderr"
+  status=$?
+  printf 'report_shared_openssl branch=%s status=%s expected=%s\\n' \
+    "$label" "$status" "$expected"
+  if [ "$status" -ne "$expected" ]; then
+    cat "$case_dir/stdout" "$case_dir/stderr" >&2
+    return 1
+  fi
+}}
+failures=0
+run_case proven-absence 0 false absent || failures=$((failures + 1))
+run_case unexpected-creation 1 false created || failures=$((failures + 1))
+run_case unexpected-deletion 1 true deleted || failures=$((failures + 1))
+run_case byte-identical 0 true identical || failures=$((failures + 1))
+run_case byte-replacement 1 true replaced || failures=$((failures + 1))
+run_case cmp-error 1 true cmp-error || failures=$((failures + 1))
+exit "$failures"
+'''
+    res = run(['bash', '-c', harness], cwd=ROOT)
+    print(res.stdout, end='')
+    expected = (
+        'report_shared_openssl branch=proven-absence status=0 expected=0\n'
+        'report_shared_openssl branch=unexpected-creation status=1 expected=1\n'
+        'report_shared_openssl branch=unexpected-deletion status=1 expected=1\n'
+        'report_shared_openssl branch=byte-identical status=0 expected=0\n'
+        'report_shared_openssl branch=byte-replacement status=1 expected=1\n'
+        'report_shared_openssl branch=cmp-error status=1 expected=1\n'
+    )
+    assert res.stdout == expected, (
+        f'guard branch results changed:\n{res.stdout}\nstderr:\n{res.stderr}')
+    assert res.returncode == 0, f'guard branch harness failed:\n{res.stderr}'
+
+
 def test_install_sh_help(ctx):
     res = run(['bash', INSTALL_SCRIPT, '--help'], env=dry_run_env(ctx))
     assert res.returncode == 0
@@ -347,8 +430,13 @@ def dry_run_common_asserts(res, target, install_dir_hint):
     assert '--force-service' in out, 'dry run must mention --force-service'
     assert 'heimdall enroll' in out, 'onboarding must show the heimdall enroll command'
     if target.startswith('linux'):
-        for marker in ('[Unit]', 'Description=Heimdall Bridge', 'ExecStart=',
-                       'Environment=HEIMDALL_HAM_PTY_HOST_BIN=',
+        # REQ-INST-28: ExecStart and the interpolated Environment= values are
+        # QUOTED now, because systemd splits those lines on unquoted whitespace
+        # and a spaced $install_dir silently truncated them. The opening quote is
+        # part of each marker deliberately: matching the bare key would still
+        # pass if the quoting were reverted.
+        for marker in ('[Unit]', 'Description=Heimdall Bridge', 'ExecStart="',
+                       'Environment="HEIMDALL_HAM_PTY_HOST_BIN=',
                        'WantedBy=default.target'):
             assert marker in out, f'systemd unit missing {marker!r}'
         assert 'systemctl --user enable --now heimdall-bridge' in out
@@ -404,11 +492,11 @@ def test_install_sh_dry_run_hub(ctx):
     # until the suite first ran on a Mac, because host_target() never returns
     # darwin-* on Linux. systemd puts the flag and its value on an ExecStart
     # continuation line; a launchd plist spells them as two separate <string>
-    # elements in ProgramArguments (service_hub_flags_plist, install.sh:722-727),
+    # elements in ProgramArguments (service_hub_flags_plist, install.sh:711-716),
     # so '--hub <url>' as one literal string cannot appear there. The full-run
     # test below already knew this; this one did not.
     if target.startswith('linux'):
-        assert f'--hub {hub}' in unit, 'the passed hub URL must follow --hub in the unit'
+        assert f'--hub "{hub}"' in unit, 'the passed hub URL must follow --hub in the unit'
     else:
         assert '<string>--hub</string>' in unit, (
             'the plist must pass --hub as its own ProgramArguments string')
@@ -515,6 +603,32 @@ def write_socat_stub(directory: Path) -> Path:
                         'exit 0\n')
         stub.chmod(0o755)
     return stub
+
+
+# The stub's directory name has TWO independent users -- socat_stub_dir() below
+# creates it, and sandbox_home_writes() excludes it from "what the install wrote".
+# A renamed literal in one place and not the other fails SILENTLY: the stub would
+# start being reported as install.sh output. One definition, so it cannot drift.
+SOCAT_STUB_DIRNAME = '.socat-stub'
+
+
+def socat_stub_dir(home: Path) -> Path:
+    """The PATH entry carrying the socat stub for a sandboxed install run.
+
+    Defined ONCE on purpose (REQ-INST-22). Every sandboxed run -- the plain ones
+    and the uid-0 namespace ones alike -- must get its socat from the suite and
+    not from the host, or REQ-INST-14's fatal preflight turns into a
+    host-dependent outcome. sudo_ns_install used to build its env inline and so
+    never got a stub; it passed only because this host keeps socat outside /usr,
+    where its own tmpfs-over-/usr could not hide it.
+
+    Callers must keep this directory OUTSIDE any path the run bind-mounts over:
+    sudo_ns_install shadows the target user's real home, so a stub under that
+    home would vanish inside the namespace.
+    """
+    socat_dir = home / SOCAT_STUB_DIRNAME
+    write_socat_stub(socat_dir)
+    return socat_dir
 
 
 def _shim_dir(base: Path, name: str, *, with_socat: bool = True) -> Path:
@@ -1749,8 +1863,8 @@ def test_install_sh_full_run_service_lifecycle(ctx):
 
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
-        hub_in_unit = f'--hub {hub}'
-        hub2_in_unit = f'--hub {hub2}'
+        hub_in_unit = f'--hub "{hub}"'
+        hub2_in_unit = f'--hub "{hub2}"'
     else:
         service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
         hub_in_unit = f'<string>{hub}</string>'
@@ -1890,7 +2004,7 @@ def sudo_ns_fixture(base: Path):
 
 
 def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
-                    pre: str = ''):
+                    pre: str = '', host_path: str = None, socat_stub: bool = True):
     """Run install.sh as uid 0 inside a private user+mount namespace:
     a tmpfs over /usr keeps /usr/local/bin writes contained, and the sandbox
     home is bind-mounted over the SUDO_USER's real home (ns-private) so the
@@ -1911,21 +2025,70 @@ def sudo_ns_install(base: Path, hub: str, entry, path_prefix: str, *extra: str,
     hide_units = ''.join(
         f'if [ -d {shlex.quote(d)} ]; then {ns_tool("mount")} -t tmpfs tmpfs {shlex.quote(d)}; fi && '
         for d in system_unit_dirs_from_install_sh())
+    # REQ-INST-22: install.sh resolves socat with `command -v`, so its FATAL
+    # preflight depends on PATH -- and every mount above hides part of the
+    # filesystem from this namespace (the tmpfs over /usr, plus one per unit dir
+    # from hide_units). A distro /usr/bin/socat would therefore be hidden, while
+    # this host's /nix/store one is not. That difference, not anything the test
+    # asserts, is what decided the outcome. So probe AFTER every mount and BEFORE
+    # install.sh runs, and fail loudly naming the PATH searched. Note ns_tool()
+    # shields T21's OWN tools by absolute path but socat is not among them
+    # (NS_TOOLS), which is exactly the gap this closes.
+    socat_probe = ('command -v socat >/dev/null 2>&1 || '
+                   '{ echo "SOCAT_UNREACHABLE_IN_NS: PATH=$PATH" >&2; exit 97; }')
     inner = (hide_units
              + 'mount -t tmpfs tmpfs /usr && '
              'mkdir -p /usr/local/bin && '
-             f'mount --bind {base / "fakehome"} {entry.pw_dir} && '
+             + socat_probe + ' && '
+             + f'mount --bind {base / "fakehome"} {entry.pw_dir} && '
              + (f'{pre} && ' if pre else '')
              + f'cd {base} && bash {script_copy} --hub {hub}'
              + (' ' + ' '.join(extra) if extra else ''))
-    env = {**os.environ,
-           'HOME': str(base / 'root-home'),
-           'SUDO_USER': entry.pw_name,
-           'PATH': f'{path_prefix}:/usr/local/bin:{os.environ["PATH"]}'}
-    (base / 'root-home').mkdir(exist_ok=True)
-    return subprocess.run(['unshare', '-rm', 'env', 'bash', '-c', inner],
-                          cwd=str(base), env=env, capture_output=True, text=True,
-                          timeout=120)
+    root_home = base / 'root-home'
+    runtime = base / 'root-runtime'
+    root_home.mkdir(exist_ok=True)
+    runtime.mkdir(exist_ok=True)
+    # Build on the SHARED sandbox env rather than an inline one (REQ-INST-22),
+    # so the socat stub and the XDG_RUNTIME_DIR/DBUS blanking that keeps
+    # `systemctl --user` off the live session bus come from one place — the same
+    # fix D-4 got for test_install_sh_full_run_service_lifecycle.
+    #
+    # Two overrides are re-asserted because they ARE the sudo path, and
+    # sandbox_install_env deliberately sets both the other way for its own
+    # (non-sudo) runs: SUDO_USER names the target user the install must resolve,
+    # and HOME is root's, not the sandbox's.
+    #
+    # sandbox_install_env also blanks SHELL, which is safe here and NOT an
+    # oversight: in its uid-0 branch install.sh reads the target user's shell
+    # from `getent passwd` into service_shell, and both path_candidates() and
+    # wire_path() prefer "${service_shell:-${SHELL:-}}", so the blanked SHELL is
+    # never consulted on this path.
+    env = {**sandbox_install_env(root_home, runtime),
+           'HOME': str(root_home),
+           'SUDO_USER': entry.pw_name}
+    # path_prefix stays FIRST: a caller's stub (e.g. the failing `chown` in
+    # test_install_sh_sudo_chown_failure_warns) has to outrank the real tool, and
+    # losing that order would quietly stop those tests testing anything.
+    # host_path and socat_stub exist for ONE caller: the REQ-INST-27 binding test
+    # below, which must be able to run this exact code path with socat absent to
+    # prove the probe and its assertion still bite. They are deliberately NOT a
+    # production escape hatch -- install.sh is untouched by them, and every other
+    # caller gets the defaults, which are the behaviour REQ-INST-22 established.
+    stub = [str(socat_stub_dir(root_home))] if socat_stub else []
+    tail = os.environ['PATH'] if host_path is None else host_path
+    # Empty components are filtered: '' in a PATH means the CURRENT DIRECTORY to
+    # every resolver, which is not something these runs should ever search, and
+    # a caller passing an empty path_prefix or host_path would silently add one.
+    env['PATH'] = os.pathsep.join(
+        [p for p in [path_prefix, *stub, '/usr/local/bin', tail] if p])
+    res = subprocess.run(['unshare', '-rm', 'env', 'bash', '-c', inner],
+                         cwd=str(base), env=env, capture_output=True, text=True,
+                         timeout=120)
+    assert 'SOCAT_UNREACHABLE_IN_NS' not in res.stderr, (
+        'the socat stub is not reachable inside the namespace, so this test would '
+        'have exercised install.sh\'s socat preflight instead of the sudo install '
+        f'it claims to test:\n{res.stderr}')
+    return res
 
 
 def test_install_sh_sudo_path_write(ctx):
@@ -1943,8 +2106,8 @@ def test_install_sh_sudo_path_write(ctx):
     service = fake_home / '.config/systemd/user/heimdall-bridge.service'
     assert service.is_file(), 'service file not written into the SUDO_USER home'
     unit = service.read_text()
-    assert 'ExecStart=/usr/local/bin/ham-bridge' in unit
-    assert f'--hub {hub}' in unit
+    assert 'ExecStart="/usr/local/bin/ham-bridge"' in unit
+    assert f'--hub "{hub}"' in unit
     expected_rc = '.zshrc' if entry.pw_shell.endswith('zsh') else '.bashrc'
     rc = fake_home / expected_rc
     assert rc.is_file(), f'target user rc file {expected_rc} not written despite root PATH containing /usr/local/bin'
@@ -2056,9 +2219,8 @@ TRIPWIRE_RC_FILES = (
 
 def live_home_tripwire_paths() -> list:
     """Every path in the real home that install.sh is capable of creating,
-    modifying or deleting: the binaries it installs, the checksum record it
-    keeps for --uninstall, both platforms' service files, every rc file
-    path_candidates() can name, and its config directory.
+    modifying or deleting: the four binaries, both platforms' service files,
+    every rc file path_candidates() can name, and its config directory.
 
     Directories are watched as well as files -- ~/.local/bin,
     ~/.config/systemd/user, ~/Library/LaunchAgents and ~/.config/fish -- so a
@@ -2070,8 +2232,7 @@ def live_home_tripwire_paths() -> list:
     """
     paths = []
     for home in live_homes():
-        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl', 'openssl',
-                    '.heimdall-openssl.sha256')
+        binaries = ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl')
         paths.append(home / '.local' / 'bin')
         paths += [home / '.local' / 'bin' / name for name in binaries]
         paths += [
@@ -2224,8 +2385,7 @@ def sandbox_install_env(home: Path, runtime: Path) -> dict:
     # keeps the suite deterministic on machines that do not have it -- notably
     # the macOS runners, where neither outcome is guaranteed.
     home.mkdir(parents=True, exist_ok=True)
-    socat_dir = home / '.socat-stub'
-    write_socat_stub(socat_dir)
+    socat_dir = socat_stub_dir(home)
     return {**os.environ,
             'PATH': f'{socat_dir}{os.pathsep}' + os.environ.get('PATH', ''),
             'HOME': str(home),
@@ -2390,7 +2550,9 @@ def test_install_sh_readonly_rc_nonfatal(ctx):
     assert f'export PATH="{install_dir}:$PATH"' in out, 'plain export form missing from snippet'
     assert f'home.sessionPath = [ "{install_dir}" ];' in out, 'home-manager form missing from snippet'
     assert 'home.sessionVariables.PATH' in out, 'home-manager sessionVariables variant missing'
-    assert f'fish_add_path {install_dir}' in out, 'fish form missing from snippet'
+    # REQ-INST-28: the fish form is quoted too -- unquoted, fish reads a spaced
+    # install dir as two arguments and adds neither.
+    assert f'fish_add_path "{install_dir}"' in out, 'fish form missing from snippet'
 
     # The summary must read as a SUCCESS with one manual step left.
     assert 'the install SUCCEEDED' in out, (
@@ -2421,10 +2583,10 @@ def test_install_sh_readonly_rc_nonfatal(ctx):
 
 
 def test_install_sh_uninstall(ctx):
-    """REQ-INST-8: --uninstall reverses the install and nothing more. Proves
-    the dry run touches nothing, that only the marked PATH lines are removed,
-    and that the three categories of user state — enrollment, unit backups,
-    and a same-named file this installer did not write — are all KEPT."""
+    """REQ-INST-8/21: install and uninstall touch only installer-owned paths.
+    Proves the dry run touches nothing, only marked PATH lines are removed, user
+    state is kept, and a pre-existing openssl stays byte-identical even when an
+    older release tarball contains a bundled openssl."""
     need_tool('curl')
     target = host_target()
     if target is None:
@@ -2434,8 +2596,10 @@ def test_install_sh_uninstall(ctx):
     home = base / 'home'
     home.mkdir(parents=True)
     (base / 'xdg-runtime').mkdir(parents=True)
-    res, tarball = package_tarball(base, target=target)
+    res, tarball = package_tarball(base, with_openssl=True, target=target)
     assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    names, _, _ = read_tarball(tarball)
+    assert 'bin/openssl' in names, 'the old-release fixture must contain a bundled openssl'
     hub = make_hub_mirror(base, tarball, target)
     env = sandbox_install_env(home, base / 'xdg-runtime')
 
@@ -2445,28 +2609,28 @@ def test_install_sh_uninstall(ctx):
     decoy = 'export PATH="/opt/other/bin:$PATH"\nexport EDITOR=vi\n'
     rc.write_text(decoy)
 
+    install_dir = home / '.local/bin'
+    install_dir.mkdir(parents=True)
+    stranger = install_dir / 'openssl'
+    stranger_bytes = b'#!/bin/sh\n# wrapper used by heimdall, not written by it\n'
+    stranger.write_bytes(stranger_bytes)
+    stranger.chmod(0o755)
+    stranger_sha = sha256_of(stranger)
+    sidecar = install_dir / '.heimdall-openssl.sha256'
+
     res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
                                env, cwd=ROOT, timeout=120)
     assert res.returncode == 0, f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}'
+    assert stranger.read_bytes() == stranger_bytes, 'install replaced the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'install changed the pre-existing openssl checksum'
+    assert not sidecar.exists(), 'install created retired openssl provenance state'
 
-    install_dir = home / '.local/bin'
     if target.startswith('linux'):
         service = home / '.config/systemd/user/heimdall-bridge.service'
     else:
         service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
     assert service.is_file()
 
-    # A generic-named file this installer did NOT write: must survive. It
-    # deliberately MENTIONS heimdall, because the superseded design proved
-    # authorship by grepping the file for that string — which would have
-    # deleted this stranger. Provenance now comes from the sidecar hash
-    # recorded at install time, and no sidecar exists here.
-    stranger = install_dir / 'openssl'
-    stranger.write_text('#!/bin/sh\n# wrapper used by heimdall, not written by it\n')
-    stranger.chmod(0o755)
-    assert 'heimdall' in stranger.read_text(), 'fixture sanity: the stranger must mention heimdall'
-    assert not (install_dir / '.heimdall-openssl.sha256').exists(), (
-        'this install shipped no openssl, so there must be no provenance record')
     # A unit backup (RULING 2: recovery artifact, must survive and be named).
     backup = service.parent / f'{service.name}.bak-20260101T000000Z'
     backup.write_text('[Unit]\n# hand-tuned unit\n')
@@ -2495,7 +2659,10 @@ def test_install_sh_uninstall(ctx):
         assert (install_dir / binary).is_file(), 'dry run must not remove a binary'
     assert service.is_file(), 'dry run must not remove the service file'
     assert rc.read_text() == rc_after_install, 'dry run must not touch the rc file'
-    assert stranger.is_file() and backup.is_file() and enrollment.is_file()
+    assert stranger.read_bytes() == stranger_bytes, 'dry-run uninstall changed the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'dry-run uninstall changed the openssl checksum'
+    assert not sidecar.exists(), 'dry-run uninstall created retired openssl provenance state'
+    assert backup.is_file() and enrollment.is_file()
 
     # --- real uninstall ------------------------------------------------------
     # REQ-INST-13: the unit name install.sh stops is the SAME one running this
@@ -2518,12 +2685,11 @@ def test_install_sh_uninstall(ctx):
     assert 'export PATH="/opt/other/bin:$PATH"' in body, 'an unrelated PATH export must survive'
     assert 'export EDITOR=vi' in body, 'unrelated rc content must survive'
 
-    # Kept state, each reported with the path to remove by hand.
-    assert stranger.is_file(), 'a generic-named file this installer did not write must be kept'
-    assert f'left {stranger} in place' in out, 'the kept stranger file must be named'
-    assert 'no record of writing it' in out, (
-        f'the reason must be the missing provenance record — the one case where '
-        f'denying authorship is actually true:\n{out}')
+    # Kept state, each reported with the path to remove by hand where applicable.
+    assert stranger.read_bytes() == stranger_bytes, 'uninstall changed the pre-existing openssl'
+    assert sha256_of(stranger) == stranger_sha, 'uninstall changed the openssl checksum'
+    assert not sidecar.exists(), 'uninstall created retired openssl provenance state'
+    assert str(stranger) not in out, 'uninstall must not inspect or report a path it no longer owns'
     assert backup.is_file(), 'unit backups are recovery artifacts and must be kept'
     assert f'kept service file backup {backup}' in out, 'the kept backup must be named'
     assert f'rm -f {service}.bak-*' in out, 'the backup glob must be given for manual removal'
@@ -2585,220 +2751,6 @@ def test_uninstall_guard_detects_live_session(ctx):
         assert probe.stdout.strip() not in ('active', 'inactive', 'activating', 'failed'), (
             f'the sandbox env REACHED a user bus (stdout={probe.stdout.strip()!r}); '
             f'a real --uninstall under it could stop the running bridge')
-
-
-def test_install_sh_uninstall_removes_bundled_openssl(ctx):
-    """REQ-INST-8, the openssl clause. The release bundle DOES ship bin/openssl
-    (flake.nix gives ham-bridge one, and package-local-binary-tarball.sh ships
-    it whenever present), so the installer writes a file under a GENERIC name.
-    Authorship therefore cannot be inferred from content — stock OpenSSL has no
-    'heimdall' bytes — so install.sh records the sha256 of the openssl it wrote
-    and --uninstall removes it only against that record.
-
-    Asserts both directions with one install each:
-      - ours: openssl + sidecar written, then both removed;
-      - tampered: the same install with the openssl overwritten afterwards is
-        KEPT, named, and reported as no-longer-matching rather than falsely
-        called a file this installer never wrote."""
-    need_tool('curl')
-    target = host_target()
-    if target is None:
-        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
-
-    base = ctx['work'] / 'uninstall-openssl'
-    base.mkdir(parents=True)
-    res, tarball = package_tarball(base, with_openssl=True, target=target)
-    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
-    names, _, _ = read_tarball(tarball)
-    assert 'bin/openssl' in names, 'this test is meaningless unless the bundle ships an openssl'
-    hub = make_hub_mirror(base, tarball, target)
-
-    def fresh_install(tag):
-        """A full install into its own sandbox HOME; returns (env, install_dir)."""
-        home = base / tag
-        runtime = base / f'{tag}-xdg'
-        home.mkdir(parents=True)
-        runtime.mkdir(parents=True)
-        env = sandbox_install_env(home, runtime)
-        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                                   env, cwd=ROOT, timeout=120)
-        assert res.returncode == 0, (
-            f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
-        return env, home / '.local/bin', res.stdout
-
-    def uninstall(env, *extra):
-        # REQ-INST-13: never make the destructive call against the live bus.
-        # install.sh stops the unit name that runs this very agent, so the
-        # sandbox env is asserted first, immediately before the call.
-        if '--dry-run' not in extra:
-            assert_bridge_isolated(env, ctx['work'])
-        return subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall', *extra],
-                              cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
-
-    # --- ours: installed openssl + provenance sidecar are both removed -------
-    env, install_dir, install_out = fresh_install('ours')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    assert openssl.is_file(), 'the bundled openssl must be installed'
-    assert f'installed bundled {openssl}' in install_out
-    assert sidecar.is_file(), (
-        'install must record the openssl provenance; without it --uninstall can '
-        'never prove the file is ours and will leave it behind forever')
-    assert sidecar.read_text().split()[0] == sha256_of(openssl), (
-        'the recorded hash must match the installed openssl')
-    assert str(sidecar) in install_out, 'the provenance record must be named at install time'
-
-    # Dry run lists both and removes neither.
-    res = uninstall(env, '--dry-run')
-    assert res.returncode == 0, f'--uninstall --dry-run failed:\n{res.stderr}'
-    assert f'would remove {openssl}' in res.stdout, (
-        f'the openssl this installer wrote must be listed for removal:\n{res.stdout}')
-    assert f'would remove {sidecar}' in res.stdout, 'the provenance record must be removed too'
-    assert openssl.is_file() and sidecar.is_file(), 'a dry run must remove nothing'
-
-    # Real uninstall: this is the arm that never ran before.
-    res = uninstall(env)
-    assert res.returncode == 0, f'--uninstall failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}'
-    assert not openssl.exists(), (
-        f'the openssl this installer wrote must be REMOVED:\n{res.stdout}')
-    assert not sidecar.exists(), 'the provenance record must not be left behind as debris'
-    assert f'removed {openssl}' in res.stdout
-    assert f'left {openssl} in place' not in res.stdout, (
-        f'our own openssl must not be reported as left in place:\n{res.stdout}')
-
-    # --- tampered: same install, openssl replaced afterwards -> KEPT ---------
-    env, install_dir, _ = fresh_install('tampered')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    recorded = sidecar.read_text().split()[0]
-    # Something else overwrote it after install: a self-update, or the user's
-    # package manager. The recorded hash no longer describes the file.
-    openssl.write_text('#!/bin/sh\n# replaced after install\n')
-    assert sha256_of(openssl) != recorded
-
-    res = uninstall(env)
-    assert res.returncode == 0, f'--uninstall failed:\n{res.stderr}'
-    assert openssl.is_file(), (
-        f'an openssl that no longer matches the record must be KEPT, not deleted:\n{res.stdout}')
-    assert f'left {openssl} in place' in res.stdout, 'the kept file must be named'
-    assert 'no longer matches the checksum' in res.stdout, (
-        f'the reason must be the failed provenance check, not a false claim that '
-        f'this installer never wrote it:\n{res.stdout}')
-    assert 'no record of writing it' not in res.stdout, (
-        'we DID write an openssl here, so the output must not deny authorship')
-
-
-def test_install_sh_uninstall_unhashable_openssl_nonfatal(ctx):
-    """Unreadable files on the removal path must not abort the uninstall, and
-    must not make the output lie about provenance. Two shapes, one install each:
-    the openssl itself unhashable, and its provenance record unreadable.
-
-    do_uninstall computes the file's current hash before deciding anything, and
-    under `set -euo pipefail` an empty answer was not the same as a successful
-    one: a failing sha256sum poisons the pipeline through pipefail, so the bare
-    assignment killed the script between the binaries and the service file —
-    the REQ-INST-5 failure shape again, on the removal side. Exit 0 alone does
-    not prove the fix, so this asserts the uninstall RAN TO COMPLETION past the
-    openssl step: service file gone, PATH lines gone, kept-state report
-    printed, and the unhashable file itself kept and named."""
-    need_tool('curl')
-    if os.getuid() == 0:
-        raise Skip('running as root: root reads a 0000 file, so it cannot be made unhashable')
-    target = host_target()
-    if target is None:
-        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
-
-    base = ctx['work'] / 'uninstall-unhashable'
-    base.mkdir(parents=True)
-    res, tarball = package_tarball(base, with_openssl=True, target=target)
-    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
-    hub = make_hub_mirror(base, tarball, target)
-
-    def fresh_install(tag):
-        home = base / tag
-        runtime = base / f'{tag}-xdg'
-        home.mkdir(parents=True)
-        runtime.mkdir(parents=True)
-        env = sandbox_install_env(home, runtime)
-        res = install_run_shielded(['bash', str(INSTALL_SCRIPT), '--hub', hub],
-                                   env, cwd=ROOT, timeout=120)
-        assert res.returncode == 0, (
-            f'install failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
-        install_dir = home / '.local/bin'
-        if target.startswith('linux'):
-            service = home / '.config/systemd/user/heimdall-bridge.service'
-        else:
-            service = home / 'Library/LaunchAgents/works.earendil.heimdall-bridge.plist'
-        rc = home / '.bashrc'
-        assert (install_dir / 'openssl').is_file() and service.is_file()
-        assert '# Added by heimdall install.sh' in rc.read_text(), (
-            'fixture needs the PATH lines present')
-        return env, install_dir, service, rc
-
-    def real_uninstall(env):
-        # REQ-INST-13: the unit install.sh stops is the same one running this agent.
-        assert_bridge_isolated(env, ctx['work'])
-        return subprocess.run(['bash', str(INSTALL_SCRIPT), '--uninstall'],
-                              cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120)
-
-    def assert_completed(out, install_dir, service, rc, res):
-        """The decider: the uninstall CONTINUED past the openssl step."""
-        assert res.returncode == 0, (
-            f'an unreadable file must not fail the uninstall; exit={res.returncode}\n'
-            f'stdout:\n{out}\nstderr:\n{res.stderr}')
-        for binary in ('heimdall', 'ham-bridge', 'ham-pty-host', 'ham-ctl'):
-            assert not (install_dir / binary).exists(), f'{binary} not removed'
-        assert not service.exists(), (
-            f'the uninstall aborted at the openssl step — the service file survived, which is '
-            f'the REQ-INST-5 bug shape on the removal side:\n{out}')
-        assert '# Added by heimdall install.sh' not in rc.read_text(), (
-            f'the uninstall aborted before the PATH step:\n{out}')
-        assert 'kept enrollment state at' in out, (
-            f'the kept-state report must still be printed:\n{out}')
-        assert 'uninstall complete' in out, f'the uninstall must report completion:\n{out}'
-
-    # --- shape 1: the openssl itself cannot be hashed ------------------------
-    env, install_dir, service, rc = fresh_install('openssl-unreadable')
-    openssl = install_dir / 'openssl'
-
-    openssl.chmod(0o000)
-    assert run(sha256_cli(openssl)).returncode != 0, (
-        'fixture sanity: the openssl must actually be unhashable for this test to mean anything')
-
-    res = real_uninstall(env)
-    out = res.stdout
-    assert_completed(out, install_dir, service, rc, res)
-    # Kept, named, and the reason is the failed hash — not a false claim that
-    # this installer never wrote it, since a sidecar for it does exist.
-    assert openssl.exists(), 'a file we cannot hash must never be deleted'
-    assert f'left {openssl} in place' in out, f'the kept file must be named:\n{out}'
-    assert 'could not hash it' in out, f'the reason must be the failed hash:\n{out}'
-    assert 'no record of writing it' not in out, (
-        f'a sidecar exists here, so the output must not deny authorship:\n{out}')
-
-    # --- shape 2: the PROVENANCE RECORD cannot be read ----------------------
-    # An existing-but-unreadable sidecar used to fall into the "no record"
-    # branch, denying authorship of a file this installer may well have
-    # written. Keep the file either way, but say which state we are in.
-    env, install_dir, service, rc = fresh_install('sidecar-unreadable')
-    openssl = install_dir / 'openssl'
-    sidecar = install_dir / '.heimdall-openssl.sha256'
-    assert sidecar.is_file(), 'fixture needs the provenance record present'
-    sidecar.chmod(0o000)
-    assert run(['cat', str(sidecar)]).returncode != 0, (
-        'fixture sanity: the sidecar must actually be unreadable')
-
-    res = real_uninstall(env)
-    out = res.stdout
-    assert_completed(out, install_dir, service, rc, res)
-    assert openssl.exists(), 'an openssl whose record we cannot read must be kept'
-    assert f'left {openssl} in place' in out, f'the kept file must be named:\n{out}'
-    assert 'no record of writing it' not in out, (
-        f'a record DOES exist here — it was merely unreadable — so the output must not '
-        f'deny authorship:\n{out}')
-    assert str(sidecar) in out, f'the unreadable record must be named:\n{out}'
-    assert 'could not be read' in out, (
-        f'the reason must be that the record exists but was unreadable:\n{out}')
 
 
 def test_install_sh_sudo_uninstall_dry_run(ctx):
@@ -3280,6 +3232,17 @@ def test_self_hosting_documents_installer(ctx):
         assert command in part2, f'Part 2 must document {command}'
     assert part2.count('heimdall vault set-key <64-hex>') >= 2, (
         'Part 2 must document vault setup in quick-install and bridge setup flows')
+    for target in ('linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64'):
+        asset = f'heimdall-local-{target}.tar.gz'
+        assert asset in part2, f'mirror layout must name {asset}'
+    assert '`install.sh --hub <url>` and `heimdall update --hub <url>` consume the same' in part2
+    assert 'mirror root must contain `SHA256SUMS`' in part2
+    assert 'unversioned basenames' in part2
+    assert 'sha256sum heimdall-local-*.tar.gz > SHA256SUMS' in part2
+    assert 'sudo loginctl enable-linger "$USER"' in part2
+    assert 'bridge stops when you\nlog out' in part2
+    for socat_command in ('sudo apt install socat', 'brew install socat'):
+        assert socat_command in part2, f'quick install must document {socat_command}'
     # Manual/source paths retained as advanced alternatives.
     for marker in ('nix build .#ham-bridge', 'ham-bridge enroll',
                    'Systemd user service', 'launchd agent', 'Home Manager module'):
@@ -3297,6 +3260,10 @@ def test_readme_points_at_installer(ctx):
     readme = (ROOT / 'README.md').read_text(encoding='utf-8')
     assert 'install.sh | bash' in readme, 'README Getting started must point at the installer'
     assert 'SELF_HOSTING.md' in readme
+    assert '`socat` runtime dependency' in readme
+    assert '`heimdall update`' in readme
+    assert '`--hub` mirror layout' in readme
+    assert 'keep a headless bridge running after logout' in readme
 
 
 # ---- runner --------------------------------------------------------------------
@@ -3736,9 +3703,9 @@ def install_run_shielded(argv, env, *, cwd=None, timeout=120):
 
 def sandbox_home_writes(home: Path) -> list:
     """What a run left in the sandbox home, EXCLUDING the harness's own socat
-    stub (sandbox_install_env writes that before install.sh ever starts)."""
+    stub (socat_stub_dir writes that before install.sh ever starts)."""
     return sorted(str(p.relative_to(home)) for p in home.rglob('*')
-                  if not str(p.relative_to(home)).startswith('.socat-stub'))
+                  if not str(p.relative_to(home)).startswith(SOCAT_STUB_DIRNAME))
 
 
 def test_install_sh_refuses_to_shadow_system_unit(ctx):
@@ -3915,6 +3882,709 @@ def test_install_sh_scans_every_system_unit_dir(ctx):
               f'no safe mount point on this host for: {", ".join(unfakeable)})')
 
 
+
+# --- REQ-INST-26: the PATH the bridge SERVICE runs with ------------------------
+# Every assertion below is on the RENDERED unit -- the text install.sh actually
+# emits -- never on the heredoc source. A template can contain the right literal
+# and still render nothing useful (an unset variable, a $() that failed under
+# `set -e`), which is precisely the class of miss these tests exist to catch.
+
+# The dirs each service manager puts on PATH when the unit says nothing.
+# systemd --user compiles its default in; launchd's is even narrower. Neither
+# contains the installer's $install_dir, and launchd's omits /opt/homebrew/bin,
+# which is where `brew install socat` lands on Apple Silicon.
+SYSTEMD_DEFAULT_PATH_DIRS = ('/usr/local/bin', '/usr/bin', '/bin',
+                             '/usr/local/sbin', '/usr/sbin', '/sbin')
+LAUNCHD_DEFAULT_PATH_DIRS = ('/usr/bin', '/bin', '/usr/sbin', '/sbin')
+
+
+def darwin_uname_shim(base: Path, name: str = 'uname-darwin') -> Path:
+    """A PATH dir whose `uname` reports an Apple Silicon Mac.
+
+    install.sh calls uname exactly twice -- `uname -s` and `uname -m`, at the
+    platform-detection block -- so shadowing that one binary is TOTAL: it moves
+    the whole run onto the darwin branch. This is what lets the launchd
+    assertions below actually EXECUTE on a Linux developer box and in Linux CI,
+    instead of being written here and only ever proven on a Mac we may not
+    reach. Everything else on PATH stays real, and --dry-run writes nothing.
+    """
+    shim = base / name
+    shim.mkdir(parents=True, exist_ok=True)
+    real_uname = shutil.which('uname')
+    assert real_uname, 'uname is required to build the darwin shim'
+    stub = shim / 'uname'
+    stub.write_text(
+        '#!/bin/sh\n'
+        'case "$1" in\n'
+        '  -s) echo Darwin ;;\n'
+        '  -m) echo arm64 ;;\n'
+        f'  *) exec {real_uname} "$@" ;;\n'
+        'esac\n')
+    stub.chmod(0o755)
+    return shim
+
+
+def rendered_systemd_path(res) -> str:
+    """The PATH= value out of a rendered systemd unit, or '' if it sets none."""
+    unit = dry_run_unit_text(res)
+    assert '[Unit]' in unit, f'not a systemd unit:\n{unit}'
+    # systemd accepts Environment=PATH=... and Environment="PATH=..." and the
+    # quoted form is the one install.sh must emit (see the space test below), so
+    # accept both HERE and let that test police the quoting. Unwrapping is done
+    # explicitly rather than by str.strip('"') so a half-quoted line -- which
+    # systemd would parse as a literal quote inside the value -- is reported
+    # instead of being silently tidied into a pass.
+    values = []
+    for line in unit.splitlines():
+        if not line.startswith('Environment='):
+            continue
+        body = line[len('Environment='):]
+        if body.startswith('"'):
+            assert body.endswith('"') and len(body) >= 2, (
+                f'unbalanced quote in {line!r}')
+            body = body[1:-1]
+        elif body.endswith('"'):
+            raise AssertionError(f'unbalanced quote in {line!r}')
+        if body.startswith('PATH='):
+            values.append(body[len('PATH='):])
+    assert len(values) <= 1, f'unit sets PATH more than once: {values}'
+    return values[0] if values else ''
+
+
+def rendered_plist_path(res) -> str:
+    """The PATH out of a rendered launchd plist, PARSED not grepped.
+
+    plistlib is used deliberately: it proves the plist is well-formed XML and
+    that PATH sits under EnvironmentVariables as a real key, which a substring
+    match on '<key>PATH</key>' would assert neither of.
+    """
+    unit = dry_run_unit_text(res)
+    assert '<!DOCTYPE plist' in unit, f'not a plist:\n{unit}'
+    # dry_run_unit_text slices from '<!DOCTYPE', dropping the '<?xml ...?>'
+    # declaration that plistlib requires to recognise the format. Put it back
+    # here rather than widening that shared helper, whose exact slice other
+    # tests assert on.
+    if not unit.lstrip().startswith('<?xml'):
+        unit = '<?xml version="1.0" encoding="UTF-8"?>\n' + unit
+    parsed = plistlib.loads(unit.encode('utf-8'))
+    return parsed.get('EnvironmentVariables', {}).get('PATH', '')
+
+
+def assert_service_path_is_sane(value: str, install_dir: str, default_dirs, label: str):
+    assert value, (
+        f'{label}: the rendered unit sets NO PATH. The bridge spawns socat, tmux, '
+        f'git and sh by BARE NAME and Odin resolves a slashless argv[0] against '
+        f'the spawning process own PATH (core/os/process_linux.odin:425-455), so '
+        f'an unset PATH here means the service manager narrow default decides '
+        f'whether the bridge can reach its hub at all.')
+    entries = value.split(':')
+    assert '' not in entries, (
+        f'{label}: PATH has an empty component ({value!r}) -- an empty entry means '
+        f'"the current directory" to a PATH resolver, which is not something a '
+        f'boot service should search.')
+    assert entries[0] == install_dir, (
+        f'{label}: $install_dir must be the FIRST PATH entry so the binaries this '
+        f'installer just wrote win over any older copy elsewhere; got {entries[0]!r} '
+        f'first in {value!r}')
+    for d in default_dirs:
+        assert d in entries, (
+            f'{label}: static fallback dir {d} missing from {value!r} -- the tail is '
+            f'the boot-time net for when discovery finds nothing.')
+
+
+def test_service_units_set_path_for_both_writers(ctx, install_script=INSTALL_SCRIPT):
+    """REQ-INST-26. BOTH writers, together, asserted on rendered output.
+
+    A systemd-only fix would leave macOS broken, and macOS is where this is
+    worst: launchd's default PATH excludes /opt/homebrew/bin, which is exactly
+    where `brew install socat` puts the binary the bridge spawns by bare name.
+    So the launchd half is not a courtesy -- it is the load-bearing platform.
+    """
+    base = ctx['work'] / 'service-path'
+    base.mkdir(parents=True, exist_ok=True)
+    env = dry_run_env(ctx)
+    install_dir = str(Path(env['HOME']) / '.local' / 'bin')
+
+    # --- linux / systemd ------------------------------------------------------
+    res = run(['bash', install_script, '--dry-run', '--version', 'v0.1.0'],
+              timeout=60, env=env)
+    assert res.returncode == 0, f'linux dry-run failed:\n{res.stderr}'
+    assert 'platform: linux/' in res.stdout, (
+        f'expected the linux branch on this host:\n{res.stdout[:400]}')
+    systemd_path = rendered_systemd_path(res)
+    assert_service_path_is_sane(systemd_path, install_dir,
+                                SYSTEMD_DEFAULT_PATH_DIRS, 'systemd unit')
+
+    # --- darwin / launchd, forced with the uname shim -------------------------
+    shim = darwin_uname_shim(base)
+    denv = {**env, 'PATH': f'{shim}:{env["PATH"]}'}
+    dres = run(['bash', install_script, '--dry-run', '--version', 'v0.1.0'],
+               timeout=60, env=denv)
+    assert dres.returncode == 0, f'darwin dry-run failed:\n{dres.stderr}'
+    assert 'platform: darwin/arm64' in dres.stdout, (
+        'the uname shim did not move the run onto the darwin branch; the plist '
+        f'assertions would silently test nothing:\n{dres.stdout[:400]}')
+    plist_path = rendered_plist_path(dres)
+    assert_service_path_is_sane(plist_path, install_dir,
+                                LAUNCHD_DEFAULT_PATH_DIRS, 'launchd plist')
+    assert '/opt/homebrew/bin' in plist_path.split(':'), (
+        'the launchd plist PATH must include /opt/homebrew/bin: launchd default '
+        'PATH omits it, and `brew install socat` puts socat there on Apple '
+        f'Silicon. got {plist_path!r}')
+
+
+def test_service_path_writer_mutations_are_detected(ctx):
+    source = INSTALL_SCRIPT.read_text(encoding='utf-8')
+    mutations = (
+        ('systemd PATH line removed',
+         'Environment="PATH=$(service_path_value)"\n',
+         'systemd unit:'),
+        ('launchd PATH entry removed',
+         '    <key>PATH</key>\n    <string>$(service_path_value)</string>\n',
+         'launchd plist:'),
+    )
+
+    for name, anchor, expected_failure in mutations:
+        assert source.count(anchor) == 1, (
+            f'{name}: mutation anchor must occur exactly once')
+        mutant = ctx['work'] / f'{name.replace(" ", "-")}.sh'
+        mutant.write_text(source.replace(anchor, '', 1), encoding='utf-8')
+        try:
+            test_service_units_set_path_for_both_writers(ctx, mutant)
+        except AssertionError as error:
+            assert expected_failure in str(error), (
+                f'{name}: killed for the wrong reason: {error}')
+        else:
+            raise AssertionError(f'mutation survived: {name}')
+
+
+def test_service_path_reaches_a_socat_outside_the_default_dirs(ctx):
+    """REQ-INST-26/REQ-INST-14: the preflight must BIND.
+
+    The REQ-INST-14 preflight resolves socat in the INSTALLER's shell. If the
+    generated unit then ships a PATH that cannot see that same socat, the
+    preflight guarantees something other than what it claims -- it passes, the
+    install reports success, and the bridge still cannot reach a wss:// hub.
+
+    _shim_dir + stub_env put socat in a hermetic directory that is NOT any
+    service-manager default dir (that is the whole point of stub_env setting
+    PATH to the shim ALONE), so this is the real 'socat lives somewhere the
+    service manager would never look' case rather than a simulation of it.
+    """
+    base = ctx['work'] / 'service-path-socat'
+    base.mkdir(parents=True, exist_ok=True)
+    shim = _shim_dir(base, 'shim-socat-elsewhere')
+    assert (shim / 'socat').exists(), 'the shim must supply socat'
+    shim_str = str(shim)
+    for default_dir in set(SYSTEMD_DEFAULT_PATH_DIRS) | set(LAUNCHD_DEFAULT_PATH_DIRS):
+        assert shim_str != default_dir, 'the shim must not BE a default dir'
+
+    home = base / 'home'
+    runtime = base / 'runtime'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    res = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--dry-run', '--version', 'v0.1.0'],
+        stub_env(home, runtime, shim), timeout=90)
+    assert res.returncode == 0, (
+        f'hermetic dry-run failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}')
+
+    rendered = rendered_systemd_path(res)
+    entries = rendered.split(':')
+    assert shim_str in entries, (
+        f'socat lives in {shim_str}, which no service manager default PATH '
+        f'contains, and the rendered unit PATH does not include it: {rendered!r}. '
+        f'The REQ-INST-14 preflight would pass and the bridge would still fail '
+        f'to spawn socat.')
+    # Prove the claim the assertion rests on rather than asserting around it:
+    # no OTHER entry in the rendered PATH could have supplied socat, so the shim
+    # dir is genuinely load-bearing here.
+    others = [d for d in entries if d != shim_str]
+    assert shutil.which('socat', path=':'.join(others)) is None, (
+        f'this test is not proving what it claims: socat is also reachable via '
+        f'{others} on this host, so the assertion above would pass even without '
+        f'the discovered entry. Harden the shim.')
+
+
+def test_service_path_tool_inventory_does_not_desync(ctx):
+    """REQ-INST-26: the tool list must be re-derivable, not a hand-typed mirror.
+
+    service_path_tools() exists so this single source can be checked against the
+    bridge's actual bare-name spawns. A literal list pasted into the writers
+    would drift the moment someone adds a spawn, and the drift would be
+    invisible -- the same failure the REQ-INST-19 rc tripwire and
+    system_unit_dirs() were both built to prevent.
+    """
+    # Sourcing install.sh would run main(); read the function body instead.
+    text = INSTALL_SCRIPT.read_text(encoding='utf-8')
+    body = text.split('service_path_tools() {', 1)[1].split('}', 1)[0]
+    tools = body.replace("printf '%s\\n'", '').split()
+    assert tools, f'could not re-derive service_path_tools() from:\n{body}'
+
+    # Each declared tool must correspond to a real bare-name spawn in the Odin
+    # sources: a vector whose argv[0] is that literal with no slash.
+    src = ROOT / 'src'
+    missing = []
+    for tool in tools:
+        lit = re.escape(tool)
+        # Two spawn spellings in this codebase, and a pattern that knew only the
+        # first silently reported socat missing:
+        #   composite literal -- []string{"tmux", "has-session", ...}
+        #   incremental append -- append(&cmd, "socat")   (ws.odin:341)
+        pats = (re.compile(r'(\{|,)\s*"' + lit + r'"\s*(,|\})'),
+                re.compile(r'append\(\s*&\w+\s*,\s*"' + lit + r'"\s*\)'))
+        found = any(any(pat.search(body) for pat in pats)
+                    for body in (f.read_text(encoding='utf-8', errors='replace')
+                                 for f in src.rglob('*.odin') if 'test' not in f.name))
+        if not found:
+            missing.append(tool)
+    assert not missing, (
+        f'service_path_tools() lists {missing}, which no Odin source spawns by '
+        f'bare name -- either the spawn was removed and the list went stale, or '
+        f'the name is wrong.')
+
+    # And the reverse direction for the tools this task established: every one
+    # of these IS spawned bare, so none may quietly fall out of the list.
+    for required in ('socat', 'tmux', 'git', 'sh'):
+        assert required in tools, (
+            f'{required} is spawned by bare name by the bridge but is no longer '
+            f'in service_path_tools(); the service PATH may no longer reach it.')
+
+
+
+def test_service_path_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-26: systemd Environment= splits on whitespace.
+
+    `Environment=PATH=/home/my user/.local/bin:...` does NOT set that PATH --
+    systemd takes the assignment up to the space and discards the remainder,
+    which `systemd-analyze verify` reports as "Invalid environment assignment,
+    ignoring: user/.local/bin:...". So the unquoted form renders a unit whose
+    PATH is a truncated fragment, and the fix for REQ-INST-26 would itself be
+    broken on any host with a space in $HOME. The quoted form is the fix; this
+    test is what stops it being un-fixed.
+
+    Asserted on the rendered unit AND, where systemd-analyze is available, by
+    systemd's own parser rather than by this file's reading of the manual.
+    """
+    base = ctx['work'] / 'service-path-space'
+    home = base / 'my home'
+    home.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, 'HOME': str(home)}
+    install_dir = str(home / '.local' / 'bin')
+    assert ' ' in install_dir, 'this test is pointless without a space'
+
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0'],
+              timeout=60, env=env)
+    assert res.returncode == 0, f'dry-run failed:\n{res.stderr}'
+    unit = dry_run_unit_text(res)
+
+    line = next((l for l in unit.splitlines()
+                 if l.startswith('Environment=') and 'PATH=' in l), None)
+    assert line is not None, f'no PATH line in:\n{unit}'
+    assert line.startswith('Environment="PATH=') and line.endswith('"'), (
+        f'the PATH assignment must be QUOTED or systemd truncates it at the '
+        f'first space in $install_dir; got {line!r}')
+    # The whole install_dir, space included, must survive inside the quotes.
+    assert install_dir in line, (
+        f'{install_dir!r} did not survive into {line!r}')
+
+    # Let systemd judge its own syntax where we can -- but judge OUR line only.
+    #
+    # This lifts the PATH line into a minimal unit rather than verifying the
+    # whole thing, so that any environment-assignment complaint from systemd is
+    # unambiguously about the line under test and cannot be masked or satisfied
+    # by a sibling line. REQ-INST-28 has since fixed ExecStart and the two
+    # HEIMDALL_*_BIN lines, which carried the identical defect, and
+    # test_systemd_unit_survives_a_space_in_the_install_dir now verifies the
+    # COMPLETE rendered unit. Both are wanted: that one proves a user's bridge
+    # starts, this one keeps the PATH line individually pinned.
+    #
+    # So the PATH line is lifted into a minimal unit of its own. Any
+    # environment-assignment complaint from systemd is then unambiguously about
+    # the line under test. T30 leaves this focused check working unchanged.
+    analyze = shutil.which('systemd-analyze')
+    if analyze is None:
+        raise Skip('systemd-analyze not available; rendered-text assertions above still ran')
+    unit_file = base / 'heimdall-bridge.service'
+    unit_file.write_text(
+        '[Unit]\nDescription=PATH quoting probe\n\n'
+        '[Service]\nType=simple\nExecStart=/bin/true\n'
+        + line + '\n\n[Install]\nWantedBy=default.target\n')
+    vres = run([analyze, 'verify', str(unit_file)], timeout=60)
+    combined = vres.stdout + vres.stderr
+    assert 'Invalid environment assignment' not in combined, (
+        f'systemd rejected the PATH assignment {line!r}:\n{combined}')
+
+
+# --- REQ-INST-28: a space in $install_dir must not break the generated units ---
+# systemd's Environment= and ExecStart= split on UNQUOTED whitespace, so an
+# interpolated path containing a space silently truncates the line: no error at
+# install time, total failure at runtime. Everything below is asserted on the
+# RENDERED unit and, where the platform's own parser is available, judged by
+# THAT parser rather than by this file's reading of the manual.
+
+SPACED_HOME_DIRNAME = 'my home'
+
+
+def render_unit_with_spaced_home(ctx, name: str, extra_env: dict = None):
+    """Run a real --dry-run whose $HOME (and so $install_dir) contains a space.
+
+    Returns (res, install_dir). A ham-bridge stub is created at the rendered
+    install_dir because systemd-analyze resolves ExecStart against the
+    filesystem: without it systemd reports "is not executable: No such file",
+    which would be indistinguishable from the truncation defect under test.
+    """
+    base = ctx['work'] / name
+    home = base / SPACED_HOME_DIRNAME
+    install_dir = home / '.local' / 'bin'
+    install_dir.mkdir(parents=True, exist_ok=True)
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+    stub = install_dir / 'ham-bridge'
+    stub.write_text('#!/bin/sh\nexit 0\n')
+    stub.chmod(0o755)
+    env = {**os.environ, 'HOME': str(home)}
+    if extra_env:
+        env.update(extra_env)
+    res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--version', 'v0.1.0',
+               '--hub', 'https://hub.example/x'], timeout=60, env=env)
+    assert res.returncode == 0, f'dry-run failed:\n{res.stdout}\n{res.stderr}'
+    return res, str(install_dir)
+
+
+def test_systemd_unit_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-28. The WHOLE unit must verify clean, not one lifted line.
+
+    T27's REQ-INST-26 test could only lift its PATH line into a minimal unit,
+    because ExecStart and the two HEIMDALL_*_BIN lines carried the identical
+    defect and would have failed the full-unit check for a reason that was not
+    that test's subject. This task fixed those three, so the full-unit check is
+    now possible -- and it is the only form that proves a user's bridge would
+    actually start.
+    """
+    res, install_dir = render_unit_with_spaced_home(ctx, 'unit-space-systemd')
+    assert 'platform: linux/' in res.stdout, 'expected the linux branch on this host'
+    unit = dry_run_unit_text(res)
+
+    # Every interpolated value must survive WHOLE into the rendered unit.
+    for key, want in (('HEIMDALL_HAM_PTY_HOST_BIN', f'{install_dir}/ham-pty-host'),
+                      ('HEIMDALL_HAM_CTL_BIN', f'{install_dir}/ham-ctl')):
+        line = next((l for l in unit.splitlines()
+                     if l.startswith('Environment=') and key in l), None)
+        assert line is not None, f'no {key} line in:\n{unit}'
+        assert line == f'Environment="{key}={want}"', (
+            f'{key} must be QUOTED or systemd truncates it at the first space '
+            f'in $install_dir; got {line!r}')
+    exec_line = next((l for l in unit.splitlines() if l.startswith('ExecStart=')), None)
+    assert exec_line is not None, f'no ExecStart in:\n{unit}'
+    assert exec_line.startswith(f'ExecStart="{install_dir}/ham-bridge"'), (
+        f'ExecStart must quote $install_dir or systemd execs the truncated '
+        f'prefix; got {exec_line!r}')
+
+    # Now let systemd judge its own syntax, on the COMPLETE unit.
+    analyze = shutil.which('systemd-analyze')
+    if analyze is None:
+        raise Skip('systemd-analyze not available; rendered-text assertions above still ran')
+    unit_file = ctx['work'] / 'unit-space-systemd' / 'heimdall-bridge.service'
+    unit_file.write_text(unit + '\n')
+    vres = run([analyze, 'verify', str(unit_file)], timeout=60)
+    combined = vres.stdout + vres.stderr
+    assert 'Invalid environment assignment' not in combined, (
+        f'systemd rejected an Environment= line:\n{combined}\n\nunit:\n{unit}')
+    assert 'is not executable' not in combined, (
+        f'systemd could not resolve ExecStart -- the path was truncated at a '
+        f'space:\n{combined}\n\nunit:\n{unit}')
+    assert vres.returncode == 0, (
+        f'systemd-analyze verify failed on the rendered unit:\n{combined}\n\nunit:\n{unit}')
+
+
+def test_launchd_plist_survives_a_space_in_the_install_dir(ctx):
+    """REQ-INST-28, the NEGATIVE half: launchd was ALREADY correct.
+
+    XML is not whitespace-split, so $install_dir inside a <string> needs no
+    quoting and none was added. This is a REGRESSION TEST, not a fix: it pins
+    the property so a future 'tidy-up' of the plist heredoc -- say one that
+    moved ProgramArguments to a single space-separated <string> -- cannot
+    reintroduce on macOS the defect just fixed on Linux.
+
+    The darwin branch is reached on Linux with the uname shim from REQ-INST-26,
+    so this assertion actually EXECUTES here instead of being written and only
+    ever proven on a Mac we may not reach.
+    """
+    shim = darwin_uname_shim(ctx['work'] / 'unit-space-launchd-shim')
+    res, install_dir = render_unit_with_spaced_home(
+        ctx, 'unit-space-launchd', {'PATH': f'{shim}:{os.environ["PATH"]}'})
+    assert 'platform: darwin/arm64' in res.stdout, (
+        f'the uname shim did not move the run onto the darwin branch; the plist '
+        f'assertions would silently test nothing:\n{res.stdout[:400]}')
+
+    xml = dry_run_unit_text(res)
+    if not xml.lstrip().startswith('<?xml'):
+        xml = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml
+    parsed = plistlib.loads(xml.encode('utf-8'))
+
+    argv = parsed['ProgramArguments']
+    # The decisive assertion: the spaced path is ONE argv element, not two.
+    assert argv[0] == f'{install_dir}/ham-bridge', (
+        f'ProgramArguments[0] must be the whole spaced path as a single '
+        f'element; got {argv[0]!r} in {argv!r}')
+    for i, arg in enumerate(argv):
+        assert arg == arg.strip(), f'argv[{i}]={arg!r} has stray whitespace'
+    # No element may be a fragment of the install dir -- what splitting looks like.
+    head = install_dir.split(' ')[0]
+    assert head not in argv, (
+        f'argv contains {head!r}, the prefix of $install_dir up to its first '
+        f'space -- the path was split: {argv!r}')
+    env_vars = parsed['EnvironmentVariables']
+    assert env_vars['HEIMDALL_HAM_PTY_HOST_BIN'] == f'{install_dir}/ham-pty-host'
+    assert env_vars['HEIMDALL_HAM_CTL_BIN'] == f'{install_dir}/ham-ctl'
+
+
+def test_fish_rc_line_quotes_a_spaced_install_dir(ctx):
+    """REQ-INST-28: the same defect in the rc writer, not a unit file.
+
+    `fish_add_path /home/my user/.local/bin` is TWO arguments to fish, so on a
+    spaced home the installer writes an rc line that adds two wrong paths and
+    not the right one. The independent awk mirror in do_uninstall() must change
+    in lockstep or uninstall silently leaves that line behind.
+
+    This is a REAL install into a sandboxed spaced HOME -- the rc file on disk
+    is the artifact asserted on, because the printed fallback snippet and the
+    written line are two different code paths. The second install binds
+    wire_path()'s duplicate guard. The independent do_uninstall() matcher is
+    exercised by test_fish_uninstall_removes_quoted_spaced_install_dir below.
+    """
+    need_tool('curl')
+    target = host_target()
+    if target is None:
+        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
+    base = ctx['work'] / 'fish-space'
+    home = base / SPACED_HOME_DIRNAME
+    runtime = base / 'xdg-runtime'
+    runtime.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+
+    res, tarball = package_tarball(base, target=target)
+    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    hub = make_hub_mirror(base, tarball, target)
+
+    # sandbox_install_env blanks SHELL (its union branch); this test is
+    # specifically the *fish* branch of path_candidates()/wire_path(), so SHELL
+    # is set back to a fish. The binary need not exist -- install.sh only
+    # case-globs the string.
+    env = {**sandbox_install_env(home, runtime), 'SHELL': '/usr/bin/fish'}
+    install_dir = home / '.local' / 'bin'
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+
+    res = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert res.returncode == 0, (
+        f'install into a spaced HOME failed:\nstdout:\n{res.stdout}\n'
+        f'stderr:\n{res.stderr}')
+
+    config_fish = home / '.config' / 'fish' / 'config.fish'
+    assert config_fish.is_file(), (
+        f'the fish branch must write config.fish; got:\n{res.stdout}')
+    written = config_fish.read_text()
+    want = f'fish_add_path "{install_dir}"'
+    assert want in written, (
+        f'the rc line must QUOTE the spaced install dir -- unquoted, fish takes '
+        f'{install_dir!r} as two arguments and adds neither.\n'
+        f'wanted: {want!r}\ngot:\n{written}')
+
+    # Idempotency: a second run must not append a second copy. wire_path()
+    # decides this with `grep -Fqx "$path_line"`, i.e. against the very string
+    # it writes -- so this pins that the WRITTEN form stays greppable (a stray
+    # trailing space or a re-quoting would break it), not that two independent
+    # copies agree.
+    res2 = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert res2.returncode == 0, f're-run failed:\n{res2.stderr}'
+    rewritten = config_fish.read_text()
+    assert rewritten.count('fish_add_path') == 1, (
+        f'a re-run must not append a second PATH line -- wire_path no longer '
+        f'recognises the exact line it writes:\n{rewritten}')
+
+
+def test_fish_uninstall_removes_quoted_spaced_install_dir(ctx):
+    """REQ-INST-28: do_uninstall must match the exact Fish line wire_path writes."""
+    need_tool('curl')
+    target = host_target()
+    if target is None:
+        raise Skip(f'unsupported host for install.sh full run: {platform.system()}/{platform.machine()}')
+    base = ctx['work'] / 'fish-space-uninstall'
+    home = base / SPACED_HOME_DIRNAME
+    runtime = base / 'xdg-runtime'
+    runtime.mkdir(parents=True, exist_ok=True)
+    config_fish = home / '.config' / 'fish' / 'config.fish'
+    config_fish.parent.mkdir(parents=True)
+    unrelated = '# user fish config\nset -gx EDITOR vi\n'
+    config_fish.write_text(unrelated)
+
+    packaged, tarball = package_tarball(base, target=target)
+    assert packaged.returncode == 0, f'packaging failed:\n{packaged.stderr}'
+    hub = make_hub_mirror(base, tarball, target)
+    env = {**sandbox_install_env(home, runtime), 'SHELL': '/usr/bin/fish'}
+    install_dir = home / '.local' / 'bin'
+    assert ' ' in str(install_dir), 'this test is pointless without a space'
+
+    installed = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--hub', hub], env, cwd=ROOT, timeout=120)
+    assert installed.returncode == 0, (
+        f'install into a spaced HOME failed:\nstdout:\n{installed.stdout}\n'
+        f'stderr:\n{installed.stderr}')
+    quoted_line = f'fish_add_path "{install_dir}"'
+    before_uninstall = config_fish.read_text()
+    assert '# Added by heimdall install.sh' in before_uninstall
+    assert quoted_line in before_uninstall
+
+    assert_bridge_isolated(env, ctx['work'])
+    removed = install_run_shielded(
+        ['bash', str(INSTALL_SCRIPT), '--uninstall'], env, cwd=ROOT, timeout=120)
+    assert removed.returncode == 0, (
+        f'uninstall from a spaced HOME failed:\nstdout:\n{removed.stdout}\n'
+        f'stderr:\n{removed.stderr}')
+    after_uninstall = config_fish.read_text()
+    assert '# Added by heimdall install.sh' not in after_uninstall, (
+        f'uninstall left its marker in config.fish:\n{after_uninstall}')
+    assert quoted_line not in after_uninstall, (
+        f'do_uninstall no longer matches the quoted Fish line it must remove:\n'
+        f'{after_uninstall}')
+    assert '# user fish config' in after_uninstall, (
+        f'uninstall removed unrelated Fish configuration:\n{after_uninstall}')
+    assert 'set -gx EDITOR vi' in after_uninstall, (
+        f'uninstall removed an unrelated Fish setting:\n{after_uninstall}')
+
+
+# --- REQ-INST-27: the socat probe's own assertion must BIND --------------------
+
+# Exactly the tools sudo_ns_install's inner script needs BEFORE install.sh runs:
+# the mounts, the probe, and the shells that carry them. Supplying precisely
+# these -- and nothing else -- is what makes the mutation below surgical.
+#
+# The trap this avoids was measured during REQ-INST-22: on this host socat is
+# supplied by FOUR PATH entries, one of which (/run/current-system/sw/bin) is
+# the ONLY provider of `mount`. Dropping "socat's PATH entry" therefore kills
+# `mount` too, and the mutant dies of a broken mount rather than of a missing
+# socat -- a caught mutant that caught nothing. Linking INDIVIDUAL binaries by
+# their resolved absolute path sidesteps directory granularity entirely.
+NS_PROBE_PREREQS = ('mount', 'mkdir', 'unshare', 'env', 'bash', 'sh', 'umount')
+
+
+def thinned_tool_dir(base: Path):
+    """A PATH dir holding symlinks to exactly NS_PROBE_PREREQS, socat excluded.
+
+    Returns (dir, skip_reason). skip_reason is non-None when this host cannot
+    support an HONEST mutation, and the caller must skip rather than assert:
+    a tool resolving under /usr would be hidden by the fixture's own tmpfs over
+    /usr inside the namespace, so the run would die of a missing `mount` and the
+    mutation would prove nothing. That is the same host assumption
+    sudo_ns_install ALREADY makes at its bare `mount`/`mkdir` calls -- this test
+    inherits it, it does not add one.
+    """
+    thin = base / 'thin-bin'
+    thin.mkdir(parents=True, exist_ok=True)
+    under_usr = []
+    for name in NS_PROBE_PREREQS:
+        found = shutil.which(name)
+        if not found:
+            return thin, f'{name} not on PATH; cannot build a surgical namespace PATH'
+        real = os.path.realpath(found)
+        if real.startswith('/usr/'):
+            under_usr.append(f'{name}->{real}')
+        link = thin / name
+        if not link.exists():
+            link.symlink_to(real)
+    if under_usr:
+        return thin, ('these tools resolve under /usr, which the fixture mounts a '
+                      'tmpfs over inside the namespace, so the mutation would die '
+                      f'of a missing tool rather than of a missing socat: {under_usr}')
+    return thin, None
+
+
+def test_socat_probe_assertion_binds(ctx):
+    """REQ-INST-27: MUTATION + CONTROL for the REQ-INST-22 probe.
+
+    REQ-INST-22 added a socat probe inside sudo_ns_install and asserted
+    SOCAT_UNREACHABLE_IN_NS is absent from stderr. That assertion's proof was a
+    throwaway harness run once and never committed -- so a later refactor could
+    neuter the probe and the suite would go quiet again, which is the very
+    failure mode REQ-INST-22 exists to remove, one level up.
+
+    This drives the REAL sudo_ns_install (not a copy of its inner script), so
+    BOTH the probe and the assertion that reads it are under test:
+
+      MUTATION: surgical PATH, no socat anywhere -> sudo_ns_install must RAISE.
+      CONTROL : byte-identical run + the socat stub -> must NOT raise.
+
+    The control is what makes the mutation mean anything. A mutation alone
+    proves the probe died; only the control proves it died of MISSING SOCAT
+    rather than of the thinning having broken the namespace -- and that
+    distinction is the entire point, established when the naive mutation was
+    measured vacuous in REQ-INST-22.
+
+    HOST ASSUMPTION, stated rather than assumed: the tools in NS_PROBE_PREREQS
+    must resolve OUTSIDE /usr (they do on a Nix host; see thinned_tool_dir,
+    which skips loudly otherwise). Note this is NOT sensitive to where socat
+    lives: socat is excluded BY NAME from the thinned dir, so a host with
+    /usr/bin/socat is fine on that axis -- and doubly so, since the fixture's
+    tmpfs over /usr would hide it anyway.
+    """
+    need_userns_mount()
+    base = ctx['work'] / 'socat-probe-binding'
+    base.mkdir(parents=True, exist_ok=True)
+    thin, skip_reason = thinned_tool_dir(base)
+    if skip_reason:
+        raise Skip(f'cannot mutate honestly on this host: {skip_reason}')
+
+    thin_path = str(thin)
+    # PRECONDITIONS. Without these the mutation is not attributable: the first
+    # makes socat genuinely absent, the second proves the thinning did not
+    # break the namespace tooling and take the probe down with it.
+    assert shutil.which('socat', path=thin_path) is None, (
+        f'the thinned PATH still reaches socat, so the mutation would not '
+        f'suppress it: {shutil.which("socat", path=thin_path)}')
+    assert shutil.which('mount', path=thin_path), (
+        'the thinned PATH lost `mount`; the mutant would die of a broken '
+        'namespace rather than of a missing socat')
+
+    hub, _fake_home, entry = sudo_ns_fixture(base)
+
+    # --- MUTATION: socat absent. The probe must fire AND be caught. ----------
+    try:
+        sudo_ns_install(base, hub, entry, thin_path,
+                        host_path='', socat_stub=False)
+    except AssertionError as exc:
+        mutation_error = str(exc)
+    else:
+        raise AssertionError(
+            'THE PROBE NO LONGER BINDS: socat was absent from the namespace and '
+            'sudo_ns_install did not raise. Either the probe was removed from '
+            'the inner script or the SOCAT_UNREACHABLE_IN_NS assertion no longer '
+            'reads it -- which is exactly the silent regression REQ-INST-22 was '
+            'written to prevent.')
+    assert 'SOCAT_UNREACHABLE_IN_NS' in mutation_error, (
+        f'the probe fired but not via its own diagnostic:\n{mutation_error}')
+    # The failure must be about socat, not about a namespace we broke.
+    lowered = mutation_error.lower()
+    for noise in ('permission denied', 'operation not permitted',
+                  'mount: ', 'no such file or directory'):
+        assert noise not in lowered, (
+            f'the mutation died with {noise!r} in its output, so it is not '
+            f'attributable to the missing socat alone:\n{mutation_error}')
+
+    # --- CONTROL: byte-identical, plus the stub. Must NOT raise. ------------
+    # install.sh itself will fail further on (the thinned PATH has no curl or
+    # tar) and that is FINE and deliberately not asserted against: the only
+    # claim here is that the PROBE passed, which is the single variable that
+    # differs from the mutation above.
+    control = sudo_ns_install(base, hub, entry, thin_path,
+                              host_path='', socat_stub=True)
+    assert 'SOCAT_UNREACHABLE_IN_NS' not in control.stderr, (
+        f'CONTROL FAILED: socat WAS supplied and the probe still fired, so the '
+        f'mutation above proved nothing about socat -- the thinned PATH itself '
+        f'is what breaks these runs:\n{control.stderr}')
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -3922,6 +4592,8 @@ def main() -> int:
         ('packaging error cases', test_packaging_error_cases),
         ('SHA256SUMS validation + tamper fail-closed', test_sha256sums_validation),
         ('install.sh syntax (bash -n)', test_install_sh_syntax),
+        ('report_shared_openssl guard branch teeth (REQ-INST-21)',
+         test_report_shared_openssl_guard_has_teeth),
         ('install.sh --help', test_install_sh_help),
         ('install.sh --dry-run --version v0.1.0', test_install_sh_dry_run_version),
         ('install.sh --dry-run --hub <url>', test_install_sh_dry_run_hub),
@@ -3979,10 +4651,6 @@ def main() -> int:
         ('uninstall isolation guard fires on a live session (REQ-INST-13)',
          test_uninstall_guard_detects_live_session),
         ('install.sh --uninstall (dry run + real, keeps user state)', test_install_sh_uninstall),
-        ('install.sh --uninstall removes the bundled openssl it recorded',
-         test_install_sh_uninstall_removes_bundled_openssl),
-        ('install.sh --uninstall survives unreadable openssl/record',
-         test_install_sh_uninstall_unhashable_openssl_nonfatal),
         ('install.sh sudo --uninstall --dry-run', test_install_sh_sudo_uninstall_dry_run),
         ('install.sh refuses to shadow a system unit (REQ-INST-23)',
          test_install_sh_refuses_to_shadow_system_unit),
@@ -4016,6 +4684,26 @@ def main() -> int:
         ('storeless execution gate has teeth (REQ-INST-16)', test_storeless_exec_has_teeth),
         ('SELF_HOSTING.md Part 2 installer docs', test_self_hosting_documents_installer),
         ('README installer pointer', test_readme_points_at_installer),
+        ('service units set PATH, both writers (REQ-INST-26)',
+         test_service_units_set_path_for_both_writers),
+        ('service PATH writer mutations are detected (REQ-INST-26)',
+         test_service_path_writer_mutations_are_detected),
+        ('service PATH reaches a socat outside the default dirs (REQ-INST-26)',
+         test_service_path_reaches_a_socat_outside_the_default_dirs),
+        ('service PATH tool inventory does not desync (REQ-INST-26)',
+         test_service_path_tool_inventory_does_not_desync),
+        ('service PATH survives a space in install_dir (REQ-INST-26)',
+         test_service_path_survives_a_space_in_the_install_dir),
+        ('systemd unit survives a space in install_dir (REQ-INST-28)',
+         test_systemd_unit_survives_a_space_in_the_install_dir),
+        ('launchd plist survives a space in install_dir (REQ-INST-28)',
+         test_launchd_plist_survives_a_space_in_the_install_dir),
+        ('fish rc line quotes a spaced install_dir (REQ-INST-28)',
+         test_fish_rc_line_quotes_a_spaced_install_dir),
+        ('fish uninstall removes quoted spaced install_dir (REQ-INST-28)',
+         test_fish_uninstall_removes_quoted_spaced_install_dir),
+        ('socat probe assertion binds: mutation + control (REQ-INST-27)',
+         test_socat_probe_assertion_binds),
     ]
 
     ctx = {}

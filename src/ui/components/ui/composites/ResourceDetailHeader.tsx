@@ -46,6 +46,17 @@ export interface ResourceDetailHeaderProps extends RootClassNameProps {
 
   /** Optional data debug ID for testing. */
   dataDebugId?: string;
+
+  /**
+   * Heading level for the title. Defaults to `'h1'`.
+   *
+   * `ResourceContainer` wraps its panes in a `PageShell`, which already renders the page's
+   * single `<h1>`, so a detail pane nested inside one must render its title as an `<h2>` to
+   * keep exactly one `<h1>` per page. The visual size lives in the className, so `'h2'` looks
+   * identical — this is a semantic change only. The default stays `'h1'` so existing callers
+   * are unaffected.
+   */
+  headingLevel?: 'h1' | 'h2';
 }
 
 export function ResourceDetailHeader({
@@ -61,11 +72,13 @@ export function ResourceDetailHeader({
   backLabel = 'Back',
   alwaysShowBack = false,
   dataDebugId,
+  headingLevel = 'h1',
   className,
 }: ResourceDetailHeaderProps) {
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const showBack = onBack && (isMobile || alwaysShowBack);
+  const Heading = headingLevel;
 
   return (
     <div
@@ -115,9 +128,9 @@ export function ResourceDetailHeader({
 
       {/* Title & mono ID - full width, space efficient */}
       <div className="min-w-0 w-full">
-        <h1 className="text-lg sm:text-xl font-semibold tracking-tight text-primary break-words">
+        <Heading className="text-lg sm:text-xl font-semibold tracking-tight text-primary break-words">
           {title}
-        </h1>
+        </Heading>
 
         {id ? (
           <p className="text-xs text-muted mt-1 font-mono select-all">{id}</p>

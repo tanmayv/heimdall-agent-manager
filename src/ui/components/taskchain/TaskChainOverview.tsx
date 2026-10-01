@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, PageShell, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Checkbox, Icon, PageShell, ResourceDetailHeader, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone, useViewport } from '@ui';
 import {
   FleetSlotChips,
   FleetManagementDrawer,
@@ -63,6 +63,7 @@ import {
 } from '../../utils/bridgeLaunchOptions';
 import { taskBridgeDisplay, taskBridgeOptions } from '../../utils/taskBridgePin';
 import { useIsMobile } from '../shell/responsive';
+import ChainActiveServersPanel from '../shells/ChainActiveServersPanel';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 
 interface TaskChainOverviewProps {
@@ -72,6 +73,15 @@ interface TaskChainOverviewProps {
   focusTaskId?: string;
   onClose?: () => void;
   isMobile?: boolean;
+  /**
+   * Render for a `ResourceContainer` detail pane instead of as a standalone page.
+   *
+   * When set, the outer `PageShell` is replaced by a plain scroll container and the chain
+   * title / status / fleet chips move into a `ResourceDetailHeader` (REQ-TCUI-3). The page
+   * body is identical either way — both branches render the same `body` node, so the
+   * standalone rendering cannot drift from the embedded one.
+   */
+  embedded?: boolean;
 }
 
 // Label formatters for instance / member <Select> options (EL-025). Names are
@@ -172,7 +182,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   focusTaskId,
   onClose,
   isMobile,
+  embedded,
 }) => {
+  // Read the viewport the same way `ResourceContainer`/`ResourceDetailHeader` do, so the
+  // embedded panes and their container can never disagree about the desktop boundary. The
+  // `isMobile` prop is mobile-only (<=767px) while the container two-panes only on desktop
+  // (>1023px), which would otherwise leave the 768-1023px tablet band with no back button.
+  const viewport = useViewport();
   const { data, isLoading, error, refetch } = useFetchTaskChainDetailQuery(
     { chainId },
     { skip: !chainId }
@@ -1624,19 +1640,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     );
   }
 
-  return (
-    <div
-      data-debug-id="taskchain-overview"
-      className="flex h-full w-full max-w-full min-w-0 flex-col overflow-y-auto overflow-x-hidden bg-canvas text-primary pb-28 sm:pb-12"
-    >
-      {/* Page frame + single <h1> — migrated to PageShell (ui-audit W2). Fixes the
-          h2-as-page-title heading-hierarchy defect (finding #7): the chain title is
-          now the page's one real <h1>. The chain status pill moves into PageShell's
-          `actions` slot with its exact prior styling/behaviour. width="full" keeps
-          the task board full-bleed (no visual regression). */}
-      <PageShell
-        width="full"
-        title={
+  // The chain title, the action cluster and the page body are built ONCE and rendered by
+  // both branches below. Criterion 7 (no regression for non-embedded callers, e.g. the
+  // conversation right panel at ConversationThreadPage.tsx) then holds by construction
+  // rather than by inspection: there is no code path on which the two can diverge.
+  const titleNode = (
           isEditingTitle ? (
             <div data-debug-id="taskchain-overview-title-edit" className="flex flex-wrap items-center gap-2 max-w-xl">
               <input
@@ -1689,8 +1697,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </button>
             </span>
           )
-        }
-        actions={
+  );
+
+  const actionsNode = (
           <div className="flex flex-wrap items-center gap-2 max-w-full">
             <FleetSlotChips
               chainId={chainId}
@@ -1712,8 +1721,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               />
             </div>
           </div>
-        }
-      >
+  );
+
+  const pageBody = (
+    <>
         <FleetManagementDrawer
           chainId={chainId}
           isOpen={isFleetDrawerOpen}
@@ -1815,6 +1826,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       </div>
 
+      {/* REQ-SHELL-6 §4 — ACTIVE SERVERS for this chain, whoever started them.
+          Placed in the chain summary because `server` is CHAIN + BRIDGE scoped and chain
+          appears in no other kind's scope key (shell_session.odin:87-91), making this the
+          only mounted surface whose scope matches the content. This deliberately
+          revisits REQ-UI-REMOVE-SHELLS-FROM-CHAIN-VIEW, which removed the GENERIC
+          all-kinds session table from this page; see the note in
+          tests/test_ui_chain_overview_no_shells_static.py for where the line now sits. */}
+      <div className="px-4 pb-4 sm:px-6">
+        <ChainActiveServersPanel chainId={chainId} />
+      </div>
 
       {/* Task List Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">
@@ -2896,6 +2917,50 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </form>
         </div>
       )}
+    </>
+  );
+
+  // Embedded: the container owns the page frame (and its single <h1>), so the chain title
+  // renders as an <h2> via headingLevel and the scrolling is ours to provide.
+  if (embedded) {
+    return (
+      <div
+        data-debug-id="taskchain-overview"
+        className="flex h-full min-h-0 w-full max-w-full min-w-0 flex-col overflow-hidden bg-canvas text-primary"
+      >
+        <ResourceDetailHeader
+          dataDebugId="taskchain-overview-detail-header"
+          title={titleNode}
+          id={chainId}
+          actions={actionsNode}
+          onBack={onClose}
+          backLabel="All chains"
+          alwaysShowBack={viewport !== 'desktop'}
+          headingLevel="h2"
+          className="shrink-0 px-4 pt-4 sm:px-6"
+        />
+        <div
+          data-debug-id="taskchain-overview-embedded-scroll"
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-28 sm:pb-12"
+        >
+          {pageBody}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-debug-id="taskchain-overview"
+      className="flex h-full w-full max-w-full min-w-0 flex-col overflow-y-auto overflow-x-hidden bg-canvas text-primary pb-28 sm:pb-12"
+    >
+      {/* Page frame + single <h1> — migrated to PageShell (ui-audit W2). Fixes the
+          h2-as-page-title heading-hierarchy defect (finding #7): the chain title is
+          now the page's one real <h1>. The chain status pill moves into PageShell's
+          `actions` slot with its exact prior styling/behaviour. width="full" keeps
+          the task board full-bleed (no visual regression). */}
+      <PageShell width="full" title={titleNode} actions={actionsNode}>
+        {pageBody}
       </PageShell>
     </div>
   );

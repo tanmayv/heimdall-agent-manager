@@ -81,8 +81,9 @@ import {
   type ShellSessionKind,
   type ShellSessionStatus,
 } from '../../api/endpoints/shells';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { openTab } from '../../store/previewTabsSlice';
+import type { ShellState } from '../../store/shellSlice';
 import { SetShellPortDialog } from './SetShellPortDialog';
 import { bridgeLabel, catalogNote, projectLabel, useActionCatalog } from '../actions/actionCatalog';
 import {
@@ -123,8 +124,6 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 250;
 const PAGE_SIZE = 25;
-/** How often the list probes page one for new sessions. */
-const REFRESH_INTERVAL_MS = 10000;
 
 type ToastEntry = {
   id: string;
@@ -198,21 +197,37 @@ export default function ShellListPage({ selectedId = '' }: { selectedId?: string
     resetKey: [serverStatus, urlState.bridge, urlState.project].join('|'),
   });
 
-  /* Live updates (REQ-UI-20). A session's status changes constantly, so the list
-     probes page one on an interval and on focus, and reports what it found as a
-     pill rather than re-fetching under the reader. `refresh` never touches the
-     rendered rows — see useInfiniteList's doc. */
+  /* Live updates (REQ-UI-20), now PUSH-DRIVEN (REQ-SHELL-6 §6).
+   *
+   * This list is the one shell view no tag invalidation can reach: it pages through
+   * `useInfiniteList` with its own `fetchShellPage` promise, not RTK Query, so the 10s
+   * interval that used to live here was the only thing telling it a session had
+   * changed. Focus-refetch alone — the pattern AgentListPage and ProjectListPage use —
+   * would have turned the grep green while quietly downgrading "push" to "refetch when
+   * the user clicks away and back", so instead the push handler bumps `shells.eventSeq`
+   * from the same place it invalidates the RTK tags (wsInvalidation.ts,
+   * invalidateShellSession) and this effect probes page one when it moves.
+   *
+   * `eventSeq` MUST NOT become a timer — nothing bumps it but the WS handler; see
+   * shellSlice.ts. The focus listener is kept because it is a user action, not a poll,
+   * and it also covers the one case push cannot: events emitted while the socket was
+   * down, which the bus does not replay.
+   *
+   * `refresh` never touches the rendered rows — it feeds the "N new or updated" pill —
+   * so a burst of events can never yank the list out from under the reader. */
+  const shellEventSeq = useSelector((state: { shells?: ShellState }) => state.shells?.eventSeq ?? 0);
   const refreshRef = React.useRef(list.refresh);
   refreshRef.current = list.refresh;
   React.useEffect(() => {
     const tick = () => { refreshRef.current(); };
-    const timer = window.setInterval(tick, REFRESH_INTERVAL_MS);
     window.addEventListener('focus', tick);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', tick);
-    };
+    return () => window.removeEventListener('focus', tick);
   }, []);
+  React.useEffect(() => {
+    // Skip the initial render: the list's own first fetch already covers seq 0.
+    if (shellEventSeq === 0) return;
+    refreshRef.current();
+  }, [shellEventSeq]);
 
   /* ---------------- Query + client-side filters over the loaded rows ---------- */
   const visibleRows = React.useMemo(() => {

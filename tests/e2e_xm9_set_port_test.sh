@@ -176,7 +176,7 @@ echo "[xm9] bridge B = $B_ID"
 # ---- 1. an INTERACTIVE session with NO port -------------------------------------
 echo "[xm9] opening an interactive session on bridge B with NO port declared"
 SESSION_ID="$(api POST "/api/v1/bridges/$B_ID/shells" \
-  "{\"kind\":\"interactive\",\"cwd\":\"$WORK\",\"label\":\"xm9-terminal\"}" \
+  "{\"kind\":\"shell\",\"cwd\":\"$WORK\",\"label\":\"xm9-terminal\"}" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["session"]["session_id"])')"
 echo "[xm9] session = $SESSION_ID"
 [ -n "$SESSION_ID" ] || { echo "[xm9] FAIL: no session id"; exit 1; }

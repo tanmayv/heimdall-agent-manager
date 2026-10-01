@@ -6,6 +6,52 @@
 
 import { withApiBase } from './apiBase';
 
+/**
+ * ApiError carries the hub's MACHINE-READABLE error code alongside the message.
+ *
+ * Every helper below used to throw `new Error(message)`, which discarded the code —
+ * and the code is the only thing that tells some outcomes apart. REQ-SHELL-8 is the
+ * case that forced this: `GET /shells/{id}/log` answers 409 `bridge_offline` when the
+ * owning bridge is gone, 410 `gone` when the retention window reclaimed the output,
+ * and 200-with-zero-lines when the command genuinely printed nothing
+ * (shell_session_service.odin:1037-1046). With only the message in hand a caller has
+ * to string-match a human sentence that is free to be reworded, so the three states
+ * collapse back into "something went wrong".
+ *
+ * `code` is the hub's `error.code` (domain.error_code_string), `status` the HTTP
+ * status. Both are optional: a network failure or an unparseable body yields neither,
+ * and callers must handle that rather than assume a code is always present.
+ *
+ * This subclasses Error, so every existing `catch (e) { e.message }` and
+ * `apiErrorText` path is unaffected — the code is additive.
+ */
+export class ApiError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// Shared by all three helpers: turn a non-2xx Response into an ApiError, preferring
+// the hub's own sentence and code over a synthesised one.
+async function errorFromResponse(res: Response): Promise<ApiError> {
+  let msg = `Request failed (${res.status})`;
+  let code: string | undefined;
+  try {
+    const text = await res.text();
+    const errBody = JSON.parse(text);
+    if (errBody?.error?.message) msg = errBody.error.message;
+    else if (errBody?.message) msg = errBody.message;
+    if (typeof errBody?.error?.code === 'string') code = errBody.error.code;
+    else if (typeof errBody?.code === 'string') code = errBody.code;
+  } catch (e) { /* non-JSON or unreadable body — the status line is all we have */ }
+  return new ApiError(msg, res.status, code);
+}
+
 // `withApiBase` is the identity in every normal build; it only does something in a
 // preview build, where the app is served under a path prefix (see apiBase.ts).
 export function apiUrl(path: string): string {
@@ -17,16 +63,7 @@ export function apiUrl(path: string): string {
 // queryFn maps it to an error state.
 export async function cookieJsonFetch(path: string): Promise<any> {
   const res = await fetch(apiUrl(path), { credentials: 'include' });
-  if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
-    try {
-      const text = await res.text();
-      const errBody = JSON.parse(text);
-      if (errBody?.error?.message) msg = errBody.error.message;
-      else if (errBody?.message) msg = errBody.message;
-    } catch (e) {}
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   let rawText: string;
   try {
     rawText = await res.text();
@@ -50,16 +87,7 @@ export async function cookieJsonFetch(path: string): Promise<any> {
 // `useInfiniteList` hands each fetch a signal it expects to be honoured.
 export async function cookieJsonFetchEnvelope(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(apiUrl(path), { ...init, credentials: 'include' });
-  if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
-    try {
-      const text = await res.text();
-      const errBody = JSON.parse(text);
-      if (errBody?.error?.message) msg = errBody.error.message;
-      else if (errBody?.message) msg = errBody.message;
-    } catch (e) {}
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   return res.json();
 }
 
@@ -70,16 +98,7 @@ export async function cookieMutation(path: string, method: string = 'POST', data
     body: data ? JSON.stringify(data) : undefined,
     credentials: 'include'
   });
-  if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
-    try {
-      const text = await res.text();
-      const errBody = JSON.parse(text);
-      if (errBody?.error?.message) msg = errBody.error.message;
-      else if (errBody?.message) msg = errBody.message;
-    } catch (e) {}
-    throw new Error(msg);
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   const text = await res.text();
   if (!text) return {};
   try {

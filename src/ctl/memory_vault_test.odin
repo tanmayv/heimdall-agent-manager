@@ -83,6 +83,8 @@ test_memory_propose_encryption_with_vault_key :: proc(t: ^testing.T) {
 test_memory_propose_without_vault_key_leaves_plaintext :: proc(t: ^testing.T) {
 	sync.mutex_lock(&vault_test_mutex)
 	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("memory-propose-without-vault-key-leaves-plaintext")
+	defer ctl_vault_test_sandbox_close(&sb)
 	orig_title := "Plaintext Memory Title"
 	orig_body := "Plaintext Memory Body"
 
@@ -167,10 +169,31 @@ test_memory_content_transparent_decryption :: proc(t: ^testing.T) {
 	decrypted := ctl_decrypt_or_fallback_armored(enc_body, TEST_MEMORY_VAULT_KEY, true, context.temp_allocator)
 	testing.expect_value(t, decrypted, orig_body)
 
-	// 2. Unconfigured key
+	// 2. Unconfigured key.
+	// As of REQ-VAULT-3 the fallback is intentionally `[Encrypted: <armored>] <remedy hint>`: the
+	// bracketed part keeps its exact historical shape and a hint naming `ham-ctl vault status`
+	// follows it. Do NOT "restore" the bare bracketed form — the hint is the point of REQ-VAULT-3
+	// (an agent was hard-blocked because nothing in the CLI named the cause or the remedy).
+	// The hint is spelled out literally rather than referencing VAULT_HINT_NO_KEY so that an
+	// accidental edit of that constant fails here instead of silently agreeing with itself.
 	fallback := ctl_decrypt_or_fallback_armored(enc_body, "", false, context.temp_allocator)
-	expected_fallback := fmt.tprintf(`[Encrypted: %s]`, enc_body)
+	expected_prefix := fmt.tprintf(`[Encrypted: %s]`, enc_body)
+	expected_fallback := fmt.tprintf(
+		"%s (vault key not configured — see `ham-ctl vault status`)",
+		expected_prefix,
+	)
+	// Equality still pins the whole string; the two expects below say which half broke.
 	testing.expect_value(t, fallback, expected_fallback)
+	testing.expect(
+		t,
+		strings.has_prefix(fallback, expected_prefix),
+		"bracketed `[Encrypted: <armored>]` prefix must keep its historical shape",
+	)
+	testing.expect(
+		t,
+		strings.contains(fallback, "see `ham-ctl vault status`"),
+		"fallback must name the `ham-ctl vault status` remedy",
+	)
 
 	// 3. Plaintext passthrough
 	plain_body := "Legacy plaintext body"

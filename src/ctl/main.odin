@@ -92,7 +92,7 @@ main :: proc() {
 		switch cmd[0] {
 		case "bridge", "bridges", "agents", "task-chain", "task-chains",
 		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
-		     "memory", "cards", "card", "context", "search", "shell-cmd", "shell",
+		     "memory", "cards", "card", "context", "search", "shell",
 		     "issue", "issues", "project", "projects":
 			ctl_agent_mode(cmd[:], os.args)
 			return
@@ -103,7 +103,7 @@ main :: proc() {
 	// context (so `ham-ctl task --help` documents the agent surface).
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
 		switch cmd[0] {
-		case "bridge", "bridges", "agents", "task-chain", "task-chains", "task", "tasks", "chat", "chats", "artifact", "artifacts", "memory", "cards", "card", "shell-cmd", "shell", "issue", "issues", "project", "projects":
+		case "bridge", "bridges", "agents", "task-chain", "task-chains", "task", "tasks", "chat", "chats", "artifact", "artifacts", "memory", "cards", "card", "shell", "issue", "issues", "project", "projects":
 			print_agent_help(cmd[:]); return
 		}
 	}

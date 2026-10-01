@@ -1,0 +1,46 @@
+-- REQ-SHELL-3: durable kill intent.
+--
+-- THE GAP THIS CLOSES. shell_session_kill was documented "fire-and-forget": it
+-- built the shell_kill command, handed it to bridge_command_send_runtime, and when
+-- the bridge was offline that call returned Bridge_Offline and the service returned
+-- the error having PERSISTED NOTHING. There was no pending intent, no outbox and no
+-- replay, so nothing re-issued the kill on reconnect and the process ran forever.
+--
+-- kill_requested_at is the durable record of "a kill was ACCEPTED for this
+-- session". Accepting a kill for an offline bridge now SUCCEEDS -- the intent is
+-- durable, the delivery is asynchronous -- and the hub re-delivers outstanding
+-- intents when that bridge's WS reconnects.
+--
+-- It is a TIMESTAMP rather than a flag for two reasons. It answers "since when",
+-- which is what a UI showing "kill pending" needs and what makes a stuck intent
+-- diagnosable at all; and it is first-writer-wins, so a second kill of the same
+-- session keeps the moment the user first asked rather than sliding forward on
+-- every retry.
+--
+-- '' means no outstanding request. It is NOT NULL DEFAULT '' like every other text
+-- column on this table, so an intent is absent by the same spelling everywhere and
+-- no reader has to branch on NULL.
+--
+-- OUTSTANDING is not the same as SET: an intent on a session that has already
+-- reached a terminal status is spent, not pending. That predicate lives in the
+-- domain (domain.shell_session_kill_intent_pending) and the upsert clears the
+-- column as soon as a terminal status lands, so a row cannot carry a kill request
+-- for a process that is already gone.
+ALTER TABLE shell_sessions ADD COLUMN kill_requested_at TEXT NOT NULL DEFAULT '';
+
+-- The replay lookup, and the ONLY query this column exists to serve: "the sessions
+-- on this bridge with an outstanding kill", asked once per bridge WS reconnect.
+--
+-- PARTIAL on kill_requested_at != '' on purpose. An outstanding kill is rare --
+-- normally zero rows on a bridge -- so a full index would be almost entirely dead
+-- entries maintained on every session write. The partial index is the size of the
+-- pending set, which is what makes the reconnect lookup cheap regardless of how
+-- many sessions the table holds.
+--
+-- NOT owner-qualified, unlike shell_sessions_conversation and its neighbours. This
+-- one index serves the reconnect replay, which has no authenticated user (it runs
+-- from the bridge WS accept path, not from a user request) and therefore keys on
+-- bridge_id alone -- see Shell_Session_List_Pending_Kills_Proc for why that is
+-- bridge-scoped rather than owner-scoped.
+CREATE INDEX IF NOT EXISTS shell_sessions_pending_kill
+	ON shell_sessions(bridge_id) WHERE kill_requested_at != '';

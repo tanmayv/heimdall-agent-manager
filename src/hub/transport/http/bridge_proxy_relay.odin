@@ -98,7 +98,19 @@ bridge_proxy_authorise_target :: proc(h: ^Bridge_Handlers, origin_bridge_id, tar
 	if owner == "" do return empty, "unknown_bridge", false
 
 	// Owner-scoped lookup: a session belonging to a different user is not found at all.
-	session, found, _ := iface.shell_session_get(h.shell_sessions.repo, owner, target_session_id)
+	//
+	// REQ-SHELL-12: an AMBIGUOUS id gets its own refusal rather than being folded into
+	// "session_not_found". This relay cannot propagate the Domain_Error the way the REST
+	// handlers do — it answers in reason STRINGS, not domain errors — so the refusal is
+	// expressed in the vocabulary this function already speaks.
+	//
+	// THIS LINE AND ITS CASE IN bridge_proxy_send_refusal ARE ONE CHANGE. That switch
+	// defaults to 403, so a reason added without its case does not fail loudly: it tells
+	// the caller they are FORBIDDEN from a session that is in fact their own, which is a
+	// worse answer than the 404 this replaces. Never add a member here without adding it
+	// there in the same edit.
+	session, found, repo_err := iface.shell_session_get(h.shell_sessions.repo, owner, target_session_id)
+	if repo_err.code == .Conflict do return empty, "session_ambiguous", false
 	if !found do return empty, "session_not_found", false
 
 	// Explicit same-owner assertion. The repo query above is already owner-scoped, so
@@ -385,6 +397,14 @@ bridge_proxy_free_record :: proc(rec: ^Hub_Proxy_Stream) {
 
 // bridge_proxy_send_tunnel_bytes chunks bytes into tunnel_data frames toward a bridge,
 // mirroring the preview path's 48KB base64 chunking.
+//
+// CHUNK_SIZE does NOT fit one WS frame, and that is deliberate rather than an oversight.
+// See the long note at the identical constant in shell_session_handlers.odin (the preview
+// request path) for the full reasoning: 49152 raw base64s to exactly 65536 chars against a
+// 65535 cap, which was FATAL before REQ-SHELL-36 and is harmless after it, because
+// write_ws_command now owns framing and re-splits any oversized command at
+// BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES. Do not "fix" the arithmetic here without
+// reading that note; pinned by preview_chunk_size_req54_test.odin (REQ-SHELL-54).
 bridge_proxy_send_tunnel_bytes :: proc(h: ^Bridge_Handlers, bridge_id, stream_id: string, payload: []byte) {
 	CHUNK_SIZE :: 48 * 1024
 	seq := 0
@@ -440,7 +460,11 @@ bridge_proxy_send_refusal :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_i
 	status := 403
 	switch reason {
 	case "session_not_found":     status = 404
-	case "session_not_running", "no_server_port": status = 409
+	// session_ambiguous is a CONFLICT, not a 403: the session exists and belongs to this
+	// caller, but the database holds two rows for the id and the hub will not guess.
+	// Added in the same edit as its producer in bridge_proxy_authorise_target — see the
+	// note there about this switch's 403 default.
+	case "session_not_running", "no_server_port", "session_ambiguous": status = 409
 	case "unavailable":           status = 503
 	}
 	b := strings.builder_make()
