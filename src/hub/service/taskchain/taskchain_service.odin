@@ -530,7 +530,7 @@ set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
 	next := strings.trim_space(title)
 	if next == "" do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is required")
-	if len(next) > 120 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is too long")
+	if err := domain.validate_capped_text("chain title", next, domain.CHAIN_TITLE_MAX_BYTES); err.code != .None do return domain.Task_Chain{}, false, err
 	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{title = next, title_source = "agent"})
 }
 
@@ -540,7 +540,7 @@ set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 set_own_chain_description :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id, description: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
 	next := strings.trim_space(description)
-	if len(next) > 4000 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain description is too long")
+	if err := domain.validate_capped_text("chain description", next, domain.CHAIN_DESCRIPTION_MAX_BYTES); err.code != .None do return domain.Task_Chain{}, false, err
 	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{description = next, has_description = true})
 }
 

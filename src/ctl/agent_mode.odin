@@ -228,6 +228,9 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case "set-title":
 		title := option_value(args, "--title", pos(tokens, 1))
 		if title == "" { print_agent_help([]string{"task-chain"}); return }
+		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
+		// is in the units the caller controls (the Hub only sees ciphertext).
+		if !is_vault_armored(title) && !ctl_check_plaintext_cap("chain title", title, CTL_CHAIN_TITLE_MAX_BYTES) { os.exit(1) }
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 		if key_ok && !is_vault_armored(title) {
 			if enc, enc_ok := vault_encrypt_text_hex(title, key_hex, context.temp_allocator); enc_ok {
@@ -243,6 +246,9 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		// coordinator-only; pass "" to clear. --chain defaults to your chain.
 		desc := option_value(args, "--description", pos(tokens, 1))
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
+		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
+		// is in the units the caller controls (the Hub only sees ciphertext).
+		if !is_vault_armored(desc) && !ctl_check_plaintext_cap("chain description", desc, CTL_CHAIN_DESCRIPTION_MAX_BYTES) { os.exit(1) }
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 		if key_ok && desc != "" && !is_vault_armored(desc) {
 			if enc, enc_ok := vault_encrypt_text_hex(desc, key_hex, context.temp_allocator); enc_ok {

@@ -125,6 +125,12 @@ Task_Comment_Summary :: struct {
 // TASK_COMMENT_PREVIEW_MAX bounds the preview length (runes) in the summary.
 TASK_COMMENT_PREVIEW_MAX :: 80
 
+// Byte caps for agent-settable chain text (REQ-VCAP-1). These bound the
+// PLAINTEXT; an encrypted value is checked against the inflated armored budget
+// instead — see domain.validate_capped_text in vault_text_caps.odin.
+CHAIN_TITLE_MAX_BYTES       :: 120
+CHAIN_DESCRIPTION_MAX_BYTES :: 4000
+
 Task_Chain_Member :: struct {
 	chain_id:          Task_Chain_ID,
 	agent_instance_id: string,
