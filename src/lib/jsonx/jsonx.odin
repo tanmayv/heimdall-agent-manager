@@ -240,13 +240,9 @@ decode_string_array :: proc(text: string, allocator := context.allocator) -> [dy
 
 // extract_raw_object serializes the sub-object value at key back to valid JSON.
 extract_raw_object :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> (string, bool) {
-	var_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&var_arena, allocator, allocator)
-	defer mem.dynamic_arena_destroy(&var_arena)
-	parse_alloc := mem.dynamic_arena_allocator(&var_arena)
-
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, parse_alloc)
+	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
 	if err != .None do return "", false
+	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
 	if !ok do return "", false
@@ -258,13 +254,9 @@ extract_raw_object :: proc(body, key: string, top_level_only := false, allocator
 
 // extract_raw_array serializes the sub-array value at key back to valid JSON.
 extract_raw_array :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> (string, bool) {
-	var_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&var_arena, allocator, allocator)
-	defer mem.dynamic_arena_destroy(&var_arena)
-	parse_alloc := mem.dynamic_arena_allocator(&var_arena)
-
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, parse_alloc)
+	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
 	if err != .None do return "", false
+	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
 	if !ok do return "", false
