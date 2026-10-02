@@ -99,6 +99,8 @@ export {
   canStartTask,
   hasLiveNudgeTarget,
   getUnpauseStatus,
+  canCompleteTask,
+  canPauseTask,
 } from './TaskCard';
 
 export interface FleetSlotChipsProps {
@@ -121,10 +123,17 @@ export const FleetSlotChips: React.FC<FleetSlotChipsProps> = ({
   );
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
+  const validIdentitiesSet = useMemo(
+    () => new Set(agentIdentities.map((a: any) => String(a.agent_id || a.agentId || a.id || ''))),
+    [agentIdentities]
+  );
 
   // REQ-AUTO-1: the Fleet renders exactly the persisted rows — no synthetic
   // standard-role cards. An empty Fleet is empty.
-  const fleets = rawFleets;
+  const fleets = useMemo(
+    () => rawFleets.filter((f) => validIdentitiesSet.has(f.agent_id)),
+    [rawFleets, validIdentitiesSet]
+  );
 
   if (!chainId) return null;
 
@@ -311,6 +320,10 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   );
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
+  const validIdentitiesSet = useMemo(
+    () => new Set(agentIdentities.map((a: any) => String(a.agent_id || a.agentId || a.id || ''))),
+    [agentIdentities]
+  );
   const members = (chainDetailQuery.data?.chain?.members || []) as any[];
   const tasks = (chainDetailQuery.data?.chain?.tasks || []) as any[];
   const liveInstancesByRoleMap = useMemo(() => liveInstancesByRole(members), [members]);
@@ -364,11 +377,19 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   const seedDrafts = useCallback(() => {
     const init: Record<string, number> = {};
     for (const f of rawFleets) {
-      init[f.agent_id] = f.capacity ?? 1;
+      if (validIdentitiesSet.has(f.agent_id)) {
+        init[f.agent_id] = f.capacity ?? 1;
+      }
     }
     setDraftCapacities(init);
-    setDraftProviderTiers(seedPerBridgeProviderTierDrafts(rawFleets, bridgesToRender, bridgeId));
-  }, [rawFleets, bridgesToRender, bridgeId]);
+    setDraftProviderTiers(
+      seedPerBridgeProviderTierDrafts(
+        rawFleets.filter((f) => validIdentitiesSet.has(f.agent_id)),
+        bridgesToRender,
+        bridgeId
+      )
+    );
+  }, [rawFleets, bridgesToRender, bridgeId, validIdentitiesSet]);
 
   // Sync drafts when drawer opens
   useEffect(() => {
@@ -387,12 +408,12 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   // REQ-AUTO-1: render exactly the persisted rows plus any roles staged via
   // Add Role — no synthetic standard-role cards. An empty Fleet renders empty.
   const fleets = useMemo(() => {
-    const list: TaskChainFleet[] = [...rawFleets];
+    const list: TaskChainFleet[] = rawFleets.filter((f) => validIdentitiesSet.has(f.agent_id));
     const seen = new Set(list.map((f) => f.agent_id));
 
     // Include any newly added agent roles staged in draftCapacities
     for (const [aid, cap] of Object.entries(draftCapacities)) {
-      if (!seen.has(aid)) {
+      if (!seen.has(aid) && validIdentitiesSet.has(aid)) {
         list.push({
           task_chain_id: chainId,
           agent_id: aid,
@@ -404,7 +425,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     }
 
     return list;
-  }, [rawFleets, chainId, draftCapacities]);
+  }, [rawFleets, chainId, draftCapacities, validIdentitiesSet]);
 
   const getOriginalCapacity = useCallback(
     (agentId: string) => getOriginalFleetCapacity(rawFleets, agentId),

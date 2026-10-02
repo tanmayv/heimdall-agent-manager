@@ -213,6 +213,12 @@ build_task_status_notice :: proc(service: ^Taskchain_Service, task: domain.Task,
 	case .Queued:
 		tag = "Task Queued"
 		verb = "queued"
+	case .Finishing:
+		tag = "Task Finishing"
+		verb = "finishing"
+	case .Pausing:
+		tag = "Task Pausing"
+		verb = "pausing"
 	}
 	assignee := primary_assignee_instance(task.assignee_ref_json)
 	defer delete(assignee)

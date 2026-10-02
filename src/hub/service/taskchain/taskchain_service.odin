@@ -967,7 +967,15 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	task, ok, err := get_task(service, auth, task_id)
 	if !ok do return domain.Task{}, false, err
 	if task.publish_state != .Published do return domain.Task{}, false, domain.domain_error(.Conflict, "draft task has no execution status")
-	if !valid_task_transition(task.status, next) do return domain.Task{}, false, domain.domain_error(.Conflict, "invalid task status transition")
+
+	target_next := next
+	if next == .Paused {
+		if task.status == .In_Progress || task.status == .Finishing {
+			target_next = .Pausing
+		}
+	}
+
+	if !valid_task_transition(task.status, target_next) do return domain.Task{}, false, domain.domain_error(.Conflict, "invalid task status transition")
 
 	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
 	if !chain_ok do return domain.Task{}, false, chain_err
@@ -983,7 +991,7 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	defer if new_assignee_ref != "" do delete(new_assignee_ref)
 
 	// Dependency Gating: reject transition to In_Progress if any dependency is blocked
-	if next == .In_Progress {
+	if target_next == .In_Progress {
 		deps, dep_err := iface.taskchain_list_dependencies_by_chain(service.repo, task.chain_id, task.owner_user_id)
 		if dep_err.code == .None {
 			defer delete(deps)
@@ -1017,13 +1025,13 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	}
 
 	now := platform.clock_now(service.clock)
-	if task.status != .In_Validation && next == .In_Validation {
+	if task.status != .In_Validation && target_next == .In_Validation {
 		_, _ = iface.taskchain_delete_votes_by_task(service.repo, task.task_id, task.owner_user_id)
 	}
-	task.status = next
+	task.status = target_next
 	task.updated_at = now
-	if next == .In_Progress && task.started_at == "" do task.started_at = now
-	if next == .Completed || next == .Cancelled {
+	if target_next == .In_Progress && task.started_at == "" do task.started_at = now
+	if target_next == .Completed || target_next == .Cancelled {
 		task.completed_at = now
 	} else {
 		task.completed_at = ""
@@ -1182,6 +1190,13 @@ notify_status_policy :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
 	coord := chain.coordinator_agent_instance_id
 	#partial switch task.status {
+	case .Pausing:
+		tag := "Task Pausing"
+		assignee := primary_assignee_instance(task.assignee_ref_json)
+		defer delete(assignee)
+		instruction := fmt.tprintf("post handoff comment and stash changes, then confirm with ham-ctl task status %s --status paused", task.task_id)
+		_ = send_task_wake(service, task, assignee, "pausing", tag, "pausing", instruction, actor)
+		if coord != assignee do _ = send_task_wake(service, task, coord, "pausing", tag, "entered pausing state", "", actor)
 	case .Paused, .Cancelled:
 		tag := "Task Paused" if task.status == .Paused else "Task Cancelled"
 		verb := "paused" if task.status == .Paused else "cancelled"
@@ -1191,6 +1206,8 @@ notify_status_policy :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 		if coord != assignee do _ = send_task_wake(service, task, coord, "status", tag, verb, "", actor)
 	case .Validated_Good:
 		_ = send_task_wake(service, task, coord, "status", "Review Consensus", "marked ready for sign-off", "", actor)
+	case .Completed:
+		_ = send_task_wake(service, task, coord, "status", "Task Completed", "has completed", "", actor)
 	}
 }
 
@@ -1202,10 +1219,12 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	// promoted back to Assigned/In_Progress when the instance is free, or paused/
 	// cancelled.
 	case .Queued: return next == .Assigned || next == .In_Progress || next == .Paused || next == .Cancelled
-	case .In_Progress: return next == .Queued || next == .In_Validation || next == .Paused || next == .Cancelled || next == .Assigned
-	// In_Validation -> Completed is legal: it is the quorum auto-finalize path
-	// (evaluate_task_quorum advances a fully-approved task straight to Completed).
-	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled || next == .In_Progress || next == .Assigned
+	case .In_Progress: return next == .Queued || next == .In_Validation || next == .Pausing || next == .Paused || next == .Cancelled || next == .Assigned
+	// In_Validation -> Finishing is legal: it is the quorum auto-finalize path
+	// (evaluate_task_quorum advances a fully-approved task to Finishing).
+	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Finishing || next == .Completed || next == .Paused || next == .Cancelled || next == .In_Progress || next == .Assigned
+	case .Finishing: return next == .Completed || next == .In_Validation || next == .In_Progress || next == .Pausing || next == .Paused || next == .Cancelled || next == .Assigned
+	case .Pausing: return next == .Paused || next == .In_Progress || next == .Cancelled || next == .Assigned
 	case .Validated_Not_Good: return next == .In_Progress || next == .Paused || next == .Cancelled || next == .Assigned
 	case .Validated_Good: return next == .Completed || next == .Paused || next == .Cancelled || next == .Assigned
 	case .Paused: return next == .In_Progress || next == .Assigned || next == .Cancelled
@@ -1429,7 +1448,12 @@ build_human_readable_task_notice :: proc(service: ^Taskchain_Service, task: doma
 	head := strings.concatenate({"[", event_tag, "] ", actor, " ", action_verb, " \"", title, "\" (", string(task.task_id), ")"})
 	if strings.trim_space(excerpt) == "" do return head
 	defer delete(head)
-	ex := truncate_runes(excerpt, NOTICE_EXCERPT_MAX_RUNES)
+	ex: string
+	if event_tag == "Task Pausing" {
+		ex = strings.clone(strings.trim_space(excerpt))
+	} else {
+		ex = truncate_runes(excerpt, NOTICE_EXCERPT_MAX_RUNES)
+	}
 	defer delete(ex)
 	return strings.concatenate({head, ": \"", ex, "\""})
 }
@@ -1507,6 +1531,8 @@ task_status_string :: proc(status: domain.Task_Status) -> string {
 	case .Queued: return "queued"
 	case .In_Progress: return "in_progress"
 	case .In_Validation: return "in_validation"
+	case .Finishing: return "finishing"
+	case .Pausing: return "pausing"
 	case .Validated_Good: return "validated_good"
 	case .Validated_Not_Good: return "validated_not_good"
 	case .Paused: return "paused"
@@ -1514,6 +1540,21 @@ task_status_string :: proc(status: domain.Task_Status) -> string {
 	case .Cancelled: return "cancelled"
 	}
 	return "assigned"
+}
+
+task_action :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, action: string) -> (domain.Task, bool, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return domain.Task{}, false, err
+	if action == "pause" {
+		target_status: domain.Task_Status = .Paused
+		if task.status == .In_Progress || task.status == .Finishing {
+			target_status = .Pausing
+		} else if task.status == .Pausing {
+			target_status = .Paused
+		}
+		return change_task_status(service, auth, task_id, target_status)
+	}
+	return domain.Task{}, false, domain.domain_error(.Validation_Failed, "unsupported task action")
 }
 
 extract_instances_from_ref_blob :: proc(blob: string) -> [dynamic]string {
@@ -1910,10 +1951,6 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 
 		// Explicit --notify targets: [Comment].
 		for target in input.notify do add_recip(&recips, &order, author_instance, target, comment_msg)
-		// Coordinator kept informed.
-		if chain_ok && chain.coordinator_agent_instance_id != "" {
-			add_recip(&recips, &order, author_instance, chain.coordinator_agent_instance_id, comment_msg if is_user_author else progress_msg)
-		}
 		// User-authored comment: wake every role-holder regardless of --notify.
 		if is_user_author {
 			a := primary_assignee_instance(task.assignee_ref_json)
@@ -2243,7 +2280,12 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		coord := chain.coordinator_agent_instance_id
 		updated, _, _ := iface.taskchain_get_task(service.repo, task.task_id)
 		if v == "lgtm" {
-			if updated.status == .Completed {
+			if updated.status == .Finishing {
+				assignee := primary_assignee_instance(updated.assignee_ref_json)
+				defer delete(assignee)
+				_ = send_task_wake(service, updated, assignee, "finishing", "Task Approved", "is approved — please wrap up and complete", input.comment, voter_instance_id)
+				_ = send_task_wake(service, updated, coord, "finishing", "Task Approved", "entered finishing state", input.comment, voter_instance_id)
+			} else if updated.status == .Completed {
 				assignee := primary_assignee_instance(updated.assignee_ref_json)
 				defer delete(assignee)
 				_ = send_task_wake(service, updated, assignee, "vote", "Task Approved", "voted LGTM on", input.comment, voter_instance_id)
@@ -2308,7 +2350,7 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 	// early return above (status != In_Validation) makes late/duplicate votes a
 	// no-op, so completion side-effects run once.
 	if quorum_approved {
-		updated_status = .Completed
+		updated_status = .Finishing
 	}
 
 	if updated_status != task.status {
@@ -2371,7 +2413,7 @@ nudge_target_for_status :: proc(status: domain.Task_Status) -> Nudge_Target {
 	switch status {
 	// Queued tasks are held back deliberately, so they do not target a nudge.
 	case .Queued: return .None
-	case .Assigned, .In_Progress, .Validated_Not_Good, .Paused: return .Assignee
+	case .Assigned, .In_Progress, .Validated_Not_Good, .Finishing, .Pausing, .Paused: return .Assignee
 	case .In_Validation: return .Reviewer
 	case .Validated_Good: return .Coordinator
 	case .Completed, .Cancelled: return .None
@@ -2581,6 +2623,8 @@ ensure_durable_actor_fleets :: proc(service: ^Taskchain_Service, task: domain.Ta
 	defer { for id in ids do delete(id); delete(ids) }
 	now := platform.clock_now(service.clock)
 	for agent_id in ids {
+		if service == nil || service.agents == nil do continue
+		if _, ok, _ := iface.agent_get(service.agents, agent_id); !ok do continue
 		fleet := domain.Task_Chain_Fleet{task_chain_id = task.chain_id, agent_id = agent_id, capacity = 1, min_warm = 0, idle_ttl_seconds = 600, created_at = now, updated_at = now}
 		if err := iface.taskchain_ensure_fleet(service.repo, fleet); err.code != .None do return err
 	}

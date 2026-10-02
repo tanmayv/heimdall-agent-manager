@@ -1218,12 +1218,23 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 );
               })()}
 
-              <span
-                data-debug-id={`taskchain-task-status-${taskId}`}
-                className="rounded bg-neutral-soft px-1.5 py-0.5 font-mono uppercase text-muted"
-              >
-                {task.status}
-              </span>
+              {(() => {
+                const s = String(task.status || '').toLowerCase();
+                const badgeCls =
+                  s === 'finishing'
+                    ? 'bg-amber-500/20 text-amber-500 border border-amber-500/30 font-semibold'
+                    : s === 'pausing'
+                      ? 'bg-cyan-500/20 text-cyan-500 border border-cyan-500/30 font-semibold'
+                      : 'bg-neutral-soft text-muted';
+                return (
+                  <span
+                    data-debug-id={`taskchain-task-status-${taskId}`}
+                    className={`rounded px-1.5 py-0.5 font-mono uppercase ${badgeCls}`}
+                  >
+                    {task.status}
+                  </span>
+                );
+              })()}
 
               {task.status === 'queued' && (
                 <span
@@ -1259,18 +1270,26 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     ? task.allowed_transitions
                     : [];
                 const allowedActions: string[] = rawAllowedActions.length > 0
-                  ? rawAllowedActions
+                  ? (status === 'finishing' && !rawAllowedActions.includes('force_finish')
+                      ? [...rawAllowedActions, 'force_finish']
+                      : status === 'pausing' && !rawAllowedActions.includes('force_pause')
+                        ? [...rawAllowedActions, 'force_pause']
+                        : rawAllowedActions)
                   : status === 'cancelled'
                     ? ['uncancel']
                     : status === 'paused'
                       ? ['unpause', 'cancel']
                       : status === 'completed' || status === 'validated_good'
                         ? ['not_complete', 'revalidate']
-                        : status === 'in_progress'
-                          ? ['validate', 'pause', 'cancel', 'nudge']
-                          : status === 'in_validation'
-                            ? ['lgtm', 'ngtm', 'pause', 'cancel', 'nudge']
-                            : ['start', 'pause', 'cancel', 'nudge'];
+                        : status === 'finishing'
+                          ? ['complete', 'force_finish', 'revalidate', 'pause', 'cancel', 'nudge']
+                          : status === 'pausing'
+                            ? ['pause', 'force_pause', 'start', 'cancel', 'nudge']
+                            : status === 'in_progress'
+                              ? ['validate', 'pause', 'cancel', 'nudge']
+                              : status === 'in_validation'
+                                ? ['lgtm', 'ngtm', 'pause', 'cancel', 'nudge']
+                                : ['start', 'pause', 'cancel', 'nudge'];
                 void allowedTransitions;
 
                 return (
@@ -1357,6 +1376,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         Validate
                       </button>
                     )}
+                    {allowedActions.includes('complete') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-complete-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'completed');
+                        }}
+                        className="rounded bg-success px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
+                      >
+                        Complete
+                      </button>
+                    )}
+                    {allowedActions.includes('force_finish') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-force-finish-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'completed');
+                        }}
+                        className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
+                      >
+                        Force Finish
+                      </button>
+                    )}
                     {allowedActions.includes('lgtm') && (
                       <button
                         type="button"
@@ -1394,6 +1439,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Pause
+                      </button>
+                    )}
+                    {allowedActions.includes('force_pause') && (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-force-pause-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'paused');
+                        }}
+                        className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
+                      >
+                        Force Pause
                       </button>
                     )}
                     {allowedActions.includes('cancel') && (

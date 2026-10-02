@@ -21,6 +21,8 @@ Task_Status :: enum {
 	Queued,
 	In_Progress,
 	In_Validation,
+	Finishing,
+	Pausing,
 	Validated_Good,
 	Validated_Not_Good,
 	Paused,
@@ -198,9 +200,13 @@ TASK_TRANSITIONS_ASSIGNED := [4]Task_Status{.Queued, .In_Progress, .Paused, .Can
 @(private = "file", rodata)
 TASK_TRANSITIONS_QUEUED := [4]Task_Status{.Assigned, .In_Progress, .Paused, .Cancelled}
 @(private = "file", rodata)
-TASK_TRANSITIONS_IN_PROGRESS := [4]Task_Status{.Queued, .In_Validation, .Paused, .Cancelled}
+TASK_TRANSITIONS_IN_PROGRESS := [5]Task_Status{.Queued, .In_Validation, .Pausing, .Paused, .Cancelled}
 @(private = "file", rodata)
-TASK_TRANSITIONS_IN_VALIDATION := [5]Task_Status{.Validated_Good, .Validated_Not_Good, .Completed, .Paused, .Cancelled}
+TASK_TRANSITIONS_IN_VALIDATION := [6]Task_Status{.Validated_Good, .Validated_Not_Good, .Finishing, .Completed, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_FINISHING := [6]Task_Status{.Completed, .In_Validation, .In_Progress, .Pausing, .Paused, .Cancelled}
+@(private = "file", rodata)
+TASK_TRANSITIONS_PAUSING := [4]Task_Status{.Paused, .In_Progress, .Cancelled, .Assigned}
 @(private = "file", rodata)
 TASK_TRANSITIONS_VALIDATED_NOT_GOOD := [3]Task_Status{.In_Progress, .Paused, .Cancelled}
 @(private = "file", rodata)
@@ -224,6 +230,10 @@ task_allowed_transitions :: proc(status: Task_Status) -> []Task_Status {
 		return TASK_TRANSITIONS_IN_PROGRESS[:]
 	case .In_Validation:
 		return TASK_TRANSITIONS_IN_VALIDATION[:]
+	case .Finishing:
+		return TASK_TRANSITIONS_FINISHING[:]
+	case .Pausing:
+		return TASK_TRANSITIONS_PAUSING[:]
 	case .Validated_Not_Good:
 		return TASK_TRANSITIONS_VALIDATED_NOT_GOOD[:]
 	case .Validated_Good:
@@ -245,6 +255,10 @@ TASK_ACTIONS_IN_PROGRESS := [4]string{"validate", "pause", "cancel", "nudge"}
 @(private = "file", rodata)
 TASK_ACTIONS_IN_VALIDATION := [5]string{"lgtm", "ngtm", "pause", "cancel", "nudge"}
 @(private = "file", rodata)
+TASK_ACTIONS_FINISHING := [5]string{"complete", "revalidate", "pause", "cancel", "nudge"}
+@(private = "file", rodata)
+TASK_ACTIONS_PAUSING := [4]string{"pause", "start", "cancel", "nudge"}
+@(private = "file", rodata)
 TASK_ACTIONS_VALIDATED_NOT_GOOD := [4]string{"start", "pause", "cancel", "nudge"}
 @(private = "file", rodata)
 TASK_ACTIONS_VALIDATED_GOOD := [3]string{"complete", "pause", "cancel"}
@@ -265,6 +279,10 @@ task_allowed_actions :: proc(status: Task_Status) -> []string {
 		return TASK_ACTIONS_IN_PROGRESS[:]
 	case .In_Validation:
 		return TASK_ACTIONS_IN_VALIDATION[:]
+	case .Finishing:
+		return TASK_ACTIONS_FINISHING[:]
+	case .Pausing:
+		return TASK_ACTIONS_PAUSING[:]
 	case .Validated_Not_Good:
 		return TASK_ACTIONS_VALIDATED_NOT_GOOD[:]
 	case .Validated_Good:
@@ -284,6 +302,10 @@ TASK_RECOVERY_ACTIONS_IN_PROGRESS := [5]string{"restart_worker", "reset_to_assig
 @(private = "file", rodata)
 TASK_RECOVERY_ACTIONS_IN_VALIDATION := [5]string{"restart_worker", "reset_to_assigned", "retry", "pause", "cancel"}
 @(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_FINISHING := [5]string{"restart_worker", "reset_to_assigned", "retry", "pause", "cancel"}
+@(private = "file", rodata)
+TASK_RECOVERY_ACTIONS_PAUSING := [5]string{"restart_worker", "reset_to_assigned", "retry", "pause", "cancel"}
+@(private = "file", rodata)
 TASK_RECOVERY_ACTIONS_STANDARD := [4]string{"restart", "reset_to_assigned", "retry", "cancel"}
 @(private = "file", rodata)
 TASK_RECOVERY_ACTIONS_PAUSED := [4]string{"unpause", "reset_to_assigned", "retry", "cancel"}
@@ -298,6 +320,10 @@ task_recovery_actions :: proc(status: Task_Status) -> []string {
 		return TASK_RECOVERY_ACTIONS_IN_PROGRESS[:]
 	case .In_Validation:
 		return TASK_RECOVERY_ACTIONS_IN_VALIDATION[:]
+	case .Finishing:
+		return TASK_RECOVERY_ACTIONS_FINISHING[:]
+	case .Pausing:
+		return TASK_RECOVERY_ACTIONS_PAUSING[:]
 	case .Assigned, .Queued, .Validated_Not_Good, .Validated_Good:
 		return TASK_RECOVERY_ACTIONS_STANDARD[:]
 	case .Paused:

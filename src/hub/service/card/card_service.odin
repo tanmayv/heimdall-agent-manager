@@ -153,6 +153,8 @@ task_status_str :: proc(st: domain.Task_Status) -> string {
 	case .Queued: return "queued"
 	case .In_Progress: return "in_progress"
 	case .In_Validation: return "in_validation"
+	case .Finishing: return "finishing"
+	case .Pausing: return "pausing"
 	case .Validated_Good: return "validated_good"
 	case .Validated_Not_Good: return "validated_not_good"
 	case .Paused: return "paused"

@@ -428,11 +428,19 @@ test_write_task_json_and_detail_emit_fsm_transitions_and_actions :: proc(t: ^tes
 		},
 		{
 			status        = .In_Progress,
-			expected_tail = `"allowed_transitions":["queued","in_validation","paused","cancelled"],"next_states":["queued","in_validation","paused","cancelled"],"allowed_actions":["validate","pause","cancel","nudge"]`,
+			expected_tail = `"allowed_transitions":["queued","in_validation","pausing","paused","cancelled"],"next_states":["queued","in_validation","pausing","paused","cancelled"],"allowed_actions":["validate","pause","cancel","nudge"]`,
 		},
 		{
 			status        = .In_Validation,
-			expected_tail = `"allowed_transitions":["validated_good","validated_not_good","completed","paused","cancelled"],"next_states":["validated_good","validated_not_good","completed","paused","cancelled"],"allowed_actions":["lgtm","ngtm","pause","cancel","nudge"]`,
+			expected_tail = `"allowed_transitions":["validated_good","validated_not_good","finishing","completed","paused","cancelled"],"next_states":["validated_good","validated_not_good","finishing","completed","paused","cancelled"],"allowed_actions":["lgtm","ngtm","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .Finishing,
+			expected_tail = `"allowed_transitions":["completed","in_validation","in_progress","pausing","paused","cancelled"],"next_states":["completed","in_validation","in_progress","pausing","paused","cancelled"],"allowed_actions":["complete","revalidate","pause","cancel","nudge"]`,
+		},
+		{
+			status        = .Pausing,
+			expected_tail = `"allowed_transitions":["paused","in_progress","cancelled","assigned"],"next_states":["paused","in_progress","cancelled","assigned"],"allowed_actions":["pause","start","cancel","nudge"]`,
 		},
 		{
 			status        = .Validated_Not_Good,

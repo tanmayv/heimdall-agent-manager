@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 import {
   isRoleAssignedWithoutLiveInstance,
   canStartTask,
+  canCompleteTask,
+  canPauseTask,
   hasLiveNudgeTarget,
   getUnpauseStatus,
 } from '../src/ui/components/tasks/TaskCard.ts';
@@ -817,4 +819,93 @@ test('REQ-TB-5 wiring: create modals, task detail, and the tasks API all carry t
   assert.match(tasksApi, /taskCreateBridgeFields\(bridgeId\)/);
   assert.match(tasksApi, /taskPatchBridgeFields\(bridgeId\)/);
   assert.match(tasksApi, /bridgeId: String\(task\.bridge_id/);
+});
+
+// -----------------------------------------------------------------------------
+// REQ-UI-CLI-FINISHING-1 & REQ-UI-CLI-PAUSING-1: Finishing & Pausing UI and helpers
+// -----------------------------------------------------------------------------
+
+test('hasLiveNudgeTarget returns true for finishing and pausing tasks with live bound instance', () => {
+  const finishingTask = {
+    taskId: 'task_fin_1',
+    status: 'finishing',
+    assigneeRef: { type: 'agent_instance', agent_instance_id: 'inst_fin_live' },
+  };
+  const pausingTask = {
+    taskId: 'task_pau_1',
+    status: 'pausing',
+    assigneeRef: { type: 'agent_instance', agent_instance_id: 'inst_pau_live' },
+  };
+  const instances = [
+    { agent_instance_id: 'inst_fin_live', runtime_status: 'running' },
+    { agent_instance_id: 'inst_pau_live', runtime_status: 'ready' },
+  ];
+
+  assert.equal(hasLiveNudgeTarget(finishingTask, instances), true);
+  assert.equal(hasLiveNudgeTarget(pausingTask, instances), true);
+});
+
+test('hasLiveNudgeTarget returns false for finishing and pausing tasks without bound instance or dead instance', () => {
+  const finishingNoInst = {
+    taskId: 'task_fin_2',
+    status: 'finishing',
+    assigneeRef: { type: 'agent_id', agent_id: 'agt_worker' },
+  };
+  const pausingDeadInst = {
+    taskId: 'task_pau_2',
+    status: 'pausing',
+    assigneeRef: { type: 'agent_instance', agent_instance_id: 'inst_dead' },
+  };
+  const instances = [
+    { agent_instance_id: 'inst_dead', runtime_status: 'stopped' },
+  ];
+
+  assert.equal(hasLiveNudgeTarget(finishingNoInst, instances), false);
+  assert.equal(hasLiveNudgeTarget(pausingDeadInst, instances), false);
+});
+
+test('canStartTask, canCompleteTask, canPauseTask handle finishing and pausing states', () => {
+  const finishingTask = {
+    taskId: 'task_fin_3',
+    status: 'finishing',
+    allowedActions: ['complete', 'force_finish', 'revalidate', 'pause', 'cancel', 'nudge'],
+  };
+  const pausingTask = {
+    taskId: 'task_pau_3',
+    status: 'pausing',
+    allowedActions: ['pause', 'force_pause', 'start', 'cancel', 'nudge'],
+  };
+
+  assert.equal(canCompleteTask(finishingTask), true);
+  assert.equal(canPauseTask(finishingTask), true);
+
+  assert.equal(canStartTask(pausingTask), true);
+  assert.equal(canPauseTask(pausingTask), true);
+  assert.equal(canCompleteTask(pausingTask), false);
+});
+
+test('TaskChainOverview handles finishing and pausing statuses with badges and action buttons', () => {
+  const overview = readRepo('src/ui/components/taskchain/TaskChainOverview.tsx');
+
+  // Fallback allowedActions for finishing and pausing
+  assert.match(overview, /status === 'finishing'/);
+  assert.match(overview, /\['complete',\s*'force_finish',\s*'revalidate',\s*'pause',\s*'cancel',\s*'nudge'\]/);
+  assert.match(overview, /status === 'pausing'/);
+  assert.match(overview, /\['pause',\s*'force_pause',\s*'start',\s*'cancel',\s*'nudge'\]/);
+
+  // Action buttons
+  assert.match(overview, /taskchain-task-complete-btn-/);
+  assert.match(overview, /taskchain-task-force-finish-btn-/);
+  assert.match(overview, /taskchain-task-pause-btn-/);
+  assert.match(overview, /taskchain-task-force-pause-btn-/);
+
+  // Status badge styling: amber for finishing, cyan/blue for pausing
+  assert.match(overview, /s === 'finishing'[\s\S]*?amber/);
+  assert.match(overview, /s === 'pausing'[\s\S]*?cyan/);
+});
+
+test('FleetManagementDrawer and FleetSlotChips filter out fleet entries for agent IDs not present in agentIdentities', () => {
+  const drawerSource = readRepo('src/ui/components/tasks/FleetManagementDrawer.tsx');
+  assert.match(drawerSource, /validIdentitiesSet/);
+  assert.match(drawerSource, /rawFleets\.filter\(\(f\)\s*=>\s*validIdentitiesSet\.has\(f\.agent_id\)\)/);
 });

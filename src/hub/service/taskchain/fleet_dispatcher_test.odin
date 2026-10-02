@@ -1756,6 +1756,8 @@ test_fsm_recovery_matrix_no_dead_ends :: proc(t: ^testing.T) {
 		.Queued,
 		.In_Progress,
 		.In_Validation,
+		.Finishing,
+		.Pausing,
 		.Validated_Good,
 		.Validated_Not_Good,
 		.Paused,
@@ -2222,6 +2224,689 @@ test_fsm_watchdog_degraded_capacity_exhausted_surfaces_actionable_recovery :: pr
 	actions := domain.task_allowed_actions(persisted.status)
 	testing.expect(t, len(actions) > 0, "queued status must have allowed actions")
 }
+
+@(test)
+test_finishing_state_and_coordinator_notifications :: proc(t: ^testing.T) {
+	testing.expect(t, valid_task_transition(.In_Validation, .Finishing), "in_validation -> finishing must be valid")
+	testing.expect(t, valid_task_transition(.Finishing, .Completed), "finishing -> completed must be valid")
+	testing.expect(t, work_status_is_actionable(.Finishing), "finishing must be an actionable work status")
+
+	db_path := fmt.tprintf("/tmp/test_finishing_state_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+
+	owner := domain.User_ID("user_finishing_test")
+	chain_id := domain.Task_Chain_ID("chain_finishing_test")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Finishing Chain",
+		description                   = "Testing finishing state",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord",
+		default_reviewer_refs_json    = "[]",
+		created_at                    = "2026-10-02T10:00:00Z",
+		updated_at                    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord",
+		owner_user_id     = owner,
+		agent_id          = "agt_coord",
+		bridge_id         = "brg_test",
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	worker_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_test",
+		display_name      = "worker",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, worker_inst)
+
+	reviewer_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_reviewer",
+		owner_user_id     = owner,
+		agent_id          = "agt_reviewer",
+		bridge_id         = "brg_test",
+		display_name      = "reviewer",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, reviewer_inst)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_coord",
+		agent_id          = "agt_coord",
+		owner_user_id     = owner,
+		role              = "coordinator",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_reviewer",
+		agent_id          = "agt_reviewer",
+		owner_user_id     = owner,
+		role              = "reviewer",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+
+	task := domain.Task{
+		task_id            = "task_finish_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Finishing Feature Task",
+		description        = "Finish me",
+		publish_state      = .Published,
+		status             = .In_Validation,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		reviewer_refs_json = `[{"type":"agent_instance","agent_instance_id":"inst_reviewer"}]`,
+		created_at         = "2026-10-02T10:01:00Z",
+		updated_at         = "2026-10-02T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	auth_rev := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_reviewer"}
+	vote_res, vote_ok, vote_err := record_task_vote(&svc, auth_rev, Vote_Input{
+		task_id = "task_finish_1",
+		vote    = "lgtm",
+		comment = "all tests passed",
+	})
+	testing.expect(t, vote_ok, "record_task_vote lgtm must succeed")
+	testing.expect_value(t, vote_err.code, domain.Error_Code.None)
+
+	persisted, get_ok, _ := iface.taskchain_get_task(&tc_repo, "task_finish_1")
+	testing.expect(t, get_ok, "task must exist")
+	testing.expect_value(t, persisted.status, domain.Task_Status.Finishing)
+	testing.expect_value(t, persisted.completed_at, "")
+
+	found_assignee_finishing := false
+	found_coord_finishing := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
+		   strings.contains(cmd.body_json, `"action":"finishing"`) &&
+		   strings.contains(cmd.body_json, "is approved — please wrap up and complete") {
+			found_assignee_finishing = true
+		}
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
+		   strings.contains(cmd.body_json, "entered finishing state") {
+			found_coord_finishing = true
+		}
+	}
+	testing.expect(t, found_assignee_finishing, "assignee must receive notification with action finishing")
+	testing.expect(t, found_coord_finishing, "coordinator must receive notification for task entering finishing")
+
+	// Now complete the task from Finishing -> Completed
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	auth_worker := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_worker"}
+	completed_task, comp_ok, comp_err := change_task_status(&svc, auth_worker, "task_finish_1", .Completed)
+	testing.expect(t, comp_ok, "change_task_status to Completed must succeed")
+	testing.expect_value(t, comp_err.code, domain.Error_Code.None)
+	testing.expect_value(t, completed_task.status, domain.Task_Status.Completed)
+	testing.expect(t, completed_task.completed_at != "", "completed_at must be set upon Completed")
+
+	found_coord_completed := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
+		   strings.contains(cmd.body_json, "Task Completed") &&
+		   strings.contains(cmd.body_json, "has completed") {
+			found_coord_completed = true
+		}
+	}
+	testing.expect(t, found_coord_completed, "coordinator must be notified upon task completion")
+}
+
+@(test)
+test_comment_task_coordinator_notify_filter :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_comment_filter_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+
+	owner := domain.User_ID("user_comment_filter_test")
+	chain_id := domain.Task_Chain_ID("chain_comment_filter_test")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Comment Filter Chain",
+		description                   = "Testing comment filter",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord",
+		default_reviewer_refs_json    = "[]",
+		created_at                    = "2026-10-02T10:00:00Z",
+		updated_at                    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord",
+		owner_user_id     = owner,
+		agent_id          = "agt_coord",
+		bridge_id         = "brg_test",
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	worker_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_test",
+		display_name      = "worker",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, worker_inst)
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_coord",
+		agent_id          = "agt_coord",
+		owner_user_id     = owner,
+		role              = "coordinator",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+
+	task := domain.Task{
+		task_id            = "task_comment_filter_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Comment Filter Task",
+		description        = "Comment filter test",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-02T10:01:00Z",
+		updated_at         = "2026-10-02T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	auth_worker := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_worker"}
+
+	// 1. Comment without coordinator in notify -> coordinator must NOT be notified
+	_, _, ok1, err1 := comment_task(&svc, auth_worker, Task_Comment_Input{
+		task_id = "task_comment_filter_1",
+		body    = "assignee update without notifying coord",
+	})
+	testing.expect(t, ok1, "comment_task without notify should succeed")
+	testing.expect_value(t, err1.code, domain.Error_Code.None)
+
+	coord_notified := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) {
+			coord_notified = true
+		}
+	}
+	testing.expect(t, !coord_notified, "coordinator must NOT be notified when not specified in notify")
+
+	// 2. Comment with coordinator in notify -> coordinator MUST be notified
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	notify_targets := [1]string{"inst_coord"}
+	_, _, ok2, err2 := comment_task(&svc, auth_worker, Task_Comment_Input{
+		task_id = "task_comment_filter_1",
+		body    = "assignee update explicitly notifying coord",
+		notify  = notify_targets[:],
+	})
+	testing.expect(t, ok2, "comment_task with notify coord should succeed")
+	testing.expect_value(t, err2.code, domain.Error_Code.None)
+
+	coord_notified_2 := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) {
+			coord_notified_2 = true
+		}
+	}
+	testing.expect(t, coord_notified_2, "coordinator MUST be notified when explicitly specified in notify")
+}
+
+@(test)
+test_task_pausing_state_and_workflow :: proc(t: ^testing.T) {
+	// Acceptance criteria verification:
+	// 1. Task_Status.Pausing added to domain and serialized as "pausing".
+	testing.expect_value(t, task_status_string(.Pausing), "pausing")
+	testing.expect_value(t, sqlite.task_status_string(.Pausing), "pausing")
+	testing.expect_value(t, sqlite.task_status_from_string("pausing"), domain.Task_Status.Pausing)
+
+	// 2. TASK_TRANSITIONS_PAUSING, TASK_ACTIONS_PAUSING, and recovery actions defined and wired in domain.
+	pausing_trans := domain.task_allowed_transitions(.Pausing)
+	testing.expect(t, len(pausing_trans) == 4, "pausing must have 4 allowed transitions")
+	testing.expect_value(t, pausing_trans[0], domain.Task_Status.Paused)
+	testing.expect_value(t, pausing_trans[1], domain.Task_Status.In_Progress)
+	testing.expect_value(t, pausing_trans[2], domain.Task_Status.Cancelled)
+	testing.expect_value(t, pausing_trans[3], domain.Task_Status.Assigned)
+
+	pausing_actions := domain.task_allowed_actions(.Pausing)
+	testing.expect(t, len(pausing_actions) == 4, "pausing must have 4 allowed actions")
+	testing.expect_value(t, pausing_actions[0], "pause")
+	testing.expect_value(t, pausing_actions[1], "start")
+	testing.expect_value(t, pausing_actions[2], "cancel")
+	testing.expect_value(t, pausing_actions[3], "nudge")
+
+	pausing_recovery := domain.task_recovery_actions(.Pausing)
+	testing.expect(t, len(pausing_recovery) == 5, "pausing must have 5 recovery actions")
+
+	// 3. In_Progress -> Pausing allowed, Pausing -> Paused allowed, Finishing -> Pausing allowed.
+	testing.expect(t, valid_task_transition(.In_Progress, .Pausing), "In_Progress -> Pausing must be valid")
+	testing.expect(t, valid_task_transition(.Pausing, .Paused), "Pausing -> Paused must be valid")
+	testing.expect(t, valid_task_transition(.Pausing, .In_Progress), "Pausing -> In_Progress must be valid")
+	testing.expect(t, valid_task_transition(.Pausing, .Cancelled), "Pausing -> Cancelled must be valid")
+	testing.expect(t, valid_task_transition(.Finishing, .Pausing), "Finishing -> Pausing must be valid")
+
+	// 4. work_status_is_actionable treats .Pausing as an actionable assignee work status.
+	testing.expect(t, work_status_is_actionable(.Pausing), ".Pausing must be actionable")
+	testing.expect(t, !work_status_is_actionable(.Paused), ".Paused must NOT be actionable")
+
+	// 5. Database and Service workflow
+	db_path := fmt.tprintf("/tmp/test_pausing_workflow_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+
+	owner := domain.User_ID("user_pausing_test")
+	chain_id := domain.Task_Chain_ID("chain_pausing_test")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Pausing Workflow Chain",
+		description                   = "Testing pausing workflow",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord",
+		default_reviewer_refs_json    = "[]",
+		created_at                    = "2026-10-02T10:00:00Z",
+		updated_at                    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord",
+		owner_user_id     = owner,
+		agent_id          = "agt_coord",
+		bridge_id         = "brg_test",
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	worker_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_test",
+		display_name      = "worker",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, worker_inst)
+
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_coord",
+		agent_id          = "agt_coord",
+		owner_user_id     = owner,
+		role              = "coordinator",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+
+	task := domain.Task{
+		task_id            = "task_pause_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Pausing Feature Task",
+		description        = "Pause me",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-02T10:01:00Z",
+		updated_at         = "2026-10-02T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task)
+
+	auth_user := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+
+	// Step 1: Request pause on active In_Progress task -> enters Pausing
+	_, pause_ok, pause_err := change_task_status(&svc, auth_user, "task_pause_1", .Paused)
+	testing.expect(t, pause_ok, "change_task_status to Paused on In_Progress task must succeed")
+	testing.expect_value(t, pause_err.code, domain.Error_Code.None)
+
+	persisted, get_ok, _ := iface.taskchain_get_task(&tc_repo, "task_pause_1")
+	testing.expect(t, get_ok, "task must exist")
+	testing.expect_value(t, persisted.status, domain.Task_Status.Pausing)
+	testing.expect(t, work_status_is_actionable(persisted.status), "Pausing state must remain actionable for assignee")
+
+	found_assignee_pausing := false
+	found_coord_pausing := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
+		   strings.contains(cmd.body_json, `"action":"pausing"`) &&
+		   strings.contains(cmd.body_json, "Task Pausing") &&
+		   strings.contains(cmd.body_json, "post handoff comment and stash changes") &&
+		   strings.contains(cmd.body_json, "ham-ctl task status task_pause_1 --status paused") {
+			found_assignee_pausing = true
+		}
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
+		   strings.contains(cmd.body_json, `"action":"pausing"`) &&
+		   strings.contains(cmd.body_json, "Task Pausing") &&
+		   strings.contains(cmd.body_json, "entered pausing state") {
+			found_coord_pausing = true
+		}
+	}
+	testing.expect(t, found_assignee_pausing, "assignee must receive notification with handoff instructions and action pausing")
+	testing.expect(t, found_coord_pausing, "coordinator must receive notification for task entering pausing")
+
+	// Step 2: Worker confirms ready-to-pause -> transitions from Pausing to Paused
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	auth_worker := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_worker"}
+	_, final_ok, final_err := change_task_status(&svc, auth_worker, "task_pause_1", .Paused)
+	testing.expect(t, final_ok, "change_task_status to Paused from Pausing must succeed")
+	testing.expect_value(t, final_err.code, domain.Error_Code.None)
+
+	persisted_final, get_final_ok, _ := iface.taskchain_get_task(&tc_repo, "task_pause_1")
+	testing.expect(t, get_final_ok, "task must exist")
+	testing.expect_value(t, persisted_final.status, domain.Task_Status.Paused)
+	testing.expect(t, !work_status_is_actionable(persisted_final.status), "Paused state must release actionable work status")
+
+	found_coord_paused := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
+		   strings.contains(cmd.body_json, "Task Paused") &&
+		   strings.contains(cmd.body_json, "paused") {
+			found_coord_paused = true
+		}
+	}
+	testing.expect(t, found_coord_paused, "coordinator must be notified upon task paused by worker")
+
+	// Step 3: Test task_action("pause") on Finishing state
+	task_fin := domain.Task{
+		task_id            = "task_pause_fin",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Finishing To Pausing Task",
+		description        = "Finish then pause",
+		publish_state      = .Published,
+		status             = .Finishing,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		reviewer_refs_json = "[]",
+		created_at         = "2026-10-02T10:02:00Z",
+		updated_at         = "2026-10-02T10:02:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, task_fin)
+	auth_coord := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_coord"}
+	act_task, act_ok, act_err := task_action(&svc, auth_coord, "task_pause_fin", "pause")
+	testing.expect(t, act_ok, "task_action pause on Finishing must succeed")
+	testing.expect_value(t, act_err.code, domain.Error_Code.None)
+
+	persisted_fin, _, _ := iface.taskchain_get_task(&tc_repo, "task_pause_fin")
+	testing.expect_value(t, persisted_fin.status, domain.Task_Status.Pausing)
+
+	// Step 4: task_action("pause") from Pausing -> Paused by coordinator notifies assignee
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	act_final, act_final_ok, _ := task_action(&svc, auth_coord, "task_pause_fin", "pause")
+	testing.expect(t, act_final_ok, "task_action pause on Pausing must succeed")
+	testing.expect_value(t, act_final.status, domain.Task_Status.Paused)
+
+	found_assignee_paused := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
+		   strings.contains(cmd.body_json, "Task Paused") &&
+		   strings.contains(cmd.body_json, "paused") {
+			found_assignee_paused = true
+		}
+	}
+	testing.expect(t, found_assignee_paused, "assignee must be notified upon task paused by coordinator")
+}
+
+@(test)
+test_ensure_durable_actor_fleets_filters_nonexistent_agents :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fleet_filter_nonexistent_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+	svc := new_taskchain_service(&tc_repo, &ag_repo, &clock, &ids)
+
+	owner := domain.User_ID("tanmay")
+	chain_id := domain.Task_Chain_ID("chain_filter_test")
+	chain := domain.Task_Chain{
+		chain_id      = chain_id,
+		owner_user_id = owner,
+		title         = "Filter Test Chain",
+		publish_state = .Published,
+		status        = .Active,
+		created_at    = "2026-10-02T10:00:00Z",
+		updated_at    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	// Save valid agent in ag_repo
+	valid_agent := domain.Agent{
+		agent_id      = "agt_valid_agent",
+		owner_user_id = owner,
+		name          = "Valid Agent",
+		created_at    = "2026-10-02T10:00:00Z",
+		updated_at    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, valid_agent)
+
+	// Task referencing both an existing agent and a non-existent agent
+	task := domain.Task{
+		task_id            = "task_filter_test",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Test Task",
+		publish_state      = .Published,
+		status             = .Assigned,
+		assignee_ref_json  = `{"type":"agent_id","agent_id":"agt_valid_agent"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_nonexistent_123"}]`,
+		created_at         = "2026-10-02T10:00:00Z",
+		updated_at         = "2026-10-02T10:00:00Z",
+	}
+
+	err := ensure_durable_actor_fleets(&svc, task)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+
+	fleets, ferr := iface.taskchain_list_fleets_by_chain(&tc_repo, chain_id, owner)
+	testing.expect_value(t, ferr.code, domain.Error_Code.None)
+	defer delete(fleets)
+
+	testing.expect_value(t, len(fleets), 1)
+	if len(fleets) == 1 {
+		testing.expect_value(t, fleets[0].agent_id, "agt_valid_agent")
+	}
+}
+
 
 
 

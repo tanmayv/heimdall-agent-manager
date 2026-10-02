@@ -118,7 +118,7 @@ task_prefers :: proc(a, b: domain.Task) -> bool {
 // current work focus. Paused is deliberately held; validation/terminal statuses
 // belong to the reviewer/coordinator, not the assignee's work queue.
 work_status_is_actionable :: proc(status: domain.Task_Status) -> bool {
-	return status == .Assigned || status == .Queued || status == .In_Progress || status == .Validated_Not_Good
+	return status == .Assigned || status == .Queued || status == .In_Progress || status == .Validated_Not_Good || status == .Finishing || status == .Pausing
 }
 
 // work_task_eligible reports whether task is a candidate for instance's current
