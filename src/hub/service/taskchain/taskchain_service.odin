@@ -990,6 +990,12 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	new_assignee_ref := ""
 	defer if new_assignee_ref != "" do delete(new_assignee_ref)
 
+	new_reviewer_refs := make([dynamic]string)
+	defer {
+		for r in new_reviewer_refs do delete(r)
+		delete(new_reviewer_refs)
+	}
+
 	// Dependency Gating: reject transition to In_Progress if any dependency is blocked
 	if target_next == .In_Progress {
 		deps, dep_err := iface.taskchain_list_dependencies_by_chain(service.repo, task.chain_id, task.owner_user_id)
@@ -1020,6 +1026,33 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 				ensure_chain_member(service, chain, allocated_inst, target_agent_id)
 				new_assignee_ref = bind_agent_id_to_instance(task.assignee_ref_json, target_agent_id, allocated_inst)
 				task.assignee_ref_json = new_assignee_ref
+			}
+		}
+	}
+
+	// REQ-FSM-REV-1: Atomic Reviewer JIT Agent Instance Binding on In_Validation
+	if target_next == .In_Validation {
+		target_ref_json := task.reviewer_refs_json
+		if target_ref_json == "" || target_ref_json == "[]" {
+			target_ref_json = chain.default_reviewer_refs_json
+		}
+
+		rev_agent_ids := extract_agent_ids_from_ref_blob(target_ref_json)
+		defer {
+			for r in rev_agent_ids do delete(r)
+			delete(rev_agent_ids)
+		}
+
+		current_rev_json := target_ref_json
+		for rev_agent_id in rev_agent_ids {
+			allocated_inst, alloc_ok := allocate_or_jit_reviewer_instance(service, chain, task, rev_agent_id)
+			if alloc_ok {
+				defer delete(allocated_inst)
+				ensure_chain_member(service, chain, allocated_inst, rev_agent_id)
+				bound_ref := bind_agent_id_to_instance(current_rev_json, rev_agent_id, allocated_inst)
+				append(&new_reviewer_refs, bound_ref)
+				current_rev_json = bound_ref
+				task.reviewer_refs_json = bound_ref
 			}
 		}
 	}

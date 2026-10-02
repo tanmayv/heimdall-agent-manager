@@ -3105,6 +3105,456 @@ test_task_wake_interrupt_and_command_suffix_pausing_and_finishing :: proc(t: ^te
 	clear(&captured_cmds)
 }
 
+@(test)
+test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_fsm_rev_dispatch_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	br_impl := sqlite.Bridge_Repo_SQLite{conn = &conn}
+	br_repo := sqlite.new_bridge_repository(&br_impl, &conn)
+
+	pr_impl := sqlite.Project_Repo_SQLite{conn = &conn}
+	pr_repo := sqlite.new_project_repository(&pr_impl, &conn)
+
+	co_impl := sqlite.Content_Repo_SQLite{conn = &conn}
+	co_repo := sqlite.new_content_repository(&co_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	owner := domain.User_ID("user_fsm_rev")
+	chain_id := domain.Task_Chain_ID("chain_fsm_rev_test")
+	auth_user := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+
+	// Set up Bridge in repo
+	bridge := domain.Bridge{
+		bridge_id         = "brg_fsm_rev",
+		owner_user_id     = owner,
+		machine_hostname  = "localhost",
+		status            = .Online,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.bridge_save_bridge(&br_repo, bridge)
+
+	project := domain.Project{
+		project_id    = domain.Project_ID("prj_rev"),
+		owner_user_id = owner,
+		name          = "Rev Project",
+		slug          = "rev-project",
+		default_path  = "/srv/rev/default",
+		state         = .Active,
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.project_save(&pr_repo, project)
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{
+		project_id    = project.project_id,
+		bridge_id     = "brg_fsm_rev",
+		owner_user_id = owner,
+		path          = "/srv/rev/primary",
+		created_at    = "2026-10-01T10:00:00Z",
+		updated_at    = "2026-10-01T10:00:00Z",
+	})
+
+	// Agents: worker and reviewer
+	worker_agent := domain.Agent{
+		agent_id         = "agt_fsm_rev_worker",
+		owner_user_id    = owner,
+		name             = "Worker Agent",
+		slug             = "worker-agent",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, worker_agent)
+
+	reviewer_agent := domain.Agent{
+		agent_id         = "agt_fsm_reviewer",
+		owner_user_id    = owner,
+		name             = "Reviewer Agent",
+		slug             = "reviewer-agent",
+		default_provider = "jetski",
+		default_tier     = "normal",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save(&ag_repo, reviewer_agent)
+
+	worker_support := domain.Agent_Bridge_Support{
+		agent_id      = "agt_fsm_rev_worker",
+		bridge_id     = "brg_fsm_rev",
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, worker_support)
+
+	rev_support := domain.Agent_Bridge_Support{
+		agent_id      = "agt_fsm_reviewer",
+		bridge_id     = "brg_fsm_rev",
+		owner_user_id = owner,
+		enabled       = true,
+	}
+	_, _, _ = iface.agent_save_support(&ag_repo, rev_support)
+
+	registry := project_service.Bridge_Runtime_Registry{}
+	project_service.bridge_runtime_registry_mark_live(&registry, "brg_fsm_rev", false, "")
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+	ag_service := agent_service.new_agent_service_with_runtime(&ag_repo, &br_repo, &pr_repo, &co_repo, &tc_repo, sink, &registry, &clock, &ids)
+	svc.agent_service = &ag_service
+
+	// Create chain
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "FSM Rev Chain",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord_rev",
+		default_reviewer_refs_json    = "[]",
+		created_at                    = "2026-10-01T10:00:00Z",
+		updated_at                    = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord_rev",
+		owner_user_id     = owner,
+		agent_id          = "agt_coordinator",
+		bridge_id         = "brg_fsm_rev",
+		project_id        = domain.Project_ID("prj_rev"),
+		display_name      = "coordinator #1",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	// Reviewer fleet capacity = 2, provider = "jetski", tier = "smart"
+	rev_fleet := domain.Task_Chain_Fleet{
+		task_chain_id    = chain_id,
+		agent_id         = "agt_fsm_reviewer",
+		capacity         = 2,
+		min_warm         = 1,
+		idle_ttl_seconds = 300,
+		provider         = "jetski",
+		tier             = "smart",
+		created_at       = "2026-10-01T10:00:00Z",
+		updated_at       = "2026-10-01T10:00:00Z",
+	}
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, rev_fleet)
+
+	// Worker instance
+	worker_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker_1",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_rev_worker",
+		bridge_id         = "brg_fsm_rev",
+		display_name      = "worker 1",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, worker_inst)
+
+	// Idle reviewer instance in warm pool
+	rev1_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_rev_idle",
+		owner_user_id     = owner,
+		agent_id          = "agt_fsm_reviewer",
+		bridge_id         = "brg_fsm_rev",
+		display_name      = "idle reviewer",
+		runtime_status    = "idle",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-01T10:00:00Z",
+		updated_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, rev1_inst)
+	rev1_member := domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_rev_idle",
+		agent_id          = "agt_fsm_reviewer",
+		owner_user_id     = owner,
+		role              = "reviewer",
+		created_at        = "2026-10-01T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_member(&tc_repo, rev1_member)
+
+	// =========================================================================
+	// REQ-FSM-REV-1: Idle instance auto-binding on in_validation
+	// =========================================================================
+	t1 := domain.Task{
+		task_id            = "task_fsm_rev_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "FSM Reviewer Task 1",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_1"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_fsm_reviewer"}]`,
+		bridge_id          = "brg_fsm_rev",
+		created_at         = "2026-10-01T10:01:00Z",
+		updated_at         = "2026-10-01T10:01:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t1)
+
+	// Transition t1 to .In_Validation via change_task_status
+	ret1, ok1, err1 := change_task_status(&svc, auth_user, "task_fsm_rev_1", .In_Validation)
+	testing.expect(t, ok1, "change_task_status to In_Validation must succeed")
+	testing.expect_value(t, err1.code, domain.Error_Code.None)
+	testing.expect_value(t, ret1.status, domain.Task_Status.In_Validation)
+
+	// Acceptance criteria:
+	// - Idle warm pool instance inst_rev_idle auto-bound to reviewer_refs_json
+	rev_insts1 := extract_instances_from_ref_blob(ret1.reviewer_refs_json)
+	defer delete(rev_insts1)
+	testing.expect_value(t, len(rev_insts1), 1)
+	if len(rev_insts1) == 1 {
+		testing.expect_value(t, rev_insts1[0], "inst_rev_idle")
+	}
+
+	// Persisted row has reviewer bound
+	persisted1, p1_ok, _ := iface.taskchain_get_task(&tc_repo, "task_fsm_rev_1")
+	testing.expect(t, p1_ok, "task 1 must exist")
+	p_rev_insts1 := extract_instances_from_ref_blob(persisted1.reviewer_refs_json)
+	defer delete(p_rev_insts1)
+	testing.expect_value(t, len(p_rev_insts1), 1)
+	if len(p_rev_insts1) == 1 {
+		testing.expect_value(t, p_rev_insts1[0], "inst_rev_idle")
+	}
+
+	// Reviewer instance focus was automatically updated to task_fsm_rev_1 with role .Review
+	updated_r1, _, _ := iface.agent_get_instance(&ag_repo, "inst_rev_idle")
+	testing.expect_value(t, updated_r1.current_task_id, "task_fsm_rev_1")
+	testing.expect_value(t, updated_r1.current_task_role, domain.Current_Task_Role.Review)
+
+	// Reviewer received status changed notification with action "review"
+	found_r1_notify := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"type":"task_status_changed_notify"`) &&
+		   strings.contains(cmd.body_json, `"task_id":"task_fsm_rev_1"`) &&
+		   strings.contains(cmd.body_json, `"action":"review"`) &&
+		   strings.contains(cmd.body_json, `"reviewer_instance_ids":["inst_rev_idle"]`) {
+			found_r1_notify = true
+		}
+	}
+	testing.expect(t, found_r1_notify, "inst_rev_idle must receive task_status_changed_notify review wake")
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	// =========================================================================
+	// REQ-FSM-REV-2: JIT provisioning reviewer when under capacity
+	// =========================================================================
+	// inst_rev_idle is now busy reviewing task_fsm_rev_1.
+	// Create second task with declarative agt_fsm_reviewer ref.
+	t2 := domain.Task{
+		task_id            = "task_fsm_rev_2",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "FSM Reviewer Task 2 (JIT)",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_1"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_fsm_reviewer"}]`,
+		bridge_id          = "brg_fsm_rev",
+		created_at         = "2026-10-01T10:02:00Z",
+		updated_at         = "2026-10-01T10:02:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t2)
+
+	// Transition t2 to .In_Validation via change_task_status
+	ret2, ok2, err2 := change_task_status(&svc, auth_user, "task_fsm_rev_2", .In_Validation)
+	testing.expect(t, ok2, "change_task_status for JIT reviewer task must succeed")
+	testing.expect_value(t, err2.code, domain.Error_Code.None)
+	testing.expect_value(t, ret2.status, domain.Task_Status.In_Validation)
+
+	// Acceptance criteria:
+	// - Since inst_rev_idle is busy reviewing t1, and live_count (1) < capacity (2), JIT provisions a new instance
+	rev_insts2 := extract_instances_from_ref_blob(ret2.reviewer_refs_json)
+	defer delete(rev_insts2)
+	testing.expect_value(t, len(rev_insts2), 1)
+	jit_rev_id := ""
+	if len(rev_insts2) == 1 {
+		jit_rev_id = rev_insts2[0]
+		testing.expect(t, jit_rev_id != "", "must bind provisioned reviewer instance")
+		testing.expect(t, jit_rev_id != "inst_rev_idle", "must provision a distinct reviewer instance")
+		testing.expect(t, jit_rev_id != "inst_worker_1", "reviewer instance must not be worker instance")
+	}
+
+	// Persisted row verification
+	persisted2, p2_ok, _ := iface.taskchain_get_task(&tc_repo, "task_fsm_rev_2")
+	testing.expect(t, p2_ok, "task 2 must exist")
+	p_rev_insts2 := extract_instances_from_ref_blob(persisted2.reviewer_refs_json)
+	defer delete(p_rev_insts2)
+	testing.expect_value(t, len(p_rev_insts2), 1)
+	if len(p_rev_insts2) == 1 {
+		testing.expect_value(t, p_rev_insts2[0], jit_rev_id)
+	}
+
+	// JIT reviewer instance was created in ag_repo with role .Review
+	if jit_rev_id != "" {
+		jit_rev_inst, j_ok, _ := iface.agent_get_instance(&ag_repo, jit_rev_id)
+		testing.expect(t, j_ok, "provisioned JIT reviewer instance must exist in agent repository")
+		testing.expect_value(t, jit_rev_inst.agent_id, "agt_fsm_reviewer")
+		testing.expect_value(t, jit_rev_inst.tier, "smart")
+		testing.expect_value(t, jit_rev_inst.current_task_id, "task_fsm_rev_2")
+		testing.expect_value(t, jit_rev_inst.current_task_role, domain.Current_Task_Role.Review)
+	}
+
+	// REQ-FSM-REV-3: JIT reviewer received review notification
+	found_r2_notify := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"type":"task_status_changed_notify"`) &&
+		   strings.contains(cmd.body_json, `"task_id":"task_fsm_rev_2"`) &&
+		   strings.contains(cmd.body_json, `"action":"review"`) &&
+		   strings.contains(cmd.body_json, jit_rev_id) {
+			found_r2_notify = true
+		}
+	}
+	testing.expect(t, found_r2_notify, "newly JIT-provisioned reviewer must receive task_status_changed_notify review wake")
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	// =========================================================================
+	// Part 3: Fallback to chain.default_reviewer_refs_json on in_validation
+	// =========================================================================
+	chain.default_reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_fsm_reviewer"}]`
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	rev_fleet.capacity = 3
+	_, _ = iface.taskchain_upsert_fleet(&tc_repo, rev_fleet)
+
+	t3 := domain.Task{
+		task_id            = "task_fsm_rev_3",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "FSM Reviewer Task 3 (Default Fallback)",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_1"}`,
+		reviewer_refs_json = "[]",
+		bridge_id          = "brg_fsm_rev",
+		created_at         = "2026-10-01T10:03:00Z",
+		updated_at         = "2026-10-01T10:03:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t3)
+
+	ret3, ok3, err3 := change_task_status(&svc, auth_user, "task_fsm_rev_3", .In_Validation)
+	testing.expect(t, ok3, "change_task_status with default reviewer fallback must succeed")
+	testing.expect_value(t, err3.code, domain.Error_Code.None)
+	testing.expect_value(t, ret3.status, domain.Task_Status.In_Validation)
+
+	rev_insts3 := extract_instances_from_ref_blob(ret3.reviewer_refs_json)
+	defer delete(rev_insts3)
+	testing.expect_value(t, len(rev_insts3), 1)
+	jit_rev_id3 := ""
+	if len(rev_insts3) == 1 {
+		jit_rev_id3 = rev_insts3[0]
+		testing.expect(t, jit_rev_id3 != "", "must bind provisioned reviewer instance from default refs")
+		testing.expect(t, jit_rev_id3 != "inst_rev_idle", "must be distinct from inst_rev_idle")
+		testing.expect(t, jit_rev_id3 != jit_rev_id, "must be distinct from jit_rev_id")
+	}
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	// =========================================================================
+	// Part 4: Reconcile pass parity when capacity was saturated
+	// =========================================================================
+	// Currently all 3 reviewer instances are busy (inst_rev_idle on t1, jit_rev_id on t2, jit_rev_id3 on t3).
+	// Creating task 4 with capacity = 3 means it cannot bind immediately on transition.
+	t4 := domain.Task{
+		task_id            = "task_fsm_rev_4",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "FSM Reviewer Task 4 (Saturated Queued)",
+		publish_state      = .Published,
+		status             = .In_Progress,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker_1"}`,
+		reviewer_refs_json = `[{"type":"agent_id","agent_id":"agt_fsm_reviewer"}]`,
+		bridge_id          = "brg_fsm_rev",
+		created_at         = "2026-10-01T10:04:00Z",
+		updated_at         = "2026-10-01T10:04:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, t4)
+
+	ret4, ok4, _ := change_task_status(&svc, auth_user, "task_fsm_rev_4", .In_Validation)
+	testing.expect(t, ok4, "change_task_status to In_Validation must succeed even when saturated")
+	// Reviewer ref should remain declarative since all instances are busy and at capacity
+	testing.expect(t, strings.contains(ret4.reviewer_refs_json, `"type":"agent_id"`), "reviewer refs must remain declarative when saturated")
+
+	// Complete task 1 to free up inst_rev_idle
+	_, _, _ = change_task_status(&svc, auth_user, "task_fsm_rev_1", .Completed)
+
+	// Now run reconcile pass
+	_ = reconcile_chain(&svc, chain)
+
+	// Task 4 should now have inst_rev_idle bound by the reconcile pass in promotion.odin!
+	persisted4, p4_ok, _ := iface.taskchain_get_task(&tc_repo, "task_fsm_rev_4")
+	testing.expect(t, p4_ok, "task 4 must exist")
+	p_rev_insts4 := extract_instances_from_ref_blob(persisted4.reviewer_refs_json)
+	defer delete(p_rev_insts4)
+	testing.expect_value(t, len(p_rev_insts4), 1)
+	if len(p_rev_insts4) == 1 {
+		testing.expect_value(t, p_rev_insts4[0], "inst_rev_idle")
+	}
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	// Clean up
+	ret2.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, ret2)
+	ret3.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, ret3)
+	persisted4.status = .Completed
+	_, _, _ = iface.taskchain_save_task(&tc_repo, persisted4)
+}
+
 
 
 

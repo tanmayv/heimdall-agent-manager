@@ -440,6 +440,155 @@ allocate_or_jit_worker_instance :: proc(service: ^Taskchain_Service, chain: doma
 	return "", false
 }
 
+// allocate_or_jit_reviewer_instance attempts to resolve an idle or warm-stopped reviewer instance
+// from the chain, or JIT-provisions a new reviewer instance if live count is below fleet capacity.
+// Ensures candidate reviewer instances exclude the task's primary assignee.
+allocate_or_jit_reviewer_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task, target_agent_id: string) -> (string, bool) {
+	if service == nil || service.repo == nil do return "", false
+
+	fleets, ferr := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	defer if ferr.code == .None do delete(fleets)
+
+	chain_instances := make([dynamic]domain.Agent_Instance)
+	defer delete(chain_instances)
+	seen_insts := make(map[string]bool)
+	defer delete(seen_insts)
+
+	add_chain_inst := proc(seen: ^map[string]bool, list: ^[dynamic]domain.Agent_Instance, inst: domain.Agent_Instance) {
+		if inst.agent_instance_id == "" || seen^[inst.agent_instance_id] do return
+		seen^[inst.agent_instance_id] = true
+		append(list, inst)
+	}
+
+	if members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); merr.code == .None {
+		defer delete(members)
+		for m in members {
+			if service.agents != nil {
+				if inst, ok, _ := iface.agent_get_instance(service.agents, m.agent_instance_id); ok {
+					add_chain_inst(&seen_insts, &chain_instances, inst)
+				}
+			}
+		}
+	}
+	if chain.coordinator_agent_instance_id != "" && service.agents != nil {
+		if coord, ok, _ := iface.agent_get_instance(service.agents, chain.coordinator_agent_instance_id); ok {
+			add_chain_inst(&seen_insts, &chain_instances, coord)
+		}
+	}
+	if service.agents != nil {
+		if insts, ierr := iface.agent_list_instances_by_owner(service.agents, chain.owner_user_id, 1000, ""); ierr.code == .None {
+			defer delete(insts)
+			for inst in insts {
+				if inst.chain_id == string(chain.chain_id) {
+					add_chain_inst(&seen_insts, &chain_instances, inst)
+				}
+			}
+		}
+	}
+
+	tasks, terr := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	defer if terr.code == .None do delete(tasks)
+
+	offline_task_ids := make(map[domain.Task_ID]bool)
+	defer delete(offline_task_ids)
+	if terr.code == .None {
+		for t in tasks {
+			bridge_online, _ := task_effective_bridge_is_online(service, chain, t)
+			if !bridge_online {
+				offline_task_ids[t.task_id] = true
+			}
+		}
+	}
+
+	busy_instances := make(map[string]bool)
+	defer delete(busy_instances)
+	busy_keys := make([dynamic]string)
+	defer {
+		for k in busy_keys do delete(k)
+		delete(busy_keys)
+	}
+
+	mark_busy := proc(busy: ^map[string]bool, keys: ^[dynamic]string, id: string) {
+		if id == "" || busy^[id] do return
+		k := strings.clone(id)
+		append(keys, k)
+		busy^[k] = true
+	}
+
+	if terr.code == .None {
+		for t in tasks {
+			if t.task_id == task.task_id do continue
+			if t.status == .In_Progress && !offline_task_ids[t.task_id] {
+				a := primary_assignee_instance(t.assignee_ref_json)
+				if a != "" {
+					if !instance_is_crashed_or_dead(service, chain_instances[:], a) {
+						mark_busy(&busy_instances, &busy_keys, a)
+					}
+					delete(a)
+				}
+			}
+		}
+		for inst in chain_instances {
+			if instance_has_pending_validation(tasks, inst.agent_instance_id, offline_task_ids) {
+				mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
+			}
+		}
+		for t in tasks {
+			if t.status != .In_Validation do continue
+			if offline_task_ids[t.task_id] do continue
+			for inst in chain_instances {
+				if instance_reviews_task(t, chain, inst.agent_instance_id) {
+					mark_busy(&busy_instances, &busy_keys, inst.agent_instance_id)
+				}
+			}
+		}
+	}
+
+	capacity := fleet_capacity_for_agent(fleets, target_agent_id)
+
+	assignee_id := primary_assignee_instance(task.assignee_ref_json)
+	defer if assignee_id != "" do delete(assignee_id)
+
+	idle_reviewer_id := ""
+	warm_stopped_reviewer_id := ""
+	live_count := 0
+
+	for inst in chain_instances {
+		if inst.agent_id != target_agent_id do continue
+		if assignee_id != "" && inst.agent_instance_id == assignee_id do continue
+		if inst.runtime_status == "failed" || inst.runtime_status == "terminated" do continue
+
+		if task.bridge_id != "" && inst.bridge_id != task.bridge_id do continue
+
+		if inst.runtime_status == "stopped" {
+			if warm_stopped_reviewer_id == "" && !busy_instances[inst.agent_instance_id] && !strings.contains(task.reviewer_refs_json, inst.agent_instance_id) {
+				warm_stopped_reviewer_id = inst.agent_instance_id
+			}
+			continue
+		}
+
+		live_count += 1
+
+		if idle_reviewer_id == "" && !busy_instances[inst.agent_instance_id] && !strings.contains(task.reviewer_refs_json, inst.agent_instance_id) {
+			idle_reviewer_id = inst.agent_instance_id
+		}
+	}
+
+	chosen_reviewer_id := idle_reviewer_id if idle_reviewer_id != "" else warm_stopped_reviewer_id
+
+	if chosen_reviewer_id != "" {
+		return strings.clone(chosen_reviewer_id), true
+	} else if live_count < capacity {
+		fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
+		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "reviewer", fleet_provider, fleet_tier)
+		if new_instance_id != "" {
+			return new_instance_id, true
+		}
+	}
+
+	return "", false
+}
+
 // dynamic_fleet_schedule acts as a dynamic scheduler for tasks with declarative agent_id refs.
 // Actionable tasks targeting agent_id are assigned to idle warm pool instances or JIT-provisioned
 // up to the chain's fleet capacity. Saturated tasks remain queued in FIFO/priority order.
@@ -721,20 +870,26 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 		assignee_id := primary_assignee_instance(t.assignee_ref_json)
 		defer delete(assignee_id)
 
-		rev_agent_ids := extract_agent_ids_from_ref_blob(t.reviewer_refs_json)
+		target_ref_json := t.reviewer_refs_json
+		if target_ref_json == "" || target_ref_json == "[]" {
+			target_ref_json = chain.default_reviewer_refs_json
+		}
+
+		rev_agent_ids := extract_agent_ids_from_ref_blob(target_ref_json)
 		defer {
 			for r in rev_agent_ids do delete(r)
 			delete(rev_agent_ids)
 		}
 
-		if len(rev_agent_ids) == 0 && chain.default_reviewer_refs_json != "" {
-			def_revs := extract_agent_ids_from_ref_blob(chain.default_reviewer_refs_json)
-			for r in def_revs do append(&rev_agent_ids, r)
-			delete(def_revs)
-		}
-
 		if len(rev_agent_ids) == 0 do continue
 
+		allocated_refs := make([dynamic]string)
+		defer {
+			for r in allocated_refs do delete(r)
+			delete(allocated_refs)
+		}
+
+		current_rev_json := target_ref_json
 		for rev_agent_id in rev_agent_ids {
 			capacity := fleet_capacity_for_agent(fleets, rev_agent_id)
 
@@ -752,7 +907,7 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				if t.bridge_id != "" && inst.bridge_id != t.bridge_id do continue
 
 				if inst.runtime_status == "stopped" {
-					if warm_stopped_reviewer_id == "" && !busy_instances[inst.agent_instance_id] {
+					if warm_stopped_reviewer_id == "" && !busy_instances[inst.agent_instance_id] && !strings.contains(current_rev_json, inst.agent_instance_id) {
 						warm_stopped_reviewer_id = inst.agent_instance_id
 					}
 					continue
@@ -760,14 +915,9 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 
 				live_count += 1
 
-				if idle_reviewer_id == "" && !busy_instances[inst.agent_instance_id] {
+				if idle_reviewer_id == "" && !busy_instances[inst.agent_instance_id] && !strings.contains(current_rev_json, inst.agent_instance_id) {
 					idle_reviewer_id = inst.agent_instance_id
 				}
-			}
-
-			target_ref_json := t.reviewer_refs_json
-			if target_ref_json == "" || target_ref_json == "[]" {
-				target_ref_json = chain.default_reviewer_refs_json
 			}
 
 			chosen_reviewer_id := idle_reviewer_id if idle_reviewer_id != "" else warm_stopped_reviewer_id
@@ -775,8 +925,9 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 			if chosen_reviewer_id != "" {
 				ensure_chain_member(service, chain, chosen_reviewer_id, rev_agent_id)
 
-				bound_ref := bind_agent_id_to_instance(target_ref_json, rev_agent_id, chosen_reviewer_id)
-				defer delete(bound_ref)
+				bound_ref := bind_agent_id_to_instance(current_rev_json, rev_agent_id, chosen_reviewer_id)
+				append(&allocated_refs, bound_ref)
+				current_rev_json = bound_ref
 
 				nt := t
 				nt.reviewer_refs_json = bound_ref
@@ -801,8 +952,9 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 					defer delete(new_instance_id)
 					ensure_chain_member(service, chain, new_instance_id, rev_agent_id)
 
-					bound_ref := bind_agent_id_to_instance(target_ref_json, rev_agent_id, new_instance_id)
-					defer delete(bound_ref)
+					bound_ref := bind_agent_id_to_instance(current_rev_json, rev_agent_id, new_instance_id)
+					append(&allocated_refs, bound_ref)
+					current_rev_json = bound_ref
 
 					nt := t
 					nt.reviewer_refs_json = bound_ref
