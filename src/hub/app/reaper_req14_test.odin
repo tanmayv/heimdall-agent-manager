@@ -73,6 +73,7 @@ b14_clone :: proc(b: domain.Bridge) -> domain.Bridge {
 	out.updated_at        = strings.clone(b.updated_at)
 	out.last_seen_at      = strings.clone(b.last_seen_at)
 	out.revoked_at        = strings.clone(b.revoked_at)
+	out.telemetry_enabled = strings.clone(b.telemetry_enabled)
 	return out
 }
 

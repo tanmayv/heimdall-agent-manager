@@ -185,14 +185,27 @@ bridge_absence_marker :: proc(service: ^Bridge_Service, bridge_id: string) -> (l
 	return strings.clone(bridge.last_seen_at), true
 }
 
-rename_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, label: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+patch_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id: string, label: string, has_label: bool, telemetry_enabled: string, has_telemetry: bool) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err
-	if strings.trim_space(label) == "" do return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "label is required")
-	bridge.label = label
-	bridge.label_is_user_customized = true
+	if has_label {
+		if strings.trim_space(label) == "" do return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "label is required")
+		bridge.label = label
+		bridge.label_is_user_customized = true
+	}
+	if has_telemetry {
+		val := strings.trim_space(telemetry_enabled)
+		if val != "inherit" && val != "enabled" && val != "disabled" {
+			return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "telemetry_enabled must be 'inherit', 'enabled', or 'disabled'")
+		}
+		bridge.telemetry_enabled = val
+	}
 	bridge.updated_at = platform.clock_now(service.clock)
 	return iface.bridge_save_bridge(service.repo, bridge)
+}
+
+rename_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, label: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	return patch_bridge(service, auth, bridge_id, label, true, "", false)
 }
 
 bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname, os_name, arch, capabilities_json: string, version: string = "", commit_sha: string = "", build_timestamp: string = "") -> (domain.Bridge, bool, domain.Domain_Error) {

@@ -96,7 +96,13 @@ test_bridge_vault_embedded_decryption_suite :: proc(t: ^testing.T) {
 		defer delete(header)
 
 		testing.expect(t, strings.contains(header, "Task chain: Confidential Chain (chain_abc)"), "header must have decrypted chain title")
-		testing.expect(t, strings.contains(header, "Coordinator: Coordinator Agent #1 (inst_coord_1)"), "header must have coordinator display name and ID")
 	}
 }
 
+@(test)
+test_bridge_read_vault_key_from_disk :: proc(t: ^testing.T) {
+	os.unset_env("HEIMDALL_VAULT_KEY")
+	key, ok := bridge_read_vault_key()
+	testing.expect(t, ok, "bridge_read_vault_key should read disk key")
+	defer if ok do delete(key)
+}

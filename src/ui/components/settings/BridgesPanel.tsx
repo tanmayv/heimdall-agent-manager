@@ -9,8 +9,13 @@ import {
   useUpdateBridgeMutation,
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
+  useUpdateBridgeTelemetryMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, FormField, Icon, Input, PageShell, StatusDot, Text, Modal, ModalBody, ModalFooter, Spinner } from '@ui';
+import {
+  useFetchTelemetryDefaultEnabledQuery,
+  useSaveTelemetryDefaultEnabledMutation,
+} from '../../api/endpoints/settings';
+import { Button, FormField, Icon, Input, PageShell, StatusDot, Text, Modal, ModalBody, ModalFooter, Spinner, Toggle } from '@ui';
 import type { Tone } from '@ui';
 import {
   isPendingEnrollment as checkIsPendingEnrollment,
@@ -35,10 +40,13 @@ export default function BridgesPanel() {
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
   const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
+  const [updateBridgeTelemetry] = useUpdateBridgeTelemetryMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
   const [updateBridge] = useUpdateBridgeMutation();
   const [createEnrollment] = useCreateBridgeEnrollmentMutation();
   const [revokeEnrollment] = useRevokeBridgeEnrollmentMutation();
+  const { data: globalTelemetryData } = useFetchTelemetryDefaultEnabledQuery();
+  const [saveGlobalTelemetry] = useSaveTelemetryDefaultEnabledMutation();
 
   const [enrollLabel, setEnrollLabel] = useState('');
   const [enrollBusy, setEnrollBusy] = useState(false);
@@ -165,6 +173,22 @@ export default function BridgesPanel() {
     }
   }
 
+  async function handleToggleGlobalTelemetry(enabled: boolean) {
+    try {
+      await saveGlobalTelemetry({ enabled }).unwrap();
+    } catch (err: any) {
+      setActionError(String(err?.message || 'Failed to update global telemetry setting'));
+    }
+  }
+
+  async function handleUpdateBridgeTelemetry(bridgeId: string, telemetry: 'inherit' | 'enabled' | 'disabled') {
+    try {
+      await updateBridgeTelemetry({ bridgeId, telemetry_enabled: telemetry }).unwrap();
+    } catch (err: any) {
+      setActionError(String(err?.message || 'Failed to update bridge telemetry preference'));
+    }
+  }
+
   async function handleConfirmUpdate() {
     if (!updateModalBridge) return;
     const bridgeId = String(updateModalBridge.bridge_id || updateModalBridge.bridgeId || updateModalBridge.id || '');
@@ -259,6 +283,24 @@ export default function BridgesPanel() {
         </div>
       ) : null}
 
+      {/* Global Telemetry Setting */}
+      <div data-debug-id="settings-bridges-global-telemetry" className="mt-4 rounded-xl border border-subtle bg-surface-raised/40 p-3.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-primary">Global Bridge Telemetry</div>
+          <div className="text-xs text-muted">Enable telemetry across all bridges by default unless overridden per-bridge.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Toggle
+            data-debug-id="settings-global-telemetry-toggle"
+            checked={globalTelemetryData?.enabled ?? true}
+            onChange={(checked) => void handleToggleGlobalTelemetry(checked)}
+          />
+          <span className="text-xs text-muted font-medium w-16">
+            {(globalTelemetryData?.enabled ?? true) ? 'Enabled' : 'Disabled'}
+          </span>
+        </div>
+      </div>
+
       {/* Bridge list */}
       <div data-debug-id="settings-bridges-list" className="mt-4">
         <Text as="div" role="overline" tone="muted" className="mb-2">Bridges ({bridges.length})</Text>
@@ -351,6 +393,52 @@ export default function BridgesPanel() {
                         <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-primary">{capabilitiesLabel(bridge)}</span></span>
                         <span>instances: <span className="text-primary">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
                         <span>last seen: <span className="text-primary">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
+                      </div>
+                      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-muted font-medium">Telemetry:</span>
+                        <div
+                          data-debug-id={`settings-bridge-telemetry-toggle-${id}`}
+                          className="inline-flex rounded-lg border border-subtle bg-surface p-0.5"
+                          role="group"
+                          aria-label={`Bridge ${id} Telemetry`}
+                        >
+                          <button
+                            type="button"
+                            data-debug-id={`settings-bridge-telemetry-inherit-${id}`}
+                            className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                              (bridge?.telemetry_enabled || 'inherit') === 'inherit'
+                                ? 'bg-surface-raised text-primary font-medium shadow-sm'
+                                : 'text-muted hover:text-primary'
+                            }`}
+                            onClick={() => void handleUpdateBridgeTelemetry(id, 'inherit')}
+                          >
+                            Inherit Global ({(globalTelemetryData?.enabled ?? true) ? 'Enabled' : 'Disabled'})
+                          </button>
+                          <button
+                            type="button"
+                            data-debug-id={`settings-bridge-telemetry-enabled-${id}`}
+                            className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                              bridge?.telemetry_enabled === 'enabled'
+                                ? 'bg-success text-success-contrast font-medium shadow-sm'
+                                : 'text-muted hover:text-primary'
+                            }`}
+                            onClick={() => void handleUpdateBridgeTelemetry(id, 'enabled')}
+                          >
+                            Enabled
+                          </button>
+                          <button
+                            type="button"
+                            data-debug-id={`settings-bridge-telemetry-disabled-${id}`}
+                            className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                              bridge?.telemetry_enabled === 'disabled'
+                                ? 'bg-danger text-danger-contrast font-medium shadow-sm'
+                                : 'text-muted hover:text-primary'
+                            }`}
+                            onClick={() => void handleUpdateBridgeTelemetry(id, 'disabled')}
+                          >
+                            Disabled
+                          </button>
+                        </div>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0 sm:justify-end">

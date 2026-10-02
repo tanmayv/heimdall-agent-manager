@@ -155,8 +155,18 @@ rename_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
 	bridge_id := suffix_after(req.path, "/api/v1/bridges/")
-	bridge, rename_ok, err := bridge_service.rename_bridge(h.bridges, auth_ctx, bridge_id, json_string(req.body, "label"))
-	if !rename_ok do return respond_error(err, req.request_id)
+	has_label := json_key_present(req.body, "label")
+	has_telemetry := json_key_present(req.body, "telemetry_enabled")
+	if !has_label && !has_telemetry {
+		return respond_error(domain.domain_error(.Validation_Failed, "no supported fields to update"), req.request_id)
+	}
+	label := json_string(req.body, "label") if has_label else ""
+	defer if has_label do delete(label)
+	telemetry_enabled := json_string(req.body, "telemetry_enabled") if has_telemetry else ""
+	defer if has_telemetry do delete(telemetry_enabled)
+
+	bridge, patch_ok, err := bridge_service.patch_bridge(h.bridges, auth_ctx, bridge_id, label, has_label, telemetry_enabled, has_telemetry)
+	if !patch_ok do return respond_error(err, req.request_id)
 	b := strings.builder_make()
 	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -2001,6 +2011,7 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\",\"update_available\":"); strings.write_string(b, "true" if update_info.update_available else "false")
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
 	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
+	strings.write_string(b, "\",\"telemetry_enabled\":\""); write_handler_json_string(b, br.telemetry_enabled if br.telemetry_enabled != "" else "inherit")
 	strings.write_string(b, "\"}")
 }
 

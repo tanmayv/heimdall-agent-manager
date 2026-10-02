@@ -34,6 +34,7 @@ Bridge :: struct {
 	build_timestamp: string,
 	update_status: string,
 	update_error: string,
+	telemetry_enabled: string,
 }
 
 // bridge_destroy frees every heap string on a Bridge read from a repository.
@@ -64,6 +65,7 @@ bridge_destroy :: proc(b: ^Bridge) {
 	if len(b.build_timestamp) > 0 do delete(b.build_timestamp)
 	if len(b.update_status) > 0 do delete(b.update_status)
 	if len(b.update_error) > 0 do delete(b.update_error)
+	if len(b.telemetry_enabled) > 0 do delete(b.telemetry_enabled)
 	b^ = Bridge{}
 }
 

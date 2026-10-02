@@ -42,6 +42,7 @@ export interface Bridge {
   last_seen_at?: string;
   updated_at?: string;
   revoked_at?: string;
+  telemetry_enabled?: 'inherit' | 'enabled' | 'disabled' | string;
 }
 
 export type BridgeCapability = {
@@ -149,10 +150,24 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: bridgeId }],
     }),
-    renameBridge: build.mutation<any, { bridgeId: string; label: string }>({
-      queryFn: async ({ bridgeId, label }) => {
+    renameBridge: build.mutation<any, { bridgeId: string; label?: string; telemetry_enabled?: string }>({
+      queryFn: async ({ bridgeId, label, telemetry_enabled }) => {
         try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}`, 'PATCH', { label });
+          const body: Record<string, any> = {};
+          if (label !== undefined) body.label = label;
+          if (telemetry_enabled !== undefined) body.telemetry_enabled = telemetry_enabled;
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}`, 'PATCH', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
+    updateBridgeTelemetry: build.mutation<any, { bridgeId: string; telemetry_enabled: 'inherit' | 'enabled' | 'disabled' | string }>({
+      queryFn: async ({ bridgeId, telemetry_enabled }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}`, 'PATCH', { telemetry_enabled });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -295,6 +310,7 @@ export const {
   useListBridgesQuery,
   useFetchBridgeDetailQuery,
   useRenameBridgeMutation,
+  useUpdateBridgeTelemetryMutation,
   useRevokeBridgeMutation,
   useUpdateBridgeMutation,
   useCreateBridgeEnrollmentMutation,

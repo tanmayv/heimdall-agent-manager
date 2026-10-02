@@ -41,6 +41,7 @@ NET_STALL_BYTES_PER_SEC=1024
 # Enforced for the whole operation by run_bounded on both branches, because
 # curl's --max-time is per attempt and wget has no equivalent flag at all.
 NET_DOWNLOAD_MAX_TIME=600
+TELEGRAF_VERSION="${TELEGRAF_VERSION:-1.32.1}"
 
 usage() {
   cat <<'USAGE'
@@ -48,7 +49,7 @@ usage: install.sh [--version <tag>] [--hub <url>] [--dry-run] [--force-service]
                   [--update, --apply-update] [--check] [--bundle <path>] [--uninstall]
 
 Installs prebuilt heimdall binaries (heimdall, ham-bridge, ham-pty-host,
-ham-ctl), wires PATH, and registers a user-level heimdall-bridge service.
+ham-ctl, telegraf), wires PATH, and registers a user-level heimdall-bridge service.
 
   --version <tag>      install release <tag> instead of the latest GitHub release
   --hub <url>          download <url>/heimdall-local-<target>.tar.gz and
@@ -1233,10 +1234,10 @@ do_uninstall() {
     fi
   fi
 
-  # 2. Binaries. These four names are ours alone, so their presence at
+  # 2. Binaries. These names are ours alone, so their presence at
   # $install_dir is itself proof this installer wrote them — no content check is
   # needed or wanted here.
-  for b in heimdall ham-bridge ham-pty-host ham-ctl; do
+  for b in heimdall ham-bridge ham-pty-host ham-ctl telegraf; do
     target="$install_dir/$b"
     [ -f "$target" ] || continue
     remove_installed "$target"
@@ -1874,6 +1875,7 @@ main() {
   sums_name="SHA256SUMS"
   tarball_url="$base_url/$tarball_name"
   sums_url="$base_url/$sums_name"
+  telegraf_url="https://dl.influxdata.com/telegraf/releases/telegraf-${TELEGRAF_VERSION}_${os}_${arch}.tar.gz"
 
   # --- dry run ------------------------------------------------------------------
   if "$dry_run"; then
@@ -1889,8 +1891,10 @@ main() {
     say "release: $effective_version"
     say "would download: $tarball_url"
     say "would download: $sums_url"
+    say "would download telegraf from $telegraf_url"
     say "would verify SHA-256 of $tarball_name against SHA256SUMS before extracting"
     say "would install bin/heimdall bin/ham-bridge bin/ham-pty-host bin/ham-ctl to $install_dir"
+    say "would install $install_dir/telegraf"
     if [ -n "$service_user" ]; then
       say "sudo detected: binaries go to $install_dir; the service file and PATH lines will be written for user $service_user (home: $service_home)"
       say "would add $install_dir to PATH in $service_home/.bashrc / .zshrc as needed (idempotent; decided from $service_user's rc files, not the sudo PATH)"
@@ -2010,6 +2014,20 @@ This installer will never remove or modify $system_unit."
     install -m 0755 "$bundle_bin/$b" "$install_dir/$b"
     say "installed $install_dir/$b"
   done
+
+  telegraf_url="https://dl.influxdata.com/telegraf/releases/telegraf-${TELEGRAF_VERSION}_${os}_${arch}.tar.gz"
+  if "$dry_run"; then
+    say "would download telegraf from $telegraf_url"
+    say "would install $install_dir/telegraf"
+  else
+    say "downloading telegraf from $telegraf_url"
+    download "$telegraf_url" "$work_dir/telegraf.tar.gz"
+    tar -xzf "$work_dir/telegraf.tar.gz" -C "$work_dir"
+    telegraf_extracted="$(find "$work_dir" -name telegraf -type f -perm -111 2>/dev/null | head -n 1)"
+    [ -n "$telegraf_extracted" ] && [ -f "$telegraf_extracted" ] || fail "failed to find extracted telegraf binary in $work_dir"
+    install -m 0755 "$telegraf_extracted" "$install_dir/telegraf"
+    say "installed $install_dir/telegraf"
+  fi
 
   # --- PATH (REQ-INST-5: never fatal) -------------------------------------------
   # wire_path handles every outcome itself — added / already present / could

@@ -7,13 +7,26 @@ function auth(session: any) {
   return { daemonUrl: session.daemonUrl, clientToken: session.clientToken };
 }
 
+export const TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY = 'telemetry.default_enabled';
+
 export const settingsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     fetchPreferences: build.query<any, { scope?: string } | void>({
       queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return { preferences: [] };
-        const data = await daemonApi.fetchPreferences(auth(session));
-        return { preferences: data?.preferences || [] };
+        let prefs: any[] = [];
+        if (session?.clientToken) {
+          try {
+            const data = await daemonApi.fetchPreferences(auth(session));
+            prefs = data?.preferences || [];
+          } catch {}
+        }
+        if (typeof window !== 'undefined') {
+          const stored = window.localStorage.getItem(`heimdall:preference:${TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY}`);
+          if (stored !== null && !prefs.some((p: any) => (p?.key || p?.id) === TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY)) {
+            prefs.push({ key: TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY, value: stored });
+          }
+        }
+        return { preferences: prefs };
       }),
       providesTags: (result) => [
         { type: 'Preferences' as const, id: 'ALL' },
@@ -22,12 +35,71 @@ export const settingsApi = heimdallApi.injectEndpoints({
     }),
     savePreference: build.mutation<any, { key: string; value: string; interrupt?: boolean }>({
       queryFn: withSessionQuery(async ({ key, value, interrupt = false }, { session }) => {
-        const data = await daemonApi.savePreference({ ...auth(session), key, value, interrupt });
-        return { preference: data?.preference || data };
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(`heimdall:preference:${key}`, value);
+        }
+        if (session?.clientToken) {
+          try {
+            const data = await daemonApi.savePreference({ ...auth(session), key, value, interrupt });
+            return { preference: data?.preference || data };
+          } catch {}
+        }
+        return { preference: { key, value } };
       }),
       invalidatesTags: (_result, _error, { key }) => [
         { type: 'Preferences' as const, id: 'ALL' },
         { type: 'Preferences' as const, id: key },
+      ],
+    }),
+    fetchTelemetryDefaultEnabled: build.query<{ enabled: boolean }, void>({
+      queryFn: async (_arg, api) => {
+        try {
+          const state = api.getState() as any;
+          const session = state?.chat?.session;
+          if (session?.clientToken && session?.daemonUrl) {
+            try {
+              const data = await daemonApi.fetchPreferences(auth(session));
+              const match = (data?.preferences || []).find((p: any) => (p?.key || p?.id) === TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY);
+              if (match) {
+                return { data: { enabled: String(match.value).toLowerCase() === 'true' || match.value === true } };
+              }
+            } catch {}
+          }
+          if (typeof window !== 'undefined') {
+            const stored = window.localStorage.getItem(`heimdall:preference:${TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY}`);
+            if (stored !== null) {
+              return { data: { enabled: stored === 'true' } };
+            }
+          }
+          return { data: { enabled: true } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Preferences' as const, id: TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY }],
+    }),
+    saveTelemetryDefaultEnabled: build.mutation<{ enabled: boolean }, { enabled: boolean }>({
+      queryFn: async ({ enabled }, api) => {
+        try {
+          const strVal = enabled ? 'true' : 'false';
+          const state = api.getState() as any;
+          const session = state?.chat?.session;
+          if (session?.clientToken && session?.daemonUrl) {
+            try {
+              await daemonApi.savePreference({ ...auth(session), key: TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY, value: strVal, interrupt: false });
+            } catch {}
+          }
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(`heimdall:preference:${TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY}`, strVal);
+          }
+          return { data: { enabled } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [
+        { type: 'Preferences' as const, id: 'ALL' },
+        { type: 'Preferences' as const, id: TELEMETRY_DEFAULT_ENABLED_PREFERENCE_KEY },
       ],
     }),
     fetchAgentDefaults: build.query<any, { scope?: string } | void>({
@@ -245,4 +317,6 @@ export const {
   useLazyFetchAgentTemplateQuery,
   useFetchExperimentsQuery,
   useSetExperimentMutation,
+  useFetchTelemetryDefaultEnabledQuery,
+  useSaveTelemetryDefaultEnabledMutation,
 } = settingsApi;

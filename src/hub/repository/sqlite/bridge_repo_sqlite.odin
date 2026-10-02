@@ -1,6 +1,7 @@
 package sqlite
 
 import "core:fmt"
+import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -80,7 +81,7 @@ bridge_list_enrollments_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: doma
 bridge_save_bridge_sqlite :: proc(ctx: rawptr, bridge: domain.Bridge) -> (domain.Bridge, bool, domain.Domain_Error) {
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO bridges (bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bridge_id) DO UPDATE SET label=excluded.label, label_is_user_customized=excluded.label_is_user_customized, machine_hostname=excluded.machine_hostname, machine_os=excluded.machine_os, machine_arch=excluded.machine_arch, capabilities_json=excluded.capabilities_json, hub_url=excluded.hub_url, status=excluded.status, bridge_token_hash=excluded.bridge_token_hash, updated_at=excluded.updated_at, last_seen_at=excluded.last_seen_at, revoked_at=excluded.revoked_at, version=excluded.version, commit_sha=excluded.commit_sha, build_timestamp=excluded.build_timestamp, update_status=excluded.update_status, update_error=excluded.update_error;"
+	query := "INSERT INTO bridges (bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error, telemetry_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bridge_id) DO UPDATE SET label=excluded.label, label_is_user_customized=excluded.label_is_user_customized, machine_hostname=excluded.machine_hostname, machine_os=excluded.machine_os, machine_arch=excluded.machine_arch, capabilities_json=excluded.capabilities_json, hub_url=excluded.hub_url, status=excluded.status, bridge_token_hash=excluded.bridge_token_hash, updated_at=excluded.updated_at, last_seen_at=excluded.last_seen_at, revoked_at=excluded.revoked_at, version=excluded.version, commit_sha=excluded.commit_sha, build_timestamp=excluded.build_timestamp, update_status=excluded.update_status, update_error=excluded.update_error, telemetry_enabled=excluded.telemetry_enabled;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Bridge{}, false, domain.domain_error(.Internal_Error, "failed to prepare bridge save")
 	defer sqlite3_finalize(stmt)
 	bind_bridge(stmt, bridge)
@@ -99,7 +100,7 @@ bridge_get_bridge_by_token_hash_sqlite :: proc(ctx: rawptr, token_hash: string) 
 bridge_get_by_column :: proc(ctx: rawptr, column, value: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := fmt.tprintf("SELECT bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error FROM bridges WHERE %s = ?;", column)
+	query := fmt.tprintf("SELECT bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error, telemetry_enabled FROM bridges WHERE %s = ?;", column)
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Bridge{}, false, domain.domain_error(.Internal_Error, "failed to prepare bridge lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, value)
@@ -110,7 +111,7 @@ bridge_get_by_column :: proc(ctx: rawptr, column, value: string) -> (domain.Brid
 bridge_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Bridge, domain.Domain_Error) {
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error FROM bridges WHERE owner_user_id = ? ORDER BY updated_at DESC;"
+	query := "SELECT bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_error, telemetry_enabled FROM bridges WHERE owner_user_id = ? ORDER BY updated_at DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare bridge list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -140,6 +141,7 @@ bind_bridge :: proc(stmt: sqlite3_stmt, bridge: domain.Bridge) {
 	bind_text(stmt, 18, bridge.build_timestamp)
 	bind_text(stmt, 19, bridge.update_status if bridge.update_status != "" else "idle")
 	bind_text(stmt, 20, bridge.update_error)
+	bind_text(stmt, 21, bridge.telemetry_enabled if bridge.telemetry_enabled != "" else "inherit")
 }
 
 enrollment_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Bridge_Enrollment {
@@ -147,7 +149,31 @@ enrollment_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Bridge_Enrollment {
 }
 
 bridge_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Bridge {
-	return domain.Bridge{bridge_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), label = column_text(stmt, 2), label_is_user_customized = column_text_unowned(stmt, 3) == "1", machine_hostname = column_text(stmt, 4), machine_os = column_text(stmt, 5), machine_arch = column_text(stmt, 6), capabilities_json = column_text(stmt, 7), hub_url = column_text(stmt, 8), status = bridge_status_from_string(column_text_unowned(stmt, 9)), bridge_token_hash = column_text(stmt, 10), created_at = column_text(stmt, 11), updated_at = column_text(stmt, 12), last_seen_at = column_text(stmt, 13), revoked_at = column_text(stmt, 14), version = column_text(stmt, 15), commit_sha = column_text(stmt, 16), build_timestamp = column_text(stmt, 17), update_status = column_text(stmt, 18), update_error = column_text(stmt, 19)}
+	te := column_text(stmt, 20)
+	if len(te) == 0 do te = strings.clone("inherit")
+	return domain.Bridge{
+		bridge_id = column_text(stmt, 0),
+		owner_user_id = domain.User_ID(column_text(stmt, 1)),
+		label = column_text(stmt, 2),
+		label_is_user_customized = column_text_unowned(stmt, 3) == "1",
+		machine_hostname = column_text(stmt, 4),
+		machine_os = column_text(stmt, 5),
+		machine_arch = column_text(stmt, 6),
+		capabilities_json = column_text(stmt, 7),
+		hub_url = column_text(stmt, 8),
+		status = bridge_status_from_string(column_text_unowned(stmt, 9)),
+		bridge_token_hash = column_text(stmt, 10),
+		created_at = column_text(stmt, 11),
+		updated_at = column_text(stmt, 12),
+		last_seen_at = column_text(stmt, 13),
+		revoked_at = column_text(stmt, 14),
+		version = column_text(stmt, 15),
+		commit_sha = column_text(stmt, 16),
+		build_timestamp = column_text(stmt, 17),
+		update_status = column_text(stmt, 18),
+		update_error = column_text(stmt, 19),
+		telemetry_enabled = te,
+	}
 }
 
 bridge_status_from_string :: proc(status: string) -> domain.Bridge_Status {

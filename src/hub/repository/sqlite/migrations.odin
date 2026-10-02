@@ -242,7 +242,10 @@ MIGRATION_052_DROP_SHELL_JOBS :: #load("migrations/052_drop_shell_jobs.sql", str
 // MIGRATION_053_BRIDGE_VERSION_AND_UPDATES adds version, commit_sha, build_timestamp, update_status, and update_error to bridges (REQ-BUPD-1).
 MIGRATION_053_BRIDGE_VERSION_AND_UPDATES :: #load("migrations/053_bridge_version_and_updates.sql", string)
 
-migration_order :: [56]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql", "048_task_subscriptions.sql", "048_shell_sessions_kind_and_key.sql", "049_shell_sessions_background_and_conversation.sql", "050_shell_sessions_kill_intent.sql", "051_shell_sessions_run_seq.sql", "052_drop_shell_jobs.sql", "053_bridge_version_and_updates.sql"}
+// MIGRATION_054_BRIDGE_TELEMETRY adds telemetry_enabled to bridges (REQ-TEL-1).
+MIGRATION_054_BRIDGE_TELEMETRY :: #load("migrations/054_bridge_telemetry.sql", string)
+
+migration_order :: [57]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql", "048_task_subscriptions.sql", "048_shell_sessions_kind_and_key.sql", "049_shell_sessions_background_and_conversation.sql", "050_shell_sessions_kill_intent.sql", "051_shell_sessions_run_seq.sql", "052_drop_shell_jobs.sql", "053_bridge_version_and_updates.sql", "054_bridge_telemetry.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -454,6 +457,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "054_bridge_telemetry.sql" && table_column_exists(conn, "bridges", "telemetry_enabled") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -558,6 +565,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "051_shell_sessions_run_seq.sql" do return strings.clone(MIGRATION_051_SHELL_SESSIONS_RUN_SEQ)
 	if name == "052_drop_shell_jobs.sql" do return strings.clone(MIGRATION_052_DROP_SHELL_JOBS)
 	if name == "053_bridge_version_and_updates.sql" do return strings.clone(MIGRATION_053_BRIDGE_VERSION_AND_UPDATES)
+	if name == "054_bridge_telemetry.sql" do return strings.clone(MIGRATION_054_BRIDGE_TELEMETRY)
 	return ""
 }
 

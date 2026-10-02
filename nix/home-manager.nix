@@ -131,7 +131,7 @@ let
     "${config.home.homeDirectory}/.pi/agent/bin"
     "${config.home.homeDirectory}/.local/bin"
     "${ptyHostPkg}/bin"
-    (lib.makeBinPath [ pkgs.bashInteractive pkgs.coreutils ])
+    (lib.makeBinPath [ pkgs.bashInteractive pkgs.coreutils pkgs.telegraf ])
     "/run/current-system/sw/bin"
     "/etc/profiles/per-user/${config.home.username}/bin"
     "/opt/homebrew/bin"
@@ -364,6 +364,7 @@ in
         ++ lib.optional anyBridgeEnabled ptyHostPkg
         ++ lib.optional anyBridgeEnabled ctlPkg
         ++ lib.optional anyBridgeEnabled hamAgentsPkg
+        ++ lib.optional anyBridgeEnabled pkgs.telegraf
         ++ cfg.extraPackages;
 
       xdg.configFile."heimdall/config.toml".source =

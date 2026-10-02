@@ -109,9 +109,17 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 		if n <= 0 do return
 		pending = strings.concatenate({pending, string(buf[:int(n)])})
 		// REQ-XM-4: same first-line HTTP demultiplex as the loopback listener.
-		if first_line && bridge_config.local_proxy_enabled {
+		if first_line {
 			if idx := strings.index_byte(pending, '\n'); idx >= 0 {
-				if bridge_proxy_looks_like_http(strings.trim_space(pending[:idx])) {
+				first_line_str := strings.trim_space(pending[:idx])
+				if bridge_telemetry_looks_like_agents_count(first_line_str) {
+					resp := bridge_telemetry_agents_count_http_response()
+					defer delete(resp)
+					bytes := transmute([]byte)resp
+					_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
+					return
+				}
+				if bridge_config.local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
 					bridge_local_proxy_serve_unix(client, pending)
 					proxy_owned = true
 					return
@@ -165,9 +173,16 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 		// request line means this is a /proxy/<session_id>/<path> call, which owns
 		// the socket for the rest of its life; anything else is the JSONL protocol
 		// and falls through completely unchanged.
-		if first_line && bridge_config.local_proxy_enabled {
+		if first_line {
 			if idx := strings.index_byte(pending, '\n'); idx >= 0 {
-				if bridge_proxy_looks_like_http(strings.trim_space(pending[:idx])) {
+				first_line_str := strings.trim_space(pending[:idx])
+				if bridge_telemetry_looks_like_agents_count(first_line_str) {
+					resp := bridge_telemetry_agents_count_http_response()
+					defer delete(resp)
+					_, _ = net.send_tcp(client, transmute([]byte)resp)
+					return
+				}
+				if bridge_config.local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
 					bridge_local_proxy_serve_tcp(client, pending)
 					proxy_owned = true
 					return

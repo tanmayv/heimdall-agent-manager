@@ -249,6 +249,10 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Local, local_op = "vault.status"}
 	case "agent.vault.get":
 		return Bridge_Agent_Route{kind = .Local, local_op = "vault.get"}
+
+	// ---- telemetry -------------------------------------------------------------
+	case "agent.telemetry.agents_count":
+		return Bridge_Agent_Route{kind = .Local, local_op = "telemetry.agents_count"}
 	}
 	return Bridge_Agent_Route{kind = .Unknown}
 }
@@ -293,7 +297,9 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // shell sessions (bridge-local block on a hub-created run)
 	     "agent.shell.wait",
 	     // vault commands (bridge-local)
-	     "agent.vault.status", "agent.vault.get":
+	     "agent.vault.status", "agent.vault.get",
+	     // telemetry (bridge-local)
+	     "agent.telemetry.agents_count":
 		return true
 	}
 	return false
@@ -413,6 +419,11 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		bridge_agent_write_int(&b, len(key))
 		strings.write_byte(&b, '}')
 		return bridge_local_response_data(request_id, strings.to_string(b))
+	}
+	if op == "telemetry.agents_count" {
+		json := bridge_telemetry_agents_count_json()
+		defer delete(json)
+		return bridge_local_response_data(request_id, json)
 	}
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown local op: ", op}))
 }
