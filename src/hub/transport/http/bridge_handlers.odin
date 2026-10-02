@@ -167,6 +167,19 @@ rename_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	bridge, patch_ok, err := bridge_service.patch_bridge(h.bridges, auth_ctx, bridge_id, label, has_label, telemetry_enabled, has_telemetry)
 	if !patch_ok do return respond_error(err, req.request_id)
+	if has_telemetry && h.bridge_runtime_registry != nil {
+		if project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
+			enabled := bridge.telemetry_enabled == "enabled"
+			cmd_id := fmt.tprintf("cmd_tel_%d", time.to_unix_nanoseconds(time.now()))
+			cmd_payload := bridge_set_telemetry_payload(cmd_id, enabled)
+			defer delete(cmd_payload)
+			_, _ = bridge_runtime_service.send_runtime_command(h.bridge_runtime_registry, project_service.Runtime_Command{
+				bridge_id = bridge.bridge_id,
+				command_id = cmd_id,
+				body_json = cmd_payload,
+			})
+		}
+	}
 	b := strings.builder_make()
 	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -1228,6 +1241,12 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// From here the socket is registered, so other threads (fs/file commands) may
 	// write it — serialize this and every subsequent write.
 	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
+	if bridge.telemetry_enabled == "enabled" {
+		cmd_id := fmt.tprintf("cmd_tel_%d", time.to_unix_nanoseconds(time.now()))
+		payload := bridge_set_telemetry_payload(cmd_id, true)
+		defer delete(payload)
+		_ = write_ws_text_frame_locked(h, client, payload)
+	}
 	// Orphan recovery: replay actionable-task notifications for this bridge's
 	// instances. A cross-bridge cascade (or any status change) that fanned out to
 	// this bridge while it was offline was dropped (fire-and-forget); on reconnect
@@ -2060,6 +2079,16 @@ bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool)
 	strings.write_string(&b, ",\"replaced_existing\":")
 	strings.write_string(&b, "true" if replaced else "false")
 	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
+bridge_set_telemetry_payload :: proc(command_id: string, enabled: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"set_telemetry\",\"command_id\":\"")
+	write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"enabled\":")
+	strings.write_string(&b, "true" if enabled else "false")
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
