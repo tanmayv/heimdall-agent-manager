@@ -431,6 +431,26 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_update_command(conn, text)
 		return
 	}
+	if type == "set_telemetry" {
+		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
+		enabled_str := extract_json_string(text, "enabled", "")
+		defer delete(enabled_str)
+		enabled := enabled_str == "true" || bridge_local_extract_json_bool(text, "enabled", false)
+		if enabled {
+			if !bridge_telemetry_status() {
+				_ = bridge_telemetry_start()
+			}
+		} else {
+			_ = bridge_telemetry_stop()
+		}
+		if command_id != "" && conn != nil {
+			res := bridge_command_result_json(command_id, "succeeded", "telemetry_running" if bridge_telemetry_status() else "telemetry_stopped")
+			defer delete(res)
+			_ = bridge_hub_send(conn, res)
+		}
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
@@ -524,7 +544,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(task_title_fallback)
 		task_title := extract_json_string(text, "title", task_title_fallback)
 		defer delete(task_title)
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title)
+		origin := extract_json_string(text, "origin", "")
+		defer delete(origin)
+		interrupt := extract_json_bool(text, "interrupt", false) || origin == "pausing" || origin == "finishing"
+		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message, task_title, interrupt)
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" {
 			res := bridge_command_result_json(command_id, "succeeded" if ok else "accepted", "")
@@ -2246,6 +2269,18 @@ bridge_runtime_status_active :: proc(runtime_status: string) -> bool {
 	// the instance must stay in the heartbeat digest and must NOT be reconciled to
 	// unreachable, but it is not "ready" (that requires start-success -> "running").
 	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping" || runtime_status == "blocked"
+}
+
+bridge_runtime_active_agent_count :: proc() -> int {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	count := 0
+	for inst in bridge_runtime_instances {
+		if bridge_runtime_status_active(inst.runtime_status) {
+			count += 1
+		}
+	}
+	return count
 }
 
 bridge_runtime_cached_command :: proc(command_id: string) -> (string, bool) {

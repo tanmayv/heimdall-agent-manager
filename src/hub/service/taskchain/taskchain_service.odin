@@ -1194,7 +1194,7 @@ notify_status_policy :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 		tag := "Task Pausing"
 		assignee := primary_assignee_instance(task.assignee_ref_json)
 		defer delete(assignee)
-		instruction := fmt.tprintf("post handoff comment and stash changes, then confirm with ham-ctl task status %s --status paused", task.task_id)
+		instruction := fmt.tprintf("wrap up, post handoff comment, stash/commit changes, then run './.heimdall/bin/ham-ctl task status %s --status paused'", task.task_id)
 		_ = send_task_wake(service, task, assignee, "pausing", tag, "pausing", instruction, actor)
 		if coord != assignee do _ = send_task_wake(service, task, coord, "pausing", tag, "entered pausing state", "", actor)
 	case .Paused, .Cancelled:
@@ -1449,7 +1449,7 @@ build_human_readable_task_notice :: proc(service: ^Taskchain_Service, task: doma
 	if strings.trim_space(excerpt) == "" do return head
 	defer delete(head)
 	ex: string
-	if event_tag == "Task Pausing" {
+	if event_tag == "Task Pausing" || event_tag == "Task Approved" {
 		ex = strings.clone(strings.trim_space(excerpt))
 	} else {
 		ex = truncate_runes(excerpt, NOTICE_EXCERPT_MAX_RUNES)
@@ -1778,7 +1778,11 @@ send_task_wake :: proc(service: ^Taskchain_Service, task: domain.Task, target_in
 	contracts.write_json_string(&b, hm)
 	strings.write_string(&b, `","created_at":"`)
 	contracts.write_json_string(&b, now)
-	strings.write_string(&b, `"}`)
+	strings.write_string(&b, `"`)
+	if origin == "pausing" || origin == "finishing" {
+		strings.write_string(&b, `,"interrupt":true`)
+	}
+	strings.write_string(&b, `}`)
 	sent, _ := project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
 	return sent
 }
@@ -2283,7 +2287,8 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 			if updated.status == .Finishing {
 				assignee := primary_assignee_instance(updated.assignee_ref_json)
 				defer delete(assignee)
-				_ = send_task_wake(service, updated, assignee, "finishing", "Task Approved", "is approved — please wrap up and complete", input.comment, voter_instance_id)
+				instruction := fmt.tprintf("wrap up, commit/push changes, then run './.heimdall/bin/ham-ctl task status %s --status completed'", updated.task_id)
+				_ = send_task_wake(service, updated, assignee, "finishing", "Task Approved", "is approved — please wrap up and complete", instruction, voter_instance_id)
 				_ = send_task_wake(service, updated, coord, "finishing", "Task Approved", "entered finishing state", input.comment, voter_instance_id)
 			} else if updated.status == .Completed {
 				assignee := primary_assignee_instance(updated.assignee_ref_json)

@@ -117,6 +117,7 @@ main :: proc() {
 	bridge_action_scheduler_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	_ = run_bridge_server(bridge_config)
+	bridge_telemetry_stop()
 }
 
 print_usage :: proc() {
@@ -377,6 +378,12 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 	method, route := request_method_route(request)
 	if method == "OPTIONS" {
 		write_response(client, 200, "OK", `{}`)
+		return
+	}
+	if method == "GET" && route == "/api/v1/telemetry/agents-count" {
+		body := bridge_telemetry_agents_count_json()
+		defer delete(body)
+		write_response(client, 200, "OK", body)
 		return
 	}
 	if !contracts.bridge_route_supported(.Bridge, method, route) {
@@ -678,6 +685,10 @@ json_unescape :: proc(value: string, allocator := context.allocator) -> string {
 
 extract_json_int :: proc(body, key: string, fallback: int) -> int {
 	return jsonx.extract_int(body, key, fallback)
+}
+
+extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
+	return jsonx.extract_bool(body, key, fallback)
 }
 
 

@@ -468,7 +468,13 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // the hub supplies a human_message it is delivered verbatim (context-rich line);
 // otherwise we fall back to the legacy generated notice for backwards compat with
 // older hubs that don't populate human_message.
-bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
+bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
+	if interrupt {
+		esc := pty_host_encode_key(instance, .Esc)
+		defer delete(esc)
+		if !bridge_pty_host_send_oneway(socket, esc) do return false
+		time.sleep(300 * time.Millisecond)
+	}
 	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
@@ -493,14 +499,14 @@ bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool
 // in the wrapper-free path: it ensures the daemon is up, then renders+delivers the
 // notice for the given kind ("message" | "task_nudge"). Returns false if the daemon
 // is unavailable or the delivery fails.
-bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
+bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if !ok do return false
 	switch kind {
 	case "message":
 		return bridge_pty_host_deliver_message(socket, instance, sender)
 	case "task_nudge":
-		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message, task_title)
+		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message, task_title, interrupt)
 	}
 	return false
 }

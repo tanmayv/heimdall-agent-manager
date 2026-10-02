@@ -2387,10 +2387,13 @@ test_finishing_state_and_coordinator_notifications :: proc(t: ^testing.T) {
 	for cmd in captured_cmds {
 		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
 		   strings.contains(cmd.body_json, `"action":"finishing"`) &&
-		   strings.contains(cmd.body_json, "is approved — please wrap up and complete") {
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
+		   strings.contains(cmd.body_json, "is approved — please wrap up and complete") &&
+		   strings.contains(cmd.body_json, "wrap up, commit/push changes, then run './.heimdall/bin/ham-ctl task status task_finish_1 --status completed'") {
 			found_assignee_finishing = true
 		}
 		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
 		   strings.contains(cmd.body_json, "entered finishing state") {
 			found_coord_finishing = true
 		}
@@ -2750,13 +2753,14 @@ test_task_pausing_state_and_workflow :: proc(t: ^testing.T) {
 	for cmd in captured_cmds {
 		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
 		   strings.contains(cmd.body_json, `"action":"pausing"`) &&
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
 		   strings.contains(cmd.body_json, "Task Pausing") &&
-		   strings.contains(cmd.body_json, "post handoff comment and stash changes") &&
-		   strings.contains(cmd.body_json, "ham-ctl task status task_pause_1 --status paused") {
+		   strings.contains(cmd.body_json, "wrap up, post handoff comment, stash/commit changes, then run './.heimdall/bin/ham-ctl task status task_pause_1 --status paused'") {
 			found_assignee_pausing = true
 		}
 		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_coord"`) &&
 		   strings.contains(cmd.body_json, `"action":"pausing"`) &&
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
 		   strings.contains(cmd.body_json, "Task Pausing") &&
 		   strings.contains(cmd.body_json, "entered pausing state") {
 			found_coord_pausing = true
@@ -2905,6 +2909,200 @@ test_ensure_durable_actor_fleets_filters_nonexistent_agents :: proc(t: ^testing.
 	if len(fleets) == 1 {
 		testing.expect_value(t, fleets[0].agent_id, "agt_valid_agent")
 	}
+}
+
+@(test)
+test_task_wake_interrupt_and_command_suffix_pausing_and_finishing :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/test_interrupt_suffix_%d.db", os.get_pid())
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	tc_impl := sqlite.Taskchain_Repo_SQLite{conn = &conn}
+	tc_repo := sqlite.new_taskchain_repository(&tc_impl, &conn)
+
+	ag_impl := sqlite.Agent_Repo_SQLite{conn = &conn}
+	ag_repo := sqlite.new_agent_repository(&ag_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	captured_cmds := make([dynamic]project_service.Runtime_Command)
+	defer {
+		for cmd in captured_cmds do delete(cmd.body_json)
+		delete(captured_cmds)
+	}
+	sink := project_service.Bridge_Command_Sink{
+		ctx = rawptr(&captured_cmds),
+		send_runtime_command = proc(ctx: rawptr, cmd: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+			commands := (^[dynamic]project_service.Runtime_Command)(ctx)
+			captured := cmd
+			captured.body_json = strings.clone(cmd.body_json)
+			append(commands, captured)
+			return true, domain.Domain_Error{}
+		},
+	}
+
+	svc := new_taskchain_service_with_runtime(&tc_repo, &ag_repo, sink, &clock, &ids)
+
+	owner := domain.User_ID("user_interrupt_test")
+	chain_id := domain.Task_Chain_ID("chain_interrupt_test")
+
+	chain := domain.Task_Chain{
+		chain_id                      = chain_id,
+		owner_user_id                 = owner,
+		title                         = "Interrupt Test Chain",
+		description                   = "Testing interrupt and command suffix",
+		publish_state                 = .Published,
+		status                        = .Active,
+		kind                          = "test",
+		coordinator_agent_instance_id = "inst_coord",
+		default_reviewer_refs_json    = "[]",
+		created_at                    = "2026-10-02T10:00:00Z",
+		updated_at                    = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_chain(&tc_repo, chain)
+
+	coord_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_coord",
+		owner_user_id     = owner,
+		agent_id          = "agt_coord",
+		bridge_id         = "brg_test",
+		display_name      = "coordinator",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
+
+	worker_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_worker",
+		owner_user_id     = owner,
+		agent_id          = "agt_worker",
+		bridge_id         = "brg_test",
+		display_name      = "worker",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, worker_inst)
+
+	reviewer_inst := domain.Agent_Instance{
+		agent_instance_id = "inst_reviewer",
+		owner_user_id     = owner,
+		agent_id          = "agt_reviewer",
+		bridge_id         = "brg_test",
+		display_name      = "reviewer",
+		runtime_status    = "running",
+		chain_id          = string(chain_id),
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.agent_save_instance(&ag_repo, reviewer_inst)
+
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_coord",
+		agent_id          = "agt_coord",
+		owner_user_id     = owner,
+		role              = "coordinator",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_worker",
+		agent_id          = "agt_worker",
+		owner_user_id     = owner,
+		role              = "worker",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+	_, _, _ = iface.taskchain_save_member(&tc_repo, domain.Task_Chain_Member{
+		chain_id          = chain_id,
+		agent_instance_id = "inst_reviewer",
+		agent_id          = "agt_reviewer",
+		owner_user_id     = owner,
+		role              = "reviewer",
+		created_at        = "2026-10-02T10:00:00Z",
+	})
+
+	// 1. Test Pausing wake: notify_status_policy
+	pause_task := domain.Task{
+		task_id           = "task_wake_pause_1",
+		chain_id          = chain_id,
+		owner_user_id     = owner,
+		title             = "Pausing Wake Task",
+		status            = .Pausing,
+		assignee_ref_json = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		created_at        = "2026-10-02T10:00:00Z",
+		updated_at        = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, pause_task)
+
+	auth := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+	notify_status_policy(&svc, auth, pause_task, chain)
+
+	found_pausing_wake := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
+		   strings.contains(cmd.body_json, `"action":"pausing"`) &&
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
+		   strings.contains(cmd.body_json, "wrap up, post handoff comment, stash/commit changes, then run './.heimdall/bin/ham-ctl task status task_wake_pause_1 --status paused'") {
+			found_pausing_wake = true
+		}
+	}
+	testing.expect(t, found_pausing_wake, "Pausing wake must contain interrupt:true and command suffix")
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
+
+	// 2. Test Finishing wake: evaluate_task_quorum / vote
+	finish_task := domain.Task{
+		task_id            = "task_wake_finish_1",
+		chain_id           = chain_id,
+		owner_user_id      = owner,
+		title              = "Finishing Wake Task",
+		description        = "Finish wake test",
+		publish_state      = .Published,
+		status             = .In_Validation,
+		priority           = .P1,
+		assignee_ref_json  = `{"type":"agent_instance","agent_instance_id":"inst_worker"}`,
+		reviewer_refs_json = `[{"type":"agent_instance","agent_instance_id":"inst_reviewer"}]`,
+		created_at         = "2026-10-02T10:00:00Z",
+		updated_at         = "2026-10-02T10:00:00Z",
+	}
+	_, _, _ = iface.taskchain_save_task(&tc_repo, finish_task)
+
+	auth_rev := contracts.Auth_Context{kind = .Instance_Token, user_id = string(owner), agent_instance_id = "inst_reviewer"}
+	_, vote_ok, vote_err := record_task_vote(&svc, auth_rev, Vote_Input{
+		task_id = "task_wake_finish_1",
+		vote    = "lgtm",
+		comment = "all clear",
+	})
+	testing.expect(t, vote_ok, "record_task_vote must succeed")
+
+	found_finishing_wake := false
+	for cmd in captured_cmds {
+		if strings.contains(cmd.body_json, `"agent_instance_id":"inst_worker"`) &&
+		   strings.contains(cmd.body_json, `"action":"finishing"`) &&
+		   strings.contains(cmd.body_json, `"interrupt":true`) &&
+		   strings.contains(cmd.body_json, "wrap up, commit/push changes, then run './.heimdall/bin/ham-ctl task status task_wake_finish_1 --status completed'") {
+			found_finishing_wake = true
+		}
+	}
+	testing.expect(t, found_finishing_wake, "Finishing wake must contain interrupt:true and command suffix")
+
+	for cmd in captured_cmds do delete(cmd.body_json)
+	clear(&captured_cmds)
 }
 
 

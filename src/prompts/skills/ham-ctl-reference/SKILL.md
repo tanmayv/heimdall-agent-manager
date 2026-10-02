@@ -210,15 +210,25 @@ globally unique — you rarely need `--chain`).
 - `task unsubscribe <task-id>` — unsubscribe from task status events.
 
 ### Task statuses (the only valid `--status` values)
-`assigned`, `queued`, `in_progress`, `in_validation`, `validated_good`,
+`assigned`, `queued`, `in_progress`, `in_validation`, `finishing`, `pausing`, `validated_good`,
 `validated_not_good`, `paused`, `completed`, `cancelled`.
 
 **There is no `approved` status and no explicit approve/complete-task verb.** Approval is
 IMPLICIT: when a task is `in_validation` and its required reviewers reach an LGTM quorum
-with no `ngtm`, the Hub auto-finalizes the task straight to `completed` (that is also the
-only outcome that unblocks dependents — `validated_good` does not). A single `ngtm` moves
-it to `validated_not_good` for rework. So the assignee's job is `--status in_validation`;
-the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
+with no `ngtm`, the Hub auto-finalizes the task straight to `completed` (or to `finishing`
+for assignee wrap-up; that is also the only outcome that unblocks dependents — `validated_good`
+does not). A single `ngtm` moves it to `validated_not_good` for rework. So the assignee's job
+is `--status in_validation`; the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
+
+### Instance lifecycle and pre-completion wrap-up checklist
+Executing `ham-ctl task status <task_id> --status paused` (for pausing) or `ham-ctl task status <task_id> --status completed` (for finishing) causes the dispatcher to recycle/restart or stop the instance.
+
+Before submitting either status command, workers must complete the mandatory pre-completion wrap-up checklist:
+1. Wrap up code changes and verify tests.
+2. Commit and push changes if needed.
+3. Post a handoff/wrap-up comment (`ham-ctl task comment <task_id> --body "..."`) capturing work summary, stash state, and context.
+4. Clean up task descriptions and scratch files.
+5. Run the status transition command.
 
 ## issue — track, discuss, and vote on issues and blockers
 Manage defects, toolchain quirks, environment problems, and out-of-scope bugs across

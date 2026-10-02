@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -9,6 +10,7 @@ import "core:sys/posix"
 import "core:mem"
 import "core:net"
 import "core:testing"
+import "core:thread"
 import ws "odin_test:lib/ws"
 
 // BR-2 runtime-layer tests: the flag gate, env-pair conversion, and spawn-request
@@ -184,6 +186,131 @@ pty_host_user_message_interrupts_with_esc :: proc(t: ^testing.T) {
 	want := []byte{PTY_HOST_T_KEY, 0, 0, 0, 6, 'i', 'n', 's', 't', '_', 'a', 2}
 	testing.expect_value(t, len(ep), len(want))
 	for i in 0..<len(want) do testing.expect_value(t, ep[i], want[i])
+}
+
+// pty_host_deliver_task_nudge_interrupt_sends_esc verifies that
+// bridge_pty_host_deliver_task_nudge sends the ESC key frame when interrupt is true.
+@(test)
+pty_host_deliver_task_nudge_interrupt_sends_esc :: proc(t: ^testing.T) {
+	sock_path := fmt.tprintf("/tmp/test_nudge_esc_%d.sock", os.get_pid())
+	_ = posix.unlink(cstring(raw_data(sock_path)))
+	defer _ = posix.unlink(cstring(raw_data(sock_path)))
+
+	listener_fd := posix.socket(.UNIX, .STREAM)
+	testing.expect(t, listener_fd >= 0, "socket create failed")
+	defer posix.close(listener_fd)
+
+	addr: posix.sockaddr_un
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
+		addr.sun_len = c.uchar(size_of(addr))
+	}
+	addr.sun_family = .UNIX
+	for i in 0..<len(sock_path) do addr.sun_path[i] = c.char(sock_path[i])
+	addr.sun_path[len(sock_path)] = 0
+	bind_res := posix.bind(listener_fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr)))
+	testing.expect_value(t, bind_res, posix.result.OK)
+	listen_res := posix.listen(listener_fd, 8)
+	testing.expect_value(t, listen_res, posix.result.OK)
+
+	Server_Ctx :: struct {
+		listener_fd: posix.FD,
+		first_payload: []byte,
+		total_conns: int,
+	}
+	ctx := Server_Ctx{listener_fd = listener_fd}
+	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload)
+
+	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+		s := (^Server_Ctx)(data)
+		for s.total_conns < 3 {
+			client := posix.accept(s.listener_fd, nil, nil)
+			if client < 0 do break
+			s.total_conns += 1
+			payload, ok := pty_host_read_frame(client)
+			if ok && s.total_conns == 1 {
+				s.first_payload = payload
+			} else if ok {
+				delete(payload)
+			}
+			posix.close(client)
+		}
+	})
+	defer thread.destroy(th)
+
+	delivered := bridge_pty_host_deliver_task_nudge(sock_path, "inst_worker", "task_test_1", "worker", "human notice", "Test Title", true)
+	testing.expect(t, delivered, "deliver_task_nudge with interrupt should succeed")
+
+	thread.join(th)
+
+	testing.expect_value(t, ctx.total_conns, 3)
+	want_esc := []byte{PTY_HOST_T_KEY, 0, 0, 0, 11, 'i', 'n', 's', 't', '_', 'w', 'o', 'r', 'k', 'e', 'r', 2}
+	testing.expect_value(t, len(ctx.first_payload), len(want_esc))
+	for i in 0..<len(want_esc) {
+		if i < len(ctx.first_payload) {
+			testing.expect_value(t, ctx.first_payload[i], want_esc[i])
+		}
+	}
+}
+
+// pty_host_deliver_task_nudge_no_interrupt_no_esc verifies that
+// bridge_pty_host_deliver_task_nudge does NOT send ESC when interrupt is false.
+@(test)
+pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
+	sock_path := fmt.tprintf("/tmp/test_nudge_no_esc_%d.sock", os.get_pid())
+	_ = posix.unlink(cstring(raw_data(sock_path)))
+	defer _ = posix.unlink(cstring(raw_data(sock_path)))
+
+	listener_fd := posix.socket(.UNIX, .STREAM)
+	testing.expect(t, listener_fd >= 0, "socket create failed")
+	defer posix.close(listener_fd)
+
+	addr: posix.sockaddr_un
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
+		addr.sun_len = c.uchar(size_of(addr))
+	}
+	addr.sun_family = .UNIX
+	for i in 0..<len(sock_path) do addr.sun_path[i] = c.char(sock_path[i])
+	addr.sun_path[len(sock_path)] = 0
+	bind_res := posix.bind(listener_fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr)))
+	testing.expect_value(t, bind_res, posix.result.OK)
+	listen_res := posix.listen(listener_fd, 8)
+	testing.expect_value(t, listen_res, posix.result.OK)
+
+	Server_Ctx :: struct {
+		listener_fd: posix.FD,
+		first_payload: []byte,
+		total_conns: int,
+	}
+	ctx := Server_Ctx{listener_fd = listener_fd}
+	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload)
+
+	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+		s := (^Server_Ctx)(data)
+		for s.total_conns < 2 {
+			client := posix.accept(s.listener_fd, nil, nil)
+			if client < 0 do break
+			s.total_conns += 1
+			payload, ok := pty_host_read_frame(client)
+			if ok && s.total_conns == 1 {
+				s.first_payload = payload
+			} else if ok {
+				delete(payload)
+			}
+			posix.close(client)
+		}
+	})
+	defer thread.destroy(th)
+
+	delivered := bridge_pty_host_deliver_task_nudge(sock_path, "inst_worker", "task_test_1", "worker", "human notice", "Test Title", false)
+	testing.expect(t, delivered, "deliver_task_nudge without interrupt should succeed")
+
+	thread.join(th)
+
+	testing.expect_value(t, ctx.total_conns, 2)
+	testing.expect(t, len(ctx.first_payload) > 0, "first payload non-empty")
+	if len(ctx.first_payload) > 0 {
+		testing.expect_value(t, ctx.first_payload[0], u8(PTY_HOST_T_INPUT))
+	}
 }
 
 @(test)

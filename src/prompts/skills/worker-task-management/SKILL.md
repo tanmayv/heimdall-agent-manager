@@ -31,7 +31,17 @@ All commands use the managed wrapper: `./.heimdall/bin/ham-ctl`. For exact flags
 - If you receive an `ngtm` vote, the task moves to `validated_not_good`. Address the feedback, comment what you changed, move it back to `in_progress`, fix, then re-submit `in_validation`.
 
 ### Task status vocabulary
-The valid statuses are exactly: `assigned`, `queued`, `in_progress`, `in_validation`, `validated_good`, `validated_not_good`, `paused`, `completed`, `cancelled`. You mainly drive `in_progress` and `in_validation`; `queued` is a holding state the auto-promotion engine manages; completion happens on the reviewer quorum, not by an explicit command.
+The valid statuses are exactly: `assigned`, `queued`, `in_progress`, `in_validation`, `finishing`, `pausing`, `validated_good`, `validated_not_good`, `paused`, `completed`, `cancelled`. You mainly drive `in_progress` and `in_validation`; `queued` is a holding state the auto-promotion engine manages; completion happens on the reviewer quorum, not by an explicit command (or via `finishing` for assignee wrap-up).
+
+### Instance lifecycle and pre-completion wrap-up checklist
+Executing `ham-ctl task status <task_id> --status paused` (for pausing) or `ham-ctl task status <task_id> --status completed` (for finishing) causes the dispatcher to recycle/restart or stop the instance.
+
+Before submitting either status command, workers must complete the mandatory pre-completion wrap-up checklist:
+1. Wrap up code changes and verify tests.
+2. Commit and push changes if needed.
+3. Post a handoff/wrap-up comment (`ham-ctl task comment <task_id> --body "..."`) capturing work summary, stash state, and context.
+4. Clean up task descriptions and scratch files.
+5. Run the status transition command.
 
 ## 4. Reviewing (when you are a reviewer)
 You cannot vote on a task assigned to you. Vote with `./.heimdall/bin/ham-ctl task vote <task-id> --result lgtm|ngtm [--comment "<specific, actionable feedback>"]` (`--result` must be exactly `lgtm` or `ngtm`). A satisfied LGTM quorum (no `ngtm`) auto-completes the task and unblocks its dependents, so review promptly — a stalled review blocks the chain.
