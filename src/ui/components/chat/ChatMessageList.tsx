@@ -11,6 +11,7 @@ import {
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { extractMessageOptions } from './types';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 const EMPTY_TIMESTAMP: ChatTimestamp = { label: '', iso: '' };
@@ -280,6 +281,7 @@ export default function ChatMessageList({
             ));
             const isClubbedGroup = message.messageType === 'shell_run_group';
             const hideCardChrome = isDivider || isClubbedGroup;
+            const options = extractMessageOptions(message);
             return (
               <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
                 <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
@@ -287,6 +289,21 @@ export default function ChatMessageList({
                   <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'w-full text-primary'}`}>
                     {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <DefaultMessageBody body={message.body} />}
                   </div>
+                  {options.length > 0 && !message.isUser && (
+                    <div data-debug-id={`${debugPrefix}-message-options-${message.messageId}`} className="mt-2 flex flex-wrap gap-1.5">
+                      {options.map((option, optIdx) => (
+                        <button
+                          key={optIdx}
+                          type="button"
+                          data-debug-id={`${debugPrefix}-option-chip-${message.messageId}-${optIdx}`}
+                          onClick={() => reply(option)}
+                          className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs font-medium text-accent hover:bg-accent/20 active:scale-95 transition-all cursor-pointer"
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {!hideCardChrome && (
                     <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
                       <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />

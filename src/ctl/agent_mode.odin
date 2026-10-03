@@ -1320,6 +1320,13 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 			}
 		}
 	}
+	opts := collect_multi_values(args, "--options", "--option", "--expected-answers", "--choices")
+	defer delete(opts)
+	if len(opts) > 0 {
+		opt_field := json_string_array_field("options", opts[:])
+		defer delete(opt_field)
+		return json_object(json_kv("to", to), json_kv("body", chat_body), opt_field)
+	}
 	return json_object(json_kv("to", to), json_kv("body", chat_body))
 }
 
@@ -1789,6 +1796,7 @@ print_help_chat :: proc() {
 	fmt.println("  read [--limit N] [--since T] [--include-read] [--transcript]   Read messages.")
 	fmt.println("      [--agent-instance-id <inst-id>]   Read another agent's inbox (same owner). Default: your own inbox.")
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
+	fmt.println("      [--options <a,b> | --option <opt>] [--expected-answers <...>] [--choices <...>]")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              Rename THIS conversation.")
 	fmt.println("")

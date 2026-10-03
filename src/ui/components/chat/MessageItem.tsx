@@ -8,6 +8,7 @@ import {
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { extractMessageOptions } from './types';
 import Markdown from '../Markdown';
 
 export interface MessageItemProps {
@@ -19,12 +20,15 @@ export interface MessageItemProps {
     isUser?: boolean;
     createdUnixMs?: number;
     timestamp?: string;
+    metadata?: any;
+    metadata_json?: string;
     [key: string]: any;
   };
+  onReply?: (reply: string) => void;
   className?: string;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({ message, className = '' }) => {
+export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, className = '' }) => {
   const messageId = String(message.messageId || message.id || '');
   const body = message.body || '';
   const isArmored = isVaultArmored(body);
@@ -33,6 +37,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, className = '
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKey = useSelector(selectRawVaultKeyHex);
   const [decryptedBody, setDecryptedBody] = useState<string | null>(null);
+  const options = extractMessageOptions(message);
 
   useEffect(() => {
     let active = true;
@@ -77,6 +82,21 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, className = '
           <Markdown source={decryptedBody ?? body} compact copyAll={false} />
         )}
       </div>
+      {options.length > 0 && !message.isUser && (
+        <div data-debug-id={`message-options-${messageId}`} className="mt-2 flex flex-wrap gap-1.5">
+          {options.map((option, optIdx) => (
+            <button
+              key={optIdx}
+              type="button"
+              data-debug-id={`option-chip-${messageId}-${optIdx}`}
+              onClick={() => onReply?.(option)}
+              className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-xs font-medium text-accent hover:bg-accent/20 active:scale-95 transition-all cursor-pointer"
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

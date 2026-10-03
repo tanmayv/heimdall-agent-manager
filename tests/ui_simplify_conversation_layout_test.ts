@@ -14,6 +14,11 @@ const THREAD_PAGE_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/Conversati
 const CHAIN_OVERVIEW_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChainOverviewPanel.tsx');
 const APP_SHELL_FILE = path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx');
 const BOTTOM_DOCK_FILE = path.join(REPO_ROOT, 'src/ui/components/shell/BottomDock.tsx');
+const MESSAGE_ITEM_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/MessageItem.tsx');
+const CHAT_MESSAGE_ITEM_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChatMessageItem.tsx');
+const CTL_AGENT_MODE_FILE = path.join(REPO_ROOT, 'src/ctl/agent_mode.odin');
+const HUB_AGENT_ACTION_FILE = path.join(REPO_ROOT, 'src/hub/transport/http/agent_action_handlers.odin');
+const HUB_CONTENT_SERVICE_FILE = path.join(REPO_ROOT, 'src/hub/service/content/content_service.odin');
 
 test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with no reserved empty gutter', () => {
   const content = fs.readFileSync(BUBBLES_FILE, 'utf8');
@@ -854,6 +859,143 @@ test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, resizing drag handle is
     'Desktop must retain minimum height clamping'
   );
 });
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: extractMessageOptions parses options from array, string metadata, and metadata_json', async () => {
+  const { extractMessageOptions } = await import('../src/ui/components/chat/types.ts');
+
+  // Object with array options
+  assert.deepEqual(
+    extractMessageOptions({ metadata: { options: ['Deploy', 'Rollback', 'Wait'] } }),
+    ['Deploy', 'Rollback', 'Wait'],
+    'Must parse string array from metadata.options'
+  );
+
+  // Stringified metadata
+  assert.deepEqual(
+    extractMessageOptions({ metadata: JSON.stringify({ options: ['Alpha', 'Beta'] }) }),
+    ['Alpha', 'Beta'],
+    'Must parse JSON string in metadata'
+  );
+
+  // Fallback to metadata_json
+  assert.deepEqual(
+    extractMessageOptions({ metadata_json: JSON.stringify({ options: ['Yes', 'No'] }) }),
+    ['Yes', 'No'],
+    'Must parse JSON string in metadata_json'
+  );
+
+  // Empty or missing metadata returns empty array (normal messages without options)
+  assert.deepEqual(extractMessageOptions({ metadata: {} }), [], 'Empty metadata object returns empty array');
+  assert.deepEqual(extractMessageOptions({}), [], 'Missing metadata returns empty array');
+  assert.deepEqual(extractMessageOptions({ metadata: { options: [] } }), [], 'Empty options array returns empty array');
+  assert.deepEqual(extractMessageOptions({ metadata: { options: ['', '   '] } }), [], 'Whitespace-only options are filtered out');
+});
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: ChatMessageList renders interactive option chips below agent messages with options', () => {
+  const content = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('extractMessageOptions'),
+    'ChatMessageList must import and use extractMessageOptions'
+  );
+  assert.ok(
+    content.includes('options.length > 0 && !message.isUser') || content.includes('options.length > 0 && !msg.isUser'),
+    'ChatMessageList must only render option chips for messages with options from non-user (agent)'
+  );
+  assert.ok(
+    content.includes('data-debug-id={`${debugPrefix}-option-chip-${message.messageId}-${optIdx}`}') ||
+    content.includes('option-chip'),
+    'ChatMessageList must render option chips with option-chip debug ids'
+  );
+  assert.ok(
+    content.includes('onClick={() => reply(option)}') || content.includes('onClick={() => reply(opt)}'),
+    'Clicking an option chip must invoke reply callback with the option text'
+  );
+});
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: MessageItem and ChatMessageItem support quick-reply option chips and onReply callback', () => {
+  const itemContent = fs.readFileSync(MESSAGE_ITEM_FILE, 'utf8');
+  assert.ok(
+    itemContent.includes('onReply?: (reply: string) => void'),
+    'MessageItemProps must include optional onReply callback'
+  );
+  assert.ok(
+    itemContent.includes('extractMessageOptions'),
+    'MessageItem must use extractMessageOptions'
+  );
+  assert.ok(
+    itemContent.includes('data-debug-id={`option-chip-${messageId}-${optIdx}`}') ||
+    itemContent.includes('option-chip'),
+    'MessageItem must render option chip buttons'
+  );
+  assert.ok(
+    itemContent.includes('onClick={() => onReply?.(option)}') || itemContent.includes('onClick={() => onReply?.(opt)}'),
+    'Clicking option chip in MessageItem must invoke onReply'
+  );
+
+  const chatItemContent = fs.readFileSync(CHAT_MESSAGE_ITEM_FILE, 'utf8');
+  assert.ok(
+    chatItemContent.includes('ChatMessageItem'),
+    'ChatMessageItem must export ChatMessageItem component'
+  );
+});
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: ConversationThreadPage passes handleSendReply as onReply to ChatMessageList', () => {
+  const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('async function handleSendReply') || content.includes('const handleSendReply ='),
+    'ConversationThreadPage must define handleSendReply'
+  );
+  assert.ok(
+    content.includes('onReply={handleSendReply}'),
+    'ConversationThreadPage must pass handleSendReply to ChatMessageList onReply'
+  );
+  assert.ok(
+    content.includes('sendMessage({ conversationId, body: sendBody'),
+    'handleSendReply must send the reply text via sendMessage mutation'
+  );
+});
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: CLI agent_mode parses --options and aliases into options array payload', () => {
+  const content = fs.readFileSync(CTL_AGENT_MODE_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('collect_multi_values(args, "--options", "--option", "--expected-answers", "--choices")'),
+    'agent_mode must parse --options, --option, --expected-answers, --choices using collect_multi_values'
+  );
+  assert.ok(
+    content.includes('json_string_array_field("options", opts[:])'),
+    'agent_mode must format options array into JSON payload'
+  );
+  assert.ok(
+    content.includes('return json_object(json_kv("to", to), json_kv("body", chat_body))'),
+    'agent_mode must keep baseline plaintext JSON payload when no options are provided'
+  );
+});
+
+test('REQ-CHAT-EXPECTED-ANSWERS-19: Backend preserves options array in message metadata_json', () => {
+  const actionContent = fs.readFileSync(HUB_AGENT_ACTION_FILE, 'utf8');
+  assert.ok(
+    actionContent.includes('json_array_optional(params, "options")'),
+    'agent_action_chat_send_to_user_handler must extract options array from params'
+  );
+  assert.ok(
+    actionContent.includes('metadata_json = fmt.tprintf("{{\\"options\\":%s}}", options)'),
+    'agent_action_chat_send_to_user_handler must format metadata_json containing options array'
+  );
+
+  const serviceContent = fs.readFileSync(HUB_CONTENT_SERVICE_FILE, 'utf8');
+  assert.ok(
+    serviceContent.includes('Message_Input :: struct { body,artifact_ids_json,message_type,metadata_json: string }'),
+    'Message_Input struct must include metadata_json'
+  );
+  assert.ok(
+    serviceContent.includes('metadata_json=input.metadata_json'),
+    'send_agent_message must assign metadata_json from input'
+  );
+});
+
 
 
 

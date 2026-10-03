@@ -107,3 +107,25 @@ export type ChatComposerProps = {
   // the soft keyboard via safe-area + visualViewport insets. No effect on desktop.
   mobileBottomPinned?: boolean;
 };
+
+export function extractMessageOptions(message: { metadata?: any; metadata_json?: string }): string[] {
+  let meta = message.metadata;
+  if (typeof meta === 'string') {
+    try {
+      meta = JSON.parse(meta);
+    } catch {
+      meta = null;
+    }
+  }
+  if (!meta && message.metadata_json) {
+    try {
+      meta = JSON.parse(message.metadata_json);
+    } catch {
+      meta = null;
+    }
+  }
+  if (meta && Array.isArray(meta.options)) {
+    return meta.options.map((opt: any) => String(opt)).filter((opt: string) => opt.trim() !== '');
+  }
+  return [];
+}

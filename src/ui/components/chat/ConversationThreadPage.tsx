@@ -1195,6 +1195,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     }
   }
 
+  async function handleSendReply(text: string) {
+    const sendBody = text.trim();
+    if (!sendBody || !conversationId) return;
+    const local = optimisticUserMessage(conversationId, sendBody);
+    const localId = msgId(local, 0);
+    setError('');
+    setLocalMessages((current) => [...current, local]);
+    try {
+      const result = await sendMessage({ conversationId, body: sendBody, artifactIds: [] }).unwrap();
+      const sent = sentMessageFromResult(result);
+      setLocalMessages((current) => current.map((message) => {
+        if (msgId(message, 0) !== localId) return message;
+        return sent ? { ...sent, body: String(sent.body || sendBody), direction: sent.direction || 'user_to_agent', artifact_ids_json: '[]' } : { ...message, sending: false };
+      }));
+      void messagesQuery.refetch();
+    } catch (err: any) {
+      const message = errMsg(err, 'Send failed');
+      setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedLocalMessage(item, message) : item)));
+    }
+  }
+
   async function requestPane() {
     if (paneCaptureDisabled) return;
     const requestId = `cap_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2074,6 +2095,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         hasMore={olderHasMore && Boolean(olderCursor)}
         loadingOlder={olderMessagesState.isFetching}
         onLoadOlder={loadOlderMessages}
+        onReply={handleSendReply}
         formatTimestamp={formatMessageTimestamp}
         getDeliveryStatus={deliveryStatusFor}
         agentIsWorking={isWorking}

@@ -164,3 +164,102 @@ test_chat_read_wrong_key_fallback :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(fallback, orig_msg), "must not leak plaintext with wrong key")
 	testing.expect(t, strings.contains(fallback, "[Encrypted: vault:v1:"), "must provide fallback on wrong key")
 }
+
+@(test)
+test_chat_send_with_comma_separated_options :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("chat-send-comma-separated-options")
+	defer ctl_vault_test_sandbox_close(&sb)
+
+	orig_to := "user"
+	orig_body := "Please choose one of the available deployments."
+	args := []string{
+		"--options", "Staging,Production,Canary",
+	}
+
+	out := ctl_agentmode_chat_send_params(orig_to, orig_body, args)
+
+	testing.expect(t, strings.contains(out, `"to":"user"`), "to must be user")
+	testing.expect(t, strings.contains(out, orig_body), "body must be preserved")
+	testing.expect(t, strings.contains(out, `"options":["Staging","Production","Canary"]`), "options array must match comma-separated input")
+
+	val, err := json.parse_string(out, allocator = context.temp_allocator)
+	testing.expect(t, err == .None, "params must be valid JSON")
+	obj := val.(json.Object)
+	opts := obj["options"].(json.Array)
+	testing.expect_value(t, len(opts), 3)
+	testing.expect_value(t, string(opts[0].(json.String)), "Staging")
+	testing.expect_value(t, string(opts[1].(json.String)), "Production")
+	testing.expect_value(t, string(opts[2].(json.String)), "Canary")
+}
+
+@(test)
+test_chat_send_with_repeated_option_flags :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("chat-send-repeated-option-flags")
+	defer ctl_vault_test_sandbox_close(&sb)
+
+	orig_to := "user"
+	orig_body := "Select an action."
+	args := []string{
+		"--option", "Approve",
+		"--option", "Reject",
+	}
+
+	out := ctl_agentmode_chat_send_params(orig_to, orig_body, args)
+
+	testing.expect(t, strings.contains(out, `"options":["Approve","Reject"]`), "options array must collect repeated --option flags")
+
+	val, err := json.parse_string(out, allocator = context.temp_allocator)
+	testing.expect(t, err == .None, "params must be valid JSON")
+	obj := val.(json.Object)
+	opts := obj["options"].(json.Array)
+	testing.expect_value(t, len(opts), 2)
+	testing.expect_value(t, string(opts[0].(json.String)), "Approve")
+	testing.expect_value(t, string(opts[1].(json.String)), "Reject")
+}
+
+@(test)
+test_chat_send_with_expected_answers_and_choices_aliases :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("chat-send-aliases")
+	defer ctl_vault_test_sandbox_close(&sb)
+
+	orig_to := "user"
+	orig_body := "Proceed with migration?"
+	args := []string{
+		"--expected-answers", "Yes,No",
+		"--choices", "Postpone",
+	}
+
+	out := ctl_agentmode_chat_send_params(orig_to, orig_body, args)
+
+	testing.expect(t, strings.contains(out, `"options":["Yes","No","Postpone"]`), "options array must include aliases")
+
+	val, err := json.parse_string(out, allocator = context.temp_allocator)
+	testing.expect(t, err == .None, "params must be valid JSON")
+	obj := val.(json.Object)
+	opts := obj["options"].(json.Array)
+	testing.expect_value(t, len(opts), 3)
+}
+
+@(test)
+test_chat_send_without_options_omits_options_key :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("chat-send-no-options")
+	defer ctl_vault_test_sandbox_close(&sb)
+
+	orig_to := "user"
+	orig_body := "Plain text question with no suggested options."
+	args := []string{}
+
+	out := ctl_agentmode_chat_send_params(orig_to, orig_body, args)
+
+	testing.expect(t, strings.contains(out, `"to":"user"`), "to must be user")
+	testing.expect(t, strings.contains(out, orig_body), "body must be preserved")
+	testing.expect(t, !strings.contains(out, `"options"`), "options field must not exist in output when omitted")
+}

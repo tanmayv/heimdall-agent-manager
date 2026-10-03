@@ -38,7 +38,15 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
-	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids")})
+	metadata_json := ""
+	if options := json_array_optional(params, "options"); options != "" {
+		metadata_json = fmt.tprintf("{{\"options\":%s}}", options)
+	} else if meta_obj := json_object_raw(params, "metadata"); meta_obj != "" {
+		metadata_json = meta_obj
+	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
+		metadata_json = meta_str
+	}
+	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), metadata_json = metadata_json})
 	if !saved do return respond_error(err, req.request_id)
 	// Notify the human's UI so it can toast + raise an OS notification. This is a
 	// metadata event with a SHORT body preview (<=140 chars) — the full body is
@@ -123,7 +131,15 @@ agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Re
 	params := json_object_raw(req.body, "params")
 	target := json_string(params, "to_instance")
 	if target == "" do target = json_string(params, "target_agent_instance_id")
-	msg, saved, err := content_service.send_agent_to_agent(h.content, auth, target, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids")})
+	metadata_json := ""
+	if options := json_array_optional(params, "options"); options != "" {
+		metadata_json = fmt.tprintf("{{\"options\":%s}}", options)
+	} else if meta_obj := json_object_raw(params, "metadata"); meta_obj != "" {
+		metadata_json = meta_obj
+	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
+		metadata_json = meta_str
+	}
+	msg, saved, err := content_service.send_agent_to_agent(h.content, auth, target, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), metadata_json = metadata_json})
 	if !saved do return respond_error(err, req.request_id)
 	// Q3: id-free plain phrase (never resolve the target's name in the emit path).
 	publish_agent_action(h, inst, "chat_send_agent", "messaged another agent")
