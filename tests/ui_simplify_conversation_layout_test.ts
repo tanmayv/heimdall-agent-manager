@@ -379,5 +379,416 @@ test('REQ-AUTO-STARTUP-PANE-16: ConversationThreadPage auto-expands capture pane
   );
 });
 
+// ---------------------------------------------------------------------------
+// REQ-TEST-VERIFICATION-17: Regression tests for command clubbing, start indicators,
+// and auto-startup capture pane
+// ---------------------------------------------------------------------------
+
+test('REQ-TEST-VERIFICATION-17: Consecutive shell_run messages (>= 2) group with count and formatted start/end time range', async () => {
+  const {
+    groupTranscriptMessages,
+    formatClubbedTimeRange,
+    formatClubbedRunLabel,
+  } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeRun = (id: string, time: number): any => ({
+    key: id,
+    messageId: id,
+    body: '',
+    isUser: false,
+    createdUnixMs: time,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: 'shell_run',
+    metadata: { session_id: `sess_${id}` },
+  });
+
+  const mockFormatTimestamp = (ms: number) => {
+    const d = new Date(ms);
+    const hours = d.getUTCHours();
+    const minutes = String(d.getUTCMinutes()).padStart(2, '0');
+    return { label: `${hours}:${minutes} UTC`, iso: d.toISOString() };
+  };
+
+  // 1. Grouping 2 consecutive runs
+  const runs2 = [
+    makeRun('run-1', 1700000000000),
+    makeRun('run-2', 1700000300000),
+  ];
+  const grouped2 = groupTranscriptMessages(runs2);
+  assert.equal(grouped2.length, 1);
+  assert.equal(grouped2[0].messageType, 'shell_run_group');
+  assert.equal(grouped2[0].metadata?.count, 2);
+  assert.equal(grouped2[0].metadata?.startUnixMs, 1700000000000);
+  assert.equal(grouped2[0].metadata?.endUnixMs, 1700000300000);
+  assert.equal(formatClubbedRunLabel(grouped2[0].metadata?.count), 'Ran 2 commands');
+  const timeRange2 = formatClubbedTimeRange(
+    grouped2[0].metadata?.startUnixMs,
+    grouped2[0].metadata?.endUnixMs,
+    mockFormatTimestamp,
+  );
+  assert.equal(timeRange2, '22:13 UTC \u2013 22:18 UTC');
+
+  // 2. Grouping 4 consecutive runs with multiple intervals
+  const runs4 = [
+    makeRun('run-a', 1700000000000),
+    makeRun('run-b', 1700000100000),
+    makeRun('run-c', 1700000200000),
+    makeRun('run-d', 1700000600000),
+  ];
+  const grouped4 = groupTranscriptMessages(runs4);
+  assert.equal(grouped4.length, 1);
+  assert.equal(grouped4[0].messageType, 'shell_run_group');
+  assert.equal(grouped4[0].metadata?.count, 4);
+  assert.equal(grouped4[0].metadata?.clubbedRuns.length, 4);
+  assert.equal(formatClubbedRunLabel(grouped4[0].metadata?.count), 'Ran 4 commands');
+  const timeRange4 = formatClubbedTimeRange(
+    grouped4[0].metadata?.startUnixMs,
+    grouped4[0].metadata?.endUnixMs,
+    mockFormatTimestamp,
+  );
+  assert.equal(timeRange4, '22:13 UTC \u2013 22:23 UTC');
+
+  // 3. Same start and end timestamp returns single time formatted
+  const sameTimeRange = formatClubbedTimeRange(
+    1700000000000,
+    1700000000000,
+    mockFormatTimestamp,
+  );
+  assert.equal(sameTimeRange, '22:13 UTC');
+});
+
+test('REQ-TEST-VERIFICATION-17: Group toggle expands/collapses the full command list', async () => {
+  const {
+    createClubbedGroupState,
+    toggleClubbedGroup,
+  } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  // Initial state is collapsed
+  let state = createClubbedGroupState(false);
+  assert.equal(state.isGroupExpanded, false, 'Group must default to collapsed');
+
+  // Toggle opens
+  state = toggleClubbedGroup(state);
+  assert.equal(state.isGroupExpanded, true, 'First toggle must expand group');
+
+  // Toggle closes
+  state = toggleClubbedGroup(state);
+  assert.equal(state.isGroupExpanded, false, 'Second toggle must collapse group');
+
+  // Component structure checks for ClubbedRunGroup in ShellRunIndicator.tsx
+  const shellRunContent = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shells/ShellRunIndicator.tsx'), 'utf8');
+  assert.ok(
+    shellRunContent.includes('data-debug-id="clubbed-run-group-toggle"'),
+    'ClubbedRunGroup must provide clubbed-run-group-toggle button'
+  );
+  assert.ok(
+    shellRunContent.includes('aria-expanded={expanded}'),
+    'Toggle button must bind aria-expanded={expanded}'
+  );
+  assert.ok(
+    shellRunContent.includes('{expanded ? \'⌄\' : \'›\'}'),
+    'Toggle chevron must reflect expanded state (› collapsed, ⌄ expanded)'
+  );
+  assert.ok(
+    shellRunContent.includes('{expanded && (') && shellRunContent.includes('data-debug-id="clubbed-run-group-items"'),
+    'clubbed-run-group-items container must only render when expanded is true'
+  );
+
+  // ChatMessageList suppresses card bubble chrome for clubbed groups
+  const chatListContent = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+  assert.ok(
+    chatListContent.includes('const isClubbedGroup = message.messageType === \'shell_run_group\';'),
+    'ChatMessageList must detect shell_run_group message type'
+  );
+  assert.ok(
+    chatListContent.includes('hideCardChrome = isDivider || isClubbedGroup'),
+    'hideCardChrome must hide bubble card chrome for clubbed groups'
+  );
+});
+
+test('REQ-TEST-VERIFICATION-17: Individual commands inside clubbed group can be toggled expanded/collapsed independently', async () => {
+  const {
+    createClubbedGroupState,
+    toggleClubbedCommand,
+  } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  let state = createClubbedGroupState(true);
+  assert.equal(state.expandedCommandIds.size, 0, 'Inner commands must default to collapsed');
+
+  // Expand command 1
+  state = toggleClubbedCommand(state, 'cmd_1');
+  assert.ok(state.expandedCommandIds.has('cmd_1'), 'cmd_1 must be expanded');
+  assert.equal(state.expandedCommandIds.size, 1);
+
+  // Expand command 2 independently
+  state = toggleClubbedCommand(state, 'cmd_2');
+  assert.ok(state.expandedCommandIds.has('cmd_1'), 'cmd_1 must remain expanded');
+  assert.ok(state.expandedCommandIds.has('cmd_2'), 'cmd_2 must be expanded');
+  assert.equal(state.expandedCommandIds.size, 2);
+
+  // Collapse command 1 while keeping command 2 expanded
+  state = toggleClubbedCommand(state, 'cmd_1');
+  assert.ok(!state.expandedCommandIds.has('cmd_1'), 'cmd_1 must be collapsed');
+  assert.ok(state.expandedCommandIds.has('cmd_2'), 'cmd_2 must still be expanded');
+  assert.equal(state.expandedCommandIds.size, 1);
+
+  // Component structure checks for ShellRunRow rendering inside ClubbedRunGroup
+  const shellRunContent = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shells/ShellRunIndicator.tsx'), 'utf8');
+  assert.ok(
+    shellRunContent.includes('<ShellRunRow key={sessionId} session={session} defaultExpanded={false} />'),
+    'ClubbedRunGroup must render ShellRunRow with defaultExpanded={false}'
+  );
+  assert.ok(
+    shellRunContent.includes('data-debug-id={`shell-run-toggle-${session.session_id}`}') &&
+    shellRunContent.includes('{expanded && <RunOutput session={session} />}'),
+    'Each ShellRunRow must have independent toggle button that controls RunOutput expansion'
+  );
+});
+
+test('REQ-TEST-VERIFICATION-17: Single isolated shell_run message renders as a single row', async () => {
+  const { groupTranscriptMessages } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeMsg = (id: string, type: string, body = ''): any => ({
+    key: id,
+    messageId: id,
+    body,
+    isUser: type === 'user',
+    createdUnixMs: 1000,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: type,
+    metadata: type === 'shell_run' ? { session_id: `sess_${id}` } : {},
+  });
+
+  // Isolated run between user and assistant messages
+  const input = [
+    makeMsg('u1', 'user', 'Run a command'),
+    makeMsg('r1', 'shell_run'),
+    makeMsg('a1', 'assistant', 'Done!'),
+  ];
+  const output = groupTranscriptMessages(input);
+  assert.equal(output.length, 3, 'Isolated run must not change message count');
+  assert.equal(output[0].messageType, 'user');
+  assert.equal(output[1].messageType, 'shell_run', 'Isolated run must remain shell_run type (not shell_run_group)');
+  assert.equal(output[1].metadata?.clubbedRuns, undefined, 'Isolated run must not have clubbedRuns metadata');
+  assert.equal(output[2].messageType, 'assistant');
+
+  // Single run alone in thread
+  const single = groupTranscriptMessages([makeMsg('r-solo', 'shell_run')]);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].messageType, 'shell_run');
+
+  // Verify ConversationThreadPage renders standalone ShellRunRow for single run
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  assert.ok(
+    threadContent.includes('if (message.messageType === \'shell_run\')') &&
+    threadContent.includes('return <ShellRunRow session={session} />;'),
+    'ConversationThreadPage must render single ShellRunRow for isolated shell_run message'
+  );
+});
+
+test('REQ-TEST-VERIFICATION-17: Agent start/restart system messages render as subtle divider indicators with time', async () => {
+  const {
+    isAgentStartMessage,
+    formatAgentStartDividerText,
+    groupTranscriptMessages,
+  } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeSystem = (id: string, body: string, time = 1700000000000, metadata: any = {}): any => ({
+    key: id,
+    messageId: id,
+    body,
+    isUser: false,
+    createdUnixMs: time,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: 'system',
+    metadata,
+  });
+
+  // Verify various startup/restart phrases are recognized
+  assert.ok(isAgentStartMessage(makeSystem('s1', 'Agent has started and is ready.')));
+  assert.ok(isAgentStartMessage(makeSystem('s2', 'Agent restarted after crash.')));
+  assert.ok(isAgentStartMessage(makeSystem('s3', 'system ready for commands')));
+  assert.ok(isAgentStartMessage({ messageType: 'agent_start' } as any));
+  assert.ok(isAgentStartMessage(makeSystem('s4', '', 0, { system_type: 'agent_start' })));
+  assert.ok(isAgentStartMessage(makeSystem('s5', '', 0, { system_type: 'startup' })));
+
+  // Single isolated start message preserves system message type
+  const solo = groupTranscriptMessages([makeSystem('s1', 'Agent has started and is ready.', 1700000000000)]);
+  assert.equal(solo.length, 1);
+  assert.equal(solo[0].messageType, 'system');
+
+  // Verify divider text formatting for single start
+  const dividerText = formatAgentStartDividerText(1, '10:14 AM');
+  assert.equal(dividerText, 'agent started (10:14 AM)');
+
+  // Verify ConversationThreadPage subtle divider DOM structure and classes
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  assert.ok(
+    threadContent.includes('data-debug-id={`conversation-agent-start-${message.messageId}`}') &&
+    threadContent.includes('className="my-2 flex w-full items-center gap-3"') &&
+    threadContent.includes('border-t border-subtle/40') &&
+    threadContent.includes('agent started ({time})'),
+    'ConversationThreadPage must render subtle centered divider with border lines and agent started ({time})'
+  );
+
+  // Verify ChatMessageList suppresses bubble borders and copy buttons for dividers
+  const chatListContent = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+  assert.ok(
+    chatListContent.includes('isDivider') &&
+    chatListContent.includes('message.body.toLowerCase().includes(\'started\')') &&
+    chatListContent.includes('!hideCardChrome &&'),
+    'ChatMessageList must mark start notices as isDivider and suppress bubble card chrome'
+  );
+});
+
+test('REQ-TEST-VERIFICATION-17: Consecutive agent starts are clubbed with count and time range', async () => {
+  const {
+    groupTranscriptMessages,
+    formatAgentStartDividerText,
+    formatClubbedTimeRange,
+  } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeStart = (id: string, time: number): any => ({
+    key: id,
+    messageId: id,
+    body: 'Agent has started and is ready.',
+    isUser: false,
+    createdUnixMs: time,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: 'system',
+    metadata: {},
+  });
+
+  const mockFormatTimestamp = (ms: number) => ({
+    label: ms === 1000 ? '10:00 AM' : ms === 2000 ? '10:02 AM' : '10:05 AM',
+    iso: new Date(ms).toISOString(),
+  });
+
+  // 3 consecutive agent starts
+  const starts = [
+    makeStart('st1', 1000),
+    makeStart('st2', 2000),
+    makeStart('st3', 3000),
+  ];
+  const clubbed = groupTranscriptMessages(starts);
+  assert.equal(clubbed.length, 1);
+  assert.equal(clubbed[0].messageType, 'agent_start_clubbed');
+  assert.equal(clubbed[0].metadata?.count, 3);
+  assert.equal(clubbed[0].metadata?.startUnixMs, 1000);
+  assert.equal(clubbed[0].metadata?.endUnixMs, 3000);
+
+  const timeRange = formatClubbedTimeRange(
+    clubbed[0].metadata?.startUnixMs,
+    clubbed[0].metadata?.endUnixMs,
+    mockFormatTimestamp,
+  );
+  assert.equal(timeRange, '10:00 AM \u2013 10:05 AM');
+
+  const dividerText = formatAgentStartDividerText(clubbed[0].metadata?.count, timeRange);
+  assert.equal(dividerText, 'agent started 3 times (10:00 AM \u2013 10:05 AM)');
+
+  // Verify ConversationThreadPage renders clubbed start divider
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  assert.ok(
+    threadContent.includes('message.messageType === \'agent_start_clubbed\'') &&
+    threadContent.includes('data-debug-id={`conversation-agent-start-clubbed-${message.messageId}`}') &&
+    threadContent.includes('agent started {count} times ({timeStr})'),
+    'ConversationThreadPage must render clubbed divider with agent started {count} times ({timeStr})'
+  );
+});
+
+test('REQ-TEST-VERIFICATION-17: Startup phase triggers capture pane expansion and running state triggers auto-close with manual override preservation', async () => {
+  const { computeAutoStartupPaneState } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  // 1. Stopped -> Starting: auto-expands pane
+  const step1 = computeAutoStartupPaneState({
+    prevStatus: 'stopped',
+    runtimeStatus: 'starting',
+    userManuallyToggled: false,
+    currentExpanded: false,
+  });
+  assert.equal(step1.isPaneExpanded, true, 'Transition into starting must auto-expand capture pane');
+  assert.equal(step1.userManuallyToggled, false);
+
+  // 2. Starting -> Running: auto-closes pane
+  const step2 = computeAutoStartupPaneState({
+    prevStatus: 'starting',
+    runtimeStatus: 'running',
+    userManuallyToggled: false,
+    currentExpanded: true,
+  });
+  assert.equal(step2.isPaneExpanded, false, 'Transition into running must auto-collapse capture pane');
+  assert.equal(step2.userManuallyToggled, false);
+
+  // 3. User manual override during starting: user manually closes pane
+  const step3 = computeAutoStartupPaneState({
+    prevStatus: 'starting',
+    runtimeStatus: 'starting',
+    userManuallyToggled: true,
+    currentExpanded: false,
+  });
+  assert.equal(step3.isPaneExpanded, false, 'Manual collapse during starting must be preserved');
+  assert.equal(step3.userManuallyToggled, true);
+
+  // 4. User manual override during running: user manually opens pane
+  const step4 = computeAutoStartupPaneState({
+    prevStatus: 'running',
+    runtimeStatus: 'running',
+    userManuallyToggled: true,
+    currentExpanded: true,
+  });
+  assert.equal(step4.isPaneExpanded, true, 'Manual expand during running must be preserved');
+  assert.equal(step4.userManuallyToggled, true);
+
+  // 5. Subsequent new start cycle resets userManuallyToggled and auto-expands
+  const step5 = computeAutoStartupPaneState({
+    prevStatus: 'running',
+    runtimeStatus: 'starting',
+    userManuallyToggled: true,
+    currentExpanded: false,
+  });
+  assert.equal(step5.isPaneExpanded, true, 'New start cycle must reset override and auto-expand');
+  assert.equal(step5.userManuallyToggled, false);
+
+  // Verify ConversationThreadPage implementation bindings
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  assert.ok(
+    threadContent.includes('userManuallyToggledPaneRef'),
+    'ConversationThreadPage must track manual overrides with userManuallyToggledPaneRef'
+  );
+  assert.ok(
+    threadContent.includes('if (isStarting)') && threadContent.includes('setIsPaneExpanded(true)'),
+    'ConversationThreadPage must set isPaneExpanded(true) on isStarting'
+  );
+  assert.ok(
+    threadContent.includes('else if (isLive)') && threadContent.includes('setIsPaneExpanded(false)'),
+    'ConversationThreadPage must set isPaneExpanded(false) on isLive'
+  );
+  assert.ok(
+    threadContent.includes('userManuallyToggledPaneRef.current = false;'),
+    'ConversationThreadPage must reset userManuallyToggledPaneRef on new status cycle'
+  );
+});
+
 
 

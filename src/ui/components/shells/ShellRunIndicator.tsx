@@ -308,6 +308,7 @@ export interface ClubbedRunGroupProps {
   messages: ChatMessage[];
   runBySessionId: Map<string, ShellSession>;
   formatTimestamp?: (unixMs: number) => ChatTimestamp;
+  defaultExpanded?: boolean;
 }
 
 /**
@@ -320,8 +321,9 @@ export function ClubbedRunGroup({
   messages,
   runBySessionId,
   formatTimestamp,
+  defaultExpanded = false,
 }: ClubbedRunGroupProps) {
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
   const count = messages.length;
   const firstMsg = messages[0];
   const lastMsg = messages[messages.length - 1];

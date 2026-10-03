@@ -122,3 +122,116 @@ export function groupTranscriptMessages(
 
   return result;
 }
+
+/**
+ * Formats a time range string between two unix timestamps (in ms).
+ */
+export function formatClubbedTimeRange(
+  startUnixMs?: number,
+  endUnixMs?: number,
+  formatTimestamp?: (unixMs: number) => { label: string },
+): string {
+  if (!formatTimestamp) return '';
+  const startTime = startUnixMs ? formatTimestamp(startUnixMs).label : '';
+  const endTime = endUnixMs ? formatTimestamp(endUnixMs).label : '';
+  if (startTime && endTime && startTime !== endTime) {
+    return `${startTime} \u2013 ${endTime}`;
+  }
+  return startTime || endTime || '';
+}
+
+/**
+ * Formats the summary label for a clubbed command group.
+ */
+export function formatClubbedRunLabel(count: number): string {
+  return `Ran ${count} commands`;
+}
+
+/**
+ * Formats subtle agent start indicator divider label.
+ */
+export function formatAgentStartDividerText(
+  count: number,
+  timeStr: string,
+): string {
+  if (count <= 1) {
+    return `agent started (${timeStr})`;
+  }
+  return `agent started ${count} times (${timeStr})`;
+}
+
+/**
+ * State container for clubbed command group expansion and individual command expansion.
+ */
+export interface ClubbedGroupToggleState {
+  isGroupExpanded: boolean;
+  expandedCommandIds: Set<string>;
+}
+
+export function createClubbedGroupState(defaultGroupExpanded = false): ClubbedGroupToggleState {
+  return {
+    isGroupExpanded: defaultGroupExpanded,
+    expandedCommandIds: new Set<string>(),
+  };
+}
+
+export function toggleClubbedGroup(state: ClubbedGroupToggleState): ClubbedGroupToggleState {
+  return {
+    ...state,
+    isGroupExpanded: !state.isGroupExpanded,
+  };
+}
+
+export function toggleClubbedCommand(state: ClubbedGroupToggleState, commandId: string): ClubbedGroupToggleState {
+  const next = new Set(state.expandedCommandIds);
+  if (next.has(commandId)) {
+    next.delete(commandId);
+  } else {
+    next.add(commandId);
+  }
+  return {
+    ...state,
+    expandedCommandIds: next,
+  };
+}
+
+/**
+ * Computes whether the terminal capture pane should auto-expand or auto-collapse,
+ * while respecting manual user overrides.
+ */
+export function computeAutoStartupPaneState(params: {
+  prevStatus: string;
+  runtimeStatus: string;
+  userManuallyToggled: boolean;
+  currentExpanded: boolean;
+  isStarting?: boolean;
+  isLive?: boolean;
+}): { isPaneExpanded: boolean; userManuallyToggled: boolean } {
+  const currentStatusNorm = (params.runtimeStatus || '').toLowerCase();
+  const isStarting =
+    params.isStarting !== undefined
+      ? params.isStarting
+      : currentStatusNorm === 'starting' || currentStatusNorm === 'launching' || currentStatusNorm === 'booting';
+  const isLive =
+    params.isLive !== undefined
+      ? params.isLive
+      : currentStatusNorm === 'running' || currentStatusNorm === 'live' || currentStatusNorm === 'ready';
+
+  let userManuallyToggled = params.userManuallyToggled;
+  let isPaneExpanded = params.currentExpanded;
+
+  if (isStarting) {
+    if (params.prevStatus !== params.runtimeStatus) {
+      userManuallyToggled = false;
+    }
+    if (!userManuallyToggled) {
+      isPaneExpanded = true;
+    }
+  } else if (isLive) {
+    if (!userManuallyToggled) {
+      isPaneExpanded = false;
+    }
+  }
+
+  return { isPaneExpanded, userManuallyToggled };
+}
