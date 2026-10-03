@@ -18,6 +18,7 @@ import agent "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import shell_session "odin_test:hub/service/shell_session"
 import jsonx "odin_test:lib/jsonx"
+import json "core:encoding/json"
 
 Nudge_Target :: enum {
 	None,
@@ -1590,18 +1591,77 @@ task_action :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	return domain.Task{}, false, domain.domain_error(.Validation_Failed, "unsupported task action")
 }
 
+parse_actor_refs :: proc(blob: string, allocator := context.temp_allocator) -> (refs: [dynamic]domain.Actor_Ref, is_array: bool, ok: bool) {
+	trimmed := strings.trim_space(blob)
+	if len(trimmed) == 0 {
+		return make([dynamic]domain.Actor_Ref, allocator), false, true
+	}
+	parsed, err := json.parse_string(trimmed, json.DEFAULT_SPECIFICATION, false, context.temp_allocator)
+	if err != .None {
+		return nil, false, false
+	}
+	refs = make([dynamic]domain.Actor_Ref, allocator)
+	#partial switch val in parsed {
+	case json.Object:
+		ref := actor_ref_from_json_object(val)
+		append(&refs, ref)
+		return refs, false, true
+	case json.Array:
+		for item in val {
+			if obj, is_obj := item.(json.Object); is_obj {
+				append(&refs, actor_ref_from_json_object(obj))
+			}
+		}
+		return refs, true, true
+	case:
+		return nil, false, false
+	}
+}
+
+actor_ref_from_json_object :: proc(obj: json.Object) -> domain.Actor_Ref {
+	ref: domain.Actor_Ref
+	if t, ok := obj["type"].(json.String); ok {
+		ref.type = string(t)
+	}
+	if a, ok := obj["agent_id"].(json.String); ok {
+		ref.agent_id = string(a)
+	}
+	if inst, ok := obj["agent_instance_id"].(json.String); ok {
+		ref.agent_instance_id = string(inst)
+	}
+	if u, ok := obj["user_id"].(json.String); ok {
+		ref.user_id = string(u)
+	}
+	return ref
+}
+
+marshal_actor_refs :: proc(refs: []domain.Actor_Ref, is_array: bool, allocator := context.allocator) -> (string, bool) {
+	if is_array {
+		bytes, err := json.marshal(refs, allocator = allocator)
+		if err != nil do return "", false
+		return string(bytes), true
+	} else if len(refs) > 0 {
+		bytes, err := json.marshal(refs[0], allocator = allocator)
+		if err != nil do return "", false
+		return string(bytes), true
+	}
+	return strings.clone("", allocator), true
+}
+
 extract_instances_from_ref_blob :: proc(blob: string) -> [dynamic]string {
 	instances := make([dynamic]string)
-	search := 0
-	for search < len(blob) {
-		rel := strings.index(blob[search:], "agent_instance_id")
-		if rel < 0 do break
-		idx := search + rel
-		id := json_string_value_after(blob, idx)
+	if blob == "" do return instances
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return instances
+	for ref in refs {
+		id := ref.agent_instance_id
 		if id != "" {
-			append(&instances, id)
+			if idx := strings.index(blob, id); idx >= 0 {
+				append(&instances, blob[idx : idx + len(id)])
+			} else {
+				append(&instances, strings.clone(id, context.temp_allocator))
+			}
 		}
-		search = idx + len("agent_instance_id")
 	}
 	return instances
 }
@@ -2422,20 +2482,13 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 
 count_required_reviewers :: proc(reviewer_refs_json: string) -> int {
 	if reviewer_refs_json == "" || reviewer_refs_json == "[]" do return 0
+	refs, _, ok := parse_actor_refs(reviewer_refs_json, context.temp_allocator)
+	if !ok do return 0
 	count := 0
-	search := 0
-	for search < len(reviewer_refs_json) {
-		rel := strings.index(reviewer_refs_json[search:], "agent_instance_id")
-		if rel < 0 do break
-		count += 1
-		search += rel + len("agent_instance_id")
-	}
-	search = 0
-	for search < len(reviewer_refs_json) {
-		rel := strings.index(reviewer_refs_json[search:], "user_id")
-		if rel < 0 do break
-		count += 1
-		search += rel + len("user_id")
+	for ref in refs {
+		if ref.agent_instance_id != "" || ref.user_id != "" || (ref.type == "agent_id" && ref.agent_id != "") {
+			count += 1
+		}
 	}
 	return count
 }
@@ -2529,25 +2582,14 @@ validate_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Chai
 }
 
 validate_ref_blob :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, blob: string) -> (bool, domain.Domain_Error) {
-	search := 0
-	for search < len(blob) {
-		rel := strings.index(blob[search:], "agent_instance_id")
-		if rel < 0 do break
-		idx := search + rel
-		id := json_string_value_after(blob, idx)
-		if id != "" {
-			if same, same_err := agent_instance_same_chain(service, id, chain); !same do return false, same_err
+	if blob == "" do return true, domain.Domain_Error{}
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return false, domain.domain_error(.Validation_Failed, "invalid actor ref JSON")
+	for ref in refs {
+		if ref.agent_instance_id != "" {
+			if same, same_err := agent_instance_same_chain(service, ref.agent_instance_id, chain); !same do return false, same_err
 		}
-		search = idx + len("agent_instance_id")
-	}
-	search = 0
-	for search < len(blob) {
-		rel := strings.index(blob[search:], "user_id")
-		if rel < 0 do break
-		idx := search + rel
-		id := json_string_value_after(blob, idx)
-		if id != "" && id != string(chain.owner_user_id) do return false, domain.domain_error(.Not_Found, "task actor ref not found")
-		search = idx + len("user_id")
+		if ref.user_id != "" && ref.user_id != string(chain.owner_user_id) do return false, domain.domain_error(.Not_Found, "task actor ref not found")
 	}
 	return true, domain.Domain_Error{}
 }
@@ -2573,77 +2615,34 @@ user_ref_json :: proc(user_id: string) -> string { return strings.concatenate({`
 normalize_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, blob: string) -> (string, bool, domain.Domain_Error) {
 	if blob == "" do return blob, true, domain.Domain_Error{}
 	if !strings.contains(blob, "\"agent_id\"") do return blob, true, domain.Domain_Error{}
-	result := blob
-	search := 0
-	for search < len(result) {
-		rel := strings.index(result[search:], "\"type\"")
-		if rel < 0 do break
-		type_idx := search + rel
-		type_val := json_string_value_after(result, type_idx)
-		if type_val != "agent_id" { search = type_idx + len("\"type\""); continue }
-		// Find the agent_id value belonging to this ref object.
-		id_rel := strings.index(result[type_idx:], "agent_id")
-		if id_rel < 0 do break
-		id_idx := type_idx + id_rel
-		agent_id := json_string_value_after(result, id_idx)
-		if agent_id == "" { search = id_idx + len("agent_id"); continue }
-		// REQ-FLEET-DISPATCHER-1: do NOT error if no instance exists for an agent_id.
-		// Allow tasks to store {"type":"agent_id","agent_id":"agt_..."} declaratively
-		// in assignee_ref_json and reviewer_refs_json.
-		search = id_idx + len("agent_id")
-	}
-	return result, true, domain.Domain_Error{}
+	_, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return blob, false, domain.domain_error(.Validation_Failed, "invalid actor ref JSON")
+	return blob, true, domain.Domain_Error{}
 }
 
 primary_assignee_agent_id :: proc(assignee_ref_json: string) -> string {
-	search := 0
-	for search < len(assignee_ref_json) {
-		rel := strings.index(assignee_ref_json[search:], "\"agent_id\"")
-		if rel < 0 do break
-		idx := search + rel
-		after_quote := idx + len("\"agent_id\"")
-		colon := strings.index_byte(assignee_ref_json[after_quote:], ':')
-		is_key := colon >= 0
-		if is_key {
-			for b in assignee_ref_json[after_quote : after_quote + colon] {
-				if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
-					is_key = false
-					break
-				}
-			}
+	if assignee_ref_json == "" do return ""
+	refs, _, ok := parse_actor_refs(assignee_ref_json, context.temp_allocator)
+	if !ok do return ""
+	for ref in refs {
+		if ref.type == "agent_id" && ref.agent_id != "" {
+			return strings.clone(ref.agent_id)
 		}
-		if is_key {
-			id := json_string_value_after(assignee_ref_json, idx)
-			if id != "" {
-				return strings.clone(id)
-			}
-		}
-		search = after_quote
 	}
 	return ""
 }
 
 collect_durable_actor_ids :: proc(ids: ^[dynamic]string, seen: ^map[string]bool, blob: string) {
-	search := 0
-	for search < len(blob) {
-		rel := strings.index(blob[search:], "\"type\"")
-		if rel < 0 do break
-		type_idx := search + rel
-		object_start := type_idx
-		for object_start >= 0 && blob[object_start] != '{' do object_start -= 1
-		object_end_rel := strings.index_byte(blob[type_idx:], '}')
-		if json_string_value_after(blob, type_idx) == "agent_id" && object_start >= 0 && object_end_rel >= 0 {
-			object := blob[object_start : type_idx + object_end_rel + 1]
-			id_idx := strings.index(object, "\"agent_id\"")
-			if id_idx >= 0 {
-				id := json_string_value_after(object, id_idx)
-				if id != "" && !seen[id] {
-					seen[id] = true
-					append(ids, strings.clone(id))
-				}
+	if blob == "" do return
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return
+	for ref in refs {
+		if ref.type == "agent_id" && ref.agent_id != "" {
+			if !seen[ref.agent_id] {
+				seen[ref.agent_id] = true
+				append(ids, strings.clone(ref.agent_id))
 			}
 		}
-		search = type_idx + len("\"type\"")
 	}
 }
 
@@ -2671,88 +2670,35 @@ ensure_durable_actor_fleets :: proc(service: ^Taskchain_Service, task: domain.Ta
 
 extract_agent_ids_from_ref_blob :: proc(blob: string) -> [dynamic]string {
 	agent_ids := make([dynamic]string)
-	search := 0
-	for search < len(blob) {
-		rel := strings.index(blob[search:], "\"agent_id\"")
-		if rel < 0 do break
-		idx := search + rel
-		after_quote := idx + len("\"agent_id\"")
-		colon := strings.index_byte(blob[after_quote:], ':')
-		is_key := colon >= 0
-		if is_key {
-			for b in blob[after_quote : after_quote + colon] {
-				if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
-					is_key = false
-					break
-				}
-			}
+	if blob == "" do return agent_ids
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return agent_ids
+	for ref in refs {
+		if ref.agent_id != "" {
+			append(&agent_ids, strings.clone(ref.agent_id))
 		}
-		if is_key {
-			id := json_string_value_after(blob, idx)
-			if id != "" {
-				append(&agent_ids, strings.clone(id))
-			}
-		}
-		search = after_quote
 	}
 	return agent_ids
 }
 
 bind_agent_id_to_instance :: proc(blob: string, target_agent_id: string, instance_id: string) -> string {
 	if blob == "" do return strings.clone(blob)
-	result := blob
-	search := 0
-	for search < len(result) {
-		rel := strings.index(result[search:], "\"type\"")
-		if rel < 0 do break
-		type_idx := search + rel
-		type_val := json_string_value_after(result, type_idx)
-		if type_val != "agent_id" {
-			search = type_idx + len("\"type\"")
-			continue
+	refs, is_array, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return strings.clone(blob)
+	replaced := false
+	for &ref in refs {
+		if ref.type == "agent_id" && ref.agent_id == target_agent_id {
+			ref.type = "agent_instance"
+			ref.agent_instance_id = instance_id
+			ref.agent_id = ""
+			replaced = true
+			break
 		}
-		id_search := type_idx + len("\"type\"")
-		found_id_idx := -1
-		for id_search < len(result) {
-			id_rel := strings.index(result[id_search:], "\"agent_id\"")
-			if id_rel < 0 do break
-			cur_id_idx := id_search + id_rel
-			after_quote := cur_id_idx + len("\"agent_id\"")
-			colon := strings.index_byte(result[after_quote:], ':')
-			is_key := colon >= 0
-			if is_key {
-				for b in result[after_quote : after_quote + colon] {
-					if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
-						is_key = false
-						break
-					}
-				}
-			}
-			if is_key {
-				found_id_idx = cur_id_idx
-				break
-			}
-			id_search = after_quote
-		}
-		if found_id_idx < 0 {
-			search = type_idx + len("\"type\"")
-			continue
-		}
-		found_agent_id := json_string_value_after(result, found_id_idx)
-		if found_agent_id != target_agent_id {
-			search = found_id_idx + len("\"agent_id\"")
-			continue
-		}
-		obj_start := strings.last_index_byte(result[:type_idx], '{')
-		if obj_start < 0 do break
-		obj_end := strings.index_byte(result[type_idx:], '}')
-		if obj_end < 0 do break
-		obj_end = type_idx + obj_end + 1
-		replacement := agent_instance_ref_json(instance_id)
-		defer delete(replacement)
-		return strings.concatenate({result[:obj_start], replacement, result[obj_end:]})
 	}
-	return strings.clone(blob)
+	if !replaced do return strings.clone(blob)
+	out, marshal_ok := marshal_actor_refs(refs[:], is_array, context.allocator)
+	if !marshal_ok do return strings.clone(blob)
+	return out
 }
 
 // resolve_agent_id_instance finds a reusable instance of the durable agent_id for the
@@ -2812,38 +2758,6 @@ ensure_chain_member :: proc(service: ^Taskchain_Service, chain: domain.Task_Chai
 		created_at = now,
 	}
 	_, _, _ = iface.taskchain_save_member(service.repo, member)
-}
-
-json_string_value_after :: proc(body: string, key_idx: int) -> string {
-	if key_idx < 0 || key_idx >= len(body) do return ""
-	rest := body[key_idx:]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	escaped := false
-	has_escapes := false
-	for i := 1; i < len(rest); i += 1 {
-		ch := rest[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if ch == '\\' {
-			escaped = true
-			has_escapes = true
-			continue
-		}
-		if ch == '"' {
-			if !has_escapes {
-				return rest[1:i]
-			}
-			str, ok := jsonx.unescape_string(rest[:i + 1], context.temp_allocator)
-			if ok do return str
-			return rest[1:i]
-		}
-	}
-	return ""
 }
 
 chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status {

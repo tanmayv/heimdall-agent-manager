@@ -385,7 +385,7 @@ test_fanout_task_status_change :: proc(t: ^testing.T) {
 		title             = "Main Task",
 		publish_state     = .Published,
 		status            = .Assigned,
-		assignee_ref_json = fmt.tprintf(`[{"type":"agent_instance","agent_instance_id":"%s"}]`, inst_assignee),
+		assignee_ref_json = fmt.tprintf(`[{{"type":"agent_instance","agent_instance_id":"%s"}}]`, inst_assignee),
 		created_at        = "2026-09-28T10:00:00Z",
 		updated_at        = "2026-09-28T10:00:00Z",
 	})
@@ -558,8 +558,8 @@ test_deduplication_actor_and_primary_wake_targets :: proc(t: ^testing.T) {
 		title              = "Dedup Task",
 		publish_state      = .Published,
 		status             = .In_Progress,
-		assignee_ref_json  = fmt.tprintf(`[{"type":"agent_instance","agent_instance_id":"%s"}]`, inst_assignee),
-		reviewer_refs_json = fmt.tprintf(`[{"type":"agent_instance","agent_instance_id":"%s"}]`, inst_reviewer),
+		assignee_ref_json  = fmt.tprintf(`[{{"type":"agent_instance","agent_instance_id":"%s"}}]`, inst_assignee),
+		reviewer_refs_json = fmt.tprintf(`[{{"type":"agent_instance","agent_instance_id":"%s"}}]`, inst_reviewer),
 		created_at         = "2026-09-28T10:00:00Z",
 		updated_at         = "2026-09-28T10:00:00Z",
 	})

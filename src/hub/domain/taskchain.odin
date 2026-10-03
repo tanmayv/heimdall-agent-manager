@@ -142,6 +142,13 @@ Task_Chain_Member :: struct {
 	created_at:        string,
 }
 
+Actor_Ref :: struct {
+	type:              string `json:"type"`,
+	agent_id:          string `json:"agent_id,omitempty"`,
+	agent_instance_id: string `json:"agent_instance_id,omitempty"`,
+	user_id:           string `json:"user_id,omitempty"`,
+}
+
 Task_Dependency :: struct {
 	task_id:            Task_ID,
 	depends_on_task_id: Task_ID,

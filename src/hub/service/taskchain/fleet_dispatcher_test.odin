@@ -57,6 +57,63 @@ test_declarative_actor_refs_normalize :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_actor_refs_json_key_order_and_whitespace :: proc(t: ^testing.T) {
+	// 1. Single object with reversed key order: agent_id before type
+	reversed_assignee := `{"agent_id":"agt_worker","type":"agent_id"}`
+	agt_id := primary_assignee_agent_id(reversed_assignee)
+	defer delete(agt_id)
+	testing.expect_value(t, agt_id, "agt_worker")
+
+	bound_assignee := bind_agent_id_to_instance(reversed_assignee, "agt_worker", "inst_worker_42")
+	defer delete(bound_assignee)
+	testing.expect(t, strings.contains(bound_assignee, `"type":"agent_instance"`), "must replace type with agent_instance")
+	testing.expect(t, strings.contains(bound_assignee, `"agent_instance_id":"inst_worker_42"`), "must contain instance id")
+	testing.expect(t, !strings.contains(bound_assignee, `"agent_id"`), "must not contain agent_id after binding")
+	testing.expect(t, strings.has_prefix(bound_assignee, "{"), "must preserve object format")
+
+	// 2. Extra whitespace and newlines
+	whitespace_assignee := "  {\n  \"agent_id\": \"agt_worker\" ,\n  \"type\": \"agent_id\" \n}  "
+	agt_ws_id := primary_assignee_agent_id(whitespace_assignee)
+	defer delete(agt_ws_id)
+	testing.expect_value(t, agt_ws_id, "agt_worker")
+
+	bound_ws := bind_agent_id_to_instance(whitespace_assignee, "agt_worker", "inst_worker_42")
+	defer delete(bound_ws)
+	testing.expect(t, strings.contains(bound_ws, `"agent_instance_id":"inst_worker_42"`), "must bind instance id with whitespace")
+
+	// 3. Array of reviewers with reversed keys and whitespace
+	reversed_reviewers := " [ \n {\"agent_id\": \"agt_rev1\", \"type\": \"agent_id\"} ,\n {\"agent_id\": \"agt_rev2\", \"type\": \"agent_id\"} \n ] "
+	req_count := count_required_reviewers(reversed_reviewers)
+	testing.expect_value(t, req_count, 2)
+
+	rev_ids := extract_agent_ids_from_ref_blob(reversed_reviewers)
+	defer {
+		for r in rev_ids do delete(r)
+		delete(rev_ids)
+	}
+	testing.expect_value(t, len(rev_ids), 2)
+	if len(rev_ids) == 2 {
+		testing.expect_value(t, rev_ids[0], "agt_rev1")
+		testing.expect_value(t, rev_ids[1], "agt_rev2")
+	}
+
+	bound_rev1 := bind_agent_id_to_instance(reversed_reviewers, "agt_rev1", "inst_rev_11")
+	defer delete(bound_rev1)
+	testing.expect(t, strings.has_prefix(bound_rev1, "["), "must preserve array format")
+	testing.expect(t, strings.contains(bound_rev1, `"agent_instance_id":"inst_rev_11"`), "must bind first reviewer")
+	testing.expect(t, strings.contains(bound_rev1, `"agent_id":"agt_rev2"`), "second reviewer remains agent_id")
+
+	// 4. Reversed keys for agent_instance extraction
+	reversed_inst := `{"agent_instance_id":"inst_test_99","type":"agent_instance"}`
+	insts := extract_instances_from_ref_blob(reversed_inst)
+	defer delete(insts)
+	testing.expect_value(t, len(insts), 1)
+	if len(insts) == 1 {
+		testing.expect_value(t, insts[0], "inst_test_99")
+	}
+}
+
+@(test)
 test_durable_actor_ids_filter_and_deduplicate :: proc(t: ^testing.T) {
 	task := domain.Task{
 		assignee_ref_json = `{"type":"agent_id","agent_id":"agt_assignee"}`,
