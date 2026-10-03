@@ -682,7 +682,8 @@ export default function ChainOverviewPanel({
                   instId === chain?.coordinatorInstanceId ||
                   instId === chain?.coordinator_instance_id;
 
-                const coordinatorClasses = isCoordinator
+                const isSelected = Boolean(agentInstanceId && instId === agentInstanceId);
+                const cardClasses = isSelected
                   ? 'border-accent/50 bg-gradient-to-br from-accent/10 to-accent/5 ring-1 ring-accent/20'
                   : 'border-subtle bg-surface-secondary/30';
                 const isCapturing = Boolean(capturedTerminalIds[instId]);
@@ -692,7 +693,7 @@ export default function ChainOverviewPanel({
                     key={instId}
                     data-debug-id={`chain-overview-agent-row-${instId}`}
                     onClick={() => handleNavigateToAgent(instId)}
-                    className={`flex flex-col justify-between gap-2 rounded-lg border p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer ${coordinatorClasses}`}
+                    className={`flex flex-col justify-between gap-2 rounded-lg border p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer ${cardClasses}`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <div className="relative shrink-0">

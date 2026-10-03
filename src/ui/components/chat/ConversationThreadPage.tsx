@@ -693,16 +693,45 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const chainAutoOpenedRef = useRef(false);
   const prevChainIdRef = useRef<string | null>(null);
 
-  // REQ-SIDEBAR-5: coordinator conversations with a chainId default the right sidebar
+  // When switching agents within the same chain, reset per-conversation local state
+  useEffect(() => {
+    setDraft('');
+    setLocalMessages([]);
+    setOlderMessages([]);
+    setOlderCursor('');
+    setOlderHasMore(false);
+    setError('');
+    setAttachments([]);
+    setFocusedTaskId(null);
+  }, [routeInstanceId]);
+
+  // REQ-SIDEBAR-5, REQ-SIDEBAR-TOGGLE-SINGLE-CLICK-10: coordinator conversations with a chainId default the right sidebar
   // to the 'chain' tab. Fires once when chainId first becomes available and the panel
   // is still closed (user hasn't explicitly chosen a tab or opened it manually).
   useEffect(() => {
     if (!chainId || isMobile || chainAutoOpenedRef.current) return;
-    if (rightPanel === 'closed') {
-      chainAutoOpenedRef.current = true;
-      setRightPanel('chain');
+    chainAutoOpenedRef.current = true;
+
+    // Respect explicitly persisted closed state
+    const isExplicitlyClosed = (() => {
+      if (typeof window === 'undefined') return false;
+      try {
+        const chainRaw = window.localStorage.getItem(`heimdall:sidebar:open:chain:${chainId}`);
+        if (chainRaw !== null) return chainRaw === 'false' || chainRaw === '0';
+        if (agentInstanceId) {
+          const instRaw = window.localStorage.getItem(`heimdall:sidebar:open:${agentInstanceId}`);
+          if (instRaw !== null) return instRaw === 'false' || instRaw === '0';
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!isExplicitlyClosed) {
+      setRightPanel((current) => (current === 'closed' ? 'chain' : current));
     }
-  }, [chainId, isMobile, rightPanel]);
+  }, [chainId, isMobile, agentInstanceId]);
 
   // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE, REQ-CHAIN-SIDEBAR-PERSIST-5)
   useEffect(() => {
@@ -2028,7 +2057,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
           data-debug-id="conversation-thread-header"
-          className="sticky top-0 z-20 flex shrink-0 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4 bg-canvas/90 backdrop-blur-md border-b border-subtle/50 overflow-visible"
+          className="sticky top-0 z-20 flex shrink-0 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4 bg-canvas/90 backdrop-blur-md overflow-visible"
         >
           {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
           <div

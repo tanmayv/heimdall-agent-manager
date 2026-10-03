@@ -78,6 +78,7 @@ import { isVaultArmored } from '../../utils/vaultContent';
 import { batchDecryptTitles, type RawSearchItemInput } from '../../utils/vaultSearch';
 import LspPanel from '../settings/LspPanel';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { useFetchConversationQuery } from '../../api/endpoints/chats';
 import LibraryPage from '../LibraryPage';
 import AgentMonitorPage from '../monitor/AgentMonitorPage';
 import ArtifactViewer from '../ArtifactViewer';
@@ -1045,7 +1046,31 @@ function DefaultsSettingsPanel() {
   );
 }
 
-function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, conversations = [] }: { path: string; focusMessageId?: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
+function findChainIdForInstance(instanceId: string, liveProjects?: LiveProject[]): string | undefined {
+  if (!instanceId || !liveProjects) return undefined;
+  for (const project of liveProjects) {
+    for (const chain of project.chains || []) {
+      if (chain.coordinatorAgentInstanceId === instanceId) return chain.chainId;
+      if (chain.liveAgents?.some((a) => a.agentInstanceId === instanceId)) return chain.chainId;
+      if (chain.members?.some((m) => m.agentInstanceId === instanceId)) return chain.chainId;
+    }
+  }
+  return undefined;
+}
+
+function RouteOutlet({
+  path,
+  focusMessageId,
+  mobileBottomPadded = false,
+  conversations = [],
+  liveProjects = [],
+}: {
+  path: string;
+  focusMessageId?: string;
+  mobileBottomPadded?: boolean;
+  conversations?: ConversationSummary[];
+  liveProjects?: LiveProject[];
+}) {
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
@@ -1053,6 +1078,21 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isConversationThreadRoute =
     (path.startsWith('/conversations/') && path !== '/conversations/new') ||
     path.startsWith('/c/');
+  const agentInstanceId = isConversationThreadRoute
+    ? decodeSegment(path.startsWith('/c/') ? path.slice('/c/'.length) : path.slice('/conversations/'.length))
+    : '';
+
+  const convQuery = useFetchConversationQuery(
+    { conversationId: '', agentInstanceId },
+    { skip: !isConversationThreadRoute || !agentInstanceId }
+  );
+
+  const activeChainId = useMemo(() => {
+    if (!agentInstanceId) return undefined;
+    const fromConv = convQuery.data?.conversation?.chain_id || convQuery.data?.conversation?.chainId;
+    if (fromConv) return fromConv;
+    return findChainIdForInstance(agentInstanceId, liveProjects);
+  }, [agentInstanceId, convQuery.data?.conversation, liveProjects]);
   // REQ-LSP-CFG-2: the LSP route is gated on the 'lsp' experiment flag HERE, not only in
   // SettingsSubNav — hiding the nav entry does nothing for a direct visit or a bookmark.
   // Nav and route read the same flag so they can never disagree.
@@ -1087,16 +1127,16 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isKnownRoute = isMappedRoute && !(isLspRoute && !lspEnabled);
 
   if (isConversationThreadRoute) {
-    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
+    const threadKey = activeChainId ? `chain-${activeChainId}` : agentInstanceId;
     return (
       <main data-debug-id="shell-main-route-outlet" className="min-w-0 min-h-0 flex-1 overflow-hidden bg-canvas">
-        {/* key by agentInstanceId so switching conversations REMOUNTS the page:
-            all per-conversation local state (older/local messages, draft, scroll
-            position, menus) resets synchronously instead of the previous
-            conversation's content painting for a frame and then swapping +
-            re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ErrorBoundary resetKey={agentInstanceId} label="Conversation">
-          <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
+        {/* REQ-SWITCH-AGENT-PERSIST-SIDEBAR-9: key by activeChainId (falling back to agentInstanceId)
+            so switching agents within the same chain does not unmount ConversationThreadPage.
+            Retaining the mounted component allows the right sidebar (tasks, files, chain overview,
+            collapsed states, queries) to stay alive without blinking or reloading, while the message
+            pane swaps to the new conversation. */}
+        <ErrorBoundary resetKey={threadKey} label="Conversation">
+          <ConversationThreadPage key={threadKey} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
         </ErrorBoundary>
       </main>
     );
@@ -1710,7 +1750,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
-        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
+        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} liveProjects={liveProjects} />
         <BottomDock />
       </div>
 
