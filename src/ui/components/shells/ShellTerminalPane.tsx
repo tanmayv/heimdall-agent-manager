@@ -81,16 +81,15 @@ export function ShellTerminalPane({
   } = useShellStream({
     sessionId: paneSessionId,
     enabled: isStreamingExperimentEnabled && !fallbackToPolling,
-    // REQ-SHELL-18 — read back by the hook from inside the socket's `onopen`, and again on every
-    // reconnect. The mount-time fit below computes the right geometry and pushes it, but the
-    // socket is not open yet at that point, so that frame is dropped; this is what makes the PTY
-    // learn the pane's real size on create instead of sitting at its 80x24 default until the user
-    // happens to resize the window. Floors applied here too, for the same reason handleResize
-    // applies them.
+    // REQ-SHELL-18 & REQ-SHELL-DOCK-NO-VSCROLL-23 — read back by the hook from inside the socket's `onopen`,
+    // and again on every reconnect. The mount-time fit below computes the right geometry and pushes it,
+    // but the socket is not open yet at that point, so that frame is dropped; this is what makes the PTY
+    // learn the pane's real size on create instead of sitting at its default until the user happens to
+    // resize the window. Column floor applied here too, for the same reason handleResize applies it.
     getGeometry: () => {
       const term = terminalRef.current;
       if (!term) return null;
-      return { rows: Math.max(term.rows, 24), cols: Math.max(term.cols, 80) };
+      return { rows: Math.max(term.rows, 1), cols: Math.max(term.cols, 40) };
     },
     onOutput: (bytes) => {
       const term = terminalRef.current;
@@ -182,20 +181,21 @@ export function ShellTerminalPane({
 
   // Unified resize handler routing between streaming and legacy polling
   //
-  // The 80x24 floors are a DELIBERATE MINIMUM, kept on purpose (REQ-SHELL-18 AC4), not a
-  // workaround for a mis-measured fit. They pair with `overflow-x-auto` on the xterm container
-  // below: on a phone-width pane, keep 80 usable columns and let the user scroll sideways, rather
-  // than hand a TUI 30 columns and have it reflow into unreadability.
+  // REQ-SHELL-DOCK-NO-VSCROLL-23: The 40-col floor is a DELIBERATE MINIMUM, kept on purpose, not a
+  // workaround for a mis-measured fit. It pairs with `overflow-x-auto` on the xterm container
+  // below: on a narrow pane (< 40 cols), keep 40 usable columns and let the user scroll sideways, rather
+  // than hand a TUI 20 columns and have it reflow into unreadability. No 24-row floor is enforced so terminal
+  // rows fit the parent container directly via FitAddon, eliminating vertical scrolling across all view sizes.
   //
-  // They are also provably innocent of "the new terminal does not fill the pane width":
-  // `Math.max(n, 80)` is monotonic and binds ONLY below 80, so if the fit proposes 200 columns it
+  // It is also provably innocent of "the new terminal does not fill the pane width":
+  // `Math.max(n, 40)` is monotonic and binds ONLY below 40, so if the fit proposes 200 columns it
   // stays 200. No value of the floor can make a WIDE pane render narrow, which means the floor
   // cannot have been masking the geometry bug and changing it would not have fixed anything. That
   // bug was the dropped resize frame (see getGeometry below), and it is fixed there.
   const handleResize = useCallback(
     (rows: number, cols: number) => {
-      const effectiveCols = Math.max(cols, 80);
-      const effectiveRows = Math.max(rows, 24);
+      const effectiveCols = Math.max(cols, 40);
+      const effectiveRows = Math.max(rows, 1);
       if (isStreamingActive) {
         sendStreamResize(effectiveRows, effectiveCols);
       } else {
@@ -261,7 +261,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          term.resize(Math.max(term.cols, 40), term.rows);
           handleResizeRef.current(term.rows, term.cols);
           term.focus();
         }
@@ -278,7 +278,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          term.resize(Math.max(term.cols, 40), term.rows);
         }
       } catch { /* ignore */ }
     });
@@ -288,7 +288,7 @@ export function ShellTerminalPane({
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
-          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          term.resize(Math.max(term.cols, 40), term.rows);
         }
       } catch { /* ignore */ }
     };

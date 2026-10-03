@@ -113,7 +113,7 @@ test('useShellPaneSubscription.ts integrity is preserved without mutation', () =
   assert.ok(src.includes('isShellTerminalStatus'), 'isShellTerminalStatus must remain intact');
 });
 
-test('ShellTerminalPane.tsx disables convertEol in streaming mode, enforces >=80 column floor, and allows horizontal scroll', () => {
+test('ShellTerminalPane.tsx disables convertEol in streaming mode, enforces >=40 column floor without 24-row floor, and allows horizontal scroll', () => {
   assert.ok(fs.existsSync(SHELL_TERMINAL_PANE), 'ShellTerminalPane.tsx must exist');
   const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
 
@@ -124,12 +124,14 @@ test('ShellTerminalPane.tsx disables convertEol in streaming mode, enforces >=80
     'must synchronize convertEol with streaming status'
   );
 
-  // 2. Minimum column floor (>=80 cols) and row floor (>=24 rows) enforced in resize handlers
-  assert.ok(src.includes('const effectiveCols = Math.max(cols, 80);'), 'handleResize must enforce minimum 80 cols');
-  assert.ok(src.includes('const effectiveRows = Math.max(rows, 24);'), 'handleResize must enforce minimum 24 rows');
+  // 2. Minimum column floor (>=40 cols) and row floor (no 24-row floor) enforced in resize handlers
+  assert.ok(src.includes('const effectiveCols = Math.max(cols, 40);'), 'handleResize must enforce minimum 40 cols');
+  assert.ok(!src.includes('const effectiveRows = Math.max(rows, 24);'), 'handleResize must not enforce minimum 24 rows');
+  assert.ok(!src.includes('Math.max(rows, 24)'), 'must not enforce 24-row floor in handleResize');
+  assert.ok(!src.includes('Math.max(term.rows, 24)'), 'must not enforce 24-row floor in term.resize');
   assert.ok(
-    src.includes('term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24))'),
-    'dispatchResize and observers must enforce >=80 cols and >=24 rows'
+    src.includes('term.resize(Math.max(term.cols, 40), term.rows)'),
+    'dispatchResize and observers must enforce >=40 cols and fit rows directly'
   );
 
   // 3. Terminal container styling enables horizontal scrolling
@@ -300,15 +302,17 @@ test('REQ-SHELL-18: every ShellTerminalPane call site is keyed by session id', (
   );
 });
 
-test('REQ-SHELL-18: the 80x24 floors are kept deliberately, with the reason recorded', () => {
+test('REQ-SHELL-DOCK-NO-VSCROLL-23: the 40-col floor is kept deliberately without 24-row floor, with reason recorded', () => {
   const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
 
-  // AC4: kept, not removed. The floors pair with overflow-x-auto to keep 80 usable
+  // Kept, not removed. The floor pairs with overflow-x-auto to keep 40 usable
   // columns on a narrow pane instead of reflowing a TUI into unreadability.
   assert.ok(src.includes('DELIBERATE MINIMUM'),
     'the floors must be justified in a comment as a deliberate minimum, not left bare');
   // And the reason they are NOT the cause of the width symptom, so it is not re-derived.
   assert.ok(src.includes('monotonic'),
-    'the comment must record that Math.max is monotonic and binds only below 80, so the floor '
+    'the comment must record that Math.max is monotonic and binds only below 40, so the floor '
     + 'cannot make a wide pane render narrow and was never masking the geometry bug');
+  assert.ok(!src.includes('Math.max(rows, 24)'), 'must not enforce 24-row floor in handleResize');
+  assert.ok(!src.includes('Math.max(term.rows, 24)'), 'must not enforce 24-row floor in term.resize');
 });

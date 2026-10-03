@@ -19,6 +19,7 @@ const CHAT_MESSAGE_ITEM_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/Chat
 const CTL_AGENT_MODE_FILE = path.join(REPO_ROOT, 'src/ctl/agent_mode.odin');
 const HUB_AGENT_ACTION_FILE = path.join(REPO_ROOT, 'src/hub/transport/http/agent_action_handlers.odin');
 const HUB_CONTENT_SERVICE_FILE = path.join(REPO_ROOT, 'src/hub/service/content/content_service.odin');
+const SHELL_TERMINAL_PANE_FILE = path.join(REPO_ROOT, 'src/ui/components/shells/ShellTerminalPane.tsx');
 
 test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with no reserved empty gutter', () => {
   const content = fs.readFileSync(BUBBLES_FILE, 'utf8');
@@ -996,6 +997,73 @@ test('REQ-CHAT-EXPECTED-ANSWERS-19: Backend preserves options array in message m
   );
 });
 
+// ---------------------------------------------------------------------------
+// REQ-SHELL-DOCK-NO-VSCROLL-23: Eliminate vertical scrolling and enforce 40-col minimum width in ShellTerminalPane
+// ---------------------------------------------------------------------------
 
+test('REQ-SHELL-DOCK-NO-VSCROLL-23: ShellTerminalPane enforces Math.max(..., 40) column floor across resize handlers and geometry', () => {
+  assert.ok(fs.existsSync(SHELL_TERMINAL_PANE_FILE), 'ShellTerminalPane.tsx must exist');
+  const content = fs.readFileSync(SHELL_TERMINAL_PANE_FILE, 'utf8');
 
+  // getGeometry enforces 40-col floor
+  assert.ok(
+    content.includes('cols: Math.max(term.cols, 40)'),
+    'getGeometry must enforce minimum 40 columns'
+  );
 
+  // handleResize enforces 40-col floor
+  assert.ok(
+    content.includes('const effectiveCols = Math.max(cols, 40);'),
+    'handleResize must enforce minimum 40 columns'
+  );
+
+  // dispatchResize, ResizeObserver, and handleWindowResize enforce 40-col floor
+  assert.ok(
+    content.includes('term.resize(Math.max(term.cols, 40), term.rows)'),
+    'dispatchResize, ResizeObserver, and handleWindowResize must enforce 40 columns floor'
+  );
+});
+
+test('REQ-SHELL-DOCK-NO-VSCROLL-23: ShellTerminalPane does NOT enforce 24-row floor across resize handlers or geometry (fits parent container directly)', () => {
+  const content = fs.readFileSync(SHELL_TERMINAL_PANE_FILE, 'utf8');
+
+  // Must not enforce 24-row floor in handleResize
+  assert.ok(
+    !content.includes('Math.max(rows, 24)'),
+    'handleResize must not enforce 24-row floor'
+  );
+
+  // Must not enforce 24-row floor in term.resize calls
+  assert.ok(
+    !content.includes('Math.max(term.rows, 24)'),
+    'term.resize callers must not enforce 24-row floor'
+  );
+
+  // Must not enforce 24-row floor in getGeometry
+  assert.ok(
+    !content.includes('rows: Math.max(term.rows, 24)'),
+    'getGeometry must not enforce 24-row floor'
+  );
+
+  // Rows fit directly from fitAddon / term.rows
+  assert.ok(
+    content.includes('term.resize(Math.max(term.cols, 40), term.rows)'),
+    'term.resize must pass term.rows directly without 24-row floor'
+  );
+});
+
+test('REQ-SHELL-DOCK-NO-VSCROLL-23: ShellTerminalPane container styling enables horizontal scroll and prevents vertical scrolling', () => {
+  const content = fs.readFileSync(SHELL_TERMINAL_PANE_FILE, 'utf8');
+
+  // Terminal container styling
+  assert.ok(
+    content.includes('chat-scrollbar relative flex-1 min-h-0 w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none'),
+    'xterm container must retain chat-scrollbar, flex-1, min-h-0, w-full, overflow-x-auto styling'
+  );
+
+  // Must not include overflow-y-auto or overflow-y-scroll on the terminal container
+  assert.ok(
+    !content.includes('overflow-y-auto') && !content.includes('overflow-y-scroll'),
+    'xterm container must not include vertical scroll overflow classes'
+  );
+});
