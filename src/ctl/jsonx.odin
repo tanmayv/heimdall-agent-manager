@@ -27,6 +27,8 @@ json_unescape_string :: proc(value: string, allocator := context.allocator) -> s
 	return jsonx.json_unescape_string(value, allocator)
 }
 
+// Deprecated: ad-hoc JSON builder allocates on dynamic heap without tracking.
+// Callers should prefer typed struct serialization (`json.marshal`) on `context.temp_allocator`.
 json_kv :: proc(key, value: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `"`)
@@ -37,6 +39,8 @@ json_kv :: proc(key, value: string) -> string {
 	return strings.to_string(b)
 }
 
+// Deprecated: ad-hoc JSON builder allocates on dynamic heap without tracking.
+// Callers should prefer typed struct serialization (`json.marshal`) on `context.temp_allocator`.
 json_kv_raw :: proc(key, value_json: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `"`)
@@ -46,6 +50,8 @@ json_kv_raw :: proc(key, value_json: string) -> string {
 	return strings.to_string(b)
 }
 
+// Deprecated: ad-hoc JSON builder allocates on dynamic heap without tracking.
+// Callers should prefer typed struct serialization (`json.marshal`) on `context.temp_allocator`.
 // json_object wraps pre-serialized kv fields into a JSON object using string
 // concatenation. (fmt.tprintf mishandles '{'/'}' + '%s' when field values
 // contain commas, so avoid it here.)
@@ -53,6 +59,8 @@ json_object :: proc(fields: ..string) -> string {
 	return strings.concatenate({"{", strings.join(fields, ","), "}"})
 }
 
+// Deprecated: ad-hoc JSON builder allocates on dynamic heap without tracking.
+// Callers should prefer typed struct serialization (`json.marshal`) on `context.temp_allocator`.
 json_object_from_slice :: proc(fields: []string) -> string {
 	return strings.concatenate({"{", strings.join(fields, ","), "}"})
 }

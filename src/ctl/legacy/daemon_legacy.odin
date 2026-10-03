@@ -1067,25 +1067,46 @@ inbox_request_json :: proc(token, limit: string, include_read: bool, chain_id: s
 	return strings.to_string(builder)
 }
 
-print_inbox_human :: proc(body: string) {
-	idx := 0
-	printed := false
-	for {
-		msg_idx := strings.index(body[idx:], `{"id":"`)
-		if msg_idx < 0 do break
-		start := idx + msg_idx
-		end_rel := strings.index(body[start:], `}`)
-		if end_rel < 0 do break
-		object := body[start:start + end_rel + 1]
-		id := extract_json_string(object, "id", "")
-		from := extract_json_string(object, "from_agent_instance_id", "")
-		message_body := extract_json_string(object, "body", "")
-		fmt.println(fmt.tprintf("%s from %s:", id, from))
-		fmt.println(message_body)
-		printed = true
-		idx = start + end_rel + 1
+Legacy_Inbox_Message_Wire :: struct {
+	id:                     string `json:"id"`,
+	from_agent_instance_id: string `json:"from_agent_instance_id"`,
+	body:                   string `json:"body"`,
+}
+
+Legacy_Inbox_Envelope_Wire :: struct {
+	messages: []Legacy_Inbox_Message_Wire `json:"messages"`,
+	data: struct {
+		messages: []Legacy_Inbox_Message_Wire `json:"messages"`,
+	} `json:"data"`,
+}
+
+parse_legacy_inbox_messages :: proc(body: string, allocator := context.temp_allocator) -> []Legacy_Inbox_Message_Wire {
+	envelope: Legacy_Inbox_Envelope_Wire
+	if err := json.unmarshal_string(body, &envelope, json.DEFAULT_SPECIFICATION, allocator); err == nil {
+		if len(envelope.messages) > 0 {
+			return envelope.messages
+		}
+		if len(envelope.data.messages) > 0 {
+			return envelope.data.messages
+		}
 	}
-	if !printed do fmt.println("No unread messages.")
+	direct_msgs: []Legacy_Inbox_Message_Wire
+	if err := json.unmarshal_string(body, &direct_msgs, json.DEFAULT_SPECIFICATION, allocator); err == nil {
+		return direct_msgs
+	}
+	return nil
+}
+
+print_inbox_human :: proc(body: string) {
+	messages := parse_legacy_inbox_messages(body, context.temp_allocator)
+	if len(messages) == 0 {
+		fmt.println("No unread messages.")
+		return
+	}
+	for msg in messages {
+		fmt.println(fmt.tprintf("%s from %s:", msg.id, msg.from_agent_instance_id))
+		fmt.println(msg.body)
+	}
 }
 
 
