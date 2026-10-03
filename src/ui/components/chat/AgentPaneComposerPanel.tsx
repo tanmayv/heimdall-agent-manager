@@ -42,6 +42,9 @@ export interface AgentPaneComposerPanelProps {
   onToggleExpand?: () => void;
   isActiveTab?: boolean;
   runtimeStatus?: string;
+  startupStatus?: string;
+  isStarting?: boolean;
+  onStreamOutput?: () => void;
   className?: string;
   hideHeader?: boolean;
   onPin?: (agentInstanceId: string) => void;
@@ -54,6 +57,9 @@ export function AgentPaneComposerPanel({
   onToggleExpand,
   isActiveTab = true,
   runtimeStatus,
+  startupStatus,
+  isStarting = false,
+  onStreamOutput,
   className = '',
   hideHeader = false,
   onPin,
@@ -102,6 +108,26 @@ export function AgentPaneComposerPanel({
     setStreamRuntimeStatus(null);
   }, [agentInstanceId]);
 
+  const onStreamOutputRef = useRef(onStreamOutput);
+  useEffect(() => {
+    onStreamOutputRef.current = onStreamOutput;
+  }, [onStreamOutput]);
+
+  const hasReceivedOutputRef = useRef<boolean>(false);
+  const streamBufferRef = useRef<Uint8Array[]>([]);
+
+  useEffect(() => {
+    hasReceivedOutputRef.current = false;
+    streamBufferRef.current = [];
+  }, [agentInstanceId]);
+
+  useEffect(() => {
+    if (isStarting) {
+      hasReceivedOutputRef.current = false;
+      streamBufferRef.current = [];
+    }
+  }, [isStarting]);
+
   // --------------------------------------------------------------------------
   // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
   // --------------------------------------------------------------------------
@@ -111,7 +137,7 @@ export function AgentPaneComposerPanel({
     sendResize: sendStreamResize,
     reconnect: reconnectStream,
   } = useAgentStream({
-    agentInstanceId: isExpanded && isActiveTab ? agentInstanceId : null,
+    agentInstanceId: (isExpanded || isStarting) && isActiveTab ? agentInstanceId : null,
     enabled: isStreamingExperimentEnabled && !fallbackToPolling,
     rows: terminalDimensions.rows,
     cols: terminalDimensions.cols,
@@ -123,8 +149,16 @@ export function AgentPaneComposerPanel({
       lastWrittenOutputRef.current = '';
     },
     onOutput: (bytes) => {
+      if (bytes && bytes.length > 0) {
+        streamBufferRef.current.push(bytes);
+        onStreamOutputRef.current?.();
+      }
       const term = terminalRef.current;
       if (!term) return;
+      if (!hasReceivedOutputRef.current) {
+        hasReceivedOutputRef.current = true;
+        term.reset();
+      }
       term.write(bytes);
       if (!userScrolledUpRef.current) {
         term.scrollToBottom();
@@ -346,8 +380,16 @@ export function AgentPaneComposerPanel({
       window.addEventListener('resize', handleWindowResize);
     }
 
-    // Initial write if output already present in legacy mode
-    if (!isStreamingActive && output) {
+    // Initial write if output already present in streaming/legacy mode, or startup indicator
+    if (streamBufferRef.current.length > 0) {
+      hasReceivedOutputRef.current = true;
+      for (const chunk of streamBufferRef.current) {
+        term.write(chunk);
+      }
+      if (!userScrolledUpRef.current) {
+        term.scrollToBottom();
+      }
+    } else if (!isStreamingActive && output) {
       term.reset();
       term.write('\x1b[?25l' + output, () => {
         if (!userScrolledUpRef.current) {
@@ -355,6 +397,8 @@ export function AgentPaneComposerPanel({
         }
       });
       lastWrittenOutputRef.current = output;
+    } else if (isStarting && !output && streamBufferRef.current.length === 0) {
+      term.write('\x1b[90mStarting agent…\x1b[0m');
     } else if (isLoading && !isStreamingActive) {
       term.write('\x1b[90mLoading terminal output…\x1b[0m');
     }
@@ -376,6 +420,24 @@ export function AgentPaneComposerPanel({
       lastWrittenOutputRef.current = '';
     };
   }, [isExpanded]);
+
+  // When pane is open but terminal is awaiting initial output during startup, show subtle 'Starting agent…' loading indicator
+  useEffect(() => {
+    if (isStarting && isExpanded && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 && !output) {
+      const term = terminalRef.current;
+      if (term) {
+        term.reset();
+        term.write('\x1b[90mStarting agent…\x1b[0m');
+      }
+    }
+  }, [isStarting, isExpanded, output]);
+
+  // Expand pane if legacy polling output arrives during startup
+  useEffect(() => {
+    if (isStarting && output) {
+      onStreamOutputRef.current?.();
+    }
+  }, [isStarting, output]);
 
   // Update terminal instance with active theme's terminal palette (REQ-THEME-EXTERNALS)
   useEffect(() => {
@@ -440,6 +502,8 @@ export function AgentPaneComposerPanel({
     ? 'paused'
     : isBlocked
     ? 'blocked'
+    : isStarting
+    ? 'starting'
     : isStreamingActive
     ? 'streaming'
     : isExpanded
@@ -467,6 +531,8 @@ export function AgentPaneComposerPanel({
             className={`h-2 w-2 rounded-full ${
               isBlocked
                 ? 'bg-warning shadow-glow-warning animate-soft-pulse'
+                : isStarting
+                ? 'bg-accent animate-pulse'
                 : isUpdatingOrRunning
                 ? 'bg-success animate-pulse'
                 : isStopped
@@ -561,7 +627,17 @@ export function AgentPaneComposerPanel({
             ? 'min-h-[360px] h-[360px] max-h-[420px]'
             : 'min-h-[140px] h-[140px] max-h-[200px]'
         }`}
-      />
+      >
+        {isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 && !output && (
+          <div
+            data-debug-id="agent-pane-starting-indicator"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 font-sans text-xs text-muted"
+          >
+            <span className="h-2 w-2 rounded-full bg-accent animate-ping" />
+            <span>Starting agent…</span>
+          </div>
+        )}
+      </div>
 
       {/* Accessible fallback & static verification pre element */}
       <pre
@@ -573,7 +649,7 @@ export function AgentPaneComposerPanel({
           isMobileMaximized ? 'max-h-[420px]' : 'max-h-[200px]'
         }`}
       >
-        {output || (isLoading ? 'Loading terminal output…' : '')}
+        {output || (isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 ? 'Starting agent…' : isLoading ? 'Loading terminal output…' : '')}
       </pre>
     </div>
   );

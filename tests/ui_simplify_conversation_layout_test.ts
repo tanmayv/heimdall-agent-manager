@@ -367,24 +367,43 @@ test('REQ-SUBTLE-AGENT-START-14: groupTranscriptMessages clubs consecutive start
   );
 });
 
-test('REQ-AUTO-STARTUP-PANE-16: ConversationThreadPage auto-expands capture pane during starting phase and auto-collapses on running', () => {
+test('REQ-AUTO-STARTUP-PANE-24: ConversationThreadPage connects stream during startup, expands on output, and auto-collapses on startup_status ready', () => {
   const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  const composerContent = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/chat/AgentPaneComposerPanel.tsx'), 'utf8');
 
   assert.ok(
     threadContent.includes('userManuallyToggledPaneRef'),
     'ConversationThreadPage must have userManuallyToggledPaneRef to track manual overrides'
   );
   assert.ok(
-    threadContent.includes('isStarting') && threadContent.includes('setIsPaneExpanded(true)'),
-    'Must auto-expand capture pane when entering starting phase'
+    threadContent.includes('startupStatus') && threadContent.includes('startup_status'),
+    'ConversationThreadPage must read startupStatus from instance / conversation'
   );
   assert.ok(
-    threadContent.includes('isLive') && threadContent.includes('setIsPaneExpanded(false)'),
-    'Must auto-collapse capture pane when transitioning to running / live'
+    threadContent.includes('isStarting') && threadContent.includes('onStreamOutput'),
+    'ConversationThreadPage must track isStarting and wire onStreamOutput'
+  );
+  assert.ok(
+    threadContent.includes("startupStatus === 'ready'") && threadContent.includes('setIsPaneExpanded(false)'),
+    'Must auto-collapse capture pane when agent calls start success (startupStatus ready)'
   );
   assert.ok(
     threadContent.includes('userManuallyToggledPaneRef.current = true;'),
     'Manual pane button clicks or panel toggles must set userManuallyToggledPaneRef to true'
+  );
+
+  // AgentPaneComposerPanel contracts for REQ-AUTO-STARTUP-PANE-24
+  assert.ok(
+    composerContent.includes('(isExpanded || isStarting) && isActiveTab'),
+    'AgentPaneComposerPanel must connect stream when isExpanded or isStarting'
+  );
+  assert.ok(
+    composerContent.includes('onStreamOutputRef.current?.()') || composerContent.includes('onStreamOutput'),
+    'AgentPaneComposerPanel must invoke onStreamOutput callback when streaming output arrives'
+  );
+  assert.ok(
+    composerContent.includes('Starting agent…'),
+    'AgentPaneComposerPanel must display subtle Starting agent… indicator while awaiting initial output'
   );
 });
 
@@ -786,12 +805,12 @@ test('REQ-TEST-VERIFICATION-17: Startup phase triggers capture pane expansion an
     'ConversationThreadPage must track manual overrides with userManuallyToggledPaneRef'
   );
   assert.ok(
-    threadContent.includes('if (isStarting)') && threadContent.includes('setIsPaneExpanded(true)'),
-    'ConversationThreadPage must set isPaneExpanded(true) on isStarting'
+    threadContent.includes('handleStreamOutput') && threadContent.includes('setIsPaneExpanded(true)'),
+    'ConversationThreadPage must auto-expand capture pane on streaming output'
   );
   assert.ok(
-    threadContent.includes('else if (isLive)') && threadContent.includes('setIsPaneExpanded(false)'),
-    'ConversationThreadPage must set isPaneExpanded(false) on isLive'
+    threadContent.includes("startupStatus === 'ready'") && threadContent.includes('setIsPaneExpanded(false)'),
+    'ConversationThreadPage must set isPaneExpanded(false) when startupStatus transitions to ready'
   );
   assert.ok(
     threadContent.includes('userManuallyToggledPaneRef.current = false;'),

@@ -580,6 +580,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const projectName = String(projectQuery.data?.project?.name || projectQuery.data?.project?.display_name || projectId || '').trim();
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
+  const startupStatus = String(instance?.startup_status || instance?.startupStatus || conversation?.startup_status || conversation?.startupStatus || '').toLowerCase();
+  const isStarting = startupStatus === 'starting' || runtimeStateFromStatus(runtimeStatus) === 'starting';
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
 
@@ -599,35 +601,37 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [isPaneExpanded, setIsPaneExpanded] = useState<boolean>(false);
   const userManuallyToggledPaneRef = useRef<boolean>(false);
   const prevRuntimeStatusRef = useRef<string>(runtimeStatus);
+  const prevStartupStatusRef = useRef<string>(startupStatus);
 
   useEffect(() => {
     userManuallyToggledPaneRef.current = false;
     prevRuntimeStatusRef.current = runtimeStatus;
+    prevStartupStatusRef.current = startupStatus;
   }, [agentInstanceId]);
 
-  // REQ-AUTO-STARTUP-PANE-16: Auto-expand capture pane during starting phase and auto-close when running
+  // REQ-AUTO-STARTUP-PANE-24: Auto-expand capture pane on streaming output during startup and auto-close when agent calls start success (ready)
+  const handleStreamOutput = useCallback(() => {
+    if (!userManuallyToggledPaneRef.current) {
+      setIsPaneExpanded(true);
+    }
+  }, []);
+
   useEffect(() => {
     const prevStatus = prevRuntimeStatusRef.current;
     prevRuntimeStatusRef.current = runtimeStatus;
+    const prevStartup = prevStartupStatusRef.current;
+    prevStartupStatusRef.current = startupStatus;
 
-    const currentStatusNorm = runtimeStatus.toLowerCase();
-    const currentState = runtimeStateFromStatus(runtimeStatus);
-    const isStarting = currentState === 'starting' || currentStatusNorm === 'starting';
-    const isLive = currentState === 'live' || currentStatusNorm === 'running';
+    if (isStarting && (prevStatus !== runtimeStatus || prevStartup !== startupStatus)) {
+      userManuallyToggledPaneRef.current = false;
+    }
 
-    if (isStarting) {
-      if (prevStatus !== runtimeStatus) {
-        userManuallyToggledPaneRef.current = false;
-      }
-      if (!userManuallyToggledPaneRef.current) {
-        setIsPaneExpanded(true);
-      }
-    } else if (isLive) {
+    if (startupStatus === 'ready' && prevStartup !== 'ready') {
       if (!userManuallyToggledPaneRef.current) {
         setIsPaneExpanded(false);
       }
     }
-  }, [runtimeStatus]);
+  }, [runtimeStatus, startupStatus, isStarting]);
   // @-mention popup state: mentionQuery is the fragment typed after '@' (null when
   // the popup is closed); mentionIndex is the highlighted row for arrow-key nav.
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -1947,6 +1951,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             }}
             isActiveTab={true}
             runtimeStatus={runtimeStatus}
+            startupStatus={startupStatus}
+            isStarting={isStarting}
+            onStreamOutput={handleStreamOutput}
             className="mb-2.5"
           />
 
