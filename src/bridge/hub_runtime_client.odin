@@ -260,6 +260,9 @@ bridge_hub_runtime_worker :: proc() {
 			// (heartbeats and command replies) on every reconnect. The shell_exited
 			// events it enqueues are drained by the loop started just below.
 			thread.run(bridge_shell_session_reconcile_now)
+			// REQ-REAP-STARTUP-1: reconcile surviving agent instances on pty-host
+			// against Hub's active instance list on reconnect to reap orphaned processes.
+			thread.run(bridge_agent_instance_reconcile_now)
 			bridge_hub_runtime_loop(&conn)
 			// NOT beside the PTY stream teardown, and not inside
 			// bridge_hub_connection_teardown with it, deliberately: this one has no
