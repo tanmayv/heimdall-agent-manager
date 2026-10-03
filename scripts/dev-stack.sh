@@ -114,7 +114,7 @@ enroll() {
   token="$(printf '%s' "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["enrollment_token"])' 2>/dev/null || true)"
   [ -n "$token" ] || { echo "[dev-stack] enrollment failed: $resp"; exit 1; }
   echo "[dev-stack] exchanging enrollment token for a durable bridge token"
-  ./result-bridge/bin/ham-bridge enroll --hub "http://$HUB_ADDR" --enrollment-token "$token" --bridge-token-file "$BRIDGE_TOKEN_FILE" 2>&1 | sed 's/^/  /'
+  ./result-bridge/bin/ham-bridge enroll --config "$BRIDGE_CONFIG" --hub "http://$HUB_ADDR" --enrollment-token "$token" --bridge-token-file "$BRIDGE_TOKEN_FILE" 2>&1 | sed 's/^/  /'
   [ -s "$BRIDGE_TOKEN_FILE" ] || { echo "[dev-stack] enroll did not write a token file"; exit 1; }
   # Fold the fresh token into the config.
   HAM_BRIDGE_TOKEN_FILE="$BRIDGE_TOKEN_FILE" _fix_bridge_config

@@ -1247,6 +1247,21 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 		defer delete(payload)
 		_ = write_ws_text_frame_locked(h, client, payload)
 	}
+	// REQ-RECON-FIX-2: Ingest active_instance_ids from bridge_hello on WS connect
+	// and immediately reconcile active instances for the connecting bridge.
+	hello_active := json_string_array(hello_text, "active_instance_ids")
+	_ = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, hello_active)
+	if h.agents != nil {
+		gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge.bridge_id, hello_active)
+		defer domain.agent_instances_destroy(gone)
+		for inst in gone {
+			if h.shell_sessions != nil {
+				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
+			}
+		}
+	}
+	for s in hello_active do delete(s)
+	delete(hello_active)
 	// Orphan recovery: replay actionable-task notifications for this bridge's
 	// instances. A cross-bridge cascade (or any status change) that fanned out to
 	// this bridge while it was offline was dropped (fire-and-forget); on reconnect

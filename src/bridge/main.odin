@@ -203,6 +203,42 @@ bridge_hub_url_supported :: proc(hub_url: string) -> bool {
 bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: string) -> bool {
 	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" do return false
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
+	if existing_bytes, err := os.read_entire_file(path, context.allocator); err == nil && len(existing_bytes) > 0 {
+		existing_str := string(existing_bytes)
+		defer delete(existing_bytes)
+		new_str := existing_str
+		daemon_id_target := fmt.tprintf("daemon_id = \"%s\"", bridge_id)
+		if idx := strings.index(new_str, "daemon_id = \""); idx >= 0 {
+			end_quote := strings.index_byte(new_str[idx + len("daemon_id = \""):], '"')
+			if end_quote >= 0 {
+				full_end := idx + len("daemon_id = \"") + end_quote + 1
+				prefix := new_str[:idx]
+				suffix := new_str[full_end:]
+				new_str = strings.concatenate({prefix, daemon_id_target, suffix})
+			}
+		} else if d_idx := strings.index(new_str, "[daemon]"); d_idx >= 0 {
+			prefix := new_str[:d_idx + len("[daemon]")]
+			suffix := new_str[d_idx + len("[daemon]"):]
+			new_str = strings.concatenate({prefix, "\ndaemon_id = \"", bridge_id, "\"", suffix})
+		}
+		if strings.trim_space(bridge_token) != "" {
+			tok_target := fmt.tprintf("bridge_token = \"%s\"", bridge_token)
+			if idx := strings.index(new_str, "bridge_token = \""); idx >= 0 {
+				end_quote := strings.index_byte(new_str[idx + len("bridge_token = \""):], '"')
+				if end_quote >= 0 {
+					full_end := idx + len("bridge_token = \"") + end_quote + 1
+					prefix := new_str[:idx]
+					suffix := new_str[full_end:]
+					new_str = strings.concatenate({prefix, tok_target, suffix})
+				}
+			} else if d_idx := strings.index(new_str, "[daemon]"); d_idx >= 0 {
+				prefix := new_str[:d_idx + len("[daemon]")]
+				suffix := new_str[d_idx + len("[daemon]"):]
+				new_str = strings.concatenate({prefix, "\n", tok_target, suffix})
+			}
+		}
+		return os.write_entire_file(path, new_str) == nil
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, "[wrapper]\ndaemon_url = \""); json_write_string(&b, hub_url)
 	strings.write_string(&b, "\"\n\n[daemon]\n")

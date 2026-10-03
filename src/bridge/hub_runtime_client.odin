@@ -247,8 +247,19 @@ bridge_hub_runtime_worker :: proc() {
 		got_error := false
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
-				if extract_json_string(text, "type", "") == "bridge_ready" { ready = true; break }
-				if extract_json_string(text, "type", "") == "bridge_error" { got_error = true; break }
+				msg_type := extract_json_string(text, "type", "")
+				defer delete(msg_type)
+				if msg_type == "bridge_ready" {
+					ready_bridge_id := extract_json_string(text, "bridge_id", "")
+					if ready_bridge_id != "" {
+						bridge_config.daemon_id = ready_bridge_id
+					} else {
+						delete(ready_bridge_id)
+					}
+					ready = true
+					break
+				}
+				if msg_type == "bridge_error" { got_error = true; break }
 			}
 			time.sleep(25 * time.Millisecond)
 		}
@@ -2059,6 +2070,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.start_success_seen = true
 				inst.start_deadline_unix_ms = 0
 				inst.last_start_prompt_unix_ms = 0
+				inst.pty_process_alive = true
 			} else if runtime_status == "blocked" {
 				// Blocked is a terminal-until-operator startup state: not ready (do NOT
 				// set start_success_seen) but no longer racing the start-success deadline,
@@ -2078,7 +2090,9 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	// keeps the durable last_applied_seq. Seed new local records from wall-clock ms
 	// plus a safety offset so post-relaunch reports remain newer than prior Hub seqs
 	// even if direct agent-actions (like repeated start-success) advanced the DB.
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen})
+	if bridge_runtime_instances == nil do bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
+	bridge_runtime_enqueue_status_push_locked(instance_id)
 }
 
 bridge_runtime_next_state_seq :: proc(current: int, now: i64) -> int {
@@ -2193,16 +2207,21 @@ bridge_runtime_touch_liveness :: proc(instance_id: string, pty_process_alive: bo
 	}
 }
 
-bridge_runtime_set_pty_process_alive :: proc(instance_id: string, alive: bool) {
+bridge_runtime_set_pty_process_alive_locked :: proc(instance_id: string, alive: bool) {
 	if strings.trim_space(instance_id) == "" do return
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for i in 0..<len(bridge_runtime_instances) {
 		if bridge_runtime_instances[i].agent_instance_id == instance_id {
 			bridge_runtime_instances[i].pty_process_alive = alive
 			return
 		}
 	}
+}
+
+bridge_runtime_set_pty_process_alive :: proc(instance_id: string, alive: bool) {
+	if strings.trim_space(instance_id) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_runtime_set_pty_process_alive_locked(instance_id, alive)
 }
 
 bridge_runtime_instance_snapshot_locked :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {
@@ -2446,6 +2465,7 @@ bridge_hub_handle_get_shell_output :: proc(conn: ^ws.Connection, text: string) {
 // instance collapses to a single pending push (the drain re-reads current status).
 bridge_runtime_enqueue_status_push_locked :: proc(instance_id: string) {
 	if strings.trim_space(instance_id) == "" do return
+	if bridge_runtime_status_outgoing == nil do bridge_runtime_status_outgoing = make([dynamic]string)
 	for id in bridge_runtime_status_outgoing do if id == instance_id do return
 	append(&bridge_runtime_status_outgoing, strings.clone(instance_id, runtime.default_allocator()))
 }
