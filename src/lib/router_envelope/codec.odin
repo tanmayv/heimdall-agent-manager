@@ -1,101 +1,40 @@
 package router_envelope
 
-import "core:fmt"
-import "core:strconv"
-import "core:strings"
-import jsonx "odin_test:lib/jsonx"
+import "core:encoding/json"
 
 router_envelope_to_json :: proc(envelope: Router_Envelope) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"protocol_version\":")
-	strings.write_string(&builder, fmt.tprintf("%d", envelope.protocol_version))
-	strings.write_string(&builder, ",\"envelope_id\":\"")
-	write_json_string(&builder, envelope.envelope_id)
-	strings.write_string(&builder, "\",\"logical_message_id\":\"")
-	write_json_string(&builder, envelope.logical_message_id)
-	strings.write_string(&builder, "\",\"nonce\":\"")
-	write_json_string(&builder, envelope.nonce)
-	strings.write_string(&builder, "\",\"user_id\":\"")
-	write_json_string(&builder, envelope.user_id)
-	strings.write_string(&builder, "\",\"namespace\":\"")
-	write_json_string(&builder, envelope.namespace)
-	strings.write_string(&builder, "\",\"source_daemon_id\":\"")
-	write_json_string(&builder, envelope.source_daemon_id)
-	strings.write_string(&builder, "\",\"target_daemon_id\":\"")
-	write_json_string(&builder, envelope.target_daemon_id)
-	strings.write_string(&builder, "\",\"target_agent_instance_id\":\"")
-	write_json_string(&builder, envelope.target_agent_instance_id)
-	strings.write_string(&builder, "\",\"payload_type\":\"")
-	write_json_string(&builder, envelope.payload_type)
-	strings.write_string(&builder, "\",\"payload_version\":")
-	strings.write_string(&builder, fmt.tprintf("%d", envelope.payload_version))
-	strings.write_string(&builder, ",\"encrypted_payload_json\":\"")
-	write_json_string(&builder, envelope.encrypted_payload_json)
-	strings.write_string(&builder, "\"}")
-	return strings.to_string(builder)
+	bytes, err := json.marshal(envelope, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return string(bytes)
 }
 
 router_envelope_from_json :: proc(body: string) -> (Router_Envelope, bool) {
-	envelope := Router_Envelope {
-		protocol_version = extract_json_int(body, "protocol_version", 0),
-		envelope_id = extract_json_string(body, "envelope_id", ""),
-		logical_message_id = extract_json_string(body, "logical_message_id", ""),
-		nonce = extract_json_string(body, "nonce", ""),
-		user_id = extract_json_string(body, "user_id", ""),
-		namespace = extract_json_string(body, "namespace", ""),
-		source_daemon_id = extract_json_string(body, "source_daemon_id", ""),
-		target_daemon_id = extract_json_string(body, "target_daemon_id", ""),
-		target_agent_instance_id = extract_json_string(body, "target_agent_instance_id", ""),
-		payload_type = extract_json_string(body, "payload_type", ""),
-		payload_version = extract_json_int(body, "payload_version", 0),
-		encrypted_payload_json = extract_json_string(body, "encrypted_payload_json", ""),
+	envelope: Router_Envelope
+	if err := json.unmarshal_string(body, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+		return {}, false
 	}
 	return envelope, validate_router_envelope_metadata(envelope)
 }
 
 message_send_payload_json :: proc(from_agent_instance_id, target_agent_instance_id, body: string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"from_agent_instance_id\":\"")
-	write_json_string(&builder, from_agent_instance_id)
-	strings.write_string(&builder, "\",\"target_agent_instance_id\":\"")
-	write_json_string(&builder, target_agent_instance_id)
-	strings.write_string(&builder, "\",\"body\":\"")
-	write_json_string(&builder, body)
-	strings.write_string(&builder, "\"}")
-	return strings.to_string(builder)
+	payload := Message_Send_Payload {
+		from_agent_instance_id = from_agent_instance_id,
+		target_agent_instance_id = target_agent_instance_id,
+		body = body,
+	}
+	bytes, err := json.marshal(payload, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return string(bytes)
 }
 
 message_read_payload_json :: proc(conversation_id, message_id, read_by_agent_instance_id: string, read_unix_ms: i64) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"conversation_id\":\"")
-	write_json_string(&builder, conversation_id)
-	strings.write_string(&builder, "\",\"message_id\":\"")
-	write_json_string(&builder, message_id)
-	strings.write_string(&builder, "\",\"read_by_agent_instance_id\":\"")
-	write_json_string(&builder, read_by_agent_instance_id)
-	strings.write_string(&builder, "\",\"read_unix_ms\":")
-	strings.write_string(&builder, fmt.tprintf("%d", read_unix_ms))
-	strings.write_string(&builder, "}")
-	return strings.to_string(builder)
-}
-
-write_json_string :: proc(builder: ^strings.Builder, value: string) {
-	for ch in value {
-		switch ch {
-		case '\\': strings.write_string(builder, "\\\\")
-		case '"': strings.write_string(builder, "\\\"")
-		case '\n': strings.write_string(builder, "\\n")
-		case '\r': strings.write_string(builder, "\\r")
-		case '\t': strings.write_string(builder, "\\t")
-		case: strings.write_rune(builder, ch)
-		}
+	payload := Message_Read_Payload {
+		conversation_id = conversation_id,
+		message_id = message_id,
+		read_by_agent_instance_id = read_by_agent_instance_id,
+		read_unix_ms = read_unix_ms,
 	}
-}
-
-extract_json_string :: proc(body, key, fallback: string) -> string {
-	return jsonx.extract_string(body, key, fallback)
-}
-
-extract_json_int :: proc(body, key: string, fallback: int) -> int {
-	return jsonx.extract_int(body, key, fallback)
+	bytes, err := json.marshal(payload, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return string(bytes)
 }

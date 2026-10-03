@@ -7,20 +7,20 @@ PAYLOAD_MESSAGE_SEND :: "message.send"
 PAYLOAD_MESSAGE_READ :: "message.read"
 
 Router_Envelope :: struct {
-	protocol_version: int,
-	envelope_id: string,
-	logical_message_id: string,
-	nonce: string,
-	user_id: string,
-	namespace: string,
-	source_daemon_id: string,
-	target_daemon_id: string,
-	target_agent_instance_id: string,
-	payload_type: string,
-	payload_version: int,
+	protocol_version:         int    `json:"protocol_version"`,
+	envelope_id:              string `json:"envelope_id"`,
+	logical_message_id:       string `json:"logical_message_id"`,
+	nonce:                    string `json:"nonce"`,
+	user_id:                  string `json:"user_id"`,
+	namespace:                string `json:"namespace"`,
+	source_daemon_id:         string `json:"source_daemon_id"`,
+	target_daemon_id:         string `json:"target_daemon_id"`,
+	target_agent_instance_id: string `json:"target_agent_instance_id"`,
+	payload_type:             string `json:"payload_type"`,
+	payload_version:          int    `json:"payload_version"`,
 
 	// Opaque to the router. The router may store/route this string, but must not parse it.
-	encrypted_payload_json: string,
+	encrypted_payload_json:   string `json:"encrypted_payload_json"`,
 }
 
 new_router_envelope :: proc(
