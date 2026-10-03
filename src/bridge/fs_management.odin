@@ -70,12 +70,12 @@ bridge_fs_init :: proc(configured_root: string, read_page_bytes: i64 = BRIDGE_FS
 }
 
 Bridge_Fs_Entry :: struct {
-	name:        string,
-	is_dir:      bool,
-	hidden:      bool,
-	has_git:     bool,
-	size:        i64,    // bytes for regular files; 0 for dirs
-	modified_at: string, // RFC3339 UTC
+	name:        string `json:"name"`,
+	is_dir:      bool   `json:"is_dir"`,
+	hidden:      bool   `json:"hidden"`,
+	has_git:     bool   `json:"has_git"`,
+	size:        i64    `json:"size"`,    // bytes for regular files; 0 for dirs
+	modified_at: string `json:"modified_at"`, // RFC3339 UTC
 }
 
 Bridge_Fs_List_Result :: struct {
@@ -133,20 +133,20 @@ Bridge_Fs_Write_File_Result :: struct {
 }
 
 Bridge_Fs_Write_Item :: struct {
-	path:    string,
-	content: string,
+	path:    string `json:"path"`,
+	content: string `json:"content"`,
 }
 
 Bridge_Fs_Saved_Item :: struct {
-	path:          string,
-	bytes_written: int,
-	modified_at:   string,
+	path:          string `json:"path"`,
+	bytes_written: int    `json:"bytes_written"`,
+	modified_at:   string `json:"modified_at"`,
 }
 
 Bridge_Fs_Error_Item :: struct {
-	path:       string,
-	error_code: string,
-	message:    string,
+	path:       string `json:"path"`,
+	error_code: string `json:"error_code"`,
+	message:    string `json:"message"`,
 }
 
 Bridge_Fs_Batch_Write_Result :: struct {
@@ -205,9 +205,9 @@ Bridge_Fs_Find_Files_Result :: struct {
 }
 
 Bridge_Fs_Grep_Match :: struct {
-	path:        string,
-	line_number: int,
-	line:        string,
+	path:        string `json:"path"`,
+	line_number: int    `json:"line_number"`,
+	line:        string `json:"line"`,
 }
 
 Bridge_Fs_Grep_Result :: struct {
@@ -217,6 +217,230 @@ Bridge_Fs_Grep_Result :: struct {
 	truncated:  bool,
 	error_code: string,
 	message:    string,
+}
+
+Bridge_Fs_Error_Wire :: struct {
+	code:    string `json:"code"`,
+	message: string `json:"message"`,
+}
+
+// --- Wire Command Structs (incoming over WS) ------------------------------
+
+Bridge_Fs_List_Command :: struct {
+	type:           string      `json:"type"`,
+	command_id:     string      `json:"command_id"`,
+	path:           string      `json:"path"`,
+	include_hidden: Maybe(bool) `json:"include_hidden"`,
+	cursor:         string      `json:"cursor"`,
+	limit:          int         `json:"limit"`,
+	root:           string      `json:"root"`,
+	instance_id:    string      `json:"instance_id"`,
+}
+
+Bridge_Fs_Read_Command :: struct {
+	type:        string `json:"type"`,
+	command_id:  string `json:"command_id"`,
+	path:        string `json:"path"`,
+	root:        string `json:"root"`,
+	offset:      i64    `json:"offset"`,
+	limit:       i64    `json:"limit"`,
+	instance_id: string `json:"instance_id"`,
+}
+
+Bridge_Fs_Create_File_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	path:       string `json:"path"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Write_File_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	path:       string `json:"path"`,
+	content:    string `json:"content"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Batch_Write_Command :: struct {
+	type:       string                 `json:"type"`,
+	command_id: string                 `json:"command_id"`,
+	root:       string                 `json:"root"`,
+	files:      []Bridge_Fs_Write_Item `json:"files"`,
+}
+
+Bridge_Fs_Move_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	from:       string `json:"from"`,
+	to:         string `json:"to"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Delete_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	path:       string `json:"path"`,
+	recursive:  bool   `json:"recursive"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Stat_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	path:       string `json:"path"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Mkdir_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	path:       string `json:"path"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Find_Files_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	query:      string `json:"query"`,
+	limit:      int    `json:"limit"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Fs_Grep_Command :: struct {
+	type:           string `json:"type"`,
+	command_id:     string `json:"command_id"`,
+	query:          string `json:"query"`,
+	case_sensitive: bool   `json:"case_sensitive"`,
+	limit:          int    `json:"limit"`,
+	max_results:    int    `json:"max_results"`,
+	root:           string `json:"root"`,
+}
+
+// --- Wire Response Structs (outgoing over WS) -----------------------------
+
+Bridge_Fs_List_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	path:        string               `json:"path"`,
+	root:        string               `json:"root"`,
+	parent:      string               `json:"parent"`,
+	truncated:   bool                 `json:"truncated"`,
+	has_more:    bool                 `json:"has_more"`,
+	next_cursor: Maybe(string)        `json:"next_cursor"`,
+	entries:     []Bridge_Fs_Entry    `json:"entries"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Read_Result_Wire :: struct {
+	type:           string               `json:"type"`,
+	command_id:     string               `json:"command_id"`,
+	ok:             bool                 `json:"ok"`,
+	path:           string               `json:"path"`,
+	viewable:       bool                 `json:"viewable"`,
+	content:        Maybe(string)        `json:"content,omitempty"`,
+	encoding:       Maybe(string)        `json:"encoding,omitempty"`,
+	mime:           string               `json:"mime"`,
+	size:           i64                  `json:"size"`,
+	offset:         i64                  `json:"offset"`,
+	bytes_returned: i64                  `json:"bytes_returned"`,
+	eof:            bool                 `json:"eof"`,
+	modified_at:    string               `json:"modified_at"`,
+	truncated:      bool                 `json:"truncated"`,
+	error:          Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Create_File_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	path:        string               `json:"path"`,
+	created:     bool                 `json:"created"`,
+	within_root: bool                 `json:"within_root"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Write_Result_Wire :: struct {
+	type:          string               `json:"type"`,
+	command_id:    string               `json:"command_id"`,
+	ok:            bool                 `json:"ok"`,
+	path:          string               `json:"path"`,
+	bytes_written: int                  `json:"bytes_written"`,
+	modified_at:   string               `json:"modified_at"`,
+	within_root:   bool                 `json:"within_root"`,
+	error:         Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Batch_Write_Result_Wire :: struct {
+	type:       string                 `json:"type"`,
+	command_id: string                 `json:"command_id"`,
+	ok:         bool                   `json:"ok"`,
+	saved:      []Bridge_Fs_Saved_Item `json:"saved"`,
+	errors:     []Bridge_Fs_Error_Item `json:"errors"`,
+	error:      Bridge_Fs_Error_Wire   `json:"error"`,
+}
+
+Bridge_Fs_Move_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	from:        string               `json:"from"`,
+	to:          string               `json:"to"`,
+	within_root: bool                 `json:"within_root"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Delete_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	path:        string               `json:"path"`,
+	deleted:     bool                 `json:"deleted"`,
+	within_root: bool                 `json:"within_root"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Stat_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	path:        string               `json:"path"`,
+	exists:      bool                 `json:"exists"`,
+	is_dir:      bool                 `json:"is_dir"`,
+	has_git:     bool                 `json:"has_git"`,
+	within_root: bool                 `json:"within_root"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Mkdir_Result_Wire :: struct {
+	type:        string               `json:"type"`,
+	command_id:  string               `json:"command_id"`,
+	ok:          bool                 `json:"ok"`,
+	path:        string               `json:"path"`,
+	created:     bool                 `json:"created"`,
+	within_root: bool                 `json:"within_root"`,
+	error:       Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Find_Files_Result_Wire :: struct {
+	type:       string               `json:"type"`,
+	command_id: string               `json:"command_id"`,
+	ok:         bool                 `json:"ok"`,
+	root:       string               `json:"root"`,
+	truncated:  bool                 `json:"truncated"`,
+	files:      []string             `json:"files"`,
+	error:      Bridge_Fs_Error_Wire `json:"error"`,
+}
+
+Bridge_Fs_Grep_Result_Wire :: struct {
+	type:       string                 `json:"type"`,
+	command_id: string                 `json:"command_id"`,
+	ok:         bool                   `json:"ok"`,
+	root:       string                 `json:"root"`,
+	truncated:  bool                   `json:"truncated"`,
+	matches:    []Bridge_Fs_Grep_Match `json:"matches"`,
+	error:      Bridge_Fs_Error_Wire   `json:"error"`,
 }
 
 BRIDGE_FS_MAX_ENTRIES :: 2000
@@ -1256,218 +1480,189 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
 	switch type {
 	case "fs_list_dir":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		// include_hidden defaults to true when the key is absent (back-compat with the
-		// existing picker which never sent it and expects hidden entries returned).
-		include_hidden := true
-		if strings.contains(text, "\"include_hidden\"") do include_hidden = bridge_fs_extract_json_bool(text, "include_hidden", true)
-		cursor := extract_json_string(text, "cursor", "")
-		limit := extract_json_int(text, "limit", BRIDGE_FS_DEFAULT_LIMIT)
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_list_dir(path, include_hidden, cursor, limit, root)
+		cmd: Bridge_Fs_List_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		include_hidden := cmd.include_hidden.? or_else true
+		limit := cmd.limit if cmd.limit > 0 else BRIDGE_FS_DEFAULT_LIMIT
+		result := bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, cmd.root)
 		defer bridge_fs_list_result_delete(&result)
-		out := bridge_fs_list_result_json(command_id, result)
+		out := bridge_fs_list_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_stat":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_stat(path, root)
-		out := bridge_fs_stat_result_json(command_id, result)
+		cmd: Bridge_Fs_Stat_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_stat(cmd.path, cmd.root)
+		out := bridge_fs_stat_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_make_dir":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_make_dir(path, root)
-		out := bridge_fs_mkdir_result_json(command_id, result)
+		cmd: Bridge_Fs_Mkdir_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_make_dir(cmd.path, cmd.root)
+		out := bridge_fs_mkdir_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_read_file":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		root := extract_json_string(text, "root", "")
-		offset := i64(extract_json_int(text, "offset", 0))
-		limit := i64(extract_json_int(text, "limit", 0))
-		result := bridge_fs_read_file(path, root, offset, limit)
+		cmd: Bridge_Fs_Read_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_read_file(cmd.path, cmd.root, cmd.offset, cmd.limit)
 		defer delete(result.content)
-		out := bridge_fs_read_file_result_json(command_id, result)
+		out := bridge_fs_read_file_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "agent_run_dir_list":
 		// READ-ONLY listing of an agent instance's run dir (the context materialized
 		// for the agent). include_hidden defaults true so dotfiles/.heimdall are shown.
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		instance_id := extract_json_string(text, "instance_id", "")
-		path := extract_json_string(text, "path", "")
-		include_hidden := true
-		if strings.contains(text, "\"include_hidden\"") do include_hidden = bridge_fs_extract_json_bool(text, "include_hidden", true)
-		cursor := extract_json_string(text, "cursor", "")
-		limit := extract_json_int(text, "limit", BRIDGE_FS_DEFAULT_LIMIT)
-		root, root_ok := bridge_fs_run_dir_root(instance_id)
+		cmd: Bridge_Fs_List_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		include_hidden := cmd.include_hidden.? or_else true
+		limit := cmd.limit if cmd.limit > 0 else BRIDGE_FS_DEFAULT_LIMIT
+		root, root_ok := bridge_fs_run_dir_root(cmd.instance_id)
 		result: Bridge_Fs_List_Result
 		if !root_ok {
 			result = Bridge_Fs_List_Result{ok = false, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
 		} else {
-			result = bridge_fs_list_dir(path, include_hidden, cursor, limit, root, true)
+			result = bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, root, true)
 		}
 		defer bridge_fs_list_result_delete(&result)
-		out := bridge_fs_list_result_json(command_id, result)
+		out := bridge_fs_list_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "agent_run_dir_read":
 		// READ-ONLY bounded view of a single file inside an agent instance's run dir.
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		instance_id := extract_json_string(text, "instance_id", "")
-		path := extract_json_string(text, "path", "")
-		offset := i64(extract_json_int(text, "offset", 0))
-		limit := i64(extract_json_int(text, "limit", 0))
-		root, root_ok := bridge_fs_run_dir_root(instance_id)
+		cmd: Bridge_Fs_Read_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		root, root_ok := bridge_fs_run_dir_root(cmd.instance_id)
 		result: Bridge_Fs_Read_File_Result
 		if !root_ok {
-			result = Bridge_Fs_Read_File_Result{ok = false, path = path, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
+			result = Bridge_Fs_Read_File_Result{ok = false, path = cmd.path, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
 		} else {
-			result = bridge_fs_read_file(path, root, offset, limit, true)
+			result = bridge_fs_read_file(cmd.path, root, cmd.offset, cmd.limit, true)
 		}
 		defer delete(result.content)
-		out := bridge_fs_read_file_result_json(command_id, result)
+		out := bridge_fs_read_file_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_create_file":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_create_file(path, root)
-		out := bridge_fs_create_file_result_json(command_id, result)
+		cmd: Bridge_Fs_Create_File_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_create_file(cmd.path, cmd.root)
+		out := bridge_fs_create_file_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_write_file":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		content := extract_json_string(text, "content", "")
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_write_file(path, content, root)
-		out := bridge_fs_write_file_result_json(command_id, result)
+		cmd: Bridge_Fs_Write_File_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_write_file(cmd.path, cmd.content, cmd.root)
+		out := bridge_fs_write_file_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_batch_write":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		root := extract_json_string(text, "root", "")
-		files := make([dynamic]Bridge_Fs_Write_Item, context.allocator)
-		defer {
-			for f in files {
-				delete(f.path)
-				delete(f.content)
-			}
-			delete(files)
+		cmd: Bridge_Fs_Batch_Write_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
 		}
-		parsed, err := json.parse(transmute([]byte)text)
-		if err == .None {
-			defer json.destroy_value(parsed)
-			if root_obj, is_obj := parsed.(json.Object); is_obj {
-				if files_arr, is_arr := root_obj["files"].(json.Array); is_arr {
-					for item_val in files_arr {
-						if item_obj, ok := item_val.(json.Object); ok {
-							p, has_p := item_obj["path"].(json.String)
-							c, has_c := item_obj["content"].(json.String)
-							if has_p {
-								append(&files, Bridge_Fs_Write_Item{
-									path = strings.clone(string(p)),
-									content = strings.clone(string(c)) if has_c else "",
-								})
-							}
-						}
-					}
-				}
-			}
-		}
-		result := bridge_fs_batch_write(files, root)
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		files := make([dynamic]Bridge_Fs_Write_Item, len(cmd.files), context.temp_allocator)
+		copy(files[:], cmd.files)
+		result := bridge_fs_batch_write(files, cmd.root)
 		defer bridge_fs_batch_write_result_delete(&result)
-		out := bridge_fs_batch_write_result_json(command_id, result)
+		out := bridge_fs_batch_write_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_move":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		from := extract_json_string(text, "from", "")
-		to := extract_json_string(text, "to", "")
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_move(from, to, root)
-		out := bridge_fs_move_result_json(command_id, result)
+		cmd: Bridge_Fs_Move_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_move(cmd.from, cmd.to, cmd.root)
+		out := bridge_fs_move_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_delete":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		path := extract_json_string(text, "path", "")
-		recursive := bridge_fs_extract_json_bool(text, "recursive", false)
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_delete(path, recursive, root)
-		out := bridge_fs_delete_result_json(command_id, result)
+		cmd: Bridge_Fs_Delete_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		result := bridge_fs_delete(cmd.path, cmd.recursive, cmd.root)
+		out := bridge_fs_delete_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_find_files":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		query := extract_json_string(text, "query", "")
-		limit := extract_json_int(text, "limit", 100)
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_find_files(query, limit, root)
+		cmd: Bridge_Fs_Find_Files_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		limit := cmd.limit if cmd.limit > 0 else 100
+		result := bridge_fs_find_files(cmd.query, limit, cmd.root)
 		defer bridge_fs_find_files_result_delete(&result)
-		out := bridge_fs_find_files_result_json(command_id, result)
+		out := bridge_fs_find_files_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_grep":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		query := extract_json_string(text, "query", "")
-		case_sensitive := bridge_fs_extract_json_bool(text, "case_sensitive", false)
-		limit := extract_json_int(text, "limit", 100)
-		if strings.contains(text, "\"max_results\"") {
-			limit = extract_json_int(text, "max_results", limit)
+		cmd: Bridge_Fs_Grep_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
 		}
-		root := extract_json_string(text, "root", "")
-		result := bridge_fs_grep(query, case_sensitive, limit, root)
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		limit := cmd.max_results if cmd.max_results > 0 else (cmd.limit if cmd.limit > 0 else 100)
+		result := bridge_fs_grep(cmd.query, cmd.case_sensitive, limit, cmd.root)
 		defer bridge_fs_grep_result_delete(&result)
-		out := bridge_fs_grep_result_json(command_id, result)
+		out := bridge_fs_grep_result_json(cmd.command_id, result)
 		defer delete(out)
-		bridge_runtime_cache_command(command_id, out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	}
@@ -1480,204 +1675,218 @@ bridge_fs_extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	return jsonx.extract_bool(body, key, fallback)
 }
 
-bridge_fs_list_result_json :: proc(command_id: string, r: Bridge_Fs_List_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_list_dir_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"root\":\""); json_write_string(&b, r.root)
-	strings.write_string(&b, "\",\"parent\":\""); json_write_string(&b, r.parent)
-	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
-	strings.write_string(&b, ",\"has_more\":"); strings.write_string(&b, "true" if r.has_more else "false")
-	if r.next_cursor == "" {
-		strings.write_string(&b, ",\"next_cursor\":null")
-	} else {
-		strings.write_string(&b, ",\"next_cursor\":\""); json_write_string(&b, r.next_cursor); strings.write_string(&b, "\"")
+bridge_fs_list_result_json :: proc(command_id: string, r: Bridge_Fs_List_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_List_Result_Wire{
+		type        = "fs_list_dir_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		path        = r.path,
+		root        = r.root,
+		parent      = r.parent,
+		truncated   = r.truncated,
+		has_more    = r.has_more,
+		next_cursor = r.next_cursor if r.next_cursor != "" else nil,
+		entries     = r.entries,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
 	}
-	strings.write_string(&b, ",\"entries\":[")
-	for e, i in r.entries {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"name\":\""); json_write_string(&b, e.name)
-		strings.write_string(&b, "\",\"is_dir\":"); strings.write_string(&b, "true" if e.is_dir else "false")
-		strings.write_string(&b, ",\"hidden\":"); strings.write_string(&b, "true" if e.hidden else "false")
-		strings.write_string(&b, ",\"has_git\":"); strings.write_string(&b, "true" if e.has_git else "false")
-		strings.write_string(&b, ",\"size\":"); strings.write_string(&b, fmt.tprintf("%d", e.size))
-		strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, e.modified_at)
-		strings.write_string(&b, "\"}")
-	}
-	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
-bridge_fs_read_file_result_json :: proc(command_id: string, r: Bridge_Fs_Read_File_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_read_file_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"viewable\":"); strings.write_string(&b, "true" if r.viewable else "false")
+bridge_fs_read_file_result_json :: proc(command_id: string, r: Bridge_Fs_Read_File_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Read_Result_Wire{
+		type           = "fs_read_file_result",
+		command_id     = command_id,
+		ok             = r.ok,
+		path           = r.path,
+		viewable       = r.viewable,
+		mime           = r.mime,
+		size           = r.size,
+		offset         = r.offset,
+		bytes_returned = r.bytes_returned,
+		eof            = r.eof,
+		modified_at    = r.modified_at,
+		truncated      = r.truncated,
+		error          = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
 	if r.viewable {
-		strings.write_string(&b, ",\"content\":\""); json_write_string(&b, r.content)
-		strings.write_string(&b, "\",\"encoding\":\""); json_write_string(&b, r.encoding); strings.write_string(&b, "\"")
+		wire.content = r.content
+		wire.encoding = r.encoding
 	}
-	strings.write_string(&b, ",\"mime\":\""); json_write_string(&b, r.mime)
-	strings.write_string(&b, "\",\"size\":"); strings.write_string(&b, fmt.tprintf("%d", r.size))
-	strings.write_string(&b, ",\"offset\":"); strings.write_string(&b, fmt.tprintf("%d", r.offset))
-	strings.write_string(&b, ",\"bytes_returned\":"); strings.write_string(&b, fmt.tprintf("%d", r.bytes_returned))
-	strings.write_string(&b, ",\"eof\":"); strings.write_string(&b, "true" if r.eof else "false")
-	strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, r.modified_at)
-	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
-bridge_fs_create_file_result_json :: proc(command_id: string, r: Bridge_Fs_Create_File_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_create_file_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"created\":"); strings.write_string(&b, "true" if r.created else "false")
-	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_move_result_json :: proc(command_id: string, r: Bridge_Fs_Move_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_move_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"from\":\""); json_write_string(&b, r.from)
-	strings.write_string(&b, "\",\"to\":\""); json_write_string(&b, r.to)
-	strings.write_string(&b, "\",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_delete_result_json :: proc(command_id: string, r: Bridge_Fs_Delete_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_delete_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"deleted\":"); strings.write_string(&b, "true" if r.deleted else "false")
-	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_stat_result_json :: proc(command_id: string, r: Bridge_Fs_Stat_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_stat_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"exists\":"); strings.write_string(&b, "true" if r.exists else "false")
-	strings.write_string(&b, ",\"is_dir\":"); strings.write_string(&b, "true" if r.is_dir else "false")
-	strings.write_string(&b, ",\"has_git\":"); strings.write_string(&b, "true" if r.has_git else "false")
-	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_mkdir_result_json :: proc(command_id: string, r: Bridge_Fs_Mkdir_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_make_dir_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"created\":"); strings.write_string(&b, "true" if r.created else "false")
-	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_write_file_result_json :: proc(command_id: string, r: Bridge_Fs_Write_File_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_write_file_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
-	strings.write_string(&b, "\",\"bytes_written\":"); strings.write_int(&b, r.bytes_written)
-	strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, r.modified_at)
-	strings.write_string(&b, "\",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
-	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_fs_batch_write_result_json :: proc(command_id: string, r: Bridge_Fs_Batch_Write_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_batch_write_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"saved\":[")
-	for s, i in r.saved {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, s.path)
-		strings.write_string(&b, "\",\"bytes_written\":"); strings.write_int(&b, s.bytes_written)
-		strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, s.modified_at)
-		strings.write_string(&b, "\"}")
+bridge_fs_create_file_result_json :: proc(command_id: string, r: Bridge_Fs_Create_File_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Create_File_Result_Wire{
+		type        = "fs_create_file_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		path        = r.path,
+		created     = r.created,
+		within_root = r.within_root,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
 	}
-	strings.write_string(&b, "],\"errors\":[")
-	for e, i in r.errors {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, e.path)
-		strings.write_string(&b, "\",\"error_code\":\""); json_write_string(&b, e.error_code)
-		strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, e.message)
-		strings.write_string(&b, "\"}")
-	}
-	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
-bridge_fs_find_files_result_json :: proc(command_id: string, r: Bridge_Fs_Find_Files_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_find_files_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"root\":\""); json_write_string(&b, r.root)
-	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
-	strings.write_string(&b, ",\"files\":[")
-	for f, i in r.files {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_byte(&b, '"')
-		json_write_string(&b, f)
-		strings.write_byte(&b, '"')
+bridge_fs_move_result_json :: proc(command_id: string, r: Bridge_Fs_Move_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Move_Result_Wire{
+		type        = "fs_move_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		from        = r.from,
+		to          = r.to,
+		within_root = r.within_root,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
 	}
-	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
-bridge_fs_grep_result_json :: proc(command_id: string, r: Bridge_Fs_Grep_Result) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"fs_grep_result\",\"command_id\":\""); json_write_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
-	strings.write_string(&b, ",\"root\":\""); json_write_string(&b, r.root)
-	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
-	strings.write_string(&b, ",\"matches\":[")
-	for m, i in r.matches {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, m.path)
-		strings.write_string(&b, "\",\"line_number\":"); strings.write_int(&b, m.line_number)
-		strings.write_string(&b, ",\"line\":\""); json_write_string(&b, m.line)
-		strings.write_string(&b, "\"}")
+bridge_fs_delete_result_json :: proc(command_id: string, r: Bridge_Fs_Delete_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Delete_Result_Wire{
+		type        = "fs_delete_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		path        = r.path,
+		deleted     = r.deleted,
+		within_root = r.within_root,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
 	}
-	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
-	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_stat_result_json :: proc(command_id: string, r: Bridge_Fs_Stat_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Stat_Result_Wire{
+		type        = "fs_stat_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		path        = r.path,
+		exists      = r.exists,
+		is_dir      = r.is_dir,
+		has_git     = r.has_git,
+		within_root = r.within_root,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_mkdir_result_json :: proc(command_id: string, r: Bridge_Fs_Mkdir_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Mkdir_Result_Wire{
+		type        = "fs_make_dir_result",
+		command_id  = command_id,
+		ok          = r.ok,
+		path        = r.path,
+		created     = r.created,
+		within_root = r.within_root,
+		error       = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_write_file_result_json :: proc(command_id: string, r: Bridge_Fs_Write_File_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Write_Result_Wire{
+		type          = "fs_write_file_result",
+		command_id    = command_id,
+		ok            = r.ok,
+		path          = r.path,
+		bytes_written = r.bytes_written,
+		modified_at   = r.modified_at,
+		within_root   = r.within_root,
+		error         = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_batch_write_result_json :: proc(command_id: string, r: Bridge_Fs_Batch_Write_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Batch_Write_Result_Wire{
+		type       = "fs_batch_write_result",
+		command_id = command_id,
+		ok         = r.ok,
+		saved      = r.saved,
+		errors     = r.errors,
+		error      = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_find_files_result_json :: proc(command_id: string, r: Bridge_Fs_Find_Files_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Find_Files_Result_Wire{
+		type       = "fs_find_files_result",
+		command_id = command_id,
+		ok         = r.ok,
+		root       = r.root,
+		truncated  = r.truncated,
+		files      = r.files,
+		error      = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
+}
+
+bridge_fs_grep_result_json :: proc(command_id: string, r: Bridge_Fs_Grep_Result, allocator := context.allocator) -> string {
+	wire := Bridge_Fs_Grep_Result_Wire{
+		type       = "fs_grep_result",
+		command_id = command_id,
+		ok         = r.ok,
+		root       = r.root,
+		truncated  = r.truncated,
+		matches    = r.matches,
+		error      = Bridge_Fs_Error_Wire{
+			code    = r.error_code,
+			message = r.message,
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 bridge_fs_find_files_result_delete :: proc(r: ^Bridge_Fs_Find_Files_Result) {

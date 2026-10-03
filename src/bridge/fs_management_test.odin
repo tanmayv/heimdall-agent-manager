@@ -11,12 +11,14 @@ package main
 // every operation. This mirrors exactly how the hub's project-scoped relay calls
 // these procs (project root passed per-command), and keeps tests independent.
 
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
 import base64 "core:encoding/base64"
+import json "core:encoding/json"
 
 // fs_test_base resolves (and pins) the shared temp base as the GLOBAL sandbox
 // root. Idempotent across concurrent tests: they all compute + write the same
@@ -527,4 +529,575 @@ fs_run_dir_prevalidated_read_and_blocks_escape :: proc(t: ^testing.T) {
 	escape := bridge_fs_read_file("../rundir_read_secret.txt", run_dir, 0, 0, true)
 	testing.expect(t, !escape.ok, "read escape above run dir rejected")
 	testing.expect_value(t, escape.error_code, "path_outside_root")
+}
+
+// --- Wire Typed Structs & Serialization Tests (REQ-P2-FS-MGMT) -----------
+
+@(test)
+fs_wire_commands_unmarshal_whitespace_and_reversed_keys :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// 1. Bridge_Fs_List_Command
+	raw_list := `
+	{
+		"root": "/tmp/root",
+		"limit": 50,
+		"cursor": "cur_abc",
+		"include_hidden": false,
+		"path": "sub/dir",
+		"command_id": "cmd_list_1",
+		"instance_id": "inst_1",
+		"type": "fs_list_dir"
+	}`
+	cmd_list: Bridge_Fs_List_Command
+	err := json.unmarshal_string(raw_list, &cmd_list, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal list command ok")
+	testing.expect_value(t, cmd_list.command_id, "cmd_list_1")
+	testing.expect_value(t, cmd_list.path, "sub/dir")
+	testing.expect_value(t, cmd_list.include_hidden.?, false)
+	testing.expect_value(t, cmd_list.cursor, "cur_abc")
+	testing.expect_value(t, cmd_list.limit, 50)
+	testing.expect_value(t, cmd_list.root, "/tmp/root")
+	testing.expect_value(t, cmd_list.instance_id, "inst_1")
+
+	// 2. Bridge_Fs_Read_Command
+	raw_read := `
+	{
+		"limit": 4096,
+		"offset": 1024,
+		"root": "/tmp/root",
+		"instance_id": "inst_2",
+		"path": "test.txt",
+		"command_id": "cmd_read_1",
+		"type": "fs_read_file"
+	}`
+	cmd_read: Bridge_Fs_Read_Command
+	err = json.unmarshal_string(raw_read, &cmd_read, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal read command ok")
+	testing.expect_value(t, cmd_read.command_id, "cmd_read_1")
+	testing.expect_value(t, cmd_read.path, "test.txt")
+	testing.expect_value(t, cmd_read.offset, 1024)
+	testing.expect_value(t, cmd_read.limit, 4096)
+	testing.expect_value(t, cmd_read.instance_id, "inst_2")
+
+	// 3. Bridge_Fs_Create_File_Command
+	raw_create := `
+	{
+		"root": "/tmp/root",
+		"path": "new_file.txt",
+		"command_id": "cmd_create_1",
+		"type": "fs_create_file"
+	}`
+	cmd_create: Bridge_Fs_Create_File_Command
+	err = json.unmarshal_string(raw_create, &cmd_create, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal create command ok")
+	testing.expect_value(t, cmd_create.command_id, "cmd_create_1")
+	testing.expect_value(t, cmd_create.path, "new_file.txt")
+
+	// 4. Bridge_Fs_Write_File_Command
+	raw_write := `
+	{
+		"root": "/tmp/root",
+		"content": "hello world",
+		"path": "write.txt",
+		"command_id": "cmd_write_1",
+		"type": "fs_write_file"
+	}`
+	cmd_write: Bridge_Fs_Write_File_Command
+	err = json.unmarshal_string(raw_write, &cmd_write, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal write command ok")
+	testing.expect_value(t, cmd_write.command_id, "cmd_write_1")
+	testing.expect_value(t, cmd_write.path, "write.txt")
+	testing.expect_value(t, cmd_write.content, "hello world")
+
+	// 5. Bridge_Fs_Batch_Write_Command
+	raw_batch := `
+	{
+		"files": [
+			{"content": "c1", "path": "f1.txt"},
+			{"content": "c2", "path": "f2.txt"}
+		],
+		"root": "/tmp/root",
+		"command_id": "cmd_batch_1",
+		"type": "fs_batch_write"
+	}`
+	cmd_batch: Bridge_Fs_Batch_Write_Command
+	err = json.unmarshal_string(raw_batch, &cmd_batch, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal batch write command ok")
+	testing.expect_value(t, cmd_batch.command_id, "cmd_batch_1")
+	testing.expect_value(t, len(cmd_batch.files), 2)
+	testing.expect_value(t, cmd_batch.files[0].path, "f1.txt")
+	testing.expect_value(t, cmd_batch.files[0].content, "c1")
+	testing.expect_value(t, cmd_batch.files[1].path, "f2.txt")
+	testing.expect_value(t, cmd_batch.files[1].content, "c2")
+
+	// 6. Bridge_Fs_Move_Command
+	raw_move := `
+	{
+		"root": "/tmp/root",
+		"to": "dst.txt",
+		"from": "src.txt",
+		"command_id": "cmd_move_1",
+		"type": "fs_move"
+	}`
+	cmd_move: Bridge_Fs_Move_Command
+	err = json.unmarshal_string(raw_move, &cmd_move, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal move command ok")
+	testing.expect_value(t, cmd_move.command_id, "cmd_move_1")
+	testing.expect_value(t, cmd_move.from, "src.txt")
+	testing.expect_value(t, cmd_move.to, "dst.txt")
+
+	// 7. Bridge_Fs_Delete_Command
+	raw_del := `
+	{
+		"root": "/tmp/root",
+		"recursive": true,
+		"path": "del_dir",
+		"command_id": "cmd_del_1",
+		"type": "fs_delete"
+	}`
+	cmd_del: Bridge_Fs_Delete_Command
+	err = json.unmarshal_string(raw_del, &cmd_del, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal delete command ok")
+	testing.expect_value(t, cmd_del.command_id, "cmd_del_1")
+	testing.expect_value(t, cmd_del.path, "del_dir")
+	testing.expect_value(t, cmd_del.recursive, true)
+
+	// 8. Bridge_Fs_Stat_Command
+	raw_stat := `
+	{
+		"root": "/tmp/root",
+		"path": "check.txt",
+		"command_id": "cmd_stat_1",
+		"type": "fs_stat"
+	}`
+	cmd_stat: Bridge_Fs_Stat_Command
+	err = json.unmarshal_string(raw_stat, &cmd_stat, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal stat command ok")
+	testing.expect_value(t, cmd_stat.command_id, "cmd_stat_1")
+	testing.expect_value(t, cmd_stat.path, "check.txt")
+
+	// 9. Bridge_Fs_Mkdir_Command
+	raw_mkdir := `
+	{
+		"root": "/tmp/root",
+		"path": "new_dir",
+		"command_id": "cmd_mkdir_1",
+		"type": "fs_make_dir"
+	}`
+	cmd_mkdir: Bridge_Fs_Mkdir_Command
+	err = json.unmarshal_string(raw_mkdir, &cmd_mkdir, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal mkdir command ok")
+	testing.expect_value(t, cmd_mkdir.command_id, "cmd_mkdir_1")
+	testing.expect_value(t, cmd_mkdir.path, "new_dir")
+
+	// 10. Bridge_Fs_Find_Files_Command
+	raw_find := `
+	{
+		"root": "/tmp/root",
+		"limit": 25,
+		"query": "*.odin",
+		"command_id": "cmd_find_1",
+		"type": "fs_find_files"
+	}`
+	cmd_find: Bridge_Fs_Find_Files_Command
+	err = json.unmarshal_string(raw_find, &cmd_find, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal find command ok")
+	testing.expect_value(t, cmd_find.command_id, "cmd_find_1")
+	testing.expect_value(t, cmd_find.query, "*.odin")
+	testing.expect_value(t, cmd_find.limit, 25)
+
+	// 11. Bridge_Fs_Grep_Command
+	raw_grep := `
+	{
+		"root": "/tmp/root",
+		"max_results": 75,
+		"limit": 10,
+		"case_sensitive": true,
+		"query": "needle",
+		"command_id": "cmd_grep_1",
+		"type": "fs_grep"
+	}`
+	cmd_grep: Bridge_Fs_Grep_Command
+	err = json.unmarshal_string(raw_grep, &cmd_grep, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshal grep command ok")
+	testing.expect_value(t, cmd_grep.command_id, "cmd_grep_1")
+	testing.expect_value(t, cmd_grep.query, "needle")
+	testing.expect_value(t, cmd_grep.case_sensitive, true)
+	testing.expect_value(t, cmd_grep.limit, 10)
+	testing.expect_value(t, cmd_grep.max_results, 75)
+
+	// Heap allocations must be 0 because temp_allocator was used
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+fs_wire_results_round_trip_all_11_operations :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// 1. list_dir
+	entries := [2]Bridge_Fs_Entry{
+		{name = "alpha.txt", is_dir = false, hidden = false, has_git = false, size = 120, modified_at = "2026-10-01T00:00:00Z"},
+		{name = "beta_dir", is_dir = true, hidden = false, has_git = true, size = 0, modified_at = "2026-10-02T00:00:00Z"},
+	}
+	r_list := Bridge_Fs_List_Result{
+		ok = true,
+		path = "/tmp/root",
+		root = "/tmp/root",
+		parent = "",
+		entries = entries[:],
+		next_cursor = "cursor_token",
+		has_more = true,
+		truncated = false,
+	}
+	json_list := bridge_fs_list_result_json("cmd_list", r_list)
+	var_list: Bridge_Fs_List_Result_Wire
+	err := json.unmarshal_string(json_list, &var_list, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_list)
+	testing.expect(t, err == nil, "unmarshal list wire ok")
+	testing.expect_value(t, var_list.type, "fs_list_dir_result")
+	testing.expect_value(t, var_list.command_id, "cmd_list")
+	testing.expect_value(t, var_list.ok, true)
+	testing.expect_value(t, var_list.path, "/tmp/root")
+	testing.expect_value(t, var_list.has_more, true)
+	testing.expect_value(t, var_list.next_cursor.?, "cursor_token")
+	testing.expect_value(t, len(var_list.entries), 2)
+	testing.expect_value(t, var_list.entries[0].name, "alpha.txt")
+	testing.expect_value(t, var_list.entries[1].has_git, true)
+
+	// 2. read_file (viewable = true)
+	r_read := Bridge_Fs_Read_File_Result{
+		ok = true,
+		path = "hello.txt",
+		viewable = true,
+		content = "line1\nline2",
+		encoding = "utf8",
+		mime = "text/plain",
+		size = 11,
+		offset = 0,
+		bytes_returned = 11,
+		eof = true,
+		modified_at = "2026-10-03T10:00:00Z",
+		truncated = false,
+	}
+	json_read := bridge_fs_read_file_result_json("cmd_read", r_read)
+	var_read: Bridge_Fs_Read_Result_Wire
+	err = json.unmarshal_string(json_read, &var_read, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_read)
+	testing.expect(t, err == nil, "unmarshal read wire ok")
+	testing.expect_value(t, var_read.type, "fs_read_file_result")
+	testing.expect_value(t, var_read.command_id, "cmd_read")
+	testing.expect_value(t, var_read.ok, true)
+	testing.expect_value(t, var_read.viewable, true)
+	testing.expect_value(t, var_read.content.?, "line1\nline2")
+	testing.expect_value(t, var_read.encoding.?, "utf8")
+	testing.expect_value(t, var_read.mime, "text/plain")
+	testing.expect_value(t, var_read.eof, true)
+
+	// 3. create_file
+	r_create := Bridge_Fs_Create_File_Result{
+		ok = true,
+		path = "new.txt",
+		created = true,
+		within_root = true,
+	}
+	json_create := bridge_fs_create_file_result_json("cmd_create", r_create)
+	var_create: Bridge_Fs_Create_File_Result_Wire
+	err = json.unmarshal_string(json_create, &var_create, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_create)
+	testing.expect(t, err == nil, "unmarshal create wire ok")
+	testing.expect_value(t, var_create.type, "fs_create_file_result")
+	testing.expect_value(t, var_create.command_id, "cmd_create")
+	testing.expect_value(t, var_create.created, true)
+	testing.expect_value(t, var_create.within_root, true)
+
+	// 4. write_file
+	r_write := Bridge_Fs_Write_File_Result{
+		ok = true,
+		path = "out.txt",
+		bytes_written = 42,
+		modified_at = "2026-10-03T11:00:00Z",
+		within_root = true,
+	}
+	json_write := bridge_fs_write_file_result_json("cmd_write", r_write)
+	var_write: Bridge_Fs_Write_Result_Wire
+	err = json.unmarshal_string(json_write, &var_write, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_write)
+	testing.expect(t, err == nil, "unmarshal write wire ok")
+	testing.expect_value(t, var_write.type, "fs_write_file_result")
+	testing.expect_value(t, var_write.command_id, "cmd_write")
+	testing.expect_value(t, var_write.bytes_written, 42)
+	testing.expect_value(t, var_write.within_root, true)
+
+	// 5. batch_write
+	saved := [1]Bridge_Fs_Saved_Item{
+		{path = "s1.txt", bytes_written = 10, modified_at = "2026-10-03T12:00:00Z"},
+	}
+	errors := [1]Bridge_Fs_Error_Item{
+		{path = "e1.txt", error_code = "permission_denied", message = "Access denied"},
+	}
+	r_batch := Bridge_Fs_Batch_Write_Result{
+		ok = false,
+		saved = saved[:],
+		errors = errors[:],
+		error_code = "batch_write_partial",
+		message = "1 file failed",
+	}
+	json_batch := bridge_fs_batch_write_result_json("cmd_batch", r_batch)
+	var_batch: Bridge_Fs_Batch_Write_Result_Wire
+	err = json.unmarshal_string(json_batch, &var_batch, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_batch)
+	testing.expect(t, err == nil, "unmarshal batch wire ok")
+	testing.expect_value(t, var_batch.type, "fs_batch_write_result")
+	testing.expect_value(t, var_batch.command_id, "cmd_batch")
+	testing.expect_value(t, len(var_batch.saved), 1)
+	testing.expect_value(t, var_batch.saved[0].path, "s1.txt")
+	testing.expect_value(t, len(var_batch.errors), 1)
+	testing.expect_value(t, var_batch.errors[0].error_code, "permission_denied")
+	testing.expect_value(t, var_batch.error.code, "batch_write_partial")
+
+	// 6. move
+	r_move := Bridge_Fs_Move_Result{
+		ok = true,
+		from = "from.txt",
+		to = "to.txt",
+		within_root = true,
+	}
+	json_move := bridge_fs_move_result_json("cmd_move", r_move)
+	var_move: Bridge_Fs_Move_Result_Wire
+	err = json.unmarshal_string(json_move, &var_move, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_move)
+	testing.expect(t, err == nil, "unmarshal move wire ok")
+	testing.expect_value(t, var_move.type, "fs_move_result")
+	testing.expect_value(t, var_move.command_id, "cmd_move")
+	testing.expect_value(t, var_move.from, "from.txt")
+	testing.expect_value(t, var_move.to, "to.txt")
+
+	// 7. delete
+	r_delete := Bridge_Fs_Delete_Result{
+		ok = true,
+		path = "deleted.txt",
+		deleted = true,
+		within_root = true,
+	}
+	json_delete := bridge_fs_delete_result_json("cmd_del", r_delete)
+	var_delete: Bridge_Fs_Delete_Result_Wire
+	err = json.unmarshal_string(json_delete, &var_delete, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_delete)
+	testing.expect(t, err == nil, "unmarshal delete wire ok")
+	testing.expect_value(t, var_delete.type, "fs_delete_result")
+	testing.expect_value(t, var_delete.command_id, "cmd_del")
+	testing.expect_value(t, var_delete.deleted, true)
+
+	// 8. stat
+	r_stat := Bridge_Fs_Stat_Result{
+		ok = true,
+		path = "dir1",
+		exists = true,
+		is_dir = true,
+		has_git = false,
+		within_root = true,
+	}
+	json_stat := bridge_fs_stat_result_json("cmd_stat", r_stat)
+	var_stat: Bridge_Fs_Stat_Result_Wire
+	err = json.unmarshal_string(json_stat, &var_stat, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_stat)
+	testing.expect(t, err == nil, "unmarshal stat wire ok")
+	testing.expect_value(t, var_stat.type, "fs_stat_result")
+	testing.expect_value(t, var_stat.command_id, "cmd_stat")
+	testing.expect_value(t, var_stat.exists, true)
+	testing.expect_value(t, var_stat.is_dir, true)
+
+	// 9. mkdir
+	r_mkdir := Bridge_Fs_Mkdir_Result{
+		ok = true,
+		path = "new_sub",
+		created = true,
+		within_root = true,
+	}
+	json_mkdir := bridge_fs_mkdir_result_json("cmd_mkdir", r_mkdir)
+	var_mkdir: Bridge_Fs_Mkdir_Result_Wire
+	err = json.unmarshal_string(json_mkdir, &var_mkdir, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_mkdir)
+	testing.expect(t, err == nil, "unmarshal mkdir wire ok")
+	testing.expect_value(t, var_mkdir.type, "fs_make_dir_result")
+	testing.expect_value(t, var_mkdir.command_id, "cmd_mkdir")
+	testing.expect_value(t, var_mkdir.created, true)
+
+	// 10. find_files
+	files_found := [2]string{"a.odin", "b.odin"}
+	r_find := Bridge_Fs_Find_Files_Result{
+		ok = true,
+		root = "/tmp/root",
+		files = files_found[:],
+		truncated = false,
+	}
+	json_find := bridge_fs_find_files_result_json("cmd_find", r_find)
+	var_find: Bridge_Fs_Find_Files_Result_Wire
+	err = json.unmarshal_string(json_find, &var_find, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_find)
+	testing.expect(t, err == nil, "unmarshal find wire ok")
+	testing.expect_value(t, var_find.type, "fs_find_files_result")
+	testing.expect_value(t, var_find.command_id, "cmd_find")
+	testing.expect_value(t, len(var_find.files), 2)
+	testing.expect_value(t, var_find.files[0], "a.odin")
+
+	// 11. grep
+	matches := [1]Bridge_Fs_Grep_Match{
+		{path = "m.odin", line_number = 42, line = "target match"},
+	}
+	r_grep := Bridge_Fs_Grep_Result{
+		ok = true,
+		root = "/tmp/root",
+		matches = matches[:],
+		truncated = false,
+	}
+	json_grep := bridge_fs_grep_result_json("cmd_grep", r_grep)
+	var_grep: Bridge_Fs_Grep_Result_Wire
+	err = json.unmarshal_string(json_grep, &var_grep, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_grep)
+	testing.expect(t, err == nil, "unmarshal grep wire ok")
+	testing.expect_value(t, var_grep.type, "fs_grep_result")
+	testing.expect_value(t, var_grep.command_id, "cmd_grep")
+	testing.expect_value(t, len(var_grep.matches), 1)
+	testing.expect_value(t, var_grep.matches[0].line_number, 42)
+	testing.expect_value(t, var_grep.matches[0].line, "target match")
+
+	// All allocations freed cleanly
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+fs_wire_read_file_result_viewable_omits_content_and_encoding :: proc(t: ^testing.T) {
+	// When viewable = false, content and encoding must not appear in JSON.
+	r_binary := Bridge_Fs_Read_File_Result{
+		ok = true,
+		path = "bin.exe",
+		viewable = false,
+		content = "",
+		encoding = "",
+		mime = "application/octet-stream",
+		size = 2048,
+		bytes_returned = 0,
+		eof = true,
+	}
+	json_bin := bridge_fs_read_file_result_json("cmd_bin", r_binary)
+	defer delete(json_bin)
+
+	testing.expect(t, !strings.contains(json_bin, "\"content\""), "content must be omitted when viewable = false")
+	testing.expect(t, !strings.contains(json_bin, "\"encoding\""), "encoding must be omitted when viewable = false")
+
+	// When viewable = true and content is empty, content and encoding must be present
+	r_empty := Bridge_Fs_Read_File_Result{
+		ok = true,
+		path = "empty.txt",
+		viewable = true,
+		content = "",
+		encoding = "utf8",
+		mime = "text/plain",
+		size = 0,
+		bytes_returned = 0,
+		eof = true,
+	}
+	json_empty := bridge_fs_read_file_result_json("cmd_empty", r_empty)
+	defer delete(json_empty)
+
+	testing.expect(t, strings.contains(json_empty, "\"content\":\"\""), "content must be present when viewable = true")
+	testing.expect(t, strings.contains(json_empty, "\"encoding\":\"utf8\""), "encoding must be present when viewable = true")
+}
+
+@(test)
+fs_wire_list_result_null_vs_string_cursor :: proc(t: ^testing.T) {
+	// Empty cursor outputs "next_cursor":null
+	r_no_cursor := Bridge_Fs_List_Result{
+		ok = true,
+		path = "/tmp",
+		root = "/tmp",
+		next_cursor = "",
+	}
+	json_no_cursor := bridge_fs_list_result_json("cmd_nc", r_no_cursor)
+	defer delete(json_no_cursor)
+	testing.expect(t, strings.contains(json_no_cursor, "\"next_cursor\":null"), "empty cursor must serialize as null")
+
+	// Non-empty cursor outputs "next_cursor":"token"
+	r_with_cursor := Bridge_Fs_List_Result{
+		ok = true,
+		path = "/tmp",
+		root = "/tmp",
+		next_cursor = "offset_100",
+	}
+	json_with_cursor := bridge_fs_list_result_json("cmd_wc", r_with_cursor)
+	defer delete(json_with_cursor)
+	testing.expect(t, strings.contains(json_with_cursor, "\"next_cursor\":\"offset_100\""), "non-empty cursor must serialize as string")
+}
+
+@(test)
+fs_wire_special_characters_escaping :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// Filenames and paths with quotes, backslashes, tabs, and unicode
+	entries := [1]Bridge_Fs_Entry{
+		{
+			name = "file \"quoted\" \\ backslash \t tab \u2764.txt",
+			is_dir = false,
+			size = 50,
+			modified_at = "2026-10-03T12:00:00Z",
+		},
+	}
+	r_list := Bridge_Fs_List_Result{
+		ok = true,
+		path = "/path/with \"quotes\"/and \\backslashes\\",
+		root = "/path/with \"quotes\"/and \\backslashes\\",
+		entries = entries[:],
+	}
+	json_out := bridge_fs_list_result_json("cmd_escapes", r_list)
+	var_list: Bridge_Fs_List_Result_Wire
+	err := json.unmarshal_string(json_out, &var_list, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_out)
+	testing.expect(t, err == nil, "unmarshaling special characters must succeed")
+	testing.expect_value(t, var_list.path, "/path/with \"quotes\"/and \\backslashes\\")
+	testing.expect_value(t, len(var_list.entries), 1)
+	testing.expect_value(t, var_list.entries[0].name, "file \"quoted\" \\ backslash \t tab \u2764.txt")
+
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+fs_wire_error_responses_round_trip :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// Error on read_file
+	r_err := Bridge_Fs_Read_File_Result{
+		ok = false,
+		path = "/secret",
+		viewable = false,
+		error_code = "path_outside_root",
+		message = "Path is outside sandbox root",
+	}
+	json_err := bridge_fs_read_file_result_json("cmd_err_1", r_err)
+	var_err: Bridge_Fs_Read_Result_Wire
+	err := json.unmarshal_string(json_err, &var_err, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	delete(json_err)
+	testing.expect(t, err == nil, "unmarshal error wire ok")
+	testing.expect_value(t, var_err.ok, false)
+	testing.expect_value(t, var_err.error.code, "path_outside_root")
+	testing.expect_value(t, var_err.error.message, "Path is outside sandbox root")
+
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
 }
