@@ -17,6 +17,8 @@
 
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { isVaultArmored, decryptVaultText, encryptVaultText } from '../../utils/vaultContent';
+import { readSessionVaultKey } from '../../store/vaultSlice';
 
 // ---- Contract types (mirror the LOCKED contract exactly) --------------------
 
@@ -261,13 +263,25 @@ export const projectFsApi = heimdallApi.injectEndpoints({
     // offset/limit to stream a large text file in chunks (avoids the one-huge-
     // frame WS relay timeout). We assume the file doesn't change between pages.
     readProjectFile: build.query<FsReadFileResult, ReadFileArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, offset, limit }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, offset, limit }, api) => {
         try {
           const qs = new URLSearchParams({ path });
           if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
           if (offset != null && offset > 0) qs.set('offset', String(offset));
           if (limit != null && limit > 0) qs.set('limit', String(limit));
-          const data = await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/file?${qs.toString()}`);
+          const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/file?${qs.toString()}`)) as FsReadFileResult;
+          if (data && typeof data.content === 'string' && isVaultArmored(data.content)) {
+            const state: any = api?.getState?.();
+            const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+            const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+            if (isUnlocked && rawKeyHex) {
+              try {
+                data.content = await decryptVaultText(data.content, rawKeyHex);
+              } catch {
+                // If locked or decryption fails, leave armored (or set error).
+              }
+            }
+          }
           return { data: data as FsReadFileResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -350,13 +364,22 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Write / overwrite file content at `path` (PUT /projects/{projectId}/fs/file).
     writeProjectFile: build.mutation<FsWriteResult, WriteFileArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, content, encoding }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, content, encoding }, api) => {
         try {
           const bp = bridgeParam(bridgeId);
+          let outgoingContent = content;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+          if (isUnlocked && rawKeyHex && typeof outgoingContent === 'string') {
+            if (!isVaultArmored(outgoingContent)) {
+              outgoingContent = await encryptVaultText(outgoingContent, rawKeyHex);
+            }
+          }
           const data = await cookieMutation(
             `${base({ projectId, chainId, directoryId, agentInstanceId })}/file${bp ? `?${bp}` : ''}`,
             'PUT',
-            { path, content, encoding },
+            { path, content: outgoingContent, encoding },
           );
           return { data: data as FsWriteResult };
         } catch (error: any) {
@@ -371,13 +394,30 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Batch write multiple files (PUT /projects/{projectId}/fs/files).
     batchWriteProjectFiles: build.mutation<FsBatchWriteResult, BatchWriteFilesArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', files }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', files }, api) => {
         try {
           const bp = bridgeParam(bridgeId);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+          let outgoingFiles = files;
+          if (isUnlocked && rawKeyHex && Array.isArray(files)) {
+            outgoingFiles = await Promise.all(
+              files.map(async (file) => {
+                if (typeof file.content === 'string') {
+                  const content = isVaultArmored(file.content)
+                    ? file.content
+                    : await encryptVaultText(file.content, rawKeyHex);
+                  return { ...file, content };
+                }
+                return file;
+              }),
+            );
+          }
           const data = await cookieMutation(
             `${base({ projectId, chainId, directoryId, agentInstanceId })}/files${bp ? `?${bp}` : ''}`,
             'PUT',
-            { files },
+            { files: outgoingFiles },
           );
           return { data: data as FsBatchWriteResult };
         } catch (error: any) {
@@ -418,7 +458,10 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Text search (fs_grep / ripgrep) across a project, chain directory, or agent run-dir.
     searchProjectFiles: build.query<FsSearchResult, SearchFilesArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', query, path = '', caseSensitive = false, limit = 100 }) => {
+      queryFn: async (
+        { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', query, path = '', caseSensitive = false, limit = 100 },
+        api,
+      ) => {
         try {
           const qs = new URLSearchParams();
           if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
@@ -428,7 +471,15 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           if (limit != null) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
           const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/search${suffix}`)) as any;
-          const matches = Array.isArray(data?.matches) ? data.matches : [];
+          const rawMatches = Array.isArray(data?.matches) ? data.matches : [];
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+
+          let matches = rawMatches;
+          if (isUnlocked && rawKeyHex) {
+            matches = await decryptSearchMatches(rawMatches, rawKeyHex);
+          }
           return { data: { ...data, matches } as FsSearchResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -438,7 +489,7 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Search agent instance run directory files (GET /api/v1/agent-instances/{instanceId}/fs/search).
     searchInstanceFiles: build.query<FsSearchResult, SearchInstanceFilesArgs>({
-      queryFn: async ({ agentInstanceId, query, path = '', caseSensitive = false, limit = 100 }) => {
+      queryFn: async ({ agentInstanceId, query, path = '', caseSensitive = false, limit = 100 }, api) => {
         try {
           const qs = new URLSearchParams();
           if (query) qs.set('query', query);
@@ -447,7 +498,15 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           if (limit != null) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
           const data = (await cookieJsonFetch(`/agent-instances/${encodeURIComponent(agentInstanceId)}/fs/search${suffix}`)) as any;
-          const matches = Array.isArray(data?.matches) ? data.matches : [];
+          const rawMatches = Array.isArray(data?.matches) ? data.matches : [];
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+
+          let matches = rawMatches;
+          if (isUnlocked && rawKeyHex) {
+            matches = await decryptSearchMatches(rawMatches, rawKeyHex);
+          }
           return { data: { ...data, matches } as FsSearchResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -463,6 +522,32 @@ function parentOf(path: string): string {
   const clean = String(path || '').replace(/\/+$/, '');
   const idx = clean.lastIndexOf('/');
   return idx <= 0 ? '' : clean.slice(0, idx);
+}
+
+// Decrypt line_content and line for grep search matches when vault is unlocked
+async function decryptSearchMatches(rawMatches: any[], rawKeyHex: string): Promise<any[]> {
+  return await Promise.all(
+    rawMatches.map(async (m: any) => {
+      const updated = { ...m };
+      if (typeof updated.line_content === 'string' && isVaultArmored(updated.line_content)) {
+        try {
+          updated.line_content = await decryptVaultText(updated.line_content, rawKeyHex);
+        } catch {}
+      }
+      if (typeof updated.line === 'string' && isVaultArmored(updated.line)) {
+        try {
+          updated.line = await decryptVaultText(updated.line, rawKeyHex);
+        } catch {}
+      }
+      if (updated.line_content !== undefined && updated.line === undefined) {
+        updated.line = updated.line_content;
+      }
+      if (updated.line !== undefined && updated.line_content === undefined) {
+        updated.line_content = updated.line;
+      }
+      return updated;
+    }),
+  );
 }
 
 export const {

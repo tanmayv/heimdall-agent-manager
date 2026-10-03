@@ -20,6 +20,7 @@ export type FsSearchMatch = {
   match_start: number;
   match_end: number;
   line: string;
+  line_content?: string;
 };
 
 export type FsSearchResult = {
