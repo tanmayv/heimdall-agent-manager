@@ -1,10 +1,66 @@
 package main
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
 import http "odin_test:lib/http_client"
+
+Task_Actor_Ref_Wire :: struct {
+	type:              string `json:"type"`,
+	agent_id:          string `json:"agent_id"`,
+	agent_instance_id: string `json:"agent_instance_id"`,
+}
+
+Task_Created_Data_Wire :: struct {
+	task_id:       string                `json:"task_id"`,
+	status:        string                `json:"status"`,
+	assignee_ref:  Task_Actor_Ref_Wire   `json:"assignee_ref"`,
+	reviewer_refs: []Task_Actor_Ref_Wire `json:"reviewer_refs"`,
+	depends_on:    []string              `json:"depends_on"`,
+	blocked:       bool                  `json:"blocked"`,
+	bridge_id:     string                `json:"bridge_id"`,
+}
+
+Task_Created_Envelope_Wire :: struct {
+	ok:   bool `json:"ok"`,
+	data: struct {
+		data: Task_Created_Data_Wire `json:"data"`,
+	} `json:"data"`,
+}
+
+format_task_created_summary :: proc(task: Task_Created_Data_Wire, allocator := context.temp_allocator) -> (assignee, reviewers, deps_str, blocked_str, bridge_str: string) {
+	assignee = "\x1b[31mNONE\x1b[0m"
+	if task.assignee_ref.agent_instance_id != "" {
+		assignee = task.assignee_ref.agent_instance_id
+	} else if task.assignee_ref.agent_id != "" {
+		assignee = task.assignee_ref.agent_id
+	}
+
+	reviewers = "\x1b[31mNONE\x1b[0m"
+	if len(task.reviewer_refs) > 0 {
+		reviewers = "assigned"
+	}
+
+	deps_str = "none"
+	if len(task.depends_on) > 0 {
+		if b, err := json.marshal(task.depends_on, allocator = allocator); err == nil {
+			deps_str = string(b)
+		}
+	}
+
+	blocked_str = "\x1b[31mtrue\x1b[0m" if task.blocked else "false"
+
+	bridge_str = "inherited"
+	if task.bridge_id != "" {
+		bridge_str = task.bridge_id
+	}
+
+	return
+}
+
+
 
 Ctl_Transport_Kind :: enum {
 	User,
@@ -640,46 +696,23 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			return
 		}
 		
-		t_id := extract_json_string_unescaped(resp_str, "task_id", "")
-		if t_id == "" {
-			fmt.println(resp_str)
-			return
-		}
-		
-		t_status := extract_json_string_unescaped(resp_str, "status", "")
-		
-		assignee := "\x1b[31mNONE\x1b[0m"
-		if !strings.contains(resp_str, "\"assignee_ref\":null") && !strings.contains(resp_str, "\"assignee_ref\":{}") && strings.contains(resp_str, "\"assignee_ref\":") { 
-			// Attempt to loosely find agent_instance_id, agent_id or fallback to "assigned"
-			aref_idx := strings.index(resp_str, "\"assignee_ref\":")
-			maybe_id := extract_json_string_unescaped(resp_str[aref_idx:], "agent_instance_id", "")
-			if maybe_id == "" do maybe_id = extract_json_string_unescaped(resp_str[aref_idx:], "agent_id", "assigned")
-			assignee = maybe_id
-		}
-		
-		reviewers := "\x1b[31mNONE\x1b[0m"
-		if !strings.contains(resp_str, "\"reviewer_refs\":null") && !strings.contains(resp_str, "\"reviewer_refs\":[]") && strings.contains(resp_str, "\"reviewer_refs\":") {
-			reviewers = "assigned"
-		}
-		
-		deps_str := "none"
-		if !strings.contains(resp_str, "\"depends_on\":null") && !strings.contains(resp_str, "\"depends_on\":[]") && strings.contains(resp_str, "\"depends_on\":[") {
-			deps_idx := strings.index(resp_str, "\"depends_on\":[")
-			end_idx := strings.index(resp_str[deps_idx:], "]")
-			if deps_idx >= 0 && end_idx > 0 {
-				deps_str = resp_str[deps_idx+13 : deps_idx+end_idx+1] // extracting `["foo"]`
+		envelope: Task_Created_Envelope_Wire
+		if err := json.unmarshal_string(resp_str, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil || envelope.data.data.task_id == "" {
+			user_env: struct {
+				data: Task_Created_Data_Wire `json:"data"`,
+			}
+			if uerr := json.unmarshal_string(resp_str, &user_env, json.DEFAULT_SPECIFICATION, context.temp_allocator); uerr == nil && user_env.data.task_id != "" {
+				envelope.data.data = user_env.data
+				envelope.ok = true
+			} else {
+				fmt.println(resp_str)
+				return
 			}
 		}
-		
-		blocked_str := "false"
-		if strings.contains(resp_str, "\"blocked\":true") { blocked_str = "\x1b[31mtrue\x1b[0m" } // also highlight blocked
 
-		// REQ-TB-4: bridge pin for the task's agent-id instantiation; empty/absent
-		// means the task inherits the coordinator bridge.
-		bridge_str := "inherited"
-		if bidx := strings.index(resp_str, "\"bridge_id\":"); bidx >= 0 {
-			if bid := extract_json_string_unescaped(resp_str[bidx:], "bridge_id", ""); bid != "" do bridge_str = bid
-		}
+		t_id := envelope.data.data.task_id
+		t_status := envelope.data.data.status
+		assignee, reviewers, deps_str, blocked_str, bridge_str := format_task_created_summary(envelope.data.data, context.temp_allocator)
 
 		fmt.printf("Task created successfully (ID: %s)\n", t_id)
 		fmt.printf("Status: %s | Assignee: %s | Reviewers: %s | Depends on: %s | Blocked: %s\n", t_status, assignee, reviewers, deps_str, blocked_str)
