@@ -2807,6 +2807,84 @@ bridge_shell_exited_drain_outgoing :: proc(conn: ^ws.Connection) {
 
 // ---- Typed wire command and event structs (REQ-P1-WIRE-CMD) ----------------
 
+Bridge_Shell_Enc_Spec :: struct {
+	cmd:       string,
+	cwd:       string,
+	env:       [][2]string,
+	has_env:   bool,
+	timestamp: i64,
+	nonce:     string,
+}
+
+bridge_shell_parse_enc_spec :: proc(json_text: string, allocator := context.temp_allocator) -> (spec: Bridge_Shell_Enc_Spec, ok: bool) {
+	val, err := json.parse_string(json_text, json.DEFAULT_SPECIFICATION, false, allocator)
+	if err != nil do return {}, false
+
+	obj, is_obj := val.(json.Object)
+	if !is_obj do return {}, false
+
+	if v, exists := obj["cmd"]; exists {
+		if s, is_str := v.(json.String); is_str {
+			spec.cmd = s
+		}
+	}
+	if v, exists := obj["cwd"]; exists {
+		if s, is_str := v.(json.String); is_str {
+			spec.cwd = s
+		}
+	}
+	if v, exists := obj["nonce"]; exists {
+		if s, is_str := v.(json.String); is_str {
+			spec.nonce = s
+		}
+	}
+	if v, exists := obj["timestamp"]; exists {
+		#partial switch t in v {
+		case json.Integer:
+			spec.timestamp = i64(t)
+		case json.Float:
+			spec.timestamp = i64(t)
+		case json.String:
+			if n, n_ok := strconv.parse_i64(t); n_ok {
+				spec.timestamp = n
+			}
+		}
+	}
+
+	if v, exists := obj["env"]; exists {
+		spec.has_env = true
+		env_list := make([dynamic][2]string, allocator)
+		#partial switch e in v {
+		case json.Array:
+			for item in e {
+				#partial switch it in item {
+				case json.Array:
+					if len(it) >= 2 {
+						k, kok := it[0].(json.String)
+						val_str, vok := it[1].(json.String)
+						if kok && vok {
+							append(&env_list, [2]string{k, val_str})
+						}
+					}
+				case json.String:
+					if eq := strings.index_byte(it, '='); eq > 0 {
+						append(&env_list, [2]string{it[:eq], it[eq+1:]})
+					}
+				}
+			}
+		case json.Object:
+			for k, item in e {
+				if val_str, vok := item.(json.String); vok {
+					append(&env_list, [2]string{k, val_str})
+				}
+			}
+		}
+		spec.env = env_list[:]
+	}
+
+	return spec, true
+}
+
 Bridge_Shell_Start_Command :: struct {
 	type:              string `json:"type"`,
 	command_id:        string `json:"command_id"`,
@@ -2814,6 +2892,7 @@ Bridge_Shell_Start_Command :: struct {
 	kind:              string `json:"kind"`,
 	cmd:               string `json:"cmd"`,
 	cwd:               string `json:"cwd"`,
+	enc_spec:          string `json:"enc_spec"`,
 	label:             string `json:"label"`,
 	project_id:        string `json:"project_id"`,
 	chain_id:          string `json:"chain_id"`,
@@ -2841,6 +2920,7 @@ Bridge_Shell_Error_Result :: struct {
 	command_id:  string     `json:"command_id"`,
 	ok:          bool       `json:"ok"`,
 	error:       string     `json:"error"`,
+	error_code:  string     `json:"error_code,omitempty"`,
 	server_port: Maybe(int) `json:"server_port,omitempty"`,
 	pid:         Maybe(int) `json:"pid,omitempty"`,
 }
@@ -3025,8 +3105,12 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// reading `send_error(conn, session_id, command_id, "reason")` and cannot forget
 	// which result type they are answering. The JSON building — and the logging they
 	// were all missing — lives in exactly one place.
-	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
-		bridge_shell_send_error(conn, "shell_start_result", session_id, command_id, msg, "")
+	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string, error_code: string = "") {
+		extra := ""
+		if error_code != "" {
+			extra = fmt.tprintf("\"error_code\":\"%s\",", error_code)
+		}
+		bridge_shell_send_error(conn, "shell_start_result", session_id, command_id, msg, extra)
 	}
 
 	cmd_wire: Bridge_Shell_Start_Command
@@ -3065,6 +3149,47 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	kind := bridge_shell_session_kind_from_str(kind_str)
+
+	// REQ-SHELL-ENC-1: Authenticate and decrypt execution specification when vault key is configured.
+	decrypted_env: [][2]string = nil
+	has_decrypted_env := false
+
+	key_hex, vault_active := bridge_read_vault_key()
+	defer if vault_active do delete(key_hex)
+	if vault_active {
+		if cmd_wire.enc_spec == "" || !strings.has_prefix(cmd_wire.enc_spec, VAULT_ARMOR_PREFIX) {
+			send_error(conn, session_id, command_id, "unauthorized: missing or invalid vault enc_spec", "invalid_vault_key")
+			return
+		}
+
+		plaintext, dec_ok := bridge_decrypt_vault_ciphertext_hex(cmd_wire.enc_spec, key_hex, context.temp_allocator)
+		if !dec_ok || len(plaintext) == 0 {
+			send_error(conn, session_id, command_id, "unauthorized: invalid vault encryption", "invalid_vault_key")
+			return
+		}
+
+		spec, parse_ok := bridge_shell_parse_enc_spec(plaintext, context.temp_allocator)
+		if !parse_ok {
+			send_error(conn, session_id, command_id, "unauthorized: invalid vault encryption", "invalid_vault_key")
+			return
+		}
+
+		now_ms := bridge_now_unix_ms()
+		ts_ms := spec.timestamp
+		if ts_ms > 0 && ts_ms < 10_000_000_000 {
+			ts_ms *= 1000
+		}
+		drift := now_ms - ts_ms
+		if ts_ms == 0 || drift < -60_000 || drift > 60_000 {
+			send_error(conn, session_id, command_id, "unauthorized: expired execution timestamp", "invalid_vault_key")
+			return
+		}
+
+		cmd = spec.cmd
+		cwd = spec.cwd
+		decrypted_env = spec.env
+		has_decrypted_env = spec.has_env
+	}
 
 	// T11-BUG-3: an interactive `shell` has no command of its own — it *is* the
 	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
@@ -3190,7 +3315,29 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet. The
 	// path itself comes from bridge_shell_output_path (src/bridge/shell_common.odin),
 	// which is also what the log and retention paths resolve, so the three agree.
-	if slash := strings.last_index_byte(tee_path, '/'); slash > 0 do _ = os.make_directory_all(tee_path[:slash])
+	spawn_env: [][2]string = nil
+	if vault_active && has_decrypted_env {
+		dyn_env := make([dynamic][2]string, context.allocator)
+		for pair in decrypted_env {
+			append(&dyn_env, [2]string{strings.clone(pair[0]), strings.clone(pair[1])})
+		}
+		if kind == .Run {
+			has_pager := false
+			has_git_pager := false
+			has_systemd_pager := false
+			for pair in dyn_env {
+				if pair[0] == "PAGER" do has_pager = true
+				if pair[0] == "GIT_PAGER" do has_git_pager = true
+				if pair[0] == "SYSTEMD_PAGER" do has_systemd_pager = true
+			}
+			if !has_pager do append(&dyn_env, [2]string{strings.clone("PAGER"), strings.clone("cat")})
+			if !has_git_pager do append(&dyn_env, [2]string{strings.clone("GIT_PAGER"), strings.clone("cat")})
+			if !has_systemd_pager do append(&dyn_env, [2]string{strings.clone("SYSTEMD_PAGER"), strings.clone("cat")})
+		}
+		spawn_env = dyn_env[:]
+	} else if kind == .Run {
+		spawn_env = bridge_shell_run_env()
+	}
 
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(spawn_instance),
@@ -3200,7 +3347,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		// than what was checked.
 		has_cwd          = cwd_resolved != "",
 		cwd              = strings.clone(cwd_resolved),
-		env              = kind == .Run ? bridge_shell_run_env() : nil,
+		env              = spawn_env,
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
 		display_name     = strings.clone(label),
