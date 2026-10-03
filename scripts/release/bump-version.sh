@@ -19,6 +19,15 @@ Examples:
 USAGE
 }
 
+# Portable in-place sed helper supporting Darwin (BSD sed) and Linux (GNU sed).
+sed_i() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -lt 1 ]; then
   usage
   exit 0
@@ -52,17 +61,17 @@ echo "    Build Timestamp: $TIMESTAMP"
 
 # 1. Update flake.nix appVersion
 if [ -f "flake.nix" ]; then
-  sed -i "s/appVersion = \".*\";/appVersion = \"$CLEAN_VERSION\";/" flake.nix
+  sed_i "s/appVersion = \".*\";/appVersion = \"$CLEAN_VERSION\";/" flake.nix
   echo "    [ok] Updated flake.nix (appVersion = \"$CLEAN_VERSION\")"
 fi
 
 # 2. Update src/contracts/protocol.odin defaults
 if [ -f "src/contracts/protocol.odin" ]; then
-  sed -i "s/APP_VERSION :: #config(HAM_APP_VERSION, \".*\")/APP_VERSION :: #config(HAM_APP_VERSION, \"$CLEAN_VERSION\")/" src/contracts/protocol.odin
+  sed_i "s/APP_VERSION :: #config(HAM_APP_VERSION, \".*\")/APP_VERSION :: #config(HAM_APP_VERSION, \"$CLEAN_VERSION\")/" src/contracts/protocol.odin
   if [ -n "$COMMIT_SHA" ]; then
-    sed -i "s/GIT_COMMIT :: #config(HAM_GIT_COMMIT, \".*\")/GIT_COMMIT :: #config(HAM_GIT_COMMIT, \"$COMMIT_SHA\")/" src/contracts/protocol.odin
+    sed_i "s/GIT_COMMIT :: #config(HAM_GIT_COMMIT, \".*\")/GIT_COMMIT :: #config(HAM_GIT_COMMIT, \"$COMMIT_SHA\")/" src/contracts/protocol.odin
   fi
-  sed -i "s/BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, \".*\")/BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, \"$TIMESTAMP\")/" src/contracts/protocol.odin
+  sed_i "s/BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, \".*\")/BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, \"$TIMESTAMP\")/" src/contracts/protocol.odin
   echo "    [ok] Updated src/contracts/protocol.odin"
 fi
 
@@ -71,7 +80,7 @@ if [ -f "package.json" ]; then
   if command -v npm >/dev/null 2>&1; then
     npm version "$CLEAN_VERSION" --no-git-tag-version --allow-same-version >/dev/null 2>&1 || true
   else
-    sed -i "s/\"version\": \".*\"/\"version\": \"$CLEAN_VERSION\"/" package.json
+    sed_i "s/\"version\": \".*\"/\"version\": \"$CLEAN_VERSION\"/" package.json
   fi
   echo "    [ok] Updated package.json (\"version\": \"$CLEAN_VERSION\")"
 fi
