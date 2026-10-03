@@ -169,7 +169,11 @@ bridge_pty_host_dispatch_event :: proc(socket: string, reply: Pty_Host_Reply) {
 		// reports alive=false (or drops from the roster) and stops being touched,
 		// so it is still correctly reaped; ChildExited remains the instant path.
 		for a in reply.heartbeat_agents {
-			if a.alive do bridge_runtime_touch_liveness(a.instance_id)
+			if a.alive {
+				bridge_runtime_touch_liveness(a.instance_id, true)
+			} else {
+				bridge_runtime_set_pty_process_alive(a.instance_id, false)
+			}
 		}
 	}
 }

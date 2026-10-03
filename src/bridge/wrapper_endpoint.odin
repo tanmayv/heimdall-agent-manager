@@ -408,6 +408,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	bridge_runtime_touch_liveness(rec.agent_instance_id)
 	if method == "agent.activity.report" {
 		activity := bridge_local_extract_json_string(params, "status", "unknown")
 		source := bridge_local_extract_json_string(params, "source", "agent_extension")

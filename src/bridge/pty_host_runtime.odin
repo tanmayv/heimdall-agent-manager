@@ -616,6 +616,7 @@ bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_l
 bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 	if strings.trim_space(instance) == "" do return
 	fmt.println("bridge pty-host: child exited", instance, "code", code)
+	bridge_runtime_set_pty_process_alive(instance, false)
 	bridge_runtime_remove_launch(instance)
 	bridge_runtime_set_status(instance, "stopped", "idle")
 

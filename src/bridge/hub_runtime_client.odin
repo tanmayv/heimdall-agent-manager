@@ -54,6 +54,7 @@ Bridge_Runtime_Instance :: struct {
 	// signal is IGNORED for status purposes so it cannot resurrect an intentionally
 	// stopped instance back to running/starting. A fresh launch clears it.
 	stopped_intent_unix_ms: i64,
+	pty_process_alive: bool,
 }
 
 Bridge_Runtime_Command_Result :: struct {
@@ -1704,6 +1705,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "ham-pty-host spawn failed"
 	}
+	bridge_runtime_set_pty_process_alive(instance_id, true)
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token)})
 	// BR-3: ensure the event-subscription worker is running so this instance's
 	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
@@ -2063,6 +2065,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.start_deadline_unix_ms = 0
 			} else if !bridge_runtime_status_active(runtime_status) {
 				inst.start_deadline_unix_ms = 0
+				inst.pty_process_alive = false
 			}
 			return
 		}
@@ -2162,7 +2165,7 @@ bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime
 // stop-intent guard is honored so a deliberately-stopped instance is never kept
 // alive by a racing liveness tick, and start-success/deadline bookkeeping is left
 // untouched (this proves "process alive", not "agent ready").
-bridge_runtime_touch_liveness :: proc(instance_id: string) {
+bridge_runtime_touch_liveness :: proc(instance_id: string, pty_process_alive: bool = false) {
 	if strings.trim_space(instance_id) == "" do return
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
@@ -2171,8 +2174,31 @@ bridge_runtime_touch_liveness :: proc(instance_id: string) {
 	for i in 0..<len(bridge_runtime_instances) {
 		if bridge_runtime_instances[i].agent_instance_id == instance_id {
 			inst := &bridge_runtime_instances[i]
-			if !bridge_runtime_status_active(inst.runtime_status) do return
+			if pty_process_alive do inst.pty_process_alive = true
+			if inst.runtime_status == "unreachable" {
+				if inst.start_success_seen {
+					inst.runtime_status = "running"
+				} else {
+					inst.runtime_status = "starting"
+				}
+				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+				bridge_runtime_enqueue_status_push_locked(instance_id)
+			} else if !bridge_runtime_status_active(inst.runtime_status) {
+				return
+			}
 			inst.last_seen_unix_ms = now
+			return
+		}
+	}
+}
+
+bridge_runtime_set_pty_process_alive :: proc(instance_id: string, alive: bool) {
+	if strings.trim_space(instance_id) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			bridge_runtime_instances[i].pty_process_alive = alive
 			return
 		}
 	}
@@ -2251,6 +2277,10 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 		inst := &bridge_runtime_instances[i]
 		if !bridge_runtime_status_active(inst.runtime_status) do continue
 		if inst.last_seen_unix_ms > 0 && now - inst.last_seen_unix_ms > BRIDGE_WRAPPER_STALE_MS {
+			if inst.pty_process_alive {
+				inst.last_seen_unix_ms = now
+				continue
+			}
 			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
 			inst.runtime_status = "unreachable"
 			inst.activity_status = "idle"

@@ -845,6 +845,19 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 		// bridge-local seq is authoritative for recovery from non-live Hub states.
 		if runtime_expected_active(runtime_status) && (inst.runtime_status == "unreachable" || inst.runtime_status == "launching" || inst.runtime_status == "starting") {
 			effective_state_seq = inst.last_applied_seq + 1
+		} else if runtime_expected_active(runtime_status) && runtime_expected_active(inst.runtime_status) {
+			// Heartbeat/liveness update for an active instance: refresh last_seen_at
+			// even if state_seq didn't advance, so idle agents are not falsely reaped.
+			now := platform.clock_now(service.clock)
+			if len(inst.last_seen_at) > 0 do delete(inst.last_seen_at)
+			inst.last_seen_at = strings.clone(now)
+			if len(inst.updated_at) > 0 do delete(inst.updated_at)
+			inst.updated_at = strings.clone(now)
+			if activity_status != "" && activity_status != inst.activity_status {
+				if len(inst.activity_status) > 0 do delete(inst.activity_status)
+				inst.activity_status = strings.clone(activity_status)
+			}
+			return iface.agent_save_instance(service.agents, inst)
 		} else {
 			domain.agent_instance_destroy(&inst)
 			return domain.Agent_Instance{}, false, domain.Domain_Error{}

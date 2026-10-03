@@ -202,3 +202,65 @@ test_reconcile_heartbeat_ignores_already_inactive_instances :: proc(t: ^testing.
 	testing.expect_value(t, len(changed), 0)
 	testing.expect_value(t, r.saves, 0)
 }
+
+@(test)
+test_apply_bridge_status_report_refreshes_last_seen_without_seq_advance :: proc(t: ^testing.T) {
+	r: Hb_Repo
+	r.instances = make([dynamic]domain.Agent_Instance)
+	defer {
+		for &inst in r.instances {
+			domain.agent_instance_destroy(&inst)
+		}
+		delete(r.instances)
+	}
+
+	inst: domain.Agent_Instance
+	inst.agent_instance_id = strings.clone("inst_idle_running")
+	inst.owner_user_id = domain.User_ID(strings.clone("owner_a"))
+	inst.agent_id = strings.clone("agt_a")
+	inst.bridge_id = strings.clone("brg_1")
+	inst.runtime_status = strings.clone("running")
+	inst.startup_status = strings.clone("ready")
+	inst.activity_status = strings.clone("idle")
+	inst.last_applied_seq = 10
+	inst.last_seen_at = strings.clone("2026-09-28T09:00:00Z")
+	inst.updated_at = strings.clone("2026-09-28T09:00:00Z")
+	inst.created_at = strings.clone("2026-09-28T08:00:00Z")
+	append(&r.instances, inst)
+
+	repo := iface.Agent_Repository{
+		ctx          = rawptr(&r),
+		get_instance = proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+			r := (^Hb_Repo)(ctx)
+			for item in r.instances {
+				if item.agent_instance_id == id {
+					c: domain.Agent_Instance
+					c.agent_instance_id = strings.clone(item.agent_instance_id)
+					c.owner_user_id     = domain.User_ID(strings.clone(string(item.owner_user_id)))
+					c.agent_id          = strings.clone(item.agent_id)
+					c.bridge_id         = strings.clone(item.bridge_id)
+					c.runtime_status    = strings.clone(item.runtime_status)
+					c.startup_status    = strings.clone(item.startup_status)
+					c.activity_status   = strings.clone(item.activity_status)
+					c.last_applied_seq  = item.last_applied_seq
+					c.last_seen_at      = strings.clone(item.last_seen_at)
+					c.updated_at        = strings.clone(item.updated_at)
+					c.created_at        = strings.clone(item.created_at)
+					return c, true, domain.Domain_Error{}
+				}
+			}
+			return domain.Agent_Instance{}, false, domain.Domain_Error{}
+		},
+		save_instance = hb_save_instance,
+	}
+	clk := platform.Clock{ctx = nil, now = hb_now}
+	svc := hb_service(&repo, &clk)
+
+	// Send status report with state_seq <= last_applied_seq (10 <= 10)
+	saved, applied, _ := apply_bridge_status_report(&svc, "brg_1", "inst_idle_running", 10, "running", "idle")
+	defer domain.agent_instance_destroy(&saved)
+
+	testing.expect(t, applied, "must apply liveness update without seq advance")
+	testing.expect_value(t, saved.last_seen_at, HB_NOW)
+	testing.expect_value(t, saved.runtime_status, "running")
+}
