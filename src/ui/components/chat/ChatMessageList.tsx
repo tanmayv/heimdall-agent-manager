@@ -275,22 +275,31 @@ export default function ChatMessageList({
           ) : messages.map((message, index) => {
             const timestamp = formatTimestamp(message.createdUnixMs);
             const delivery = getDeliveryStatus(message);
+            const isDivider = message.messageType === 'agent_start_clubbed' || message.messageType === 'agent_start' || (message.messageType === 'system' && (
+              !message.body || message.body.toLowerCase().includes('started') || message.body.toLowerCase().includes('ready') || message.body.toLowerCase().includes('restart')
+            ));
+            const isClubbedGroup = message.messageType === 'shell_run_group';
+            const hideCardChrome = isDivider || isClubbedGroup;
             return (
               <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
                 <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                   {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
-                  <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'text-primary'}`}>
+                  <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'w-full text-primary'}`}>
                     {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <DefaultMessageBody body={message.body} />}
                   </div>
-                  <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
-                    <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />
-                  </div>
-                  <div className="mt-1 flex w-full items-center justify-end gap-1.5 text-[10px] text-faint">
-                    {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso}>{timestamp.label}</time> : null}
-                    {message.isUser && delivery.glyph ? (
-                      <span data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={delivery.tone}>{delivery.glyph} {delivery.label}</span>
-                    ) : null}
-                  </div>
+                  {!hideCardChrome && (
+                    <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
+                      <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />
+                    </div>
+                  )}
+                  {!hideCardChrome && (
+                    <div className="mt-1 flex w-full items-center justify-end gap-1.5 text-[10px] text-faint">
+                      {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso}>{timestamp.label}</time> : null}
+                      {message.isUser && delivery.glyph ? (
+                        <span data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={delivery.tone}>{delivery.glyph} {delivery.label}</span>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               </div>
             );

@@ -8,6 +8,7 @@ import {
 import type { ShellSession } from '../../api/endpoints/shells';
 import { isTerminal, killAffordance, pinnedRunSessions, statusPresentation, type ShellRunMarker } from './shellModel';
 import { ShellOutputEmpty, ShellOutputUnavailable, shellLogFailure } from './ShellOutputStates';
+import type { ChatMessage, ChatTimestamp } from '../chat/types';
 
 /**
  * REQ-SHELL-6 §2/§3 — the RUN INDICATOR.
@@ -302,3 +303,61 @@ export function PinnedShellRuns({ sessions }: { sessions: ShellSession[] }) {
     </div>
   );
 }
+
+export interface ClubbedRunGroupProps {
+  messages: ChatMessage[];
+  runBySessionId: Map<string, ShellSession>;
+  formatTimestamp?: (unixMs: number) => ChatTimestamp;
+}
+
+/**
+ * REQ-CLUB-RUN-COMMANDS-13: Clubbed group header component for consecutive shell runs (>= 2).
+ * Displays 'Ran {N} commands • {startTime} – {endTime} ›' (collapsed by default).
+ * When expanded, renders individual ShellRunRows in chronological order, with each
+ * command independently expandable to view prompt, cwd, and log output.
+ */
+export function ClubbedRunGroup({
+  messages,
+  runBySessionId,
+  formatTimestamp,
+}: ClubbedRunGroupProps) {
+  const [expanded, setExpanded] = React.useState(false);
+  const count = messages.length;
+  const firstMsg = messages[0];
+  const lastMsg = messages[messages.length - 1];
+  const startTime = formatTimestamp && firstMsg ? formatTimestamp(firstMsg.createdUnixMs).label : '';
+  const endTime = formatTimestamp && lastMsg ? formatTimestamp(lastMsg.createdUnixMs).label : '';
+  const timeRange = startTime && endTime ? `${startTime} – ${endTime}` : (startTime || endTime || '');
+
+  return (
+    <div data-debug-id="clubbed-run-group" className="min-w-0 text-[12px] my-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        data-debug-id="clubbed-run-group-toggle"
+        aria-expanded={expanded}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-muted hover:bg-neutral-soft hover:text-primary cursor-pointer"
+      >
+        <span className="font-sans font-medium text-primary">Ran {count} commands</span>
+        {timeRange ? (
+          <>
+            <span className="text-faint">•</span>
+            <span className="text-faint font-mono text-[11px]">{timeRange}</span>
+          </>
+        ) : null}
+        <span className="shrink-0 text-faint ml-auto" aria-hidden="true">{expanded ? '⌄' : '›'}</span>
+      </button>
+      {expanded && (
+        <div data-debug-id="clubbed-run-group-items" className="mt-1 ml-2 pl-2 border-l border-subtle/50 space-y-1">
+          {messages.map((msg) => {
+            const sessionId = String(msg.metadata?.session_id || msg.metadata?.sessionId || '');
+            const session = sessionId ? runBySessionId.get(sessionId) : undefined;
+            if (!session) return null;
+            return <ShellRunRow key={sessionId} session={session} defaultExpanded={false} />;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+

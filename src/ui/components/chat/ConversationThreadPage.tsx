@@ -62,7 +62,8 @@ import {
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
-import { PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
+import { ClubbedRunGroup, PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
+import { groupTranscriptMessages, isAgentStartMessage } from './transcriptGrouping';
 import { type TaskLike } from './chainTaskInference';
 import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
@@ -596,6 +597,37 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
   const [isPaneExpanded, setIsPaneExpanded] = useState<boolean>(false);
+  const userManuallyToggledPaneRef = useRef<boolean>(false);
+  const prevRuntimeStatusRef = useRef<string>(runtimeStatus);
+
+  useEffect(() => {
+    userManuallyToggledPaneRef.current = false;
+    prevRuntimeStatusRef.current = runtimeStatus;
+  }, [agentInstanceId]);
+
+  // REQ-AUTO-STARTUP-PANE-16: Auto-expand capture pane during starting phase and auto-close when running
+  useEffect(() => {
+    const prevStatus = prevRuntimeStatusRef.current;
+    prevRuntimeStatusRef.current = runtimeStatus;
+
+    const currentStatusNorm = runtimeStatus.toLowerCase();
+    const currentState = runtimeStateFromStatus(runtimeStatus);
+    const isStarting = currentState === 'starting' || currentStatusNorm === 'starting';
+    const isLive = currentState === 'live' || currentStatusNorm === 'running';
+
+    if (isStarting) {
+      if (prevStatus !== runtimeStatus) {
+        userManuallyToggledPaneRef.current = false;
+      }
+      if (!userManuallyToggledPaneRef.current) {
+        setIsPaneExpanded(true);
+      }
+    } else if (isLive) {
+      if (!userManuallyToggledPaneRef.current) {
+        setIsPaneExpanded(false);
+      }
+    }
+  }, [runtimeStatus]);
   // @-mention popup state: mentionQuery is the fragment typed after '@' (null when
   // the popup is closed); mentionIndex is the highlighted row for arrow-key nav.
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -937,10 +969,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }, [caps, provider, providerOptions, instanceProvider, instanceTier]);
 
   const chatMessages = useMemo(
-    // System notices (e.g. "Agent has started and is ready.") are runtime chrome,
-    // not conversation content — hide them from the transcript entirely.
-    () => normalizeConversationMessages([...olderMessages, ...baseMessages, ...localMessages], agentId || agentInstanceId)
-      .filter((message) => message.messageType !== 'system'),
+    // REQ-SUBTLE-AGENT-START-14: Retain agent start/restart system messages for subtle divider rendering
+    () => normalizeConversationMessages([...olderMessages, ...baseMessages, ...localMessages], agentId || agentInstanceId),
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
   /* REQ-SHELL-6 §2 — THE RUN INDICATOR's three derived values.
@@ -968,7 +998,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
    * excluded because a run must not unpin itself (or its siblings) merely by existing. */
   const lastConversationMessageMs = useMemo(
     () => chatMessages.reduce(
-      (newest, message) => (message.messageType === 'shell_run' ? newest : Math.max(newest, message.createdUnixMs || 0)),
+      (newest, message) => (message.messageType === 'shell_run' || isAgentStartMessage(message) ? newest : Math.max(newest, message.createdUnixMs || 0)),
       0,
     ),
     [chatMessages],
@@ -994,12 +1024,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     () => new Set(pinnedRuns.map((session) => session.session_id)),
     [pinnedRuns],
   );
+  // REQ-CLUB-RUN-COMMANDS-13 & REQ-SUBTLE-AGENT-START-14: Group consecutive shell_run and agent start messages
   const transcriptMessages = useMemo(
-    () => chatMessages.filter((message) => {
-      if (message.messageType !== 'shell_run') return true;
-      const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
-      return !pinnedSessionIds.has(sessionId);
-    }),
+    () => groupTranscriptMessages(chatMessages, pinnedSessionIds),
     [chatMessages, pinnedSessionIds],
   );
 
@@ -1368,6 +1395,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
        carries no status by design. If the row is not loaded yet there is nothing
        truthful to say about the run, so the marker renders nothing rather than guessing
        a state. */
+    // REQ-CLUB-RUN-COMMANDS-13: Clubbed consecutive shell_run messages
+    if (message.messageType === 'shell_run_group') {
+      const clubbedRuns: ChatMessage[] = message.metadata?.clubbedRuns || [];
+      return (
+        <ClubbedRunGroup
+          messages={clubbedRuns}
+          runBySessionId={runBySessionId}
+          formatTimestamp={formatMessageTimestamp}
+        />
+      );
+    }
     if (message.messageType === 'shell_run') {
       const sessionId = String(message.metadata?.session_id || message.metadata?.sessionId || '');
       const session = sessionId ? runBySessionId.get(sessionId) : undefined;
@@ -1391,11 +1429,38 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </div>
       );
     }
-    // SYS-1: system notices (message_type='system', e.g. 'Agent has started and
-    // is ready.') get a deliberately LOW-KEY, muted treatment — a small info
-    // Icon + uppercase 'System' label + Markdown body — so they read as
-    // ambient status, clearly distinct from user bubbles and the amber action
-    // card without dominating the thread.
+    // REQ-SUBTLE-AGENT-START-14: Consecutive agent start messages clubbed together
+    if (message.messageType === 'agent_start_clubbed') {
+      const count = message.metadata?.count || 2;
+      const startMs = message.metadata?.startUnixMs || message.createdUnixMs;
+      const endMs = message.metadata?.endUnixMs || message.createdUnixMs;
+      const startTime = formatMessageTimestamp(startMs).label;
+      const endTime = formatMessageTimestamp(endMs).label;
+      const timeStr = startTime && endTime ? `${startTime} – ${endTime}` : (startTime || endTime || '');
+      return (
+        <div data-debug-id={`conversation-agent-start-clubbed-${message.messageId}`} className="my-2 flex w-full items-center gap-3">
+          <div className="flex-1 border-t border-subtle/40" />
+          <span className="shrink-0 font-mono text-[11px] text-faint">
+            agent started {count} times ({timeStr})
+          </span>
+          <div className="flex-1 border-t border-subtle/40" />
+        </div>
+      );
+    }
+    // REQ-SUBTLE-AGENT-START-14: Isolated agent start message rendered as subtle divider
+    if (isAgentStartMessage(message)) {
+      const time = formatMessageTimestamp(message.createdUnixMs).label;
+      return (
+        <div data-debug-id={`conversation-agent-start-${message.messageId}`} className="my-2 flex w-full items-center gap-3">
+          <div className="flex-1 border-t border-subtle/40" />
+          <span className="shrink-0 font-mono text-[11px] text-faint">
+            agent started ({time})
+          </span>
+          <div className="flex-1 border-t border-subtle/40" />
+        </div>
+      );
+    }
+    // SYS-1: general system notices (other than agent start/restart)
     if (message.messageType === 'system') {
       return (
         <div data-debug-id={`conversation-system-message-${message.messageId}`} className="rounded-xl border border-subtle bg-surface px-3 py-2 text-muted">
@@ -1851,8 +1916,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           <AgentPaneComposerPanel
             agentInstanceId={agentInstanceId}
             isExpanded={isPaneExpanded}
-            onClose={() => setIsPaneExpanded(false)}
-            onToggleExpand={() => setIsPaneExpanded((prev) => !prev)}
+            onClose={() => {
+              userManuallyToggledPaneRef.current = true;
+              setIsPaneExpanded(false);
+            }}
+            onToggleExpand={() => {
+              userManuallyToggledPaneRef.current = true;
+              setIsPaneExpanded((prev) => !prev);
+            }}
             isActiveTab={true}
             runtimeStatus={runtimeStatus}
             className="mb-2.5"
@@ -1909,7 +1980,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               aria-pressed={isPaneExpanded}
               title="Toggle terminal pane panel"
               aria-label="Toggle terminal pane panel"
-              onClick={() => setIsPaneExpanded((prev) => !prev)}
+              onClick={() => {
+                userManuallyToggledPaneRef.current = true;
+                setIsPaneExpanded((prev) => !prev);
+              }}
               className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
                 isPaneExpanded
                   ? 'bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30'

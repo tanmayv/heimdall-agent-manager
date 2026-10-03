@@ -221,4 +221,163 @@ test('REQ-MOBILE-SLIM-SIDEBAR-11: AppShell implements slim mobile left sidebar w
   );
 });
 
+test('REQ-CLUB-RUN-COMMANDS-13: groupTranscriptMessages clubs consecutive shell_run messages (>= 2) and keeps single runs standalone', async () => {
+  const { groupTranscriptMessages } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeRun = (id: string, sessionId: string, time: number): any => ({
+    key: id,
+    messageId: id,
+    body: '',
+    isUser: false,
+    createdUnixMs: time,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: 'shell_run',
+    metadata: { session_id: sessionId },
+  });
+
+  const makeUser = (id: string, text: string): any => ({
+    key: id,
+    messageId: id,
+    body: text,
+    isUser: true,
+    createdUnixMs: 1000,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: 'you',
+    messageType: 'text',
+  });
+
+  // 3 consecutive runs -> 1 clubbed group
+  const input1 = [
+    makeRun('r1', 's1', 1000),
+    makeRun('r2', 's2', 2000),
+    makeRun('r3', 's3', 3000),
+  ];
+  const out1 = groupTranscriptMessages(input1);
+  assert.equal(out1.length, 1);
+  assert.equal(out1[0].messageType, 'shell_run_group');
+  assert.equal(out1[0].metadata?.count, 3);
+  assert.equal(out1[0].metadata?.clubbedRuns.length, 3);
+
+  // Single isolated run -> stays 1 shell_run
+  const input2 = [
+    makeUser('u1', 'hello'),
+    makeRun('r1', 's1', 1000),
+    makeUser('u2', 'world'),
+  ];
+  const out2 = groupTranscriptMessages(input2);
+  assert.equal(out2.length, 3);
+  assert.equal(out2[1].messageType, 'shell_run');
+
+  // Consecutive runs with pinned session filtered out
+  const input3 = [
+    makeRun('r1', 's1', 1000),
+    makeRun('r2', 's2', 2000),
+    makeRun('r3', 's3_pinned', 3000),
+  ];
+  const out3 = groupTranscriptMessages(input3, new Set(['s3_pinned']));
+  assert.equal(out3.length, 1);
+  assert.equal(out3[0].messageType, 'shell_run_group');
+  assert.equal(out3[0].metadata?.count, 2);
+});
+
+test('REQ-CLUB-RUN-COMMANDS-13: ShellRunIndicator exports ClubbedRunGroup with label, time range, chevron, and expansion', () => {
+  const content = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shells/ShellRunIndicator.tsx'), 'utf8');
+
+  assert.ok(content.includes('export function ClubbedRunGroup'), 'Must export ClubbedRunGroup');
+  assert.ok(content.includes('data-debug-id="clubbed-run-group"'), 'Must have clubbed-run-group debug ID');
+  assert.ok(content.includes('data-debug-id="clubbed-run-group-toggle"'), 'Must have toggle button with clubbed-run-group-toggle');
+  assert.ok(content.includes('Ran {count} commands'), 'Must display Ran {count} commands');
+  assert.ok(content.includes('{expanded ? \'⌄\' : \'›\'}'), 'Must toggle chevron between › and ⌄');
+  assert.ok(content.includes('data-debug-id="clubbed-run-group-items"'), 'Must render clubbed-run-group-items when expanded');
+  assert.ok(content.includes('defaultExpanded={false}'), 'Inner ShellRunRows must default to collapsed');
+});
+
+test('REQ-SUBTLE-AGENT-START-14: groupTranscriptMessages clubs consecutive start messages and ConversationThreadPage renders subtle dividers', async () => {
+  const { groupTranscriptMessages, isAgentStartMessage } = await import('../src/ui/components/chat/transcriptGrouping.ts');
+
+  const makeSystem = (id: string, body: string, time: number): any => ({
+    key: id,
+    messageId: id,
+    body,
+    isUser: false,
+    createdUnixMs: time,
+    deliveredUnixMs: 0,
+    readUnixMs: 0,
+    deliveryFailedUnixMs: 0,
+    deliveryError: '',
+    sending: false,
+    authorLabel: '',
+    messageType: 'system',
+  });
+
+  const msg1 = makeSystem('sys1', 'Agent has started and is ready.', 1000);
+  const msg2 = makeSystem('sys2', 'Agent has started and is ready.', 2000);
+  assert.ok(isAgentStartMessage(msg1), 'Must identify system start message');
+
+  // Single start message -> isolated
+  const single = groupTranscriptMessages([msg1]);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].messageType, 'system');
+
+  // Consecutive start messages -> clubbed into agent_start_clubbed
+  const clubbed = groupTranscriptMessages([msg1, msg2]);
+  assert.equal(clubbed.length, 1);
+  assert.equal(clubbed[0].messageType, 'agent_start_clubbed');
+  assert.equal(clubbed[0].metadata?.count, 2);
+
+  // Check ConversationThreadPage source
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+  assert.ok(
+    !threadContent.includes('.filter((message) => message.messageType !== \'system\')'),
+    'ConversationThreadPage must not filter out system messages from chatMessages'
+  );
+  assert.ok(
+    threadContent.includes('border-t border-subtle/40'),
+    'Subtle start divider must use border-t border-subtle/40'
+  );
+  assert.ok(
+    threadContent.includes('text-faint text-[11px] font-mono') || threadContent.includes('font-mono text-[11px] text-faint'),
+    'Subtle start divider must use faint font-mono styling'
+  );
+  assert.ok(
+    threadContent.includes('agent started ({time})'),
+    'Isolated start divider must format as agent started ({time})'
+  );
+  assert.ok(
+    threadContent.includes('agent started {count} times ({timeStr})'),
+    'Clubbed start divider must format as agent started {count} times ({timeStr})'
+  );
+});
+
+test('REQ-AUTO-STARTUP-PANE-16: ConversationThreadPage auto-expands capture pane during starting phase and auto-collapses on running', () => {
+  const threadContent = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
+
+  assert.ok(
+    threadContent.includes('userManuallyToggledPaneRef'),
+    'ConversationThreadPage must have userManuallyToggledPaneRef to track manual overrides'
+  );
+  assert.ok(
+    threadContent.includes('isStarting') && threadContent.includes('setIsPaneExpanded(true)'),
+    'Must auto-expand capture pane when entering starting phase'
+  );
+  assert.ok(
+    threadContent.includes('isLive') && threadContent.includes('setIsPaneExpanded(false)'),
+    'Must auto-collapse capture pane when transitioning to running / live'
+  );
+  assert.ok(
+    threadContent.includes('userManuallyToggledPaneRef.current = true;'),
+    'Manual pane button clicks or panel toggles must set userManuallyToggledPaneRef to true'
+  );
+});
+
+
 
