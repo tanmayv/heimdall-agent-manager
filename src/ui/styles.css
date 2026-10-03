@@ -537,9 +537,8 @@ body {
 }
 
 /* Agent activity bubbles: the push-only row of ham-ctl action indicators above
-   the chat composer. The row lives in a reserved fixed-height gutter, on a single
-   clipped line. Animations are intentionally SUBTLE/low-contrast so the row reads
-   as ambient presence, never an attention-grabbing toast:
+   the chat composer, rendered in normal flow when active. Animations are intentionally
+   SUBTLE/low-contrast so the row reads as ambient presence, never an attention-grabbing toast:
      - a NEW bubble (row already has bubbles) slides in from the left and EXPANDS
        (max-width 0 -> full), which pushes the existing bubbles over to make room;
      - the FIRST bubble (empty row) shows a small 3-dot indicator, then MORPHS into

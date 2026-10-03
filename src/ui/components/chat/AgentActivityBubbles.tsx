@@ -223,8 +223,8 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
     }
   }, [buffer, pushVisible]);
 
-  // Reserved fixed-height gutter: ALWAYS rendered (even when empty) so the
-  // composer never shifts as bubbles appear/disappear. Single line, clipped.
+  if (visible.length === 0) return null;
+
   return (
     <div
       data-debug-id="conversation-activity-bubbles"

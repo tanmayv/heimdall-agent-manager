@@ -64,7 +64,7 @@ import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
 import { type TaskLike } from './chainTaskInference';
-import { focusSuppressesMobileChrome, keyboardAwareBottomPx, useIsBelowTailwindSm, useIsMobile, useKeyboardInset } from '../shell/responsive';
+import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -647,14 +647,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
   }
   const isMobile = useIsMobile();
-  // REQ-SHELL-28: how much of the viewport the soft keyboard is covering; 0 on desktop
-  // and whenever no keyboard is up. Consumed by the bottom-pinned composer form below.
-  const keyboardInset = useKeyboardInset();
-  // REQ-SHELL-28: is focus in a keyboard-bearing field of the composer? That — and NOT
-  // the keyboard inset — is what AppShell uses to unmount the 56px MobileTabBar, so it is
-  // what decides whether the composer still has to clear a tab bar. Same predicate, from
-  // the same module, so the two cannot drift apart.
-  const [composerHoldsKeyboardFocus, setComposerHoldsKeyboardFocus] = useState(false);
   // REQ-UI-DUP-1: the two right-panel branches below are shown/hidden by `sm:` classes
   // (`sm:hidden` / `hidden sm:flex`). Those are CSS visibility only — React mounts BOTH
   // subtrees at every width, so one opened file produced two ProjectFilesPanel instances,
@@ -890,60 +882,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
 
-  // Mobile scroll hide/reveal chrome tracking
-  const [chromeVisible, setChromeVisible] = useState(true);
-  const lastScrollTopRef = useRef(0);
 
-  const restoreChrome = useCallback(() => {
-    setChromeVisible(true);
-  }, []);
-
-  const handleTranscriptScroll = useCallback(
-    (event: UIEvent<HTMLDivElement>) => {
-      if (!isMobile) return;
-
-      const TOP_MARGIN = 60;
-      const BOTTOM_MARGIN = 100;
-      const target = event.currentTarget;
-      const currentTop = target.scrollTop;
-      const distanceToBottom = target.scrollHeight - currentTop - target.clientHeight;
-      const isAtTop = currentTop <= TOP_MARGIN;
-      const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;
-
-      if (isAtTop || isAtBottom) {
-        restoreChrome();
-        lastScrollTopRef.current = currentTop;
-        return;
-      }
-
-      const delta = currentTop - lastScrollTopRef.current;
-      if (Math.abs(delta) > 8) {
-        setChromeVisible(false);
-        lastScrollTopRef.current = currentTop;
-      }
-    },
-    [isMobile, restoreChrome],
-  );
-
-  useEffect(() => {
-    if (!isMobile) {
-      restoreChrome();
-    }
-  }, [isMobile, restoreChrome]);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && isMobile) {
-      window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: chromeVisible } }));
-    }
-  }, [chromeVisible, isMobile]);
-
-  useEffect(() => {
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: true } }));
-      }
-    };
-  }, []);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
@@ -1058,9 +997,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setOlderHasMore(false);
     setLocalMessages([]);
     setAttachments([]);
-    restoreChrome();
-    lastScrollTopRef.current = 0;
-  }, [conversationId, restoreChrome]);
+  }, [conversationId]);
   useEffect(() => {
     if (baseMessages.length === 0 || localMessages.length === 0) return;
     const serverIds = new Set(baseMessages.map((message, index) => msgId(message, index)));
@@ -1817,41 +1754,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <form
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
-        data-mobile-shell-chrome="hide-on-focus"
-        onFocus={(event) => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(event.target))}
-        onBlur={() => window.setTimeout(
-          () => setComposerHoldsKeyboardFocus(focusSuppressesMobileChrome(document.activeElement)),
-          0,
-        )}
-        // REQ-SHELL-28: iOS shrinks the VISUAL viewport for the soft keyboard and leaves the
-        // LAYOUT viewport at full height, so a `fixed bottom-…` bar stays pinned BELOW the
-        // keyboard. `bottom-14` below is the static fallback; this inline style is the live
-        // value, and at rest it clears the tab bar by the bar's OWN measured height
-        // (`--ui-bottom-chrome`) rather than a hardcoded 56. See `keyboardAwareBottomPx` for
-        // the four-row truth table — it is NOT `keyboardInset + 56`, and the two zero-ish rows
-        // are not the same value: one is a mounted tab bar, the other a home indicator.
-        // `transition-all` below now also eases `bottom`, so the bar slides up with the
-        // keyboard over 300ms rather than jumping. That is intentional.
-        style={isMobile ? { bottom: keyboardAwareBottomPx({ keyboardInset, holdsKeyboardFocus: composerHoldsKeyboardFocus }) } : undefined}
-        className={`w-full max-w-full shrink-0 transition-all duration-300 ease-in-out ${
-          isMobile
-            ? `fixed bottom-14 inset-x-0 z-20 bg-canvas px-3 pb-2 pt-0 ${
-                !chromeVisible
-                  ? 'translate-y-full opacity-0 pointer-events-none'
-                  : 'translate-y-0 opacity-100 pointer-events-auto'
-              }`
-            : 'max-h-[800px] px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 translate-y-0 opacity-100 pointer-events-auto'
-        }`}
+        className="w-full max-w-4xl mx-auto px-3 sm:px-0 py-4"
       >
         <div className="mx-auto w-full max-w-4xl">
-          {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
-              above the composer (co-located with the working indicator). */}
-          <AgentActivityBubbles instanceId={agentInstanceId} />
-          {/* REQ-SHELL-6 §2/§3: every RUNNING run, and every just-finished one, sits at
-              the END of the conversation directly above the composer — the user's
-              explicit placement. Concurrent runs stack; finished ones collapse into a
-              single "Ran N commands" row. */}
-          <PinnedShellRuns sessions={pinnedRuns} />
           {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
           {attachments.length > 0 && (
             <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary">
@@ -1938,11 +1843,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               ref={textareaRef}
               data-debug-id="conversation-composer-input"
               value={draft}
-              onFocus={() => {
-                restoreChrome();
-              }}
               onChange={(e) => {
-                restoreChrome();
                 setDraft(e.target.value);
                 const val = e.target.value;
                 const pos = e.target.selectionStart ?? val.length;
@@ -1956,7 +1857,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 }
               }}
               onKeyDown={(e) => {
-                restoreChrome();
                 if (mentionQuery !== null && filteredMentions.length > 0) {
                   if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
                   if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
@@ -2071,13 +1971,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         hasMore={olderHasMore && Boolean(olderCursor)}
         loadingOlder={olderMessagesState.isFetching}
         onLoadOlder={loadOlderMessages}
-        onScroll={handleTranscriptScroll}
         formatTimestamp={formatMessageTimestamp}
         getDeliveryStatus={deliveryStatusFor}
         agentIsWorking={isWorking}
         renderMessageBody={({ message }) => renderConversationMessageBody(message)}
         wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+        footer={(
+          <div className="w-full max-w-4xl mx-auto">
+            <AgentActivityBubbles instanceId={agentInstanceId} />
+            <PinnedShellRuns sessions={pinnedRuns} />
+            {renderComposer()}
+          </div>
+        )}
         emptyState={messagesQuery.isFetching ? (
           <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-muted">Loading messages…</div>
         ) : (
@@ -2122,20 +2028,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
           data-debug-id="conversation-thread-header"
-          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out overflow-visible ${
-            isMobile
-              // REQ-SHELL-28: opaque, not `bg-canvas/90`. Like the composer below, this bar
-              // is `fixed` on mobile only, so the transcript scrolls UNDER it and 10% of a
-              // moving message is legible ghosting through the title. The desktop branch
-              // keeps the frosted look: there the bar is in normal flow with nothing behind
-              // it. The `-bottom-6` gradient fade below stays translucent by design.
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas ${
-                  !chromeVisible
-                    ? '-translate-y-full opacity-0 pointer-events-none'
-                    : 'translate-y-0 opacity-100 pointer-events-auto'
-                }`
-              : 'relative z-20 max-h-16 py-2 bg-canvas/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
-          }`}
+          className="sticky top-0 z-20 flex shrink-0 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4 bg-canvas/90 backdrop-blur-md border-b border-subtle/50 overflow-visible"
         >
           {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
           <div
@@ -2263,7 +2156,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </header>
 
         {transcript}
-        {renderComposer()}
       </div>
 
       {/* Desktop (>= 640px, Tailwind `sm:`) vertical resizer divider between chat view and right sidebar */}
@@ -2314,70 +2206,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </div>
       ) : null}
 
-      {/* Subtle Top-Right Floating Toggle Button */}
-      {isMobile && !chromeVisible && rightPanel === 'closed' && Boolean(chainId || projectId || agentInstanceId) ? (
-        <button
-          type="button"
-          data-debug-id="conversation-floating-panel-toggle-btn"
-          aria-label="Open side panel"
-          title="Open panel"
-          onClick={toggleRightPanel}
-          className="fixed top-2.5 right-2.5 z-30 bg-surface-overlay/80 backdrop-blur border border-subtle text-muted hover:text-primary rounded-xl h-10 w-10 grid place-items-center transition-opacity duration-200"
-        >
-          <Icon name="panel-right" size={20} />
-          {chainId && chainProgress.total > 0 ? (
-            <span
-              data-debug-id="conversation-floating-panel-toggle-progress"
-              className="absolute -right-1 -top-1 rounded-full bg-accent px-1 text-[9px] font-bold leading-4 text-accent-fg"
-            >
-              {chainProgress.done}/{chainProgress.total}
-            </span>
-          ) : null}
-        </button>
-      ) : null}
-
-      {/* Subtle Bottom Floating Pills.
-
-          REQ-SHELL-28 — why this bottom-pinned surface deliberately does NOT take the
-          keyboard inset the composer above takes, so the next reader inherits the argument
-          instead of re-deriving it or "fixing" it blind:
-
-          The gate below is `!chromeVisible`, i.e. the user is SCROLLING. In that state the
-          composer is translated off-screen and unfocused, and the composer's textarea is the
-          only thing on this route that raises a soft keyboard. So "pills rendered AND keyboard
-          up" needs the keyboard to outlive the composer being hidden — which is the iOS
-          dismiss-without-blur case, and there the keyboard is DOWN. The state could not be
-          constructed in the harness, and it cannot be proved unreachable on real iOS either;
-          adding a defensive `style={{ bottom: keyboardAwareBottomPx(...) }}` here would be an
-          UNTESTED branch guarding a state neither side can produce. Each pill already carries
-          its own opaque-enough background, so the transparency half does not apply. */}
-      {isMobile && !chromeVisible && rightPanel === 'closed' ? (
-        <div className="fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none">
-          <button
-            type="button"
-            data-debug-id="conversation-floating-agent-pill"
-            aria-label="Switch agent"
-            title={agentDisplayName || agentInstanceId || 'Agent'}
-            onClick={() => setAgentPickerOpen(true)}
-            className="pointer-events-auto bg-surface-raised/90 backdrop-blur-md border border-subtle px-3 py-1.5 rounded-full text-xs font-medium text-primary shadow-panel flex items-center gap-1.5 hover:bg-neutral-soft hover:text-primary transition-all duration-200"
-          >
-            <span className="max-w-[160px] truncate">{agentDisplayName || agentInstanceId || 'Agent'}</span>
-            <Icon name="chevron-down" size={13} />
-          </button>
-          <button
-            type="button"
-            data-debug-id="conversation-floating-reply-pill"
-            aria-label="Reply"
-            title="Reply"
-            onClick={() => {
-              restoreChrome();
-            }}
-            className="pointer-events-auto bg-surface-raised/90 backdrop-blur-md border border-subtle px-3 py-1.5 rounded-full text-xs font-medium text-primary shadow-panel flex items-center gap-1.5 hover:bg-neutral-soft hover:text-primary transition-all duration-200"
-          >
-            Reply
-          </button>
-        </div>
-      ) : null}
 
       <TaskChainSelectorModal
         open={chainSelectorOpen}

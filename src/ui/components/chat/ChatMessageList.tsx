@@ -99,8 +99,10 @@ export default function ChatMessageList({
   formatTimestamp = () => EMPTY_TIMESTAMP,
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
+  footer,
+  children,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
-  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
+  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
 }: {
   conversationKey: string;
   messages: ChatMessage[];
@@ -121,6 +123,8 @@ export default function ChatMessageList({
   formatTimestamp?: (unixMs: number) => ChatTimestamp;
   getDeliveryStatus?: (message: ChatMessage) => ChatDeliveryStatus;
   agentIsWorking?: boolean;
+  footer?: ReactNode;
+  children?: ReactNode;
   wrapperClassName?: string;
   scrollClassName?: string;
 }) {
@@ -302,8 +306,9 @@ export default function ChatMessageList({
               </div>
             </div>
           )}
+          {footer}
+          {children}
         </div>
-        <div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-56 shrink-0 sm:hidden" aria-hidden="true" />
       </div>
       {showJump ? (
         <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-subtle bg-surface-raised/90 px-3 py-1 text-caption text-primary shadow-lg hover:bg-surface-raised">Jump to latest ↓</button>
