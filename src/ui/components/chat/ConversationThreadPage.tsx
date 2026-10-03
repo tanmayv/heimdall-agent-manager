@@ -464,6 +464,8 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
     .map(({ chatMessage }) => chatMessage);
 }
 
+export const COMPOSER_DRAFT_KEY = 'heimdall:composer:draft';
+
 export default function ConversationThreadPage({ agentInstanceId: routeInstanceId, focusMessageId }: { agentInstanceId: string; focusMessageId?: string }) {
   // The route is instance-id-only (#/conversations/{agentInstanceId}); an instance
   // maps 1:1 to a conversation, which we resolve via the O(1) by-instance endpoint.
@@ -598,7 +600,29 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [olderMessages, setOlderMessages] = useState<Message[]>([]);
   const [olderCursor, setOlderCursor] = useState('');
   const [olderHasMore, setOlderHasMore] = useState(false);
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return window.localStorage.getItem(COMPOSER_DRAFT_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const updateDraft = useCallback((value: string) => {
+    setDraft(value);
+    if (typeof window !== 'undefined') {
+      try {
+        if (value) {
+          window.localStorage.setItem(COMPOSER_DRAFT_KEY, value);
+        } else {
+          window.localStorage.removeItem(COMPOSER_DRAFT_KEY);
+        }
+      } catch {
+        // ignore storage errors
+      }
+    }
+  }, []);
   const [isPaneExpanded, setIsPaneExpanded] = useState<boolean>(false);
   const userManuallyToggledPaneRef = useRef<boolean>(false);
   const prevRuntimeStatusRef = useRef<string>(runtimeStatus);
@@ -678,7 +702,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const before = draft.slice(0, pos);
     const after = draft.slice(pos);
     const newBefore = before.replace(/@([^\s@]*)$/, `@${entity.id}`);
-    setDraft(newBefore + after);
+    updateDraft(newBefore + after);
     setMentionQuery(null);
     setMentionIndex(0);
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
@@ -732,14 +756,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const prevChainIdRef = useRef<string | null>(null);
 
   // When switching agents within the same chain, reset per-conversation local state
+  // Input draft and attachments are retained across agent switching (REQ-COMPOSER-INPUT-PERSIST-29)
   useEffect(() => {
-    setDraft('');
     setLocalMessages([]);
     setOlderMessages([]);
     setOlderCursor('');
     setOlderHasMore(false);
     setError('');
-    setAttachments([]);
     setFocusedTaskId(null);
   }, [routeInstanceId]);
 
@@ -1184,7 +1207,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const localId = msgId(local, 0);
     (local as any).artifact_ids_json = JSON.stringify(attachmentIds);
     setError('');
-    setDraft('');
+    updateDraft('');
     setAttachments([]);
     setLocalMessages((current) => [...current, local]);
     try {
@@ -1865,10 +1888,26 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
-        className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-muted hover:bg-neutral-soft hover:text-primary"
+        className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[200px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised sm:border-transparent sm:bg-transparent px-2.5 text-[13px] text-primary sm:text-muted hover:bg-neutral-soft hover:text-primary"
       >
-        <span className="max-w-[120px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+        <span className="truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
         <Icon name="chevron-down" size={13} className="shrink-0" />
+      </button>
+    );
+    const runtimeMenuTrigger = (
+      <button
+        type="button"
+        data-debug-id="conversation-runtime-menu-btn"
+        aria-label="Change provider and tier"
+        title="Change provider / tier — restarts the agent"
+        aria-haspopup={isMobile ? 'dialog' : undefined}
+        aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
+        onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
+        className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
+      >
+        <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
+        <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
+        <Icon name="chevron-down" size={14} className="shrink-0" />
       </button>
     );
     return (
@@ -1903,18 +1942,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               input in the middle, action toolbar (attach/terminal · model switcher ·
               send) on the bottom. */}
           <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-subtle bg-surface px-3 py-2.5 focus-within:border-accent sm:px-4 sm:py-3">
-          <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
-            <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
-              <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
-            </span>
-            {projectId ? (
-              <>
-                <span className="opacity-40">·</span>
-                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-neutral-soft hover:text-primary">
-                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-muted"><VaultText value={projectName} fallback="Project" /></span>
-                </button>
-              </>
-            ) : null}
+          <div data-debug-id="conversation-composer-context" className="mb-2 flex min-w-0 items-center gap-x-2 text-[12px] text-muted">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+              <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
+                <Icon name="lock" size={12} className="shrink-0" /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
+              </span>
+              {projectId ? (
+                <>
+                  <span className="shrink-0 opacity-40">·</span>
+                  <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-neutral-soft hover:text-primary">
+                    <Icon name="folder" size={13} className="shrink-0" /><span className="min-w-0 truncate font-semibold text-muted"><VaultText value={projectName} fallback="Project" /></span>
+                  </button>
+                </>
+              ) : null}
+            </div>
             <div className="ml-auto shrink-0">
               <Menu
                 side="top"
@@ -1979,7 +2020,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 requestAnimationFrame(() => textareaRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
               }}
               onChange={(e) => {
-                setDraft(e.target.value);
+                updateDraft(e.target.value);
                 const val = e.target.value;
                 const pos = e.target.selectionStart ?? val.length;
                 const before = val.slice(0, pos);
@@ -2002,96 +2043,109 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               }}
               onPaste={handleComposerPaste}
               rows={2}
-              placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
+              placeholder={isMobile ? 'Message the agent…' : 'Message the agent… (Cmd/Ctrl+Enter to send)'}
               className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-primary outline-none placeholder:text-muted sm:text-sm"
             />
           </div>
 
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 min-w-0">
-            <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="plus" size={19} /></button>
-            <button
-              data-debug-id="conversation-request-pane-btn"
-              type="button"
-              aria-pressed={isPaneExpanded}
-              title="Toggle terminal pane panel"
-              aria-label="Toggle terminal pane panel"
-              onClick={() => {
-                userManuallyToggledPaneRef.current = true;
-                setIsPaneExpanded((prev) => !prev);
-              }}
-              className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
-                isPaneExpanded
-                  ? 'bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30'
-                  : 'text-muted hover:bg-neutral-soft hover:text-primary'
-              }`}
-            >
-              <Icon name="terminal" size={18} />
-            </button>
+          <div className="mt-2 flex flex-col gap-2 sm:mt-1 sm:flex-row sm:items-center sm:gap-1.5 min-w-0">
+            {/* Mobile Row 1: Agent chip and Model switcher side-by-side with full width under the textarea */}
+            <div className="flex w-full min-w-0 items-center gap-1.5 sm:contents">
+              <div className="flex-1 min-w-0 sm:flex-initial sm:order-4">
+                {!isMobile ? (
+                  <Popover
+                    side="top"
+                    align="start"
+                    label="Switch agent"
+                    open={agentPickerOpen}
+                    onOpenChange={setAgentPickerOpen}
+                    className="w-[min(92vw,320px)]"
+                    trigger={agentPickerTrigger}
+                  >
+                    {agentPickerList}
+                  </Popover>
+                ) : (
+                  <>
+                    {agentPickerTrigger}
+                    <Drawer side="bottom" title="Switch agent" open={agentPickerOpen} onOpenChange={setAgentPickerOpen} data-debug-id="conversation-agent-picker-mobile-sheet">
+                      <Drawer.Body>{agentPickerList}</Drawer.Body>
+                    </Drawer>
+                  </>
+                )}
+              </div>
 
-            <div className="flex-1 min-w-[8px]" />
+              <div className="flex-1 min-w-0 sm:flex-initial sm:order-6">
+                {!isMobile ? (
+                  <Popover
+                    side="top"
+                    align="end"
+                    label="Runtime controls"
+                    open={runtimeMenuOpen}
+                    onOpenChange={setRuntimeMenuOpen}
+                    className="w-[min(92vw,430px)]"
+                    trigger={runtimeMenuTrigger}
+                  >
+                    {runtimeControls}
+                  </Popover>
+                ) : (
+                  <>
+                    {runtimeMenuTrigger}
+                    <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
+                      <Drawer.Body>{runtimeControls}</Drawer.Body>
+                    </Drawer>
+                  </>
+                )}
+              </div>
+            </div>
 
-            {/* Agent chip: shows the current agent's display name, centered
-                between the pane-capture controls and the model switcher. Clicking
-                it opens a picker of all running agents to switch conversations.
-                Desktop uses a Popover; mobile uses a bottom Drawer (matching the
-                runtime menu pattern below). */}
-            {!isMobile ? (
-              <Popover
-                side="top"
-                align="start"
-                label="Switch agent"
-                open={agentPickerOpen}
-                onOpenChange={setAgentPickerOpen}
-                className="w-[min(92vw,320px)]"
-                trigger={agentPickerTrigger}
-              >
-                {agentPickerList}
-              </Popover>
-            ) : (
-              <>
-                {agentPickerTrigger}
-                <Drawer side="bottom" title="Switch agent" open={agentPickerOpen} onOpenChange={setAgentPickerOpen} data-debug-id="conversation-agent-picker-mobile-sheet">
-                  <Drawer.Body>{agentPickerList}</Drawer.Body>
-                </Drawer>
-              </>
-            )}
+            {/* Desktop Spacers */}
+            <div className="hidden sm:block flex-1 min-w-[8px] sm:order-3" />
+            <div className="hidden sm:block flex-1 min-w-[8px] sm:order-5" />
 
-            <div className="flex-1 min-w-[8px]" />
-
-            {/* Model switcher: shows current provider · tier; opens the runtime
-                menu to change them (which restarts the agent). */}
-            {!isMobile ? (
-              <Popover
-                side="top"
-                align="end"
-                label="Runtime controls"
-                open={runtimeMenuOpen}
-                onOpenChange={setRuntimeMenuOpen}
-                className="w-[min(92vw,430px)]"
-                trigger={
-                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 min-w-0 max-w-[160px] items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
-                    <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
-                    <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
-                    <Icon name="chevron-down" size={14} className="shrink-0" />
-                  </button>
-                }
-              >
-                {runtimeControls}
-              </Popover>
-            ) : (
-              <>
-                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 min-w-0 max-w-[160px] items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
-                  <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
-                  <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
-                  <Icon name="chevron-down" size={14} className="shrink-0" />
+            {/* Mobile Row 2: Left: [+] attach and [>_] terminal; Right: Send button anchored to bottom-right corner */}
+            <div className="flex w-full min-w-0 items-center justify-between sm:contents">
+              <div className="flex items-center gap-1.5 sm:contents">
+                <button
+                  data-debug-id="conversation-attach-btn"
+                  type="button"
+                  onClick={openAttachmentPicker}
+                  aria-label="Upload attachment"
+                  title="Upload attachment"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary sm:order-1"
+                >
+                  <Icon name="plus" size={19} />
                 </button>
-                <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
-                  <Drawer.Body>{runtimeControls}</Drawer.Body>
-                </Drawer>
-              </>
-            )}
+                <button
+                  data-debug-id="conversation-request-pane-btn"
+                  type="button"
+                  aria-pressed={isPaneExpanded}
+                  title="Toggle terminal pane panel"
+                  aria-label="Toggle terminal pane panel"
+                  onClick={() => {
+                    userManuallyToggledPaneRef.current = true;
+                    setIsPaneExpanded((prev) => !prev);
+                  }}
+                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors sm:order-2 ${
+                    isPaneExpanded
+                      ? 'bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30'
+                      : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                  }`}
+                >
+                  <Icon name="terminal" size={18} />
+                </button>
+              </div>
 
-            <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="arrow-up" size={18} /></button>
+              <button
+                data-debug-id="conversation-composer-send-btn"
+                type="submit"
+                disabled={sendDisabled}
+                aria-label="Send message"
+                title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:order-7"
+              >
+                <Icon name="arrow-up" size={18} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
