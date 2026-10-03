@@ -227,3 +227,19 @@ bridge_telemetry_agents_count_http_response :: proc(allocator := context.allocat
 	strings.write_string(&b, body)
 	return strings.to_string(b)
 }
+
+bridge_telemetry_looks_like_processes :: proc(line: string) -> bool {
+	if !strings.has_prefix(line, "GET ") do return false
+	rest := line[4:]
+	return strings.has_prefix(rest, "/api/v1/telemetry/processes")
+}
+
+bridge_telemetry_processes_http_response :: proc(allocator := context.allocator) -> string {
+	body := process_tree_get_cached_prometheus(context.temp_allocator)
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nConnection: close\r\nContent-Length: ")
+	strings.write_int(&b, len(body))
+	strings.write_string(&b, "\r\n\r\n")
+	strings.write_string(&b, body)
+	return strings.to_string(b)
+}

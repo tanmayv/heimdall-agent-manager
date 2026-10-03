@@ -119,6 +119,13 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 					_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
 					return
 				}
+				if bridge_telemetry_looks_like_processes(first_line_str) {
+					resp := bridge_telemetry_processes_http_response()
+					defer delete(resp)
+					bytes := transmute([]byte)resp
+					_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
+					return
+				}
 				if bridge_config.local_proxy_enabled && bridge_proxy_looks_like_http(first_line_str) {
 					bridge_local_proxy_serve_unix(client, pending)
 					proxy_owned = true
@@ -178,6 +185,12 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 				first_line_str := strings.trim_space(pending[:idx])
 				if bridge_telemetry_looks_like_agents_count(first_line_str) {
 					resp := bridge_telemetry_agents_count_http_response()
+					defer delete(resp)
+					_, _ = net.send_tcp(client, transmute([]byte)resp)
+					return
+				}
+				if bridge_telemetry_looks_like_processes(first_line_str) {
+					resp := bridge_telemetry_processes_http_response()
 					defer delete(resp)
 					_, _ = net.send_tcp(client, transmute([]byte)resp)
 					return
