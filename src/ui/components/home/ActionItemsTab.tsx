@@ -29,6 +29,9 @@ import {
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
 import { isVaultArmored } from '../../utils/vaultContent';
+import { useSelector } from 'react-redux';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { decryptProjectList } from '../../utils/vaultProjects';
 import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 
 const STATUS_TABS = [
@@ -95,20 +98,45 @@ export function ActionItemsTab() {
   const cards: Card[] = cardsData?.cards || [];
   const projects: Project[] = projectsData?.projects || [];
 
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawKey = useSelector(selectRawVaultKeyHex);
+  const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
+
+  useEffect(() => {
+    let active = true;
+    if (!isUnlocked || !rawKey) {
+      setDecryptedProjects(
+        projects.map((p) => ({
+          ...p,
+          name: p.name && isVaultArmored(p.name) ? p.name.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : p.name,
+        }))
+      );
+      return;
+    }
+    decryptProjectList(projects, rawKey).then((res) => {
+      if (active) setDecryptedProjects(res);
+    }).catch(() => {
+      if (active) setDecryptedProjects(projects);
+    });
+    return () => {
+      active = false;
+    };
+  }, [projects, isUnlocked, rawKey]);
+
   const projectMap = useMemo(() => {
     const map = new Map<string, Project>();
-    for (const p of projects) {
+    for (const p of decryptedProjects) {
       map.set(p.project_id, p);
     }
     return map;
-  }, [projects]);
+  }, [decryptedProjects]);
 
   const projectOptions = useMemo(() => {
     return [
       { value: '', label: 'All Projects' },
-      ...projects.map((p) => ({ value: p.project_id, label: p.name })),
+      ...decryptedProjects.map((p) => ({ value: p.project_id, label: p.name })),
     ];
-  }, [projects]);
+  }, [decryptedProjects]);
 
   // Filter cards by status, project, and search query
   const filteredCards = useMemo(() => {

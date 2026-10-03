@@ -30,6 +30,7 @@ import { LspNoticeBanner } from '../../lsp/LspNoticeBanner';
 import { lspServerNoticeKey } from '../../lsp/lspServerNotice';
 import { useMonacoLsp } from '../../lsp/useMonacoLsp';
 import { Icon, IconButton } from '@ui';
+import { VaultText } from '../vault/VaultText';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import {
   useLazyListProjectDirQuery,
@@ -166,7 +167,7 @@ export function TaskChainDirectorySelector({
         }`}
       >
         <Icon name="folder" size={13} className="text-accent shrink-0" />
-        <span className="truncate font-semibold">{activeDirectory.label}</span>
+        <span className="truncate font-semibold"><VaultText value={activeDirectory.label} /></span>
         <Icon name="chevron-down" size={10} className="text-muted shrink-0 ml-0.5" />
       </button>
 
@@ -207,7 +208,7 @@ export function TaskChainDirectorySelector({
                     <Icon name="folder" size={14} className={isSelected ? 'text-accent shrink-0' : 'text-muted shrink-0'} />
                     <div className="flex min-w-0 flex-1 flex-col">
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate font-medium text-primary">{dir.label}</span>
+                        <span className="truncate font-medium text-primary"><VaultText value={dir.label} /></span>
                         {dir.isPrimary ? (
                           <span className="rounded bg-accent/15 px-1 py-0.2 text-[9px] font-medium text-accent">primary</span>
                         ) : dir.kind === 'agent_run_dir' ? (
@@ -2344,7 +2345,7 @@ export default function ProjectFilesPanel({
                           disabled={i === crumbs.length - 1}
                           className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
                         >
-                          {i === 0 ? activeDirectory.label : c.label}
+                          <VaultText value={i === 0 ? activeDirectory.label : c.label} />
                         </button>
                       </span>
                     ))}

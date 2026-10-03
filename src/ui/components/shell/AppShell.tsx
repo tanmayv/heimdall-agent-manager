@@ -75,6 +75,7 @@ import {
   selectSearchChains,
 } from '../../store/searchTitleSlice';
 import { isVaultArmored } from '../../utils/vaultContent';
+import { VaultText } from '../vault/VaultText';
 import { batchDecryptTitles, type RawSearchItemInput } from '../../utils/vaultSearch';
 import LspPanel from '../settings/LspPanel';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
@@ -795,7 +796,9 @@ function ProjectGroupItem({
           >
             <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
-          <span className="truncate">{projectGroup.project.name}</span>
+          <span className="truncate">
+            <VaultText value={projectGroup.project.name} fallback="Project" />
+          </span>
           {projectGroup.project.projectType === 'fig' && projectGroup.project.workspaceName ? (
             <Badge
               data-debug-id={`sidebar-project-workspace-${projectId}`}
@@ -815,8 +818,16 @@ function ProjectGroupItem({
             e.stopPropagation();
             onLaunchProject?.(projectGroup.project);
           }}
-          title={`Launch agent for ${projectGroup.project.name}`}
-          aria-label={`Launch agent for ${projectGroup.project.name}`}
+          title={
+            projectGroup.project.name && isVaultArmored(projectGroup.project.name)
+              ? 'Launch agent for project'
+              : `Launch agent for ${projectGroup.project.name || 'project'}`
+          }
+          aria-label={
+            projectGroup.project.name && isVaultArmored(projectGroup.project.name)
+              ? 'Launch agent for project'
+              : `Launch agent for ${projectGroup.project.name || 'project'}`
+          }
           className="flex h-5 w-5 items-center justify-center rounded-md text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
         >
           <Icon name="plus" size={13} />
@@ -1360,6 +1371,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       dispatch(setUnlockModalOpen(false));
     }
   }, [isOnboardingModalOpen, isUnlockModalOpen, dispatch]);
+
+  // Invalidate cached RTK Query tags when vault unlocks (REQ-VAULT-TAGS-INVALIDATE)
+  useEffect(() => {
+    if (isVaultUnlocked) {
+      dispatch(
+        heimdallApi.util.invalidateTags([
+          'Projects',
+          'SidebarProjects',
+          'SidebarConversations',
+          'Cards',
+          'ChainList',
+        ]),
+      );
+    }
+  }, [isVaultUnlocked, dispatch]);
 
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
   // component-local state. The single user-WS connection invalidates the

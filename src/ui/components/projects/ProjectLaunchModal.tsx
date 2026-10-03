@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 
 import { Button, Checkbox, Icon, Modal, Select } from '@ui';
+import { VaultText, useDecryptedText } from '../vault/VaultText';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -80,6 +81,7 @@ export default function ProjectLaunchModal({
 
   // Queries
   const projectId = project?.projectId || '';
+  const { text: decryptedProjectName } = useDecryptedText(project?.name);
 
   // Tab 1: Task chains for project
   const chainsQuery = useListTaskChainsQuery(
@@ -350,7 +352,7 @@ export default function ProjectLaunchModal({
       }
       setFeedback({
         type: 'success',
-        message: `Successfully launched ${ids.length} new agent instance(s) for ${project.name}.`,
+        message: `Successfully launched ${ids.length} new agent instance(s) for ${decryptedProjectName || project.name}.`,
       });
       setSelectedNewAgentIds(new Set());
       // Navigate to the first launched instance when a handler is provided and
@@ -444,7 +446,7 @@ export default function ProjectLaunchModal({
       size="lg"
       className="h-[640px] text-primary"
       data-debug-id="project-launch-modal"
-      title={<>Launch Agent — <span className="text-accent">{project.name}</span></>}
+      title={<>Launch Agent — <span className="text-accent"><VaultText value={project.name} /></span></>}
     >
       <div className="flex h-full flex-col px-6 pb-2">
         <p className="shrink-0 -mt-1 mb-3 text-xs text-muted">

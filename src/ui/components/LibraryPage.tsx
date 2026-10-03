@@ -1,10 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
 import {
   useListArtifactsQuery,
   useDeleteArtifactMutation,
   useUpdateArtifactMutation,
 } from '../api/endpoints/artifacts';
 import { useListAgentsQuery } from '../api/endpoints/agents';
+import { useListProjectsQuery } from '../api/endpoints/projects';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../store/vaultSlice';
+import { decryptProjectList } from '../utils/vaultProjects';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 import { VaultText } from './vault/VaultText';
@@ -115,7 +119,36 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   const artifacts = useMemo(() => (artifactsQuery.data?.artifacts || []) as ArtifactRow[], [artifactsQuery.data]);
   const agents = agentsQuery?.data?.agents || agentsQuery?.data || [];
   const agentsArray = Array.isArray(agents) ? agents : [];
-  const projectsList = Array.isArray(projects) ? projects : Object.values(projects || {});
+  const projectsQuery = useListProjectsQuery(undefined, { skip: !clientToken || Boolean(projects) });
+  const rawProjectsList = useMemo(() => {
+    if (projects) return Array.isArray(projects) ? projects : Object.values(projects || {});
+    return projectsQuery.data?.projects || [];
+  }, [projects, projectsQuery.data]);
+
+  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
+  const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
+  const [projectsList, setProjectsList] = useState<any[]>(rawProjectsList);
+
+  useEffect(() => {
+    let active = true;
+    if (!isVaultUnlocked || !rawVaultKeyHex) {
+      setProjectsList(
+        rawProjectsList.map((p: any) => ({
+          ...p,
+          name: p.name && isVaultArmored(p.name) ? p.name.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : p.name,
+        }))
+      );
+      return;
+    }
+    decryptProjectList(rawProjectsList, rawVaultKeyHex).then((res) => {
+      if (active) setProjectsList(res);
+    }).catch(() => {
+      if (active) setProjectsList(rawProjectsList);
+    });
+    return () => {
+      active = false;
+    };
+  }, [rawProjectsList, isVaultUnlocked, rawVaultKeyHex]);
   const chainsArray = Array.isArray(chains) ? chains : [];
 
   const kindOptions = useMemo(() => {
@@ -303,7 +336,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                   </button>
                   <span className="truncate text-[11.5px] text-muted">{kindLabel(a)}</span>
                   <span className="truncate text-[11.5px] text-muted">{formatBytes(Number(a?.size_bytes) || 0)}</span>
-                  <span className="truncate text-[11.5px] text-muted">{project?.name || projectId(a) || '—'}</span>
+                  <span className="truncate text-[11.5px] text-muted"><VaultText value={project?.name} fallback={projectId(a) || '—'} /></span>
                   <span className="truncate text-[11.5px] text-muted">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
                   <span className="flex justify-end gap-1">
                     <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-row-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md px-1 text-muted hover:text-primary"><Icon name="pencil" size={12} /></button>
