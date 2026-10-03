@@ -1548,15 +1548,11 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			for s in superseded do delete(s)
 			delete(superseded)
 		}
-		if used_digest {
-			for s in active do delete(s)
-			delete(active)
-		} else {
-			delete(active)
-			if digest_active != nil {
-				for s in digest_active do delete(s)
-				delete(digest_active)
-			}
+		for s in active do delete(s)
+		delete(active)
+		if !used_digest && digest_active != nil {
+			for s in digest_active do delete(s)
+			delete(digest_active)
 		}
 	case "agent_instance_status":
 		instance_id := json_string(text, "agent_instance_id")
@@ -1720,38 +1716,45 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	return true
 }
 
+Bridge_Agent_Status_Report :: struct {
+	agent_instance_id: string `json:"agent_instance_id"`,
+	state_seq:         int    `json:"state_seq"`,
+	runtime_status:    string `json:"runtime_status"`,
+	activity_status:   string `json:"activity_status"`,
+}
+
+Bridge_Heartbeat_Message :: struct {
+	type:                string                       `json:"type"`,
+	active_instance_ids: []string                     `json:"active_instance_ids"`,
+	digest:              []Bridge_Agent_Status_Report `json:"digest"`,
+	instances:           []Bridge_Agent_Status_Report `json:"instances"`,
+}
+
 bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: string) -> []string {
-	active := make([dynamic]string)
-	search_from := 0
-	for search_from < len(text) {
-		rel := strings.index(text[search_from:], "\"agent_instance_id\"")
-		if rel < 0 do break
-		idx := search_from + rel
-		next_rel := strings.index(text[idx + len("\"agent_instance_id\""):], "\"agent_instance_id\"")
-		end := len(text)
-		if next_rel >= 0 do end = idx + len("\"agent_instance_id\"") + next_rel
-		entry := text[idx:end]
-		instance_id := json_string(entry, "agent_instance_id")
-		state_seq := json_int(entry, "state_seq", 0)
-		runtime_status := json_string(entry, "runtime_status")
-		activity_status := json_string(entry, "activity_status")
-		if instance_id != "" {
-			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, instance_id, state_seq, runtime_status, activity_status)
+	msg: Bridge_Heartbeat_Message
+	if err := json.unmarshal_string(text, &msg, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+		return nil
+	}
+
+	reports := msg.digest
+	if len(reports) == 0 do reports = msg.instances
+	if len(reports) == 0 do return nil
+
+	active := make([dynamic]string, context.allocator)
+	for report in reports {
+		if report.agent_instance_id == "" do continue
+		if h != nil {
+			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status)
 			if h.agents != nil {
-				if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, instance_id, state_seq, runtime_status, activity_status); applied {
+				if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status); applied {
 					summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 					delete(summary)
 					domain.agent_instance_destroy(&inst)
 				}
 			}
-			append(&active, instance_id)
-		} else {
-			delete(instance_id)
 		}
-		delete(runtime_status)
-		delete(activity_status)
-		search_from = end
+		append(&active, strings.clone(report.agent_instance_id, context.allocator))
 	}
 	return active[:]
 }
