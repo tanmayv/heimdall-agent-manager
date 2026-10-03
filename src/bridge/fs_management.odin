@@ -879,37 +879,48 @@ bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset
 	}
 	defer delete(data, context.allocator)
 
+	result: Bridge_Fs_Read_File_Result
 	// base64/images: return whole (already bounded by the size cap); no paging.
 	if encoding == "base64" {
 		content := base64.encode(data)
-		return Bridge_Fs_Read_File_Result{
+		result = Bridge_Fs_Read_File_Result{
 			ok = true, path = canonical, viewable = true, content = content,
 			encoding = encoding, mime = mime, size = info.size, modified_at = modified_at,
 			offset = 0, bytes_returned = info.size, eof = true,
 		}
+	} else {
+		// utf8 text: return the [offset, offset+page) byte window, trimmed to a valid
+		// UTF-8 boundary so a multi-byte rune isn't split across chunks.
+		total := i64(len(data))
+		start := offset
+		if start < 0 do start = 0
+		if start > total do start = total
+		page := limit
+		if page <= 0 do page = bridge_fs_read_page_bytes
+		end := start + page
+		if end > total do end = total
+		// Trim `end` back off the middle of a multi-byte UTF-8 sequence (a continuation
+		// byte has the top bits 10xxxxxx). Never trim below `start`.
+		for end > start && end < total && (data[end] & 0xC0) == 0x80 {
+			end -= 1
+		}
+		chunk := string(data[start:end])
+		result = Bridge_Fs_Read_File_Result{
+			ok = true, path = canonical, viewable = true, content = strings.clone(chunk),
+			encoding = encoding, mime = mime, size = info.size, modified_at = modified_at,
+			offset = start, bytes_returned = end - start, eof = end >= total,
+		}
 	}
 
-	// utf8 text: return the [offset, offset+page) byte window, trimmed to a valid
-	// UTF-8 boundary so a multi-byte rune isn't split across chunks.
-	total := i64(len(data))
-	start := offset
-	if start < 0 do start = 0
-	if start > total do start = total
-	page := limit
-	if page <= 0 do page = bridge_fs_read_page_bytes
-	end := start + page
-	if end > total do end = total
-	// Trim `end` back off the middle of a multi-byte UTF-8 sequence (a continuation
-	// byte has the top bits 10xxxxxx). Never trim below `start`.
-	for end > start && end < total && (data[end] & 0xC0) == 0x80 {
-		end -= 1
+	if key_hex, ok := bridge_read_vault_key(); ok {
+		defer delete(key_hex)
+		if encrypted, enc_ok := bridge_encrypt_vault_ciphertext_hex(result.content, key_hex); enc_ok {
+			delete(result.content)
+			result.content = encrypted
+		}
 	}
-	chunk := string(data[start:end])
-	return Bridge_Fs_Read_File_Result{
-		ok = true, path = canonical, viewable = true, content = strings.clone(chunk),
-		encoding = encoding, mime = mime, size = info.size, modified_at = modified_at,
-		offset = start, bytes_returned = end - start, eof = end >= total,
-	}
+
+	return result
 }
 
 // bridge_fs_create_file creates an empty regular file. The parent directory must
@@ -962,6 +973,39 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 		return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "path_not_found", message = "Parent directory does not exist"}
 	}
 
+	payload_to_write := content
+	decrypted_payload: string
+	has_decrypted := false
+	defer if has_decrypted do delete(decrypted_payload)
+
+	if strings.has_prefix(content, VAULT_ARMOR_PREFIX) {
+		key_hex, ok := bridge_read_vault_key()
+		if !ok {
+			return Bridge_Fs_Write_File_Result{
+				ok = false,
+				path = requested,
+				within_root = true,
+				error_code = "invalid_vault_key",
+				message = "Vault decryption failed for file write",
+			}
+		}
+		defer delete(key_hex)
+
+		decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(content, key_hex)
+		if !dec_ok {
+			return Bridge_Fs_Write_File_Result{
+				ok = false,
+				path = requested,
+				within_root = true,
+				error_code = "invalid_vault_key",
+				message = "Vault decryption failed for file write",
+			}
+		}
+		decrypted_payload = decrypted
+		has_decrypted = true
+		payload_to_write = decrypted
+	}
+
 	temp_name := fmt.tprintf(".tmp_write_%d_%s", time.to_unix_nanoseconds(time.now()), filepath.base(canonical))
 	temp_path, jerr := filepath.join([]string{parent, temp_name}, context.allocator)
 	if jerr != nil {
@@ -970,7 +1014,7 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 	defer delete(temp_path, context.allocator)
 
 	written_cleanly := false
-	if err := os.write_entire_file_from_string(temp_path, content); err == nil {
+	if err := os.write_entire_file_from_string(temp_path, payload_to_write); err == nil {
 		temp_c := strings.clone_to_cstring(temp_path, context.temp_allocator)
 		canon_c := strings.clone_to_cstring(canonical, context.temp_allocator)
 		if libc.rename(temp_c, canon_c) == 0 {
@@ -981,7 +1025,7 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 	}
 
 	if !written_cleanly {
-		if err := os.write_entire_file_from_string(canonical, content); err != nil {
+		if err := os.write_entire_file_from_string(canonical, payload_to_write); err != nil {
 			return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "write_failed", message = "Could not write file"}
 		}
 	}
@@ -997,7 +1041,7 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 	return Bridge_Fs_Write_File_Result{
 		ok = true,
 		path = canonical,
-		bytes_written = len(content),
+		bytes_written = len(payload_to_write),
 		modified_at = modified_at,
 		within_root = true,
 	}
@@ -1462,6 +1506,16 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 		}
 		os.file_info_slice_delete(infos, context.allocator)
 		if truncated do break
+	}
+
+	if key_hex, ok := bridge_read_vault_key(); ok {
+		defer delete(key_hex)
+		for &m in matches {
+			if encrypted, enc_ok := bridge_encrypt_vault_ciphertext_hex(m.line, key_hex, context.allocator); enc_ok {
+				delete(m.line)
+				m.line = encrypted
+			}
+		}
 	}
 
 	return Bridge_Fs_Grep_Result{

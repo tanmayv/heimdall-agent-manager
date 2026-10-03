@@ -19,6 +19,7 @@ import "core:testing"
 import "core:time"
 import base64 "core:encoding/base64"
 import json "core:encoding/json"
+import "core:path/filepath"
 
 // fs_test_base resolves (and pins) the shared temp base as the GLOBAL sandbox
 // root. Idempotent across concurrent tests: they all compute + write the same
@@ -229,9 +230,19 @@ fs_read_returns_utf8_text :: proc(t: ^testing.T) {
 	defer fs_test_cleanup(root)
 	fs_test_seed_file(t, root, "hello.md", "# hi")
 	res := bridge_fs_read_file("hello.md", root)
+	defer delete(res.content)
 	testing.expect(t, res.ok && res.viewable, "viewable")
 	testing.expect_value(t, res.encoding, "utf8")
-	testing.expect_value(t, res.content, "# hi")
+	if key, has_key := bridge_read_vault_key(); has_key {
+		defer delete(key)
+		testing.expect(t, strings.has_prefix(res.content, "vault:v1:"), "encrypted with vault key")
+		decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(res.content, key)
+		testing.expect(t, dec_ok, "decryption ok")
+		defer delete(decrypted)
+		testing.expect_value(t, decrypted, "# hi")
+	} else {
+		testing.expect_value(t, res.content, "# hi")
+	}
 }
 
 @(test)
@@ -248,9 +259,19 @@ fs_read_honors_configured_chunk_size :: proc(t: ^testing.T) {
 	defer { bridge_fs_read_page_bytes = orig_chunk_size }
 
 	res := bridge_fs_read_file("numbers.txt", root)
+	defer delete(res.content)
 	testing.expect(t, res.ok && res.viewable, "viewable")
 	testing.expect_value(t, res.bytes_returned, i64(10))
-	testing.expect_value(t, res.content, "0123456789")
+	if key, has_key := bridge_read_vault_key(); has_key {
+		defer delete(key)
+		testing.expect(t, strings.has_prefix(res.content, "vault:v1:"), "encrypted with vault key")
+		decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(res.content, key)
+		testing.expect(t, dec_ok, "decryption ok")
+		defer delete(decrypted)
+		testing.expect_value(t, decrypted, "0123456789")
+	} else {
+		testing.expect_value(t, res.content, "0123456789")
+	}
 	testing.expect(t, !res.eof, "not eof yet")
 }
 
@@ -522,9 +543,19 @@ fs_run_dir_prevalidated_read_and_blocks_escape :: proc(t: ^testing.T) {
 	defer fs_test_cleanup(strings.concatenate({run_dir, "/../rundir_read_secret.txt"}))
 
 	ok_read := bridge_fs_read_file("CLAUDE.md", run_dir, 0, 0, true)
+	defer delete(ok_read.content)
 	testing.expect(t, ok_read.ok, "prevalidated read ok")
 	testing.expect(t, ok_read.viewable, "file viewable")
-	testing.expect_value(t, ok_read.content, "# context")
+	if key, has_key := bridge_read_vault_key(); has_key {
+		defer delete(key)
+		testing.expect(t, strings.has_prefix(ok_read.content, "vault:v1:"), "encrypted with vault key")
+		decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(ok_read.content, key)
+		testing.expect(t, dec_ok, "decryption ok")
+		defer delete(decrypted)
+		testing.expect_value(t, decrypted, "# context")
+	} else {
+		testing.expect_value(t, ok_read.content, "# context")
+	}
 
 	escape := bridge_fs_read_file("../rundir_read_secret.txt", run_dir, 0, 0, true)
 	testing.expect(t, !escape.ok, "read escape above run dir rejected")
@@ -1100,4 +1131,215 @@ fs_wire_error_responses_round_trip :: proc(t: ^testing.T) {
 
 	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
 	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+// --- Zero-Trust Vault Encryption in Bridge FS Tests (REQ-FS-ENC-1, REQ-FS-ENC-2, REQ-FS-ENC-3) ---
+
+@(test)
+fs_vault_read_file_encryption_lifecycle :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+			delete(prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+
+	root := fs_test_make_root(t, "vault_read")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "confidential.txt", "classified data 12345")
+
+	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// 1. With active vault key: read_file encrypts content with vault:v1:
+	_ = os.set_env("HEIMDALL_VAULT_KEY", test_key)
+	res_enc := bridge_fs_read_file("confidential.txt", root)
+	defer delete(res_enc.content)
+	testing.expect(t, res_enc.ok && res_enc.viewable, "read encrypted ok")
+	testing.expect(t, strings.has_prefix(res_enc.content, VAULT_ARMOR_PREFIX), "content must have vault:v1: prefix")
+	decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(res_enc.content, test_key)
+	testing.expect(t, dec_ok, "decryption of read content ok")
+	defer delete(decrypted)
+	testing.expect_value(t, decrypted, "classified data 12345")
+
+	// 2. With unconfigured vault key: read_file leaves content unencrypted
+	// An invalid explicit env var prevents falling through to disk vault key.
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "unconfigured_key")
+	res_plain := bridge_fs_read_file("confidential.txt", root)
+	defer delete(res_plain.content)
+	testing.expect(t, res_plain.ok && res_plain.viewable, "read plain ok")
+	testing.expect(t, !strings.has_prefix(res_plain.content, VAULT_ARMOR_PREFIX), "content must NOT have vault:v1: prefix when unconfigured")
+	testing.expect_value(t, res_plain.content, "classified data 12345")
+}
+
+@(test)
+fs_vault_write_file_decryption_and_rejection :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+			delete(prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+
+	root := fs_test_make_root(t, "vault_write")
+	defer fs_test_cleanup(root)
+
+	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	wrong_key := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+	// 1. Valid armored content decrypts and writes plaintext to disk
+	_ = os.set_env("HEIMDALL_VAULT_KEY", test_key)
+	plaintext := "Decrypted disk content 999"
+	armored, enc_ok := bridge_encrypt_vault_ciphertext_hex(plaintext, test_key)
+	testing.expect(t, enc_ok, "encryption ok")
+	defer delete(armored)
+
+	res_write := bridge_fs_write_file("valid.txt", armored, root)
+	testing.expect(t, res_write.ok, "write with valid armored payload ok")
+	testing.expect_value(t, res_write.bytes_written, len(plaintext))
+
+	disk_content, rerr := os.read_entire_file_from_path(res_write.path, context.allocator)
+	testing.expect(t, rerr == nil, "read written file from disk ok")
+	defer delete(disk_content, context.allocator)
+	testing.expect_value(t, string(disk_content), plaintext)
+
+	// 2. Armored content encrypted with wrong key is rejected with invalid_vault_key and does not touch disk
+	armored_wrong, _ := bridge_encrypt_vault_ciphertext_hex("unauthorized content", wrong_key)
+	defer delete(armored_wrong)
+
+	res_wrong := bridge_fs_write_file("wrong.txt", armored_wrong, root)
+	testing.expect(t, !res_wrong.ok, "write with wrong key rejected")
+	testing.expect_value(t, res_wrong.error_code, "invalid_vault_key")
+	testing.expect_value(t, res_wrong.message, "Vault decryption failed for file write")
+	testing.expect(t, res_wrong.within_root, "within_root is true")
+	wrong_disk_path, _ := filepath.join([]string{root, "wrong.txt"}, context.allocator)
+	defer delete(wrong_disk_path, context.allocator)
+	testing.expect(t, !os.exists(wrong_disk_path), "rejected file must NOT be written to disk")
+
+	// 3. Tampered armored content is rejected with invalid_vault_key
+	tampered := strings.concatenate({VAULT_ARMOR_PREFIX, "A", armored[len(VAULT_ARMOR_PREFIX)+1:]})
+	defer delete(tampered)
+	res_tampered := bridge_fs_write_file("tampered.txt", tampered, root)
+	testing.expect(t, !res_tampered.ok, "tampered write rejected")
+	testing.expect_value(t, res_tampered.error_code, "invalid_vault_key")
+	tampered_path, _ := filepath.join([]string{root, "tampered.txt"}, context.allocator)
+	defer delete(tampered_path, context.allocator)
+	testing.expect(t, !os.exists(tampered_path), "tampered file must NOT be written to disk")
+
+	// 4. Armored write when vault key is unconfigured is rejected
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "unconfigured_key")
+	res_unconf := bridge_fs_write_file("unconf.txt", armored, root)
+	testing.expect(t, !res_unconf.ok, "unconfigured vault key rejected")
+	testing.expect_value(t, res_unconf.error_code, "invalid_vault_key")
+	unconf_path, _ := filepath.join([]string{root, "unconf.txt"}, context.allocator)
+	defer delete(unconf_path, context.allocator)
+	testing.expect(t, !os.exists(unconf_path), "unconfigured vault key write must NOT touch disk")
+}
+
+@(test)
+fs_vault_batch_write_enforces_decryption_per_item :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+			delete(prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+
+	root := fs_test_make_root(t, "vault_batch")
+	defer fs_test_cleanup(root)
+
+	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	wrong_key := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	_ = os.set_env("HEIMDALL_VAULT_KEY", test_key)
+
+	armored_good, _ := bridge_encrypt_vault_ciphertext_hex("Good file content", test_key)
+	defer delete(armored_good)
+	armored_bad, _ := bridge_encrypt_vault_ciphertext_hex("Bad file content", wrong_key)
+	defer delete(armored_bad)
+
+	items := make([dynamic]Bridge_Fs_Write_Item)
+	defer delete(items)
+	append(&items, Bridge_Fs_Write_Item{path = "good.txt", content = armored_good})
+	append(&items, Bridge_Fs_Write_Item{path = "bad.txt", content = armored_bad})
+
+	batch_res := bridge_fs_batch_write(items, root)
+	defer bridge_fs_batch_write_result_delete(&batch_res)
+
+	testing.expect(t, !batch_res.ok, "batch write with one bad file should not be ok")
+	testing.expect_value(t, batch_res.error_code, "batch_write_partial")
+	testing.expect_value(t, len(batch_res.saved), 1)
+	testing.expect_value(t, len(batch_res.errors), 1)
+	testing.expect_value(t, batch_res.errors[0].error_code, "invalid_vault_key")
+	testing.expect_value(t, batch_res.errors[0].message, "Vault decryption failed for file write")
+
+	good_path, _ := filepath.join([]string{root, "good.txt"}, context.allocator)
+	defer delete(good_path, context.allocator)
+	testing.expect(t, os.exists(good_path), "good file must exist on disk")
+
+	bad_path, _ := filepath.join([]string{root, "bad.txt"}, context.allocator)
+	defer delete(bad_path, context.allocator)
+	testing.expect(t, !os.exists(bad_path), "bad file must NOT exist on disk")
+}
+
+@(test)
+fs_vault_grep_encrypts_matched_lines :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+			delete(prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+
+	root := fs_test_make_root(t, "vault_grep")
+	defer fs_test_cleanup(root)
+
+	fs_test_seed_file(t, root, "src/code.py", "def sensitive_function():\n    return 'secret_value'\n")
+
+	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// 1. With active vault key: grep matches are encrypted
+	_ = os.set_env("HEIMDALL_VAULT_KEY", test_key)
+	grep_enc := bridge_fs_grep("sensitive_function", false, 10, root)
+	defer bridge_fs_grep_result_delete(&grep_enc)
+
+	testing.expect(t, grep_enc.ok, "grep ok")
+	testing.expect_value(t, len(grep_enc.matches), 1)
+	testing.expect(t, strings.has_prefix(grep_enc.matches[0].line, VAULT_ARMOR_PREFIX), "grep match line must have vault:v1: prefix")
+	decrypted_line, dec_ok := bridge_decrypt_vault_ciphertext_hex(grep_enc.matches[0].line, test_key)
+	testing.expect(t, dec_ok, "decryption of grep match line ok")
+	defer delete(decrypted_line)
+	testing.expect_value(t, decrypted_line, "def sensitive_function():")
+
+	// 2. With unconfigured vault key: grep matches are plain
+	_ = os.set_env("HEIMDALL_VAULT_KEY", "unconfigured_key")
+	grep_plain := bridge_fs_grep("sensitive_function", false, 10, root)
+	defer bridge_fs_grep_result_delete(&grep_plain)
+
+	testing.expect(t, grep_plain.ok, "grep plain ok")
+	testing.expect_value(t, len(grep_plain.matches), 1)
+	testing.expect(t, !strings.has_prefix(grep_plain.matches[0].line, VAULT_ARMOR_PREFIX), "grep match line must NOT have vault:v1: prefix")
+	testing.expect_value(t, grep_plain.matches[0].line, "def sensitive_function():")
 }
