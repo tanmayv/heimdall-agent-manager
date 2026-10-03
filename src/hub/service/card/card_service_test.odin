@@ -3,6 +3,7 @@ package card
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -204,4 +205,78 @@ test_accept_card_executes_memory_approve :: proc(t: ^testing.T) {
 	testing.expect(t, got_ok, "get memory should succeed")
 	testing.expect_value(t, got_err.code, domain.Error_Code.None)
 	testing.expect_value(t, got_mem.status, "active")
+}
+
+@(test)
+test_card_default_ttl_24h :: proc(t: ^testing.T) {
+	db_path := "/tmp/test_card_service_ttl.db"
+	os.remove(db_path)
+	defer os.remove(db_path)
+
+	conn, open_ok, open_err := sqlite.open(db_path)
+	testing.expect(t, open_ok, "sqlite open ok")
+	testing.expect_value(t, open_err.code, domain.Error_Code.None)
+	defer sqlite.close(&conn)
+
+	mig_ok, mig_err := sqlite.run_migrations(&conn)
+	testing.expect(t, mig_ok, "migrations ok")
+	testing.expect_value(t, mig_err.code, domain.Error_Code.None)
+
+	card_impl := sqlite.Card_Repo_SQLite{conn = &conn}
+	card_repo := sqlite.new_card_repository(&card_impl, &conn)
+
+	clock := platform.real_clock()
+	ids := platform.real_id_generator()
+
+	card_svc := new_card_service(
+		cards       = &card_repo,
+		projects    = nil,
+		taskchains  = nil,
+		content     = nil,
+		project_svc = nil,
+		agents      = nil,
+		uow_factory = nil,
+		clock       = &clock,
+		ids         = &ids,
+	)
+
+	auth := contracts.Auth_Context{
+		kind    = .User_Token,
+		user_id = "test_user_owner",
+	}
+
+	now_str := platform.clock_now(&clock)
+	now_t, parse_ok := platform.parse_rfc3339_utc(now_str)
+	testing.expect(t, parse_ok, "parse now ok")
+
+	// 1. Without ttl_at: should default to ~24h
+	card_in1 := Card_Input{
+		project_id = "proj_test",
+		title      = "Card without TTL",
+		scope      = "project",
+		provider   = "agent",
+	}
+	c1, ok1, err1 := create_card(&card_svc, auth, card_in1)
+	testing.expect(t, ok1, "create card 1 ok")
+	testing.expect_value(t, err1.code, domain.Error_Code.None)
+	testing.expect(t, c1.ttl_at != "", "ttl_at should not be empty")
+
+	ttl_t, ttl_ok := platform.parse_rfc3339_utc(c1.ttl_at)
+	testing.expect(t, ttl_ok, "parse ttl_at ok")
+	diff := time.diff(now_t, ttl_t)
+	hours := time.duration_hours(diff)
+	testing.expect(t, hours >= 23.99 && hours <= 24.01, "ttl_at should be ~24h in the future")
+
+	// 2. With explicit ttl_at: should be preserved
+	card_in2 := Card_Input{
+		project_id = "proj_test",
+		title      = "Card with TTL",
+		scope      = "project",
+		provider   = "agent",
+		ttl_at     = "2030-01-01T00:00:00Z",
+	}
+	c2, ok2, err2 := create_card(&card_svc, auth, card_in2)
+	testing.expect(t, ok2, "create card 2 ok")
+	testing.expect_value(t, err2.code, domain.Error_Code.None)
+	testing.expect_value(t, c2.ttl_at, "2030-01-01T00:00:00Z")
 }

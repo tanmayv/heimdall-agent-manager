@@ -8,7 +8,7 @@ import iface "odin_test:hub/repository/iface"
 
 @(test)
 test_issue_sqlite_lifecycle :: proc(t: ^testing.T) {
-	db_path := "/tmp/test_issues_repo.db"
+	db_path := fmt.tprintf("/tmp/test_issues_repo_%d.db", os.get_pid())
 	os.remove(db_path)
 	defer os.remove(db_path)
 

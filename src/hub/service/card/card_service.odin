@@ -3,6 +3,7 @@ package card
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -312,6 +313,15 @@ create_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, input: Card_
 	now := platform.clock_now(s.clock)
 	card_id := domain.Card_ID(platform.generate_id(s.ids, "crd_"))
 
+	ttl_at := input.ttl_at
+	if ttl_at == "" {
+		if t, t_ok := platform.parse_rfc3339_utc(now); t_ok {
+			ttl_at = platform.format_rfc3339_utc(time.time_add(t, 24 * time.Hour))
+		} else {
+			ttl_at = platform.expires_at_after_seconds(24 * 3600)
+		}
+	}
+
 	card := domain.Card{
 		card_id          = card_id,
 		owner_user_id    = owner,
@@ -326,7 +336,7 @@ create_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, input: Card_
 		operations_json  = ops,
 		guard_json       = guard,
 		snooze_until     = input.snooze_until,
-		ttl_at           = input.ttl_at,
+		ttl_at           = ttl_at,
 		created_at       = now,
 		updated_at       = now,
 	}
@@ -337,6 +347,12 @@ create_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, input: Card_
 sync_projected_cards :: proc(s: ^Card_Service, owner: domain.User_ID) {
 	if s == nil || s.cards == nil do return
 	now := platform.clock_now(s.clock)
+	default_ttl := ""
+	if t, t_ok := platform.parse_rfc3339_utc(now); t_ok {
+		default_ttl = platform.format_rfc3339_utc(time.time_add(t, 24 * time.Hour))
+	} else {
+		default_ttl = platform.expires_at_after_seconds(24 * 3600)
+	}
 
 	// 1. Task-in-validation deterministic provider
 	if s.taskchains != nil && s.taskchains.repo != nil {
@@ -409,6 +425,7 @@ sync_projected_cards :: proc(s: ^Card_Service, owner: domain.User_ID) {
 						status           = domain.CARD_STATUS_PENDING,
 						operations_json  = strings.to_string(b_ops),
 						guard_json       = strings.to_string(b_guard),
+						ttl_at           = default_ttl,
 						created_at       = now,
 						updated_at       = now,
 					}
@@ -474,6 +491,7 @@ sync_projected_cards :: proc(s: ^Card_Service, owner: domain.User_ID) {
 					status           = domain.CARD_STATUS_PENDING,
 					operations_json  = strings.to_string(b_ops),
 					guard_json       = strings.to_string(b_guard),
+					ttl_at           = default_ttl,
 					created_at       = now,
 					updated_at       = now,
 				}
