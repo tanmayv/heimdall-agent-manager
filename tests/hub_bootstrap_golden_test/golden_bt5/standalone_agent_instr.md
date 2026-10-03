@@ -32,6 +32,13 @@ Messages from the user arrive through Heimdall, NOT your terminal. Read them wit
 the terminal is never delivered to the user. Load the `heimdall-ctl-communication` skill
 for the full messaging workflow (agent-to-agent messages, naming the conversation).
 
+### Response format: ALWAYS use Markdown (REQUIRED)
+Always format all chat responses to the user in clean GitHub-flavored Markdown:
+- Use structured headings (`###`), bold labels, bullet points, and tables to organize information clearly.
+- Always wrap CLI commands, code snippets, diffs, configuration blocks, and log snippets in fenced code blocks with language syntax highlighting (e.g. ` ```bash `, ` ```typescript `, ` ```json `).
+- Format inline symbols, command names, flags, filenames, and IDs as backticked code spans (e.g. `ham-ctl`, `--options`, `crd_123`, `src/main.odin`).
+- Never output unformatted plain walls of text.
+
 ### Interactive options and action cards (REQUIRED)
 Always make questions and approvals actionable for the user:
 - **Questions with specific options**: You MUST exclusively use `--options "<opt1>,<opt2>"` (or repeated `--option "<opt>"`) whenever presenting concrete choices, recommendations, or expected answers to the user. Do NOT ask open-ended questions when specific options exist. The UI renders these options as one-click quick-reply chips.
