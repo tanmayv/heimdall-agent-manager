@@ -1,11 +1,23 @@
 package bridge
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+
+Bridge_Manifest_Target_Wire :: struct {
+	tarball_url: string `json:"tarball_url"`,
+	sha256:      string `json:"sha256"`,
+}
+
+Bridge_Update_Manifest_Wire :: struct {
+	version:    string                                 `json:"version"`,
+	commit_sha: string                                 `json:"commit_sha"`,
+	targets:    map[string]Bridge_Manifest_Target_Wire `json:"targets"`,
+}
 
 Bridge_Update_Target :: struct {
 	tarball_url: string,
@@ -108,34 +120,6 @@ is_bridge_update_available :: proc(bridge_version, bridge_commit, latest_version
 	return false
 }
 
-catalog_json_string :: proc(json_text, key: string) -> string {
-	needle := fmt.tprintf("\"%s\"", key)
-	idx := strings.index(json_text, needle)
-	if idx < 0 do return ""
-	rest := json_text[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	rest = rest[1:]
-	end_quote := strings.index_byte(rest, '"')
-	if end_quote < 0 do return ""
-	return rest[:end_quote]
-}
-
-catalog_target_info :: proc(json_text, target: string) -> (tarball_url: string, sha256: string) {
-	needle := fmt.tprintf("\"%s\"", target)
-	idx := strings.index(json_text, needle)
-	if idx < 0 do return "", ""
-	rest := json_text[idx + len(needle):]
-	end_brace := strings.index_byte(rest, '}')
-	if end_brace < 0 do return "", ""
-	section := rest[:end_brace]
-	url := catalog_json_string(section, "tarball_url")
-	sha := catalog_json_string(section, "sha256")
-	return url, sha
-}
-
 resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: domain.Bridge) -> Bridge_Update_Info {
 	target := normalize_bridge_target(bridge.machine_os, bridge.machine_arch)
 	latest_version := contracts.APP_VERSION
@@ -160,14 +144,25 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 	if manifest_path != "" && os.exists(manifest_path) {
 		if data, err := os.read_entire_file(manifest_path, context.temp_allocator); err == nil {
 			manifest_text := string(data)
-			ver := catalog_json_string(manifest_text, "version")
-			if ver != "" && (catalog == nil || catalog.override_version == "") do latest_version = fmt.tprintf("%s", ver)
-			sha := catalog_json_string(manifest_text, "commit_sha")
-			if sha != "" && (catalog == nil || catalog.override_commit_sha == "") do latest_commit_sha = fmt.tprintf("%s", sha)
-
-			t_url, t_sha := catalog_target_info(manifest_text, target)
-			if t_url != "" && (catalog == nil || catalog.override_download_url == "") do download_url = fmt.tprintf("%s", t_url)
-			if t_sha != "" && (catalog == nil || catalog.override_sha256 == "") do sha256 = fmt.tprintf("%s", t_sha)
+			manifest: Bridge_Update_Manifest_Wire
+			if json_err := json.unmarshal_string(manifest_text, &manifest, json.DEFAULT_SPECIFICATION, context.temp_allocator); json_err == nil {
+				if manifest.version != "" && (catalog == nil || catalog.override_version == "") {
+					latest_version = manifest.version
+				}
+				if manifest.commit_sha != "" && (catalog == nil || catalog.override_commit_sha == "") {
+					latest_commit_sha = manifest.commit_sha
+				}
+				if manifest.targets != nil {
+					if target_info, ok := manifest.targets[target]; ok {
+						if target_info.tarball_url != "" && (catalog == nil || catalog.override_download_url == "") {
+							download_url = target_info.tarball_url
+						}
+						if target_info.sha256 != "" && (catalog == nil || catalog.override_sha256 == "") {
+							sha256 = target_info.sha256
+						}
+					}
+				}
+			}
 		}
 	}
 
