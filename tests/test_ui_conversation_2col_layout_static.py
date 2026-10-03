@@ -162,8 +162,8 @@ def test_topbar_actions() -> None:
             "Header must apply sticky top-0 positioning")
     require("bg-canvas/90 backdrop-blur-md" in header_chunk,
             "Header must use bg-canvas/90 backdrop-blur-md")
-    require("border-b" in header_chunk,
-            "Header must contain border-b separator")
+    require("border-b" not in header_chunk,
+            "Header must be borderless without border-b separator")
 
 
 def test_sidebar_toggle_buttons() -> None:

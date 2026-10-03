@@ -118,29 +118,11 @@ test('Desktop sidebar Settings NavItem click opens SettingsModal without page na
 });
 
 // ---------------------------------------------------------------------------
-// 3. Mobile Bottom Tab Bar Settings Click Integration
+// 3. Mobile Slim Sidebar Settings Click Integration
 // ---------------------------------------------------------------------------
 
-test('Mobile bottom tab bar Settings item click opens SettingsModal', () => {
-  const responsiveContent = fs.readFileSync(RESPONSIVE_PATH, 'utf-8');
+test('Mobile slim sidebar Settings item click opens SettingsModal and closes drawer', () => {
   const appShellContent = fs.readFileSync(APP_SHELL_PATH, 'utf-8');
-
-  // MobileTabBarProps defines onOpenSettings and isSettingsOpen
-  assert.ok(
-    responsiveContent.includes('onOpenSettings?: () => void'),
-    'MobileTabBarProps must define onOpenSettings callback',
-  );
-  assert.ok(
-    responsiveContent.includes('isSettingsOpen?: boolean'),
-    'MobileTabBarProps must define isSettingsOpen state prop',
-  );
-
-  // MobileTabBar calls onOpenSettings when clicking settings tab
-  assert.ok(
-    responsiveContent.includes("tab.id === 'settings'") &&
-      responsiveContent.includes('onOpenSettings()'),
-    'MobileTabBar must invoke onOpenSettings when settings tab is tapped',
-  );
 
   // Mobile settings click closes mobile drawer and opens SettingsModal
   assert.ok(
@@ -148,8 +130,12 @@ test('Mobile bottom tab bar Settings item click opens SettingsModal', () => {
     'AppShell must open SettingsModal when settings is selected',
   );
   assert.ok(
-    appShellContent.includes('setDrawerOpen(false)'),
+    appShellContent.includes('if (isMobile) setDrawerOpen(false)'),
     'AppShell must close mobile drawer when navigating to settings on mobile',
+  );
+  assert.ok(
+    appShellContent.includes('isEffectiveCollapsed'),
+    'AppShell must use isEffectiveCollapsed for slim mobile left sidebar',
   );
 });
 

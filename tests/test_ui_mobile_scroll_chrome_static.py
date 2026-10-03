@@ -22,6 +22,9 @@ Requirements covered:
 - REQ-CHAIN-SIDEBAR-PERSIST-5:
   * Right sidebar tab persistence functions support chainId.
   * ConversationThreadPage preserves right panel tab on instance switch within same chain.
+- REQ-MOBILE-SLIM-SIDEBAR-11:
+  * AppShell removes MobileTabBar and mobileBottomPadded completely.
+  * AppShell implements slim mobile left sidebar with isEffectiveCollapsed and shell-sidebar-collapse-toggle.
 """
 from pathlib import Path
 
@@ -119,14 +122,21 @@ def test_header_sticky_and_transcript():
             "Transcript element must exist")
 
 
-def test_app_shell_and_mobile_tab_bar():
+def test_app_shell_and_mobile_slim_sidebar():
     shell_src = SHELL_FILE.read_text(encoding="utf-8")
-    responsive_src = RESPONSIVE_FILE.read_text(encoding="utf-8")
 
     require('data-debug-id="shell-main-route-outlet"' in shell_src,
             "AppShell must render shell-main-route-outlet")
-    require("transition-transform duration-300 ease-in-out" in responsive_src,
-            "MobileTabBar must include transition-transform duration-300 ease-in-out")
+    require("<MobileTabBar" not in shell_src,
+            "AppShell must not render MobileTabBar")
+    require("mobileBottomPadded" not in shell_src,
+            "AppShell must not use or define mobileBottomPadded")
+    require("isEffectiveCollapsed" in shell_src,
+            "AppShell must implement slim mobile left sidebar with isEffectiveCollapsed")
+    require('data-debug-id="shell-sidebar-collapse-toggle"' in shell_src,
+            "AppShell must provide a toggle button to expand/collapse sidebar")
+    require("min-h-11" in shell_src,
+            "NavItem must enforce touch-friendly min-h-11 targets")
 
 
 def test_right_sidebar_tab_chain_persistence():
@@ -156,6 +166,6 @@ if __name__ == "__main__":
     test_conversation_thread_page_scroll_flow()
     test_no_floating_pills()
     test_header_sticky_and_transcript()
-    test_app_shell_and_mobile_tab_bar()
+    test_app_shell_and_mobile_slim_sidebar()
     test_right_sidebar_tab_chain_persistence()
-    print("PASS: Simplified conversation layout and chain tab persistence verification (REQ-SIMPLIFY-LAYOUT-1, REQ-SIMPLIFY-COMPOSER-2, REQ-SIMPLIFY-GUTTER-3, REQ-SIMPLIFY-SCROLL-4, REQ-CHAIN-SIDEBAR-PERSIST-5)")
+    print("PASS: Simplified conversation layout and chain tab persistence verification (REQ-SIMPLIFY-LAYOUT-1, REQ-SIMPLIFY-COMPOSER-2, REQ-SIMPLIFY-GUTTER-3, REQ-SIMPLIFY-SCROLL-4, REQ-CHAIN-SIDEBAR-PERSIST-5, REQ-MOBILE-SLIM-SIDEBAR-11)")
