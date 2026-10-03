@@ -1,15 +1,15 @@
 package main
 
-// VCS command handlers (Hub -> Bridge) for the four vcs_* commands, plus their
-// JSON serialization. Mirrors bridge_fs_handle_command in fs_management.odin: each
-// command is idempotent (results cached by command_id) and replies over the
+// VCS command handlers (Hub -> Bridge) for the VCS commands, plus their
+// typed JSON serialization. Mirrors bridge_fs_handle_command in fs_management.odin:
+// each read command is idempotent (results cached by command_id) and replies over the
 // runtime WS with the same chunk-safe bridge_hub_send envelope.
 //
 // Commands:
-//   vcs_capabilities  params: {path}                      -> provider + supports_staging
-//   vcs_status        params: {path}                      -> branch/remote/ahead/behind/clean
-//   vcs_files         params: {path, cursor?, limit?}     -> paginated changed files
-//   vcs_diff          params: {path, file, cursor?, limit?}-> paginated diff hunks
+//   vcs_capabilities  params: {root}                      -> provider + supports_staging
+//   vcs_status        params: {root}                      -> branch/remote/ahead/behind/clean
+//   vcs_files         params: {root, cursor?, limit?}     -> paginated changed files
+//   vcs_diff          params: {root, path|file, cursor?, limit?}-> paginated diff hunks
 //
 // vcs_commit_diff has two modes: the default returns paginated diff hunks; with
 // list_files:true it returns a flat "files":[] list (path/status/+/-) between the
@@ -24,6 +24,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import json "core:encoding/json"
 import ws "odin_test:lib/ws"
 
 VCS_FILES_DEFAULT_LIMIT :: 100
@@ -33,88 +34,513 @@ VCS_DIFF_MAX_LIMIT :: 200
 VCS_LOG_DEFAULT_LIMIT :: 100
 VCS_LOG_MAX_LIMIT :: 500
 
+// --- Wire Command Structs (incoming over WS) ------------------------------
+
+Bridge_Vcs_Capabilities_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Vcs_Status_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Vcs_Files_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	cursor:     string `json:"cursor"`,
+	limit:      int    `json:"limit"`,
+}
+
+Bridge_Vcs_Diff_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	path:       string `json:"path"`,
+	file:       string `json:"file"`,
+	cursor:     string `json:"cursor"`,
+	limit:      int    `json:"limit"`,
+}
+
+Bridge_Vcs_Stage_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	path:       string `json:"path"`,
+}
+
+Bridge_Vcs_Unstage_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	path:       string `json:"path"`,
+}
+
+Bridge_Vcs_Revert_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	path:       string `json:"path"`,
+}
+
+Bridge_Vcs_Save_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	path:       string `json:"path"`,
+	content:    string `json:"content"`,
+}
+
+Bridge_Vcs_Commit_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	message:    string `json:"message"`,
+	amend:      bool   `json:"amend"`,
+}
+
+Bridge_Vcs_Upload_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Vcs_Sync_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+}
+
+Bridge_Vcs_Log_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	cursor:     string `json:"cursor"`,
+	limit:      int    `json:"limit"`,
+}
+
+Bridge_Vcs_Commit_Diff_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+	base_ref:   string `json:"base_ref"`,
+	head_ref:   string `json:"head_ref"`,
+	path:       string `json:"path"`,
+	file:       string `json:"file"`,
+	list_files: bool   `json:"list_files"`,
+	cursor:     string `json:"cursor"`,
+	limit:      int    `json:"limit"`,
+}
+
+Bridge_Vcs_Workspaces_Command :: struct {
+	type:       string `json:"type"`,
+	command_id: string `json:"command_id"`,
+	root:       string `json:"root"`,
+}
+
+// --- Wire Response Structs (outgoing over WS) -----------------------------
+
+Bridge_Vcs_Error_Wire :: struct {
+	code:    string `json:"code"`,
+	message: string `json:"message"`,
+}
+
+Bridge_Vcs_Capabilities_Result_Wire :: struct {
+	type:              string                `json:"type"`,
+	command_id:        string                `json:"command_id"`,
+	ok:                bool                  `json:"ok"`,
+	provider:          string                `json:"provider"`,
+	supports_staging:  bool                  `json:"supports_staging"`,
+	supports_amend:    bool                  `json:"supports_amend"`,
+	supports_upload:   bool                  `json:"supports_upload"`,
+	supports_sync:     bool                  `json:"supports_sync"`,
+	upload_label:      string                `json:"upload_label"`,
+	sync_label:        string                `json:"sync_label"`,
+	staging_model:     string                `json:"staging_model"`,
+	commit_model:      string                `json:"commit_model"`,
+	supported_actions: []string              `json:"supported_actions"`,
+	error:             Bridge_Vcs_Error_Wire `json:"error"`,
+}
+
+Bridge_Vcs_Status_Result_Wire :: struct {
+	type:       string                `json:"type"`,
+	command_id: string                `json:"command_id"`,
+	ok:         bool                  `json:"ok"`,
+	provider:   string                `json:"provider"`,
+	branch:     string                `json:"branch"`,
+	remote:     string                `json:"remote"`,
+	ahead:      int                   `json:"ahead"`,
+	behind:     int                   `json:"behind"`,
+	is_clean:   bool                  `json:"is_clean"`,
+	error:      Bridge_Vcs_Error_Wire `json:"error"`,
+}
+
+Bridge_Vcs_Changed_File_Wire :: struct {
+	path:      string `json:"path"`,
+	status:    string `json:"status"`,
+	staged:    bool   `json:"staged"`,
+	additions: int    `json:"additions"`,
+	deletions: int    `json:"deletions"`,
+}
+
+Bridge_Vcs_Files_Result_Wire :: struct {
+	type:        string                         `json:"type"`,
+	command_id:  string                         `json:"command_id"`,
+	ok:          bool                           `json:"ok"`,
+	provider:    string                         `json:"provider"`,
+	cursor:      string                         `json:"cursor"`,
+	limit:       int                            `json:"limit"`,
+	has_more:    bool                           `json:"has_more"`,
+	next_cursor: Maybe(string)                  `json:"next_cursor"`,
+	files:       []Bridge_Vcs_Changed_File_Wire `json:"files"`,
+	error:       Bridge_Vcs_Error_Wire          `json:"error"`,
+}
+
+Bridge_Vcs_Diff_Line_Wire :: struct {
+	op:   string `json:"op"`,
+	text: string `json:"text"`,
+}
+
+Bridge_Vcs_Diff_Hunk_Wire :: struct {
+	old_start: int                        `json:"old_start"`,
+	old_len:   int                        `json:"old_len"`,
+	new_start: int                        `json:"new_start"`,
+	new_len:   int                        `json:"new_len"`,
+	lines:     []Bridge_Vcs_Diff_Line_Wire `json:"lines"`,
+}
+
+Bridge_Vcs_Diff_Result_Wire :: struct {
+	type:        string                      `json:"type"`,
+	command_id:  string                      `json:"command_id"`,
+	ok:          bool                        `json:"ok"`,
+	provider:    string                      `json:"provider"`,
+	file:        string                      `json:"file"`,
+	cursor:      string                      `json:"cursor"`,
+	limit:       int                         `json:"limit"`,
+	has_more:    bool                        `json:"has_more"`,
+	next_cursor: Maybe(string)               `json:"next_cursor"`,
+	hunks:       []Bridge_Vcs_Diff_Hunk_Wire `json:"hunks"`,
+	error:       Bridge_Vcs_Error_Wire       `json:"error"`,
+}
+
+Bridge_Vcs_Mutation_Result_Wire :: struct {
+	type:       string                `json:"type"`,
+	command_id: string                `json:"command_id"`,
+	ok:         bool                  `json:"ok"`,
+	provider:   string                `json:"provider,omitempty"`,
+	error:      Bridge_Vcs_Error_Wire `json:"error"`,
+}
+
+Bridge_Vcs_Log_Entry_Wire :: struct {
+	hash:          string `json:"hash"`,
+	short_hash:    string `json:"short_hash"`,
+	subject:       string `json:"subject"`,
+	author:        string `json:"author"`,
+	date:          string `json:"date"`,
+	cl_number:     string `json:"cl_number,omitempty"`,
+	review_status: string `json:"review_status,omitempty"`,
+}
+
+Bridge_Vcs_Log_Result_Wire :: struct {
+	type:        string                      `json:"type"`,
+	command_id:  string                      `json:"command_id"`,
+	ok:          bool                        `json:"ok"`,
+	provider:    string                      `json:"provider"`,
+	has_more:    bool                        `json:"has_more"`,
+	next_cursor: Maybe(string)               `json:"next_cursor"`,
+	entries:     []Bridge_Vcs_Log_Entry_Wire `json:"entries"`,
+	error:       Bridge_Vcs_Error_Wire       `json:"error"`,
+}
+
+Bridge_Vcs_Commit_File_Wire :: struct {
+	path:      string `json:"path"`,
+	status:    string `json:"status"`,
+	additions: int    `json:"additions"`,
+	deletions: int    `json:"deletions"`,
+}
+
+Bridge_Vcs_Commit_Diff_Files_Result_Wire :: struct {
+	type:       string                        `json:"type"`,
+	command_id: string                        `json:"command_id"`,
+	ok:         bool                          `json:"ok"`,
+	provider:   string                        `json:"provider"`,
+	list_files: bool                          `json:"list_files"`,
+	base_ref:   string                        `json:"base_ref"`,
+	head_ref:   string                        `json:"head_ref"`,
+	files:      []Bridge_Vcs_Commit_File_Wire `json:"files"`,
+	error:      Bridge_Vcs_Error_Wire         `json:"error"`,
+}
+
+Bridge_Vcs_Commit_Diff_Result_Wire :: struct {
+	type:        string                      `json:"type"`,
+	command_id:  string                      `json:"command_id"`,
+	ok:          bool                        `json:"ok"`,
+	provider:    string                      `json:"provider"`,
+	file:        string                      `json:"file"`,
+	base_ref:    string                      `json:"base_ref"`,
+	head_ref:    string                      `json:"head_ref"`,
+	cursor:      string                      `json:"cursor"`,
+	limit:       int                         `json:"limit"`,
+	has_more:    bool                        `json:"has_more"`,
+	next_cursor: Maybe(string)               `json:"next_cursor"`,
+	hunks:       []Bridge_Vcs_Diff_Hunk_Wire `json:"hunks"`,
+	error:       Bridge_Vcs_Error_Wire       `json:"error"`,
+}
+
+Bridge_Vcs_Workspace_Entry_Wire :: struct {
+	path:       string `json:"path"`,
+	label:      string `json:"label"`,
+	is_current: bool   `json:"is_current"`,
+	is_locked:  bool   `json:"is_locked"`,
+}
+
+Bridge_Vcs_Workspaces_Result_Wire :: struct {
+	type:       string                            `json:"type"`,
+	command_id: string                            `json:"command_id"`,
+	ok:         bool                              `json:"ok"`,
+	provider:   string                            `json:"provider"`,
+	workspaces: []Bridge_Vcs_Workspace_Entry_Wire `json:"workspaces"`,
+	error:      Bridge_Vcs_Error_Wire             `json:"error"`,
+}
+
+// --- Wire Conversion Helpers ----------------------------------------------
+
+@(private)
+vcs_to_wire_files :: proc(files: []VCS_Changed_File) -> []Bridge_Vcs_Changed_File_Wire {
+	if len(files) == 0 do return []Bridge_Vcs_Changed_File_Wire{}
+	out := make([]Bridge_Vcs_Changed_File_Wire, len(files), context.temp_allocator)
+	for f, i in files {
+		out[i] = Bridge_Vcs_Changed_File_Wire{
+			path      = f.path,
+			status    = f.status,
+			staged    = f.staged,
+			additions = f.additions,
+			deletions = f.deletions,
+		}
+	}
+	return out
+}
+
+@(private)
+vcs_to_wire_hunks :: proc(hunks: []VCS_Diff_Hunk) -> []Bridge_Vcs_Diff_Hunk_Wire {
+	if len(hunks) == 0 do return []Bridge_Vcs_Diff_Hunk_Wire{}
+	out := make([]Bridge_Vcs_Diff_Hunk_Wire, len(hunks), context.temp_allocator)
+	for h, i in hunks {
+		lines := make([]Bridge_Vcs_Diff_Line_Wire, len(h.lines), context.temp_allocator)
+		for l, j in h.lines {
+			lines[j] = Bridge_Vcs_Diff_Line_Wire{
+				op   = l.op,
+				text = l.text,
+			}
+		}
+		out[i] = Bridge_Vcs_Diff_Hunk_Wire{
+			old_start = h.old_start,
+			old_len   = h.old_len,
+			new_start = h.new_start,
+			new_len   = h.new_len,
+			lines     = lines,
+		}
+	}
+	return out
+}
+
+@(private)
+vcs_to_wire_log_entries :: proc(entries: []VCS_Log_Entry) -> []Bridge_Vcs_Log_Entry_Wire {
+	if len(entries) == 0 do return []Bridge_Vcs_Log_Entry_Wire{}
+	out := make([]Bridge_Vcs_Log_Entry_Wire, len(entries), context.temp_allocator)
+	for e, i in entries {
+		out[i] = Bridge_Vcs_Log_Entry_Wire{
+			hash          = e.hash,
+			short_hash    = e.short_hash,
+			subject       = e.subject,
+			author        = e.author,
+			date          = e.date,
+			cl_number     = e.cl_number,
+			review_status = e.review_status,
+		}
+	}
+	return out
+}
+
+@(private)
+vcs_to_wire_commit_files :: proc(files: []VCS_Changed_File) -> []Bridge_Vcs_Commit_File_Wire {
+	if len(files) == 0 do return []Bridge_Vcs_Commit_File_Wire{}
+	out := make([]Bridge_Vcs_Commit_File_Wire, len(files), context.temp_allocator)
+	for f, i in files {
+		out[i] = Bridge_Vcs_Commit_File_Wire{
+			path      = f.path,
+			status    = f.status,
+			additions = f.additions,
+			deletions = f.deletions,
+		}
+	}
+	return out
+}
+
+@(private)
+vcs_to_wire_workspaces :: proc(workspaces: []VCS_Workspace) -> []Bridge_Vcs_Workspace_Entry_Wire {
+	if len(workspaces) == 0 do return []Bridge_Vcs_Workspace_Entry_Wire{}
+	out := make([]Bridge_Vcs_Workspace_Entry_Wire, len(workspaces), context.temp_allocator)
+	for w, i in workspaces {
+		out[i] = Bridge_Vcs_Workspace_Entry_Wire{
+			path       = w.path,
+			label      = w.label,
+			is_current = w.is_current,
+			is_locked  = w.is_locked,
+		}
+	}
+	return out
+}
+
 // bridge_vcs_handle_command dispatches the vcs_* command types over the runtime
 // WS. Returns true if `type` was a vcs command (handled), false otherwise. Results
 // are cached by command_id for idempotent replay, matching the fs_* handlers.
 bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
 	switch type {
 	case "vcs_capabilities":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_capabilities_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Capabilities_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_capabilities_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_status":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_status_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Status_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_status_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_files":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_files_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Files_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_files_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_diff":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_diff_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Diff_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_diff_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	// --- write commands: mutations are NOT idempotent, so they are never cached. ---
 	case "vcs_stage":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_stage_json(command_id, text))
+		cmd: Bridge_Vcs_Stage_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_stage_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_unstage":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_unstage_json(command_id, text))
+		cmd: Bridge_Vcs_Unstage_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_unstage_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_revert":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_revert_json(command_id, text))
+		cmd: Bridge_Vcs_Revert_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_revert_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_save_file":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_save_json(command_id, text))
+		cmd: Bridge_Vcs_Save_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_save_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_commit":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_commit_json(command_id, text))
+		cmd: Bridge_Vcs_Commit_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_commit_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_upload", "vcs_push":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_upload_json(command_id, text))
+		cmd: Bridge_Vcs_Upload_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_upload_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_sync", "vcs_pull":
-		command_id := extract_json_string(text, "command_id", "")
-		_ = bridge_hub_send(conn, bridge_vcs_sync_json(command_id, text))
+		cmd: Bridge_Vcs_Sync_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		out := bridge_vcs_sync_json(cmd.command_id, text)
+		defer delete(out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	// --- read-only commands: cached by command_id like the other read handlers. ---
 	case "vcs_log":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_log_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Log_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_log_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_commit_diff":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_commit_diff_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Commit_Diff_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_commit_diff_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	case "vcs_workspaces":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		out := bridge_vcs_workspaces_json(command_id, text)
-		bridge_runtime_cache_command(command_id, out)
+		cmd: Bridge_Vcs_Workspaces_Command
+		if err := json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+			return false
+		}
+		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		out := bridge_vcs_workspaces_json(cmd.command_id, text)
+		defer delete(out)
+		bridge_runtime_cache_command(cmd.command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
 	}
@@ -122,8 +548,8 @@ bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 }
 
 // vcs_request_path extracts and home-expands the "root" param.
-vcs_request_path :: proc(text: string) -> string {
-	raw := strings.trim_space(extract_json_string(text, "root", ""))
+vcs_request_path :: proc(root: string) -> string {
+	raw := strings.trim_space(root)
 	if raw == "" do return ""
 	return bridge_expand_home(raw)
 }
@@ -139,208 +565,310 @@ vcs_clamp_limit :: proc(limit, default_limit, max_limit: int) -> int {
 
 // --- vcs_capabilities ----------------------------------------------------
 
-bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
+bridge_vcs_capabilities_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Capabilities_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_capabilities_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"supports_upload\":false,\"supports_sync\":false,\"upload_label\":\"\",\"sync_label\":\"\",\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Capabilities_Result_Wire{
+			type              = "vcs_capabilities_result",
+			command_id        = cid,
+			ok                = false,
+			provider          = "",
+			supports_staging  = false,
+			supports_amend    = false,
+			supports_upload   = false,
+			supports_sync     = false,
+			upload_label      = "",
+			sync_label        = "",
+			staging_model     = "",
+			commit_model      = "",
+			supported_actions = []string{},
+			error             = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	caps := provider.capabilities(path)
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, caps.provider)
-	strings.write_string(&b, "\",\"supports_staging\":"); strings.write_string(&b, "true" if caps.supports_staging else "false")
-	strings.write_string(&b, ",\"supports_amend\":"); strings.write_string(&b, "true" if caps.supports_amend else "false")
-	strings.write_string(&b, ",\"supports_upload\":"); strings.write_string(&b, "true" if caps.supports_upload else "false")
-	strings.write_string(&b, ",\"supports_sync\":"); strings.write_string(&b, "true" if caps.supports_sync else "false")
-	strings.write_string(&b, ",\"upload_label\":\""); json_write_string(&b, caps.upload_label)
-	strings.write_string(&b, "\",\"sync_label\":\""); json_write_string(&b, caps.sync_label)
-	strings.write_string(&b, "\",\"staging_model\":\""); json_write_string(&b, caps.staging_model)
-	strings.write_string(&b, "\",\"commit_model\":\""); json_write_string(&b, caps.commit_model)
-	strings.write_string(&b, "\",\"supported_actions\":[")
-	for a, i in caps.supported_actions {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_byte(&b, '"'); json_write_string(&b, a); strings.write_byte(&b, '"')
+	actions := caps.supported_actions if caps.supported_actions != nil else []string{}
+	wire := Bridge_Vcs_Capabilities_Result_Wire{
+		type              = "vcs_capabilities_result",
+		command_id        = cid,
+		ok                = true,
+		provider          = caps.provider,
+		supports_staging  = caps.supports_staging,
+		supports_amend    = caps.supports_amend,
+		supports_upload   = caps.supports_upload,
+		supports_sync     = caps.supports_sync,
+		upload_label      = caps.upload_label,
+		sync_label        = caps.sync_label,
+		staging_model     = caps.staging_model,
+		commit_model      = caps.commit_model,
+		supported_actions = actions,
+		error             = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
 	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_status ----------------------------------------------------------
 
-bridge_vcs_status_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
+bridge_vcs_status_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Status_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_status_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Status_Result_Wire{
+			type       = "vcs_status_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			branch     = "",
+			remote     = "",
+			ahead      = 0,
+			behind     = 0,
+			is_clean   = false,
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	st, sok := provider.status(path)
 	if !sok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "status_failed", "Could not read VCS status")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Status_Result_Wire{
+			type       = "vcs_status_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			branch     = "",
+			remote     = "",
+			ahead      = 0,
+			behind     = 0,
+			is_clean   = false,
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "status_failed",
+				message = "Could not read VCS status",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, st.provider)
-	strings.write_string(&b, "\",\"branch\":\""); json_write_string(&b, st.branch)
-	strings.write_string(&b, "\",\"remote\":\""); json_write_string(&b, st.remote)
-	strings.write_string(&b, "\",\"ahead\":"); strings.write_string(&b, fmt.tprintf("%d", st.ahead))
-	strings.write_string(&b, ",\"behind\":"); strings.write_string(&b, fmt.tprintf("%d", st.behind))
-	strings.write_string(&b, ",\"is_clean\":"); strings.write_string(&b, "true" if st.is_clean else "false")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Status_Result_Wire{
+		type       = "vcs_status_result",
+		command_id = cid,
+		ok         = true,
+		provider   = st.provider,
+		branch     = st.branch,
+		remote     = st.remote,
+		ahead      = st.ahead,
+		behind     = st.behind,
+		is_clean   = st.is_clean,
+		error      = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_files -----------------------------------------------------------
 
-bridge_vcs_files_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	cursor := extract_json_string(text, "cursor", "")
-	limit := extract_json_int(text, "limit", VCS_FILES_DEFAULT_LIMIT)
-	eff_limit := vcs_clamp_limit(limit, VCS_FILES_DEFAULT_LIMIT, VCS_FILES_MAX_LIMIT)
+bridge_vcs_files_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Files_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	eff_limit := vcs_clamp_limit(cmd.limit, VCS_FILES_DEFAULT_LIMIT, VCS_FILES_MAX_LIMIT)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_files_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"files\":[],\"cursor\":\""); json_write_string(&b, cursor)
-		strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-		strings.write_string(&b, ",\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Files_Result_Wire{
+			type        = "vcs_files_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = "",
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			files       = []Bridge_Vcs_Changed_File_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	files, next_cursor, has_more, fok := provider.changed_files(path, cursor, eff_limit)
+	files, next_cursor, has_more, fok := provider.changed_files(path, cmd.cursor, eff_limit)
 	if !fok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"files\":[],\"cursor\":\""); json_write_string(&b, cursor)
-		strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-		strings.write_string(&b, ",\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "files_failed", "Could not list changed files")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Files_Result_Wire{
+			type        = "vcs_files_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			files       = []Bridge_Vcs_Changed_File_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "files_failed",
+				message = "Could not list changed files",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\",\"cursor\":\""); json_write_string(&b, cursor)
-	strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-	strings.write_string(&b, ",\"has_more\":"); strings.write_string(&b, "true" if has_more else "false")
-	if next_cursor == "" {
-		strings.write_string(&b, ",\"next_cursor\":null")
-	} else {
-		strings.write_string(&b, ",\"next_cursor\":\""); json_write_string(&b, next_cursor); strings.write_string(&b, "\"")
+	next_cursor_val: Maybe(string) = next_cursor if next_cursor != "" else nil
+	wire := Bridge_Vcs_Files_Result_Wire{
+		type        = "vcs_files_result",
+		command_id  = cid,
+		ok          = true,
+		provider    = provider.name(),
+		cursor      = cmd.cursor,
+		limit       = eff_limit,
+		has_more    = has_more,
+		next_cursor = next_cursor_val,
+		files       = vcs_to_wire_files(files),
+		error       = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
 	}
-	strings.write_string(&b, ",\"files\":[")
-	for f, i in files {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, f.path)
-		strings.write_string(&b, "\",\"status\":\""); json_write_string(&b, f.status)
-		strings.write_string(&b, "\",\"staged\":"); strings.write_string(&b, "true" if f.staged else "false")
-		strings.write_string(&b, ",\"additions\":"); strings.write_string(&b, fmt.tprintf("%d", f.additions))
-		strings.write_string(&b, ",\"deletions\":"); strings.write_string(&b, fmt.tprintf("%d", f.deletions))
-		strings.write_string(&b, "}")
-	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_diff ------------------------------------------------------------
 
-bridge_vcs_diff_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	file := strings.trim_space(extract_json_string(text, "path", ""))
-	if file == "" {
-		file = strings.trim_space(extract_json_string(text, "file", ""))
-	}
-	cursor := extract_json_string(text, "cursor", "")
-	limit := extract_json_int(text, "limit", VCS_DIFF_DEFAULT_LIMIT)
-	eff_limit := vcs_clamp_limit(limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
+bridge_vcs_diff_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Diff_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	file := strings.trim_space(cmd.path) if strings.trim_space(cmd.path) != "" else strings.trim_space(cmd.file)
+	eff_limit := vcs_clamp_limit(cmd.limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_diff_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"file\":\""); json_write_string(&b, file)
-		strings.write_string(&b, "\",\"hunks\":[],\"cursor\":\""); json_write_string(&b, cursor)
-		strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-		strings.write_string(&b, ",\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Diff_Result_Wire{
+			type        = "vcs_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = "",
+			file        = file,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if file == "" {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"file\":\"\",\"hunks\":[],\"cursor\":\""); json_write_string(&b, cursor)
-		strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-		strings.write_string(&b, ",\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "missing_file", "The 'file' parameter is required for vcs_diff")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
-	}
-	hunks, next_cursor, has_more, dok := provider.diff_file(path, file, cursor, eff_limit)
-	if !dok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-		strings.write_string(&b, "\",\"hunks\":[],\"cursor\":\""); json_write_string(&b, cursor)
-		strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-		strings.write_string(&b, ",\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "diff_failed", "Could not read file diff")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
-	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-	strings.write_string(&b, "\",\"cursor\":\""); json_write_string(&b, cursor)
-	strings.write_string(&b, "\",\"limit\":"); strings.write_string(&b, fmt.tprintf("%d", eff_limit))
-	strings.write_string(&b, ",\"has_more\":"); strings.write_string(&b, "true" if has_more else "false")
-	if next_cursor == "" {
-		strings.write_string(&b, ",\"next_cursor\":null")
-	} else {
-		strings.write_string(&b, ",\"next_cursor\":\""); json_write_string(&b, next_cursor); strings.write_string(&b, "\"")
-	}
-	strings.write_string(&b, ",\"hunks\":[")
-	for h, i in hunks {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"old_start\":"); strings.write_string(&b, fmt.tprintf("%d", h.old_start))
-		strings.write_string(&b, ",\"old_len\":"); strings.write_string(&b, fmt.tprintf("%d", h.old_len))
-		strings.write_string(&b, ",\"new_start\":"); strings.write_string(&b, fmt.tprintf("%d", h.new_start))
-		strings.write_string(&b, ",\"new_len\":"); strings.write_string(&b, fmt.tprintf("%d", h.new_len))
-		strings.write_string(&b, ",\"lines\":[")
-		for ln, j in h.lines {
-			if j > 0 do strings.write_byte(&b, ',')
-			strings.write_string(&b, "{\"op\":\""); json_write_string(&b, ln.op)
-			strings.write_string(&b, "\",\"text\":\""); json_write_string(&b, ln.text)
-			strings.write_string(&b, "\"}")
+		wire := Bridge_Vcs_Diff_Result_Wire{
+			type        = "vcs_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			file        = "",
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "missing_file",
+				message = "The 'file' parameter is required for vcs_diff",
+			},
 		}
-		strings.write_string(&b, "]}")
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	hunks, next_cursor, has_more, dok := provider.diff_file(path, file, cmd.cursor, eff_limit)
+	if !dok {
+		wire := Bridge_Vcs_Diff_Result_Wire{
+			type        = "vcs_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			file        = file,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "diff_failed",
+				message = "Could not read file diff",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
+	}
+	next_cursor_val: Maybe(string) = next_cursor if next_cursor != "" else nil
+	wire := Bridge_Vcs_Diff_Result_Wire{
+		type        = "vcs_diff_result",
+		command_id  = cid,
+		ok          = true,
+		provider    = provider.name(),
+		file        = file,
+		cursor      = cmd.cursor,
+		limit       = eff_limit,
+		has_more    = has_more,
+		next_cursor = next_cursor_val,
+		hunks       = vcs_to_wire_hunks(hunks),
+		error       = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_stage / vcs_unstage / vcs_revert (write commands) ---------------
 
-bridge_vcs_stage_json :: proc(command_id, text: string) -> string {
-	return bridge_vcs_write_action_json(command_id, text, "vcs_stage_result", "stage")
+bridge_vcs_stage_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	return bridge_vcs_write_action_json(command_id, text, "vcs_stage_result", "stage", allocator)
 }
-bridge_vcs_unstage_json :: proc(command_id, text: string) -> string {
-	return bridge_vcs_write_action_json(command_id, text, "vcs_unstage_result", "unstage")
+
+bridge_vcs_unstage_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	return bridge_vcs_write_action_json(command_id, text, "vcs_unstage_result", "unstage", allocator)
 }
-bridge_vcs_revert_json :: proc(command_id, text: string) -> string {
-	return bridge_vcs_write_action_json(command_id, text, "vcs_revert_result", "revert")
+
+bridge_vcs_revert_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	return bridge_vcs_write_action_json(command_id, text, "vcs_revert_result", "revert", allocator)
 }
 
 // bridge_vcs_write_action_json is the shared body for the three write commands,
@@ -348,24 +876,42 @@ bridge_vcs_revert_json :: proc(command_id, text: string) -> string {
 // "root", file in "path" (matching vcs_diff). A nil proc pointer or a "not_supported"
 // msg both surface error code "not_supported"; the provider's own failure msg
 // (e.g. "untracked_file") becomes the error code otherwise.
-bridge_vcs_write_action_json :: proc(command_id, text, result_type, action: string) -> string {
-	path := vcs_request_path(text)
-	file := strings.trim_space(extract_json_string(text, "path", ""))
+bridge_vcs_write_action_json :: proc(command_id, text, result_type, action: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Stage_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	file := strings.trim_space(cmd.path)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\""); json_write_string(&b, result_type)
-	strings.write_string(&b, "\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = result_type,
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if file == "" {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "missing_file", "The 'path' parameter is required")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = result_type,
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "missing_file",
+				message = "The 'path' parameter is required",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	supported := true
 	aok := false
@@ -379,69 +925,113 @@ bridge_vcs_write_action_json :: proc(command_id, text, result_type, action: stri
 		if provider.revert_file == nil { supported = false } else { aok, msg = provider.revert_file(path, file) }
 	}
 	if !supported {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "not_supported", "Action not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = result_type,
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Action not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
-	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\"")
+	err_wire: Bridge_Vcs_Error_Wire
 	if aok {
-		vcs_write_error(&b, "", "")
+		err_wire = Bridge_Vcs_Error_Wire{code = "", message = ""}
 	} else {
-		code := msg
-		if code == "" do code = "action_failed"
-		vcs_write_error(&b, code, vcs_action_error_message(code))
+		code := msg if msg != "" else "action_failed"
+		err_wire = Bridge_Vcs_Error_Wire{code = code, message = vcs_action_error_message(code)}
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = result_type,
+		command_id = cid,
+		ok         = aok,
+		provider   = provider.name(),
+		error      = err_wire,
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_save_file (write command) ---------------------------------------
 // Editor save: writes the full text of a working-tree file. Params: repo in "root",
 // relative file in "path" (uniform with the other write commands), buffer in
 // "content". Never cached (mutation). Result type "vcs_save_file_result".
-bridge_vcs_save_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	file := strings.trim_space(extract_json_string(text, "path", ""))
-	content := extract_json_string(text, "content", "")
+bridge_vcs_save_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Save_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	file := strings.trim_space(cmd.path)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_save_file_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_save_file_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if file == "" {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "missing_file", "The 'path' parameter is required")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_save_file_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "missing_file",
+				message = "The 'path' parameter is required",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.save_file == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "not_supported", "Save is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_save_file_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Save is not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	aok, msg := provider.save_file(path, file, content)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
-	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\"")
+	aok, msg := provider.save_file(path, file, cmd.content)
+	err_wire: Bridge_Vcs_Error_Wire
 	if aok {
-		vcs_write_error(&b, "", "")
+		err_wire = Bridge_Vcs_Error_Wire{code = "", message = ""}
 	} else {
-		code := msg
-		if code == "" do code = "save_failed"
-		vcs_write_error(&b, code, vcs_action_error_message(code))
+		code := msg if msg != "" else "save_failed"
+		err_wire = Bridge_Vcs_Error_Wire{code = code, message = vcs_action_error_message(code)}
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = "vcs_save_file_result",
+		command_id = cid,
+		ok         = aok,
+		provider   = provider.name(),
+		error      = err_wire,
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_commit (write command) ------------------------------------------
@@ -449,241 +1039,373 @@ bridge_vcs_save_json :: proc(command_id, text: string) -> string {
 // repo in "root", message in "message". Never cached (mutation). Result type
 // "vcs_commit_result". A nil provider.commit proc surfaces "not_supported"; an empty
 // message surfaces "missing_message"; a failed git commit surfaces "commit_failed".
-bridge_vcs_commit_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	message := strings.trim_space(extract_json_string(text, "message", ""))
-	amend := bridge_fs_extract_json_bool(text, "amend", false)
+bridge_vcs_commit_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Commit_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	message := strings.trim_space(cmd.message)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_commit_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_commit_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if message == "" {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "missing_message", "The 'message' parameter is required")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_commit_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "missing_message",
+				message = "The 'message' parameter is required",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.commit == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "not_supported", "Commit is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_commit_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Commit is not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	aok := provider.commit(path, message, amend)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
-	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\"")
+	aok := provider.commit(path, message, cmd.amend)
+	err_wire: Bridge_Vcs_Error_Wire
 	if aok {
-		vcs_write_error(&b, "", "")
+		err_wire = Bridge_Vcs_Error_Wire{code = "", message = ""}
 	} else {
-		vcs_write_error(&b, "commit_failed", vcs_action_error_message("commit_failed"))
+		err_wire = Bridge_Vcs_Error_Wire{
+			code    = "commit_failed",
+			message = vcs_action_error_message("commit_failed"),
+		}
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = "vcs_commit_result",
+		command_id = cid,
+		ok         = aok,
+		provider   = provider.name(),
+		error      = err_wire,
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_upload (write command) ------------------------------------------
 // Uploads the current branch/chain of commits (e.g. `hg upload chain` for fig).
 // Params: repo in "root". Never cached (mutation). Result type "vcs_upload_result".
-bridge_vcs_upload_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
+bridge_vcs_upload_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Upload_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_upload_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_upload_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.upload == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "not_supported", "Upload is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_upload_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Upload is not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	aok, code, detail := provider.upload(path)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
-	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\"")
+	err_wire: Bridge_Vcs_Error_Wire
 	if aok {
-		vcs_write_error(&b, "", "")
+		err_wire = Bridge_Vcs_Error_Wire{code = "", message = ""}
 	} else {
-		if code == "" do code = "upload_failed"
-		message := vcs_action_error_message(code)
+		err_code := code if code != "" else "upload_failed"
+		msg := vcs_action_error_message(err_code)
 		if detail != "" {
-			message = fmt.tprintf("%s — %s", message, detail)
+			msg = fmt.tprintf("%s — %s", msg, detail)
 			delete(detail)
 		}
-		vcs_write_error(&b, code, message)
+		err_wire = Bridge_Vcs_Error_Wire{code = err_code, message = msg}
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = "vcs_upload_result",
+		command_id = cid,
+		ok         = aok,
+		provider   = provider.name(),
+		error      = err_wire,
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_sync (write command) --------------------------------------------
 // Syncs current branch/worktree with upstream head (e.g. `hg sync` or `git pull --rebase`).
 // Params: repo in "root". Never cached (mutation). Result type "vcs_sync_result".
-bridge_vcs_sync_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
+bridge_vcs_sync_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Sync_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_sync_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_sync_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.sync == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\"")
-		vcs_write_error(&b, "not_supported", "Sync is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Mutation_Result_Wire{
+			type       = "vcs_sync_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Sync is not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	aok, code, detail := provider.sync(path)
-	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
-	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\"")
+	err_wire: Bridge_Vcs_Error_Wire
 	if aok {
-		vcs_write_error(&b, "", "")
+		err_wire = Bridge_Vcs_Error_Wire{code = "", message = ""}
 	} else {
-		if code == "" do code = "sync_failed"
-		message := vcs_action_error_message(code)
+		err_code := code if code != "" else "sync_failed"
+		msg := vcs_action_error_message(err_code)
 		if detail != "" {
-			message = fmt.tprintf("%s — %s", message, detail)
+			msg = fmt.tprintf("%s — %s", msg, detail)
 			delete(detail)
 		}
-		vcs_write_error(&b, code, message)
+		err_wire = Bridge_Vcs_Error_Wire{code = err_code, message = msg}
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = "vcs_sync_result",
+		command_id = cid,
+		ok         = aok,
+		provider   = provider.name(),
+		error      = err_wire,
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // vcs_action_error_message maps a write-action error code to a human message.
 vcs_action_error_message :: proc(code: string) -> string {
 	switch code {
-	case "not_supported":  return "Action not supported by this provider"
-	case "untracked_file": return "File is untracked and cannot be reverted"
-	case "stage_failed":   return "Could not stage file"
-	case "unstage_failed": return "Could not unstage file"
-	case "revert_failed":  return "Could not revert file"
-	case "save_failed":    return "Could not save file"
-	case "commit_failed":  return "Could not create commit (nothing staged, or git rejected it)"
-	case "upload_failed":  return "Could not upload changes to remote/Critique"
-	case "sync_failed":    return "Could not sync repository with head"
-	case "push_failed":    return "Could not push commits to remote repository"
-	case "pull_failed":    return "Could not pull commits from remote repository"
-	case "missing_message": return "The 'message' parameter is required"
-	case "missing_file":   return "The 'path' parameter is required"
+	case "not_supported":     return "Action not supported by this provider"
+	case "untracked_file":    return "File is untracked and cannot be reverted"
+	case "stage_failed":      return "Could not stage file"
+	case "unstage_failed":    return "Could not unstage file"
+	case "revert_failed":     return "Could not revert file"
+	case "save_failed":       return "Could not save file"
+	case "commit_failed":     return "Could not create commit (nothing staged, or git rejected it)"
+	case "upload_failed":     return "Could not upload changes to remote/Critique"
+	case "sync_failed":       return "Could not sync repository with head"
+	case "push_failed":       return "Could not push commits to remote repository"
+	case "pull_failed":       return "Could not pull commits from remote repository"
+	case "missing_message":   return "The 'message' parameter is required"
+	case "missing_file":      return "The 'path' parameter is required"
 	case "path_outside_root": return "File path is outside the repository root"
-	case:                  return "VCS action failed"
+	case:                     return "VCS action failed"
 	}
 }
 
 // --- vcs_log -------------------------------------------------------------
 
-bridge_vcs_log_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	cursor := extract_json_string(text, "cursor", "")
-	limit := extract_json_int(text, "limit", VCS_LOG_DEFAULT_LIMIT)
-	eff_limit := vcs_clamp_limit(limit, VCS_LOG_DEFAULT_LIMIT, VCS_LOG_MAX_LIMIT)
+bridge_vcs_log_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Log_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	eff_limit := vcs_clamp_limit(cmd.limit, VCS_LOG_DEFAULT_LIMIT, VCS_LOG_MAX_LIMIT)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_log_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"entries\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Log_Result_Wire{
+			type        = "vcs_log_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = "",
+			has_more    = false,
+			next_cursor = nil,
+			entries     = []Bridge_Vcs_Log_Entry_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.log == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"entries\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "not_supported", "Log is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Log_Result_Wire{
+			type        = "vcs_log_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			has_more    = false,
+			next_cursor = nil,
+			entries     = []Bridge_Vcs_Log_Entry_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Log is not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	entries, next_cursor, has_more, lok := provider.log(path, cursor, eff_limit)
+	entries, next_cursor, has_more, lok := provider.log(path, cmd.cursor, eff_limit)
 	if !lok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"entries\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "log_failed", "Could not read commit log")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
-	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\",\"has_more\":"); strings.write_string(&b, "true" if has_more else "false")
-	if next_cursor == "" {
-		strings.write_string(&b, ",\"next_cursor\":null")
-	} else {
-		strings.write_string(&b, ",\"next_cursor\":\""); json_write_string(&b, next_cursor); strings.write_string(&b, "\"")
-	}
-	strings.write_string(&b, ",\"entries\":[")
-	for e, i in entries {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"hash\":\""); json_write_string(&b, e.hash)
-		strings.write_string(&b, "\",\"short_hash\":\""); json_write_string(&b, e.short_hash)
-		strings.write_string(&b, "\",\"subject\":\""); json_write_string(&b, e.subject)
-		strings.write_string(&b, "\",\"author\":\""); json_write_string(&b, e.author)
-		strings.write_string(&b, "\",\"date\":\""); json_write_string(&b, e.date)
-		strings.write_string(&b, "\"")
-		if e.cl_number != "" {
-			strings.write_string(&b, ",\"cl_number\":\""); json_write_string(&b, e.cl_number); strings.write_string(&b, "\"")
+		wire := Bridge_Vcs_Log_Result_Wire{
+			type        = "vcs_log_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			has_more    = false,
+			next_cursor = nil,
+			entries     = []Bridge_Vcs_Log_Entry_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "log_failed",
+				message = "Could not read commit log",
+			},
 		}
-		if e.review_status != "" {
-			strings.write_string(&b, ",\"review_status\":\""); json_write_string(&b, e.review_status); strings.write_string(&b, "\"")
-		}
-		strings.write_string(&b, "}")
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	next_cursor_val: Maybe(string) = next_cursor if next_cursor != "" else nil
+	wire := Bridge_Vcs_Log_Result_Wire{
+		type        = "vcs_log_result",
+		command_id  = cid,
+		ok          = true,
+		provider    = provider.name(),
+		has_more    = has_more,
+		next_cursor = next_cursor_val,
+		entries     = vcs_to_wire_log_entries(entries),
+		error       = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_commit_diff -----------------------------------------------------
 // Same shape as vcs_diff_result (type "vcs_commit_diff_result"), plus the base/head
-// refs echoed back for correlation. Params: repo in "root", optional file in "path",
+// refs echoed back for correlation. Params: repo in "root", optional file in "path"|"file",
 // refs in "base_ref"/"head_ref" (head_ref "WORKDIR" or absent = compare to worktree).
 
-bridge_vcs_commit_diff_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
-	base_ref := strings.trim_space(extract_json_string(text, "base_ref", ""))
-	head_ref := strings.trim_space(extract_json_string(text, "head_ref", ""))
-	file := strings.trim_space(extract_json_string(text, "path", ""))
-	list_files := bridge_fs_extract_json_bool(text, "list_files", false)
-	cursor := extract_json_string(text, "cursor", "")
-	limit := extract_json_int(text, "limit", VCS_DIFF_DEFAULT_LIMIT)
-	eff_limit := vcs_clamp_limit(limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
+bridge_vcs_commit_diff_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Commit_Diff_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
+	base_ref := strings.trim_space(cmd.base_ref)
+	head_ref := strings.trim_space(cmd.head_ref)
+	file := strings.trim_space(cmd.path) if strings.trim_space(cmd.path) != "" else strings.trim_space(cmd.file)
+	list_files := cmd.list_files
+	eff_limit := vcs_clamp_limit(cmd.limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_commit_diff_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"file\":\""); json_write_string(&b, file)
-		bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
-		strings.write_string(&b, ",\"hunks\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Commit_Diff_Result_Wire{
+			type        = "vcs_commit_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = "",
+			file        = file,
+			base_ref    = base_ref,
+			head_ref    = head_ref,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if base_ref == "" {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-		bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
-		strings.write_string(&b, ",\"hunks\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "invalid_ref", "The 'base_ref' parameter is required")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Commit_Diff_Result_Wire{
+			type        = "vcs_commit_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			file        = file,
+			base_ref    = base_ref,
+			head_ref    = head_ref,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "invalid_ref",
+				message = "The 'base_ref' parameter is required",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	// File-list mode: return the flat list of changed files (name + status + +/-
 	// counts) instead of diff hunks. The response echoes "list_files":true and a
@@ -691,162 +1413,202 @@ bridge_vcs_commit_diff_json :: proc(command_id, text: string) -> string {
 	// tab renders the selector before loading any per-file diff.
 	if list_files {
 		if provider.commit_diff_files == nil {
-			strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-			strings.write_string(&b, "\",\"list_files\":true")
-			bridge_vcs_list_files_refs(&b, base_ref, head_ref)
-			strings.write_string(&b, ",\"files\":[]")
-			vcs_write_error(&b, "not_supported", "Commit diff file list is not supported by this provider")
-			strings.write_string(&b, "}")
-			return strings.to_string(b)
+			wire := Bridge_Vcs_Commit_Diff_Files_Result_Wire{
+				type       = "vcs_commit_diff_result",
+				command_id = cid,
+				ok         = false,
+				provider   = provider.name(),
+				list_files = true,
+				base_ref   = base_ref,
+				head_ref   = head_ref,
+				files      = []Bridge_Vcs_Commit_File_Wire{},
+				error      = Bridge_Vcs_Error_Wire{
+					code    = "not_supported",
+					message = "Commit diff file list is not supported by this provider",
+				},
+			}
+			data, err := json.marshal(wire, allocator = context.temp_allocator)
+			if err != nil do return ""
+			return strings.clone(string(data), allocator)
 		}
 		files, dok := provider.commit_diff_files(path, base_ref, head_ref)
 		if !dok {
-			strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-			strings.write_string(&b, "\",\"list_files\":true")
-			bridge_vcs_list_files_refs(&b, base_ref, head_ref)
-			strings.write_string(&b, ",\"files\":[]")
-			vcs_write_error(&b, "invalid_ref", "Could not diff the requested revisions")
-			strings.write_string(&b, "}")
-			return strings.to_string(b)
+			wire := Bridge_Vcs_Commit_Diff_Files_Result_Wire{
+				type       = "vcs_commit_diff_result",
+				command_id = cid,
+				ok         = false,
+				provider   = provider.name(),
+				list_files = true,
+				base_ref   = base_ref,
+				head_ref   = head_ref,
+				files      = []Bridge_Vcs_Commit_File_Wire{},
+				error      = Bridge_Vcs_Error_Wire{
+					code    = "invalid_ref",
+					message = "Could not diff the requested revisions",
+				},
+			}
+			data, err := json.marshal(wire, allocator = context.temp_allocator)
+			if err != nil do return ""
+			return strings.clone(string(data), allocator)
 		}
-		strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"list_files\":true")
-		bridge_vcs_list_files_refs(&b, base_ref, head_ref)
-		strings.write_string(&b, ",\"files\":[")
-		for f, i in files {
-			if i > 0 do strings.write_byte(&b, ',')
-			strings.write_string(&b, "{\"path\":\""); json_write_string(&b, f.path)
-			strings.write_string(&b, "\",\"status\":\""); json_write_string(&b, f.status)
-			strings.write_string(&b, "\",\"additions\":"); strings.write_string(&b, fmt.tprintf("%d", f.additions))
-			strings.write_string(&b, ",\"deletions\":"); strings.write_string(&b, fmt.tprintf("%d", f.deletions))
-			strings.write_byte(&b, '}')
+		wire := Bridge_Vcs_Commit_Diff_Files_Result_Wire{
+			type       = "vcs_commit_diff_result",
+			command_id = cid,
+			ok         = true,
+			provider   = provider.name(),
+			list_files = true,
+			base_ref   = base_ref,
+			head_ref   = head_ref,
+			files      = vcs_to_wire_commit_files(files),
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "",
+				message = "",
+			},
 		}
-		strings.write_string(&b, "]")
-		vcs_write_error(&b, "", "")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.commit_diff == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-		bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
-		strings.write_string(&b, ",\"hunks\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "not_supported", "Commit diff is not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
-	}
-	hunks, next_cursor, has_more, dok := provider.commit_diff(path, base_ref, head_ref, file, cursor, eff_limit)
-	if !dok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-		bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
-		strings.write_string(&b, ",\"hunks\":[],\"has_more\":false,\"next_cursor\":null")
-		vcs_write_error(&b, "invalid_ref", "Could not diff the requested revisions")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
-	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\",\"file\":\""); json_write_string(&b, file)
-	bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
-	strings.write_string(&b, ",\"has_more\":"); strings.write_string(&b, "true" if has_more else "false")
-	if next_cursor == "" {
-		strings.write_string(&b, ",\"next_cursor\":null")
-	} else {
-		strings.write_string(&b, ",\"next_cursor\":\""); json_write_string(&b, next_cursor); strings.write_string(&b, "\"")
-	}
-	strings.write_string(&b, ",\"hunks\":[")
-	for h, i in hunks {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"old_start\":"); strings.write_string(&b, fmt.tprintf("%d", h.old_start))
-		strings.write_string(&b, ",\"old_len\":"); strings.write_string(&b, fmt.tprintf("%d", h.old_len))
-		strings.write_string(&b, ",\"new_start\":"); strings.write_string(&b, fmt.tprintf("%d", h.new_start))
-		strings.write_string(&b, ",\"new_len\":"); strings.write_string(&b, fmt.tprintf("%d", h.new_len))
-		strings.write_string(&b, ",\"lines\":[")
-		for ln, j in h.lines {
-			if j > 0 do strings.write_byte(&b, ',')
-			strings.write_string(&b, "{\"op\":\""); json_write_string(&b, ln.op)
-			strings.write_string(&b, "\",\"text\":\""); json_write_string(&b, ln.text)
-			strings.write_string(&b, "\"}")
+		wire := Bridge_Vcs_Commit_Diff_Result_Wire{
+			type        = "vcs_commit_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			file        = file,
+			base_ref    = base_ref,
+			head_ref    = head_ref,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Commit diff is not supported by this provider",
+			},
 		}
-		strings.write_string(&b, "]}")
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
-}
-
-// bridge_vcs_commit_diff_meta writes the shared ,"base_ref":..,"head_ref":..,
-// "cursor":..,"limit":.. fields for every vcs_commit_diff response branch. Caller
-// has just written the "file" field; this appends the rest of the metadata.
-bridge_vcs_commit_diff_meta :: proc(b: ^strings.Builder, base_ref, head_ref, cursor: string, eff_limit: int) {
-	strings.write_string(b, "\",\"base_ref\":\""); json_write_string(b, base_ref)
-	strings.write_string(b, "\",\"head_ref\":\""); json_write_string(b, head_ref)
-	strings.write_string(b, "\",\"cursor\":\""); json_write_string(b, cursor)
-	strings.write_string(b, "\",\"limit\":"); strings.write_string(b, fmt.tprintf("%d", eff_limit))
-}
-
-// bridge_vcs_list_files_refs writes the ,"base_ref":..,"head_ref":.. pair for the
-// list_files-mode response. Unlike bridge_vcs_commit_diff_meta it does NOT start with
-// a closing quote (the file-list branches write a bare `,"list_files":true` token, not
-// an open string), and it omits the paginated-only cursor/limit fields which the flat
-// file list does not use.
-bridge_vcs_list_files_refs :: proc(b: ^strings.Builder, base_ref, head_ref: string) {
-	strings.write_string(b, ",\"base_ref\":\""); json_write_string(b, base_ref)
-	strings.write_string(b, "\",\"head_ref\":\""); json_write_string(b, head_ref)
-	strings.write_string(b, "\"")
+	hunks, next_cursor, has_more, dok := provider.commit_diff(path, base_ref, head_ref, file, cmd.cursor, eff_limit)
+	if !dok {
+		wire := Bridge_Vcs_Commit_Diff_Result_Wire{
+			type        = "vcs_commit_diff_result",
+			command_id  = cid,
+			ok          = false,
+			provider    = provider.name(),
+			file        = file,
+			base_ref    = base_ref,
+			head_ref    = head_ref,
+			cursor      = cmd.cursor,
+			limit       = eff_limit,
+			has_more    = false,
+			next_cursor = nil,
+			hunks       = []Bridge_Vcs_Diff_Hunk_Wire{},
+			error       = Bridge_Vcs_Error_Wire{
+				code    = "invalid_ref",
+				message = "Could not diff the requested revisions",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
+	}
+	next_cursor_val: Maybe(string) = next_cursor if next_cursor != "" else nil
+	wire := Bridge_Vcs_Commit_Diff_Result_Wire{
+		type        = "vcs_commit_diff_result",
+		command_id  = cid,
+		ok          = true,
+		provider    = provider.name(),
+		file        = file,
+		base_ref    = base_ref,
+		head_ref    = head_ref,
+		cursor      = cmd.cursor,
+		limit       = eff_limit,
+		has_more    = has_more,
+		next_cursor = next_cursor_val,
+		hunks       = vcs_to_wire_hunks(hunks),
+		error       = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
+	}
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
 
 // --- vcs_workspaces ------------------------------------------------------
 
-bridge_vcs_workspaces_json :: proc(command_id, text: string) -> string {
-	path := vcs_request_path(text)
+bridge_vcs_workspaces_json :: proc(command_id, text: string, allocator := context.allocator) -> string {
+	cmd: Bridge_Vcs_Workspaces_Command
+	_ = json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	cid := command_id if command_id != "" else cmd.command_id
+	path := vcs_request_path(cmd.root)
 	provider, ok := vcs_detect_provider(path)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"vcs_workspaces_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"workspaces\":[]")
-		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Workspaces_Result_Wire{
+			type       = "vcs_workspaces_result",
+			command_id = cid,
+			ok         = false,
+			provider   = "",
+			workspaces = []Bridge_Vcs_Workspace_Entry_Wire{},
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "no_vcs",
+				message = "No supported version control system found at path",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	if provider.list_workspaces == nil {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"workspaces\":[]")
-		vcs_write_error(&b, "not_supported", "Workspaces are not supported by this provider")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Workspaces_Result_Wire{
+			type       = "vcs_workspaces_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			workspaces = []Bridge_Vcs_Workspace_Entry_Wire{},
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "not_supported",
+				message = "Workspaces are not supported by this provider",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
 	workspaces, wok := provider.list_workspaces(path)
 	if !wok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
-		strings.write_string(&b, "\",\"workspaces\":[]")
-		vcs_write_error(&b, "workspaces_failed", "Could not list workspaces")
-		strings.write_string(&b, "}")
-		return strings.to_string(b)
+		wire := Bridge_Vcs_Workspaces_Result_Wire{
+			type       = "vcs_workspaces_result",
+			command_id = cid,
+			ok         = false,
+			provider   = provider.name(),
+			workspaces = []Bridge_Vcs_Workspace_Entry_Wire{},
+			error      = Bridge_Vcs_Error_Wire{
+				code    = "workspaces_failed",
+				message = "Could not list workspaces",
+			},
+		}
+		data, err := json.marshal(wire, allocator = context.temp_allocator)
+		if err != nil do return ""
+		return strings.clone(string(data), allocator)
 	}
-	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
-	strings.write_string(&b, "\",\"workspaces\":[")
-	for w, i in workspaces {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, w.path)
-		strings.write_string(&b, "\",\"label\":\""); json_write_string(&b, w.label)
-		strings.write_string(&b, "\",\"is_current\":"); strings.write_string(&b, "true" if w.is_current else "false")
-		strings.write_string(&b, ",\"is_locked\":"); strings.write_string(&b, "true" if w.is_locked else "false")
-		strings.write_string(&b, "}")
+	wire := Bridge_Vcs_Workspaces_Result_Wire{
+		type       = "vcs_workspaces_result",
+		command_id = cid,
+		ok         = true,
+		provider   = provider.name(),
+		workspaces = vcs_to_wire_workspaces(workspaces),
+		error      = Bridge_Vcs_Error_Wire{
+			code    = "",
+			message = "",
+		},
 	}
-	strings.write_string(&b, "]")
-	vcs_write_error(&b, "", "")
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	data, err := json.marshal(wire, allocator = context.temp_allocator)
+	if err != nil do return ""
+	return strings.clone(string(data), allocator)
 }
-
-// vcs_write_error appends the shared trailing ,"error":{"code":..,"message":..}
-// object used by every vcs_* result (empty code/message on success).
-vcs_write_error :: proc(b: ^strings.Builder, code, message: string) {
-	strings.write_string(b, ",\"error\":{\"code\":\""); json_write_string(b, code)
-	strings.write_string(b, "\",\"message\":\""); json_write_string(b, message)
-	strings.write_string(b, "\"}")
-}
-
-// vcs-panel-test: 2026-09-17T08:26:21Z

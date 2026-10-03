@@ -1,8 +1,10 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:strings"
 import "core:testing"
+import json "core:encoding/json"
 
 // Crash-regression + payload-correctness tests for the VCS bridge command
 // handlers. These feed the exact JSON payloads the hub sends (see
@@ -423,5 +425,250 @@ vcs_api_upload_failure_escapes_stderr :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `\"`), "quote in stderr escaped in the frame")
 	testing.expect(t, strings.contains(out, `\n`), "newline in stderr escaped in the frame")
 }
+
+// --- REQ-P2-VCS: Typed structs, key-ordering, whitespace, escaping, zero-leaks ---
+
+@(test)
+vcs_api_status_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_status_json("s1", `{"command_id":"s1","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"type":"vcs_status_result"`), "result type is vcs_status_result")
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root status ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root status -> no_vcs")
+}
+
+@(test)
+vcs_api_status_real_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_status_json("s2", `{"command_id":"s2","root":"."}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"type":"vcs_status_result"`), "result type is vcs_status_result")
+	testing.expect(t, strings.contains(out, `"ok":true`), "real repo status ok:true")
+	testing.expect(t, strings.contains(out, `"provider":"git"`), "provider resolves to git")
+	testing.expect(t, strings.contains(out, `"branch"`), "status contains branch")
+}
+
+@(test)
+vcs_api_key_ordering_resilience :: proc(t: ^testing.T) {
+	// Root before command_id
+	out1 := bridge_vcs_capabilities_json("", `{"root":"","command_id":"rev_1"}`)
+	defer delete(out1)
+	testing.expect(t, strings.contains(out1, `"command_id":"rev_1"`), "command_id extracted when at end")
+	testing.expect(t, strings.contains(out1, `"no_vcs"`), "root evaluated correctly")
+
+	// Limit and cursor before command_id and root
+	out2 := bridge_vcs_files_json("", `{"limit":42,"cursor":"cur_123","command_id":"rev_2","root":""}`)
+	defer delete(out2)
+	testing.expect(t, strings.contains(out2, `"command_id":"rev_2"`), "command_id extracted")
+	testing.expect(t, strings.contains(out2, `"cursor":"cur_123"`), "cursor extracted")
+	testing.expect(t, strings.contains(out2, `"limit":42`), "limit extracted")
+
+	// Commit command with message before root
+	repo := vcs_test_make_marker_repo("key-order-cm", ".git")
+	defer vcs_test_rm(repo)
+	out3 := bridge_vcs_commit_json("", fmt.tprintf(`{{"message":"","root":"%s","command_id":"rev_3"}}`, repo))
+	defer delete(out3)
+	testing.expect(t, strings.contains(out3, `"command_id":"rev_3"`), "command_id extracted")
+	testing.expect(t, strings.contains(out3, `"missing_message"`), "message evaluated correctly")
+}
+
+@(test)
+vcs_api_whitespace_tolerance :: proc(t: ^testing.T) {
+	payload := `
+	{
+		"type":        "vcs_files",
+		"command_id":  "ws_cmd_1",
+		"root":        "",
+		"cursor":      "page_1",
+		"limit":       25
+	}
+	`
+	out := bridge_vcs_files_json("", payload)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"command_id":"ws_cmd_1"`), "multiline formatted json parsed")
+	testing.expect(t, strings.contains(out, `"cursor":"page_1"`), "cursor preserved")
+	testing.expect(t, strings.contains(out, `"limit":25`), "limit preserved")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "error returned cleanly")
+}
+
+@(test)
+vcs_api_special_characters_commit_message :: proc(t: ^testing.T) {
+	raw := `{"command_id":"c_spec","root":".","message":"feat(core): \"quoted text\" \\ and \n newline \t tab and \u2764 unicode 🚀"}`
+	cmd: Bridge_Vcs_Commit_Command
+	err := json.unmarshal_string(raw, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshaling commit command succeeded")
+	testing.expect(t, strings.contains(cmd.message, `"quoted text"`), "quotes unescaped properly")
+	testing.expect(t, strings.contains(cmd.message, `\ and`), "backslash preserved properly")
+	testing.expect(t, strings.contains(cmd.message, "\n newline"), "newline decoded properly")
+	testing.expect(t, strings.contains(cmd.message, "❤"), "unicode decoded properly")
+	testing.expect(t, strings.contains(cmd.message, "🚀"), "multibyte utf-8 decoded properly")
+}
+
+@(test)
+vcs_api_special_characters_diff_hunks :: proc(t: ^testing.T) {
+	lines := make([]Bridge_Vcs_Diff_Line_Wire, 3, context.temp_allocator)
+	lines[0] = Bridge_Vcs_Diff_Line_Wire{op = "-", text = "func old() { return \"hello \\ world\"; }"}
+	lines[1] = Bridge_Vcs_Diff_Line_Wire{op = "+", text = "func new() { return \"hello \\ world \u2764 🚀\"; }"}
+	lines[2] = Bridge_Vcs_Diff_Line_Wire{op = " ", text = "var end = 0;"}
+	hunks := make([]Bridge_Vcs_Diff_Hunk_Wire, 1, context.temp_allocator)
+	hunks[0] = Bridge_Vcs_Diff_Hunk_Wire{
+		old_start = 1,
+		old_len   = 2,
+		new_start = 1,
+		new_len   = 2,
+		lines     = lines,
+	}
+	wire := Bridge_Vcs_Diff_Result_Wire{
+		type        = "vcs_diff_result",
+		command_id  = "cmd_spec_diff",
+		ok          = true,
+		provider    = "git",
+		file        = "src/special\"name\\path.odin",
+		cursor      = "",
+		limit       = 50,
+		has_more    = false,
+		next_cursor = nil,
+		hunks       = hunks,
+		error       = Bridge_Vcs_Error_Wire{code = "", message = ""},
+	}
+	data, merr := json.marshal(wire, allocator = context.temp_allocator)
+	testing.expect(t, merr == nil, "diff result marshaled successfully")
+	json_str := string(data)
+	testing.expect(t, strings.contains(json_str, `"src/special\"name\\path.odin"`), "file name quotes and backslashes escaped in json")
+	testing.expect(t, strings.contains(json_str, `\"hello \\ world`), "diff line escaped in json")
+
+	// Round-trip back into struct
+	decoded: Bridge_Vcs_Diff_Result_Wire
+	uerr := json.unmarshal_string(json_str, &decoded, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, uerr == nil, "diff result unmarshaled cleanly")
+	testing.expect(t, decoded.file == "src/special\"name\\path.odin", "file path round-tripped exactly")
+	testing.expect(t, len(decoded.hunks) == 1, "hunks length preserved")
+	testing.expect(t, decoded.hunks[0].lines[1].text == "func new() { return \"hello \\ world ❤ 🚀\"; }", "diff text round-tripped exactly")
+}
+
+@(test)
+vcs_api_zero_tracking_allocator_leaks :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+
+	context.allocator = mem.tracking_allocator(&track)
+
+	// Call each of the handlers and verify that deleting the result leaves 0 net allocated bytes
+	{
+		out := bridge_vcs_capabilities_json("t1", `{"command_id":"t1","root":""}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_status_json("t2", `{"command_id":"t2","root":""}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_files_json("t3", `{"command_id":"t3","root":"","cursor":"","limit":10}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_diff_json("t4", `{"command_id":"t4","root":"","file":"f.txt"}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_log_json("t5", `{"command_id":"t5","root":""}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_workspaces_json("t6", `{"command_id":"t6","root":""}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_stage_json("t7", `{"command_id":"t7","root":"","path":"a.txt"}`)
+		delete(out)
+	}
+	{
+		out := bridge_vcs_commit_diff_json("t8", `{"command_id":"t8","root":"","base_ref":"HEAD"}`)
+		delete(out)
+	}
+
+	testing.expect(t, len(track.allocation_map) == 0, fmt.tprintf("expected 0 leaks, got %d leaks", len(track.allocation_map)))
+	testing.expect(t, len(track.bad_free_array) == 0, fmt.tprintf("expected 0 bad frees, got %d bad frees", len(track.bad_free_array)))
+}
+
+@(test)
+vcs_api_wire_struct_roundtrips :: proc(t: ^testing.T) {
+	// Capabilities
+	caps_wire := Bridge_Vcs_Capabilities_Result_Wire{
+		type              = "vcs_capabilities_result",
+		command_id        = "c1",
+		ok                = true,
+		provider          = "git",
+		supports_staging  = true,
+		supports_amend    = true,
+		supports_upload   = true,
+		supports_sync     = true,
+		upload_label      = "Push",
+		sync_label        = "Pull",
+		staging_model     = "index",
+		commit_model      = "branch",
+		supported_actions = []string{"stage", "unstage", "commit"},
+		error             = Bridge_Vcs_Error_Wire{code = "", message = ""},
+	}
+	caps_json, _ := json.marshal(caps_wire, allocator = context.temp_allocator)
+	caps_dec: Bridge_Vcs_Capabilities_Result_Wire
+	_ = json.unmarshal_string(string(caps_json), &caps_dec, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, caps_dec.ok == true, "caps roundtrip ok")
+	testing.expect(t, caps_dec.upload_label == "Push", "caps roundtrip upload_label")
+	testing.expect(t, len(caps_dec.supported_actions) == 3, "caps roundtrip supported_actions")
+
+	// Status
+	stat_wire := Bridge_Vcs_Status_Result_Wire{
+		type       = "vcs_status_result",
+		command_id = "s1",
+		ok         = true,
+		provider   = "git",
+		branch     = "main",
+		remote     = "origin/main",
+		ahead      = 2,
+		behind     = 1,
+		is_clean   = false,
+		error      = Bridge_Vcs_Error_Wire{code = "", message = ""},
+	}
+	stat_json, _ := json.marshal(stat_wire, allocator = context.temp_allocator)
+	stat_dec: Bridge_Vcs_Status_Result_Wire
+	_ = json.unmarshal_string(string(stat_json), &stat_dec, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, stat_dec.ahead == 2, "status roundtrip ahead")
+	testing.expect(t, stat_dec.behind == 1, "status roundtrip behind")
+	testing.expect(t, stat_dec.branch == "main", "status roundtrip branch")
+
+	// Mutation
+	mut_wire := Bridge_Vcs_Mutation_Result_Wire{
+		type       = "vcs_commit_result",
+		command_id = "m1",
+		ok         = true,
+		provider   = "git",
+		error      = Bridge_Vcs_Error_Wire{code = "", message = ""},
+	}
+	mut_json, _ := json.marshal(mut_wire, allocator = context.temp_allocator)
+	mut_dec: Bridge_Vcs_Mutation_Result_Wire
+	_ = json.unmarshal_string(string(mut_json), &mut_dec, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, mut_dec.ok == true, "mutation roundtrip ok")
+	testing.expect(t, mut_dec.provider == "git", "mutation roundtrip provider")
+
+	// Workspaces
+	ws_wire := Bridge_Vcs_Workspaces_Result_Wire{
+		type       = "vcs_workspaces_result",
+		command_id = "w1",
+		ok         = true,
+		provider   = "git",
+		workspaces = []Bridge_Vcs_Workspace_Entry_Wire{
+			{path = "/tmp/repo", label = "main", is_current = true, is_locked = false},
+		},
+		error      = Bridge_Vcs_Error_Wire{code = "", message = ""},
+	}
+	ws_json, _ := json.marshal(ws_wire, allocator = context.temp_allocator)
+	ws_dec: Bridge_Vcs_Workspaces_Result_Wire
+	_ = json.unmarshal_string(string(ws_json), &ws_dec, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	testing.expect(t, len(ws_dec.workspaces) == 1, "workspaces roundtrip count")
+	testing.expect(t, ws_dec.workspaces[0].is_current == true, "workspaces roundtrip is_current")
+}
+
 
 
