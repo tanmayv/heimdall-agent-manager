@@ -89,6 +89,180 @@ Bridge_Provider_Override :: struct {
 	activity_max_gap_set: bool,
 }
 
+Bridge_Provider_Models_Wire :: struct {
+	flag:   Maybe(string) `json:"flag,omitempty"`,
+	cheap:  Maybe(string) `json:"cheap,omitempty"`,
+	normal: Maybe(string) `json:"normal,omitempty"`,
+	smart:  Maybe(string) `json:"smart,omitempty"`,
+}
+
+Bridge_Provider_Startup_Detection_Wire :: struct {
+	enabled:                    Maybe(bool)     `json:"enabled,omitempty"`,
+	startup_probe_seconds:      Maybe(int)      `json:"startup_probe_seconds,omitempty"`,
+	capture_interval_ms:        Maybe(int)      `json:"capture_interval_ms,omitempty"`,
+	blocked_patterns:           Maybe([]string) `json:"blocked_patterns,omitempty"`,
+	auto_enter_patterns:        Maybe([]string) `json:"auto_enter_patterns,omitempty"`,
+	auto_enter_pre_keys:        Maybe([]string) `json:"auto_enter_pre_keys,omitempty"`,
+	startup_unknown_is_blocked: Maybe(bool)     `json:"startup_unknown_is_blocked,omitempty"`,
+	sanitized_reason_mapping:   Maybe([]string) `json:"sanitized_reason_mapping,omitempty"`,
+}
+
+Bridge_Provider_Activity_Detection_Wire :: struct {
+	enabled:                Maybe(bool) `json:"enabled,omitempty"`,
+	sample_line_count:      Maybe(int)  `json:"sample_line_count,omitempty"`,
+	ignore_bottom_lines:    Maybe(int)  `json:"ignore_bottom_lines,omitempty"`,
+	check_interval_seconds: Maybe(int)  `json:"check_interval_seconds,omitempty"`,
+	min_gap_ms:             Maybe(int)  `json:"min_gap_ms,omitempty"`,
+	max_gap_ms:             Maybe(int)  `json:"max_gap_ms,omitempty"`,
+}
+
+Bridge_Provider_Override_Wire :: struct {
+	name:                 string                                        `json:"name"`,
+	enabled:              Maybe(bool)                                   `json:"enabled,omitempty"`,
+	command:              Maybe([]string)                               `json:"command,omitempty"`,
+	yolo_flags:           Maybe([]string)                               `json:"yolo_flags,omitempty"`,
+	prompt_flags:         Maybe([]string)                               `json:"prompt_flags,omitempty"`,
+	starter_prompt:       Maybe(string)                                 `json:"starter_prompt,omitempty"`,
+	prompt_delivery:      Maybe(string)                                 `json:"prompt_delivery,omitempty"`,
+	prompt_tmux_delay_ms: Maybe(int)                                    `json:"prompt_tmux_delay_ms,omitempty"`,
+	prompt_tmux_enter:    Maybe(bool)                                   `json:"prompt_tmux_enter,omitempty"`,
+	agent_run_dir:        Maybe(string)                                 `json:"agent_run_dir,omitempty"`,
+	use_random_dir:       Maybe(bool)                                   `json:"use_random_dir,omitempty"`,
+	skill_dir:            Maybe(string)                                 `json:"skill_dir,omitempty"`,
+	bootstrap_file_name:  Maybe(string)                                 `json:"bootstrap_file_name,omitempty"`,
+	logo:                 Maybe(string)                                 `json:"logo,omitempty"`,
+	models:               Maybe(Bridge_Provider_Models_Wire)            `json:"models,omitempty"`,
+	startup_detection:    Maybe(Bridge_Provider_Startup_Detection_Wire) `json:"startup_detection,omitempty"`,
+	activity_detection:   Maybe(Bridge_Provider_Activity_Detection_Wire)`json:"activity_detection,omitempty"`,
+}
+
+Bridge_Provider_Store_Wire :: struct {
+	default_provider: string                         `json:"default_provider"`,
+	default_tier:     string                         `json:"default_tier"`,
+	providers:        []Bridge_Provider_Override_Wire `json:"providers"`,
+}
+
+bridge_provider_override_to_wire :: proc(override: Bridge_Provider_Override) -> Bridge_Provider_Override_Wire {
+	w: Bridge_Provider_Override_Wire
+	w.name = override.name
+	if override.enabled_set do w.enabled = override.enabled
+	if override.command_set do w.command = override.command
+	if override.yolo_flags_set do w.yolo_flags = override.yolo_flags
+	if override.prompt_flags_set do w.prompt_flags = override.prompt_flags
+	if override.starter_prompt_set do w.starter_prompt = override.starter_prompt
+	if override.prompt_delivery_set do w.prompt_delivery = override.prompt_delivery
+	if override.prompt_tmux_delay_ms_set do w.prompt_tmux_delay_ms = override.prompt_tmux_delay_ms
+	if override.prompt_tmux_enter_set do w.prompt_tmux_enter = override.prompt_tmux_enter
+	if override.agent_run_dir_set do w.agent_run_dir = override.agent_run_dir
+	if override.use_random_dir_set do w.use_random_dir = override.use_random_dir
+	if override.skill_dir_set do w.skill_dir = override.skill_dir
+	if override.bootstrap_file_name_set do w.bootstrap_file_name = override.bootstrap_file_name
+	if override.logo_set do w.logo = override.logo
+
+	if bridge_provider_override_has_models(override) {
+		mw: Bridge_Provider_Models_Wire
+		if override.models_flag_set do mw.flag = override.models.flag
+		if override.models_cheap_set do mw.cheap = override.models.cheap
+		if override.models_normal_set do mw.normal = override.models.normal
+		if override.models_smart_set do mw.smart = override.models.smart
+		w.models = mw
+	}
+
+	if bridge_provider_override_has_startup(override) {
+		sw: Bridge_Provider_Startup_Detection_Wire
+		if override.startup_enabled_set do sw.enabled = override.startup_detection.enabled
+		if override.startup_probe_set do sw.startup_probe_seconds = override.startup_detection.startup_probe_seconds
+		if override.startup_capture_set do sw.capture_interval_ms = override.startup_detection.capture_interval_ms
+		if override.startup_blocked_patterns_set do sw.blocked_patterns = override.startup_detection.blocked_patterns
+		if override.startup_auto_enter_patterns_set do sw.auto_enter_patterns = override.startup_detection.auto_enter_patterns
+		if override.startup_auto_enter_pre_keys_set do sw.auto_enter_pre_keys = override.startup_detection.auto_enter_pre_keys
+		if override.startup_unknown_blocked_set do sw.startup_unknown_is_blocked = override.startup_detection.startup_unknown_is_blocked
+		if override.startup_reason_mapping_set do sw.sanitized_reason_mapping = override.startup_detection.sanitized_reason_mapping
+		w.startup_detection = sw
+	}
+
+	if bridge_provider_override_has_activity(override) {
+		aw: Bridge_Provider_Activity_Detection_Wire
+		if override.activity_enabled_set do aw.enabled = override.activity_detection.enabled
+		if override.activity_sample_lines_set do aw.sample_line_count = override.activity_detection.sample_line_count
+		if override.activity_ignore_bottom_set do aw.ignore_bottom_lines = override.activity_detection.ignore_bottom_lines
+		if override.activity_check_interval_set do aw.check_interval_seconds = override.activity_detection.check_interval_seconds
+		if override.activity_min_gap_set do aw.min_gap_ms = override.activity_detection.min_gap_ms
+		if override.activity_max_gap_set do aw.max_gap_ms = override.activity_detection.max_gap_ms
+		w.activity_detection = aw
+	}
+
+	return w
+}
+
+bridge_provider_override_from_wire :: proc(wire: Bridge_Provider_Override_Wire, fallback_name: string = "", allocator := context.allocator) -> (Bridge_Provider_Override, bool) {
+	o: Bridge_Provider_Override
+	name := wire.name
+	if strings.trim_space(name) == "" {
+		name = fallback_name
+	}
+	if strings.trim_space(name) == "" {
+		return o, false
+	}
+	o.name = strings.clone(name, allocator)
+
+	if v, ok := wire.enabled.?; ok { o.enabled = v; o.enabled_set = true }
+	if v, ok := wire.command.?; ok { o.command = bridge_clone_string_slice(v, allocator); o.command_set = true }
+	if v, ok := wire.yolo_flags.?; ok { o.yolo_flags = bridge_clone_string_slice(v, allocator); o.yolo_flags_set = true }
+	if v, ok := wire.prompt_flags.?; ok { o.prompt_flags = bridge_clone_string_slice(v, allocator); o.prompt_flags_set = true }
+	if v, ok := wire.starter_prompt.?; ok { o.starter_prompt = strings.clone(v, allocator); o.starter_prompt_set = true }
+	if v, ok := wire.prompt_delivery.?; ok { o.prompt_delivery = strings.clone(v, allocator); o.prompt_delivery_set = true }
+	if v, ok := wire.prompt_tmux_delay_ms.?; ok { o.prompt_tmux_delay_ms = v; o.prompt_tmux_delay_ms_set = true }
+	if v, ok := wire.prompt_tmux_enter.?; ok { o.prompt_tmux_enter = v; o.prompt_tmux_enter_set = true }
+	if v, ok := wire.agent_run_dir.?; ok {
+		expanded := bridge_expand_home(v)
+		if expanded != v {
+			o.agent_run_dir = strings.clone(expanded, allocator)
+			delete(expanded)
+		} else {
+			o.agent_run_dir = strings.clone(v, allocator)
+		}
+		o.agent_run_dir_set = true
+	}
+	if v, ok := wire.use_random_dir.?; ok { o.use_random_dir = v; o.use_random_dir_set = true }
+	if v, ok := wire.skill_dir.?; ok { o.skill_dir = strings.clone(v, allocator); o.skill_dir_set = true }
+	if v, ok := wire.bootstrap_file_name.?; ok {
+		trimmed := strings.trim_space(v)
+		o.bootstrap_file_name = strings.clone(trimmed, allocator)
+		o.bootstrap_file_name_set = true
+	}
+	if v, ok := wire.logo.?; ok { o.logo = strings.clone(v, allocator); o.logo_set = true }
+
+	if mw, ok := wire.models.?; ok {
+		if v, got := mw.flag.?; got { o.models.flag = strings.clone(v, allocator); o.models_flag_set = true }
+		if v, got := mw.cheap.?; got { o.models.cheap = strings.clone(v, allocator); o.models_cheap_set = true }
+		if v, got := mw.normal.?; got { o.models.normal = strings.clone(v, allocator); o.models_normal_set = true }
+		if v, got := mw.smart.?; got { o.models.smart = strings.clone(v, allocator); o.models_smart_set = true }
+	}
+
+	if sd, ok := wire.startup_detection.?; ok {
+		if v, got := sd.enabled.?; got { o.startup_detection.enabled = v; o.startup_enabled_set = true }
+		if v, got := sd.startup_probe_seconds.?; got { o.startup_detection.startup_probe_seconds = v; o.startup_probe_set = true }
+		if v, got := sd.capture_interval_ms.?; got { o.startup_detection.capture_interval_ms = v; o.startup_capture_set = true }
+		if v, got := sd.blocked_patterns.?; got { o.startup_detection.blocked_patterns = bridge_clone_string_slice(v, allocator); o.startup_blocked_patterns_set = true }
+		if v, got := sd.auto_enter_patterns.?; got { o.startup_detection.auto_enter_patterns = bridge_clone_string_slice(v, allocator); o.startup_auto_enter_patterns_set = true }
+		if v, got := sd.auto_enter_pre_keys.?; got { o.startup_detection.auto_enter_pre_keys = bridge_clone_string_slice(v, allocator); o.startup_auto_enter_pre_keys_set = true }
+		if v, got := sd.startup_unknown_is_blocked.?; got { o.startup_detection.startup_unknown_is_blocked = v; o.startup_unknown_blocked_set = true }
+		if v, got := sd.sanitized_reason_mapping.?; got { o.startup_detection.sanitized_reason_mapping = bridge_clone_string_slice(v, allocator); o.startup_reason_mapping_set = true }
+	}
+
+	if ad, ok := wire.activity_detection.?; ok {
+		if v, got := ad.enabled.?; got { o.activity_detection.enabled = v; o.activity_enabled_set = true }
+		if v, got := ad.sample_line_count.?; got { o.activity_detection.sample_line_count = v; o.activity_sample_lines_set = true }
+		if v, got := ad.ignore_bottom_lines.?; got { o.activity_detection.ignore_bottom_lines = v; o.activity_ignore_bottom_set = true }
+		if v, got := ad.check_interval_seconds.?; got { o.activity_detection.check_interval_seconds = v; o.activity_check_interval_set = true }
+		if v, got := ad.min_gap_ms.?; got { o.activity_detection.min_gap_ms = v; o.activity_min_gap_set = true }
+		if v, got := ad.max_gap_ms.?; got { o.activity_detection.max_gap_ms = v; o.activity_max_gap_set = true }
+	}
+
+	return o, true
+}
+
 bridge_provider_mutex: sync.Mutex
 bridge_provider_store_loaded: bool
 bridge_provider_store_path_value: string
@@ -179,14 +353,31 @@ bridge_provider_load_unlocked :: proc() {
 	if strings.trim_space(path) == "" do return
 	raw, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return
+	defer delete(raw)
 	body := string(raw)
-	bridge_provider_default_provider_value = bridge_provider_json_extract_string(body, "default_provider", "")
-	bridge_provider_default_tier_value = bridge_provider_json_extract_string(body, "default_tier", "")
-	providers_array, ok := bridge_provider_json_extract_array(body, "providers")
-	if !ok do return
-	objects := bridge_provider_json_top_level_objects(providers_array)
-	for obj in objects {
-		override, override_ok := bridge_provider_override_from_json(obj)
+
+	store_wire: Bridge_Provider_Store_Wire
+	if uerr := json.unmarshal_string(body, &store_wire, json.DEFAULT_SPECIFICATION, context.temp_allocator); uerr != nil {
+		return
+	}
+
+	if bridge_provider_default_provider_value != "" {
+		delete(bridge_provider_default_provider_value)
+		bridge_provider_default_provider_value = ""
+	}
+	if bridge_provider_default_tier_value != "" {
+		delete(bridge_provider_default_tier_value)
+		bridge_provider_default_tier_value = ""
+	}
+	if len(store_wire.default_provider) > 0 {
+		bridge_provider_default_provider_value = strings.clone(store_wire.default_provider)
+	}
+	if len(store_wire.default_tier) > 0 {
+		bridge_provider_default_tier_value = strings.clone(store_wire.default_tier)
+	}
+
+	for wire in store_wire.providers {
+		override, override_ok := bridge_provider_override_from_wire(wire, "", context.allocator)
 		if !override_ok do continue
 		bridge_provider_upsert_override_unlocked(override)
 	}
@@ -211,19 +402,30 @@ bridge_provider_save_overrides :: proc() -> bool {
 	path := bridge_provider_store_path_value
 	if strings.trim_space(path) == "" do return false
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
-	b := strings.builder_make()
-	strings.write_string(&b, "{\n  \"default_provider\": \""); json_write_string(&b, bridge_provider_default_provider_value)
-	strings.write_string(&b, "\",\n  \"default_tier\": \""); json_write_string(&b, bridge_provider_default_tier_value)
-	strings.write_string(&b, "\",\n  \"providers\": [")
+
+	wire_providers := make([]Bridge_Provider_Override_Wire, len(bridge_provider_overrides), context.temp_allocator)
 	for override, i in bridge_provider_overrides {
-		if i > 0 do strings.write_string(&b, ",")
-		strings.write_string(&b, "\n    ")
-		bridge_provider_write_override_json(&b, override)
+		wire_providers[i] = bridge_provider_override_to_wire(override)
 	}
-	strings.write_string(&b, "\n  ]\n}\n")
-	content := strings.to_string(b)
-	tmp := strings.concatenate({path, ".tmp"})
-	if os.write_entire_file(tmp, content) != nil do return false
+
+	store_wire := Bridge_Provider_Store_Wire{
+		default_provider = bridge_provider_default_provider_value,
+		default_tier     = bridge_provider_default_tier_value,
+		providers        = wire_providers,
+	}
+
+	opt := json.Marshal_Options{
+		pretty           = true,
+		use_spaces       = true,
+		spaces           = 2,
+		sort_maps_by_key = true,
+	}
+	bytes, merr := json.marshal(store_wire, opt, context.temp_allocator)
+	if merr != nil do return false
+
+	payload := strings.concatenate({string(bytes), "\n"}, context.temp_allocator)
+	tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
+	if os.write_entire_file(tmp, transmute([]byte)payload) != nil do return false
 	if os.rename(tmp, path) != nil {
 		_ = os.remove(tmp)
 		return false
@@ -493,44 +695,14 @@ bridge_provider_source_string :: proc(source: Bridge_Provider_Source) -> string 
 }
 
 bridge_provider_write_override_json :: proc(b: ^strings.Builder, override: Bridge_Provider_Override) {
-	strings.write_byte(b, '{')
-	first := true
-	bridge_provider_write_json_field_prefix(b, &first, "name")
-	strings.write_byte(b, '"'); json_write_string(b, override.name); strings.write_byte(b, '"')
-	if override.enabled_set { bridge_provider_write_json_field_prefix(b, &first, "enabled"); strings.write_string(b, "true" if override.enabled else "false") }
-	if override.command_set { bridge_provider_write_json_field_prefix(b, &first, "command"); bridge_provider_write_string_array_json(b, override.command) }
-	if override.prompt_flags_set { bridge_provider_write_json_field_prefix(b, &first, "prompt_flags"); bridge_provider_write_string_array_json(b, override.prompt_flags) }
-	if override.yolo_flags_set { bridge_provider_write_json_field_prefix(b, &first, "yolo_flags"); bridge_provider_write_string_array_json(b, override.yolo_flags) }
-	if override.starter_prompt_set { bridge_provider_write_json_field_prefix(b, &first, "starter_prompt"); strings.write_byte(b, '"'); json_write_string(b, override.starter_prompt); strings.write_byte(b, '"') }
-	if override.prompt_delivery_set { bridge_provider_write_json_field_prefix(b, &first, "prompt_delivery"); strings.write_byte(b, '"'); json_write_string(b, override.prompt_delivery); strings.write_byte(b, '"') }
-	if override.prompt_tmux_delay_ms_set { bridge_provider_write_json_field_prefix(b, &first, "prompt_tmux_delay_ms"); strings.write_string(b, fmt.tprintf("%d", override.prompt_tmux_delay_ms)) }
-	if override.prompt_tmux_enter_set { bridge_provider_write_json_field_prefix(b, &first, "prompt_tmux_enter"); strings.write_string(b, "true" if override.prompt_tmux_enter else "false") }
-	if override.agent_run_dir_set { bridge_provider_write_json_field_prefix(b, &first, "agent_run_dir"); strings.write_byte(b, '"'); json_write_string(b, override.agent_run_dir); strings.write_byte(b, '"') }
-	if override.use_random_dir_set { bridge_provider_write_json_field_prefix(b, &first, "use_random_dir"); strings.write_string(b, "true" if override.use_random_dir else "false") }
-	if override.skill_dir_set { bridge_provider_write_json_field_prefix(b, &first, "skill_dir"); strings.write_byte(b, '"'); json_write_string(b, override.skill_dir); strings.write_byte(b, '"') }
-	if override.bootstrap_file_name_set { bridge_provider_write_json_field_prefix(b, &first, "bootstrap_file_name"); strings.write_byte(b, '"'); json_write_string(b, override.bootstrap_file_name); strings.write_byte(b, '"') }
-	if override.logo_set { bridge_provider_write_json_field_prefix(b, &first, "logo"); strings.write_byte(b, '"'); json_write_string(b, override.logo); strings.write_byte(b, '"') }
-	if bridge_provider_override_has_models(override) {
-		bridge_provider_write_json_field_prefix(b, &first, "models")
-		bridge_provider_write_override_models_json(b, override)
+	wire := bridge_provider_override_to_wire(override)
+	opt := json.Marshal_Options{
+		sort_maps_by_key = true,
 	}
-	if bridge_provider_override_has_startup(override) {
-		bridge_provider_write_json_field_prefix(b, &first, "startup_detection")
-		bridge_provider_write_override_startup_json(b, override)
+	bytes, merr := json.marshal(wire, opt, context.temp_allocator)
+	if merr == nil {
+		strings.write_string(b, string(bytes))
 	}
-	if bridge_provider_override_has_activity(override) {
-		bridge_provider_write_json_field_prefix(b, &first, "activity_detection")
-		bridge_provider_write_override_activity_json(b, override)
-	}
-	strings.write_byte(b, '}')
-}
-
-bridge_provider_write_json_field_prefix :: proc(b: ^strings.Builder, first: ^bool, key: string) {
-	if !first^ do strings.write_byte(b, ',')
-	first^ = false
-	strings.write_byte(b, '"')
-	json_write_string(b, key)
-	strings.write_string(b, "\":")
 }
 
 bridge_provider_override_has_models :: proc(override: Bridge_Provider_Override) -> bool {
@@ -545,41 +717,6 @@ bridge_provider_override_has_activity :: proc(override: Bridge_Provider_Override
 	return override.activity_enabled_set || override.activity_sample_lines_set || override.activity_ignore_bottom_set || override.activity_check_interval_set || override.activity_min_gap_set || override.activity_max_gap_set
 }
 
-bridge_provider_write_override_models_json :: proc(b: ^strings.Builder, override: Bridge_Provider_Override) {
-	strings.write_byte(b, '{')
-	first := true
-	if override.models_flag_set { bridge_provider_write_json_field_prefix(b, &first, "flag"); strings.write_byte(b, '"'); json_write_string(b, override.models.flag); strings.write_byte(b, '"') }
-	if override.models_cheap_set { bridge_provider_write_json_field_prefix(b, &first, "cheap"); strings.write_byte(b, '"'); json_write_string(b, override.models.cheap); strings.write_byte(b, '"') }
-	if override.models_normal_set { bridge_provider_write_json_field_prefix(b, &first, "normal"); strings.write_byte(b, '"'); json_write_string(b, override.models.normal); strings.write_byte(b, '"') }
-	if override.models_smart_set { bridge_provider_write_json_field_prefix(b, &first, "smart"); strings.write_byte(b, '"'); json_write_string(b, override.models.smart); strings.write_byte(b, '"') }
-	strings.write_byte(b, '}')
-}
-
-bridge_provider_write_override_startup_json :: proc(b: ^strings.Builder, override: Bridge_Provider_Override) {
-	strings.write_byte(b, '{')
-	first := true
-	if override.startup_enabled_set { bridge_provider_write_json_field_prefix(b, &first, "enabled"); strings.write_string(b, "true" if override.startup_detection.enabled else "false") }
-	if override.startup_probe_set { bridge_provider_write_json_field_prefix(b, &first, "startup_probe_seconds"); strings.write_string(b, fmt.tprintf("%d", override.startup_detection.startup_probe_seconds)) }
-	if override.startup_capture_set { bridge_provider_write_json_field_prefix(b, &first, "capture_interval_ms"); strings.write_string(b, fmt.tprintf("%d", override.startup_detection.capture_interval_ms)) }
-	if override.startup_blocked_patterns_set { bridge_provider_write_json_field_prefix(b, &first, "blocked_patterns"); bridge_provider_write_string_array_json(b, override.startup_detection.blocked_patterns) }
-	if override.startup_auto_enter_patterns_set { bridge_provider_write_json_field_prefix(b, &first, "auto_enter_patterns"); bridge_provider_write_string_array_json(b, override.startup_detection.auto_enter_patterns) }
-	if override.startup_auto_enter_pre_keys_set { bridge_provider_write_json_field_prefix(b, &first, "auto_enter_pre_keys"); bridge_provider_write_string_array_json(b, override.startup_detection.auto_enter_pre_keys) }
-	if override.startup_unknown_blocked_set { bridge_provider_write_json_field_prefix(b, &first, "startup_unknown_is_blocked"); strings.write_string(b, "true" if override.startup_detection.startup_unknown_is_blocked else "false") }
-	if override.startup_reason_mapping_set { bridge_provider_write_json_field_prefix(b, &first, "sanitized_reason_mapping"); bridge_provider_write_string_array_json(b, override.startup_detection.sanitized_reason_mapping) }
-	strings.write_byte(b, '}')
-}
-
-bridge_provider_write_override_activity_json :: proc(b: ^strings.Builder, override: Bridge_Provider_Override) {
-	strings.write_byte(b, '{')
-	first := true
-	if override.activity_enabled_set { bridge_provider_write_json_field_prefix(b, &first, "enabled"); strings.write_string(b, "true" if override.activity_detection.enabled else "false") }
-	if override.activity_sample_lines_set { bridge_provider_write_json_field_prefix(b, &first, "sample_line_count"); strings.write_string(b, fmt.tprintf("%d", override.activity_detection.sample_line_count)) }
-	if override.activity_ignore_bottom_set { bridge_provider_write_json_field_prefix(b, &first, "ignore_bottom_lines"); strings.write_string(b, fmt.tprintf("%d", override.activity_detection.ignore_bottom_lines)) }
-	if override.activity_check_interval_set { bridge_provider_write_json_field_prefix(b, &first, "check_interval_seconds"); strings.write_string(b, fmt.tprintf("%d", override.activity_detection.check_interval_seconds)) }
-	if override.activity_min_gap_set { bridge_provider_write_json_field_prefix(b, &first, "min_gap_ms"); strings.write_string(b, fmt.tprintf("%d", override.activity_detection.min_gap_ms)) }
-	if override.activity_max_gap_set { bridge_provider_write_json_field_prefix(b, &first, "max_gap_ms"); strings.write_string(b, fmt.tprintf("%d", override.activity_detection.max_gap_ms)) }
-	strings.write_byte(b, '}')
-}
 
 bridge_provider_write_models_json :: proc(b: ^strings.Builder, models: cfg_lib.Model_Tiers_Config) {
 	strings.write_string(b, "{\"flag\":\""); json_write_string(b, models.flag)
@@ -622,62 +759,16 @@ bridge_provider_write_string_array_json :: proc(b: ^strings.Builder, values: []s
 	strings.write_byte(b, ']')
 }
 
-bridge_provider_override_from_json :: proc(obj: string) -> (Bridge_Provider_Override, bool) {
-	return bridge_provider_override_from_json_with_name(obj, "")
+bridge_provider_override_from_json :: proc(obj: string, allocator := context.allocator) -> (Bridge_Provider_Override, bool) {
+	return bridge_provider_override_from_json_with_name(obj, "", allocator)
 }
 
-bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string) -> (Bridge_Provider_Override, bool) {
-	o: Bridge_Provider_Override
-	o.name = bridge_provider_json_extract_string(obj, "name", fallback_name)
-	if strings.trim_space(o.name) == "" do return o, false
-	if v, ok := bridge_provider_json_extract_bool(obj, "enabled"); ok { o.enabled = v; o.enabled_set = true }
-	if v, ok := bridge_provider_json_extract_string_array(obj, "command"); ok { o.command = v; o.command_set = true }
-	if v, ok := bridge_provider_json_extract_string_array(obj, "yolo_flags"); ok { o.yolo_flags = v; o.yolo_flags_set = true }
-	if v, ok := bridge_provider_json_extract_string_array(obj, "prompt_flags"); ok { o.prompt_flags = v; o.prompt_flags_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "starter_prompt"); ok { o.starter_prompt = v; o.starter_prompt_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "prompt_delivery"); ok { o.prompt_delivery = v; o.prompt_delivery_set = true }
-	if v, ok := bridge_provider_json_extract_int(obj, "prompt_tmux_delay_ms"); ok { o.prompt_tmux_delay_ms = v; o.prompt_tmux_delay_ms_set = true }
-	if v, ok := bridge_provider_json_extract_bool(obj, "prompt_tmux_enter"); ok { o.prompt_tmux_enter = v; o.prompt_tmux_enter_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "agent_run_dir"); ok {
-		expanded := bridge_expand_home(v)
-		if expanded != v do delete(v)
-		o.agent_run_dir = expanded
-		o.agent_run_dir_set = true
+bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string, allocator := context.allocator) -> (Bridge_Provider_Override, bool) {
+	wire: Bridge_Provider_Override_Wire
+	if err := json.unmarshal_string(obj, &wire, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+		return {}, false
 	}
-	if v, ok := bridge_provider_json_extract_bool(obj, "use_random_dir"); ok { o.use_random_dir = v; o.use_random_dir_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "skill_dir"); ok { o.skill_dir = v; o.skill_dir_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "bootstrap_file_name"); ok {
-		trimmed := strings.trim_space(v)
-		o.bootstrap_file_name = strings.clone(trimmed)
-		delete(v)
-		o.bootstrap_file_name_set = true
-	}
-	if v, ok := bridge_provider_json_extract_string_set(obj, "logo"); ok { o.logo = v; o.logo_set = true }
-	if models_obj, ok := bridge_provider_json_extract_object(obj, "models"); ok {
-		if v, got := bridge_provider_json_extract_string_set(models_obj, "flag"); got { o.models.flag = v; o.models_flag_set = true }
-		if v, got := bridge_provider_json_extract_string_set(models_obj, "cheap"); got { o.models.cheap = v; o.models_cheap_set = true }
-		if v, got := bridge_provider_json_extract_string_set(models_obj, "normal"); got { o.models.normal = v; o.models_normal_set = true }
-		if v, got := bridge_provider_json_extract_string_set(models_obj, "smart"); got { o.models.smart = v; o.models_smart_set = true }
-	}
-	if sd_obj, ok := bridge_provider_json_extract_object(obj, "startup_detection"); ok {
-		if v, got := bridge_provider_json_extract_bool(sd_obj, "enabled"); got { o.startup_detection.enabled = v; o.startup_enabled_set = true }
-		if v, got := bridge_provider_json_extract_int(sd_obj, "startup_probe_seconds"); got { o.startup_detection.startup_probe_seconds = v; o.startup_probe_set = true }
-		if v, got := bridge_provider_json_extract_int(sd_obj, "capture_interval_ms"); got { o.startup_detection.capture_interval_ms = v; o.startup_capture_set = true }
-		if v, got := bridge_provider_json_extract_string_array(sd_obj, "blocked_patterns"); got { o.startup_detection.blocked_patterns = v; o.startup_blocked_patterns_set = true }
-		if v, got := bridge_provider_json_extract_string_array(sd_obj, "auto_enter_patterns"); got { o.startup_detection.auto_enter_patterns = v; o.startup_auto_enter_patterns_set = true }
-		if v, got := bridge_provider_json_extract_string_array(sd_obj, "auto_enter_pre_keys"); got { o.startup_detection.auto_enter_pre_keys = v; o.startup_auto_enter_pre_keys_set = true }
-		if v, got := bridge_provider_json_extract_bool(sd_obj, "startup_unknown_is_blocked"); got { o.startup_detection.startup_unknown_is_blocked = v; o.startup_unknown_blocked_set = true }
-		if v, got := bridge_provider_json_extract_string_array(sd_obj, "sanitized_reason_mapping"); got { o.startup_detection.sanitized_reason_mapping = v; o.startup_reason_mapping_set = true }
-	}
-	if ad_obj, ok := bridge_provider_json_extract_object(obj, "activity_detection"); ok {
-		if v, got := bridge_provider_json_extract_bool(ad_obj, "enabled"); got { o.activity_detection.enabled = v; o.activity_enabled_set = true }
-		if v, got := bridge_provider_json_extract_int(ad_obj, "sample_line_count"); got { o.activity_detection.sample_line_count = v; o.activity_sample_lines_set = true }
-		if v, got := bridge_provider_json_extract_int(ad_obj, "ignore_bottom_lines"); got { o.activity_detection.ignore_bottom_lines = v; o.activity_ignore_bottom_set = true }
-		if v, got := bridge_provider_json_extract_int(ad_obj, "check_interval_seconds"); got { o.activity_detection.check_interval_seconds = v; o.activity_check_interval_set = true }
-		if v, got := bridge_provider_json_extract_int(ad_obj, "min_gap_ms"); got { o.activity_detection.min_gap_ms = v; o.activity_min_gap_set = true }
-		if v, got := bridge_provider_json_extract_int(ad_obj, "max_gap_ms"); got { o.activity_detection.max_gap_ms = v; o.activity_max_gap_set = true }
-	}
-	return o, true
+	return bridge_provider_override_from_wire(wire, fallback_name, allocator)
 }
 
 bridge_provider_upsert_override_json :: proc(name, body: string) -> (Bridge_Provider_Profile, bool, string) {
@@ -727,43 +818,52 @@ bridge_provider_delete_override :: proc(name: string) -> (bool, string) {
 	return true, ""
 }
 
+// Deprecated: Retained for task_scheduler.odin until migrated to typed structs.
 bridge_provider_json_extract_string :: proc(json, key, fallback: string) -> string {
 	value, ok := bridge_provider_json_extract_string_set(json, key)
 	if !ok do return fallback
 	return value
 }
 
+// Deprecated: Retained for backward compatibility.
 bridge_provider_json_extract_string_set :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
 	return jsonx.extract_string_found(json, key, false, allocator)
 }
 
+// Deprecated: Retained for backward compatibility.
 bridge_provider_json_extract_bool :: proc(json, key: string) -> (bool, bool) {
 	return jsonx.extract_bool_found(json, key)
 }
 
+// Deprecated: Retained for backward compatibility.
 bridge_provider_json_extract_int :: proc(json, key: string) -> (int, bool) {
 	return jsonx.extract_int_found(json, key)
 }
 
+// Deprecated: Retained for task_scheduler.odin until migrated to typed structs.
 bridge_provider_json_extract_object :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
 	return jsonx.extract_raw_object(json, key, false, allocator)
 }
 
+// Deprecated: Retained for task_scheduler.odin until migrated to typed structs.
 bridge_provider_json_extract_array :: proc(json, key: string, allocator := context.allocator) -> (string, bool) {
 	return jsonx.extract_raw_array(json, key, false, allocator)
 }
 
+// Deprecated: Retained for backward compatibility.
 bridge_provider_json_extract_string_array :: proc(json, key: string, allocator := context.allocator) -> ([]string, bool) {
 	if !jsonx.has_key(json, key) do return nil, false
 	arr := jsonx.extract_string_array(json, key, false, allocator)
 	return arr[:], true
 }
 
+// Deprecated: Retained for backward compatibility.
 bridge_provider_json_parse_string_array :: proc(array: string, allocator := context.allocator) -> []string {
 	arr := jsonx.decode_string_array(array, allocator)
 	return arr[:]
 }
 
+// Deprecated: Retained for task_scheduler.odin until migrated to typed structs.
 bridge_provider_json_top_level_objects :: proc(array: string, allocator := context.allocator) -> []string {
 	out := make([dynamic]string, allocator)
 	parsed, err := json.parse_string(array, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
@@ -782,41 +882,41 @@ bridge_provider_json_top_level_objects :: proc(array: string, allocator := conte
 	return out[:]
 }
 
-bridge_clone_string_slice :: proc(values: []string) -> []string {
+bridge_clone_string_slice :: proc(values: []string, allocator := context.allocator) -> []string {
 	if len(values) == 0 do return nil
-	out := make([]string, len(values))
-	for value, i in values do out[i] = strings.clone(value)
+	out := make([]string, len(values), allocator)
+	for value, i in values do out[i] = strings.clone(value, allocator)
 	return out
 }
 
-bridge_delete_string_slice :: proc(slice: []string) {
+bridge_delete_string_slice :: proc(slice: []string, allocator := context.allocator) {
 	if slice == nil do return
 	for s in slice {
-		delete(s)
+		delete(s, allocator)
 	}
-	delete(slice)
+	delete(slice, allocator)
 }
 
-bridge_provider_override_destroy :: proc(override: ^Bridge_Provider_Override) {
+bridge_provider_override_destroy :: proc(override: ^Bridge_Provider_Override, allocator := context.allocator) {
 	if override == nil do return
-	if len(override.name) > 0 do delete(override.name)
-	if override.command_set do bridge_delete_string_slice(override.command)
-	if override.yolo_flags_set do bridge_delete_string_slice(override.yolo_flags)
-	if override.prompt_flags_set do bridge_delete_string_slice(override.prompt_flags)
-	if override.starter_prompt_set && len(override.starter_prompt) > 0 do delete(override.starter_prompt)
-	if override.prompt_delivery_set && len(override.prompt_delivery) > 0 do delete(override.prompt_delivery)
-	if override.agent_run_dir_set && len(override.agent_run_dir) > 0 do delete(override.agent_run_dir)
-	if override.skill_dir_set && len(override.skill_dir) > 0 do delete(override.skill_dir)
-	if override.bootstrap_file_name_set && len(override.bootstrap_file_name) > 0 do delete(override.bootstrap_file_name)
-	if override.logo_set && len(override.logo) > 0 do delete(override.logo)
-	if override.models_flag_set && len(override.models.flag) > 0 do delete(override.models.flag)
-	if override.models_cheap_set && len(override.models.cheap) > 0 do delete(override.models.cheap)
-	if override.models_normal_set && len(override.models.normal) > 0 do delete(override.models.normal)
-	if override.models_smart_set && len(override.models.smart) > 0 do delete(override.models.smart)
-	if override.startup_blocked_patterns_set do bridge_delete_string_slice(override.startup_detection.blocked_patterns)
-	if override.startup_auto_enter_patterns_set do bridge_delete_string_slice(override.startup_detection.auto_enter_patterns)
-	if override.startup_auto_enter_pre_keys_set do bridge_delete_string_slice(override.startup_detection.auto_enter_pre_keys)
-	if override.startup_reason_mapping_set do bridge_delete_string_slice(override.startup_detection.sanitized_reason_mapping)
+	if len(override.name) > 0 do delete(override.name, allocator)
+	if override.command_set do bridge_delete_string_slice(override.command, allocator)
+	if override.yolo_flags_set do bridge_delete_string_slice(override.yolo_flags, allocator)
+	if override.prompt_flags_set do bridge_delete_string_slice(override.prompt_flags, allocator)
+	if override.starter_prompt_set && len(override.starter_prompt) > 0 do delete(override.starter_prompt, allocator)
+	if override.prompt_delivery_set && len(override.prompt_delivery) > 0 do delete(override.prompt_delivery, allocator)
+	if override.agent_run_dir_set && len(override.agent_run_dir) > 0 do delete(override.agent_run_dir, allocator)
+	if override.skill_dir_set && len(override.skill_dir) > 0 do delete(override.skill_dir, allocator)
+	if override.bootstrap_file_name_set && len(override.bootstrap_file_name) > 0 do delete(override.bootstrap_file_name, allocator)
+	if override.logo_set && len(override.logo) > 0 do delete(override.logo, allocator)
+	if override.models_flag_set && len(override.models.flag) > 0 do delete(override.models.flag, allocator)
+	if override.models_cheap_set && len(override.models.cheap) > 0 do delete(override.models.cheap, allocator)
+	if override.models_normal_set && len(override.models.normal) > 0 do delete(override.models.normal, allocator)
+	if override.models_smart_set && len(override.models.smart) > 0 do delete(override.models.smart, allocator)
+	if override.startup_blocked_patterns_set do bridge_delete_string_slice(override.startup_detection.blocked_patterns, allocator)
+	if override.startup_auto_enter_patterns_set do bridge_delete_string_slice(override.startup_detection.auto_enter_patterns, allocator)
+	if override.startup_auto_enter_pre_keys_set do bridge_delete_string_slice(override.startup_detection.auto_enter_pre_keys, allocator)
+	if override.startup_reason_mapping_set do bridge_delete_string_slice(override.startup_detection.sanitized_reason_mapping, allocator)
 	override^ = {}
 }
 
