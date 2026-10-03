@@ -10,6 +10,7 @@ import {
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import { extractMessageOptions } from './types';
 import Markdown from '../Markdown';
+import ChatActionCard from './ChatActionCard';
 
 export interface MessageItemProps {
   message: {
@@ -82,6 +83,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, clas
           <Markdown source={decryptedBody ?? body} compact copyAll={false} />
         )}
       </div>
+      <ChatActionCard message={message} conversationId={message.conversationId} onReply={onReply} />
       {options.length > 0 && !message.isUser && (
         <div data-debug-id={`message-options-${messageId}`} className="mt-2 flex flex-wrap gap-1.5">
           {options.map((option, optIdx) => (

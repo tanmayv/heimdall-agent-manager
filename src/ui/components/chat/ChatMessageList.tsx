@@ -13,6 +13,7 @@ import {
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import { extractMessageOptions } from './types';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
+import ChatActionCard from './ChatActionCard';
 
 const EMPTY_TIMESTAMP: ChatTimestamp = { label: '', iso: '' };
 const EMPTY_DELIVERY: ChatDeliveryStatus = { glyph: '', label: '', tone: '' };
@@ -288,6 +289,7 @@ export default function ChatMessageList({
                   {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                   <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'w-full text-primary'}`}>
                     {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <DefaultMessageBody body={message.body} />}
+                    <ChatActionCard message={message} conversationId={conversationKey} onReply={reply} />
                   </div>
                   {options.length > 0 && !message.isUser && (
                     <div data-debug-id={`${debugPrefix}-message-options-${message.messageId}`} className="mt-2 flex flex-wrap gap-1.5">

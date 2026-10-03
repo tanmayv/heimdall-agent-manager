@@ -121,6 +121,10 @@ export function formatOpLabel(op: CardOperation): string {
       const mid = getArg('memory_id') || getArg('id');
       return mid ? `Reject memory proposal ${mid}` : 'Reject memory proposal';
     }
+    case 'issue.create': {
+      const title = getArg('title');
+      return title ? `Create issue: "${title}"` : 'Create issue';
+    }
     case 'task.vote': {
       const tid = getArg('task_id');
       const result = (getArg('result') || 'lgtm').toUpperCase();
@@ -223,8 +227,9 @@ export const cardsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
-    getCard: build.query<{ card: Card | null }, { id: string }>({
-      queryFn: async ({ id }) => {
+    getCard: build.query<{ card: Card | null }, { id?: string; cardId?: string }>({
+      queryFn: async (arg) => {
+        const id = arg.cardId || arg.id;
         if (!id) return { data: { card: null } };
         try {
           const data = await cookieJsonFetch(`/cards/${encodeURIComponent(id)}`);
@@ -234,7 +239,7 @@ export const cardsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: cardErrorText(error, 'Failed to get card') } as any };
         }
       },
-      providesTags: (_result, _error, { id }) => [{ type: 'Card' as const, id }],
+      providesTags: (_result, _error, arg) => [{ type: 'Card' as const, id: arg.cardId || arg.id || '' }],
     }),
 
     createCard: build.mutation<Card, CreateCardInput>({
@@ -249,8 +254,10 @@ export const cardsApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: 'Cards' as const, id: 'LIST' }],
     }),
 
-    acceptCard: build.mutation<Card, { id: string }>({
-      queryFn: async ({ id }) => {
+    acceptCard: build.mutation<Card, { id?: string; cardId?: string }>({
+      queryFn: async (arg) => {
+        const id = arg.cardId || arg.id;
+        if (!id) return { error: { status: 'CUSTOM_ERROR', error: 'Missing card id' } as any };
         try {
           const card = await cookieMutation(`/cards/${encodeURIComponent(id)}/accept`, 'POST', {});
           return { data: card };
@@ -258,17 +265,19 @@ export const cardsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: cardErrorText(error, 'Failed to accept card') } as any };
         }
       },
-      invalidatesTags: (_result, _error, { id }) => [
+      invalidatesTags: (_result, _error, arg) => [
         { type: 'Cards' as const, id: 'LIST' },
-        { type: 'Card' as const, id },
+        { type: 'Card' as const, id: arg.cardId || arg.id || '' },
         { type: 'Memory' as const, id: 'LIST' },
         { type: 'Chain' as const, id: 'LIST' },
         { type: 'Task' as const, id: 'LIST' },
       ],
     }),
 
-    rejectCard: build.mutation<Card, { id: string }>({
-      queryFn: async ({ id }) => {
+    rejectCard: build.mutation<Card, { id?: string; cardId?: string }>({
+      queryFn: async (arg) => {
+        const id = arg.cardId || arg.id;
+        if (!id) return { error: { status: 'CUSTOM_ERROR', error: 'Missing card id' } as any };
         try {
           const card = await cookieMutation(`/cards/${encodeURIComponent(id)}/reject`, 'POST', {});
           return { data: card };
@@ -276,14 +285,16 @@ export const cardsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: cardErrorText(error, 'Failed to reject card') } as any };
         }
       },
-      invalidatesTags: (_result, _error, { id }) => [
+      invalidatesTags: (_result, _error, arg) => [
         { type: 'Cards' as const, id: 'LIST' },
-        { type: 'Card' as const, id },
+        { type: 'Card' as const, id: arg.cardId || arg.id || '' },
       ],
     }),
 
-    discardCard: build.mutation<Card, { id: string }>({
-      queryFn: async ({ id }) => {
+    discardCard: build.mutation<Card, { id?: string; cardId?: string }>({
+      queryFn: async (arg) => {
+        const id = arg.cardId || arg.id;
+        if (!id) return { error: { status: 'CUSTOM_ERROR', error: 'Missing card id' } as any };
         try {
           const card = await cookieMutation(`/cards/${encodeURIComponent(id)}/discard`, 'POST', {});
           return { data: card };
@@ -291,9 +302,9 @@ export const cardsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: cardErrorText(error, 'Failed to discard card') } as any };
         }
       },
-      invalidatesTags: (_result, _error, { id }) => [
+      invalidatesTags: (_result, _error, arg) => [
         { type: 'Cards' as const, id: 'LIST' },
-        { type: 'Card' as const, id },
+        { type: 'Card' as const, id: arg.cardId || arg.id || '' },
       ],
     }),
 

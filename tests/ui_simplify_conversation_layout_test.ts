@@ -20,6 +20,8 @@ const CTL_AGENT_MODE_FILE = path.join(REPO_ROOT, 'src/ctl/agent_mode.odin');
 const HUB_AGENT_ACTION_FILE = path.join(REPO_ROOT, 'src/hub/transport/http/agent_action_handlers.odin');
 const HUB_CONTENT_SERVICE_FILE = path.join(REPO_ROOT, 'src/hub/service/content/content_service.odin');
 const SHELL_TERMINAL_PANE_FILE = path.join(REPO_ROOT, 'src/ui/components/shells/ShellTerminalPane.tsx');
+const CHAT_ACTION_CARD_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChatActionCard.tsx');
+const CARDS_ENDPOINT_FILE = path.join(REPO_ROOT, 'src/ui/api/endpoints/cards.ts');
 
 test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with no reserved empty gutter', () => {
   const content = fs.readFileSync(BUBBLES_FILE, 'utf8');
@@ -1067,3 +1069,182 @@ test('REQ-SHELL-DOCK-NO-VSCROLL-23: ShellTerminalPane container styling enables 
     'xterm container must not include vertical scroll overflow classes'
   );
 });
+
+// ---------------------------------------------------------------------------
+// REQ-ACTION-FEEDBACK-LOOP-21: In-chat Action Card approval/rejection UI and agent feedback loop
+// ---------------------------------------------------------------------------
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: extractMessageActionIds parses action_ids from metadata, stringified metadata, and metadata_json', async () => {
+  const { extractMessageActionIds } = await import('../src/ui/components/chat/types.ts');
+
+  // Array of action_ids
+  assert.deepEqual(
+    extractMessageActionIds({ metadata: { action_ids: ['card_1', 'card_2'] } }),
+    ['card_1', 'card_2'],
+    'Must parse string array from metadata.action_ids'
+  );
+
+  // Stringified metadata
+  assert.deepEqual(
+    extractMessageActionIds({ metadata: JSON.stringify({ action_ids: ['card_3'] }) }),
+    ['card_3'],
+    'Must parse JSON string in metadata'
+  );
+
+  // Fallback to metadata_json
+  assert.deepEqual(
+    extractMessageActionIds({ metadata_json: JSON.stringify({ action_ids: ['card_4'] }) }),
+    ['card_4'],
+    'Must parse JSON string in metadata_json'
+  );
+
+  // Aliases: actions or action_id
+  assert.deepEqual(
+    extractMessageActionIds({ metadata: { actions: ['card_5'] } }),
+    ['card_5'],
+    'Must support actions alias'
+  );
+  assert.deepEqual(
+    extractMessageActionIds({ metadata: { action_id: 'card_6' } }),
+    ['card_6'],
+    'Must support single action_id string'
+  );
+
+  // Normal messages without action_ids return empty array
+  assert.deepEqual(extractMessageActionIds({ metadata: {} }), [], 'Empty metadata returns empty array');
+  assert.deepEqual(extractMessageActionIds({}), [], 'Missing metadata returns empty array');
+  assert.deepEqual(extractMessageActionIds({ metadata: { action_ids: [] } }), [], 'Empty array returns empty array');
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: ChatMessageList, MessageItem, and ChatMessageItem render inline Action Card inside message bubble', () => {
+  assert.ok(fs.existsSync(CHAT_ACTION_CARD_FILE), 'ChatActionCard.tsx must exist');
+
+  const listContent = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+  assert.ok(
+    listContent.includes('ChatActionCard'),
+    'ChatMessageList must import ChatActionCard'
+  );
+  assert.ok(
+    listContent.includes('<ChatActionCard message={message}'),
+    'ChatMessageList must render ChatActionCard inside message bubble container'
+  );
+
+  const itemContent = fs.readFileSync(MESSAGE_ITEM_FILE, 'utf8');
+  assert.ok(
+    itemContent.includes('ChatActionCard'),
+    'MessageItem must import and render ChatActionCard'
+  );
+
+  const chatItemContent = fs.readFileSync(CHAT_MESSAGE_ITEM_FILE, 'utf8');
+  assert.ok(
+    chatItemContent.includes('ChatActionCard'),
+    'ChatMessageItem must export or reference ChatActionCard'
+  );
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: ChatActionCard displays title, status badge, and operations summary', () => {
+  const content = fs.readFileSync(CHAT_ACTION_CARD_FILE, 'utf8');
+
+  // Title
+  assert.ok(
+    content.includes('action-card-title-'),
+    'ChatActionCard must render card title with debug id action-card-title-'
+  );
+
+  // Status badge (pending/accepted/rejected)
+  assert.ok(
+    content.includes('action-card-status-'),
+    'ChatActionCard must render card status badge with debug id action-card-status-'
+  );
+  assert.ok(
+    content.includes("'pending'") && content.includes("'accepted'") && content.includes("'rejected'"),
+    'ChatActionCard status badge must support pending, accepted, and rejected statuses'
+  );
+
+  // Operations summary
+  assert.ok(
+    content.includes('action-card-summary-') || content.includes('operationsSummary'),
+    'ChatActionCard must render operations summary'
+  );
+  assert.ok(
+    content.includes('formatOpLabel'),
+    'ChatActionCard must format operations using formatOpLabel'
+  );
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: Clicking Approve executes acceptCard({ cardId }) and sends [Action Approved] confirmation message', () => {
+  const content = fs.readFileSync(CHAT_ACTION_CARD_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('action-card-approve-btn-'),
+    'ChatActionCard must render approve button'
+  );
+  assert.ok(
+    content.includes('acceptCardMutation') || content.includes('acceptCard'),
+    'Approve action must execute acceptCard mutation'
+  );
+  assert.ok(
+    content.includes('cardId: actionId') || content.includes('cardId'),
+    'Approve action must pass cardId to acceptCard'
+  );
+  assert.ok(
+    content.includes('[Action Approved] Action') && content.includes('was approved by user'),
+    'Approve action must construct confirmation message: "[Action Approved] Action <action_id> (<title>) was approved by user"'
+  );
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: Clicking Reject discards card and sends [Action Rejected] confirmation message with comment', () => {
+  const content = fs.readFileSync(CHAT_ACTION_CARD_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('action-card-reject-btn-'),
+    'ChatActionCard must render reject button'
+  );
+  assert.ok(
+    content.includes('action-card-comment-input-'),
+    'ChatActionCard must render optional user comment input'
+  );
+  assert.ok(
+    content.includes('discardCardMutation') || content.includes('discardCard'),
+    'Reject action must execute discardCard mutation'
+  );
+  assert.ok(
+    content.includes('cardId: actionId') || content.includes('cardId'),
+    'Reject action must pass cardId to discardCard'
+  );
+  assert.ok(
+    content.includes('[Action Rejected] Action') && content.includes('was rejected by user'),
+    'Reject action must construct confirmation message: "[Action Rejected] Action <action_id> (<title>) was rejected by user: <comment>"'
+  );
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: Resolved action cards reflect approved/rejected state and disable action buttons', () => {
+  const content = fs.readFileSync(CHAT_ACTION_CARD_FILE, 'utf8');
+
+  assert.ok(
+    content.includes("const isResolved = status === 'accepted' || status === 'rejected'"),
+    'ChatActionCard must determine resolved state for accepted and rejected cards'
+  );
+  assert.ok(
+    content.includes('disabled={isResolved || isBusy}'),
+    'Action buttons and inputs must be disabled once the card is resolved'
+  );
+});
+
+test('REQ-ACTION-FEEDBACK-LOOP-21: cards.ts API endpoints support cardId argument and issue.create formatting', () => {
+  const content = fs.readFileSync(CARDS_ENDPOINT_FILE, 'utf8');
+
+  assert.ok(
+    content.includes('acceptCard: build.mutation<Card, { id?: string; cardId?: string }>'),
+    'acceptCard must accept cardId in argument'
+  );
+  assert.ok(
+    content.includes('discardCard: build.mutation<Card, { id?: string; cardId?: string }>'),
+    'discardCard must accept cardId in argument'
+  );
+  assert.ok(
+    content.includes("case 'issue.create':"),
+    'formatOpLabel must format issue.create operations'
+  );
+});
+

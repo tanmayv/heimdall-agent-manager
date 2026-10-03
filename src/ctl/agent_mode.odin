@@ -1425,6 +1425,10 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 	acts := collect_multi_values(args, "--actions", "--action", "--action-id", "--action-ids")
 	defer delete(acts)
 
+	if len(opts) == 0 && len(acts) == 0 {
+		return json_object(json_kv("to", to), json_kv("body", chat_body))
+	}
+
 	fields := make([dynamic]string)
 	defer delete(fields)
 	append(&fields, json_kv("to", to))

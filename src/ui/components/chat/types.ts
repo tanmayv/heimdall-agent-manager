@@ -129,3 +129,31 @@ export function extractMessageOptions(message: { metadata?: any; metadata_json?:
   }
   return [];
 }
+
+export function extractMessageActionIds(message: { metadata?: any; metadata_json?: string }): string[] {
+  let meta = message.metadata;
+  if (typeof meta === 'string') {
+    try {
+      meta = JSON.parse(meta);
+    } catch {
+      meta = null;
+    }
+  }
+  if (!meta && message.metadata_json) {
+    try {
+      meta = JSON.parse(message.metadata_json);
+    } catch {
+      meta = null;
+    }
+  }
+  if (!meta) return [];
+  const raw = meta.action_ids ?? meta.actions ?? meta.actionId ?? meta.action_id;
+  if (Array.isArray(raw)) {
+    return raw.map((a: any) => String(a).trim()).filter((s: string) => s !== '');
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return [raw.trim()];
+  }
+  return [];
+}
+
