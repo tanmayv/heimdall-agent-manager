@@ -62,8 +62,8 @@ def test_2column_layout_structure() -> None:
     # Col 1 chat column container
     require('data-debug-id="conversation-chat-column"' in src,
             "Col 1 must have data-debug-id='conversation-chat-column'")
-    require("flex-1 flex-col sm:min-w-[380px]" in src,
-            "Col 1 chat column must have flex-1 flex-col sm:min-w-[380px]")
+    require("flex-1 flex-col" in src and "sm:min-w-[380px]" in src,
+            "Col 1 chat column must have flex-1 flex-col and sm:min-w-[380px]")
 
     # Header is inside Col 1 above transcript
     chat_col_idx = src.find('data-debug-id="conversation-chat-column"')
@@ -142,7 +142,7 @@ def test_topbar_actions() -> None:
     require('data-debug-id="conversation-search-btn"' in src,
             "Top bar must retain search button with data-debug-id='conversation-search-btn'")
 
-    # Top bar has no bottom border and includes blur-fade overlay
+    # Top bar has blur-fade overlay and border
     require('data-debug-id="conversation-topbar-blur-fade"' in src,
             "Top bar must render bottom blur-fade overlay with data-debug-id='conversation-topbar-blur-fade'")
     require("backdrop-blur-sm" in src or "backdrop-blur" in src,
@@ -151,25 +151,19 @@ def test_topbar_actions() -> None:
             "Three-dots menu must have dedicated width w-64")
     require("overflow-visible" in src,
             "Header must retain overflow-visible")
-    require("relative z-20" in src,
-            "Header must have relative z-20 stacking context on desktop")
+    require("sticky top-0 z-20" in src,
+            "Header must have sticky top-0 z-20 stacking context")
 
-    # Header positioning: conditional fixed on mobile and relative on desktop without class collision (REQ-MOBILE-TOPBAR-FIX, REQ-MOBILE-BORDERLESS)
+    # Header positioning: sticky on top without fixed overlay collision
     header_start = src.find('data-debug-id="conversation-thread-header"')
     require(header_start != -1, "Header element must exist")
     header_chunk = src[header_start:header_start + 450]
-    require("isMobile" in header_chunk, "Header classes must branch on isMobile")
-    base_classes = header_chunk.split("isMobile")[0]
-    require("relative" not in base_classes,
-            "Header base classes must not contain unconditional relative (avoids mobile fixed collision)")
-    require("fixed top-0 inset-x-0" in header_chunk,
-            "Header must apply fixed top-0 inset-x-0 overlay positioning on mobile")
+    require("sticky top-0" in header_chunk,
+            "Header must apply sticky top-0 positioning")
     require("bg-canvas/90 backdrop-blur-md" in header_chunk,
-            "Header must use bg-canvas/90 backdrop-blur-md on mobile (REQ-MOBILE-BORDERLESS)")
-    require("border-b" not in header_chunk,
-            "Header must not contain border-b on mobile (REQ-MOBILE-BORDERLESS)")
-    require("shadow-sm" not in header_chunk,
-            "Header must not contain shadow-sm on mobile (REQ-MOBILE-BORDERLESS)")
+            "Header must use bg-canvas/90 backdrop-blur-md")
+    require("border-b" in header_chunk,
+            "Header must contain border-b separator")
 
 
 def test_sidebar_toggle_buttons() -> None:
@@ -201,19 +195,19 @@ def test_mobile_responsive() -> None:
     require("sm:hidden" in src and "renderRightPanel(true)" in src,
             "Mobile view (< 768px) must render right panel in full-screen overlay")
 
-    # Mobile scroll-hide transitions preserved
-    require("-translate-y-full opacity-0 pointer-events-none" in src,
-            "Header mobile scroll-hide transition must be preserved")
-    require('data-debug-id="conversation-floating-reply-pill"' in src,
-            "Floating reply pill on mobile must be preserved when chrome is hidden")
+    # Mobile scroll-hide transitions and floating pills removed (REQ-SIMPLIFY-SCROLL-4)
+    require("-translate-y-full" not in src,
+            "Header must not hide/translate on scroll")
+    require('data-debug-id="conversation-floating-reply-pill"' not in src,
+            "Floating reply pill on mobile must be removed")
+    require('data-debug-id="conversation-floating-agent-pill"' not in src,
+            "Floating agent pill on mobile must be removed")
+    require('data-debug-id="conversation-floating-panel-toggle-btn"' not in src,
+            "Floating panel toggle button must be removed")
 
-    # Mobile overlay semantics and transcript padding clearance (REQ-MOBILE-TOPBAR-FIX, REQ-VAL-MOBILE-FIX, REQ-MOBILE-BORDERLESS)
-    require("fixed top-0 inset-x-0 z-20 h-14 bg-canvas/90 backdrop-blur-md" in src,
-            "Header must use fixed top-0 overlay semantics on mobile with bg-canvas/90 backdrop-blur-md")
-    require("fixed bottom-14 inset-x-0 z-20" in src,
-            "Composer must use fixed bottom-14 overlay semantics on mobile")
-    require("pt-16 pb-4" in src,
-            "Transcript scroll container must have pt-16 top padding clearance for fixed header")
+    # Unified layout semantics
+    require("fixed bottom-14 inset-x-0 z-20" not in src,
+            "Composer must not use fixed bottom-14 overlay semantics on mobile")
 
 
 def test_chat_and_composer_max_width() -> None:
