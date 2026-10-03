@@ -24,6 +24,7 @@ import {
   writeBottomDockOpen,
   BOTTOM_DOCK_MIN_HEIGHT,
 } from '../../utils/clientPersistence';
+import { useViewport } from './responsive';
 
 export interface BottomDockProps {
   isOpen?: boolean;
@@ -37,6 +38,8 @@ export default function BottomDock({
   defaultBridgeId,
 }: BottomDockProps = {}) {
   const dispatch = useDispatch();
+  const viewport = useViewport();
+  const isMobile = viewport === 'mobile';
 
   // Dock sizing & window state
   const [height, setHeight] = useState<number>(() => readBottomDockHeight());
@@ -233,6 +236,7 @@ export default function BottomDock({
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
       if (isMinimized) return;
+      if (isMobile) return;
       e.preventDefault();
       setIsResizing(true);
       const startY = e.clientY;
@@ -261,7 +265,7 @@ export default function BottomDock({
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
     },
-    [height, isMinimized]
+    [height, isMinimized, isMobile]
   );
 
   // Active session object
@@ -301,18 +305,23 @@ export default function BottomDock({
 
   if (!isOpen) return null;
 
-  const effectiveHeight = isMinimized ? 36 : height;
+  const effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(100vh - 48px)' : height);
 
   return (
     <div
       data-debug-id="bottom-dock-container"
-      style={{ height: effectiveHeight, maxHeight: 'min(calc(100vh - 100px), 80vh)' }}
-      className={`relative z-20 flex w-full shrink-0 flex-col border-t border-subtle bg-surface transition-[height] duration-150 ease-out max-h-[80vh] ${
+      style={{
+        height: effectiveHeight,
+        maxHeight: isMobile ? 'calc(100vh - 48px)' : 'min(calc(100vh - 100px), 80vh)',
+      }}
+      className={`relative z-20 flex w-full shrink-0 flex-col border-t border-subtle bg-surface transition-[height] duration-150 ease-out ${
+        isMobile ? 'max-h-[calc(100vh-48px)]' : 'max-h-[80vh]'
+      } ${
         isResizing ? 'select-none pointer-events-none' : ''
       }`}
     >
-      {/* Top resize handle (only active when restored) */}
-      {!isMinimized && (
+      {/* Top resize handle (only active when restored on desktop) */}
+      {!isMinimized && !isMobile && (
         <div
           data-debug-id="bottom-dock-resizer"
           onMouseDown={handleResizeStart}

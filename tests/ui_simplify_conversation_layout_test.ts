@@ -13,6 +13,7 @@ const CHAT_LIST_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChatMessageL
 const THREAD_PAGE_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationThreadPage.tsx');
 const CHAIN_OVERVIEW_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChainOverviewPanel.tsx');
 const APP_SHELL_FILE = path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx');
+const BOTTOM_DOCK_FILE = path.join(REPO_ROOT, 'src/ui/components/shell/BottomDock.tsx');
 
 test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with no reserved empty gutter', () => {
   const content = fs.readFileSync(BUBBLES_FILE, 'utf8');
@@ -787,6 +788,70 @@ test('REQ-TEST-VERIFICATION-17: Startup phase triggers capture pane expansion an
   assert.ok(
     threadContent.includes('userManuallyToggledPaneRef.current = false;'),
     'ConversationThreadPage must reset userManuallyToggledPaneRef on new status cycle'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// REQ-MOBILE-DOCK-FULLHEIGHT-18: Make BottomDock default to full vertical height on mobile viewports
+// ---------------------------------------------------------------------------
+
+test('REQ-MOBILE-DOCK-FULLHEIGHT-18: BottomDock imports useViewport and checks isMobile', () => {
+  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  assert.ok(
+    content.includes("import { useViewport } from './responsive';") ||
+    (content.includes('useViewport') && (content.includes('@ui') || content.includes('./responsive'))),
+    'BottomDock must import useViewport'
+  );
+  assert.ok(
+    content.includes("viewport === 'mobile'"),
+    'BottomDock must determine isMobile using viewport === \'mobile\''
+  );
+});
+
+test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, open BottomDock expands to full vertical space and collapses to 36px when minimized', () => {
+  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  assert.ok(
+    content.includes("effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(100vh - 48px)' : height)") ||
+    (content.includes('effectiveHeight') && content.includes('isMobile') && content.includes('calc(100vh - 48px)') && content.includes('36')),
+    'BottomDock effectiveHeight must occupy full vertical space calc(100vh - 48px) on mobile when open, and 36px when minimized'
+  );
+  assert.ok(
+    content.includes('data-debug-id="bottom-dock-minimize-btn"'),
+    'BottomDock must include minimize button to toggle collapsed/expanded state'
+  );
+});
+
+test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, container maxHeight expands to full vertical space and desktop caps at 80vh', () => {
+  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  assert.ok(
+    content.includes("maxHeight: isMobile ? 'calc(100vh - 48px)' : 'min(calc(100vh - 100px), 80vh)'") ||
+    (content.includes('maxHeight') && content.includes('isMobile') && content.includes('calc(100vh - 48px)')),
+    'BottomDock container style must set maxHeight to calc(100vh - 48px) on mobile and min(calc(100vh - 100px), 80vh) on desktop'
+  );
+  assert.ok(
+    content.includes('max-h-[80vh]'),
+    'Desktop must retain 80vh max-height cap'
+  );
+});
+
+test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, resizing drag handle is disabled and desktop retains draggable resizing', () => {
+  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  assert.ok(
+    content.includes('if (isMobile) return;') || content.includes('if (isMinimized || isMobile) return;'),
+    'handleResizeStart must return early and disable drag when isMobile is true'
+  );
+  assert.ok(
+    content.includes('!isMinimized && !isMobile && (') ||
+    content.includes('data-debug-id="bottom-dock-resizer"'),
+    'bottom-dock-resizer handle must be disabled on mobile'
+  );
+  assert.ok(
+    content.includes('readBottomDockHeight()'),
+    'Desktop must retain persisted default height'
+  );
+  assert.ok(
+    content.includes('BOTTOM_DOCK_MIN_HEIGHT'),
+    'Desktop must retain minimum height clamping'
   );
 });
 
