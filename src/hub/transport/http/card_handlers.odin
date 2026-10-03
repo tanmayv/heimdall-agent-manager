@@ -20,6 +20,8 @@ Card_Handlers :: struct {
 write_card_json :: proc(b: ^strings.Builder, c: domain.Card) {
 	strings.write_string(b, "{\"card_id\":\"")
 	write_handler_json_string(b, string(c.card_id))
+	strings.write_string(b, "\",\"action_id\":\"")
+	write_handler_json_string(b, string(c.card_id))
 	strings.write_string(b, "\",\"owner_user_id\":\"")
 	write_handler_json_string(b, string(c.owner_user_id))
 	strings.write_string(b, "\",\"project_id\":\"")

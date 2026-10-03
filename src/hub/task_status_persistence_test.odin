@@ -65,7 +65,7 @@ build_status_fixture :: proc(graph: ^app.App_Graph, owner: string, tag: string) 
 	}
 	_, _, _ = iface.taskchain_save_chain(graph.taskchains.repo, chain)
 
-	assignee := fmt.tprintf(`{"type":"agent_instance","agent_instance_id":"%s"}`, instance_id)
+	assignee := fmt.tprintf(`{{"type":"agent_instance","agent_instance_id":"%s"}}`, instance_id)
 
 	review_id := domain.Task_ID(fmt.tprintf("task_%s_review", tag))
 	review := domain.Task{

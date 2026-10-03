@@ -12,6 +12,7 @@ import taskchain_service "odin_test:hub/service/taskchain"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import agent_service "odin_test:hub/service/agent"
+import issue_service "odin_test:hub/service/issue"
 
 is_valid_json_array :: proc(s: string) -> bool {
 	trimmed := strings.trim_space(s)
@@ -123,6 +124,8 @@ validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool
 	case "memory.create":
 		if op_arg_string(op_obj, "title") == "" do return false, op_field_missing("title")
 		if op_arg_string(op_obj, "body") == "" do return false, op_field_missing("body")
+	case "issue.create":
+		if op_arg_string(op_obj, "title") == "" do return false, op_field_missing("title")
 	case "task_chain.set_status":
 		if op_arg_string(op_obj, "chain_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("chain_id")
 		if op_arg_string(op_obj, "status") == "" do return false, op_field_missing("status")
@@ -228,6 +231,7 @@ Card_Service :: struct {
 	content:     ^content_service.Content_Service,
 	project_svc: ^project_service.Project_Service,
 	agents:      ^agent_service.Agent_Service,
+	issues:      ^issue_service.Issue_Service,
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	clock:       ^platform.Clock,
 	ids:         ^platform.ID_Generator,
@@ -243,6 +247,7 @@ new_card_service :: proc(
 	uow_factory: ^iface.Unit_Of_Work_Factory = nil,
 	clock:       ^platform.Clock = nil,
 	ids:         ^platform.ID_Generator = nil,
+	issues:      ^issue_service.Issue_Service = nil,
 ) -> Card_Service {
 	return Card_Service{
 		cards       = cards,
@@ -251,6 +256,7 @@ new_card_service :: proc(
 		content     = content,
 		project_svc = project_svc,
 		agents      = agents,
+		issues      = issues,
 		uow_factory = uow_factory,
 		clock       = clock,
 		ids         = ids,
@@ -985,6 +991,30 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			if !ch_ok {
 				if has_uow do iface.unit_of_work_rollback(&uow)
 				return domain.Card{}, false, ch_err
+			}
+
+		case "issue.create":
+			title := op_arg_string(op_obj, "title")
+			description := op_arg_string(op_obj, "description")
+			scope := op_arg_string(op_obj, "scope")
+			if scope == "" do scope = op_arg_string(op_obj, "scope_type")
+			target_id := op_arg_string(op_obj, "target_id")
+			chain_id := op_arg_string(op_obj, "chain_id")
+			if s.issues == nil {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, domain.domain_error(.Internal_Error, "issue service is not configured")
+			}
+			_, cr_ok, cr_err := issue_service.create_issue(s.issues, user_auth, issue_service.Issue_Create_Input{
+				title       = title,
+				description = description,
+				created_by  = string(card.owner_user_id),
+				scope_type  = scope,
+				target_id   = target_id,
+				chain_id    = chain_id,
+			})
+			if !cr_ok {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, cr_err
 			}
 
 		case "project.update":

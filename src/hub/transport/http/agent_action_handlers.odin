@@ -39,8 +39,15 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	metadata_json := ""
-	if options := json_array_optional(params, "options"); options != "" {
+	options := json_array_optional(params, "options")
+	action_ids := json_array_optional(params, "action_ids")
+	if action_ids == "" do action_ids = json_array_optional(params, "actions")
+	if options != "" && action_ids != "" {
+		metadata_json = fmt.tprintf("{{\"options\":%s,\"action_ids\":%s}}", options, action_ids)
+	} else if options != "" {
 		metadata_json = fmt.tprintf("{{\"options\":%s}}", options)
+	} else if action_ids != "" {
+		metadata_json = fmt.tprintf("{{\"action_ids\":%s}}", action_ids)
 	} else if meta_obj := json_object_raw(params, "metadata"); meta_obj != "" {
 		metadata_json = meta_obj
 	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
@@ -132,8 +139,15 @@ agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Re
 	target := json_string(params, "to_instance")
 	if target == "" do target = json_string(params, "target_agent_instance_id")
 	metadata_json := ""
-	if options := json_array_optional(params, "options"); options != "" {
+	options := json_array_optional(params, "options")
+	action_ids := json_array_optional(params, "action_ids")
+	if action_ids == "" do action_ids = json_array_optional(params, "actions")
+	if options != "" && action_ids != "" {
+		metadata_json = fmt.tprintf("{{\"options\":%s,\"action_ids\":%s}}", options, action_ids)
+	} else if options != "" {
 		metadata_json = fmt.tprintf("{{\"options\":%s}}", options)
+	} else if action_ids != "" {
+		metadata_json = fmt.tprintf("{{\"action_ids\":%s}}", action_ids)
 	} else if meta_obj := json_object_raw(params, "metadata"); meta_obj != "" {
 		metadata_json = meta_obj
 	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
@@ -1260,6 +1274,7 @@ agent_action_card_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	params := json_object_raw(req.body, "params")
 	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "action_id")
 	if card_id == "" do card_id = json_string(params, "card")
 	if card_id == "" do card_id = json_string(params, "id")
 	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
@@ -1281,6 +1296,7 @@ agent_action_card_discard_handler :: proc(ctx: rawptr, req: Request) -> Response
 
 	params := json_object_raw(req.body, "params")
 	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "action_id")
 	if card_id == "" do card_id = json_string(params, "card")
 	if card_id == "" do card_id = json_string(params, "id")
 	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
@@ -1302,6 +1318,7 @@ agent_action_card_accept_handler :: proc(ctx: rawptr, req: Request) -> Response 
 
 	params := json_object_raw(req.body, "params")
 	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "action_id")
 	if card_id == "" do card_id = json_string(params, "card")
 	if card_id == "" do card_id = json_string(params, "id")
 	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)

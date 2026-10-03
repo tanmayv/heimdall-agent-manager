@@ -52,7 +52,7 @@ create_sync_test_chain :: proc(graph: ^app.App_Graph, owner: string, chain_id: d
 create_sync_test_task :: proc(graph: ^app.App_Graph, owner: string, chain_id: domain.Task_Chain_ID, task_id: domain.Task_ID, status: domain.Task_Status, reviewer_json: string = "[]") -> domain.Task {
 	now := "2026-09-26T00:00:00Z"
 	completed_at := now if status == .Completed || status == .Cancelled else ""
-	assignee := fmt.tprintf(`{"type":"user_id","user_id":"%s"}`, owner)
+	assignee := fmt.tprintf(`{{"type":"user_id","user_id":"%s"}}`, owner)
 	task := domain.Task{
 		task_id            = task_id,
 		chain_id           = chain_id,
@@ -218,7 +218,7 @@ test_chain_status_sync_quorum_approval_completes_chain :: proc(t: ^testing.T) {
 	}
 	_, _, _ = iface.taskchain_save_member(graph.taskchains.repo, member)
 
-	reviewer_ref := fmt.tprintf(`[{"type":"agent_instance","agent_instance_id":"%s"}]`, reviewer_inst_id)
+	reviewer_ref := fmt.tprintf(`[{{"type":"agent_instance","agent_instance_id":"%s"}}]`, reviewer_inst_id)
 	t1 := create_sync_test_task(&graph, owner, chain_id, "task_sync_5_1", .In_Validation, reviewer_ref)
 
 	// Cast LGTM review vote as reviewer instance
@@ -230,9 +230,14 @@ test_chain_status_sync_quorum_approval_completes_chain :: proc(t: ^testing.T) {
 	})
 	testing.expect(t, recorded, "record_task_vote should succeed")
 
-	// Task should auto-complete via quorum
+	// Task enters Finishing state via quorum approval
 	task_db, _, _ := iface.taskchain_get_task(graph.taskchains.repo, t1.task_id)
-	testing.expect_value(t, task_db.status, domain.Task_Status.Completed)
+	testing.expect_value(t, task_db.status, domain.Task_Status.Finishing)
+
+	// Worker wraps up and marks task Completed
+	auth_owner := contracts.Auth_Context{kind = .User_Token, user_id = owner}
+	_, comp_ok, _ := taskchain_service.change_task_status(&graph.taskchains, auth_owner, t1.task_id, .Completed)
+	testing.expect(t, comp_ok, "change_task_status to completed should succeed")
 
 	// Chain should now automatically transition to Completed
 	c, _, _ := iface.taskchain_get_chain(graph.taskchains.repo, chain_id)

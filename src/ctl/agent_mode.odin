@@ -47,6 +47,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
+	case "action", "actions":     ctl_v2_action(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
 	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	case "issue", "issues": ctl_issues_command(cmd[idx:], args); return
@@ -899,6 +900,105 @@ ctl_v2_cards :: proc(endpoint, token: string, tokens, args: []string) {
 	}
 }
 
+ctl_agentmode_action_create_params :: proc(args: []string, tokens: []string = nil) -> (string, bool) {
+	type_str := option_value(args, "--type", "")
+	title := option_value(args, "--title", "")
+	if title == "" && tokens != nil && len(tokens) > 1 {
+		title = pos(tokens, 1)
+	}
+	if title == "" do return "", false
+
+	ops_json := ""
+	if type_str == "memory.approve" {
+		mid := option_value(args, "--memory-id", option_value(args, "--id", ""))
+		if mid == "" do return "", false
+		b := strings.builder_make()
+		strings.write_string(&b, `[{"op":"memory.approve","memory_id":"`)
+		json_write_string(&b, mid)
+		strings.write_string(&b, `"}]`)
+		ops_json = strings.to_string(b)
+	} else if type_str == "issue.create" {
+		desc := option_value(args, "--description", option_value(args, "--desc", ""))
+		scope := option_value(args, "--scope", "")
+		b := strings.builder_make()
+		strings.write_string(&b, `[{"op":"issue.create","title":"`)
+		json_write_string(&b, title)
+		strings.write_string(&b, `"`)
+		if desc != "" {
+			strings.write_string(&b, `,"description":"`)
+			json_write_string(&b, desc)
+			strings.write_string(&b, `"`)
+		}
+		if scope != "" {
+			strings.write_string(&b, `,"scope":"`)
+			json_write_string(&b, scope)
+			strings.write_string(&b, `"`)
+		}
+		strings.write_string(&b, `}]`)
+		ops_json = strings.to_string(b)
+	} else if type_str == "" {
+		ops_json = option_value(args, "--operations", option_value(args, "--op", ""))
+		if ops_json == "" do return "", false
+	} else {
+		ops_json = option_value(args, "--operations", option_value(args, "--op", ""))
+		if ops_json == "" do return "", false
+	}
+
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("title", title))
+	append(&fields, json_kv_raw("operations", ops_json))
+	if r := option_value(args, "--rationale", ""); r != "" do append(&fields, json_kv("rationale", r))
+	if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+	if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+	if c := option_value(args, "--confidence", ""); c != "" do append(&fields, json_kv_raw("confidence", c))
+	if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+	if sr := option_value(args, "--source-refs", ""); sr != "" do append(&fields, json_kv_raw("source_refs", sr))
+	if g := option_value(args, "--guard", ""); g != "" do append(&fields, json_kv_raw("guard", g))
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if su := option_value(args, "--snooze-until", ""); su != "" do append(&fields, json_kv("snooze_until", su))
+	if ttl := option_value(args, "--ttl-at", ""); ttl != "" do append(&fields, json_kv("ttl_at", ttl))
+	return json_object_from_slice(fields[:]), true
+}
+
+ctl_v2_action :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "create":
+		params, ok := ctl_agentmode_action_create_params(args, tokens)
+		if !ok {
+			fmt.println("usage: ham-ctl action create (--type memory.approve --memory-id <id> --title <title> | --type issue.create --title <title> [--description <desc>] [--scope <scope>] | --title <title> --operations <json>)")
+			return
+		}
+		ctl_agent_call(endpoint, token, "agent.cards.create", params)
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.cards.list", ctl_agentmode_cards_list_params(args))
+	case "show", "get":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", option_value(args, "--action-id", ""))))
+		if card_id == "" { print_agent_help([]string{"action"}); return }
+		if has_flag(args, "--json") || has_flag(args, "--raw") {
+			ctl_agent_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+			return
+		}
+		response, r_ok := ctl_agent_local_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+		if !r_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		render_human_card(response)
+	case "discard":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", option_value(args, "--action-id", ""))))
+		if card_id == "" { print_agent_help([]string{"action"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.discard", json_object(json_kv("card_id", card_id)))
+	case "accept":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", option_value(args, "--action-id", ""))))
+		if card_id == "" { print_agent_help([]string{"action"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.accept", json_object(json_kv("card_id", card_id)))
+	case:
+		print_agent_help([]string{"action"})
+	}
+}
+
 ctl_agentmode_cards_list_params :: proc(args: []string) -> string {
 	fields := make([dynamic]string)
 	defer delete(fields)
@@ -1322,12 +1422,21 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 	}
 	opts := collect_multi_values(args, "--options", "--option", "--expected-answers", "--choices")
 	defer delete(opts)
+	acts := collect_multi_values(args, "--actions", "--action", "--action-id", "--action-ids")
+	defer delete(acts)
+
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("to", to))
+	append(&fields, json_kv("body", chat_body))
 	if len(opts) > 0 {
-		opt_field := json_string_array_field("options", opts[:])
-		defer delete(opt_field)
-		return json_object(json_kv("to", to), json_kv("body", chat_body), opt_field)
+		append(&fields, json_string_array_field("options", opts[:]))
 	}
-	return json_object(json_kv("to", to), json_kv("body", chat_body))
+	if len(acts) > 0 {
+		append(&fields, json_string_array_field("action_ids", acts[:]))
+		append(&fields, json_string_array_field("actions", acts[:]))
+	}
+	return json_object_from_slice(fields[:])
 }
 
 ctl_agentmode_chat_set_title_params :: proc(title: string, args: []string) -> string {
@@ -1596,7 +1705,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "chat", "chats", "conversation", "conversations": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
-	case "cards", "card": print_help_cards(); return
+	case "cards", "card", "action", "actions": print_help_cards(); return
 	case "shell":     print_help_shell(); return
 	case "issue", "issues": print_issues_help(); return
 	case "project", "projects": print_projects_help(); return
@@ -1623,6 +1732,7 @@ print_help_overview :: proc() {
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
+	fmt.println("  action      Action cards (create, list, show, accept, discard)")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
 	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
 	fmt.println("  issue       Issues, bugs, and blockers (list, show, create, update, comment, vote, unvote)")
@@ -1797,6 +1907,7 @@ print_help_chat :: proc() {
 	fmt.println("      [--agent-instance-id <inst-id>]   Read another agent's inbox (same owner). Default: your own inbox.")
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
 	fmt.println("      [--options <a,b> | --option <opt>] [--expected-answers <...>] [--choices <...>]")
+	fmt.println("      [--actions <a,b> | --action <act>]")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              Rename THIS conversation.")
 	fmt.println("")
