@@ -554,7 +554,7 @@ export function CollapsedPinnedChains({
               e.preventDefault();
               onNavigate(path);
             }}
-            className={`relative flex h-9 w-9 items-center justify-center rounded-xl text-xs font-bold transition select-none ${
+            className={`relative flex h-10 w-10 min-h-10 min-w-10 items-center justify-center rounded-xl text-xs font-bold transition select-none ${
               active
                 ? 'border-2 border-accent text-accent bg-neutral-soft ring-1 ring-accent/30 font-bold'
                 : 'border border-subtle text-muted hover:text-primary hover:bg-neutral-soft hover:border-default'

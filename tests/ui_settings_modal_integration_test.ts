@@ -142,15 +142,14 @@ test('Mobile bottom tab bar Settings item click opens SettingsModal', () => {
     'MobileTabBar must invoke onOpenSettings when settings tab is tapped',
   );
 
-  // AppShell connects onOpenSettings and isSettingsOpen to MobileTabBar
+  // Mobile settings click closes mobile drawer and opens SettingsModal
   assert.ok(
-    appShellContent.includes('onOpenSettings={() => {') &&
-      appShellContent.includes('setSettingsModalOpen(true)'),
-    'AppShell must pass onOpenSettings callback that opens SettingsModal',
+    appShellContent.includes('setSettingsModalOpen(true)'),
+    'AppShell must open SettingsModal when settings is selected',
   );
   assert.ok(
-    appShellContent.includes('isSettingsOpen={settingsModalOpen}'),
-    'AppShell must pass isSettingsOpen={settingsModalOpen} to MobileTabBar',
+    appShellContent.includes('setDrawerOpen(false)'),
+    'AppShell must close mobile drawer when navigating to settings on mobile',
   );
 });
 

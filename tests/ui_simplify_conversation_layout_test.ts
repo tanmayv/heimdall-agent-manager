@@ -177,3 +177,48 @@ test('REQ-SIDEBAR-TOGGLE-SINGLE-CLICK-10: ConversationThreadPage auto-open effec
   );
 });
 
+test('REQ-MOBILE-SLIM-SIDEBAR-11: AppShell removes MobileTabBar and mobileBottomPadded completely', () => {
+  const content = fs.readFileSync(APP_SHELL_FILE, 'utf8');
+  assert.ok(
+    !content.includes('<MobileTabBar'),
+    'AppShell must not render MobileTabBar'
+  );
+  assert.ok(
+    !content.includes('mobileBottomPadded'),
+    'AppShell must not use or define mobileBottomPadded'
+  );
+  assert.ok(
+    !content.includes('--ui-bottom-chrome'),
+    'AppShell must not calculate padding based on --ui-bottom-chrome'
+  );
+});
+
+test('REQ-MOBILE-SLIM-SIDEBAR-11: AppShell implements slim mobile left sidebar with toggle and touch targets', () => {
+  const content = fs.readFileSync(APP_SHELL_FILE, 'utf8');
+  assert.ok(
+    !content.includes('-translate-x-full'),
+    'AppShell must not hide the left sidebar off-canvas with -translate-x-full'
+  );
+  assert.ok(
+    content.includes('isEffectiveCollapsed'),
+    'AppShell must compute isEffectiveCollapsed considering isMobile and drawerOpen'
+  );
+  assert.ok(
+    content.includes('isMobile ? !drawerOpen : collapsed'),
+    'AppShell must collapse mobile sidebar when drawer is not open'
+  );
+  assert.ok(
+    content.includes('shell-sidebar-collapse-toggle'),
+    'AppShell must provide a toggle button to expand/collapse sidebar'
+  );
+  assert.ok(
+    content.includes('min-h-11 items-center gap-3 rounded-xl px-2.5 py-2'),
+    'NavItem must enforce touch-friendly min-h-11 targets'
+  );
+  assert.ok(
+    content.includes('w-16 shrink-0 md:hidden'),
+    'AppShell must reserve space on mobile for the slim left sidebar'
+  );
+});
+
+

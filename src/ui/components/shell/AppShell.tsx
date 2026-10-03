@@ -7,7 +7,7 @@ import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
 import { Badge, Breadcrumbs as UiBreadcrumbs, CommandPalette, PageShell, StatusDot } from '@ui';
-import { useViewport, MobileTabBar, focusSuppressesMobileChrome } from './responsive';
+import { useViewport } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { withApiBase } from '../../api/apiBase';
@@ -876,7 +876,7 @@ function NavItem({ item, active, collapsed, badge = 0, onClick }: { item: ShellR
       onClick={onClick}
       aria-label={collapsed ? item.label : undefined}
       title={collapsed ? item.label : item.description}
-      className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
+      className={`group flex min-h-11 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center min-w-11' : ''}`}
     >
       <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-accent' : ''}`}><Icon name={item.icon} size={17} /></span>
       {!collapsed && <span className="min-w-0 flex-1 truncate">{item.label}</span>}
@@ -1061,13 +1061,11 @@ function findChainIdForInstance(instanceId: string, liveProjects?: LiveProject[]
 function RouteOutlet({
   path,
   focusMessageId,
-  mobileBottomPadded = false,
   conversations = [],
   liveProjects = [],
 }: {
   path: string;
   focusMessageId?: string;
-  mobileBottomPadded?: boolean;
   conversations?: ConversationSummary[];
   liveProjects?: LiveProject[];
 }) {
@@ -1157,16 +1155,6 @@ function RouteOutlet({
         isDesktopTwoPaneRoute
           ? 'h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas'
           : 'min-w-0 min-h-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
-      }
-      // The scroll container clears the bottom chrome by MEASUREMENT rather than by a
-      // guessed `pb-20` (spec › GLOBAL FIXES): `--ui-bottom-chrome` is the tab bar's
-      // real height, published by the bar itself, and the safe-area inset is added on
-      // top so nothing is clipped on a device with a home indicator. A page that docks
-      // its own action bar adds its height in its own spacer.
-      style={
-        !isDesktopTwoPaneRoute && mobileBottomPadded
-          ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
-          : undefined
       }
     >
       <section
@@ -1307,8 +1295,6 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
-  const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const [settingsModalOpen, setSettingsModalOpenState] = useState<boolean>(() => routeFromLocation().startsWith('/settings'));
   const [settingsModalTab, setSettingsModalTab] = useState<string>(() => resolveSettingsTab(routeFromLocation()));
@@ -1477,35 +1463,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setDrawerOpen(false); }, [path]);
 
-  // Close the mobile drawer on heimdall:close-sidebar event.
+  // Handle mobile drawer open/close events.
   useEffect(() => {
     const handleCloseSidebar = () => {
       setDrawerOpen(false);
     };
+    const handleOpenSidebar = () => {
+      setDrawerOpen(true);
+    };
     window.addEventListener('heimdall:close-sidebar', handleCloseSidebar);
+    window.addEventListener('heimdall:open-sidebar', handleOpenSidebar);
     return () => {
       window.removeEventListener('heimdall:close-sidebar', handleCloseSidebar);
+      window.removeEventListener('heimdall:open-sidebar', handleOpenSidebar);
     };
   }, []);
-
-  // Mobile keyboards consume most of the viewport. While focus is inside an
-  // opted-in chat composer/input, hide the mobile top bar and bottom tab bar;
-  // restore them as soon as focus leaves the composer. Desktop is unaffected.
-  useEffect(() => {
-    if (!isMobile) { setMobileChromeSuppressed(false); return; }
-    // REQ-SHELL-28: the predicate moved to `./responsive` so the bottom-pinned composer
-    // reads the same rule — it has to know whether the tab bar below it is still mounted.
-    const updateFromActiveElement = () => setMobileChromeSuppressed(focusSuppressesMobileChrome(document.activeElement));
-    const onFocusIn = (event: FocusEvent) => setMobileChromeSuppressed(focusSuppressesMobileChrome(event.target));
-    const onFocusOut = () => window.setTimeout(updateFromActiveElement, 0);
-    document.addEventListener('focusin', onFocusIn);
-    document.addEventListener('focusout', onFocusOut);
-    updateFromActiveElement();
-    return () => {
-      document.removeEventListener('focusin', onFocusIn);
-      document.removeEventListener('focusout', onFocusOut);
-    };
-  }, [isMobile, path]);
 
   // UI-12: Cmd/Ctrl-K opens the command palette (desktop). Also the sidebar
   // Search button and the mobile bottom-tab center button open the same surface.
@@ -1570,26 +1542,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const handleMobileChrome = (event: Event) => {
-      const customEvent = event as CustomEvent<{ visible?: boolean }>;
-      if (customEvent.detail?.visible === false) {
-        setScrollChromeSuppressed(true);
-      } else if (customEvent.detail?.visible === true) {
-        setScrollChromeSuppressed(false);
-      }
-    };
-    window.addEventListener('heimdall:mobile-chrome', handleMobileChrome);
-    return () => {
-      window.removeEventListener('heimdall:mobile-chrome', handleMobileChrome);
-    };
-  }, []);
-
-  useEffect(() => {
     const update = () => {
       const current = routeFromLocation();
       setPath(current);
       setFocusMessageId(focusMessageFromLocation());
-      setScrollChromeSuppressed(false);
       if (current.startsWith('/settings')) {
         const tab = resolveSettingsTab(current);
         setSettingsModalTab(tab);
@@ -1626,7 +1582,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
-  const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
+  const isEffectiveCollapsed = isMobile ? !drawerOpen : collapsed;
   const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
@@ -1642,7 +1598,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   return (
     <div data-debug-id="app-shell" className="fixed inset-0 flex h-full w-full max-w-full overflow-hidden bg-canvas text-primary">
-      {/* UI-13: mobile drawer scrim. Closes the off-canvas sidebar on tap. */}
+      {/* On mobile, reserve space for the slim left sidebar so main content doesn't shift when drawer expands */}
+      {isMobile ? <div className="w-16 shrink-0 md:hidden pointer-events-none" aria-hidden="true" /> : null}
+
+      {/* UI-13: mobile drawer scrim. Closes the expanded sidebar on tap. */}
       {isMobile && drawerOpen ? (
         <div
           data-debug-id="shell-mobile-drawer-scrim"
@@ -1652,12 +1611,14 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
       <aside
-        data-debug-id={collapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
-        className={`flex shrink-0 flex-col border-r border-subtle bg-surface transition-[width,transform] duration-200 ${collapsed ? 'w-16' : 'w-80'} ${isMobile ? 'fixed inset-y-0 left-0 z-50 w-80 transition-transform md:static md:z-auto' : 'md:static'} ${isMobile && !drawerOpen ? '-translate-x-full md:translate-x-0' : 'translate-x-0'}`}
+        data-debug-id={isEffectiveCollapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
+        className={`flex shrink-0 flex-col border-r border-subtle bg-surface transition-[width] duration-200 ${
+          isEffectiveCollapsed ? 'w-16' : 'w-80 max-w-[calc(100vw-1rem)]'
+        } ${isMobile ? 'fixed inset-y-0 left-0 z-50 md:static md:z-auto' : 'md:static'} translate-x-0`}
         aria-label="Primary navigation"
       >
-        <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
-          {!collapsed && (
+        <div className={`flex items-center gap-3 p-3 ${isEffectiveCollapsed ? 'justify-center' : 'justify-between'}`}>
+          {!isEffectiveCollapsed && (
             <a href={shellHash('/home')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-neutral-soft">
               <span className="block truncate text-sm font-black tracking-tight text-primary">Heimdall</span>
             </a>
@@ -1665,30 +1626,33 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <button
             data-debug-id="shell-sidebar-collapse-toggle"
             type="button"
-            onClick={() => (isMobile ? setDrawerOpen(false) : toggleCollapsed())}
-            aria-label={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
-            title={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary"
+            onClick={() => (isMobile ? setDrawerOpen(!drawerOpen) : toggleCollapsed())}
+            aria-label={isEffectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={isEffectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary min-h-11 min-w-11"
           >
-            <Icon name={isMobile ? 'close' : (collapsed ? 'chevron-right' : 'chevron-left')} size={16} />
+            <Icon name={isEffectiveCollapsed ? (isMobile ? 'menu' : 'chevron-right') : (isMobile ? 'close' : 'chevron-left')} size={16} />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
           {/* Primary action: open the command palette (search + jump + new chat).
               Replaces the old direct "New chat" link — the palette is the canonical
-              entry point (also Cmd/Ctrl-K on desktop, the mobile tab bar center). */}
+              entry point (also Cmd/Ctrl-K on desktop). */}
           <button
             data-debug-id="shell-sidebar-search-button"
             type="button"
-            onClick={() => setPaletteOpen(true)}
+            onClick={() => {
+              if (isMobile) setDrawerOpen(false);
+              setPaletteOpen(true);
+            }}
             title="Search (⌘K)"
             aria-label="Search"
             aria-keyshortcuts="Meta+K Control+K"
-            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-subtle bg-surface-raised px-3 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary ${collapsed ? 'justify-center' : ''}`}
+            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-subtle bg-surface-raised px-3 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary ${isEffectiveCollapsed ? 'justify-center' : ''}`}
           >
             <Icon name="search" size={18} />
-            {!collapsed && (
+            {!isEffectiveCollapsed && (
               <>
                 <span className="flex-1 text-left">Search</span>
                 <kbd className="rounded border border-subtle bg-surface px-1.5 py-0.5 text-[10px] font-medium text-faint">⌘K</kbd>
@@ -1696,10 +1660,36 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             )}
           </button>
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
-            {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
+            {primary.map((item) => (
+              <NavItem
+                key={item.path}
+                item={item}
+                active={isRouteActive(path, item.path)}
+                collapsed={isEffectiveCollapsed}
+                badge={item.path === '/conversations' ? totalUnread : 0}
+                onClick={isMobile ? () => setDrawerOpen(false) : undefined}
+              />
+            ))}
           </nav>
-          {collapsed && <CollapsedPinnedChains currentPath={path} onNavigate={handlePaletteNavigate} />}
-          {!collapsed && <ProjectChainTree projects={liveProjects.map((p) => ({ projectId: p.projectId, projectName: p.name }))} currentPath={path} onNavigate={handlePaletteNavigate} />}
+          {isEffectiveCollapsed && (
+            <CollapsedPinnedChains
+              currentPath={path}
+              onNavigate={(navPath) => {
+                if (isMobile) setDrawerOpen(false);
+                handlePaletteNavigate(navPath);
+              }}
+            />
+          )}
+          {!isEffectiveCollapsed && (
+            <ProjectChainTree
+              projects={liveProjects.map((p) => ({ projectId: p.projectId, projectName: p.name }))}
+              currentPath={path}
+              onNavigate={(navPath) => {
+                if (isMobile) setDrawerOpen(false);
+                handlePaletteNavigate(navPath);
+              }}
+            />
+          )}
         </div>
 
         <div className="border-t border-subtle p-3">
@@ -1709,20 +1699,23 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
                 key={item.path}
                 item={item}
                 active={settingsModalOpen || isRouteActive(path, item.path)}
-                collapsed={collapsed}
+                collapsed={isEffectiveCollapsed}
                 onClick={
                   item.path.startsWith('/settings')
                     ? (e) => {
                         e.preventDefault();
+                        if (isMobile) setDrawerOpen(false);
                         setSettingsModalTab('appearance');
                         setSettingsModalOpen(true);
                       }
+                    : isMobile
+                    ? () => setDrawerOpen(false)
                     : undefined
                 }
               />
             ))}
           </nav>
-          <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
+          <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${isEffectiveCollapsed ? 'justify-center' : ''}`}>
             <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-neutral-soft text-caption font-bold text-muted`}>
               {(displayName || 'U').slice(0, 1).toUpperCase()}
               <span className="absolute ml-5 mt-5">
@@ -1734,23 +1727,19 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
                 />
               </span>
             </span>
-            {!collapsed && (
+            {!isEffectiveCollapsed && (
               <div className="min-w-0 flex-1">
                 <div data-debug-id="shell-current-user-owner" className="truncate text-[12px] font-semibold text-primary">{displayName}</div>
                 <div className="truncate text-[10.5px] text-muted">{user.email || user.user_id || ''}</div>
               </div>
             )}
-            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="close" size={14} /></a>}
+            {logoutUrl && !isEffectiveCollapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="close" size={14} /></a>}
           </div>
         </div>
       </aside>
 
-      {/* UI-13: on mobile, the sidebar is an off-canvas drawer (hidden by default);
-          a mobile top bar carries the drawer toggle + title, and the route outlet
-          gets bottom padding so content clears the bottom tab bar. On >= md the
-          sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
-        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} liveProjects={liveProjects} />
+        <RouteOutlet path={path} focusMessageId={focusMessageId} conversations={conversations} liveProjects={liveProjects} />
         <BottomDock />
       </div>
 
@@ -1758,32 +1747,6 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           route outlet, so open previews survive navigating between routes. It
           renders nothing at all until a preview tab is opened. */}
       <PreviewSidebar />
-
-      {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.
-          The center button owns the canonical `shell-mobile-palette-button` debug-id
-          so the palette entry point has one stable, layout-independent id. */}
-      {!hideMobileShellChrome ? (
-        <MobileTabBar
-          activePath={path}
-          onNavigate={(route) => {
-            if (route.startsWith('/settings')) {
-              const tab = resolveSettingsTab(route);
-              setSettingsModalTab(tab);
-              setSettingsModalOpen(true);
-            } else {
-              window.location.hash = buildRouteHash(route, '');
-            }
-          }}
-          onOpenPalette={() => setPaletteOpen(true)}
-          onOpenSettings={() => {
-            setSettingsModalTab('appearance');
-            setSettingsModalOpen(true);
-          }}
-          isSettingsOpen={settingsModalOpen}
-          chatBadge={totalUnread}
-          className={scrollChromeSuppressed ? 'translate-y-full pointer-events-none' : 'translate-y-0 pointer-events-auto'}
-        />
-      ) : null}
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} onAction={handlePaletteAction} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} chainGroups={chainGroupsQuery.data?.groups ?? []} />
       <ProjectLaunchModal
