@@ -1955,6 +1955,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             runtimeStatus={runtimeStatus}
             startupStatus={startupStatus}
             isStarting={isStarting}
+            runCount={instance?.run_count ?? instance?.runCount}
+            startedAt={instance?.started_at ?? instance?.startedAt}
             onStreamOutput={handleStreamOutput}
             className="mb-2.5"
           />

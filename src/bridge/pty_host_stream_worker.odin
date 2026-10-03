@@ -464,6 +464,23 @@ bridge_pty_stream_worker_is_active :: proc(session_id: string) -> bool {
 	return false
 }
 
+// bridge_pty_stream_worker_get_active_conn checks if an active streaming worker exists for session_id and retrieves its connection.
+bridge_pty_stream_worker_get_active_conn :: proc(session_id: string) -> (conn: ^ws.Connection, active: bool) {
+	sid := strings.trim_space(session_id)
+	if sid == "" do return nil, false
+
+	sync.mutex_lock(&bridge_pty_stream_map.mu)
+	defer sync.mutex_unlock(&bridge_pty_stream_map.mu)
+
+	if bridge_pty_stream_map.workers == nil do return nil, false
+	if worker, ok := bridge_pty_stream_map.workers[sid]; ok {
+		if worker != nil && worker.active {
+			return worker.conn, true
+		}
+	}
+	return nil, false
+}
+
 // bridge_pty_stream_reset clears all streaming workers and outgoing queue (for tests).
 bridge_pty_stream_reset :: proc() {
 	sync.mutex_lock(&bridge_pty_stream_map.mu)

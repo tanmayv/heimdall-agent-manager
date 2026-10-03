@@ -262,4 +262,53 @@ test('Contract test: stream connect and resume triggers terminal reset, cursor h
   assert.deepEqual(sentMessages[1], { type: 'resize', rows: 24, cols: 80 });
 });
 
+test('REQ-STREAM-RECONNECT-27: AgentPaneComposerPanel accepts runCount and startedAt props and resets/reconnects stream on restart', () => {
+  assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
+  const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
+
+  // 1. Props interface accepts runCount and startedAt
+  assert.ok(src.includes('runCount?: number;'), 'AgentPaneComposerPanelProps must declare runCount?: number');
+  assert.ok(src.includes('startedAt?: string;'), 'AgentPaneComposerPanelProps must declare startedAt?: string');
+
+  // 2. Function component accepts runCount and startedAt
+  assert.ok(src.includes('runCount,'), 'AgentPaneComposerPanel must accept runCount prop');
+  assert.ok(src.includes('startedAt,'), 'AgentPaneComposerPanel must accept startedAt prop');
+
+  // 3. Tracks previous values via refs
+  assert.ok(src.includes('prevRunCountRef'), 'must track prevRunCountRef');
+  assert.ok(src.includes('prevStartedAtRef'), 'must track prevStartedAtRef');
+
+  // 4. Resets buffer and triggers reconnect on change
+  assert.ok(src.includes('reconnectStream()'), 'must call reconnectStream()');
+  assert.ok(src.includes('streamBufferRef.current = []'), 'must clear streamBufferRef');
+  assert.ok(src.includes('hasReceivedOutputRef.current = false'), 'must reset hasReceivedOutputRef');
+  assert.ok(src.includes('terminalRef.current.reset()'), 'must reset terminal on stream reconnect');
+});
+
+test('REQ-STREAM-RECONNECT-27: AgentPaneComposerPanel manual refresh button reconnects stream when streaming is enabled/active', () => {
+  assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
+  const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
+
+  // Manual refresh button triggers reconnectStream
+  assert.ok(src.includes('data-debug-id="agent-pane-refresh-btn"'), 'must include refresh button');
+  const refreshSection = src.slice(src.indexOf('data-debug-id="agent-pane-refresh-btn"'), src.indexOf('data-debug-id="agent-pane-refresh-btn"') + 400);
+  assert.ok(refreshSection.includes('reconnectStream()'), 'refresh button onClick must invoke reconnectStream()');
+  assert.ok(refreshSection.includes('refetch()'), 'refresh button onClick must invoke refetch()');
+});
+
+test('REQ-STREAM-RECONNECT-27: ConversationThreadPage forwards runCount and startedAt to AgentPaneComposerPanel', () => {
+  const CONVERSATION_THREAD_PAGE = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationThreadPage.tsx');
+  assert.ok(fs.existsSync(CONVERSATION_THREAD_PAGE), 'ConversationThreadPage.tsx must exist');
+  const src = fs.readFileSync(CONVERSATION_THREAD_PAGE, 'utf8');
+
+  assert.ok(
+    src.includes('runCount={instance?.run_count ?? instance?.runCount}'),
+    'must pass runCount to AgentPaneComposerPanel'
+  );
+  assert.ok(
+    src.includes('startedAt={instance?.started_at ?? instance?.startedAt}'),
+    'must pass startedAt to AgentPaneComposerPanel'
+  );
+});
+
 

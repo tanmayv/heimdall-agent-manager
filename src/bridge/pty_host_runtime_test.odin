@@ -979,3 +979,93 @@ t40_connection_teardown_retires_workers_then_closes :: proc(t: ^testing.T) {
 	bridge_hub_connection_teardown(&conn)
 	testing.expect(t, !conn.connected, "a second teardown is harmless")
 }
+
+@(test)
+pty_stream_worker_get_active_conn_retrieves_registered_connection :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	defer posix.close(fds[0]); defer posix.close(fds[1])
+
+	// Non-registered session returns nil, false
+	c_nil, active_nil := bridge_pty_stream_worker_get_active_conn("sh_nonexistent")
+	testing.expect(t, c_nil == nil && !active_nil, "nonexistent worker must return nil, false")
+
+	// Registered worker
+	worker := t40_fake_worker("sh_get_conn", fds[0])
+	heap := runtime.heap_allocator()
+	defer { delete(worker.session_id, heap); delete(worker.shell_id, heap); free(worker, heap) }
+
+	var_conn: ws.Connection
+	worker.conn = &var_conn
+
+	conn_ret, active := bridge_pty_stream_worker_get_active_conn("sh_get_conn")
+	testing.expect(t, active, "registered worker must be active")
+	testing.expect(t, conn_ret == &var_conn, "retrieved conn must match worker.conn")
+
+	// Detached worker returns false
+	_ = bridge_pty_stream_worker_detach("sh_get_conn")
+	c_after, active_after := bridge_pty_stream_worker_get_active_conn("sh_get_conn")
+	testing.expect(t, !active_after, "detached worker must not be active")
+	testing.expect(t, c_after == nil, "detached worker must return nil conn")
+}
+
+@(test)
+pty_stream_worker_auto_reattach_flow_preserves_connection :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_stream_mutex)
+	defer sync.mutex_unlock(&bridge_test_stream_mutex)
+
+	bridge_pty_stream_reset()
+	defer bridge_pty_stream_reset()
+
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	defer posix.close(fds[0]); defer posix.close(fds[1])
+
+	inst_id := "inst_stream_relaunch_test"
+	worker := t40_fake_worker(inst_id, fds[0])
+	heap := runtime.heap_allocator()
+	defer { delete(worker.session_id, heap); delete(worker.shell_id, heap); free(worker, heap) }
+
+	var_conn: ws.Connection
+	worker.conn = &var_conn
+
+	// Simulate bridge_runtime_launch_agent_pty_host relaunch check:
+	conn, stream_was_active := bridge_pty_stream_worker_get_active_conn(inst_id)
+	testing.expect(t, stream_was_active, "stream was active prior to relaunch")
+	testing.expect(t, conn == &var_conn, "stream conn was captured")
+
+	if stream_was_active {
+		bridge_pty_stream_worker_detach(inst_id)
+	}
+
+	testing.expect(t, !bridge_pty_stream_worker_is_active(inst_id), "worker detached before respawn")
+
+	// Simulate after respawn succeeds: re-register fake worker with captured conn.
+	// new_fds[0] is handed to new_worker which remains registered at test end,
+	// so the deferred bridge_pty_stream_reset owns closing new_fds[0] and freeing new_worker.
+	new_fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &new_fds) != .OK {
+		testing.expect(t, false, "new socketpair failed")
+		return
+	}
+	defer posix.close(new_fds[1])
+
+	new_worker := t40_fake_worker(inst_id, new_fds[0])
+	new_worker.conn = conn
+
+	conn_after, active_after := bridge_pty_stream_worker_get_active_conn(inst_id)
+	testing.expect(t, active_after, "stream worker is active on newly spawned PTY")
+	testing.expect(t, conn_after == &var_conn, "conn is preserved across relaunch")
+}

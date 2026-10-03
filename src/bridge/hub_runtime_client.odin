@@ -1707,6 +1707,10 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// the new spec. This makes provider/tier changes actually take effect.
 	pid: i32
 	ok: bool
+	stream_conn, stream_was_active := bridge_pty_stream_worker_get_active_conn(instance_id)
+	if stream_was_active {
+		bridge_pty_stream_worker_detach(instance_id)
+	}
 	if bridge_pty_host_is_registered(socket, instance_id) {
 		if !bridge_pty_host_close(socket, instance_id) {
 			fmt.eprintln("bridge launch: failed to close registered instance before respawn", instance_id)
@@ -1723,6 +1727,9 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
 	// status/activity surface without polling.
 	bridge_pty_host_events_ensure()
+	if stream_was_active {
+		bridge_pty_stream_worker_start(instance_id, instance_id, stream_conn)
+	}
 	return true, ""
 }
 

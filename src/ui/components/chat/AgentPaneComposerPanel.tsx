@@ -44,6 +44,8 @@ export interface AgentPaneComposerPanelProps {
   runtimeStatus?: string;
   startupStatus?: string;
   isStarting?: boolean;
+  runCount?: number;
+  startedAt?: string;
   onStreamOutput?: () => void;
   className?: string;
   hideHeader?: boolean;
@@ -59,6 +61,8 @@ export function AgentPaneComposerPanel({
   runtimeStatus,
   startupStatus,
   isStarting = false,
+  runCount,
+  startedAt,
   onStreamOutput,
   className = '',
   hideHeader = false,
@@ -184,6 +188,30 @@ export function AgentPaneComposerPanel({
   });
 
   const isStreamingActive = isStreamingExperimentEnabled && streamConnected && !fallbackToPolling;
+
+  // Track runCount, startedAt, and isStarting to reset stream on agent restart (REQ-STREAM-RECONNECT-27)
+  const prevRunCountRef = useRef<number | undefined>(runCount);
+  const prevStartedAtRef = useRef<string | undefined>(startedAt);
+  const prevIsStartingRef = useRef<boolean>(isStarting);
+
+  useEffect(() => {
+    const runCountChanged = prevRunCountRef.current !== undefined && prevRunCountRef.current !== runCount;
+    const startedAtChanged = prevStartedAtRef.current !== undefined && prevStartedAtRef.current !== startedAt;
+    const isRestartStarting = !prevIsStartingRef.current && isStarting;
+
+    prevRunCountRef.current = runCount;
+    prevStartedAtRef.current = startedAt;
+    prevIsStartingRef.current = isStarting;
+
+    if (runCountChanged || startedAtChanged || isRestartStarting) {
+      streamBufferRef.current = [];
+      hasReceivedOutputRef.current = false;
+      if (terminalRef.current) {
+        terminalRef.current.reset();
+      }
+      reconnectStream();
+    }
+  }, [runCount, startedAt, isStarting, reconnectStream]);
 
   // --------------------------------------------------------------------------
   // LEGACY POLLING PATH: 500ms/5m polled capture with SHA-256 diff & term.reset()
@@ -576,7 +604,12 @@ export function AgentPaneComposerPanel({
             data-debug-id="agent-pane-refresh-btn"
             title="Refresh terminal output"
             aria-label="Refresh terminal output"
-            onClick={() => refetch()}
+            onClick={() => {
+              if (isStreamingActive || (isStreamingExperimentEnabled && !fallbackToPolling)) {
+                reconnectStream();
+              }
+              refetch();
+            }}
             disabled={isLoading || isFetching}
             className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
           >
