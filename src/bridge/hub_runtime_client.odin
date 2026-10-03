@@ -2844,6 +2844,18 @@ bridge_shell_error_result_json :: proc(result_type, session_id, command_id, msg,
 	return strings.to_string(b)
 }
 
+// REQ-PAGER-1, REQ-PAGER-2, REQ-PAGER-3: inject non-interactive pager overrides into
+// kind=run sessions so interactive pagers (less) do not block one-shot commands on stdin.
+// Caller owns the returned slice and its cloned strings; bridge_pty_host_spawn_request_delete
+// frees both.
+bridge_shell_run_env :: proc() -> [][2]string {
+	out := make([][2]string, 3)
+	out[0] = [2]string{strings.clone("PAGER"), strings.clone("cat")}
+	out[1] = [2]string{strings.clone("GIT_PAGER"), strings.clone("cat")}
+	out[2] = [2]string{strings.clone("SYSTEMD_PAGER"), strings.clone("cat")}
+	return out
+}
+
 // ---- T4: hub→bridge WS runtime command handlers (REQ-SH-CONTRACT §3) ----
 
 // bridge_hub_handle_shell_start handles the "shell_start" command.
@@ -3031,7 +3043,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		// than what was checked.
 		has_cwd          = cwd_resolved != "",
 		cwd              = strings.clone(cwd_resolved),
-		env              = nil,
+		env              = kind == .Run ? bridge_shell_run_env() : nil,
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
 		display_name     = strings.clone(label),
@@ -3538,7 +3550,7 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		argv             = cloned_argv,
 		has_cwd          = cwd_resolved != "",
 		cwd              = strings.clone(cwd_resolved),
-		env              = nil,
+		env              = sess.kind == .Run ? bridge_shell_run_env() : nil,
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
 		display_name     = strings.clone(sess.label),
