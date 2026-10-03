@@ -876,7 +876,7 @@ function NavItem({ item, active, collapsed, badge = 0, onClick }: { item: ShellR
       onClick={onClick}
       aria-label={collapsed ? item.label : undefined}
       title={collapsed ? item.label : item.description}
-      className={`group flex min-h-11 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center min-w-11' : ''}`}
+      className={`group flex min-h-11 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
       <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-accent' : ''}`}><Icon name={item.icon} size={17} /></span>
       {!collapsed && <span className="min-w-0 flex-1 truncate">{item.label}</span>}
@@ -1599,7 +1599,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   return (
     <div data-debug-id="app-shell" className="fixed inset-0 flex h-full w-full max-w-full overflow-hidden bg-canvas text-primary">
       {/* On mobile, reserve space for the slim left sidebar so main content doesn't shift when drawer expands */}
-      {isMobile ? <div className="w-16 shrink-0 md:hidden pointer-events-none" aria-hidden="true" /> : null}
+      {isMobile ? <div className="w-12 shrink-0 md:hidden pointer-events-none" aria-hidden="true" /> : null}
 
       {/* UI-13: mobile drawer scrim. Closes the expanded sidebar on tap. */}
       {isMobile && drawerOpen ? (
@@ -1613,11 +1613,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       <aside
         data-debug-id={isEffectiveCollapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
         className={`flex shrink-0 flex-col border-r border-subtle bg-surface transition-[width] duration-200 ${
-          isEffectiveCollapsed ? 'w-16' : 'w-80 max-w-[calc(100vw-1rem)]'
+          isEffectiveCollapsed ? (isMobile ? 'w-12' : 'w-16') : 'w-80 max-w-[calc(100vw-1rem)]'
         } ${isMobile ? 'fixed inset-y-0 left-0 z-50 md:static md:z-auto' : 'md:static'} translate-x-0`}
         aria-label="Primary navigation"
       >
-        <div className={`flex items-center gap-3 p-3 ${isEffectiveCollapsed ? 'justify-center' : 'justify-between'}`}>
+        <div className={`flex items-center gap-3 ${isMobile && isEffectiveCollapsed ? 'p-1.5' : 'p-3'} ${isEffectiveCollapsed ? 'justify-center' : 'justify-between'}`}>
           {!isEffectiveCollapsed && (
             <a href={shellHash('/home')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-neutral-soft">
               <span className="block truncate text-sm font-black tracking-tight text-primary">Heimdall</span>
@@ -1629,13 +1629,17 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             onClick={() => (isMobile ? setDrawerOpen(!drawerOpen) : toggleCollapsed())}
             aria-label={isEffectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             title={isEffectiveCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary min-h-11 min-w-11"
+            className={`grid shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary ${
+              isMobile && isEffectiveCollapsed
+                ? 'h-9 w-9 min-h-9 min-w-9'
+                : 'h-10 w-10 min-h-11 min-w-11'
+            }`}
           >
             <Icon name={isEffectiveCollapsed ? (isMobile ? 'menu' : 'chevron-right') : (isMobile ? 'close' : 'chevron-left')} size={16} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3">
+        <div className={`flex-1 overflow-y-auto ${isMobile && isEffectiveCollapsed ? 'p-1.5' : 'p-3'}`}>
           {/* Primary action: open the command palette (search + jump + new chat).
               Replaces the old direct "New chat" link — the palette is the canonical
               entry point (also Cmd/Ctrl-K on desktop). */}
@@ -1649,7 +1653,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             title="Search (⌘K)"
             aria-label="Search"
             aria-keyshortcuts="Meta+K Control+K"
-            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-subtle bg-surface-raised px-3 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary ${isEffectiveCollapsed ? 'justify-center' : ''}`}
+            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-subtle bg-surface-raised ${isMobile && isEffectiveCollapsed ? 'px-1.5' : 'px-3'} py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary ${isEffectiveCollapsed ? 'justify-center' : ''}`}
           >
             <Icon name="search" size={18} />
             {!isEffectiveCollapsed && (
@@ -1692,7 +1696,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           )}
         </div>
 
-        <div className="border-t border-subtle p-3">
+        <div className={`border-t border-subtle ${isMobile && isEffectiveCollapsed ? 'p-1.5' : 'p-3'}`}>
           <nav data-debug-id="shell-secondary-nav" className="mb-2 space-y-0.5" aria-label="Settings destinations">
             {secondary.map((item) => (
               <NavItem

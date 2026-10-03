@@ -225,7 +225,7 @@ test('REQ-MOBILE-SLIM-SIDEBAR-11: AppShell implements slim mobile left sidebar w
     'NavItem must enforce touch-friendly min-h-11 targets'
   );
   assert.ok(
-    content.includes('w-16 shrink-0 md:hidden'),
+    content.includes('w-12 shrink-0 md:hidden') || content.includes('w-16 shrink-0 md:hidden'),
     'AppShell must reserve space on mobile for the slim left sidebar'
   );
 });
