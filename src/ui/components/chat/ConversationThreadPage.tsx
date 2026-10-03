@@ -676,13 +676,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (isRightSidebarTab(norm)) return norm;
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
-        return readRightSidebarTab(agentInstanceId) || 'tasks';
+        return (chainId ? readRightSidebarTab({ chainId, instanceId: agentInstanceId }) : readRightSidebarTab(agentInstanceId)) || 'tasks';
       }
     }
     // Guard initial rightPanel state on mobile: !isMobile && readRightSidebarOpen()
-    const open = !isMobile && readRightSidebarOpen(agentInstanceId);
+    const open = !isMobile && (chainId ? readRightSidebarOpen({ chainId, instanceId: agentInstanceId }) : readRightSidebarOpen(agentInstanceId));
     if (open) {
-      return readRightSidebarTab(agentInstanceId) || 'tasks';
+      return (chainId ? readRightSidebarTab({ chainId, instanceId: agentInstanceId }) : readRightSidebarTab(agentInstanceId)) || 'tasks';
     }
     return 'closed';
   });
@@ -699,6 +699,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const containerRef = useRef<HTMLDivElement>(null);
   // Guards the one-shot chain-tab auto-open so it only fires once per conversation load.
   const chainAutoOpenedRef = useRef(false);
+  const prevChainIdRef = useRef<string | null>(null);
 
   // REQ-SIDEBAR-5: coordinator conversations with a chainId default the right sidebar
   // to the 'chain' tab. Fires once when chainId first becomes available and the panel
@@ -711,9 +712,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     }
   }, [chainId, isMobile, rightPanel]);
 
-  // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)
+  // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE, REQ-CHAIN-SIDEBAR-PERSIST-5)
   useEffect(() => {
     if (!agentInstanceId) return;
+
+    // If chainId is present and unchanged (switching instance within the same chain),
+    // preserve the current user-selected rightPanel tab without resetting or re-reading.
+    if (chainId && prevChainIdRef.current === chainId) {
+      return;
+    }
+    prevChainIdRef.current = chainId || null;
+
     const search = getRouteSearch();
     const params = new URLSearchParams(search.replace(/^\?/, ''));
     const param = params.get('panel') || params.get('sidebar');
@@ -732,13 +741,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         return;
       }
     }
-    const open = !isMobile && readRightSidebarOpen(agentInstanceId);
+    const open = !isMobile && (chainId ? readRightSidebarOpen({ chainId, instanceId: agentInstanceId }) : readRightSidebarOpen(agentInstanceId));
     if (open) {
-      setRightPanel(readRightSidebarTab(agentInstanceId) || 'tasks');
+      setRightPanel((chainId ? readRightSidebarTab({ chainId, instanceId: agentInstanceId }) : readRightSidebarTab(agentInstanceId)) || 'tasks');
     } else {
       setRightPanel('closed');
     }
-  }, [agentInstanceId, isMobile]);
+  }, [agentInstanceId, chainId, isMobile]);
 
   // Global Cmd+P / Ctrl+P shortcut to trigger Quick Open across the conversation page (REQ-UI-GLOBAL-CMDP-EVERYWHERE)
   useEffect(() => {
@@ -806,15 +815,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         const tab = norm === 'rundir' ? 'files' : norm;
         if (isRightSidebarTab(tab)) {
           setRightPanel(tab);
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab(tab, agentInstanceId);
+          writeRightSidebarOpen(true, { chainId, instanceId: agentInstanceId });
+          writeRightSidebarTab(tab, { chainId, instanceId: agentInstanceId });
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
-          writeRightSidebarOpen(false, agentInstanceId);
+          writeRightSidebarOpen(false, { chainId, instanceId: agentInstanceId });
         }
       } else {
         setRightPanel('closed');
-        writeRightSidebarOpen(false, agentInstanceId);
+        writeRightSidebarOpen(false, { chainId, instanceId: agentInstanceId });
       }
     };
     window.addEventListener('hashchange', handleLocationChange);
@@ -823,7 +832,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('popstate', handleLocationChange);
     };
-  }, [agentInstanceId]);
+  }, [agentInstanceId, chainId]);
 
   // Guardrail: adjust sidebar width on window resize so chat view never violates CHAT_VIEW_MIN_WIDTH
   useEffect(() => {
@@ -1259,14 +1268,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setHeaderActionsOpen(false);
     setRightPanel((cur) => {
       if (cur === 'closed') {
-        const targetTab = readRightSidebarTab(agentInstanceId) || defaultPanelTab();
-        writeRightSidebarOpen(true, agentInstanceId);
-        writeRightSidebarTab(targetTab, agentInstanceId);
+        const targetTab = readRightSidebarTab({ chainId, instanceId: agentInstanceId }) || defaultPanelTab();
+        writeRightSidebarOpen(true, { chainId, instanceId: agentInstanceId });
+        writeRightSidebarTab(targetTab, { chainId, instanceId: agentInstanceId });
         syncUrlPanel(targetTab);
         return targetTab;
       } else {
         setIsRightPanelMaximized(false);
-        writeRightSidebarOpen(false, agentInstanceId);
+        writeRightSidebarOpen(false, { chainId, instanceId: agentInstanceId });
         syncUrlPanel(null);
         return 'closed';
       }
@@ -1278,15 +1287,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   function openRightPanel(tab: RightSidebarTab) {
     const targetTab = tab === 'rundir' ? 'files' : tab;
     setHeaderActionsOpen(false);
-    writeRightSidebarOpen(true, agentInstanceId);
-    writeRightSidebarTab(targetTab, agentInstanceId);
-    syncUrlPanel(targetTab);
+    writeRightSidebarOpen(true, { chainId, instanceId: agentInstanceId });
+    writeRightSidebarTab(targetTab, { chainId, instanceId: agentInstanceId });
+    syncUrlPanel(tab);
     setRightPanel(targetTab);
   }
 
   function closeRightPanel() {
     setIsRightPanelMaximized(false);
-    writeRightSidebarOpen(false, agentInstanceId);
+    writeRightSidebarOpen(false, { chainId, instanceId: agentInstanceId });
     syncUrlPanel(null);
     setRightPanel('closed');
   }
@@ -1296,20 +1305,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       setIsRightPanelMaximized(false);
       setRightPanel('closed');
       writeRightSidebarOpen(false);
-      if (agentInstanceId) writeRightSidebarOpen(false, agentInstanceId);
+      if (agentInstanceId || chainId) writeRightSidebarOpen(false, { chainId, instanceId: agentInstanceId });
       syncUrlPanel(null);
     };
     window.addEventListener('heimdall:close-sidebar', handleCloseSidebar);
     return () => {
       window.removeEventListener('heimdall:close-sidebar', handleCloseSidebar);
     };
-  }, [agentInstanceId]);
+  }, [agentInstanceId, chainId]);
 
   function selectRightPanelTab(tab: RightSidebarTab) {
     const targetTab = tab === 'rundir' ? 'files' : tab;
-    writeRightSidebarOpen(true, agentInstanceId);
-    writeRightSidebarTab(targetTab, agentInstanceId);
-    syncUrlPanel(targetTab);
+    writeRightSidebarOpen(true, { chainId, instanceId: agentInstanceId });
+    writeRightSidebarTab(targetTab, { chainId, instanceId: agentInstanceId });
+    syncUrlPanel(tab);
     setRightPanel(targetTab);
   }
 

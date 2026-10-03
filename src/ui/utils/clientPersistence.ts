@@ -95,11 +95,44 @@ export function writeRightSidebarWidth(width: number): void {
   }
 }
 
-export function readRightSidebarOpen(instanceId?: string): boolean {
+export type SidebarPersistenceScope = {
+  chainId?: string;
+  instanceId?: string;
+};
+
+function resolveSidebarScope(
+  scopeOrInstanceId?: string | SidebarPersistenceScope,
+  maybeChainId?: string
+): { chainId?: string; instanceId?: string } {
+  if (typeof scopeOrInstanceId === 'object' && scopeOrInstanceId !== null) {
+    return {
+      chainId: scopeOrInstanceId.chainId || undefined,
+      instanceId: scopeOrInstanceId.instanceId || undefined,
+    };
+  }
+  return {
+    chainId: maybeChainId || undefined,
+    instanceId: typeof scopeOrInstanceId === 'string' ? scopeOrInstanceId || undefined : undefined,
+  };
+}
+
+export function readRightSidebarOpen(instanceId?: string): boolean;
+export function readRightSidebarOpen(scope?: SidebarPersistenceScope): boolean;
+export function readRightSidebarOpen(
+  scopeOrInstanceId?: string | SidebarPersistenceScope,
+  chainId?: string
+): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    if (instanceId) {
-      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:open:${instanceId}`);
+    const scope = resolveSidebarScope(scopeOrInstanceId, chainId);
+    if (scope.chainId) {
+      const chainRaw = window.localStorage.getItem(`heimdall:sidebar:open:chain:${scope.chainId}`);
+      if (chainRaw !== null) {
+        return chainRaw === 'true' || chainRaw === '1';
+      }
+    }
+    if (scope.instanceId) {
+      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:open:${scope.instanceId}`);
       if (instanceRaw !== null) {
         return instanceRaw === 'true' || instanceRaw === '1';
       }
@@ -112,24 +145,45 @@ export function readRightSidebarOpen(instanceId?: string): boolean {
   }
 }
 
-export function writeRightSidebarOpen(open: boolean, instanceId?: string): void {
+export function writeRightSidebarOpen(open: boolean, instanceId?: string): void;
+export function writeRightSidebarOpen(open: boolean, scope?: SidebarPersistenceScope): void;
+export function writeRightSidebarOpen(
+  open: boolean,
+  scopeOrInstanceId?: string | SidebarPersistenceScope,
+  chainId?: string
+): void {
   if (typeof window === 'undefined') return;
   try {
+    const scope = resolveSidebarScope(scopeOrInstanceId, chainId);
     const val = open ? 'true' : 'false';
     window.localStorage.setItem(RIGHT_SIDEBAR_OPEN_KEY, val);
-    if (instanceId) {
-      window.localStorage.setItem(`heimdall:sidebar:open:${instanceId}`, val);
+    if (scope.instanceId) {
+      window.localStorage.setItem(`heimdall:sidebar:open:${scope.instanceId}`, val);
+    }
+    if (scope.chainId) {
+      window.localStorage.setItem(`heimdall:sidebar:open:chain:${scope.chainId}`, val);
     }
   } catch {
     /* ignore */
   }
 }
 
-export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null {
+export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null;
+export function readRightSidebarTab(scope?: SidebarPersistenceScope): RightSidebarTab | null;
+export function readRightSidebarTab(
+  scopeOrInstanceId?: string | SidebarPersistenceScope,
+  chainId?: string
+): RightSidebarTab | null {
   if (typeof window === 'undefined') return null;
   try {
-    if (instanceId) {
-      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${instanceId}`);
+    const scope = resolveSidebarScope(scopeOrInstanceId, chainId);
+    if (scope.chainId) {
+      const chainRaw = window.localStorage.getItem(`heimdall:sidebar:tab:chain:${scope.chainId}`);
+      if (chainRaw === 'rundir') return 'files';
+      if (isRightSidebarTab(chainRaw)) return chainRaw;
+    }
+    if (scope.instanceId) {
+      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${scope.instanceId}`);
       if (instanceRaw === 'rundir') return 'files';
       if (isRightSidebarTab(instanceRaw)) return instanceRaw;
     }
@@ -142,14 +196,24 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
   }
 }
 
-export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void {
+export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void;
+export function writeRightSidebarTab(tab: RightSidebarTab, scope?: SidebarPersistenceScope): void;
+export function writeRightSidebarTab(
+  tab: RightSidebarTab,
+  scopeOrInstanceId?: string | SidebarPersistenceScope,
+  chainId?: string
+): void {
   if (typeof window === 'undefined') return;
   try {
+    const scope = resolveSidebarScope(scopeOrInstanceId, chainId);
     const targetTab = tab === 'rundir' ? 'files' : tab;
     if (isRightSidebarTab(targetTab)) {
       window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, targetTab);
-      if (instanceId) {
-        window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, targetTab);
+      if (scope.instanceId) {
+        window.localStorage.setItem(`heimdall:sidebar:tab:${scope.instanceId}`, targetTab);
+      }
+      if (scope.chainId) {
+        window.localStorage.setItem(`heimdall:sidebar:tab:chain:${scope.chainId}`, targetTab);
       }
     }
   } catch {

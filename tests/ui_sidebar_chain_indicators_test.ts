@@ -135,3 +135,63 @@ test('Icon.tsx includes filter glyph in IconName and PATHS', () => {
   assert.match(content, /\|\s*'filter'/, 'IconName union must include filter');
   assert.match(content, /filter:\s*\(/, 'PATHS dictionary must define filter path');
 });
+
+// 5. REQ-CHAIN-SIDEBAR-PERSIST-5: Chain-level Right Sidebar Tab & Open Persistence
+test('REQ-CHAIN-SIDEBAR-PERSIST-5: clientPersistence persists and retrieves tab and open state by chainId', async () => {
+  const mockStorage: Record<string, string> = {};
+  (globalThis as any).window = {
+    localStorage: {
+      getItem: (key: string) => mockStorage[key] ?? null,
+      setItem: (key: string, val: string) => { mockStorage[key] = String(val); },
+      removeItem: (key: string) => { delete mockStorage[key]; },
+    },
+  };
+
+  const {
+    readRightSidebarTab,
+    writeRightSidebarTab,
+    readRightSidebarOpen,
+    writeRightSidebarOpen,
+  } = await import('../src/ui/utils/clientPersistence.ts');
+
+  // Test 1: Writing with chainId writes to heimdall:sidebar:tab:chain:<chainId>
+  writeRightSidebarTab('files', { chainId: 'chain_test_1', instanceId: 'inst_1' });
+  assert.equal(mockStorage['heimdall:sidebar:tab:chain:chain_test_1'], 'files');
+  assert.equal(mockStorage['heimdall:sidebar:tab:inst_1'], 'files');
+
+  // Test 2: Reading with chainId retrieves chain-level tab
+  assert.equal(readRightSidebarTab({ chainId: 'chain_test_1' }), 'files');
+  assert.equal(readRightSidebarTab({ chainId: 'chain_test_1', instanceId: 'inst_2' }), 'files');
+
+  // Test 3: Tab falls back to instanceId when chain key is absent
+  mockStorage['heimdall:sidebar:tab:inst_solo'] = 'vcs';
+  assert.equal(readRightSidebarTab({ chainId: 'chain_nonexistent', instanceId: 'inst_solo' }), 'vcs');
+
+  // Test 4: Tab falls back to global key when neither chain nor instance key is present
+  mockStorage['heimdall.rightSidebar.tab'] = 'tasks';
+  assert.equal(readRightSidebarTab({ chainId: 'chain_none', instanceId: 'inst_none' }), 'tasks');
+
+  // Test 5: Open state persists to heimdall:sidebar:open:chain:<chainId>
+  writeRightSidebarOpen(true, { chainId: 'chain_test_1', instanceId: 'inst_1' });
+  assert.equal(mockStorage['heimdall:sidebar:open:chain:chain_test_1'], 'true');
+  assert.equal(readRightSidebarOpen({ chainId: 'chain_test_1' }), true);
+
+  writeRightSidebarOpen(false, { chainId: 'chain_test_1' });
+  assert.equal(mockStorage['heimdall:sidebar:open:chain:chain_test_1'], 'false');
+  assert.equal(readRightSidebarOpen({ chainId: 'chain_test_1' }), false);
+
+  // Test 6: Open state falls back to instanceId when chain key is absent
+  mockStorage['heimdall:sidebar:open:inst_solo'] = 'true';
+  assert.equal(readRightSidebarOpen({ chainId: 'chain_other', instanceId: 'inst_solo' }), true);
+
+  // Test 7: Verify ConversationThreadPage invariants for instance switch within same chain
+  const convFile = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationThreadPage.tsx');
+  const convSrc = fs.readFileSync(convFile, 'utf8');
+
+  assert.match(convSrc, /prevChainIdRef\s*=\s*useRef/, 'Must define prevChainIdRef');
+  assert.match(convSrc, /chainId\s*&&\s*prevChainIdRef\.current\s*===\s*chainId/, 'Must guard rightPanel reset when switching instances within same chain');
+  assert.match(convSrc, /readRightSidebarTab\(\{\s*chainId/, 'Must read tab with chainId');
+  assert.match(convSrc, /readRightSidebarOpen\(\{\s*chainId/, 'Must read open with chainId');
+  assert.match(convSrc, /writeRightSidebarTab\(targetTab,\s*\{\s*chainId/, 'Must write tab with chainId in selectRightPanelTab');
+});
+
