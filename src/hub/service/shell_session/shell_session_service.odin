@@ -2240,9 +2240,7 @@ _json_int :: proc(body, key: string, default_value: int) -> int {
 }
 
 _json_bool :: proc(body, key: string) -> bool {
-	value_start, ok := _inventory_value(body, key)
-	if !ok do return false
-	return strings.has_prefix(body[value_start:], "true")
+	return jsonx.extract_bool(body, key, false)
 }
 
 _json_array_raw :: proc(body, key: string, allocator := context.allocator) -> string {

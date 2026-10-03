@@ -42,8 +42,8 @@ package shell_session
 // naming bridge B's session resolves to nothing and changes nothing on B.
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
-import "core:strconv"
 import "core:strings"
 import "core:sync"
 import domain "odin_test:hub/domain"
@@ -87,22 +87,29 @@ SHELL_SESSION_INVENTORY_UNOBSERVED_TERMINAL :: domain.Shell_Session_Status_Faile
 // itself field-for-field the bridge's on-disk session spec, so the three spellings
 // cannot drift apart into a translation table nobody maintains.
 Shell_Session_Inventory_Entry :: struct {
-	session_id:        string,
-	kind:              string,
-	status:            string,
-	shell_id:          string,
-	started_at:        string,
-	label:             string,
-	cmd:               string,
-	cwd:               string,
-	owner_user_id:     string,
-	project_id:        string,
-	chain_id:          string,
-	agent_instance_id: string,
-	background:        bool,
-	pid:               int,
-	server_port:       int,
-	run_seq:           int,
+	session_id:        string `json:"session_id"`,
+	kind:              string `json:"kind"`,
+	status:            string `json:"status"`,
+	shell_id:          string `json:"shell_id"`,
+	started_at:        string `json:"started_at"`,
+	label:             string `json:"label"`,
+	cmd:               string `json:"cmd"`,
+	cwd:               string `json:"cwd"`,
+	owner_user_id:     string `json:"owner_user_id"`,
+	project_id:        string `json:"project_id"`,
+	chain_id:          string `json:"chain_id"`,
+	agent_instance_id: string `json:"agent_instance_id"`,
+	background:        bool   `json:"background"`,
+	pid:               int    `json:"pid"`,
+	server_port:       int    `json:"server_port"`,
+	run_seq:           int    `json:"run_seq"`,
+}
+
+Shell_Session_Inventory_Frame :: struct {
+	type:      string                         `json:"type"`,
+	bridge_id: string                         `json:"bridge_id"`,
+	truncated: bool                           `json:"truncated"`,
+	sessions:  []Shell_Session_Inventory_Entry `json:"sessions"`,
 }
 
 // Shell_Session_Inventory_Result reports what one diff did. Counters rather than a
@@ -149,9 +156,11 @@ shell_session_apply_inventory :: proc(svc: ^Shell_Session_Service, bridge_id, fr
 	result: Shell_Session_Inventory_Result
 	if svc == nil || svc.repo == nil || bridge_id == "" do return result
 
-	entries := shell_session_inventory_parse(frame_json)
+	frame, ok := shell_session_inventory_parse_frame(frame_json)
+	if !ok do return result
+	entries := frame.sessions
 	defer delete(entries)
-	truncated := _json_bool(frame_json, "truncated")
+	truncated := frame.truncated
 
 	// BORROWED, NEVER DELETED. platform.clock_now bottoms out in fmt.tprintf, so what
 	// it returns lives in the temp allocator's arena and was never a heap block —
@@ -641,231 +650,38 @@ _publish_inventory_change :: proc(svc: ^Shell_Session_Service, owner_user_id, se
 
 // --- frame parsing -----------------------------------------------------------
 
+// shell_session_inventory_parse_frame unmarshals a full shell_inventory frame into
+// a typed Shell_Session_Inventory_Frame.
+//
+// Strings and intermediate values are decoded on context.temp_allocator, while the
+// sessions slice itself is allocated with `allocator` (defaults to context.allocator)
+// according to caller ownership.
+shell_session_inventory_parse_frame :: proc(frame_json: string, allocator := context.allocator) -> (frame: Shell_Session_Inventory_Frame, ok: bool) {
+	temp_frame: Shell_Session_Inventory_Frame
+	if err := json.unmarshal_string(frame_json, &temp_frame, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
+		return {}, false
+	}
+	frame.type = temp_frame.type
+	frame.bridge_id = temp_frame.bridge_id
+	frame.truncated = temp_frame.truncated
+	if len(temp_frame.sessions) > 0 {
+		frame.sessions = make([]Shell_Session_Inventory_Entry, len(temp_frame.sessions), allocator)
+		copy(frame.sessions, temp_frame.sessions)
+	} else {
+		frame.sessions = make([]Shell_Session_Inventory_Entry, 0, allocator)
+	}
+	return frame, true
+}
+
 // shell_session_inventory_parse extracts the entries of a shell_inventory frame.
 //
-// The returned slice is the caller's to `delete`, but every STRING in it points into
-// `frame_json` rather than being cloned — the frame outlives the diff at every call
-// site (the transport owns it for the length of the handler), and cloning sixteen
-// fields per session only to free them a few lines later is work with no reader.
+// The returned slice is the caller's to `delete`. Strings in entries are allocated in
+// the temp allocator (via json.unmarshal_string on context.temp_allocator).
 //
 // Exported for tests: the parse is the one part of this path with no database in it,
 // so it is worth asserting directly rather than only through its effects.
-shell_session_inventory_parse :: proc(frame_json: string) -> []Shell_Session_Inventory_Entry {
-	array_start := _inventory_find_array(frame_json, "sessions")
-	if array_start < 0 do return nil
-	out := make([dynamic]Shell_Session_Inventory_Entry)
-	objects := _inventory_objects(frame_json[array_start:])
-	defer delete(objects)
-	for obj in objects {
-		entry := Shell_Session_Inventory_Entry{
-			session_id        = _inventory_str(obj, "session_id"),
-			kind              = _inventory_str(obj, "kind"),
-			status            = _inventory_str(obj, "status"),
-			shell_id          = _inventory_str(obj, "shell_id"),
-			started_at        = _inventory_str(obj, "started_at"),
-			label             = _inventory_str(obj, "label"),
-			cmd               = _inventory_str(obj, "cmd"),
-			cwd               = _inventory_str(obj, "cwd"),
-			owner_user_id     = _inventory_str(obj, "owner_user_id"),
-			project_id        = _inventory_str(obj, "project_id"),
-			chain_id          = _inventory_str(obj, "chain_id"),
-			agent_instance_id = _inventory_str(obj, "agent_instance_id"),
-			background        = _inventory_raw_is_true(obj, "background"),
-			pid               = _inventory_int(obj, "pid"),
-			server_port       = _inventory_int(obj, "server_port"),
-			run_seq           = _inventory_int(obj, "run_seq"),
-		}
-		append(&out, entry)
-	}
-	return out[:]
-}
-
-// _inventory_find_array returns the index of the '[' opening `key`'s array value, or
-// -1. It scans for the key OUTSIDE string literals, so a session whose cmd contains
-// `"sessions":` cannot be mistaken for the array itself.
-// Package-scoped, not file-private: _json_array_raw in shell_session_service.odin
-// extracts the bridge reply's "lines" array out of arbitrary process stdout and needs
-// exactly this scan. One string-aware key scan serves the package.
-@(private)
-_inventory_find_array :: proc(body, key: string) -> int {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	in_string := false
-	escaped := false
-	for i := 0; i < len(body); i += 1 {
-		ch := body[i]
-		if escaped { escaped = false; continue }
-		if ch == '\\' && in_string { escaped = true; continue }
-		if ch == '"' {
-			if !in_string && strings.has_prefix(body[i:], needle) {
-				rest := body[i + len(needle):]
-				for j := 0; j < len(rest); j += 1 {
-					switch rest[j] {
-					case ' ', '\t', '\n', '\r', ':': continue
-					case '[': return i + len(needle) + j
-					case: return -1
-					}
-				}
-				return -1
-			}
-			in_string = !in_string
-		}
-	}
-	return -1
-}
-
-// _inventory_objects splits the array that starts at body[0] == '[' into its
-// top-level objects, returning SLICES of the input. String- and escape-aware, which
-// a brace counter alone is not: a cmd of `echo "}"` would otherwise end the object
-// early and truncate every field after it.
-@(private = "file")
-_inventory_objects :: proc(body: string) -> [][]u8 {
-	out := make([dynamic][]u8)
-	if len(body) == 0 || body[0] != '[' do return out[:]
-	depth := 0
-	start := -1
-	in_string := false
-	escaped := false
-	for i := 0; i < len(body); i += 1 {
-		ch := body[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		switch ch {
-		case '"': in_string = true
-		case '{':
-			if depth == 0 do start = i
-			depth += 1
-		case '}':
-			// GUARDED, so a stray top-level `}` cannot drive depth NEGATIVE. Unguarded,
-			// one extra brace left depth at -1, every subsequent `{` opened at a depth
-			// that never returned to 0, and every remaining entry was dropped with no
-			// signal — an inventory that looks exactly like sessions having ended, which
-			// is the worst way for this to fail. With the guard a stray brace is skipped
-			// and the entries after it are still parsed.
-			//
-			// NOT reachable from session content: values go through the bridge's
-			// bridge_local_write_json_string, which escapes `"` and `\`, so a cmd cannot
-			// break out of its string and contribute a structural brace. This is
-			// robustness against our OWN bridge emitting a malformed frame.
-			//
-			// AND IT DELIBERATELY DOES NOT FAIL THE WHOLE PARSE. Returning nothing on a
-			// malformed frame would be worse, not safer: the caller reaps by ABSENCE when
-			// `truncated` is false (see shell_session_inventory_apply), so an empty result
-			// from a frame that merely had a stray brace would terminate every live
-			// session on the bridge. Recovering as many entries as the frame actually
-			// contains is the conservative direction here.
-			if depth > 0 do depth -= 1
-			if depth == 0 && start >= 0 {
-				append(&out, transmute([]u8)body[start:i + 1])
-				start = -1
-			}
-		case ']':
-			if depth == 0 do return out[:]
-		}
-	}
-	return out[:]
-}
-
-// _inventory_str reads a string field of one object, returning a SLICE of the input
-// (no allocation, no ownership).
-//
-// IT RETURNS THE RAW, STILL-ESCAPED SPAN, and does not decode. It finds the value's true
-// end — the escape-aware scan below means a `\"` inside the value does not terminate it
-// early — but what it hands back is the bytes as they sit in the frame. A cmd the bridge
-// wrote from `echo "hi"` therefore reads back as `echo \"hi\"`, with the backslashes.
-//
-// THIS COMMENT USED TO CLAIM IT RETURNED "" for a value needing unescaping. It never did,
-// and the claim was the thing worth fixing rather than the behaviour: returning "" would
-// DISCARD the cmd of any adopted session whose command line contains a quote, a backslash
-// or a newline, which is a normal shell command and not an edge case. A cmd rendered with
-// visible backslashes is a display-fidelity wart on the adopt path; a cmd silently
-// emptied is a lost record. The fields the diff actually BRANCHES on — session_id, kind,
-// status, cwd — cannot legitimately carry an escape, so no decision is affected either
-// way, and nothing here needs a decoded copy to be correct.
-//
-// If display fidelity on the adopt path ever matters enough, the fix is an unescaping
-// variant used by the adopt path alone, not a change to this one.
-@(private = "file")
-_inventory_str :: proc(obj: []u8, key: string) -> string {
-	body := string(obj)
-	value_start, ok := _inventory_value(body, key)
-	if !ok do return ""
-	rest := body[value_start:]
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	escaped := false
-	for i := 1; i < len(rest); i += 1 {
-		ch := rest[i]
-		if escaped { escaped = false; continue }
-		if ch == '\\' { escaped = true; continue }
-		if ch == '"' do return rest[1:i]
-	}
-	return ""
-}
-
-@(private = "file")
-_inventory_int :: proc(obj: []u8, key: string) -> int {
-	body := string(obj)
-	value_start, ok := _inventory_value(body, key)
-	if !ok do return 0
-	rest := body[value_start:]
-	end := 0
-	if end < len(rest) && rest[end] == '-' do end += 1
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
-	if end == 0 do return 0
-	v, parsed := strconv.parse_int(rest[:end])
-	if !parsed do return 0
-	return int(v)
-}
-
-@(private = "file")
-_inventory_raw_is_true :: proc(obj: []u8, key: string) -> bool {
-	body := string(obj)
-	value_start, ok := _inventory_value(body, key)
-	if !ok do return false
-	return strings.has_prefix(body[value_start:], "true")
-}
-
-// _inventory_value returns the index at which `key`'s value begins, matching the key
-// only OUTSIDE string literals so a value containing `"pid":` cannot be read as the
-// field itself.
-//
-// Package-scoped, not file-private, for the same reason _inventory_find_array is:
-// _json_bool in shell_session_service.odin reads flags out of frames and bridge replies
-// that carry arbitrary process output, and needs exactly this scan. One string-aware key
-// scan serves the package — three subtly different ones is how this bug class keeps
-// reappearing, each author writing a more careful parser rather than fixing the one they
-// found.
-@(private)
-_inventory_value :: proc(body, key: string) -> (int, bool) {
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	in_string := false
-	escaped := false
-	for i := 0; i < len(body); i += 1 {
-		ch := body[i]
-		if in_string {
-			if escaped { escaped = false; continue }
-			if ch == '\\' { escaped = true; continue }
-			if ch == '"' do in_string = false
-			continue
-		}
-		if ch == '"' {
-			if strings.has_prefix(body[i:], needle) {
-				rest := body[i + len(needle):]
-				for j := 0; j < len(rest); j += 1 {
-					switch rest[j] {
-					case ' ', '\t', '\n', '\r', ':': continue
-					case: return i + len(needle) + j, true
-					}
-				}
-				return 0, false
-			}
-			in_string = true
-		}
-	}
-	return 0, false
+shell_session_inventory_parse :: proc(frame_json: string, allocator := context.allocator) -> []Shell_Session_Inventory_Entry {
+	frame, ok := shell_session_inventory_parse_frame(frame_json, allocator)
+	if !ok do return nil
+	return frame.sessions
 }

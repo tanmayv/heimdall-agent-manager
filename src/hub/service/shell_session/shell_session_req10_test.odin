@@ -676,6 +676,109 @@ t10_parse_survives_json_lookalikes_in_cmd :: proc(t: ^testing.T) {
 	testing.expect_value(t, entries[1].pid, 2)
 }
 
+// REQ-P1-INVENTORY: Command lines containing quotes, braces, and backslashes decode with high fidelity.
+@(test)
+t10_parse_escapes_and_special_characters :: proc(t: ^testing.T) {
+	// Sample frame from REQ-P1-INVENTORY specification
+	frame := `{"type":"shell_inventory","bridge_id":"brg_1","truncated":false,"sessions":[{"session_id":"sh_1","cmd":"echo \"hello world\" && echo }","kind":"run","status":"running","pid":1234}]}`
+	entries := shell_session_inventory_parse(frame)
+	defer delete(entries)
+
+	testing.expect_value(t, len(entries), 1)
+	if len(entries) == 1 {
+		testing.expect_value(t, entries[0].session_id, "sh_1")
+		// Quotes and braces must decode cleanly without remaining backslash artifacts
+		testing.expect_value(t, entries[0].cmd, `echo "hello world" && echo }`)
+		testing.expect_value(t, entries[0].kind, "run")
+		testing.expect_value(t, entries[0].status, "running")
+		testing.expect_value(t, entries[0].pid, 1234)
+	}
+
+	// Complex command line with paths, quotes, backslashes, braces
+	complex_frame := `{"type":"shell_inventory","bridge_id":"brg_1","truncated":false,"sessions":[{"session_id":"sh_complex","cmd":"cmd.exe /c \"dir \\\"C:\\\\Program Files\\\\test\\\" && {echo done}\"","kind":"shell","status":"running"}]}`
+	complex_entries := shell_session_inventory_parse(complex_frame)
+	defer delete(complex_entries)
+
+	testing.expect_value(t, len(complex_entries), 1)
+	if len(complex_entries) == 1 {
+		testing.expect_value(t, complex_entries[0].session_id, "sh_complex")
+		testing.expect_value(t, complex_entries[0].cmd, `cmd.exe /c "dir \"C:\\Program Files\\test\" && {echo done}"`)
+	}
+}
+
+// REQ-P1-INVENTORY: Reordered keys and arbitrary whitespace/newlines parse without error.
+@(test)
+t10_parse_reordered_keys_and_whitespace :: proc(t: ^testing.T) {
+	frame := `
+	{
+		"truncated": false,
+		"bridge_id": "brg_custom",
+		"sessions": [
+			{
+				"run_seq": 7,
+				"background": true,
+				"pid": 4321,
+				"server_port": 9090,
+				"agent_instance_id": "inst_worker_99",
+				"chain_id": "chain_77",
+				"project_id": "proj_reorder",
+				"owner_user_id": "usr_reorder",
+				"cwd": "/opt/workspace",
+				"cmd": "server --debug",
+				"label": "worker background service",
+				"started_at": "2026-10-03T10:00:00Z",
+				"shell_id": "shl_root",
+				"status": "starting",
+				"kind": "server",
+				"session_id": "sh_reordered"
+			}
+		],
+		"type": "shell_inventory"
+	}
+	`
+	entries := shell_session_inventory_parse(frame)
+	defer delete(entries)
+
+	testing.expect_value(t, len(entries), 1)
+	if len(entries) == 1 {
+		e := entries[0]
+		testing.expect_value(t, e.session_id, "sh_reordered")
+		testing.expect_value(t, e.kind, "server")
+		testing.expect_value(t, e.status, "starting")
+		testing.expect_value(t, e.shell_id, "shl_root")
+		testing.expect_value(t, e.started_at, "2026-10-03T10:00:00Z")
+		testing.expect_value(t, e.label, "worker background service")
+		testing.expect_value(t, e.cmd, "server --debug")
+		testing.expect_value(t, e.cwd, "/opt/workspace")
+		testing.expect_value(t, e.owner_user_id, "usr_reorder")
+		testing.expect_value(t, e.project_id, "proj_reorder")
+		testing.expect_value(t, e.chain_id, "chain_77")
+		testing.expect_value(t, e.agent_instance_id, "inst_worker_99")
+		testing.expect_value(t, e.background, true)
+		testing.expect_value(t, e.pid, 4321)
+		testing.expect_value(t, e.server_port, 9090)
+		testing.expect_value(t, e.run_seq, 7)
+	}
+}
+
+// REQ-P1-INVENTORY: Zero memory leaks and bad frees under Odin tracking allocator.
+@(test)
+t10_parse_tracking_allocator_zero_leaks :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	for _ in 0..<10 {
+		frame := `{"type":"shell_inventory","bridge_id":"brg_1","truncated":false,"sessions":[{"session_id":"sh_leak","cmd":"echo \"test\" && echo }","kind":"run","status":"running","pid":999}]}`
+		entries := shell_session_inventory_parse(frame)
+		delete(entries)
+	}
+
+	testing.expect_value(t, len(track.allocation_map), 0)
+	testing.expect_value(t, len(track.bad_free_array), 0)
+}
+
 // The coordinator asked for the replay window to be pinned on the ADOPTED path as
 // well as the revived one. It cannot be: a kill intent lives ON A ROW
 // (kill_requested_at), and adoption is by definition the branch where NO ROW EXISTS —
