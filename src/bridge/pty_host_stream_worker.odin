@@ -1,7 +1,10 @@
 package main
 
 import "base:runtime"
+import "core:crypto"
+import "core:crypto/aes"
 import base64 "core:encoding/base64"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -20,7 +23,14 @@ Bridge_PTY_Stream_Worker :: struct {
 	fd:         posix.FD,
 	active:     bool,
 	conn:       ^ws.Connection,
+	salt:       [4]byte,
+	seq:        u64,
 }
+
+bridge_pty_stream_fallback_mu: sync.Mutex
+bridge_pty_stream_fallback_salt: [4]byte
+bridge_pty_stream_fallback_seq: u64
+bridge_pty_stream_fallback_inited: bool
 
 Bridge_PTY_Stream_Outgoing :: struct {
 	json: string,
@@ -112,6 +122,8 @@ bridge_pty_stream_worker_start :: proc(session_id, shell_id: string, conn: ^ws.C
 	worker.fd = fd
 	worker.active = true
 	worker.conn = conn
+	crypto.rand_bytes(worker.salt[:])
+	worker.seq = 0
 
 	sync.mutex_lock(&bridge_pty_stream_map.mu)
 	bridge_pty_stream_map.workers[strings.clone(sid, runtime.heap_allocator())] = worker
@@ -383,20 +395,144 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 	free(worker, heap)
 }
 
+// bridge_pty_stream_encrypt_chunk encrypts PTY output using AES-256-GCM with a 12-byte nonce
+// composed of a 4-byte session salt and 8-byte big-endian sequence counter (NIST SP 800-38D).
+// Emits enc_b64 containing base64-encoded nonce(12B) + auth_tag(16B) + ciphertext.
+bridge_pty_stream_encrypt_chunk :: proc(
+	data: []byte,
+	salt: [4]byte,
+	seq: u64,
+	key_hex: string,
+	allocator := context.allocator,
+) -> (enc_b64: string, ok: bool) {
+	if !bridge_is_valid_hex_key(key_hex) do return "", false
+	raw_key, hex_ok := hex.decode(transmute([]byte)key_hex, context.temp_allocator)
+	if !hex_ok || len(raw_key) != VAULT_KEY_BYTES do return "", false
+
+	nonce: [VAULT_NONCE_BYTES]byte
+	nonce[0] = salt[0]
+	nonce[1] = salt[1]
+	nonce[2] = salt[2]
+	nonce[3] = salt[3]
+	nonce[4] = byte(seq >> 56)
+	nonce[5] = byte(seq >> 48)
+	nonce[6] = byte(seq >> 40)
+	nonce[7] = byte(seq >> 32)
+	nonce[8] = byte(seq >> 24)
+	nonce[9] = byte(seq >> 16)
+	nonce[10] = byte(seq >> 8)
+	nonce[11] = byte(seq)
+
+	ciphertext := make([]byte, len(data), context.temp_allocator)
+	tag: [VAULT_TAG_BYTES]byte
+
+	gcm: aes.Context_GCM
+	aes.init_gcm(&gcm, raw_key)
+	defer aes.reset_gcm(&gcm)
+
+	aes.seal_gcm(&gcm, ciphertext, tag[:], nonce[:], nil, data)
+
+	payload_len := VAULT_HEADER_BYTES + len(ciphertext)
+	payload := make([]byte, payload_len, context.temp_allocator)
+	copy(payload[0:VAULT_NONCE_BYTES], nonce[:])
+	copy(payload[VAULT_NONCE_BYTES:VAULT_HEADER_BYTES], tag[:])
+	copy(payload[VAULT_HEADER_BYTES:], ciphertext)
+
+	b64, err := base64.encode(payload, allocator = allocator)
+	if err != nil do return "", false
+	return string(b64), true
+}
+
+// bridge_pty_stream_decrypt_chunk decrypts enc_b64 containing base64(nonce(12B) + auth_tag(16B) + ciphertext)
+// using AES-256-GCM and verifies authenticity against the provided vault key.
+bridge_pty_stream_decrypt_chunk :: proc(
+	enc_b64: string,
+	key_hex: string,
+	allocator := context.allocator,
+) -> (plaintext: []byte, ok: bool) {
+	if !bridge_is_valid_hex_key(key_hex) do return nil, false
+	raw_key, hex_ok := hex.decode(transmute([]byte)key_hex, context.temp_allocator)
+	if !hex_ok || len(raw_key) != VAULT_KEY_BYTES do return nil, false
+
+	clean_b64 := strings.trim_space(enc_b64)
+	if strings.has_prefix(clean_b64, VAULT_ARMOR_PREFIX) {
+		clean_b64 = clean_b64[len(VAULT_ARMOR_PREFIX):]
+	}
+	if len(clean_b64) == 0 do return nil, false
+
+	payload, err := base64.decode(clean_b64, allocator = context.temp_allocator)
+	if err != nil do return nil, false
+	if len(payload) < VAULT_HEADER_BYTES do return nil, false
+
+	nonce := payload[0:VAULT_NONCE_BYTES]
+	tag := payload[VAULT_NONCE_BYTES:VAULT_HEADER_BYTES]
+	ciphertext := payload[VAULT_HEADER_BYTES:]
+
+	dst := make([]byte, len(ciphertext), allocator)
+	gcm: aes.Context_GCM
+	aes.init_gcm(&gcm, raw_key)
+	defer aes.reset_gcm(&gcm)
+
+	if !aes.open_gcm(&gcm, dst, nonce, nil, ciphertext, tag) {
+		delete(dst, allocator)
+		return nil, false
+	}
+	return dst, true
+}
+
 // bridge_pty_stream_emit_frame encodes data chunk to base64 and formats shell_pty_output JSON.
+// When vault key is active, it encrypts the chunk with AES-256-GCM using a monotonic counter nonce,
+// emitting enc_b64. If vault key is unconfigured, it falls back to plaintext data_b64.
 bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_id: string, data: []byte) {
 	if len(data) == 0 do return
 	heap := runtime.heap_allocator()
-	encoded := base64.encode(data, allocator = heap)
-	defer delete(encoded, heap)
 
-	b := strings.builder_make(heap)
-	strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
-	bridge_runtime_write_json_string(&b, session_id)
-	strings.write_string(&b, "\",\"data_b64\":\"")
-	bridge_runtime_write_json_string(&b, string(encoded))
-	strings.write_string(&b, "\"}")
-	frame := strings.to_string(b)
+	key_hex, vault_active := bridge_read_vault_key()
+	defer if vault_active do delete(key_hex)
+
+	frame: string
+	if vault_active {
+		salt: [4]byte
+		seq: u64
+		if worker != nil {
+			worker.seq += 1
+			seq = worker.seq
+			salt = worker.salt
+		} else {
+			sync.mutex_lock(&bridge_pty_stream_fallback_mu)
+			if !bridge_pty_stream_fallback_inited {
+				crypto.rand_bytes(bridge_pty_stream_fallback_salt[:])
+				bridge_pty_stream_fallback_inited = true
+			}
+			bridge_pty_stream_fallback_seq += 1
+			seq = bridge_pty_stream_fallback_seq
+			salt = bridge_pty_stream_fallback_salt
+			sync.mutex_unlock(&bridge_pty_stream_fallback_mu)
+		}
+
+		if enc_b64, ok := bridge_pty_stream_encrypt_chunk(data, salt, seq, key_hex, context.temp_allocator); ok {
+			b := strings.builder_make(heap)
+			strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
+			bridge_runtime_write_json_string(&b, session_id)
+			strings.write_string(&b, "\",\"enc_b64\":\"")
+			bridge_runtime_write_json_string(&b, enc_b64)
+			strings.write_string(&b, "\"}")
+			frame = strings.to_string(b)
+		}
+	}
+
+	if frame == "" {
+		encoded := base64.encode(data, allocator = heap)
+		defer delete(encoded, heap)
+
+		b := strings.builder_make(heap)
+		strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"data_b64\":\"")
+		bridge_runtime_write_json_string(&b, string(encoded))
+		strings.write_string(&b, "\"}")
+		frame = strings.to_string(b)
+	}
 
 	sent := false
 	if worker != nil && worker.active && worker.conn != nil && worker.conn.connected {
@@ -504,4 +640,9 @@ bridge_pty_stream_reset :: proc() {
 	}
 	clear(&bridge_pty_stream_outgoing)
 	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+
+	sync.mutex_lock(&bridge_pty_stream_fallback_mu)
+	bridge_pty_stream_fallback_seq = 0
+	bridge_pty_stream_fallback_inited = false
+	sync.mutex_unlock(&bridge_pty_stream_fallback_mu)
 }

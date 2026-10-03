@@ -603,7 +603,15 @@ pty_stream_worker_emit_frame_encodes_base64_and_queues :: proc(t: ^testing.T) {
 		frame := frames[0]
 		testing.expect(t, strings.contains(frame, `"type":"shell_pty_output"`), "frame type is shell_pty_output")
 		testing.expect(t, strings.contains(frame, `"session_id":"sh_stream_1"`), "frame has session_id")
-		testing.expect(t, strings.contains(frame, `"data_b64":"ZWNobyBzdHJlYW1pbmcgdGVzdAo="`), "frame data_b64 matches encoded test string")
+		if key, has_key := bridge_read_vault_key(); has_key {
+			defer delete(key)
+			testing.expect(t, strings.contains(frame, `"enc_b64":`), "frame contains enc_b64 when vault key active")
+			decrypted, dec_ok := bridge_pty_stream_decrypt_chunk(extract_json_string(frame, "enc_b64", ""), key, context.temp_allocator)
+			testing.expect(t, dec_ok, "decryption ok")
+			testing.expect_value(t, string(decrypted), test_data)
+		} else {
+			testing.expect(t, strings.contains(frame, `"data_b64":"ZWNobyBzdHJlYW1pbmcgdGVzdAo="`), "frame data_b64 matches encoded test string")
+		}
 	}
 }
 
