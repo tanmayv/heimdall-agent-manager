@@ -240,7 +240,7 @@ export function RecentTaskChainsTab() {
                           className="inline-flex items-center gap-1 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-caption text-muted"
                         >
                           <Icon name="folder" size={11} className="text-accent" />
-                          <span>{chain.projectName}</span>
+                          <VaultText value={chain.projectName} fallback="Unassigned" as="span" />
                         </span>
 
                         <span

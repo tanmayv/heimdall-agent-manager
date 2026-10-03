@@ -316,7 +316,7 @@ function ChainGroupCard({
           </span>
           <div className="flex min-w-0 items-center gap-2">
             <Icon name="folder" size={15} className="shrink-0 text-accent" />
-            <span className="truncate text-sm font-semibold text-primary">{displayName}</span>
+            <span className="truncate text-sm font-semibold text-primary"><VaultText value={displayName} fallback="Unassigned" /></span>
           </div>
         </button>
         <div className="flex shrink-0 items-center gap-2">

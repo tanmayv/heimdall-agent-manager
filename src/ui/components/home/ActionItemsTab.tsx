@@ -29,6 +29,7 @@ import {
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
 import { isVaultArmored } from '../../utils/vaultContent';
+import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 
 const STATUS_TABS = [
   { id: 'pending', label: 'Pending' },
@@ -362,7 +363,7 @@ export function ActionItemsTab() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <h4 className="text-sm font-semibold text-primary line-clamp-1 flex-1">
-                    {card.title}
+                    <VaultText value={card.title} fallback="Untitled card" as="span" />
                   </h4>
                   <StatusPill tone={tone} className="shrink-0 text-[10px]">
                     {card.status}
@@ -372,7 +373,7 @@ export function ActionItemsTab() {
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-caption text-muted">
                   <span className="inline-flex items-center gap-1">
                     <Icon name="folder" size={10} className="text-accent" />
-                    <span>{project?.name || 'Global'}</span>
+                    <span><VaultText value={project?.name || 'Global'} as="span" /></span>
                   </span>
 
                   <span className="rounded-md border border-subtle bg-surface px-1.5 py-0.2 text-[10px]">
@@ -431,7 +432,7 @@ export function ActionItemsTab() {
 
             <span className="inline-flex items-center gap-1 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-caption text-muted">
               <Icon name="folder" size={11} className="text-accent" />
-              <span>{selectedCard.project_id ? (projectMap.get(selectedCard.project_id)?.name || selectedCard.project_id) : 'Global'}</span>
+              <span><VaultText value={selectedCard.project_id ? (projectMap.get(selectedCard.project_id)?.name || selectedCard.project_id) : 'Global'} as="span" /></span>
             </span>
 
             <span className="inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-caption text-accent font-medium">
@@ -448,7 +449,7 @@ export function ActionItemsTab() {
             data-debug-id="action-item-detail-title"
             className="text-xl sm:text-2xl font-bold tracking-tight text-primary break-words"
           >
-            {selectedCard.title}
+            <VaultText value={selectedCard.title} fallback="Untitled card" as="span" />
           </h2>
           <p className="text-caption font-mono text-muted">{selectedCard.card_id}</p>
         </div>
@@ -520,7 +521,7 @@ export function ActionItemsTab() {
           <span>Rationale & Summary</span>
         </h4>
         <div className="text-body-sm text-primary leading-relaxed">
-          <Markdown source={selectedCard.rationale || '_No rationale provided._'} />
+          <DecryptedMarkdown source={selectedCard.rationale || '_No rationale provided._'} />
         </div>
       </div>
 
@@ -718,21 +719,21 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
           <div>Target ID: <span className="font-mono text-primary">{memId}</span></div>
         )}
         {memTitle && (
-          <div>Title: <span className="text-primary font-medium">"{memTitle}"</span></div>
+          <div>Title: <span className="text-primary font-medium">"<VaultText value={memTitle} />"</span></div>
         )}
         {memType && (
           <div>Type: <span className="capitalize text-primary">{memType}</span></div>
         )}
         {memBody && (
           <div className="text-primary bg-neutral-soft p-2 rounded-lg break-words mt-1">
-            <Markdown source={memBody} compact copyAll={false} />
+            <DecryptedMarkdown source={memBody} compact copyAll={false} />
           </div>
         )}
         {taskVote && (
           <div>Vote: <span className="font-semibold text-accent">{String(taskVote).toUpperCase()}</span></div>
         )}
         {taskComment && (
-          <div>Comment: <span className="italic text-primary">"{taskComment}"</span></div>
+          <div>Comment: <span className="italic text-primary">"<VaultText value={taskComment} />"</span></div>
         )}
         {chainStatus && (
           <div>Target Status: <span className="font-semibold text-accent">{chainStatus}</span></div>

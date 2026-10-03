@@ -14,6 +14,7 @@ import {
   decryptEmbeddedVaultTokens,
   decryptList,
 } from '../../utils/vaultContent';
+import Markdown from '../Markdown';
 
 export interface VaultTextProps {
   value?: string | null;
@@ -256,6 +257,28 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
   }, [items, isUnlocked, rawKey]);
 
   return decryptedList;
+}
+
+export interface DecryptedMarkdownProps {
+  source?: string | null;
+  className?: string;
+  compact?: boolean;
+  copyAll?: boolean;
+  'data-debug-id'?: string;
+  fallback?: string;
+}
+
+/**
+ * Reactive Markdown component that decrypts armored or embedded vault tokens in `source`
+ * using `useDecryptedText` before rendering with `Markdown`.
+ */
+export function DecryptedMarkdown({
+  source,
+  fallback = '',
+  ...props
+}: DecryptedMarkdownProps) {
+  const { text } = useDecryptedText(source ?? '');
+  return <Markdown source={text || fallback} {...props} />;
 }
 
 export default VaultText;

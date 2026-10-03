@@ -10,7 +10,8 @@ import { showToast } from '../../store/toastSlice';
 import { useArchivedProjectIds } from '../projects/projectModel';
 import CreateChainModal from './CreateChainModal';
 import { StatusDot, Icon, Menu } from '@ui';
-import { VaultText } from '../vault/VaultText';
+import { VaultText, useDecryptedText } from '../vault/VaultText';
+import { isVaultArmored } from '../../utils/vaultContent';
 import {
   readSidebarChainFilter,
   writeSidebarChainFilter,
@@ -447,19 +448,8 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
   );
 }
 
-/**
- * Extracts first letter of first two words, uppercase.
- * If 1 word, first 2 letters uppercase. If single char, 1 letter. If empty/whitespace, "TC".
- */
-export function chainAvatarInitials(title: string): string {
-  const trimmed = (title || '').trim();
-  if (!trimmed) return 'TC';
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0][0] + words[1][0]).toUpperCase();
-  }
-  return trimmed.slice(0, 2).toUpperCase();
-}
+export { chainAvatarInitials, resolveCollapsedPinnedChainAvatar } from './chainInitials';
+import { chainAvatarInitials } from './chainInitials';
 
 /**
  * Returns true if currentPath matches chain coordinator conversation
@@ -496,6 +486,123 @@ export function isChainActive(chain: ChainListItem, currentPath: string): boolea
   return false;
 }
 
+export function CollapsedPinnedChainItem({
+  chain,
+  currentPath,
+  onNavigate,
+}: {
+  chain: ChainListItem;
+  currentPath: string;
+  onNavigate: (path: string) => void;
+}) {
+  const decryptedTitle = useDecryptedText(chain.title);
+  const path = chain.coordinatorAgentInstanceId
+    ? `/conversations/${encodeURIComponent(chain.coordinatorAgentInstanceId)}`
+    : `/chains/${encodeURIComponent(chain.chainId)}`;
+  const active = isChainActive(chain, currentPath);
+  const tone = chainStatusTone(chain.status);
+  const isArmored = isVaultArmored(chain.title || '');
+  const isLocked = isArmored && decryptedTitle.isLocked;
+  const initials = isLocked ? '🔒' : chainAvatarInitials(decryptedTitle.text);
+
+  const isCompleted = chain.status === 'completed';
+  const isActive = chain.status === 'active' || chain.status === 'in_progress';
+  const hasTasks = typeof chain.taskCount === 'number' && chain.taskCount > 0;
+  const radius = 5.25;
+  const circumference = 2 * Math.PI * radius;
+  const completedTaskCount = chain.completedTaskCount || 0;
+  const ratio = hasTasks ? Math.min(1, Math.max(0, completedTaskCount / chain.taskCount)) : 0;
+  const strokeDashoffset = circumference * (1 - ratio);
+  const pct = Math.round(ratio * 100);
+
+  return (
+    <a
+      href={`#${path}`}
+      data-debug-id={`collapsed-chain-avatar-${chain.chainId}`}
+      data-active={active ? 'true' : 'false'}
+      title={decryptedTitle.text}
+      aria-label={decryptedTitle.text}
+      onClick={(e) => {
+        e.preventDefault();
+        onNavigate(path);
+      }}
+      className={`relative flex h-10 w-10 min-h-10 min-w-10 items-center justify-center rounded-xl text-xs font-bold transition select-none ${
+        active
+          ? 'border-2 border-accent text-accent bg-neutral-soft ring-1 ring-accent/30 font-bold'
+          : 'border border-subtle text-muted hover:text-primary hover:bg-neutral-soft hover:border-default'
+      }`}
+    >
+      <span>{initials}</span>
+      {isCompleted ? (
+        <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-neutral-soft text-muted pointer-events-none">
+          <Icon name="check" size={8} />
+        </span>
+      ) : isActive && hasTasks ? (
+        <div
+          data-debug-id="chain-progress-ring"
+          className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center pointer-events-none"
+          title={`${pct}% completed (${completedTaskCount}/${chain.taskCount} tasks)`}
+          aria-label={`${pct}% completed`}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            className="absolute inset-0 -rotate-90 pointer-events-none"
+            aria-hidden="true"
+          >
+            <circle
+              cx="7"
+              cy="7"
+              r={radius}
+              fill="none"
+              stroke="currentColor"
+              className="text-neutral-subtle opacity-25"
+              strokeWidth="1.5"
+            />
+            <circle
+              cx="7"
+              cy="7"
+              r={radius}
+              fill="none"
+              stroke="currentColor"
+              className="text-success transition-all duration-300"
+              strokeWidth="1.5"
+              strokeDasharray={circumference}
+              strokeDashoffset={strokeDashoffset}
+              strokeLinecap="round"
+            />
+          </svg>
+          <StatusDot
+            tone="success"
+            pulse
+            label={chain.status}
+            size="sm"
+          />
+        </div>
+      ) : (
+        <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
+          <StatusDot
+            tone={tone}
+            pulse={chain.status === 'active'}
+            label={chain.status}
+            size="sm"
+          />
+        </span>
+      )}
+      {(chain.userValidationCount > 0 || chain.hasUserValidation) && (
+        <span
+          data-debug-id={`collapsed-chain-validation-${chain.chainId}`}
+          className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning text-[8px] text-surface font-bold pointer-events-none"
+          title="Awaiting user validation"
+        >
+          !
+        </span>
+      )}
+    </a>
+  );
+}
+
 export function CollapsedPinnedChains({
   currentPath,
   onNavigate,
@@ -523,113 +630,14 @@ export function CollapsedPinnedChains({
       data-debug-id="collapsed-pinned-chains"
       className="flex flex-col items-center gap-2 pt-3 mt-3 border-t border-subtle"
     >
-      {pinnedChains.map((chain) => {
-        const path = chain.coordinatorAgentInstanceId
-          ? `/conversations/${encodeURIComponent(chain.coordinatorAgentInstanceId)}`
-          : `/chains/${encodeURIComponent(chain.chainId)}`;
-        const active = isChainActive(chain, currentPath);
-        const title = chain.title || 'Untitled chain';
-        const tone = chainStatusTone(chain.status);
-        const initials = chainAvatarInitials(chain.title);
-
-        const isCompleted = chain.status === 'completed';
-        const isActive = chain.status === 'active' || chain.status === 'in_progress';
-        const hasTasks = typeof chain.taskCount === 'number' && chain.taskCount > 0;
-        const radius = 5.25;
-        const circumference = 2 * Math.PI * radius;
-        const completedTaskCount = chain.completedTaskCount || 0;
-        const ratio = hasTasks ? Math.min(1, Math.max(0, completedTaskCount / chain.taskCount)) : 0;
-        const strokeDashoffset = circumference * (1 - ratio);
-        const pct = Math.round(ratio * 100);
-
-        return (
-          <a
-            key={`collapsed-pinned-${chain.chainId}`}
-            href={`#${path}`}
-            data-debug-id={`collapsed-chain-avatar-${chain.chainId}`}
-            data-active={active ? 'true' : 'false'}
-            title={title}
-            aria-label={title}
-            onClick={(e) => {
-              e.preventDefault();
-              onNavigate(path);
-            }}
-            className={`relative flex h-10 w-10 min-h-10 min-w-10 items-center justify-center rounded-xl text-xs font-bold transition select-none ${
-              active
-                ? 'border-2 border-accent text-accent bg-neutral-soft ring-1 ring-accent/30 font-bold'
-                : 'border border-subtle text-muted hover:text-primary hover:bg-neutral-soft hover:border-default'
-            }`}
-          >
-            <span>{initials}</span>
-            {isCompleted ? (
-              <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-neutral-soft text-muted pointer-events-none">
-                <Icon name="check" size={8} />
-              </span>
-            ) : isActive && hasTasks ? (
-              <div
-                data-debug-id="chain-progress-ring"
-                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center pointer-events-none"
-                title={`${pct}% completed (${completedTaskCount}/${chain.taskCount} tasks)`}
-                aria-label={`${pct}% completed`}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 14 14"
-                  className="absolute inset-0 -rotate-90 pointer-events-none"
-                  aria-hidden="true"
-                >
-                  <circle
-                    cx="7"
-                    cy="7"
-                    r={radius}
-                    fill="none"
-                    stroke="currentColor"
-                    className="text-neutral-subtle opacity-25"
-                    strokeWidth="1.5"
-                  />
-                  <circle
-                    cx="7"
-                    cy="7"
-                    r={radius}
-                    fill="none"
-                    stroke="currentColor"
-                    className="text-success transition-all duration-300"
-                    strokeWidth="1.5"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={strokeDashoffset}
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <StatusDot
-                  tone="success"
-                  pulse
-                  label={chain.status}
-                  size="sm"
-                />
-              </div>
-            ) : (
-              <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
-                <StatusDot
-                  tone={tone}
-                  pulse={chain.status === 'active'}
-                  label={chain.status}
-                  size="sm"
-                />
-              </span>
-            )}
-            {(chain.userValidationCount > 0 || chain.hasUserValidation) && (
-              <span
-                data-debug-id={`collapsed-chain-validation-${chain.chainId}`}
-                className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning text-[8px] text-surface font-bold pointer-events-none"
-                title="Awaiting user validation"
-              >
-                !
-              </span>
-            )}
-          </a>
-        );
-      })}
+      {pinnedChains.map((chain) => (
+        <CollapsedPinnedChainItem
+          key={`collapsed-pinned-${chain.chainId}`}
+          chain={chain}
+          currentPath={currentPath}
+          onNavigate={onNavigate}
+        />
+      ))}
     </div>
   );
 }

@@ -1,7 +1,10 @@
-// Zero-Knowledge VaultText Resolver and Helper Logic
-// REQ-VAULT-ISSUES-UI-1
-
-import { isVaultArmored, decryptVaultText, decryptList } from '../../utils/vaultContent.ts';
+import {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+  decryptList,
+} from '../../utils/vaultContent.ts';
 
 export interface VaultTextModelProps {
   value?: string | null;
@@ -71,4 +74,57 @@ export async function decryptVaultTextContent(
   return await decryptVaultText(raw, rawKeyHex);
 }
 
-export { isVaultArmored, decryptVaultText, decryptList };
+export interface DecryptedMarkdownResolved {
+  text: string;
+  isArmored: boolean;
+  isLocked: boolean;
+}
+
+/**
+ * Pure helper function to resolve DecryptedMarkdown content reactively.
+ */
+export async function resolveDecryptedMarkdownContent(
+  source: string | null | undefined,
+  rawKeyHex: string | null | undefined,
+  isUnlocked: boolean,
+  fallback = '',
+): Promise<DecryptedMarkdownResolved> {
+  const raw = source ?? '';
+  const isArmored = isVaultArmored(raw);
+  const isEmbedded = !isArmored && containsVaultArmored(raw);
+  const hasVault = isArmored || isEmbedded;
+
+  if (!hasVault) {
+    return {
+      text: raw || fallback,
+      isArmored: false,
+      isLocked: false,
+    };
+  }
+
+  if (!isUnlocked || !rawKeyHex) {
+    return {
+      text: raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'),
+      isArmored: true,
+      isLocked: true,
+    };
+  }
+
+  const decrypted = isArmored
+    ? await decryptVaultText(raw, rawKeyHex)
+    : await decryptEmbeddedVaultTokens(raw, rawKeyHex);
+
+  return {
+    text: decrypted.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'),
+    isArmored: true,
+    isLocked: false,
+  };
+}
+
+export {
+  isVaultArmored,
+  containsVaultArmored,
+  decryptVaultText,
+  decryptEmbeddedVaultTokens,
+  decryptList,
+};

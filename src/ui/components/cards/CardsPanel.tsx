@@ -16,6 +16,7 @@ import {
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
 import { isVaultArmored } from '../../utils/vaultContent';
+import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 
 export function isCardExpired(c: { ttl_at?: string } | null | undefined): boolean {
   if (!c?.ttl_at || typeof c.ttl_at !== 'string' || !c.ttl_at.trim()) {
@@ -578,7 +579,7 @@ export default function CardsPanel() {
                       >
                         <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={14} className="text-muted" />
                         <Icon name="folder" size={15} className="text-accent" />
-                        <span className="text-sm font-semibold">{group.name}</span>
+                        <span className="text-sm font-semibold"><VaultText value={group.name} /></span>
                       </button>
                     </div>
 
@@ -711,7 +712,7 @@ function CardRow({
                 onClick={onToggleExpand}
                 className="text-sm font-semibold text-primary cursor-pointer hover:text-accent transition-colors"
               >
-                {card.title}
+                <VaultText value={card.title} fallback="Untitled card" as="span" />
               </h4>
 
               {/* Status Pill */}
@@ -747,7 +748,7 @@ function CardRow({
                 data-debug-id={`card-rationale-${card.card_id}`}
                 className="text-xs text-muted leading-relaxed max-w-3xl break-words"
               >
-                <Markdown source={card.rationale} compact copyAll={false} />
+                <DecryptedMarkdown source={card.rationale} compact copyAll={false} />
               </div>
             )}
           </div>
@@ -924,7 +925,7 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
           <div>Target ID: <span className="font-mono text-primary">{memId}</span></div>
         )}
         {memTitle && (
-          <div>Title: <span className="text-primary font-medium">"{memTitle}"</span></div>
+          <div>Title: <span className="text-primary font-medium">"<VaultText value={memTitle} />"</span></div>
         )}
         {memType && (
           <div>Type: <span className="capitalize text-primary">{memType}</span></div>
@@ -934,14 +935,14 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
             data-debug-id={`card-op-body-${index}`}
             className="text-primary bg-neutral-soft p-1.5 rounded break-words"
           >
-            <Markdown source={memBody} compact copyAll={false} />
+            <DecryptedMarkdown source={memBody} compact copyAll={false} />
           </div>
         )}
         {taskVote && (
           <div>Vote: <span className="font-semibold text-accent">{String(taskVote).toUpperCase()}</span></div>
         )}
         {taskComment && (
-          <div>Comment: <span className="italic text-primary">"{taskComment}"</span></div>
+          <div>Comment: <span className="italic text-primary">"<VaultText value={taskComment} />"</span></div>
         )}
         {chainStatus && (
           <div>Target Status: <span className="font-semibold text-accent">{chainStatus}</span></div>
