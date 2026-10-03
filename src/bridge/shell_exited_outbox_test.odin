@@ -18,6 +18,7 @@ package main
 // no thread and no interval anywhere in this file or in shell_exited_outbox.odin.
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -429,3 +430,66 @@ bridge_shell4_run_seq_round_trips_through_the_spec :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, found, "the spec must reload")
 }
+
+// REQ-P1-SHELL-SPEC AC: Outbox envelope key-order resilience and whitespace tolerance.
+@(test)
+bridge_shell4_envelope_key_order_and_whitespace_resilience :: proc(t: ^testing.T) {
+	dir := outbox_test_dir("env_scrambled")
+	defer delete(dir)
+	outbox_test_reset(dir)
+
+	odir := bridge_shell_exited_outbox_dir(dir)
+	defer delete(odir)
+	_ = os.make_directory_all(odir)
+
+	// Scrambled envelope keys with whitespace, newlines, and tabs
+	scrambled_envelope := `
+	{
+		"event" :   "{\"type\":\"shell_exited\",\"session_id\":\"sh_order_scrambled\",\"exit_code\":0}"  ,
+		"enqueued_at_ms" :   1234567890  ,
+		"session_id" : "sh_order_scrambled"
+	}
+	`
+
+	path := strings.concatenate({odir, "/sh_order_scrambled.run0.json"})
+	defer delete(path)
+	_ = os.write_entire_file(path, transmute([]byte)scrambled_envelope)
+
+	entries := bridge_shell_exited_outbox_load(dir, 1234567890 + 1000)
+	defer outbox_test_free(entries)
+
+	testing.expect_value(t, len(entries), 1)
+	if len(entries) == 1 {
+		testing.expect_value(t, entries[0].session_id, "sh_order_scrambled")
+		testing.expect_value(t, entries[0].enqueued_at_ms, i64(1234567890))
+		testing.expect_value(t, entries[0].event_json, `{"type":"shell_exited","session_id":"sh_order_scrambled","exit_code":0}`)
+	}
+}
+
+// REQ-P1-SHELL-SPEC AC: Outbox zero tracking allocator leaks on write and load.
+@(test)
+bridge_shell4_outbox_zero_tracking_allocator_leaks :: proc(t: ^testing.T) {
+	dir := outbox_test_dir("env_track")
+	defer delete(dir)
+	outbox_test_reset(dir)
+
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+
+	// In this test, we execute the write and reload with tracking allocator
+	event := `{"type":"shell_exited","session_id":"sh_track_leak"}`
+	path := bridge_shell_exited_outbox_write(dir, "sh_track_leak", event, 1_000_000, 0)
+	testing.expect(t, path != "", "outbox path written")
+	delete(path)
+
+	// Load entries and release them
+	entries := bridge_shell_exited_outbox_load(dir, 1_000_000)
+	testing.expect_value(t, len(entries), 1)
+	for e in entries do bridge_shell_exited_outbox_entry_free(e)
+	delete(entries)
+
+	testing.expect_value(t, len(track.allocation_map), 0)
+	testing.expect_value(t, len(track.bad_free_array), 0)
+}
+

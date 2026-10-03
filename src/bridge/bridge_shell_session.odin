@@ -832,6 +832,32 @@ bridge_shell_session_spec_dir :: proc(data_dir: string) -> string {
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/shell_sessions"})
 }
 
+// Shell_Session_Spec is the typed disk representation of a shell session.
+// Persisted atomically to $data_dir/shell_sessions/<session_id>.json.
+Shell_Session_Spec :: struct {
+	session_id:        string      `json:"session_id"`,
+	kind:              string      `json:"kind"`,
+	label:             string      `json:"label"`,
+	cmd:               string      `json:"cmd"`,
+	cwd:               string      `json:"cwd"`,
+	bridge_id:         string      `json:"bridge_id"`,
+	project_id:        string      `json:"project_id"`,
+	chain_id:          string      `json:"chain_id"`,
+	agent_instance_id: string      `json:"agent_instance_id"`,
+	owner_user_id:     string      `json:"owner_user_id"`,
+	pid:               int         `json:"pid"`,
+	server_port:       int         `json:"server_port"`,
+	run_seq:           int         `json:"run_seq"`,
+	status:            string      `json:"status"`,
+	exit_code:         int         `json:"exit_code"`,
+	exit_code_set:     bool        `json:"exit_code_set"`,
+	started_at:        string      `json:"started_at"`,
+	finished_at:       string      `json:"finished_at"`,
+	shell_id:          string      `json:"shell_id"`,
+	background:        bool        `json:"background"`,
+	pty_host:          Maybe(bool) `json:"pty_host"`,
+}
+
 // bridge_shell_session_save_spec writes the session spec to disk atomically
 // (write to a .tmp file then rename). Callers pass the expanded data_dir.
 bridge_shell_session_save_spec :: proc(data_dir: string, s: Bridge_Shell_Session) {
@@ -844,54 +870,37 @@ bridge_shell_session_save_spec :: proc(data_dir: string, s: Bridge_Shell_Session
 	tmp := strings.concatenate({path, ".tmp"})
 	defer delete(tmp)
 
-	b := strings.builder_make()
-	defer strings.builder_destroy(&b)
-	strings.write_string(&b, "{\"session_id\":\"")
-	bridge_local_write_json_string(&b, s.session_id)
-	strings.write_string(&b, "\",\"kind\":\"")
-	bridge_local_write_json_string(&b, bridge_shell_session_kind_str(s.kind))
-	strings.write_string(&b, "\",\"label\":\"")
-	bridge_local_write_json_string(&b, s.label)
-	strings.write_string(&b, "\",\"cmd\":\"")
-	bridge_local_write_json_string(&b, s.cmd)
-	strings.write_string(&b, "\",\"cwd\":\"")
-	bridge_local_write_json_string(&b, s.cwd)
-	strings.write_string(&b, "\",\"bridge_id\":\"")
-	bridge_local_write_json_string(&b, s.bridge_id)
-	strings.write_string(&b, "\",\"project_id\":\"")
-	bridge_local_write_json_string(&b, s.project_id)
-	strings.write_string(&b, "\",\"chain_id\":\"")
-	bridge_local_write_json_string(&b, s.chain_id)
-	strings.write_string(&b, "\",\"agent_instance_id\":\"")
-	bridge_local_write_json_string(&b, s.agent_instance_id)
-	strings.write_string(&b, "\",\"owner_user_id\":\"")
-	bridge_local_write_json_string(&b, s.owner_user_id)
-	strings.write_string(&b, "\",\"pid\":")
-	bridge_agent_write_int(&b, s.pid)
-	strings.write_string(&b, ",\"server_port\":")
-	bridge_agent_write_int(&b, s.server_port)
-	strings.write_string(&b, ",\"run_seq\":")
-	bridge_agent_write_int(&b, s.run_seq)
-	strings.write_string(&b, ",\"status\":\"")
-	bridge_local_write_json_string(&b, bridge_shell_session_status_str(s.status))
-	strings.write_string(&b, "\",\"exit_code\":")
-	bridge_agent_write_int(&b, s.exit_code)
-	strings.write_string(&b, ",\"exit_code_set\":")
-	strings.write_string(&b, s.exit_code_set ? "true" : "false")
-	strings.write_string(&b, ",\"started_at\":\"")
-	bridge_local_write_json_string(&b, s.started_at)
-	strings.write_string(&b, "\",\"finished_at\":\"")
-	bridge_local_write_json_string(&b, s.finished_at)
-	strings.write_string(&b, "\",\"shell_id\":\"")
-	bridge_local_write_json_string(&b, s.shell_id)
-	strings.write_string(&b, "\",\"background\":")
-	strings.write_string(&b, s.background ? "true" : "false")
-	strings.write_string(&b, ",\"pty_host\":")
-	strings.write_string(&b, s.pty_host ? "true" : "false")
-	strings.write_byte(&b, '}')
+	spec := Shell_Session_Spec{
+		session_id        = s.session_id,
+		kind              = bridge_shell_session_kind_str(s.kind),
+		label             = s.label,
+		cmd               = s.cmd,
+		cwd               = s.cwd,
+		bridge_id         = s.bridge_id,
+		project_id        = s.project_id,
+		chain_id          = s.chain_id,
+		agent_instance_id = s.agent_instance_id,
+		owner_user_id     = s.owner_user_id,
+		pid               = s.pid,
+		server_port       = s.server_port,
+		run_seq           = s.run_seq,
+		status            = bridge_shell_session_status_str(s.status),
+		exit_code         = s.exit_code,
+		exit_code_set     = s.exit_code_set,
+		started_at        = s.started_at,
+		finished_at       = s.finished_at,
+		shell_id          = s.shell_id,
+		background        = s.background,
+		pty_host          = s.pty_host,
+	}
 
-	json_str := strings.to_string(b)
-	if os.write_entire_file(tmp, transmute([]byte)json_str) == nil {
+	payload, merr := json.marshal(spec, allocator = context.temp_allocator)
+	if merr != nil {
+		fmt.eprintln("bridge shell session: failed to marshal spec:", merr)
+		return
+	}
+
+	if os.write_entire_file(tmp, payload) == nil {
 		_ = os.rename(tmp, path)
 	}
 }
@@ -924,50 +933,51 @@ bridge_shell_session_load_specs :: proc(data_dir: string, allocator: runtime.All
 		if ferr != nil do continue
 		defer delete(raw)
 
-		parsed, jerr := json.parse(raw)
+		spec: Shell_Session_Spec
+		jerr := json.unmarshal(raw, &spec, allocator = context.temp_allocator)
 		if jerr != nil {
 			fmt.eprintln("bridge shell session: corrupt spec, skipping:", info.name)
 			continue
 		}
-		defer json.destroy_value(parsed)
-
-		obj, is_obj := parsed.(json.Object)
-		if !is_obj do continue
 
 		s: Bridge_Shell_Session
-		if v, ok := obj["session_id"].(json.String); ok do s.session_id = strings.clone(string(v), allocator)
-		if v, ok := obj["kind"].(json.String); ok do s.kind = bridge_shell_session_kind_from_str(string(v))
-		if v, ok := obj["label"].(json.String); ok do s.label = strings.clone(string(v), allocator)
-		if v, ok := obj["cmd"].(json.String); ok do s.cmd = strings.clone(string(v), allocator)
-		if v, ok := obj["cwd"].(json.String); ok do s.cwd = strings.clone(string(v), allocator)
-		if v, ok := obj["bridge_id"].(json.String); ok do s.bridge_id = strings.clone(string(v), allocator)
-		if v, ok := obj["project_id"].(json.String); ok do s.project_id = strings.clone(string(v), allocator)
-		if v, ok := obj["chain_id"].(json.String); ok do s.chain_id = strings.clone(string(v), allocator)
-		if v, ok := obj["agent_instance_id"].(json.String); ok do s.agent_instance_id = strings.clone(string(v), allocator)
-		if v, ok := obj["owner_user_id"].(json.String); ok do s.owner_user_id = strings.clone(string(v), allocator)
-		if v, ok := obj["pid"].(json.Float); ok do s.pid = int(v)
-		if v, ok := obj["server_port"].(json.Float); ok do s.server_port = int(v)
+		s.session_id = strings.clone(spec.session_id, allocator)
+		s.kind = bridge_shell_session_kind_from_str(spec.kind)
+		s.label = strings.clone(spec.label, allocator)
+		s.cmd = strings.clone(spec.cmd, allocator)
+		s.cwd = strings.clone(spec.cwd, allocator)
+		s.bridge_id = strings.clone(spec.bridge_id, allocator)
+		s.project_id = strings.clone(spec.project_id, allocator)
+		s.chain_id = strings.clone(spec.chain_id, allocator)
+		s.agent_instance_id = strings.clone(spec.agent_instance_id, allocator)
+		s.owner_user_id = strings.clone(spec.owner_user_id, allocator)
+		s.pid = spec.pid
+		s.server_port = spec.server_port
 		// A spec written before REQ-SHELL-4 has no run_seq key and loads as 0, the
 		// first run — the same value the hub's row carries for a session that has
 		// never been restarted, so the two sides agree with no backfill.
-		if v, ok := obj["run_seq"].(json.Float); ok do s.run_seq = int(v)
-		if v, ok := obj["status"].(json.String); ok do s.status = bridge_shell_session_status_from_str(string(v))
-		if v, ok := obj["exit_code"].(json.Float); ok do s.exit_code = int(v)
-		if v, ok := obj["exit_code_set"].(json.Boolean); ok do s.exit_code_set = bool(v)
-		if v, ok := obj["started_at"].(json.String); ok do s.started_at = strings.clone(string(v), allocator)
-		if v, ok := obj["finished_at"].(json.String); ok do s.finished_at = strings.clone(string(v), allocator)
-		if v, ok := obj["shell_id"].(json.String); ok do s.shell_id = strings.clone(string(v), allocator)
-		if v, ok := obj["background"].(json.Boolean); ok do s.background = bool(v)
+		s.run_seq = spec.run_seq
+		s.status = bridge_shell_session_status_from_str(spec.status)
+		s.exit_code = spec.exit_code
+		s.exit_code_set = spec.exit_code_set
+		s.started_at = strings.clone(spec.started_at, allocator)
+		s.finished_at = strings.clone(spec.finished_at, allocator)
+		s.shell_id = strings.clone(spec.shell_id, allocator)
+		s.background = spec.background
 		// A spec written before REQ-SHELL-2 has no pty_host key and loads as false,
 		// i.e. "direct child". That is the SAFE default: the false branch proves
 		// liveness with ps before acting, while defaulting to true would ask the
 		// roster about a process that may never have been in it and reap it as dead.
-		if v, ok := obj["pty_host"].(json.Boolean); ok {
-			s.pty_host = bool(v)
+		if pty, ok := spec.pty_host.?; ok {
+			s.pty_host = pty
 			s.pty_host_provenance_known = true
 		}
 
-		if s.session_id != "" do append(&result, s)
+		if s.session_id != "" {
+			append(&result, s)
+		} else {
+			bridge_shell_session_free_fields(s, allocator)
+		}
 	}
 	return result[:]
 }

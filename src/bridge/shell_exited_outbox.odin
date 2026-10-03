@@ -112,6 +112,13 @@ bridge_shell_exited_outbox_path :: proc(data_dir, session_id: string, run_seq: i
 	return strings.concatenate({dir, "/", name})
 }
 
+// Shell_Exited_Outbox_Envelope is the typed disk representation of a queued exit.
+Shell_Exited_Outbox_Envelope :: struct {
+	session_id:     string `json:"session_id"`,
+	enqueued_at_ms: i64    `json:"enqueued_at_ms"`,
+	event:          string `json:"event"`,
+}
+
 // bridge_shell_exited_outbox_write persists one queued exit, atomically. Returns the
 // path it wrote, or "" when it could not write — a failure here is not fatal: the
 // in-memory queue still carries the event, so the only thing lost is restart
@@ -128,22 +135,20 @@ bridge_shell_exited_outbox_write :: proc(data_dir, session_id, event_json: strin
 	tmp := strings.concatenate({path, ".tmp"})
 	defer delete(tmp)
 
-	b := strings.builder_make()
-	defer strings.builder_destroy(&b)
-	strings.write_string(&b, "{\"session_id\":\"")
-	bridge_local_write_json_string(&b, session_id)
-	strings.write_string(&b, "\",\"enqueued_at_ms\":")
-	// Allocates nothing, so there is no ownership question on the exit path.
-	bridge_agent_write_int(&b, int(enqueued_at_ms))
-	// The event frame is stored as an opaque STRING, not as a nested object, so the
-	// bytes that go on the wire are exactly the bytes the enqueuing code built. A
-	// re-serialized object would be a second chance to change the frame.
-	strings.write_string(&b, ",\"event\":\"")
-	bridge_local_write_json_string(&b, event_json)
-	strings.write_string(&b, "\"}")
+	envelope := Shell_Exited_Outbox_Envelope{
+		session_id     = session_id,
+		enqueued_at_ms = enqueued_at_ms,
+		event          = event_json,
+	}
 
-	payload := strings.to_string(b)
-	if os.write_entire_file(tmp, transmute([]byte)payload) != nil {
+	payload, merr := json.marshal(envelope, allocator = context.temp_allocator)
+	if merr != nil {
+		fmt.eprintln("bridge shell_exited outbox: failed to marshal envelope:", merr)
+		delete(path)
+		return ""
+	}
+
+	if os.write_entire_file(tmp, payload) != nil {
 		fmt.eprintln("bridge shell_exited outbox: could not write", tmp, "— this exit will not survive a restart")
 		delete(path)
 		return ""
@@ -210,23 +215,10 @@ bridge_shell_exited_outbox_load :: proc(data_dir: string, now_ms: i64) -> []Brid
 		}
 		defer delete(raw)
 
-		parsed, jerr := json.parse(raw)
+		envelope: Shell_Exited_Outbox_Envelope
+		jerr := json.unmarshal(raw, &envelope, allocator = context.temp_allocator)
 		if jerr != nil {
-			// json.parse allocates whatever it managed to build BEFORE it failed, so the
-			// error path has to destroy it too — dropping it leaks a few bytes per
-			// corrupt envelope, on a path that by definition runs on malformed input.
-			// (bridge_shell_session_load_specs has this same miss at its corrupt-spec
-			// branch; not touched here, it is not this task's file.)
-			json.destroy_value(parsed)
 			fmt.eprintln("bridge shell_exited outbox: corrupt envelope, discarding:", info.name)
-			_ = os.remove(path)
-			delete(path)
-			continue
-		}
-		defer json.destroy_value(parsed)
-
-		obj, is_obj := parsed.(json.Object)
-		if !is_obj {
 			_ = os.remove(path)
 			delete(path)
 			continue
@@ -234,9 +226,9 @@ bridge_shell_exited_outbox_load :: proc(data_dir: string, now_ms: i64) -> []Brid
 
 		e: Bridge_Shell_Exited_Outbox_Entry
 		e.path = path
-		if v, ok := obj["session_id"].(json.String); ok do e.session_id = strings.clone(string(v))
-		if v, ok := obj["event"].(json.String); ok do e.event_json = strings.clone(string(v))
-		if v, ok := obj["enqueued_at_ms"].(json.Float); ok do e.enqueued_at_ms = i64(v)
+		e.session_id = strings.clone(envelope.session_id)
+		e.event_json = strings.clone(envelope.event)
+		e.enqueued_at_ms = envelope.enqueued_at_ms
 
 		if strings.trim_space(e.event_json) == "" {
 			fmt.eprintln("bridge shell_exited outbox: envelope carries no event, discarding:", info.name)
