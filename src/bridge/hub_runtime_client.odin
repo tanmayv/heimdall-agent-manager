@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:crypto/hash"
 import base64 "core:encoding/base64"
 import "core:encoding/hex"
+import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:os"
@@ -2777,33 +2778,129 @@ bridge_shell_exited_drain_outgoing :: proc(conn: ^ws.Connection) {
 	}
 }
 
-// ---- shell_exited event JSON builder ------------------------------------
+// ---- Typed wire command and event structs (REQ-P1-WIRE-CMD) ----------------
+
+Bridge_Shell_Start_Command :: struct {
+	type:              string `json:"type"`,
+	command_id:        string `json:"command_id"`,
+	session_id:        string `json:"session_id"`,
+	kind:              string `json:"kind"`,
+	cmd:               string `json:"cmd"`,
+	cwd:               string `json:"cwd"`,
+	label:             string `json:"label"`,
+	project_id:        string `json:"project_id"`,
+	chain_id:          string `json:"chain_id"`,
+	agent_instance_id: string `json:"agent_instance_id"`,
+	owner_user_id:     string `json:"owner_user_id"`,
+	started_at:        string `json:"started_at"`,
+	server_port:       int    `json:"server_port"`,
+	background:        bool   `json:"background"`,
+	run_seq:           int    `json:"run_seq"`,
+}
+
+Bridge_Shell_Exited_Event :: struct {
+	type:          string `json:"type"`,
+	session_id:    string `json:"session_id"`,
+	exit_code:     int    `json:"exit_code"`,
+	exit_code_set: bool   `json:"exit_code_set"`,
+	status:        string `json:"status"`,
+	finished_at:   string `json:"finished_at"`,
+	run_seq:       int    `json:"run_seq"`,
+}
+
+Bridge_Shell_Error_Result :: struct {
+	type:        string     `json:"type"`,
+	session_id:  string     `json:"session_id"`,
+	command_id:  string     `json:"command_id"`,
+	ok:          bool       `json:"ok"`,
+	error:       string     `json:"error"`,
+	server_port: Maybe(int) `json:"server_port,omitempty"`,
+	pid:         Maybe(int) `json:"pid,omitempty"`,
+}
+
+Bridge_Shell_Start_Result :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+	command_id: string `json:"command_id"`,
+	ok:         bool   `json:"ok"`,
+	pid:        int    `json:"pid"`,
+	shell_id:   string `json:"shell_id"`,
+}
+
+Bridge_Shell_Set_Port_Command :: struct {
+	type:        string `json:"type"`,
+	session_id:  string `json:"session_id"`,
+	command_id:  string `json:"command_id"`,
+	server_port: int    `json:"server_port"`,
+}
+
+Bridge_Shell_Set_Port_Result :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+	command_id: string `json:"command_id"`,
+	ok:         bool   `json:"ok"`,
+	error:      string `json:"error,omitempty"`,
+}
+
+Bridge_Shell_Restart_Command :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+	command_id: string `json:"command_id"`,
+	run_seq:    int    `json:"run_seq"`,
+}
+
+Bridge_Shell_Restart_Result :: struct {
+	type:       string     `json:"type"`,
+	session_id: string     `json:"session_id"`,
+	command_id: string     `json:"command_id"`,
+	ok:         bool       `json:"ok"`,
+	pid:        Maybe(int) `json:"pid,omitempty"`,
+}
+
+Bridge_Shell_Logs_Command :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+	command_id: string `json:"command_id"`,
+	offset:     int    `json:"offset"`,
+	limit:      int    `json:"limit"`,
+	grep:       string `json:"grep"`,
+}
+
+Bridge_Shell_Background_Command :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+}
+
+Bridge_Shell_Kill_Command :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+}
+
+Bridge_Shell_Signal_Command :: struct {
+	type:       string `json:"type"`,
+	session_id: string `json:"session_id"`,
+	signal:     int    `json:"signal"`,
+}
+
+// ---- shell_exited event JSON serializer (REQ-P1-WIRE-CMD) ---------------
 
 // run_seq (REQ-SHELL-4) names which RUN of the session exited. The hub discards a
 // report whose run_seq is older than its row's, which is what stops an exit replayed
 // from the durable outbox from terminating a session that has since been restarted
 // and is genuinely alive.
 bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_code_set: bool, status: string, run_seq: int) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"shell_exited\",\"session_id\":\"")
-	bridge_runtime_write_json_string(&b, session_id)
-	strings.write_string(&b, "\",\"exit_code\":")
-	// Allocates nothing, so there is no ownership question on the exit path.
-	bridge_agent_write_int(&b, exit_code)
-	strings.write_string(&b, ",\"exit_code_set\":")
-	strings.write_string(&b, "true" if exit_code_set else "false")
-	strings.write_string(&b, ",\"status\":\"")
-	bridge_runtime_write_json_string(&b, status)
-	finished_at := action_scheduler_format_rfc3339_utc(bridge_now_unix_ms())
-	strings.write_string(&b, "\",\"finished_at\":\"")
-	bridge_runtime_write_json_string(&b, finished_at)
-	strings.write_string(&b, "\",\"run_seq\":")
-	{
-		buf: [24]byte
-		strings.write_string(&b, strconv.write_int(buf[:], i64(run_seq), 10))
+	evt := Bridge_Shell_Exited_Event{
+		type          = "shell_exited",
+		session_id    = session_id,
+		exit_code     = exit_code,
+		exit_code_set = exit_code_set,
+		status        = status,
+		finished_at   = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()),
+		run_seq       = run_seq,
 	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
+	data, err := json.marshal(evt, allocator = context.allocator)
+	if err != nil do return ""
+	return string(data)
 }
 
 // ---- REQ-SHELL-16 D1a: one rejection path, and it is never silent ----
@@ -2896,30 +2993,6 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// retention so neither can be the one that never tidies up.
 	bridge_shell_output_sweep_if_due()
 
-	session_id  := extract_json_string(text, "session_id", "")
-	command_id  := extract_json_string(text, "command_id", "")
-	kind_str    := extract_json_string(text, "kind", "run")
-	cmd         := extract_json_string(text, "cmd", "")
-	cwd         := extract_json_string(text, "cwd", "")
-	label       := extract_json_string(text, "label", "")
-	project_id  := extract_json_string(text, "project_id", "")
-	chain_id    := extract_json_string(text, "chain_id", "")
-	agent_iid   := extract_json_string(text, "agent_instance_id", "")
-	owner_uid   := extract_json_string(text, "owner_user_id", "")
-	// REQ-SHELL-1 §8: the HUB clock is authoritative for every lifecycle and age
-	// decision, so the hub sends the started_at it assigned and the bridge stores
-	// THAT rather than stamping its own. Falls back to the local clock only when a
-	// caller omits it (there is no hub-side path that does).
-	hub_started_at := extract_json_string(text, "started_at", "")
-	server_port := extract_json_int(text, "server_port", 0)
-	// REQ-SHELL-2: a run may be born background (--bg). Only a run uses this; a
-	// shell and a server have no foreground form to convert from.
-	background := bridge_local_extract_json_bool(text, "background", false)
-	// REQ-SHELL-4: the hub-assigned run number, echoed back on every exit this
-	// session reports. Same "hub assigns, bridge stores THAT" rule as started_at
-	// above. Absent means run 0, the first run.
-	run_seq := extract_json_int(text, "run_seq", 0)
-
 	// REQ-SHELL-16: this is now a two-constant binding over bridge_shell_send_error,
 	// not a body. It stays as a nested proc only so the handler's rejection sites keep
 	// reading `send_error(conn, session_id, command_id, "reason")` and cannot forget
@@ -2928,6 +3001,36 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
 		bridge_shell_send_error(conn, "shell_start_result", session_id, command_id, msg, "")
 	}
+
+	cmd_wire: Bridge_Shell_Start_Command
+	if err := json.unmarshal(transmute([]byte)text, &cmd_wire, allocator = context.temp_allocator); err != nil {
+		send_error(conn, "", "", "invalid json")
+		return
+	}
+
+	session_id  := cmd_wire.session_id
+	command_id  := cmd_wire.command_id
+	kind_str    := cmd_wire.kind if cmd_wire.kind != "" else "run"
+	cmd         := cmd_wire.cmd
+	cwd         := cmd_wire.cwd
+	label       := cmd_wire.label
+	project_id  := cmd_wire.project_id
+	chain_id    := cmd_wire.chain_id
+	agent_iid   := cmd_wire.agent_instance_id
+	owner_uid   := cmd_wire.owner_user_id
+	// REQ-SHELL-1 §8: the HUB clock is authoritative for every lifecycle and age
+	// decision, so the hub sends the started_at it assigned and the bridge stores
+	// THAT rather than stamping its own. Falls back to the local clock only when a
+	// caller omits it (there is no hub-side path that does).
+	hub_started_at := cmd_wire.started_at
+	server_port := cmd_wire.server_port
+	// REQ-SHELL-2: a run may be born background (--bg). Only a run uses this; a
+	// shell and a server have no foreground form to convert from.
+	background := cmd_wire.background
+	// REQ-SHELL-4: the hub-assigned run number, echoed back on every exit this
+	// session reports. Same "hub assigns, bridge stores THAT" rule as started_at
+	// above. Absent means run 0, the first run.
+	run_seq := cmd_wire.run_seq
 
 	if session_id == "" {
 		send_error(conn, session_id, command_id, "missing session_id")
@@ -2939,13 +3042,10 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// T11-BUG-3: an interactive `shell` has no command of its own — it *is* the
 	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
 	// rejecting the request. Every other kind still requires an explicit cmd.
-	cmd_owned := false
 	cmd_defaulted := false
-	defer if cmd_owned do delete(cmd)
 	if kind == .Shell && cmd == "" {
 		shell_env := os.get_env("SHELL", context.temp_allocator)
-		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
-		cmd_owned = true
+		cmd = len(shell_env) > 0 ? shell_env : "/bin/sh"
 		cmd_defaulted = true
 	}
 	if cmd == "" {
@@ -3174,19 +3274,17 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// has a child to wait for).
 	bridge_shell_run_cap_start(session_id, kind)
 
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"shell_start_result\",\"session_id\":\"")
-	bridge_runtime_write_json_string(&b, session_id)
-	strings.write_string(&b, "\",\"command_id\":\"")
-	bridge_runtime_write_json_string(&b, command_id)
-	strings.write_string(&b, "\",\"ok\":true,\"pid\":")
-	bridge_agent_write_int(&b, int(pid))
-	strings.write_string(&b, ",\"shell_id\":\"")
-	bridge_runtime_write_json_string(&b, spawn_instance)
-	strings.write_string(&b, "\"}")
-	result := strings.to_string(b)
-	if conn != nil do _ = bridge_hub_send(conn, result)
-	delete(result)
+	res_wire := Bridge_Shell_Start_Result{
+		type       = "shell_start_result",
+		session_id = session_id,
+		command_id = command_id,
+		ok         = true,
+		pid        = int(pid),
+		shell_id   = spawn_instance,
+	}
+	if res_bytes, err := json.marshal(res_wire, allocator = context.temp_allocator); err == nil {
+		if conn != nil do _ = bridge_hub_send(conn, string(res_bytes))
+	}
 
 	// KILL BEFORE START, THE APPLY HALF (REQ-SHELL-3 work item 5b). A kill that
 	// arrived while this start was in flight was recorded as a pending intent, because
@@ -3310,8 +3408,12 @@ bridge_shell_kill_worker :: proc(data: rawptr) {
 // reconnect, so this handler must expect to be called more than once for the same
 // session, and to be called for a session it has never heard of.
 bridge_hub_handle_shell_kill :: proc(text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	if session_id == "" do return
+	cmd: Bridge_Shell_Kill_Command
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		return
+	}
+	if cmd.session_id == "" do return
+	session_id := cmd.session_id
 
 	sc, ok := bridge_shell_session_scalars(&bridge_shell_session_map, session_id)
 	if !ok {
@@ -3408,17 +3510,25 @@ bridge_shell_kill_arm :: proc(session_id: string, shell_id: string) {
 // persists the flag and releases the blocked caller locally, and the hub has
 // already written its own row. There is nothing for the hub to wait on.
 bridge_hub_handle_shell_background :: proc(text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	if session_id == "" do return
-	_ = bridge_shell_set_background(session_id)
+	cmd: Bridge_Shell_Background_Command
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		return
+	}
+	if cmd.session_id == "" do return
+	_ = bridge_shell_set_background(cmd.session_id)
 }
 
 // bridge_hub_handle_shell_signal handles the "shell_signal" command.
 // FIRE-AND-FORGET: delivers signal to process group.
 bridge_hub_handle_shell_signal :: proc(text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	signal     := extract_json_int(text, "signal", 15)
-	if session_id == "" do return
+	cmd: Bridge_Shell_Signal_Command
+	cmd.signal = 15
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		return
+	}
+	if cmd.session_id == "" do return
+	session_id := cmd.session_id
+	signal     := cmd.signal if cmd.signal != 0 else 15
 
 	// An OWNED clone, held across bridge_pty_host_ensure_daemon below — the other half
 	// of the window the old leak comment named (see bridge_hub_handle_shell_kill).
@@ -3444,29 +3554,25 @@ bridge_hub_handle_shell_signal :: proc(text: string) {
 // Ownership is NOT re-checked here: the hub settles it before sending, the same
 // division of labour tunnel_open uses.
 bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	command_id := extract_json_string(text, "command_id", "")
-	port       := extract_json_int(text, "server_port", 0)
-	defer delete(session_id)
-	defer delete(command_id)
+	cmd: Bridge_Shell_Set_Port_Command
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		return
+	}
+	session_id := cmd.session_id
+	command_id := cmd.command_id
+	port       := cmd.server_port
 
 	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, reason: string) {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"type\":\"shell_set_port_result\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"command_id\":\"")
-		bridge_runtime_write_json_string(&b, command_id)
-		strings.write_string(&b, "\",\"ok\":")
-		strings.write_string(&b, "true" if ok else "false")
-		if !ok {
-			strings.write_string(&b, ",\"error\":\"")
-			bridge_runtime_write_json_string(&b, reason)
-			strings.write_byte(&b, '"')
+		res := Bridge_Shell_Set_Port_Result{
+			type       = "shell_set_port_result",
+			session_id = session_id,
+			command_id = command_id,
+			ok         = ok,
+			error      = reason,
 		}
-		strings.write_byte(&b, '}')
-		result := strings.to_string(b)
-		if conn != nil do _ = bridge_hub_send(conn, result)
-		delete(result)
+		if data, err := json.marshal(res, allocator = context.temp_allocator); err == nil {
+			if conn != nil do _ = bridge_hub_send(conn, string(data))
+		}
 	}
 
 	if session_id == "" {
@@ -3505,29 +3611,28 @@ bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
 // bridge_hub_handle_shell_restart handles the "shell_restart" command.
 // REQUEST/REPLY: closes the existing child and re-spawns with same spec.
 bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	command_id := extract_json_string(text, "command_id", "")
+	cmd: Bridge_Shell_Restart_Command
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		return
+	}
+	session_id := cmd.session_id
+	command_id := cmd.command_id
 	// REQ-SHELL-4: the run number this session is to carry FROM NOW ON. Adopted only
 	// on a SUCCESSFUL respawn (see below), which is what keeps the two sides in step
 	// when a restart fails — the hub does not advance its row on a failure either.
-	new_run_seq := extract_json_int(text, "run_seq", 0)
+	new_run_seq := cmd.run_seq
 
 	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, pid: int) {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"type\":\"shell_restart_result\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"command_id\":\"")
-		bridge_runtime_write_json_string(&b, command_id)
-		strings.write_string(&b, "\",\"ok\":")
-		strings.write_string(&b, "true" if ok else "false")
-		if ok {
-			strings.write_string(&b, ",\"pid\":")
-			bridge_agent_write_int(&b, pid)
+		res := Bridge_Shell_Restart_Result{
+			type       = "shell_restart_result",
+			session_id = session_id,
+			command_id = command_id,
+			ok         = ok,
+			pid        = pid if ok else nil,
 		}
-		strings.write_string(&b, "}")
-		result := strings.to_string(b)
-		if conn != nil do _ = bridge_hub_send(conn, result)
-		delete(result)
+		if data, err := json.marshal(res, allocator = context.temp_allocator); err == nil {
+			if conn != nil do _ = bridge_hub_send(conn, string(data))
+		}
 	}
 
 	if session_id == "" {
@@ -3684,11 +3789,16 @@ bridge_shell_session_write_json :: proc(b: ^strings.Builder, s: Bridge_Shell_Ses
 // bridge_hub_handle_shell_logs handles the "shell_logs" command.
 // REQUEST/REPLY: reads lines from the session tee_path with optional paging and grep.
 bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
-	session_id := extract_json_string(text, "session_id", "")
-	command_id := extract_json_string(text, "command_id", "")
-	offset     := extract_json_int(text, "offset", 0)
-	limit      := extract_json_int(text, "limit", BRIDGE_SHELL_TAIL_KEEP)
-	grep       := extract_json_string(text, "grep", "")
+	cmd: Bridge_Shell_Logs_Command
+	cmd.limit = BRIDGE_SHELL_TAIL_KEEP
+	if err := json.unmarshal(transmute([]byte)text, &cmd, allocator = context.temp_allocator); err != nil {
+		// Proceed; if session_id is empty, send_error below handles it
+	}
+	session_id := cmd.session_id
+	command_id := cmd.command_id
+	offset     := cmd.offset
+	limit      := cmd.limit if cmd.limit > 0 else BRIDGE_SHELL_TAIL_KEEP
+	grep       := cmd.grep
 
 	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
 		bridge_shell_send_error(conn, "shell_logs_result", session_id, command_id, msg, "\"lines\":[],\"truncated\":false,\"total_lines\":0,")

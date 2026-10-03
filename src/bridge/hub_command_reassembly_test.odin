@@ -10,6 +10,8 @@ package main
 //   3. ALL-OR-NOTHING — an INTERRUPTED sequence (the reconnect case) never dispatches a
 //      partial command, and the partial dies with the connection rather than lingering.
 
+import "core:encoding/json"
+import "core:mem"
 import "core:strings"
 import "core:testing"
 import base64 "core:encoding/base64"
@@ -315,3 +317,154 @@ hub_command_reassemble_accepts_the_bridges_own_chunk_shape :: proc(t: ^testing.T
 	defer delete(assembled)
 	testing.expect(t, assembled == original, "both directions must share one wire format exactly")
 }
+
+@(test)
+hub_command_reassembly_wire_shell_start_reversed_keys_and_whitespace :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// Reversed key order with arbitrary whitespace, indentation, newlines.
+	raw := `
+	{
+		"run_seq": 5,
+		"background": true,
+		"server_port": 8080,
+		"started_at": "2026-10-03T11:00:00Z",
+		"owner_user_id": "usr_tanmay",
+		"agent_instance_id": "inst_worker_1",
+		"chain_id": "chain_test_99",
+		"project_id": "proj_heima",
+		"label": "Build Job",
+		"cwd": "/tmp/test_dir",
+		"cmd": "make build -j4",
+		"kind": "run",
+		"session_id": "sh_reversed_01",
+		"command_id": "cmd_rev_01",
+		"type": "shell_start"
+	}
+	`
+
+	cmd: Bridge_Shell_Start_Command
+	err := json.unmarshal(transmute([]byte)raw, &cmd, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshaling with reversed keys and whitespace must succeed")
+
+	testing.expect_value(t, cmd.type, "shell_start")
+	testing.expect_value(t, cmd.command_id, "cmd_rev_01")
+	testing.expect_value(t, cmd.session_id, "sh_reversed_01")
+	testing.expect_value(t, cmd.kind, "run")
+	testing.expect_value(t, cmd.cmd, "make build -j4")
+	testing.expect_value(t, cmd.cwd, "/tmp/test_dir")
+	testing.expect_value(t, cmd.label, "Build Job")
+	testing.expect_value(t, cmd.project_id, "proj_heima")
+	testing.expect_value(t, cmd.chain_id, "chain_test_99")
+	testing.expect_value(t, cmd.agent_instance_id, "inst_worker_1")
+	testing.expect_value(t, cmd.owner_user_id, "usr_tanmay")
+	testing.expect_value(t, cmd.started_at, "2026-10-03T11:00:00Z")
+	testing.expect_value(t, cmd.server_port, 8080)
+	testing.expect_value(t, cmd.background, true)
+	testing.expect_value(t, cmd.run_seq, 5)
+
+	// Since unmarshaling was on context.temp_allocator, heap tracking allocator must have zero leaks
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+hub_command_reassembly_wire_shell_start_special_characters :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// JSON containing escaped double quotes, backslashes, unicode characters, tabs, newlines
+	raw := `{"type":"shell_start","command_id":"cmd_spec_1","session_id":"sh_spec_1","kind":"server","cmd":"echo \"hello \\ world\" \u2764\n\t","cwd":"/path/with spaces/and \"quotes\""}`
+
+	cmd: Bridge_Shell_Start_Command
+	err := json.unmarshal(transmute([]byte)raw, &cmd, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "unmarshaling with special characters must succeed")
+
+	testing.expect_value(t, cmd.type, "shell_start")
+	testing.expect_value(t, cmd.session_id, "sh_spec_1")
+	testing.expect_value(t, cmd.kind, "server")
+	testing.expect_value(t, cmd.cmd, "echo \"hello \\ world\" \u2764\n\t")
+	testing.expect_value(t, cmd.cwd, "/path/with spaces/and \"quotes\"")
+
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+hub_command_reassembly_wire_shell_exited_event_serialization_and_no_leak :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	event_str := bridge_shell_exited_event_json("sh_exit_test", 137, true, "killed", 3)
+	testing.expect(t, len(event_str) > 0, "serialized event must not be empty")
+
+	// Verify unmarshaling the emitted json back into Bridge_Shell_Exited_Event
+	parsed: Bridge_Shell_Exited_Event
+	err := json.unmarshal(transmute([]byte)event_str, &parsed, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "serialized event must be valid JSON")
+
+	testing.expect_value(t, parsed.type, "shell_exited")
+	testing.expect_value(t, parsed.session_id, "sh_exit_test")
+	testing.expect_value(t, parsed.exit_code, 137)
+	testing.expect_value(t, parsed.exit_code_set, true)
+	testing.expect_value(t, parsed.status, "killed")
+	testing.expect_value(t, parsed.run_seq, 3)
+	testing.expect(t, len(parsed.finished_at) > 0, "finished_at must be populated")
+
+	// Free event_str and assert tracking allocator has 0 leaks and 0 bad frees
+	delete(event_str)
+
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
+@(test)
+hub_command_reassembly_wire_related_commands_deserialization :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+
+	// Test Bridge_Shell_Set_Port_Command
+	set_port_raw := `{"server_port": 9001, "command_id": "cmd_p1", "session_id": "sh_p1", "type": "shell_set_port"}`
+	cmd_port: Bridge_Shell_Set_Port_Command
+	err := json.unmarshal(transmute([]byte)set_port_raw, &cmd_port, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "set_port unmarshal ok")
+	testing.expect_value(t, cmd_port.type, "shell_set_port")
+	testing.expect_value(t, cmd_port.session_id, "sh_p1")
+	testing.expect_value(t, cmd_port.command_id, "cmd_p1")
+	testing.expect_value(t, cmd_port.server_port, 9001)
+
+	// Test Bridge_Shell_Restart_Command
+	restart_raw := `{"run_seq": 2, "command_id": "cmd_r1", "session_id": "sh_r1", "type": "shell_restart"}`
+	cmd_restart: Bridge_Shell_Restart_Command
+	err = json.unmarshal(transmute([]byte)restart_raw, &cmd_restart, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "restart unmarshal ok")
+	testing.expect_value(t, cmd_restart.type, "shell_restart")
+	testing.expect_value(t, cmd_restart.session_id, "sh_r1")
+	testing.expect_value(t, cmd_restart.command_id, "cmd_r1")
+	testing.expect_value(t, cmd_restart.run_seq, 2)
+
+	// Test Bridge_Shell_Logs_Command
+	logs_raw := `{"grep": "error: *", "limit": 50, "offset": 10, "command_id": "cmd_l1", "session_id": "sh_l1", "type": "shell_logs"}`
+	cmd_logs: Bridge_Shell_Logs_Command
+	err = json.unmarshal(transmute([]byte)logs_raw, &cmd_logs, allocator = context.temp_allocator)
+	testing.expect(t, err == nil, "logs unmarshal ok")
+	testing.expect_value(t, cmd_logs.type, "shell_logs")
+	testing.expect_value(t, cmd_logs.session_id, "sh_l1")
+	testing.expect_value(t, cmd_logs.command_id, "cmd_l1")
+	testing.expect_value(t, cmd_logs.offset, 10)
+	testing.expect_value(t, cmd_logs.limit, 50)
+	testing.expect_value(t, cmd_logs.grep, "error: *")
+
+	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
+	testing.expect(t, len(track.bad_free_array) == 0, "no bad frees")
+}
+
