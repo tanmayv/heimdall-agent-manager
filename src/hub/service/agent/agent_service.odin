@@ -6,6 +6,7 @@ import "core:strings"
 import "core:sync"
 import "core:crypto/hash"
 import "core:encoding/hex"
+import "core:encoding/json"
 import contracts "odin_test:contracts"
 import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
@@ -1241,24 +1242,48 @@ validate_provider_tier_intersection :: proc(bridge: domain.Bridge, support: doma
 	return domain.Resolved_Provider_Tier{provider = provider, tier = tier}, true, domain.Domain_Error{}
 }
 
+Bridge_Capabilities_Envelope :: struct {
+	capabilities: []domain.Bridge_Provider_Capability `json:"capabilities"`,
+}
+
+parse_bridge_capabilities :: proc(capabilities_json: string) -> []domain.Bridge_Provider_Capability {
+	trimmed := strings.trim_space(capabilities_json)
+	if trimmed == "" do return nil
+
+	if strings.has_prefix(trimmed, "{") {
+		envelope: Bridge_Capabilities_Envelope
+		if json.unmarshal_string(trimmed, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator) == nil {
+			return envelope.capabilities
+		}
+	} else if strings.has_prefix(trimmed, "[") {
+		caps: []domain.Bridge_Provider_Capability
+		if json.unmarshal_string(trimmed, &caps, json.DEFAULT_SPECIFICATION, context.temp_allocator) == nil {
+			return caps
+		}
+	} else {
+		envelope: Bridge_Capabilities_Envelope
+		if json.unmarshal_string(trimmed, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator) == nil {
+			return envelope.capabilities
+		}
+		caps: []domain.Bridge_Provider_Capability
+		if json.unmarshal_string(trimmed, &caps, json.DEFAULT_SPECIFICATION, context.temp_allocator) == nil {
+			return caps
+		}
+	}
+	return nil
+}
+
 bridge_supports_provider_tier :: proc(bridge: domain.Bridge, provider, tier: string) -> bool {
 	if provider == "" do return false
-	caps := bridge.capabilities_json
-	if caps == "" do return false
-	search_from := 0
-	for search_from < len(caps) {
-		rel := strings.index(caps[search_from:], "\"provider\"")
-		if rel < 0 do return false
-		idx := search_from + rel
-		value := json_value_at(caps, "provider", idx)
-		if value == provider {
+	caps := parse_bridge_capabilities(bridge.capabilities_json)
+	for cap in caps {
+		if cap.provider == provider {
 			if tier == "" do return true
-			next_rel := strings.index(caps[idx + len("\"provider\""):], "\"provider\"")
-			end := len(caps)
-			if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
-			return json_tiers_array_contains(caps[idx:end], tier)
+			for t in cap.tiers {
+				if t == tier do return true
+			}
+			return false
 		}
-		search_from = idx + len("\"provider\"")
 	}
 	return false
 }
@@ -1269,47 +1294,18 @@ bridge_supports_provider :: proc(bridge: domain.Bridge, provider: string) -> boo
 
 bridge_supports_any_provider_tier :: proc(bridge: domain.Bridge, tier: string) -> bool {
 	if strings.trim_space(tier) == "" do return false
-	caps := bridge.capabilities_json
-	if caps == "" do return false
-	search_from := 0
-	for search_from < len(caps) {
-		rel := strings.index(caps[search_from:], "\"provider\"")
-		if rel < 0 do return false
-		idx := search_from + rel
-		next_rel := strings.index(caps[idx + len("\"provider\""):], "\"provider\"")
-		end := len(caps)
-		if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
-		if json_tiers_array_contains(caps[idx:end], tier) do return true
-		search_from = idx + len("\"provider\"")
+	caps := parse_bridge_capabilities(bridge.capabilities_json)
+	for cap in caps {
+		for t in cap.tiers {
+			if t == tier do return true
+		}
 	}
 	return false
 }
 
-json_value_at :: proc(body, key: string, start: int) -> string {
-	if start < 0 || start >= len(body) do return ""
-	return json_value(body[start:], key)
-}
+// REQ-P1-CAPS: json_tiers_array_contains and json_value_at removed in favor of
+// parse_bridge_capabilities and domain.Bridge_Provider_Capability.
 
-json_tiers_array_contains :: proc(body, tier: string) -> bool {
-	tiers_idx := strings.index(body, "\"tiers\"")
-	if tiers_idx < 0 do return false
-	rest := body[tiers_idx + len("\"tiers\""):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return false
-	rest = rest[colon + 1:]
-	open := strings.index_byte(rest, '[')
-	if open < 0 do return false
-	rest = rest[open + 1:]
-	close := strings.index_byte(rest, ']')
-	if close < 0 do return false
-	return json_string_literal_present(rest[:close], tier)
-}
-
-json_string_literal_present :: proc(body, value: string) -> bool {
-	needle := strings.concatenate({"\"", value, "\""})
-	defer delete(needle)
-	return strings.contains(body, needle)
-}
 
 select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent: domain.Agent, req: Run_Request) -> (domain.Bridge, bool, domain.Domain_Error) {
 	supports, err := list_support(service, auth, agent.agent_id)
@@ -1555,41 +1551,31 @@ write_service_json_string :: proc(b: ^strings.Builder, value: string) {
 	contracts.write_json_string(b, value)
 }
 
-default_provider_from_bridge :: proc(bridge: domain.Bridge) -> string { return json_value(bridge.capabilities_json, "provider") }
-default_tier_from_bridge :: proc(bridge: domain.Bridge) -> string { return json_value(bridge.capabilities_json, "default_tier") }
-default_tier_for_provider_from_bridge :: proc(bridge: domain.Bridge, provider: string) -> string {
-	if provider == "" do return default_tier_from_bridge(bridge)
-	caps := bridge.capabilities_json
-	search_from := 0
-	for search_from < len(caps) {
-		rel := strings.index(caps[search_from:], "\"provider\"")
-		if rel < 0 do break
-		idx := search_from + rel
-		value := json_value_at(caps, "provider", idx)
-		if value == provider {
-			next_rel := strings.index(caps[idx + len("\"provider\""):], "\"provider\"")
-			end := len(caps)
-			if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
-			return json_value(caps[idx:end], "default_tier")
-		}
-		search_from = idx + len("\"provider\"")
-	}
-	return default_tier_from_bridge(bridge)
-}
-first_non_empty :: proc(a, b, c, d: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; return d }
-
-json_value :: proc(body, key: string) -> string {
-	needle := strings.concatenate({"\"", key, "\""}); defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return ""
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	for i := 1; i < len(rest); i += 1 { if rest[i] == '"' do return rest[1:i] }
+default_provider_from_bridge :: proc(bridge: domain.Bridge) -> string {
+	caps := parse_bridge_capabilities(bridge.capabilities_json)
+	if len(caps) > 0 do return caps[0].provider
 	return ""
 }
+
+default_tier_from_bridge :: proc(bridge: domain.Bridge) -> string {
+	caps := parse_bridge_capabilities(bridge.capabilities_json)
+	if len(caps) > 0 do return caps[0].default_tier
+	return ""
+}
+
+default_tier_for_provider_from_bridge :: proc(bridge: domain.Bridge, provider: string) -> string {
+	caps := parse_bridge_capabilities(bridge.capabilities_json)
+	if provider != "" {
+		for cap in caps {
+			if cap.provider == provider do return cap.default_tier
+		}
+	}
+	if len(caps) > 0 do return caps[0].default_tier
+	return ""
+}
+
+first_non_empty :: proc(a, b, c, d: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; return d }
+
 
 bootstrap_fragment_hash :: proc(body: string) -> string {
 	buf: [32]byte

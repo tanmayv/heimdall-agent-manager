@@ -37,6 +37,13 @@ Bridge :: struct {
 	telemetry_enabled: string,
 }
 
+Bridge_Provider_Capability :: struct {
+	provider:     string   `json:"provider"`,
+	tiers:        []string `json:"tiers"`,
+	default_tier: string   `json:"default_tier"`,
+}
+
+
 // bridge_destroy frees every heap string on a Bridge read from a repository.
 //
 // It exists because the REQ-SHELL-14 sweep reads bridges on the reaper's
