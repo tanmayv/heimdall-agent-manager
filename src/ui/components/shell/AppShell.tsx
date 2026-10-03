@@ -1382,6 +1382,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           'SidebarConversations',
           'Cards',
           'ChainList',
+          'Issue',
         ]),
       );
     }

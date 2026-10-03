@@ -10,6 +10,7 @@ import {
 import { IssueRow } from '../issues/IssueRow';
 import { issueViewHref } from '../issues/issueModel';
 import { navigateTo } from '../../utils/appLocation';
+import { useDecryptedIssues } from '../vault/VaultText';
 
 export function RecentIssuesTab() {
   const isMobile = useIsMobile();
@@ -34,7 +35,7 @@ export function RecentIssuesTab() {
   };
 
   // Recent: created_at descending
-  const issues = useMemo(() => {
+  const sortedIssues = useMemo(() => {
     const raw = [...(data?.items || [])];
     raw.sort((a, b) => {
       const tA = new Date(a.created_at || a.createdAt || 0).getTime();
@@ -43,6 +44,7 @@ export function RecentIssuesTab() {
     });
     return raw;
   }, [data]);
+  const issues = useDecryptedIssues(sortedIssues);
 
   return (
     <div

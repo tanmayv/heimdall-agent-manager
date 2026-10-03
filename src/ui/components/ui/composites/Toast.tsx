@@ -29,6 +29,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon, type IconName } from '../primitives/Icon';
 import { IconButton } from '../primitives/IconButton';
 import type { RootClassNameProps, Tone } from '../types';
+import { VaultText } from '../../vault/VaultText';
 
 const TONE_ICON: Record<Tone, IconName> = {
   neutral: 'info',
@@ -108,8 +109,12 @@ export const Toast: React.FC<ToastProps> = ({
     >
       {iconName ? <Icon name={iconName} size="sm" className={`mt-0.5 shrink-0 ${TONE_ICON_COLOR[tone]}`} /> : null}
       <div className="min-w-0 flex-1">
-        <div className="font-semibold">{title}</div>
-        {children ? <div className="mt-0.5 text-muted">{children}</div> : null}
+        <div className="font-semibold">{typeof title === 'string' ? <VaultText value={title} /> : title}</div>
+        {children ? (
+          <div className="mt-0.5 text-muted">
+            {typeof children === 'string' ? <VaultText value={children} /> : children}
+          </div>
+        ) : null}
       </div>
       {onDismiss ? (
         <IconButton icon="close" label="Dismiss" size="sm" onClick={onDismiss} className="-mr-1 -mt-0.5 shrink-0" />

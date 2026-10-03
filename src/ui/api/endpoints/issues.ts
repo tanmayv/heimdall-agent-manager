@@ -1,6 +1,7 @@
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 import { heimdallApi } from '../heimdallApi';
 import { encryptVaultText, decryptVaultText, isVaultArmored } from '../../utils/vaultContent';
+import { readSessionVaultKey } from '../../store/vaultSlice';
 
 export type IssueStatus = 'new' | 'fixed' | 'obsolete';
 export type IssueScopeType = 'global' | 'project' | 'agent' | 'bridge' | 'agent_id' | 'bridge_id';
@@ -271,13 +272,18 @@ export type UnvoteIssueInput = {
 export const issuesApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listIssues: build.query<{ items: Issue[]; has_more: boolean }, ListIssuesQueryArg>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const res = await cookieJsonFetchEnvelope(issueListPath(arg));
           const data = res?.data ?? res;
           const page = res?.page ?? {};
           const rawItems = Array.isArray(data) ? data : data?.items || [];
-          const items = rawItems.map(normalizeIssue);
+          let items = rawItems.map(normalizeIssue);
+          const state: any = api.getState();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey();
+          if (rawKeyHex) {
+            items = await Promise.all(items.map((iss) => decryptIssueRecord(iss, rawKeyHex)));
+          }
           return { data: { items, has_more: Boolean(page?.has_more) } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -290,13 +296,20 @@ export const issuesApi = heimdallApi.injectEndpoints({
     }),
 
     getIssue: build.query<Issue | null, { issueId: string } | string>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         const issueId = typeof arg === 'string' ? arg : arg?.issueId;
         if (!issueId) return { data: null };
         try {
           const res = await cookieJsonFetch(`/issues/${encodeURIComponent(issueId)}`);
           const record = res?.issue || res?.record || res;
-          return { data: record ? normalizeIssue(record) : null };
+          if (!record) return { data: null };
+          let issue = normalizeIssue(record);
+          const state: any = api.getState();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey();
+          if (rawKeyHex) {
+            issue = await decryptIssueRecord(issue, rawKeyHex);
+          }
+          return { data: issue };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }

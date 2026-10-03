@@ -17,6 +17,7 @@ import {
 import { getRoutePathname } from '../../utils/appLocation';
 import { IssueDetail } from './IssueDetail';
 import { IssueRow } from './IssueRow';
+import { useDecryptedIssues } from '../vault/VaultText';
 import {
   issueEditHref,
   issueNewHref,
@@ -74,9 +75,10 @@ export function IssueListPage({ selectedIssueId }: IssueListPageProps) {
     limit: 100,
   });
 
-  const issues: Issue[] = useMemo(() => {
+  const rawIssues: Issue[] = useMemo(() => {
     return data?.items || [];
   }, [data]);
+  const issues = useDecryptedIssues(rawIssues);
 
   // If in two-pane mode and an issue is selected, but not found in current results, keep selectedId
   // If no issue is selected in twoPane, auto-select the first issue if available

@@ -22,6 +22,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { Toast } from '@ui';
 import type { Tone } from '@ui';
 import { dismissToast, type Toast as ToastData, type ToastKind } from '../store/toastSlice';
+import { VaultText } from './vault/VaultText';
 
 const KIND_TONE: Record<ToastKind, Tone> = {
   success: 'success',
@@ -42,11 +43,11 @@ export function ToastViewport() {
         <Toast
           key={t.id}
           tone={KIND_TONE[t.kind]}
-          title={t.title}
+          title={t.title ? <VaultText value={t.title} /> : t.title}
           duration={t.autoDismissMs}
           onDismiss={() => dispatch(dismissToast(t.id))}
         >
-          {t.message}
+          {t.message ? <VaultText value={t.message} /> : t.message}
         </Toast>
       ))}
     </div>,

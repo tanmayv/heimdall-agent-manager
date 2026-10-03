@@ -9,6 +9,7 @@
 // The side-effectful parts (permission state, visibility/focus gate, creating
 // the Notification, click -> focus + route, Electron guard) live in the thin
 // notificationService and are wired from the single handleUserWsEvent funnel.
+import { isVaultArmored, containsVaultArmored } from '../utils/vaultContent.ts';
 
 export type NotificationCategory = 'chat' | 'attention';
 
@@ -48,6 +49,7 @@ function str(value: unknown): string {
 
 function truncate(text: string, max = 140): string {
   const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (isVaultArmored(trimmed) || containsVaultArmored(trimmed)) return trimmed;
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1)}…`;
 }

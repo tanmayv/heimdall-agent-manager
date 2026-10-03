@@ -33,9 +33,9 @@ import {
   selectRawVaultKeyHex,
   readSessionVaultKey,
 } from '../../../store/vaultSlice';
-import { isVaultArmored } from '../../../utils/vaultContent';
+import { isVaultArmored, decryptVaultText } from '../../../utils/vaultContent';
 import { batchDecryptTitles, type RawSearchItemInput } from '../../../utils/vaultSearch';
-import { VaultText } from '../../vault/VaultText';
+import { VaultText, useDecryptedText } from '../../vault/VaultText';
 import { Icon, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
@@ -115,6 +115,9 @@ export function CommandPalette({
   const hasScope = Boolean(scope && (scope.chainId || scope.conversationId));
   const [scoped, setScoped] = useState(true);
   const scopeActive = hasScope && scoped;
+
+  const { text: decryptedScopeLabel } = useDecryptedText(scope?.label);
+  const scopeTitle = decryptedScopeLabel || scope?.label || 'This chain';
 
   // Shared dialog contract: focus trap, Esc-to-close, body scroll-lock, and focus restore.
   useDialogA11y(open, onClose, panelRef);
@@ -198,17 +201,68 @@ export function CommandPalette({
     };
   }, [chainGroups, searchChains, activeVaultKey, dispatch]);
 
+  const [decryptedProjectNames, setDecryptedProjectNames] = useState<Record<string, string>>({});
+
+  // Decrypt armored project names in chainGroups/conversationGroups using activeVaultKey
+  useEffect(() => {
+    if (!activeVaultKey) return;
+    let canceled = false;
+    const toDecrypt: { id: string; raw: string }[] = [];
+
+    for (const g of chainGroups) {
+      if (g.projectId && g.projectName && isVaultArmored(g.projectName) && !decryptedProjectNames[g.projectId]) {
+        toDecrypt.push({ id: g.projectId, raw: g.projectName });
+      }
+    }
+    for (const g of conversationGroups) {
+      if (g.projectId && g.projectName && isVaultArmored(g.projectName) && !decryptedProjectNames[g.projectId]) {
+        toDecrypt.push({ id: g.projectId, raw: g.projectName });
+      }
+    }
+
+    if (toDecrypt.length === 0) return;
+
+    Promise.all(
+      toDecrypt.map(async (item) => {
+        try {
+          const dec = await decryptVaultText(item.raw, activeVaultKey);
+          return { id: item.id, dec };
+        } catch {
+          return { id: item.id, dec: item.raw };
+        }
+      })
+    ).then((res) => {
+      if (!canceled && res.length > 0) {
+        setDecryptedProjectNames((prev) => {
+          const next = { ...prev };
+          for (const item of res) {
+            next[item.id] = item.dec;
+          }
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      canceled = true;
+    };
+  }, [chainGroups, conversationGroups, activeVaultKey, decryptedProjectNames]);
+
   // Project names index lookup
   const projectNamesById = useMemo(() => {
     const map = new Map<string, string>();
     for (const g of chainGroups) {
-      if (g.projectId && g.projectName) map.set(g.projectId, g.projectName);
+      if (g.projectId && g.projectName) {
+        map.set(g.projectId, decryptedProjectNames[g.projectId] || g.projectName);
+      }
     }
     for (const g of conversationGroups) {
-      if (g.projectId && g.projectName) map.set(g.projectId, g.projectName);
+      if (g.projectId && g.projectName) {
+        map.set(g.projectId, decryptedProjectNames[g.projectId] || g.projectName);
+      }
     }
     return map;
-  }, [chainGroups, conversationGroups]);
+  }, [chainGroups, conversationGroups, decryptedProjectNames]);
 
   // Combine task chains across ALL projects from props and searchTitleSlice
   const allChains = useMemo(() => {
@@ -228,13 +282,15 @@ export function CommandPalette({
         const id = ch.chainId;
         const searchItem = searchChains[id];
         const title = searchItem?.decryptedTitle || ch.title || 'Untitled chain';
+        const pId = ch.projectId || g.projectId;
+        const pName = (pId ? projectNamesById.get(pId) : null) || ch.projectName || g.projectName || '';
         map.set(id, {
           chainId: id,
           title,
           rawTitle: searchItem?.rawTitle || ch.title,
           status: searchItem?.status || ch.status,
-          projectId: ch.projectId || g.projectId,
-          projectName: ch.projectName || g.projectName || projectNamesById.get(ch.projectId || g.projectId) || '',
+          projectId: pId,
+          projectName: pName,
           coordinatorAgentInstanceId: ch.coordinatorAgentInstanceId,
         });
       }
@@ -248,7 +304,7 @@ export function CommandPalette({
       const title = item.decryptedTitle || item.rawTitle || existing?.title || 'Untitled chain';
       const status = item.status || existing?.status;
       const projectId = item.projectId || existing?.projectId;
-      const projectName = existing?.projectName || (projectId ? projectNamesById.get(projectId) : '') || '';
+      const projectName = (projectId ? projectNamesById.get(projectId) : '') || existing?.projectName || '';
 
       if (!existing) {
         map.set(id, {
@@ -301,13 +357,14 @@ export function CommandPalette({
 
       if (hasScope && scopeActive) {
         for (const group of conversationGroups) {
+          const groupName = (group.projectId && projectNamesById.get(group.projectId)) || group.projectName || 'Conversations';
           group.conversations.forEach((c) => {
             out.push({
               kind: 'conversation',
               label: c.title || c.agentName || c.conversationId,
               hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
               route: `/conversations/${encodeURIComponent(c.agentInstanceId || '')}`,
-              group: group.projectName || 'Conversations',
+              group: groupName,
               convo: c,
             });
           });
@@ -335,13 +392,14 @@ export function CommandPalette({
 
       if (!hasScope) {
         for (const group of conversationGroups) {
+          const groupName = (group.projectId && projectNamesById.get(group.projectId)) || group.projectName || 'Conversations';
           group.conversations.forEach((c) => {
             out.push({
               kind: 'conversation',
               label: c.title || c.agentName || c.conversationId,
               hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
               route: `/conversations/${encodeURIComponent(c.agentInstanceId || '')}`,
-              group: group.projectName || 'Conversations',
+              group: groupName,
               convo: c,
             });
           });
@@ -377,7 +435,7 @@ export function CommandPalette({
     }
 
     return out;
-  }, [query, actions, conversationGroups, allChains, hasScope, scopeActive, scope?.chainId]);
+  }, [query, actions, conversationGroups, allChains, hasScope, scopeActive, scope?.chainId, projectNamesById]);
 
   // Reset active index when results change
   useEffect(() => {
@@ -482,10 +540,10 @@ export function CommandPalette({
                 data-debug-id="command-palette-scope-chain"
                 aria-pressed={scoped}
                 onClick={() => setScoped(true)}
-                title={scope?.label || 'This chain'}
+                title={scopeTitle}
                 className={`max-w-[200px] truncate px-2 py-0.5 ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
               >
-                {scope?.label || 'This chain'}
+                <VaultText value={scope?.label} fallback="This chain" />
               </button>
               <button
                 type="button"
@@ -516,7 +574,7 @@ export function CommandPalette({
           ) : (
             Array.from(grouped.entries()).map(([groupLabel, { results: groupResults, indices }]) => (
               <div key={groupLabel} role="group" aria-label={groupLabel} className="mb-1">
-                <div aria-hidden="true" data-debug-id={`command-palette-group-${groupLabel.toLowerCase().replace(/\s+/g, '-')}`} className="px-3 py-1 text-[10.5px] font-semibold uppercase tracking-[0.18em] text-faint">{groupLabel}</div>
+                <div aria-hidden="true" data-debug-id={`command-palette-group-${groupLabel.toLowerCase().replace(/\s+/g, '-')}`} className="px-3 py-1 text-[10.5px] font-semibold uppercase tracking-[0.18em] text-faint"><VaultText value={groupLabel} /></div>
                 {groupResults.map((result, i) => {
                   const idx = indices[i];
                   const active = idx === activeIndex;
@@ -562,7 +620,7 @@ export function CommandPalette({
                           <VaultText value={label} as="span" />
                         </span>
                         {isChain && result.hint ? (
-                          <span className="truncate text-caption text-muted">{result.hint}</span>
+                          <span className="truncate text-caption text-muted"><VaultText value={result.hint} /></span>
                         ) : null}
                       </span>
                       {result.kind === 'action' && result.badge ? (
@@ -576,7 +634,7 @@ export function CommandPalette({
                         </span>
                       ) : null}
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-center text-[10px] font-bold leading-4 text-accent-fg">{unread > 99 ? '99+' : unread}</span> : null}
-                      {result.hint && !isChain ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-caption text-muted">{result.hint}</span> : null}
+                      {result.hint && !isChain ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-caption text-muted"><VaultText value={result.hint} /></span> : null}
                       {isChain ? (
                         <span aria-hidden="true" className="ml-auto shrink-0 text-muted opacity-60">
                           <Icon name="chevron-right" size={14} />

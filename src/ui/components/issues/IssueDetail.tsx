@@ -31,7 +31,7 @@ import MarkdownBody from '../MarkdownBody';
 import { useSelector } from 'react-redux';
 import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
-import { VaultText } from '../vault/VaultText';
+import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 import {
   absoluteTime,
   issueEditHref,
@@ -55,35 +55,12 @@ export interface IssueDetailProps {
 
 function IssueCommentContent({
   body,
-  isUnlocked,
-  rawKey,
 }: {
   body: string;
-  isUnlocked: boolean;
-  rawKey: string | null;
+  isUnlocked?: boolean;
+  rawKey?: string | null;
 }) {
-  const isArmored = isVaultArmored(body);
-  const [decrypted, setDecrypted] = useState<string>(body);
-
-  useEffect(() => {
-    let active = true;
-    if (!isArmored || !isUnlocked || !rawKey) {
-      setDecrypted(body);
-      return;
-    }
-    decryptVaultText(body, rawKey)
-      .then((t) => {
-        if (active) setDecrypted(t);
-      })
-      .catch(() => {
-        if (active) setDecrypted(body);
-      });
-    return () => {
-      active = false;
-    };
-  }, [body, isArmored, isUnlocked, rawKey]);
-
-  return <MarkdownBody source={decrypted} />;
+  return <DecryptedMarkdown source={body} />;
 }
 
 export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailProps) {
@@ -99,29 +76,6 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
   const comments = fetchedComments !== undefined ? fetchedComments : embeddedComments;
   const commentsLoading = commentsQueryLoading && embeddedComments.length === 0;
 
-  const [decryptedDescription, setDecryptedDescription] = useState<string>('');
-
-  useEffect(() => {
-    let active = true;
-    if (!issue?.description || !isVaultArmored(issue.description)) {
-      setDecryptedDescription(issue?.description || '');
-      return;
-    }
-    if (!isVaultUnlocked || !rawKey) {
-      setDecryptedDescription('');
-      return;
-    }
-    decryptVaultText(issue.description, rawKey)
-      .then((t) => {
-        if (active) setDecryptedDescription(t);
-      })
-      .catch(() => {
-        if (active) setDecryptedDescription(issue.description);
-      });
-    return () => {
-      active = false;
-    };
-  }, [issue?.description, isVaultUnlocked, rawKey]);
 
   const [updateIssue, { isLoading: isUpdatingStatus }] = useUpdateIssueMutation();
   const [deleteIssue, { isLoading: isDeleting }] = useDeleteIssueMutation();
@@ -365,13 +319,9 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
 
       {/* Description Section */}
       <ResourceSectionCard title="Description" dataDebugId="issue-description-card">
-        {isVaultArmored(issue.description) && !isVaultUnlocked ? (
-          <div className="py-2">
-            <VaultText value={issue.description} as="div" />
-          </div>
-        ) : issue.description ? (
+        {issue.description ? (
           <div className="prose prose-invert max-w-none text-sm text-primary">
-            <MarkdownBody source={decryptedDescription || issue.description} />
+            <DecryptedMarkdown source={issue.description} />
           </div>
         ) : (
           <p className="italic text-muted text-sm">No description provided.</p>

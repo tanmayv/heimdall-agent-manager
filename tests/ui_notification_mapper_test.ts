@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 // The mapper is pure (no DOM). Import it directly.
-const { notificationForWsEvent } = await import('../src/ui/api/notificationMapper');
+const { notificationForWsEvent } = await import('../src/ui/api/notificationMapper.ts');
 
 // --- Curated NOTIFY cases -------------------------------------------------
 

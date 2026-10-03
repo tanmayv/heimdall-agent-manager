@@ -24,7 +24,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../utils/vaultContent.ts';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../store/vaultSlice.ts';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey } from '../store/vaultSlice.ts';
 
 export function isNotificationSupported(): boolean {
   try {
@@ -302,6 +302,12 @@ function isViewingPlanThread(plan: NotificationPlan, ctx: NotificationMapperCtx)
   return target.some((k) => Boolean(k) && open.includes(k));
 }
 
+function truncateNotificationText(text: string, max = 140): string {
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
+}
+
 // Entry point wired into handleUserWsEvent. `getState` is the redux store's
 // getState (dependency-injected to avoid a circular store import). Returns the
 // plan that fired (for tests/telemetry) or null when skipped.
@@ -335,13 +341,13 @@ export function fireNotificationForWsEvent(
 
   const rawState = typeof getState === 'function' ? getState() : undefined;
   const isUnlocked = rawState ? Boolean(selectIsVaultUnlocked(rawState)) : false;
-  const rawKeyHex = rawState ? selectRawVaultKeyHex(rawState) : null;
+  const rawKeyHex = (rawState ? selectRawVaultKeyHex(rawState) : null) || readSessionVaultKey();
 
   const hasArmoredBody = isVaultArmored(plan.body) || containsVaultArmored(plan.body);
   const hasArmoredTitle = isVaultArmored(plan.title) || containsVaultArmored(plan.title);
 
   if (hasArmoredBody || hasArmoredTitle) {
-    if (isUnlocked && rawKeyHex) {
+    if (rawKeyHex) {
       // Fire-and-forget: asynchronously decrypt before invoking showNativeNotification
       void (async () => {
         try {
@@ -355,6 +361,8 @@ export function fireNotificationForWsEvent(
               ? await decryptVaultText(plan.title, rawKeyHex)
               : await decryptEmbeddedVaultTokens(plan.title, rawKeyHex);
           }
+          plan.title = truncateNotificationText(plan.title);
+          plan.body = truncateNotificationText(plan.body);
         } catch {
           if (hasArmoredBody) {
             plan.body = plan.category === 'attention' ? '[🔒 Encrypted action]' : '[🔒 Encrypted message]';
