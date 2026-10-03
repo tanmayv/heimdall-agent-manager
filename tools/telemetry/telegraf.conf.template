@@ -11,9 +11,9 @@
   bridge_id = "${HEIMDALL_BRIDGE_ID}"
   bridge_host = "${HOSTNAME}"
 
-[[inputs.procstat]]
-  pattern = "(ham-bridge|ham-ctl|ham-pty-host|node|python|jetski|claude)"
-  tag_with = ["pid", "cmdline"]
+[[inputs.http]]
+  urls = ["http://127.0.0.1:${LOCAL_ENDPOINT_PORT:-49324}/api/v1/telemetry/processes"]
+  data_format = "prometheus"
 
 [[inputs.cpu]]
   percpu = false
