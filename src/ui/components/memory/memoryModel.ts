@@ -55,6 +55,55 @@ export function statusTone(status: MemoryStatus): Tone {
 export const MEMORY_TYPE_OPTIONS = ['fact', 'habit', 'episode', 'expertise', 'skill'] as const;
 export type MemoryType = (typeof MEMORY_TYPE_OPTIONS)[number];
 
+export interface Memory {
+  id?: string;
+  memory_id?: string;
+  memoryId?: string;
+  proposal_id?: string;
+  proposalId?: string;
+  title?: string;
+  description?: string;
+  body?: string;
+  body_preview?: string;
+  bodyPreview?: string;
+  type?: MemoryType | string;
+  status?: MemoryStatus | string;
+  expires_at?: string;
+  expiresAt?: string;
+  created_at?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  reason?: string;
+  evidence?: string;
+  metadata_json?: string;
+  metadataJson?: string;
+  target?: string;
+  agent_ids?: string[];
+  agentIds?: string[];
+  project_ids?: string[];
+  projectIds?: string[];
+  bridge_ids?: string[];
+  bridgeIds?: string[];
+  template_ids?: string[];
+  templateIds?: string[];
+  [key: string]: any;
+}
+
+/**
+ * Returns true if m.expires_at is non-empty and new Date(m.expires_at).getTime() <= Date.now().
+ */
+export function isMemoryExpired(m: { expires_at?: string; expiresAt?: string } | null | undefined): boolean {
+  const expiresAt = m?.expires_at || m?.expiresAt;
+  if (!expiresAt || typeof expiresAt !== 'string' || !expiresAt.trim()) {
+    return false;
+  }
+  const time = new Date(expiresAt).getTime();
+  if (Number.isNaN(time)) {
+    return false;
+  }
+  return time <= Date.now();
+}
+
 /* ------------------------------------------------------------------ *
  * Tabs (§1, Amendment A1.3)
  * ------------------------------------------------------------------ */

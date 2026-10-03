@@ -17,6 +17,17 @@ import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
 import { isVaultArmored } from '../../utils/vaultContent';
 
+export function isCardExpired(c: { ttl_at?: string } | null | undefined): boolean {
+  if (!c?.ttl_at || typeof c.ttl_at !== 'string' || !c.ttl_at.trim()) {
+    return false;
+  }
+  const time = new Date(c.ttl_at).getTime();
+  if (Number.isNaN(time)) {
+    return false;
+  }
+  return time <= Date.now();
+}
+
 const STATUS_TABS = [
   { id: 'pending', label: 'Pending' },
   { id: 'all', label: 'All Cards' },
@@ -70,13 +81,18 @@ export default function CardsPanel() {
     let filteredTotal = 0;
 
     for (const card of cards) {
-      if (card.status === 'pending') {
+      if (card.status === 'pending' && !isCardExpired(card)) {
         pending += 1;
       }
 
       // Status filter
-      if (statusFilter !== 'all' && card.status !== statusFilter) {
-        continue;
+      if (statusFilter !== 'all') {
+        if (card.status !== statusFilter) {
+          continue;
+        }
+        if (statusFilter === 'pending' && isCardExpired(card)) {
+          continue;
+        }
       }
 
       // Search query filter

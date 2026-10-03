@@ -3,6 +3,7 @@ import { heimdallApi } from "../heimdallApi";
 import { normalizeMemory } from "../memoryCatalog";
 import { encryptVaultText, decryptVaultText, isVaultArmored } from "../../utils/vaultContent";
 import { encryptMemoryFields, decryptMemoryRecord } from "../../utils/vaultMemories";
+export { type Memory, isMemoryExpired } from "../../components/memory/memoryModel";
 
 // Memory targeting is a LIST per dimension (T1 contract): agent_ids/project_ids/
 // bridge_ids/template_ids as JSON string arrays where empty = applies to all.

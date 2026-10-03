@@ -1,5 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+export { isCardExpired } from '../../components/cards/CardsPanel';
 
 export type CardStatus = 'pending' | 'accepted' | 'rejected' | 'snoozed' | 'discarded';
 

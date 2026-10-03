@@ -59,6 +59,8 @@ export function normalizeMemory(record: any) {
     evidence: record.evidence || '',
     metadataJson: record.metadata_json || record.metadataJson || '',
     sourceTaskId: record.source_task_id || record.sourceTaskId || '',
+    expires_at: record.expires_at || record.expiresAt || '',
+    expiresAt: record.expires_at || record.expiresAt || '',
     version: Number(record.version || 0),
     // `updated_at` is an RFC3339 string and is the ONLY timestamp the hub
     // serialises for a memory (`write_memory_json`, content_handlers.odin:590 —

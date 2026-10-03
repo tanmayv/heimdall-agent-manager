@@ -67,6 +67,7 @@ import {
   VERB_LABEL,
   absoluteTime,
   hasActiveFilters,
+  isMemoryExpired,
   listCrumbs,
   memoryEditHref,
   memoryListHref,
@@ -86,6 +87,7 @@ import {
   takeRememberedRow,
   verbsForStatus,
   type ArchivedView,
+  type Memory,
   type MemoryListUrlState,
   type MemoryStatus,
   type MemoryTab,
@@ -161,8 +163,9 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
     // the URL still names no tab, and never re-applied.
     void (async () => {
       try {
-        const page = await fetchMemoryPage({ status: 'pending', limit: 1 });
-        if (page.items.length > 0) setProbedTab('proposals');
+        const page = await fetchMemoryPage({ status: 'pending', limit: 10 });
+        const unexpired = (page.items || []).filter((m: any) => !isMemoryExpired(m));
+        if (unexpired.length > 0) setProbedTab('proposals');
       } catch {
         /* Silent: Active is the fallback, and it is already on screen. */
       }
@@ -188,8 +191,8 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    * instead of `updated_at`, and a reduced row shape. Two hooks rather than one
    * keeps each path's item type honest; only one is ever enabled. */
   const list = useInfiniteList<any>({
-    fetchPage: ({ cursor, signal }) =>
-      fetchMemoryPage({
+    fetchPage: async ({ cursor, signal }) => {
+      const page = await fetchMemoryPage({
         status: listStatus || undefined,
         type: urlState.type || undefined,
         projectId: urlState.project || undefined,
@@ -199,7 +202,15 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
         limit: PAGE_SIZE,
         cursor,
         signal,
-      }),
+      });
+      const items = (tab === 'proposals' || listStatus === 'pending')
+        ? (page.items || []).filter((m: any) => !isMemoryExpired(m))
+        : (page.items || []);
+      return {
+        ...page,
+        items,
+      };
+    },
     getItemId: (row) => String(row.memoryId || row.id || ''),
     // Memory's cursor column is `updated_at` — this is what lets a probe tell
     // "changed" from "same" for the N-new pill.
@@ -545,13 +556,13 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    */
   const advanceFrom = React.useCallback(
     (memoryId: string) => {
-      const items = list.items;
+      const items = tab === 'proposals' ? list.items.filter((m: any) => !isMemoryExpired(m)) : list.items;
       const index = items.findIndex((row: any) => String(row.memoryId || row.id || '') === memoryId);
       if (index < 0) return '';
       const next = items[index + 1] || items[index - 1];
       return next ? String(next.memoryId || next.id || '') : '';
     },
-    [list.items],
+    [list.items, tab],
   );
 
 
@@ -657,7 +668,9 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    * claim otherwise.
    */
   /* ---------------- The rows themselves ---------------- */
+  const activeTab = searching ? '' : tab;
   const rows = searching ? search.items : list.items;
+  const visibleRows = (activeTab === 'proposals' ? rows.filter(m => !isMemoryExpired(m)) : rows);
 
   /** Open a memory: in the two-pane layout that means the pane, not a navigation. */
   const openMemory = React.useCallback(
@@ -671,13 +684,13 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
 
   /** Auto-select the first memory in two-pane mode if none is selected */
   React.useEffect(() => {
-    if (twoPane && !selectedId && rows.length > 0) {
-      const firstId = String(rows[0].memoryId || rows[0].id || '');
+    if (twoPane && !selectedId && visibleRows.length > 0) {
+      const firstId = String(visibleRows[0].memoryId || visibleRows[0].id || '');
       if (firstId) {
         navigateTo(memoryViewHref(firstId, urlState));
       }
     }
-  }, [twoPane, selectedId, rows, urlState]);
+  }, [twoPane, selectedId, visibleRows, urlState]);
 
   const listBody = (
     <>
@@ -702,7 +715,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
             ))}
           </ul>
         </div>
-      ) : rows.length === 0 ? (
+      ) : visibleRows.length === 0 ? (
         emptyState()
       ) : (
         <ul
@@ -710,7 +723,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
           data-debug-id="memory-rows"
           className={['flex flex-col', querySettling ? 'opacity-60' : ''].filter(Boolean).join(' ')}
         >
-          {rows.map((row: any) => {
+          {visibleRows.map((row: any) => {
             const memoryId = String(row.memoryId || row.id || '');
             return (
               <MemoryRow
@@ -942,7 +955,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
         <ConfirmModal
           verb={confirm.verb}
           ids={confirm.ids}
-          rows={list.items}
+          rows={visibleRows}
           busy={bulkBusy}
           onCancel={() => setConfirm(null)}
           onConfirm={() => {
