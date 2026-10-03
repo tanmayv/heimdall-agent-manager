@@ -1,6 +1,7 @@
 package auth
 
 import "core:crypto/legacy/sha1"
+import "core:encoding/json"
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
@@ -107,7 +108,7 @@ resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) 
 		instance_id = relay_token[len("hit_"):]
 	}
 	if instance_id == "" {
-		instance_id = json_key_value(req.body, "agent_instance_id")
+		instance_id = extract_body_instance_id(req.body)
 	}
 	if instance_id == "" {
 		return contracts.Auth_Context{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
@@ -151,7 +152,7 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 				instance_id = relay_token[len("hit_"):]
 			}
 			if instance_id == "" {
-				instance_id = json_key_value(req.body, "agent_instance_id")
+				instance_id = extract_body_instance_id(req.body)
 			}
 			if instance_id != "" {
 				return resolve_bridge_instance_auth(service, req)
@@ -182,7 +183,7 @@ resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) 
 				instance_id = relay_token[len("hit_"):]
 			}
 			if instance_id == "" {
-				instance_id = json_key_value(req.body, "agent_instance_id")
+				instance_id = extract_body_instance_id(req.body)
 			}
 			if instance_id != "" {
 				return resolve_bridge_instance_auth(service, req)
@@ -199,21 +200,16 @@ resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) 
 	return resolve_auth(service, req)
 }
 
-json_key_value :: proc(body, key: string) -> string {
-	if body == "" do return ""
-	needle := strings.concatenate({"\"", key, "\""})
-	defer delete(needle)
-	idx := strings.index(body, needle)
-	if idx < 0 do return ""
-	rest := body[idx + len(needle):]
-	colon := strings.index_byte(rest, ':')
-	if colon < 0 do return ""
-	rest = strings.trim_space(rest[colon + 1:])
-	if len(rest) == 0 || rest[0] != '"' do return ""
-	for i := 1; i < len(rest); i += 1 {
-		if rest[i] == '"' do return rest[1:i]
-	}
-	return ""
+Auth_Instance_Assertion_Body :: struct {
+	agent_instance_id: string `json:"agent_instance_id"`,
+}
+
+extract_body_instance_id :: proc(body: string) -> string {
+	if strings.trim_space(body) == "" do return ""
+	payload: Auth_Instance_Assertion_Body
+	err := json.unmarshal_string(body, &payload, json.DEFAULT_SPECIFICATION, context.temp_allocator)
+	if err != nil do return ""
+	return payload.agent_instance_id
 }
 
 resolve_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
