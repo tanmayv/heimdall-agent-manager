@@ -673,10 +673,14 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 // only reads 0 for it inside a pipeline, where POSIX hands back the LAST command's
 // status. This error path is the one that genuinely reported success on failure.
 //
-// NOTE: the identical pattern still exists in the `memory` paths
-// (ctl_agent_memory_call_and_decrypt, ctl_agent_memory_content). That is the same
-// defect in a sibling command family, outside F1's file scope; reported to the
-// coordinator rather than changed here.
+// SHARED by the artifact and memory command families (REQ-CTL-EXIT-1). The `memory`
+// paths carried the byte-identical swallow and now call this too, so the name is the
+// only artifact-specific thing left about it -- deliberately not renamed, because that
+// would touch every call site and is not worth the churn.
+//
+// Both families kept the same asymmetry before this: an unreachable ENDPOINT already
+// exited 1, while a hub response of `"ok":true` absent -- not found, not permitted, bad
+// id -- printed the error and returned success. Only the endpoint half was ever right.
 artifact_require_ok :: proc(response: string) {
 	if strings.contains(response, `"ok":true`) do return
 	fmt.println(response)
@@ -1217,10 +1221,7 @@ ctl_decrypt_memory_json :: proc(raw_json: string, key_hex: string, key_configure
 ctl_agent_memory_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string) {
 	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(response, `"ok":true`) {
-		fmt.println(response)
-		return
-	}
+	artifact_require_ok(response)
 	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 	decrypted_json := ctl_decrypt_memory_json(response, key_hex, key_ok)
 	defer delete(decrypted_json)
@@ -1230,10 +1231,7 @@ ctl_agent_memory_call_and_decrypt :: proc(endpoint, token, method, params_json: 
 ctl_agent_memory_content :: proc(endpoint, token, memory_id: string, args: []string = nil) {
 	response, ok := ctl_agent_local_call(endpoint, token, "agent.memory.content", json_object(json_kv("memory_id", memory_id)))
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(response, `"ok":true`) {
-		fmt.println(response)
-		return
-	}
+	artifact_require_ok(response)
 	content := extract_json_string_unescaped(response, "content", "")
 	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 	decrypted := ctl_decrypt_or_fallback_armored(content, key_hex, key_ok, context.temp_allocator)
