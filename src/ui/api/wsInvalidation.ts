@@ -16,8 +16,7 @@ import { shellSessionEventReceived } from '../store/shellSlice';
 import { agentActionReceived } from '../store/agentActivitySlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
 import { upsertChainTitle, upsertConversationTitle } from '../store/searchTitleSlice';
-import { isVaultArmored, decryptVaultText } from '../utils/vaultContent';
-import { readSessionVaultKey } from '../store/vaultSlice';
+import { isVaultArmored, decryptVaultText, getActiveVaultKey } from '../utils/vaultContent';
 
 // Focus context read at WS-event time (populated by the shell from the live
 // route). Only focusedChainId is consumed — it lets a resource/chat/agent event
@@ -378,9 +377,9 @@ function dispatchSearchTitleUpsert(
   );
 
   if (isVaultArmored(item.rawTitle)) {
-    const rawKey = readSessionVaultKey();
-    if (rawKey) {
-      decryptVaultText(item.rawTitle, rawKey)
+    const activeKey = getActiveVaultKey();
+    if (activeKey) {
+      decryptVaultText(item.rawTitle, activeKey)
         .then((decrypted) => {
           if (decrypted && decrypted !== item.rawTitle) {
             dispatch(

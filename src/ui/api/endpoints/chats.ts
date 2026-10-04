@@ -213,10 +213,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           let encBody = body;
-          if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
-            encBody = await encryptVaultText(encBody, rawKeyHex);
+          if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
+            encBody = await encryptVaultText(encBody, activeKey);
           }
           const payload: any = { agent_id: agentId, initial_message: { body: encBody }, artifact_ids: artifactIds };
           if (projectId) payload.project_id = projectId;
@@ -266,7 +266,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           }
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           if (isUnlocked && activeKey && conversation) {
             conversation = await decryptConversationRecord(conversation, activeKey);
           }
@@ -318,10 +318,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           let encTitle = title.trim();
-          if (isUnlocked && rawKeyHex && encTitle && !isVaultArmored(encTitle)) {
-            encTitle = await encryptVaultText(encTitle, rawKeyHex);
+          if (isUnlocked && activeKey && encTitle && !isVaultArmored(encTitle)) {
+            encTitle = await encryptVaultText(encTitle, activeKey);
           }
           const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}`, 'PATCH', { title: encTitle });
           return { data };
@@ -356,10 +356,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           let encBody = body;
-          if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
-            encBody = await encryptVaultText(encBody, rawKeyHex);
+          if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
+            encBody = await encryptVaultText(encBody, activeKey);
           }
           const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body: encBody, artifact_ids: artifactIds });
           return { data };
@@ -660,10 +660,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
     sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean; artifactIds?: string[] }>({
       queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt, artifactIds }, { session, state }) => {
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+        const activeKey = getActiveVaultKey();
         let encBody = body;
-        if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
-          encBody = await encryptVaultText(encBody, rawKeyHex);
+        if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
+          encBody = await encryptVaultText(encBody, activeKey);
         }
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
@@ -704,10 +704,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
     sendGuideMessage: build.mutation<any, { body: string; tempId: string; interrupt?: boolean }>({
       queryFn: withSessionQuery(async ({ body, interrupt }, { session, state }) => {
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+        const activeKey = getActiveVaultKey();
         let encBody = body;
-        if (isUnlocked && rawKeyHex && encBody && !isVaultArmored(encBody)) {
-          encBody = await encryptVaultText(encBody, rawKeyHex);
+        if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
+          encBody = await encryptVaultText(encBody, activeKey);
         }
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
@@ -752,7 +752,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           let data = raw?.data ?? raw;
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           if (isUnlocked && activeKey && Array.isArray(data)) {
             data = await Promise.all(data.map((c) => decryptConversationRecord(c, activeKey)));
           }

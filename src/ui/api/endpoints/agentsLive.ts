@@ -106,7 +106,7 @@ export const agentsLiveApi = heimdallApi.injectEndpoints({
           let projects = rows.map(normalizeLiveProject);
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           if (isUnlocked && activeKey) {
             projects = await Promise.all(
               projects.map(async (p) => {

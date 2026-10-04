@@ -36,10 +36,10 @@ export const projectsApi = heimdallApi.injectEndpoints({
           const data = await cookieJsonFetch('/projects');
           const rawProjects = Array.isArray(data) ? data : (data?.projects || []);
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const projects = (isUnlocked && rawKeyHex)
-            ? await decryptProjectList(rawProjects, rawKeyHex)
+          const projects = (isUnlocked && activeKey)
+            ? await decryptProjectList(rawProjects, activeKey)
             : rawProjects;
           return { data: { projects } };
         } catch (error: any) {
@@ -60,10 +60,10 @@ export const projectsApi = heimdallApi.injectEndpoints({
           let project = data?.project || data;
           const bridge_paths = project?.bridge_paths || data?.bridge_paths || [];
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          if (project && isUnlocked && rawKeyHex) {
-            project = await decryptProjectRecord(project, rawKeyHex);
+          if (project && isUnlocked && activeKey) {
+            project = await decryptProjectRecord(project, activeKey);
           }
           return { data: { project: { ...project, bridge_paths }, bridge_paths } };
         } catch (error: any) {
@@ -77,16 +77,16 @@ export const projectsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           let name = payload.name;
           let description = payload.description;
 
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             if (name && !isVaultArmored(name)) {
-              name = await encryptVaultText(name, rawKeyHex);
+              name = await encryptVaultText(name, activeKey);
             }
             if (description && !isVaultArmored(description)) {
-              description = await encryptVaultText(description, rawKeyHex);
+              description = await encryptVaultText(description, activeKey);
             }
           }
 
@@ -111,16 +111,16 @@ export const projectsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           let name = payload.name;
           let description = payload.description;
 
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             if (name !== undefined && !isVaultArmored(name)) {
-              name = await encryptVaultText(name, rawKeyHex);
+              name = await encryptVaultText(name, activeKey);
             }
             if (description !== undefined && !isVaultArmored(description)) {
-              description = await encryptVaultText(description, rawKeyHex);
+              description = await encryptVaultText(description, activeKey);
             }
           }
 

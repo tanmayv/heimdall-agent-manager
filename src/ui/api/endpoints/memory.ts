@@ -250,25 +250,25 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description;
           let body = payload.body;
           let evidence = payload.evidence;
 
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             if (title && !isVaultArmored(title)) {
-              title = await encryptVaultText(title, rawKeyHex);
+              title = await encryptVaultText(title, activeKey);
             }
             if (description && !isVaultArmored(description)) {
-              description = await encryptVaultText(description, rawKeyHex);
+              description = await encryptVaultText(description, activeKey);
             }
             if (body && !isVaultArmored(body)) {
-              body = await encryptVaultText(body, rawKeyHex);
+              body = await encryptVaultText(body, activeKey);
             }
             if (evidence && !isVaultArmored(evidence)) {
-              evidence = await encryptVaultText(evidence, rawKeyHex);
+              evidence = await encryptVaultText(evidence, activeKey);
             }
           }
 
@@ -293,25 +293,25 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description;
           let body = payload.body;
           let evidence = payload.evidence;
 
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             if (title && !isVaultArmored(title)) {
-              title = await encryptVaultText(title, rawKeyHex);
+              title = await encryptVaultText(title, activeKey);
             }
             if (description && !isVaultArmored(description)) {
-              description = await encryptVaultText(description, rawKeyHex);
+              description = await encryptVaultText(description, activeKey);
             }
             if (body && !isVaultArmored(body)) {
-              body = await encryptVaultText(body, rawKeyHex);
+              body = await encryptVaultText(body, activeKey);
             }
             if (evidence && !isVaultArmored(evidence)) {
-              evidence = await encryptVaultText(evidence, rawKeyHex);
+              evidence = await encryptVaultText(evidence, activeKey);
             }
           }
 
@@ -336,32 +336,32 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
 
           const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
           const body: Record<string, any> = { ...rest };
           if (payload.title !== undefined) {
             body.title =
-              isUnlocked && rawKeyHex && payload.title && !isVaultArmored(payload.title)
-                ? await encryptVaultText(payload.title, rawKeyHex)
+              isUnlocked && activeKey && payload.title && !isVaultArmored(payload.title)
+                ? await encryptVaultText(payload.title, activeKey)
                 : payload.title;
           }
           if (payload.description !== undefined) {
             body.description =
-              isUnlocked && rawKeyHex && payload.description && !isVaultArmored(payload.description)
-                ? await encryptVaultText(payload.description, rawKeyHex)
+              isUnlocked && activeKey && payload.description && !isVaultArmored(payload.description)
+                ? await encryptVaultText(payload.description, activeKey)
                 : payload.description;
           }
           if (payload.body !== undefined) {
             body.body =
-              isUnlocked && rawKeyHex && payload.body && !isVaultArmored(payload.body)
-                ? await encryptVaultText(payload.body, rawKeyHex)
+              isUnlocked && activeKey && payload.body && !isVaultArmored(payload.body)
+                ? await encryptVaultText(payload.body, activeKey)
                 : payload.body;
           }
           if (payload.evidence !== undefined) {
             body.evidence =
-              isUnlocked && rawKeyHex && payload.evidence && !isVaultArmored(payload.evidence)
-                ? await encryptVaultText(payload.evidence, rawKeyHex)
+              isUnlocked && activeKey && payload.evidence && !isVaultArmored(payload.evidence)
+                ? await encryptVaultText(payload.evidence, activeKey)
                 : payload.evidence;
           }
 
@@ -386,32 +386,32 @@ export const memoryApi = heimdallApi.injectEndpoints({
           }
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
 
           const { memoryId: _m, proposalId: _p, decision: _d, agentIds, projectIds, bridgeIds, templateIds, ...edits } = arg;
           const body: Record<string, any> = { ...edits };
           if (edits.title !== undefined) {
             body.title =
-              isUnlocked && rawKeyHex && edits.title && !isVaultArmored(edits.title)
-                ? await encryptVaultText(edits.title, rawKeyHex)
+              isUnlocked && activeKey && edits.title && !isVaultArmored(edits.title)
+                ? await encryptVaultText(edits.title, activeKey)
                 : edits.title;
           }
           if (edits.description !== undefined) {
             body.description =
-              isUnlocked && rawKeyHex && edits.description && !isVaultArmored(edits.description)
-                ? await encryptVaultText(edits.description, rawKeyHex)
+              isUnlocked && activeKey && edits.description && !isVaultArmored(edits.description)
+                ? await encryptVaultText(edits.description, activeKey)
                 : edits.description;
           }
           if (edits.body !== undefined) {
             body.body =
-              isUnlocked && rawKeyHex && edits.body && !isVaultArmored(edits.body)
-                ? await encryptVaultText(edits.body, rawKeyHex)
+              isUnlocked && activeKey && edits.body && !isVaultArmored(edits.body)
+                ? await encryptVaultText(edits.body, activeKey)
                 : edits.body;
           }
           if (edits.evidence !== undefined) {
             body.evidence =
-              isUnlocked && rawKeyHex && edits.evidence && !isVaultArmored(edits.evidence)
-                ? await encryptVaultText(edits.evidence, rawKeyHex)
+              isUnlocked && activeKey && edits.evidence && !isVaultArmored(edits.evidence)
+                ? await encryptVaultText(edits.evidence, activeKey)
                 : edits.evidence;
           }
 

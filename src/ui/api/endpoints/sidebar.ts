@@ -184,7 +184,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
           const rows = await fetchCookieList(`/chats?limit=${limit}${activeOnly ? '&active=true' : ''}`, ['conversations', 'chats']);
           let conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
           const state: any = api?.getState?.();
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           if (isUnlocked && activeKey) {
             conversations = await Promise.all(conversations.map((c) => decryptConversationRecord(c, activeKey)));
@@ -213,7 +213,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
           const { rows, page } = await fetchCookiePage(`/chats?${params.toString()}`, ['conversations', 'chats']);
           let conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
           const state: any = api?.getState?.();
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           if (isUnlocked && activeKey) {
             conversations = await Promise.all(conversations.map((c) => decryptConversationRecord(c, activeKey)));
@@ -235,10 +235,10 @@ export const sidebarApi = heimdallApi.injectEndpoints({
           const rows = await fetchCookieList(`/projects?limit=${limit}`, ['projects']);
           const rawProjects = rows.map(normalizeSidebarProject);
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const projects = (isUnlocked && rawKeyHex)
-            ? await decryptProjectList(rawProjects, rawKeyHex)
+          const projects = (isUnlocked && activeKey)
+            ? await decryptProjectList(rawProjects, activeKey)
             : rawProjects;
           return { data: projects };
         } catch (error: any) {

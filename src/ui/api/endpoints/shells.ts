@@ -1,7 +1,7 @@
 import { heimdallApi } from '../heimdallApi';
 import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 import { encryptVaultText, VAULT_ARMOR_PREFIX, getActiveVaultKey } from '../../utils/vaultContent';
-import { readSessionVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptShellStreamPayload } from '../../components/shells/useShellStream';
 
 // REQ-SHELL-1 collapsed the model to three kinds: `command` became `run`,
@@ -324,10 +324,10 @@ export const shellsApi = heimdallApi.injectEndpoints({
       queryFn: async ({ bridgeId, ...body }, api) => {
         try {
           const state: any = api?.getState?.();
-          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const activeKey = getActiveVaultKey();
           const isUnlocked = state?.vault != null
             ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
-            : Boolean(readSessionVaultKey() || activeKey);
+            : Boolean(activeKey);
 
           let requestBody: Record<string, any> = { ...body };
           if (isUnlocked && activeKey) {
@@ -506,10 +506,10 @@ export const shellsApi = heimdallApi.injectEndpoints({
         }
         try {
           const state: any = api?.getState?.();
-          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const activeKey = getActiveVaultKey();
           const isUnlocked = state?.vault != null
             ? Boolean(selectIsVaultUnlocked(state) || activeKey)
-            : Boolean(readSessionVaultKey() || activeKey);
+            : Boolean(activeKey);
 
           let resolvedEncB64 = enc_b64;
           if (!resolvedEncB64 && isUnlocked && activeKey) {
