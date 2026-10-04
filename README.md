@@ -302,3 +302,107 @@ Use `heimdall update` for later binary updates. See `SELF_HOSTING.md` for the fu
 deployment guide, including the `--hub` mirror layout and the Linux linger step
 required to keep a headless bridge running after logout. The
 `nix-homelab-config` repository contains the NixOS deployment configuration.
+
+---
+
+### Connecting a node to https://hub.mundus.in
+
+To connect your developer machine (Linux or macOS) to the shared hub at [https://hub.mundus.in](https://hub.mundus.in) as an agent bridge:
+
+#### 1. Prerequisites
+
+Install `socat` (the default bridge-to-hub TLS transport):
+
+```bash
+sudo apt install socat  # Debian/Ubuntu
+brew install socat      # macOS
+```
+
+#### 2. First-time connection (new node)
+
+If this machine has not been enrolled with the Hub before:
+
+1. **Obtain an enrollment token:**
+   - Open the web dashboard at [https://hub.mundus.in](https://hub.mundus.in) to generate an enrollment token, or generate one on the hub host via CLI:
+     ```bash
+     ham-ctl bridge enroll-token --new
+     ```
+   - Copy the one-time token (format: `hbe_...`).
+
+2. **Run the one-line installer with the Hub URL:**
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.mundus.in
+   ```
+   *(Alternatively, run `curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash` in an interactive terminal and enter `https://hub.mundus.in` when prompted).*
+
+3. **Complete interactive onboarding:**
+   - When prompted, paste your enrollment token:
+     ```text
+     Enter one-time enrollment token (hbe_...): hbe_...
+     ```
+   - The installer enrolls the node with the hub, writes your permanent credentials to `~/.config/heimdall/bridge-token` (with mode `0600`), and writes the hub URL into `~/.config/heimdall/config.toml`.
+   - It automatically starts the bridge service (`systemctl --user enable --now heimdall-bridge` on Linux, or `launchctl` on macOS) and verifies the active connection.
+   - You will be asked if you wish to configure client vault encryption and enter a master password (`[y/N]`).
+
+**Non-interactive / script alternative:**
+If installing in CI or automated non-interactive environments:
+```bash
+# Install binaries and register service non-interactively
+curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.mundus.in
+
+# Enroll manually and start service
+heimdall enroll <hbe_token> --hub https://hub.mundus.in
+systemctl --user enable --now heimdall-bridge        # Linux
+# or macOS:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist
+launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
+```
+
+#### 3. Connecting with an existing token (reinstalling or migrating)
+
+If you already have a valid bridge token (e.g. `hbr_...` from a previous installation or backup):
+
+- **Automatic detection on reinstall:**
+  Running `install.sh` automatically checks for `$HOME/.config/heimdall/bridge-token`. If a valid token is found, it reports:
+  ```text
+  ==> Found existing bridge token at ~/.config/heimdall/bridge-token; node is already enrolled.
+  ```
+  It preserves your token, skips enrollment prompting, ensures the service is registered with `https://hub.mundus.in`, and starts the service.
+
+- **Configuring / migrating an existing token manually:**
+  If migrating from a backup or setting up manually, place the token file:
+  ```bash
+  mkdir -p ~/.config/heimdall
+  echo "hbr_your_bridge_token" > ~/.config/heimdall/bridge-token
+  chmod 0600 ~/.config/heimdall/bridge-token
+  ```
+  Ensure `~/.config/heimdall/config.toml` specifies the Hub URL:
+  ```toml
+  [wrapper]
+  daemon_url = "https://hub.mundus.in"
+  ```
+  Then start or restart the bridge service:
+  ```bash
+  systemctl --user restart heimdall-bridge          # Linux
+  # or macOS:
+  launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
+  ```
+
+#### 4. Verification & Diagnostics
+
+- **Check service status:**
+  ```bash
+  systemctl --user status heimdall-bridge          # Linux
+  journalctl --user -u heimdall-bridge -f          # Linux live logs
+  # macOS logs:
+  cat /tmp/heimdall-logs/heimdall-bridge.out.log
+  ```
+- **Check Hub dashboard:**
+  Visit [https://hub.mundus.in](https://hub.mundus.in) and check the Fleet / Bridges view to confirm your node is connected and ready.
+- **Headless Linux servers (linger):**
+  On a remote headless Linux server, enable user systemd lingering so the bridge process stays alive after SSH logout:
+  ```bash
+  sudo loginctl enable-linger "$USER"
+  ```
+
+
