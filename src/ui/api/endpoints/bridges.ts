@@ -37,13 +37,29 @@ export async function unsealBridgeE2EE(
   return await unsealBridge(bridgeId, payload);
 }
 
+/**
+ * Locks (purges the vault key on) a single bridge.
+ *
+ * REQ-BVS-4: this used to swallow EVERY error and `return { ok: true }`, so a lock
+ * that never reached the bridge — offline bridge, 401, network failure — rendered as
+ * a success and the UI happily reported the vault purged. A status indicator cannot
+ * be built on top of a call that cannot fail, so the error now propagates: callers
+ * that want to tolerate a failure must catch it explicitly (as
+ * `lockAllConnectedBridges` below does), and callers that render state must surface
+ * it. The returned `ok` is the hub's own answer, not a fabricated one.
+ *
+ * @throws ApiError (or the underlying network error) when the lock did not succeed.
+ */
 export async function lockBridge(bridgeId: string): Promise<{ ok: boolean }> {
-  try {
-    const res = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/lock`, 'POST', {});
-    return res as { ok: boolean };
-  } catch {
-    return { ok: true };
+  const res = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/lock`, 'POST', {});
+  // A 2xx with an explicit `ok: false` is still a failed lock — do not report success.
+  const ok = (res as any)?.ok;
+  if (ok === false) {
+    throw new Error(
+      String((res as any)?.message || (res as any)?.error?.message || `Bridge ${bridgeId} refused the lock request`),
+    );
   }
+  return { ok: true };
 }
 
 /**

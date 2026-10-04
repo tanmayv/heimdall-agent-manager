@@ -45,6 +45,13 @@ export interface Bridge {
   telemetry_enabled?: 'inherit' | 'enabled' | 'disabled' | string;
   public_key?: string;
   bridge_public_key?: string;
+  /**
+   * REQ-BVS-2/REQ-BVS-3: the vault state this bridge last reported, serialized
+   * verbatim by the hub — `"disabled" | "locked" | "unlocked"`, or `""` when the
+   * bridge has never reported one (older builds). Never infer "unlocked" from an
+   * absent value; see `utils/bridgeVaultStatus.ts` for the derivation.
+   */
+  vault_status?: string;
 }
 
 export type BridgeCapability = {

@@ -9,6 +9,7 @@ import { buildRouteHash } from './utils/appLocation';
 import { registerNotificationServiceWorker } from './services/notificationService';
 import { resubscribeOnLoad } from './services/pushSubscriptionService';
 import { selectNotificationsState } from './store/notificationsSlice';
+import { initializeVaultPersistence } from './store/vaultSlice';
 import './debugCapture';
 import './styles.css';
 
@@ -49,6 +50,33 @@ void registerNotificationServiceWorker();
 {
   const settings = selectNotificationsState(store.getState());
   void resubscribeOnLoad(settings.enabled, settings.permission === 'granted');
+}
+
+// Vault key rehydration (REQ-VAULT-HARDEN-2, wired for REQ-BVS-5).
+// THIS CALL IS LOAD-BEARING — DO NOT REMOVE IT AS "UNUSED".
+// `initializeVaultPersistence` is the ONLY code that restores the non-extractable
+// CryptoKey from IndexedDB back into the module-level `activeVaultCryptoKey` in
+// utils/vaultCrypto.ts. It shipped with ZERO production callers, so after any page
+// reload `getActiveVaultKey()` returned null even though the key was still sitting in
+// IndexedDB. The visible consequence: `createShell` (api/endpoints/shells.ts) omits
+// `enc_spec` entirely when there is no active key, and every vault-active bridge then
+// rejects shell creation with "unauthorized: missing or invalid vault enc_spec".
+//
+// It lives at module scope rather than in a component effect so it runs exactly once:
+// React StrictMode double-mounts components in dev, while this module is evaluated a
+// single time. The flag is parked on `globalThis` rather than in a module-local `let`
+// precisely because a module-local one would be re-initialised along with the module —
+// it guards the case a module-local cannot, namely a Vite HMR re-evaluation or a second
+// copy of this module being pulled in by a different import path.
+//
+// It must NEVER fabricate an unlocked state: when IndexedDB holds no key the function
+// dispatches nothing and resolves to null, leaving the app in exactly the state it is
+// in today. Failures are swallowed inside the function and logged; startup is never
+// blocked, hence `void`.
+const VAULT_REHYDRATION_FLAG = '__heimdallVaultRehydrationStarted';
+if (!(globalThis as any)[VAULT_REHYDRATION_FLAG]) {
+  (globalThis as any)[VAULT_REHYDRATION_FLAG] = true;
+  void initializeVaultPersistence(store.dispatch);
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
