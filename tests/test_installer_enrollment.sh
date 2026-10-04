@@ -264,6 +264,9 @@ cat <<'EOF' > "$MOCK_BIN/systemctl"
 if [ "$1" = "--user" ] && [ "$2" = "enable" ] && [ "$3" = "--now" ] && [ "$4" = "heimdall-bridge" ]; then
   echo "mock: bridge service enabled and started"
   exit 0
+elif [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "heimdall-bridge" ]; then
+  echo "mock: bridge service restarted"
+  exit 0
 elif [ "$1" = "--user" ] && [ "$2" = "is-active" ] && [ "$3" = "heimdall-bridge" ]; then
   echo "active"
   exit 0
@@ -302,7 +305,7 @@ echo "$T8_OUTPUT" | grep -q "Node successfully enrolled." || {
   echo "FAIL: Enrollment success message missing: $T8_OUTPUT" >&2
   exit 1
 }
-echo "$T8_OUTPUT" | grep -q "Bridge service started via systemctl --user." || {
+echo "$T8_OUTPUT" | grep -qE "Bridge service (started|restarted) via systemctl --user." || {
   echo "FAIL: Bridge service startup missing: $T8_OUTPUT" >&2
   exit 1
 }
@@ -512,6 +515,318 @@ grep -q "configured:secret123" "$MOCK_HOME/.config/heimdall/vault_configured" ||
 }
 echo "PASS: Test 12 passed (Vault password verification and key configuration succeeded)!"
 
-echo ""
-echo "ALL 12 INSTALLER ONBOARDING AND ENROLLMENT TESTS PASSED SUCCESSFULLY!"
+# --- Test 13: Piped terminal execution detection in is_interactive (REQ-INST-ENROLL-5) ---
+echo "=== Test 13: Piped terminal execution detection in is_interactive (REQ-INST-ENROLL-5) ==="
+python3 -c '
+import pty, os, select, sys
+
+master, slave = pty.openpty()
+pid = os.fork()
+if pid == 0:
+    os.close(master)
+    os.setsid()
+    import fcntl, termios
+    fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+    os.dup2(slave, 1)
+    os.dup2(slave, 2)
+    os.close(slave)
+    cmd = (
+        "sed '\''/^main \"\\$@\"/d'\'' \"'"$INSTALLER"'\" | bash -c '\''"
+        "source /dev/stdin\n"
+        "dry_run=false\n"
+        "uninstall=false\n"
+        "if is_interactive; then echo INTERACTIVE_PIPED_DETECTED; else echo NON_INTERACTIVE_FAILED; fi\n"
+        "'\''"
+    )
+    os.system(cmd)
+    os._exit(0)
+else:
+    os.close(slave)
+    buf = b""
+    while True:
+        r, _, _ = select.select([master], [], [], 3.0)
+        if not r: break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk: break
+        buf += chunk
+    os.close(master)
+    os.waitpid(pid, 0)
+    out = buf.decode(errors="replace")
+    assert "INTERACTIVE_PIPED_DETECTED" in out, f"Failed to detect interactive piped session: {out}"
+' || {
+  echo "FAIL: is_interactive did not detect interactive terminal when piped to bash" >&2
+  exit 1
+}
+echo "PASS: Test 13 passed (is_interactive accurately detects piped interactive terminal)!"
+
+# --- Test 14: Piped /dev/tty prompting when piped to bash (curl | bash) (REQ-INST-ENROLL-5) ---
+echo "=== Test 14: Piped /dev/tty prompting when piped to bash (REQ-INST-ENROLL-5) ==="
+reset_mock_home
+python3 -c '
+import pty, os, select, sys
+
+master, slave = pty.openpty()
+pid = os.fork()
+if pid == 0:
+    os.close(master)
+    os.setsid()
+    import fcntl, termios
+    fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+    os.dup2(slave, 1)
+    os.dup2(slave, 2)
+    os.close(slave)
+    cmd = (
+        "sed '\''/^main \"\\$@\"/d'\'' \"'"$INSTALLER"'\" | bash -c '\''"
+        "source /dev/stdin\n"
+        "service_home=\"'"$MOCK_HOME"'\"\n"
+        "install_dir=\"'"$MOCK_BIN"'\"\n"
+        "os=linux\n"
+        "service_user=\n"
+        "path_needs_action=false\n"
+        "hub_url=\n"
+        "run_interactive_onboarding\n"
+        "'\''"
+    )
+    os.system(cmd)
+    os._exit(0)
+else:
+    os.close(slave)
+    buf = b""
+    while b"Enter Hub URL: " not in buf:
+        r, _, _ = select.select([master], [], [], 3.0)
+        if not r: break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk: break
+        buf += chunk
+    out_buf = buf.decode(errors="replace")
+    assert b"Enter Hub URL: " in buf, "Hub URL prompt not received: " + out_buf
+    os.write(master, b"https://piped-hub.example.com\n")
+
+    buf2 = b""
+    while b"Enter one-time enrollment token" not in buf2:
+        r, _, _ = select.select([master], [], [], 3.0)
+        if not r: break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk: break
+        buf2 += chunk
+    out_buf2 = buf2.decode(errors="replace")
+    assert b"Enter one-time enrollment token" in buf2, "Enrollment token prompt not received: " + out_buf2
+    os.write(master, b"\n")
+
+    rest = b""
+    while True:
+        r, _, _ = select.select([master], [], [], 3.0)
+        if not r: break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk: break
+        rest += chunk
+    os.close(master)
+    os.waitpid(pid, 0)
+    out = (buf + buf2 + rest).decode(errors="replace")
+    assert "https://piped-hub.example.com" in out, "Hub URL was not captured from /dev/tty"
+' || {
+  echo "FAIL: Interactive prompting from /dev/tty failed when piped" >&2
+  exit 1
+}
+echo "PASS: Test 14 passed (Piped /dev/tty prompting works seamlessly)!"
+
+# --- Test 15: Piped non-terminal stdout fallback to non-interactive (REQ-INST-ENROLL-5) ---
+echo "=== Test 15: Piped non-terminal stdout fallback (REQ-INST-ENROLL-5) ==="
+T15_OUTPUT="$(
+  cat "$INSTALLER" | bash -s -- --dry-run
+)"
+if echo "$T15_OUTPUT" | grep -q "Enter Hub URL:"; then
+  echo "FAIL: Prompted for Hub URL when stdout redirected / non-interactive" >&2
+  exit 1
+fi
+if echo "$T15_OUTPUT" | grep -q "Enter one-time enrollment token"; then
+  echo "FAIL: Prompted for enrollment token when stdout redirected / non-interactive" >&2
+  exit 1
+fi
+echo "$T15_OUTPUT" | grep -q "Next steps:" || {
+  echo "FAIL: Fallback instructions missing from non-interactive output" >&2
+  exit 1
+}
+echo "PASS: Test 15 passed (Piped non-terminal execution cleanly falls back to non-interactive)!"
+
+# --- Test 16: Interactive Hub URL prompt writes --hub to service file (REQ-HUB-URL-1, REQ-HUB-URL-5a) ---
+echo "=== Test 16: Interactive Hub URL prompt writes --hub to service file (REQ-HUB-URL-1, REQ-HUB-URL-5a) ==="
+reset_mock_home
+rm -rf "$MOCK_BIN"
+mkdir -p "$MOCK_BIN"
+cat <<'EOF' > "$MOCK_BIN/systemctl"
+#!/usr/bin/env bash
+if [ "$1" = "--user" ] && [ "$2" = "daemon-reload" ]; then
+  echo "mock: daemon-reload called"
+  exit 0
+fi
 exit 0
+EOF
+chmod +x "$MOCK_BIN/systemctl"
+
+T16_OUTPUT="$(
+  PATH="$MOCK_BIN:$PATH" \
+  HOME="$MOCK_HOME" \
+  bash -c '
+    source "'"$INSTALLER_LIB"'"
+    service_home="'"$MOCK_HOME"'"
+    install_dir="'"$MOCK_BIN"'"
+    os="linux"
+    service_user=""
+    path_needs_action=false
+
+    hub_url=""
+    # Enter hub URL, empty token to exit onboarding
+    run_interactive_onboarding <<EOF
+http://interactive-hub.domain:9999
+
+EOF
+  ' 2>&1
+)"
+
+SVC_FILE="$MOCK_HOME/.config/systemd/user/heimdall-bridge.service"
+[ -f "$SVC_FILE" ] || {
+  echo "FAIL: Service file $SVC_FILE was not written after Hub URL prompt: $T16_OUTPUT" >&2
+  exit 1
+}
+grep -q -- '--hub "http://interactive-hub.domain:9999"' "$SVC_FILE" || {
+  echo "FAIL: --hub \"http://interactive-hub.domain:9999\" not found in $SVC_FILE:" >&2
+  cat "$SVC_FILE" >&2
+  exit 1
+}
+echo "$T16_OUTPUT" | grep -q "systemd user unit registered" || {
+  echo "FAIL: daemon-reload was not executed after service file update: $T16_OUTPUT" >&2
+  exit 1
+}
+echo "PASS: Test 16 passed (Interactive Hub prompt wrote --hub to service file and ran daemon-reload)!"
+
+# --- Test 17: Existing token pre-check still ensures config.toml has daemon_url (REQ-HUB-URL-2, REQ-HUB-URL-5b) ---
+echo "=== Test 17: Existing token pre-check ensures config.toml has daemon_url (REQ-HUB-URL-2, REQ-HUB-URL-5b) ==="
+reset_mock_home
+mkdir -p "$MOCK_HOME/.config/heimdall"
+echo "hbe_pre_existing_token" > "$MOCK_HOME/.config/heimdall/bridge-token"
+cat <<'EOF' > "$MOCK_HOME/.config/heimdall/config.toml"
+# My existing config
+[wrapper]
+daemon_url = "http://127.0.0.1:49322"
+extra_wrapper_field = "preserved"
+
+[daemon]
+daemon_id = "brg_existing_node"
+data_dir = "~/.local/share/heimdall"
+EOF
+
+T17_OUTPUT="$(
+  PATH="$MOCK_BIN:$PATH" \
+  HOME="$MOCK_HOME" \
+  bash -c '
+    source "'"$INSTALLER_LIB"'"
+    service_home="'"$MOCK_HOME"'"
+    install_dir="'"$MOCK_BIN"'"
+    os="linux"
+    service_user=""
+    path_needs_action=false
+    hub_url="https://new-central-hub.corp:8443"
+
+    run_interactive_onboarding <<EOF
+n
+EOF
+  ' 2>&1
+)"
+
+CFG_FILE="$MOCK_HOME/.config/heimdall/config.toml"
+[ -f "$CFG_FILE" ] || {
+  echo "FAIL: config.toml $CFG_FILE missing: $T17_OUTPUT" >&2
+  exit 1
+}
+grep -q 'daemon_url = "https://new-central-hub.corp:8443"' "$CFG_FILE" || {
+  echo "FAIL: Updated daemon_url not found in $CFG_FILE:" >&2
+  cat "$CFG_FILE" >&2
+  exit 1
+}
+grep -q '\[ctl\]' "$CFG_FILE" || {
+  echo "FAIL: [ctl] section not ensured in $CFG_FILE:" >&2
+  cat "$CFG_FILE" >&2
+  exit 1
+}
+grep -q 'extra_wrapper_field = "preserved"' "$CFG_FILE" || {
+  echo "FAIL: Existing fields in config.toml were not preserved:" >&2
+  cat "$CFG_FILE" >&2
+  exit 1
+}
+grep -q 'daemon_id = "brg_existing_node"' "$CFG_FILE" || {
+  echo "FAIL: Existing daemon_id in config.toml was not preserved:" >&2
+  cat "$CFG_FILE" >&2
+  exit 1
+}
+echo "PASS: Test 17 passed (Pre-existing enrollment updated config.toml with new Hub URL)!"
+
+# --- Test 18: Service is properly restarted/reloaded when already active (REQ-HUB-URL-4, REQ-HUB-URL-5c) ---
+echo "=== Test 18: Active service is restarted during onboarding (REQ-HUB-URL-4, REQ-HUB-URL-5c) ==="
+reset_mock_home
+rm -rf "$MOCK_BIN"
+mkdir -p "$MOCK_BIN" "$MOCK_HOME/.config/heimdall"
+echo "token_present" > "$MOCK_HOME/.config/heimdall/bridge-token"
+LOG_SYSTEMCTL="$TMP_DIR/systemctl_invocations.log"
+rm -f "$LOG_SYSTEMCTL"
+
+cat <<EOF > "$MOCK_BIN/systemctl"
+#!/usr/bin/env bash
+echo "\$*" >> "$LOG_SYSTEMCTL"
+if [ "\$1" = "--user" ] && [ "\$2" = "is-active" ] && [ "\$3" = "heimdall-bridge" ]; then
+  exit 0
+elif [ "\$1" = "--user" ] && [ "\$2" = "restart" ] && [ "\$3" = "heimdall-bridge" ]; then
+  echo "mock: restarted heimdall-bridge"
+  exit 0
+elif [ "\$1" = "--user" ] && [ "\$2" = "daemon-reload" ]; then
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$MOCK_BIN/systemctl"
+
+T18_OUTPUT="$(
+  PATH="$MOCK_BIN:$PATH" \
+  HOME="$MOCK_HOME" \
+  bash -c '
+    source "'"$INSTALLER_LIB"'"
+    service_home="'"$MOCK_HOME"'"
+    install_dir="'"$MOCK_BIN"'"
+    os="linux"
+    service_user=""
+    path_needs_action=false
+    hub_url="https://restarted-hub.corp"
+
+    run_interactive_onboarding <<EOF
+n
+EOF
+  ' 2>&1
+)"
+
+echo "$T18_OUTPUT" | grep -q "Bridge service restarted via systemctl --user." || {
+  echo "FAIL: Expected restart message not found: $T18_OUTPUT" >&2
+  exit 1
+}
+grep -q -- "--user restart heimdall-bridge" "$LOG_SYSTEMCTL" || {
+  echo "FAIL: systemctl --user restart heimdall-bridge was not called:" >&2
+  cat "$LOG_SYSTEMCTL" >&2
+  exit 1
+}
+echo "PASS: Test 18 passed (Active service restarted via systemctl --user restart)!"
+
+echo ""
+echo "ALL 18 INSTALLER ONBOARDING AND ENROLLMENT TESTS PASSED SUCCESSFULLY!"
+exit 0
+

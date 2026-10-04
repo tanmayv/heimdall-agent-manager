@@ -2799,7 +2799,7 @@ def test_install_sh_sudo_uninstall_dry_run(ctx):
 
 def version_constants():
     proto = (ROOT / 'src' / 'contracts' / 'protocol.odin').read_text(encoding='utf-8')
-    app_version = re.search(r'APP_VERSION :: "([^"]*)"', proto)
+    app_version = re.search(r'APP_VERSION :: (?:#config\(HAM_APP_VERSION, )?"([^"]*)"', proto)
     protocol_version = re.search(r'PROTOCOL_VERSION :: (\d+)', proto)
     assert app_version and protocol_version, 'could not parse src/contracts/protocol.odin'
     return app_version.group(1), protocol_version.group(1)
@@ -4677,7 +4677,7 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     assert 'END_TEST_HUB_URL: http://my-test-hub.example.com' in out, 'Hub URL trailing slashes or spaces not cleaned'
     assert 'Enter one-time enrollment token (hbe_...):' in out, 'Missing enrollment token prompt'
     assert 'Node successfully enrolled.' in out, 'Missing enrollment success message'
-    assert 'Bridge service started via systemctl --user.' in out, 'Missing bridge service start message'
+    assert ('Bridge service started via systemctl --user.' in out or 'Bridge service restarted via systemctl --user.' in out), 'Missing bridge service start message'
     assert 'Enrollment verified: bridge token is present' in out, 'Missing bridge token verification'
     assert 'Bridge service is running (active).' in out, 'Missing bridge active verification'
     assert 'Vault encryption successfully configured.' in out, 'Missing vault success message'
