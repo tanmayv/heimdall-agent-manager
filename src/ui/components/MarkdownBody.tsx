@@ -3,27 +3,43 @@ import { useDispatch, useSelector } from 'react-redux';
 import { artifactsApi } from '../api/endpoints/artifacts';
 import { highlightCode, getActiveShikiTheme } from '../utils/codeHighlight';
 
-type MermaidRenderer = {
+export type MermaidRenderer = {
   initialize: (config: Record<string, any>) => void;
   render: (id: string, code: string) => Promise<{ svg: string; bindFunctions?: (element: Element) => void }>;
 };
 
 let mermaidInitialized = false;
-function ensureMermaidInitialized(): MermaidRenderer | null {
-  // The installed mermaid package in this workspace advertises a missing ESM
-  // entry. Keep markdown rendering usable by treating mermaid as optional rather
-  // than importing the broken package at module load time.
-  const mermaid = (globalThis as any).mermaid as MermaidRenderer | undefined;
-  if (!mermaid) return null;
-  if (!mermaidInitialized) {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'dark',
-      securityLevel: 'loose',
-    });
-    mermaidInitialized = true;
+let mermaidPromise: Promise<MermaidRenderer | null> | null = null;
+
+export async function getMermaid(): Promise<MermaidRenderer | null> {
+  if (typeof window === 'undefined') return null;
+  const ambient = (globalThis as any).mermaid;
+  if (ambient) {
+    if (!mermaidInitialized) {
+      ambient.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
+      mermaidInitialized = true;
+    }
+    return ambient;
   }
-  return mermaid;
+  if (!mermaidPromise) {
+    mermaidPromise = import('mermaid')
+      .then((mod) => {
+        const m = (mod.default || mod) as any;
+        m.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
+        mermaidInitialized = true;
+        return m as MermaidRenderer;
+      })
+      .catch((err) => {
+        console.warn('Failed to load mermaid:', err);
+        return null;
+      });
+  }
+  return mermaidPromise;
+}
+
+export function resetMermaidForTesting(): void {
+  mermaidPromise = null;
+  mermaidInitialized = false;
 }
 
 export type MarkdownTextSelection = {
@@ -109,7 +125,7 @@ export function artifactIdFromUri(value: string): string {
   return match?.[1] || '';
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -343,6 +359,44 @@ function readMarkdownSelection(root: HTMLElement): MarkdownTextSelection | null 
   return { selectedText };
 }
 
+export async function renderMermaidElement(
+  container: HTMLElement,
+  idx = 0,
+  isCancelled: () => boolean = () => false
+): Promise<boolean> {
+  const mermaid = await getMermaid();
+  if (isCancelled()) return false;
+  if (!mermaid) {
+    container.setAttribute('data-mermaid-rendered', 'unavailable');
+    return false;
+  }
+  const block = container.closest('.mermaid-block') as HTMLElement | null;
+  const code = block?.getAttribute('data-mermaid-code') || container.textContent || '';
+  if (!code.trim()) return false;
+
+  const uniqueId = `mermaid-svg-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 8)}`;
+  try {
+    const { svg, bindFunctions } = await mermaid.render(uniqueId, code);
+    if (isCancelled()) return false;
+    container.innerHTML = svg;
+    container.setAttribute('data-mermaid-rendered', 'true');
+    if (bindFunctions && typeof bindFunctions === 'function') {
+      bindFunctions(container);
+    }
+    return true;
+  } catch (err) {
+    if (isCancelled()) return false;
+    console.warn('Mermaid rendering failed:', err);
+    container.setAttribute('data-mermaid-rendered', 'error');
+    const tempEl = document.getElementById(`d${uniqueId}`) || document.getElementById(uniqueId);
+    if (tempEl && tempEl.parentNode) {
+      tempEl.parentNode.removeChild(tempEl);
+    }
+    container.innerHTML = `<div class="mb-2 flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning-soft px-2.5 py-1 text-xs text-warning" data-debug-id="mermaid-syntax-error-indicator"><span>Invalid diagram syntax</span></div><pre class="font-mono text-[12px] leading-relaxed text-primary overflow-x-auto w-full" data-lang="mermaid"><code>${escapeHtml(code)}</code></pre>`;
+    return false;
+  }
+}
+
 export default function MarkdownBody({ source, className, compact, copyAll = true, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange }: MarkdownBodyProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => renderMarkdown(source || '', copyAll), [source, copyAll]);
@@ -388,42 +442,9 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     if (containers.length === 0) return undefined;
 
     let cancelled = false;
-    const mermaid = ensureMermaidInitialized();
-    if (!mermaid) {
-      containers.forEach((container) => container.setAttribute('data-mermaid-rendered', 'unavailable'));
-      return undefined;
-    }
 
-    containers.forEach(async (container, idx) => {
-      if (cancelled) return;
-      const block = container.closest('.mermaid-block') as HTMLElement | null;
-      const code = block?.getAttribute('data-mermaid-code') || container.textContent || '';
-      if (!code.trim()) return;
-
-      const uniqueId = `mermaid-svg-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 8)}`;
-      try {
-        const { svg, bindFunctions } = await mermaid.render(uniqueId, code);
-        if (cancelled) return;
-        container.innerHTML = svg;
-        container.setAttribute('data-mermaid-rendered', 'true');
-        if (bindFunctions && typeof bindFunctions === 'function') {
-          bindFunctions(container);
-        }
-      } catch (err) {
-        if (cancelled) return;
-        console.warn('Mermaid rendering failed:', err);
-        container.setAttribute('data-mermaid-rendered', 'error');
-        const tempEl = document.getElementById(`d${uniqueId}`) || document.getElementById(uniqueId);
-        if (tempEl && tempEl.parentNode) {
-          tempEl.parentNode.removeChild(tempEl);
-        }
-        const errorBanner = document.createElement('div');
-        errorBanner.className = 'mb-2 rounded bg-danger-soft border border-danger/30 px-2 py-1 text-caption text-danger';
-        errorBanner.textContent = 'Failed to render Mermaid diagram';
-        if (!container.querySelector('.text-danger')) {
-          container.insertBefore(errorBanner, container.firstChild);
-        }
-      }
+    containers.forEach((container, idx) => {
+      renderMermaidElement(container, idx, () => cancelled);
     });
 
     return () => {
