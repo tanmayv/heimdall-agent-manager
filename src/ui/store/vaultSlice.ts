@@ -132,7 +132,6 @@ export async function initializeVaultPersistence(
 export interface VaultState {
   isConfigured: boolean;
   isUnlocked: boolean;
-  rawVaultKeyHex?: string | null;
   isUnlockModalOpen?: boolean;
 }
 
@@ -359,8 +358,13 @@ export function shouldOpenVaultOnboarding(args: {
 export const selectVaultState = (state: { vault?: VaultState }) => state?.vault;
 export const selectIsVaultConfigured = (state: { vault?: VaultState }) => Boolean(state?.vault?.isConfigured);
 export const selectIsVaultUnlocked = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlocked);
-export const selectRawVaultKeyHex = (state?: { vault?: VaultState }): string | null =>
-  (state?.vault as any)?.rawVaultKeyHex ?? null;
+/**
+ * Deprecated: raw key material never enters Redux state (REQ-VAULT-HARDEN-1, REQ-RAWKEY-A7).
+ * `VaultState.rawVaultKeyHex` has been removed, so this selector is retained only as a
+ * shim for callers that still import it and always returns null. Resolve the key with
+ * `getActiveVaultKey()` instead -- note `selectActiveVaultKey` below is NOT reactive.
+ */
+export const selectRawVaultKeyHex = (_state?: { vault?: VaultState }): string | null => null;
 export const selectActiveVaultKey = (_state?: { vault?: VaultState }): CryptoKey | null => getActiveVaultKey();
 export const selectIsUnlockModalOpen = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlockModalOpen);
 

@@ -25,7 +25,6 @@ import {
 } from '../../api/endpoints/userVault';
 import {
   generateVaultKey,
-  exportRawKeyHex,
   importRawKeyHex,
   deriveKeyFromPassword,
   generate12RecoveryWords,
@@ -228,7 +227,6 @@ export default function VaultOnboardingModal({
 
       // 1. Generate 256-bit symmetric AES-GCM Vault Key (KV)
       const vaultKey = await generateVaultKey();
-      const rawHex = await exportRawKeyHex(vaultKey);
 
       // 2. Derive Master Wrapping Key (KM) from Master Password
       const kdfSalt = generateSaltHex(16);
@@ -256,7 +254,10 @@ export default function VaultOnboardingModal({
 
       // 5. Update Redux store
       dispatch(setVaultConfigured(true));
-      dispatch(setVaultUnlocked({ rawVaultKeyHex: rawHex, rememberSession }));
+      // Pass the CryptoKey, not the hex: the key payload is installed synchronously
+      // inside the reducer, so there is no tick in which isUnlocked is true while
+      // getActiveVaultKey() is still null (REQ-RAWKEY-A7b).
+      dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
 
       // Reset sensitive password inputs
       setMasterPassword('');
@@ -366,11 +367,14 @@ export default function VaultOnboardingModal({
 
     try {
       setIsImporting(true);
-      // Validate by importing via WebCrypto AES-GCM
-      await importRawKeyHex(clean);
+      // Import once, here, and keep the key: awaiting it at the call site is the only
+      // place the await is legal, and dispatching the hex instead would let the reducer
+      // flip isUnlocked while getActiveVaultKey() is still null for a tick, so effects
+      // gated on isUnlocked run once with no key and never re-fire (REQ-RAWKEY-A7b).
+      const key = await importRawKeyHex(clean);
 
-      // Dispatch Redux importLocalKey action
-      dispatch(importLocalKey(clean, rememberSession));
+      // Dispatch Redux importLocalKey action with the installed CryptoKey
+      dispatch(importLocalKey({ key, rememberSession }));
       setDirectHexKey('');
       handleClose();
     } catch (err: any) {

@@ -226,7 +226,11 @@ export default function VaultPanel() {
 
       // 5. Update Redux store
       dispatch(setVaultConfigured(true));
-      dispatch(setVaultUnlocked(rawHex));
+      // Pass the CryptoKey, not the hex: the key payload is installed synchronously
+      // inside the reducer, so there is no tick in which isUnlocked is true while
+      // getActiveVaultKey() is still null (REQ-RAWKEY-A7b). rawHex is still needed
+      // below, for the E2EE bridge unseal payload.
+      dispatch(setVaultUnlocked(vaultKey));
       void unsealAllConnectedBridges(rawHex);
 
       // Reset sensitive password inputs

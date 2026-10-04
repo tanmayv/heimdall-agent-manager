@@ -17,6 +17,38 @@ import {
 } from '../../utils/vaultContent';
 import Markdown from '../Markdown';
 
+/** Replace every armored vault token in `text` with the locked placeholder. */
+const VAULT_TOKEN_RE = /vault:v1:[A-Za-z0-9+/=_-]+/g;
+function maskVaultTokens(text: string): string {
+  return text.replace(VAULT_TOKEN_RE, '[🔒 Encrypted]');
+}
+
+/**
+ * Mask the vault-armored fields of a list of records. Returns the input array
+ * untouched when nothing is armored, so referential equality is preserved.
+ */
+function maskVaultFields<T extends Record<string, any>>(items: T[], fields: string[]): T[] {
+  let changed = false;
+  const masked = items.map((item) => {
+    let next: T | null = null;
+    for (const field of fields) {
+      const value = item[field];
+      if (typeof value === 'string' && containsVaultArmored(value)) {
+        next = next ?? ({ ...item } as T);
+        (next as Record<string, any>)[field] = maskVaultTokens(value);
+      }
+    }
+    if (next) {
+      changed = true;
+      return next;
+    }
+    return item;
+  });
+  return changed ? masked : items;
+}
+
+const VAULT_LIST_FIELDS = ['title', 'description', 'description_preview', 'descriptionPreview'];
+
 export interface VaultTextProps {
   value?: string | null;
   fallback?: string;
@@ -64,7 +96,7 @@ export function VaultText({
     const activeKey = activeVaultKey || getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
       setDecryptedText(
-        isEmbedded ? rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : null
+        isEmbedded ? maskVaultTokens(rawString) : null
       );
       setIsDecrypting(false);
       return;
@@ -82,7 +114,7 @@ export function VaultText({
     }).catch((err) => {
       if (mounted) {
         console.error('Failed to decrypt vault armored text:', err);
-        setDecryptedText(fallback || rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setDecryptedText(fallback || maskVaultTokens(rawString));
         setIsDecrypting(false);
       }
     });
@@ -130,7 +162,7 @@ export function VaultText({
     }
     return (
       <Tag className={className} title={title}>
-        {decryptedText !== null ? decryptedText : rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]')}
+        {decryptedText !== null ? decryptedText : maskVaultTokens(rawString)}
       </Tag>
     );
   }
@@ -168,7 +200,10 @@ export function useDecryptedText(value?: string | null): {
   const isEmbedded = !isArmored && containsVaultArmored(raw);
   const hasVault = isArmored || isEmbedded;
 
-  const [text, setText] = useState<string>(raw);
+  // Seed masked, never raw: React commits initial state before effects run, so
+  // seeding `raw` paints one frame of vault:v1: ciphertext on every consumer --
+  // locked vaults included (iss_18db4e292b0c5b57).
+  const [text, setText] = useState<string>(() => (hasVault ? maskVaultTokens(raw) : raw));
   const [isDecrypting, setIsDecrypting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -180,7 +215,7 @@ export function useDecryptedText(value?: string | null): {
     }
     const activeKey = activeVaultKey || getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
-      setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+      setText(maskVaultTokens(raw));
       setIsDecrypting(false);
       return;
     }
@@ -190,12 +225,12 @@ export function useDecryptedText(value?: string | null): {
       : decryptEmbeddedVaultTokens(raw, activeKey);
     p.then((decrypted) => {
       if (mounted) {
-        setText(decrypted.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setText(maskVaultTokens(decrypted));
         setIsDecrypting(false);
       }
     }).catch(() => {
       if (mounted) {
-        setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
+        setText(maskVaultTokens(raw));
         setIsDecrypting(false);
       }
     });
@@ -220,13 +255,19 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
 ): T[] {
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey();
-  const [decryptedList, setDecryptedList] = useState<T[]>(items);
+  // Same reason as useDecryptedText above: seed masked so no consumer paints a
+  // frame of ciphertext before the decryption effect runs.
+  const [decryptedList, setDecryptedList] = useState<T[]>(() =>
+    maskVaultFields(items, VAULT_LIST_FIELDS),
+  );
 
   useEffect(() => {
     let mounted = true;
     const activeKey = activeVaultKey || getActiveVaultKey();
     if (!isUnlocked || !activeKey || items.length === 0) {
-      setDecryptedList(items);
+      // Locked or keyless: mask rather than render the armored values. Returning
+      // `items` here left ciphertext on screen for as long as the vault stayed locked.
+      setDecryptedList(maskVaultFields(items, VAULT_LIST_FIELDS));
       return;
     }
 
@@ -253,7 +294,7 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
       })
       .catch((err) => {
         console.error('Failed to decrypt issues list:', err);
-        if (mounted) setDecryptedList(items);
+        if (mounted) setDecryptedList(maskVaultFields(items, VAULT_LIST_FIELDS));
       });
 
     return () => {
