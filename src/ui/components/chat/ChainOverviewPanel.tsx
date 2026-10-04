@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
@@ -168,8 +168,10 @@ function AttentionTaskReviewCard({
   const [voteComment, setVoteComment] = useState('');
   const [voteError, setVoteError] = useState('');
 
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1), so both
+  // the decryption effect and the locked-state render branch below test the real key
+  // rather than the permanently-null state.vault.rawVaultKeyHex.
+  const activeKey = useSelector(selectActiveVaultKey);
   const [decryptedDescription, setDecryptedDescription] = useState<string | null>(null);
 
   const fullTask = detailData?.task || task;
@@ -177,8 +179,8 @@ function AttentionTaskReviewCard({
 
   useEffect(() => {
     let active = true;
-    if (isVaultArmored(rawDescription) && isVaultUnlocked && rawKeyHex) {
-      decryptVaultText(rawDescription, rawKeyHex)
+    if (isVaultArmored(rawDescription) && activeKey) {
+      decryptVaultText(rawDescription, activeKey)
         .then((decrypted) => {
           if (active) setDecryptedDescription(decrypted);
         })
@@ -191,7 +193,7 @@ function AttentionTaskReviewCard({
     return () => {
       active = false;
     };
-  }, [rawDescription, isVaultUnlocked, rawKeyHex]);
+  }, [rawDescription, activeKey]);
 
   const effectiveDescription = isVaultArmored(rawDescription)
     ? (decryptedDescription || '')
@@ -260,7 +262,7 @@ function AttentionTaskReviewCard({
                 ))}
               </ul>
             </div>
-          ) : isVaultArmored(rawDescription) && (!isVaultUnlocked || !rawKeyHex) ? (
+          ) : isVaultArmored(rawDescription) && !activeKey ? (
             <div className="max-h-48 overflow-y-auto rounded bg-surface-secondary/40 p-2 text-xs">
               <VaultText value={rawDescription} as="div" fallback="[🔒 Encrypted description]" />
             </div>

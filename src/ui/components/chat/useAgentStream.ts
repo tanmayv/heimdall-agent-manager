@@ -3,7 +3,6 @@ import { useSelector } from 'react-redux';
 import { apiAbsoluteUrl } from '../../api/apiBase';
 import { decryptShellStreamPayload, encryptShellStreamPayload } from '../shells/useShellStream';
 import { VAULT_ARMOR_PREFIX, bytesToBase64, getActiveVaultKey } from '../../utils/vaultContent';
-import { readSessionVaultKey } from '../../store/vaultSlice';
 
 const HEARTBEAT_INTERVAL_MS = 30000;
 const INITIAL_RECONNECT_DELAY_MS = 1000;
@@ -36,7 +35,6 @@ export type UseAgentStreamOptions = {
   onStatus?: (status: string) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
-  rawVaultKeyHex?: string | null;
   isVaultUnlocked?: boolean;
 };
 
@@ -101,7 +99,6 @@ export function useAgentStream({
   onStatus,
   onError,
   onClose,
-  rawVaultKeyHex: propRawVaultKeyHex,
   isVaultUnlocked: propIsVaultUnlocked,
 }: UseAgentStreamOptions): UseAgentStreamResult {
   const [connected, setConnected] = useState(false);
@@ -115,27 +112,22 @@ export function useAgentStream({
 
   // Vault state subscription
   let reduxUnlocked = false;
-  let reduxKeyHex: string | null = null;
   try {
     reduxUnlocked = useSelector((state: any) => Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked));
-    reduxKeyHex = useSelector((state: any) => state?.vault?.rawVaultKeyHex ?? null);
   } catch {
     // Non-fatal when rendered outside Redux Provider (e.g. standalone test)
   }
 
-  const sessionKey = readSessionVaultKey();
+  // Key material exists only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned and readSessionVaultKey() is hardened to
+  // return null unconditionally, so getActiveVaultKey() is the single source of key material.
   const activeKey = getActiveVaultKey();
   const isVaultUnlocked = propIsVaultUnlocked !== undefined
     ? propIsVaultUnlocked
-    : (reduxUnlocked || Boolean(reduxKeyHex) || Boolean(sessionKey) || Boolean(activeKey));
-  const rawVaultKeyHex = propRawVaultKeyHex !== undefined
-    ? propRawVaultKeyHex
-    : (reduxKeyHex || sessionKey);
+    : (reduxUnlocked || Boolean(activeKey));
 
   const isVaultUnlockedRef = useRef(isVaultUnlocked);
   isVaultUnlockedRef.current = isVaultUnlocked;
-  const rawVaultKeyHexRef = useRef(rawVaultKeyHex);
-  rawVaultKeyHexRef.current = rawVaultKeyHex;
   const outputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -143,9 +135,6 @@ export function useAgentStream({
     isVaultUnlockedRef.current = isVaultUnlocked;
   }, [isVaultUnlocked]);
 
-  useEffect(() => {
-    rawVaultKeyHexRef.current = rawVaultKeyHex;
-  }, [rawVaultKeyHex]);
 
   const rowsRef = useRef(rows);
   const colsRef = useRef(cols);
@@ -295,9 +284,8 @@ export function useAgentStream({
             if (enc_b64) {
               outputQueueRef.current = outputQueueRef.current.then(async () => {
                 if (activeConnectIdRef.current !== connectId) return;
-                const activeVaultKey = getActiveVaultKey();
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeVaultKey);
-                const keyToUse = activeVaultKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+                const keyToUse = getActiveVaultKey();
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(keyToUse);
                 if (isUnlocked && keyToUse) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
@@ -326,9 +314,8 @@ export function useAgentStream({
             if (enc_b64) {
               outputQueueRef.current = outputQueueRef.current.then(async () => {
                 if (activeConnectIdRef.current !== connectId) return;
-                const activeVaultKey = getActiveVaultKey();
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeVaultKey);
-                const keyToUse = activeVaultKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+                const keyToUse = getActiveVaultKey();
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(keyToUse);
                 if (isUnlocked && keyToUse) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
@@ -399,9 +386,8 @@ export function useAgentStream({
     const s = socketRef.current;
     if (!s || s.readyState !== WebSocket.OPEN) return;
 
-    const activeVaultKey = getActiveVaultKey();
-    const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeVaultKey);
-    const keyToUse = activeVaultKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+    const keyToUse = getActiveVaultKey();
+    const isUnlocked = isVaultUnlockedRef.current || Boolean(keyToUse);
 
     if (isUnlocked && keyToUse) {
       inputQueueRef.current = inputQueueRef.current.then(async () => {

@@ -10,7 +10,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
 
@@ -132,8 +132,11 @@ export default function CurrentTaskStrip({
   const reviewer = taskReviewerOf(task);
   const userIsReviewer = isUserEffectiveReviewer(task);
 
-  const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1), so the
+  // decryption gates below test the real key rather than the permanently-null
+  // state.vault.rawVaultKeyHex. With no vault configured there is no key and the
+  // unarmored plaintext returns through the early returns above each gate.
+  const activeKey = useSelector(selectActiveVaultKey);
   const rawDesc = String(task.description || '').trim();
   const [decryptedDesc, setDecryptedDesc] = useState<string | null>(null);
 
@@ -143,13 +146,13 @@ export default function CurrentTaskStrip({
       setDecryptedDesc(rawDesc);
       return;
     }
-    if (!isUnlocked || !rawKeyHex) {
+    if (!activeKey) {
       setDecryptedDesc(null);
       return;
     }
     const p = isVaultArmored(rawDesc)
-      ? decryptVaultText(rawDesc, rawKeyHex)
-      : decryptEmbeddedVaultTokens(rawDesc, rawKeyHex);
+      ? decryptVaultText(rawDesc, activeKey)
+      : decryptEmbeddedVaultTokens(rawDesc, activeKey);
     p.then((res) => {
       if (active) setDecryptedDesc(res);
     }).catch(() => {
@@ -158,7 +161,7 @@ export default function CurrentTaskStrip({
     return () => {
       active = false;
     };
-  }, [rawDesc, isUnlocked, rawKeyHex]);
+  }, [rawDesc, activeKey]);
 
   const effectiveDesc = decryptedDesc !== null ? decryptedDesc : (isVaultArmored(rawDesc) ? '' : rawDesc);
   const summary = acceptanceSummary(effectiveDesc);
@@ -171,7 +174,7 @@ export default function CurrentTaskStrip({
       setDecryptedSwitchableTasks([]);
       return;
     }
-    if (!isUnlocked || !rawKeyHex) {
+    if (!activeKey) {
       setDecryptedSwitchableTasks(
         switchableTasks.map((t) => ({
           ...t,
@@ -186,8 +189,8 @@ export default function CurrentTaskStrip({
         if (!isVaultArmored(rawTitle) && !containsVaultArmored(rawTitle)) return t;
         try {
           const dec = isVaultArmored(rawTitle)
-            ? await decryptVaultText(rawTitle, rawKeyHex)
-            : await decryptEmbeddedVaultTokens(rawTitle, rawKeyHex);
+            ? await decryptVaultText(rawTitle, activeKey)
+            : await decryptEmbeddedVaultTokens(rawTitle, activeKey);
           return { ...t, title: dec };
         } catch {
           return { ...t, title: rawTitle.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') };
@@ -199,7 +202,7 @@ export default function CurrentTaskStrip({
     return () => {
       active = false;
     };
-  }, [switchableTasks, isUnlocked, rawKeyHex]);
+  }, [switchableTasks, activeKey]);
 
   const { data: identitiesData } = useListAgentIdentitiesQuery();
   const agentIdentities = identitiesData?.agents || (identitiesData as any)?.identities || [];

@@ -121,9 +121,8 @@ test('Task UI components, endpoints, and utils exist with required contracts', (
     'ChainOverviewPanel.tsx must wrap currentTask.title in VaultText on agent cards',
   );
   assert.ok(
-    chainOverviewPanelSrc.includes('selectIsVaultUnlocked') &&
-      chainOverviewPanelSrc.includes('selectRawVaultKeyHex'),
-    'ChainOverviewPanel.tsx must import vault unlock and key selectors',
+    chainOverviewPanelSrc.includes('selectActiveVaultKey'),
+    'ChainOverviewPanel.tsx must import the active CryptoKey selector',
   );
   assert.ok(
     chainOverviewPanelSrc.includes('decryptVaultText'),

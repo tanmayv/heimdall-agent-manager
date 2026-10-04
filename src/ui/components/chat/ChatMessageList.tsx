@@ -10,7 +10,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { extractMessageOptions } from './types';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 import ChatActionCard from './ChatActionCard';
@@ -45,8 +45,11 @@ function DefaultMessageBody({ body }: { body: string }) {
   const isArmored = isVaultArmored(body);
   const containsArmored = containsVaultArmored(body);
   const hasVault = isArmored || containsArmored;
-  const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1).
+  // state.vault.rawVaultKeyHex is never assigned, so the old `rawKey || getActiveVaultKey()`
+  // worked solely by its fallback, and the render gates below could show raw ciphertext
+  // whenever the vault reported unlocked without a key. Both now test the real key.
+  const activeKey = useSelector(selectActiveVaultKey);
   const [decrypted, setDecrypted] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,8 +58,7 @@ function DefaultMessageBody({ body }: { body: string }) {
       setDecrypted(body);
       return;
     }
-    const activeKey = rawKeyHex || getActiveVaultKey();
-    if (!isUnlocked || !activeKey) {
+    if (!activeKey) {
       setDecrypted(null);
       return;
     }
@@ -73,12 +75,12 @@ function DefaultMessageBody({ body }: { body: string }) {
     return () => {
       mounted = false;
     };
-  }, [body, hasVault, isArmored, isUnlocked, rawKeyHex]);
+  }, [body, hasVault, isArmored, activeKey]);
 
-  if (isArmored && !isUnlocked) {
+  if (isArmored && !activeKey) {
     return <VaultText value={body} as="div" />;
   }
-  if (containsArmored && !isUnlocked) {
+  if (containsArmored && !activeKey) {
     const sanitized = body.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]');
     return <Markdown source={sanitized} compact copyAll={false} />;
   }

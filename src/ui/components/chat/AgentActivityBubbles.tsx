@@ -13,7 +13,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 
 // Push-only, ephemeral row of small "activity bubbles" rendered in a reserved,
 // fixed-height gutter just above the chat composer, for the CURRENTLY-VIEWED
@@ -63,8 +63,7 @@ function ActivityBubbleItem({
   bubble: VisibleBubble;
   sharedClassName: string;
 }) {
-  const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const activeKey = useSelector(selectActiveVaultKey);
   const [summary, setSummary] = useState(bubble.summary);
 
   useEffect(() => {
@@ -74,13 +73,15 @@ function ActivityBubbleItem({
       setSummary(raw);
       return;
     }
-    if (!isUnlocked || !rawKeyHex) {
+    // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1),
+    // so the gate is the real key, not the permanently-null state.vault.rawVaultKeyHex.
+    if (!activeKey) {
       setSummary(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
       return;
     }
     const p = isVaultArmored(raw)
-      ? decryptVaultText(raw, rawKeyHex)
-      : decryptEmbeddedVaultTokens(raw, rawKeyHex);
+      ? decryptVaultText(raw, activeKey)
+      : decryptEmbeddedVaultTokens(raw, activeKey);
     p.then((res) => {
       if (active) setSummary(res.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
     }).catch(() => {
@@ -89,7 +90,7 @@ function ActivityBubbleItem({
     return () => {
       active = false;
     };
-  }, [bubble.summary, isUnlocked, rawKeyHex]);
+  }, [bubble.summary, activeKey]);
 
   const inner = bubble.phase === 'dots' ? (
     <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">

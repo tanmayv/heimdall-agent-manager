@@ -7,7 +7,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { extractMessageOptions } from './types';
 import Markdown from '../Markdown';
 import ChatActionCard from './ChatActionCard';
@@ -35,8 +35,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, clas
   const isArmored = isVaultArmored(body);
   const containsArmored = containsVaultArmored(body);
   const hasVault = isArmored || containsArmored;
-  const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKey = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1).
+  // state.vault.rawVaultKeyHex is never assigned, so the old `rawKey || getActiveVaultKey()`
+  // worked solely by its fallback, and the render gates below could show raw ciphertext
+  // whenever the vault reported unlocked without a key. Both now test the real key.
+  const activeKey = useSelector(selectActiveVaultKey);
   const [decryptedBody, setDecryptedBody] = useState<string | null>(null);
   const options = extractMessageOptions(message);
 
@@ -46,8 +49,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, clas
       setDecryptedBody(body);
       return;
     }
-    const activeKey = rawKey || getActiveVaultKey();
-    if (!isUnlocked || !activeKey) {
+    if (!activeKey) {
       setDecryptedBody(null);
       return;
     }
@@ -64,7 +66,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, clas
     return () => {
       active = false;
     };
-  }, [body, hasVault, isArmored, isUnlocked, rawKey]);
+  }, [body, hasVault, isArmored, activeKey]);
 
   return (
     <div
@@ -72,9 +74,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onReply, clas
       className={`message-item flex flex-col gap-1 py-1 ${className}`}
     >
       <div data-debug-id={`message-body-${messageId}`} className="text-sm">
-        {isArmored && !isUnlocked ? (
+        {isArmored && !activeKey ? (
           <VaultText value={body} as="div" />
-        ) : containsArmored && !isUnlocked ? (
+        ) : containsArmored && !activeKey ? (
           <Markdown
             source={body.replace(/vault:v1:[A-Za-z0-9+/=]+/g, '[🔒 Encrypted]')}
             compact

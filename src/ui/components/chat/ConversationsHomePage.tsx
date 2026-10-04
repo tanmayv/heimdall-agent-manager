@@ -6,7 +6,7 @@ import { buildRouteHash } from '../../utils/appLocation';
 import { Button, Icon, Text } from '@ui';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { decryptConversationList } from '../../utils/vaultChats';
 const PAGE_SIZE = 40;
 
@@ -63,8 +63,7 @@ export default function ConversationsHomePage() {
   const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState('');
 
-  const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  const activeKey = useSelector(selectActiveVaultKey);
   const [decryptedRows, setDecryptedRows] = useState<SidebarConversation[]>([]);
 
   useEffect(() => {
@@ -76,11 +75,14 @@ export default function ConversationsHomePage() {
 
   useEffect(() => {
     let mounted = true;
-    if (!isUnlocked || !rawKeyHex) {
+    // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1),
+    // so the gate is the real key, not the permanently-null state.vault.rawVaultKeyHex.
+    // With no vault configured there is no key and the plaintext rows pass through unchanged.
+    if (!activeKey) {
       setDecryptedRows(rows);
       return;
     }
-    decryptConversationList(rows, rawKeyHex)
+    decryptConversationList(rows, activeKey)
       .then((decrypted) => {
         if (mounted) setDecryptedRows(decrypted);
       })
@@ -90,7 +92,7 @@ export default function ConversationsHomePage() {
     return () => {
       mounted = false;
     };
-  }, [rows, isUnlocked, rawKeyHex]);
+  }, [rows, activeKey]);
 
   const conversations = useMemo(() => mergeConversations([], decryptedRows), [decryptedRows]);
   const unreadTotal = conversations.reduce((sum, conversation) => sum + Number(conversation.unreadCount || 0), 0);
