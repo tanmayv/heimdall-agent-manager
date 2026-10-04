@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import {
   isVaultArmored,
   encryptVaultText,
   decryptVaultText,
+  getActiveVaultKey,
   base64ToBytes,
   bytesToBase64,
 } from '../../utils/vaultContent';
@@ -473,10 +474,10 @@ export const artifactsApi = heimdallApi.injectEndpoints({
           } catch {}
         }
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex;
-        if (isUnlocked && rawKeyHex && isVaultArmored(text)) {
+        const activeKey = getActiveVaultKey();
+        if (isUnlocked && activeKey && isVaultArmored(text)) {
           try {
-            text = await decryptVaultText(text, rawKeyHex);
+            text = await decryptVaultText(text, activeKey);
           } catch {}
         }
         return { artifactId, versionNo, text };
@@ -502,9 +503,9 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     createArtifact: build.mutation<any, ArtifactCreateArgs>({
       queryFn: withSessionQuery(async (args, { session, state }) => {
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        const activeKey = getActiveVaultKey();
         let effectiveArgs = args;
-        if (isUnlocked && rawKeyHex) {
+        if (isUnlocked && activeKey) {
           let file = args.file;
           let contentBase64 = args.contentBase64;
           let content = (args as any).content;
@@ -512,21 +513,21 @@ export const artifactsApi = heimdallApi.injectEndpoints({
           let description = args.description;
 
           if (name && !isVaultArmored(name)) {
-            name = await encryptVaultText(name, rawKeyHex);
+            name = await encryptVaultText(name, activeKey);
           }
           if (description && !isVaultArmored(description)) {
-            description = await encryptVaultText(description, rawKeyHex);
+            description = await encryptVaultText(description, activeKey);
           }
 
           if (content && typeof content === 'string' && !isVaultArmored(content)) {
-            const encContent = await encryptVaultText(content, rawKeyHex);
+            const encContent = await encryptVaultText(content, activeKey);
             contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
             content = encContent;
           } else if (contentBase64 && typeof contentBase64 === 'string') {
             try {
               const decoded = new TextDecoder('utf-8', { fatal: true }).decode(base64ToBytes(contentBase64));
               if (decoded && !isVaultArmored(decoded)) {
-                const encContent = await encryptVaultText(decoded, rawKeyHex);
+                const encContent = await encryptVaultText(decoded, activeKey);
                 contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
                 content = encContent;
               }
@@ -539,7 +540,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
               try {
                 const text = await file.text();
                 if (text && !isVaultArmored(text)) {
-                  const encContent = await encryptVaultText(text, rawKeyHex);
+                  const encContent = await encryptVaultText(text, activeKey);
                   contentBase64 = bytesToBase64(new TextEncoder().encode(encContent));
                   content = encContent;
                   file = null;
@@ -580,15 +581,15 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     updateArtifact: build.mutation<any, ArtifactUpdateArgs>({
       queryFn: withSessionQuery(async (args, { session, state }) => {
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        const activeKey = getActiveVaultKey();
         let name = args.name;
         let description = args.description;
-        if (isUnlocked && rawKeyHex) {
+        if (isUnlocked && activeKey) {
           if (name && !isVaultArmored(name)) {
-            name = await encryptVaultText(name, rawKeyHex);
+            name = await encryptVaultText(name, activeKey);
           }
           if (description && !isVaultArmored(description)) {
-            description = await encryptVaultText(description, rawKeyHex);
+            description = await encryptVaultText(description, activeKey);
           }
         }
         return daemonApi.updateArtifact({
@@ -677,7 +678,6 @@ export function normalizeArtifacts(data: any) {
 
 export function useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const [state, setState] = useState<{ url: string; loading: boolean; error: string }>({ url: '', loading: false, error: '' });
   useEffect(() => {
     const token = String(clientToken || '');
@@ -698,11 +698,15 @@ export function useArtifactContentState({ daemonUrl, clientToken, artifactId, ve
       })
       .then(async (blob) => {
         let finalBlob = blob;
-        if (isUnlocked && rawKeyHex) {
+        // Resolved here rather than in render: the active CryptoKey is a module-level
+        // ref, not reactive state, so it must be read when the blob is decrypted.
+        // `isUnlocked` is the reactive trigger that re-runs this effect on unlock/lock.
+        const activeKey = getActiveVaultKey();
+        if (isUnlocked && activeKey) {
           try {
             const rawText = await blob.text();
             if (isVaultArmored(rawText)) {
-              const decrypted = await decryptVaultText(rawText, rawKeyHex);
+              const decrypted = await decryptVaultText(rawText, activeKey);
               finalBlob = new Blob([decrypted], { type: blob.type || 'text/plain' });
             }
           } catch {}
@@ -718,7 +722,7 @@ export function useArtifactContentState({ daemonUrl, clientToken, artifactId, ve
       cancelled = true;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
-  }, [daemonUrl, clientToken, artifactId, versionNo, isUnlocked, rawKeyHex]);
+  }, [daemonUrl, clientToken, artifactId, versionNo, isUnlocked]);
   return state;
 }
 

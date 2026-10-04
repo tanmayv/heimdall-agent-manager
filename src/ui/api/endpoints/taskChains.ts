@@ -139,7 +139,7 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           let data = raw?.data ?? raw;
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           if (isUnlocked && activeKey && data) {
             data = await decryptChainRecord(data, activeKey);
           }
@@ -168,7 +168,7 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           let data = raw?.data ?? raw;
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const activeKey = getActiveVaultKey();
           if (isUnlocked && activeKey && Array.isArray(data)) {
             data = await decryptChainList(data, activeKey);
           }
@@ -185,17 +185,17 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const activeKey = getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description || '';
 
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             if (!isVaultArmored(title)) {
-              title = await encryptVaultText(title, rawKeyHex);
+              title = await encryptVaultText(title, activeKey);
             }
             if (description && !isVaultArmored(description)) {
-              description = await encryptVaultText(description, rawKeyHex);
+              description = await encryptVaultText(description, activeKey);
             }
           }
 
@@ -224,19 +224,19 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const activeKey = getActiveVaultKey();
 
           const body: any = {};
           if (title !== undefined) {
             body.title =
-              isUnlocked && rawKeyHex && !isVaultArmored(title)
-                ? await encryptVaultText(title, rawKeyHex)
+              isUnlocked && activeKey && !isVaultArmored(title)
+                ? await encryptVaultText(title, activeKey)
                 : title;
           }
           if (description !== undefined) {
             body.description =
-              isUnlocked && rawKeyHex && description && !isVaultArmored(description)
-                ? await encryptVaultText(description, rawKeyHex)
+              isUnlocked && activeKey && description && !isVaultArmored(description)
+                ? await encryptVaultText(description, activeKey)
                 : description;
           }
           if (status !== undefined) body.status = status;
