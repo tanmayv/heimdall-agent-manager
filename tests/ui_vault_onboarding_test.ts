@@ -180,11 +180,28 @@ test('VaultOnboardingModal.tsx implements Setup, Unlock, Direct Key Import, and 
     );
   }
 
-  // Verify direct import dispatches importLocalKey
+  // Verify direct import dispatches importLocalKey with an already-imported CryptoKey.
+  // REQ-RAWKEY-A7b: this assertion stays a source check because this suite has no DOM
+  // harness to mount the component, but it is retargeted from the retired
+  // `importLocalKey(clean, rememberSession)` hex call onto the current shape. Dispatching
+  // the key rather than the hex is what closes the unlock race -- the reducer's hex branch
+  // installs the key in a `.then()`, leaving a tick where isUnlocked is true and
+  // getActiveVaultKey() is still null. The *behavioral* proof of that property lives in
+  // tests/ui_vault_unlock_race_test.ts; this only pins the component's half of the contract.
   assert.match(
     content,
-    /importLocalKey\(clean,\s*rememberSession\)/,
-    'VaultOnboardingModal.tsx must dispatch importLocalKey with clean hex and rememberSession',
+    /const key = await importRawKeyHex\(clean\)/,
+    'VaultOnboardingModal.tsx must await importRawKeyHex at the call site, where the await is legal',
+  );
+  assert.match(
+    content,
+    /dispatch\(importLocalKey\(\{\s*key,\s*rememberSession\s*\}\)\)/,
+    'VaultOnboardingModal.tsx must dispatch importLocalKey with the CryptoKey, not the pasted hex',
+  );
+  assert.doesNotMatch(
+    content,
+    /importLocalKey\(clean/,
+    'VaultOnboardingModal.tsx must not dispatch the raw pasted hex into Redux (REQ-RAWKEY-A7)',
   );
 
   // Verify skip button writes dismissal

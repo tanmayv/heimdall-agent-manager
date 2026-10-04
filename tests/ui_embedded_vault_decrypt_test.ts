@@ -341,6 +341,12 @@ const flushMicrotasks = async () => {
 
 const { fireNotificationForWsEvent } = await import('../src/ui/services/notificationService.ts');
 
+// REQ-RAWKEY-A8: notificationService resolves the key via getActiveVaultKey(), not
+// from Redux state. Supply it the production way -- a real non-extractable CryptoKey
+// in the module-level active-key slot -- rather than injecting fake hex into a mock
+// state, which no longer reaches any production read.
+const { importRawKeyHex, setActiveVaultKey } = await import('../src/ui/utils/vaultCrypto.ts');
+
 test('fireNotificationForWsEvent sanitizes notifications when vault is locked', async () => {
   mockCreatedNotifications.length = 0;
   mockBrowserState.visibility = 'hidden';
@@ -358,9 +364,11 @@ test('fireNotificationForWsEvent sanitizes notifications when vault is locked', 
     vault: {
       isConfigured: true,
       isUnlocked: false,
-      rawVaultKeyHex: null,
     },
   });
+
+  // Locked means no active key at all -- this is what lockVault() leaves behind.
+  setActiveVaultKey(null);
 
   // 1. Attention category with armored body
   const attentionPayload = {
@@ -418,9 +426,11 @@ test('fireNotificationForWsEvent asynchronously decrypts notifications when vaul
     vault: {
       isConfigured: true,
       isUnlocked: true,
-      rawVaultKeyHex: TEST_KEY_HEX,
     },
   });
+
+  // Unlocked means a live CryptoKey in the active-key slot.
+  setActiveVaultKey(await importRawKeyHex(TEST_KEY_HEX));
 
   const payload = {
     type: 'chat_event',
@@ -432,15 +442,22 @@ test('fireNotificationForWsEvent asynchronously decrypts notifications when vaul
     },
   };
 
-  const plan = fireNotificationForWsEvent(unlockedState, payload);
-  assert.ok(plan, 'Plan must be returned');
+  try {
+    const plan = fireNotificationForWsEvent(unlockedState, payload);
+    assert.ok(plan, 'Plan must be returned');
 
-  // Wait for asynchronous decryption to complete
-  await flushMicrotasks();
+    // Wait for asynchronous decryption to complete
+    await flushMicrotasks();
 
-  assert.ok(mockCreatedNotifications.length >= 1);
-  const notification = mockCreatedNotifications[mockCreatedNotifications.length - 1];
-  assert.equal(notification.options.body, `Status: ${secretBody}`, 'Body must be decrypted in OS notification');
+    assert.ok(mockCreatedNotifications.length >= 1);
+    const notification = mockCreatedNotifications[mockCreatedNotifications.length - 1];
+    assert.equal(notification.options.body, `Status: ${secretBody}`, 'Body must be decrypted in OS notification');
+  } finally {
+    // The active key is MODULE-level state shared by every test in this file, and
+    // decryptEmbeddedVaultTokens() falls back to it when called without a key. Leaving
+    // it set would silently arm later no-active-key tests. Restore the locked state.
+    setActiveVaultKey(null);
+  }
 });
 
 // -----------------------------------------------------------------------------

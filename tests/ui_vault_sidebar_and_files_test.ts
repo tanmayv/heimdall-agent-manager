@@ -133,13 +133,23 @@ test('REQ-VAULT-ARTIFACTS-LIBRARY: LibraryPage wraps project column in VaultText
     'LibraryPage.tsx must wrap project?.name with VaultText fallback={projectId(a) || "—"}',
   );
 
-  // Verify project list decryption for options
+  // Verify project list decryption for options.
+  // REQ-RAWKEY-A8: the `decryptProjectList(rawProjectsList, rawVaultKeyHex)` alternative is
+  // gone. Accepting it kept a permanently-null operand on the allowed list, so a regression
+  // back to the dead source would have passed this test while decrypting nothing. Still a
+  // source check rather than a behavioral one because LibraryPage is a React component and
+  // this suite has no DOM renderer to mount it.
   assert.ok(
     content.includes('decryptProjectList(rawProjectsList, keyToUse)') ||
-      content.includes('decryptProjectList(rawProjectsList, activeKey)') ||
-      content.includes('decryptProjectList(rawProjectsList, rawVaultKeyHex)'),
-    'LibraryPage.tsx must decrypt projectsList using decryptProjectList',
+      content.includes('decryptProjectList(rawProjectsList, activeKey)'),
+    'LibraryPage.tsx must decrypt projectsList using decryptProjectList with the active key',
   );
+  for (const dead of ['rawVaultKeyHex', 'selectRawVaultKeyHex', 'readSessionVaultKey']) {
+    assert.ok(
+      !content.includes(dead),
+      `LibraryPage.tsx must not read ${dead} -- it is permanently null, so a gate on it never fires`,
+    );
+  }
 });
 
 test('REQ-VAULT-PROJECT-LAUNCH: ProjectLaunchModal wraps project.name in VaultText and uses decrypted name in feedback message', () => {
@@ -173,10 +183,21 @@ test('REQ-VAULT-HOME-ACTIONS: ActionItemsTab projectOptions displays decrypted p
 
   const content = fs.readFileSync(filePath, 'utf8');
 
+  // Retargeted from the retired `rawKey` operand onto `activeKey` (REQ-RAWKEY-A5): the key
+  // comes from getActiveVaultKey(), not from state.vault.rawVaultKeyHex, which never held one.
   assert.ok(
-    content.includes('decryptProjectList(projects, rawKey)'),
+    content.includes('decryptProjectList(projects, activeKey)'),
     'ActionItemsTab.tsx must decrypt projects using decryptProjectList',
   );
+  assert.ok(
+    content.includes('getActiveVaultKey()'),
+    'ActionItemsTab.tsx must resolve the vault key via getActiveVaultKey()',
+  );
+  // REQ-RAWKEY-A8: negative guard, so a regression BACK to the dead source fails here
+  // rather than passing silently with encryption quietly disabled.
+  for (const dead of ['rawVaultKeyHex', 'selectRawVaultKeyHex', 'readSessionVaultKey']) {
+    assert.ok(!content.includes(dead), `ActionItemsTab.tsx must not read the retired ${dead}`);
+  }
   assert.ok(
     content.includes('decryptedProjects.map((p) => ({ value: p.project_id, label: p.name }))'),
     'ActionItemsTab.tsx projectOptions must map over decryptedProjects',

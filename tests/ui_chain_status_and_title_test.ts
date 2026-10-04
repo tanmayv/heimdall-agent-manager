@@ -51,7 +51,16 @@ test('TaskChainOverview.tsx implements inline title editing with Enter/Save and 
 
   // Verification of Vault title decryption
   assert.match(content, /decryptedTitle/, 'TaskChainOverview must track decryptedTitle state');
-  assert.match(content, /decryptVaultText\(chainTitle,\s*rawKey\)/, 'TaskChainOverview must decrypt armored chain title');
+  // Retargeted from the retired `rawKey` operand onto `activeKey`: the key is now resolved
+  // inside the effect via getActiveVaultKey() (REQ-VAULT-HARDEN-1), never from Redux state.
+  assert.match(content, /decryptVaultText\(chainTitle,\s*activeKey\)/, 'TaskChainOverview must decrypt armored chain title');
+  assert.match(content, /const activeKey = getActiveVaultKey\(\)/, 'TaskChainOverview must resolve the key via getActiveVaultKey()');
+  // REQ-RAWKEY-A8: negative guard. Retargeting alone would still pass if someone reintroduced
+  // the dead operand alongside the live one, which is precisely how `rawKey || getActiveVaultKey()`
+  // survived for so long: the fallback made the broken half invisible.
+  for (const dead of ['rawVaultKeyHex', 'selectRawVaultKeyHex', 'readSessionVaultKey']) {
+    assert.ok(!content.includes(dead), `TaskChainOverview.tsx must not read the retired ${dead}`);
+  }
 });
 
 test('TaskChainsPage.tsx implements status filtering and archive chain card actions', () => {

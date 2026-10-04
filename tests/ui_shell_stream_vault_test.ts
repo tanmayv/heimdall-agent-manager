@@ -6,6 +6,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Imported FIRST: this registers the module resolve hook that lets node load
+// src/ui/api/endpoints/*.ts, whose relative imports are extensionless.
+import {
+  installFetchCapture,
+  installWindowShim,
+  makeVaultStore,
+  unlockVault,
+  lockVaultFully,
+  clearActiveKey,
+} from './helpers/vaultEndpointHarness.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,13 +55,26 @@ test('REQ-SHELL-ENC-5: useShellStream.ts static contract verification', () => {
   assert.ok(src.includes('export async function decryptShellStreamPayload'), 'must export decryptShellStreamPayload');
   assert.ok(src.includes('export async function encryptShellStreamPayload'), 'must export encryptShellStreamPayload');
 
-  // Must support vault state and key options
-  assert.ok(src.includes('rawVaultKeyHex?: string | null'), 'must accept rawVaultKeyHex in options');
+  // Must accept the unlock FLAG as an option. The KEY is deliberately not an option
+  // and is not readable from Redux: after the zero-trust hardening it exists only as a
+  // non-extractable CryptoKey reached through getActiveVaultKey().
   assert.ok(src.includes('isVaultUnlocked?: boolean'), 'must accept isVaultUnlocked in options');
+  assert.ok(src.includes('getActiveVaultKey'), 'must resolve the key via getActiveVaultKey()');
 
-  // Must read Redux vault state
+  // Must read Redux vault state for the unlock flag only.
   assert.ok(src.includes('useSelector'), 'must use Redux useSelector');
-  assert.ok(src.includes('rawVaultKeyHex'), 'must reference rawVaultKeyHex');
+
+  // REQ-RAWKEY-A8: this file's crypto behaviour is covered behaviourally below, through
+  // the exported encryptShellStreamPayload / decryptShellStreamPayload helpers. These
+  // remaining source checks exist only because useShellStream is a React hook that owns
+  // a live WebSocket, so it cannot be driven without a DOM renderer. They are therefore
+  // retargeted at the CURRENT symbol, plus a negative guard: rawVaultKeyHex is never
+  // assigned on any branch, so a read of it silently resolves to undefined and the
+  // encryption gate behind it never fires. That is the P0 this chain exists to purge.
+  assert.ok(
+    !src.includes('rawVaultKeyHex'),
+    'the retired rawVaultKeyHex source must not reappear -- reading it silently disables encryption',
+  );
 
   // Must handle enc_b64 in onmessage for output and screen
   assert.ok(src.includes("msg.type === 'output'"), 'must handle output message');
@@ -197,9 +220,15 @@ test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verifica
     endpointSrc.includes('encryptVaultText'),
     'shells.ts must import encryptVaultText',
   );
+  // REQ-RAWKEY-A8: readSessionVaultKey is hardened to unconditionally return null, so
+  // pinning its presence pinned a dead mechanism. The live source is getActiveVaultKey().
   assert.ok(
-    endpointSrc.includes('readSessionVaultKey'),
-    'shells.ts must import readSessionVaultKey',
+    endpointSrc.includes('getActiveVaultKey'),
+    'shells.ts must resolve the vault key via getActiveVaultKey',
+  );
+  assert.ok(
+    !endpointSrc.includes('readSessionVaultKey'),
+    'shells.ts must not read readSessionVaultKey -- it always returns null',
   );
 
   // Verify CreateShellArgs includes optional enc_spec
@@ -214,9 +243,11 @@ test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verifica
     'shells.ts must define createShell mutation',
   );
   assert.ok(
-    endpointSrc.includes('rawVaultKeyHex') && endpointSrc.includes('isUnlocked'),
-    'createShell queryFn must check vault unlock status and raw key',
+    !endpointSrc.includes('rawVaultKeyHex'),
+    'createShell must not gate on the retired rawVaultKeyHex -- the gate never fires',
   );
+  // What createShell actually DOES with the unlock state is asserted against the real
+  // mutation and the real wire payload in section 3b, not by grepping for identifiers.
 
   // Verify createShell constructs spec with cmd, cwd, timestamp, and nonce
   assert.ok(
@@ -228,9 +259,8 @@ test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verifica
     'createShell queryFn must populate nonce',
   );
   assert.ok(
-    endpointSrc.includes('encryptVaultText(JSON.stringify(spec), activeKey)') ||
-    endpointSrc.includes('encryptVaultText(JSON.stringify(spec), rawKeyHex)'),
-    'createShell queryFn must encrypt spec JSON with activeKey or rawKeyHex',
+    endpointSrc.includes('encryptVaultText(JSON.stringify(spec), activeKey)'),
+    'createShell queryFn must encrypt spec JSON with the active CryptoKey',
   );
 
   // Verify NewShellDialog relies on createShell mutation
@@ -244,137 +274,155 @@ test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verifica
   );
 });
 
-test('REQ-SHELL-ENC-8: createShell logic generates valid armored enc_spec containing expected JSON properties when vault is unlocked', async () => {
+// -----------------------------------------------------------------------------
+// 3b. REQ-SHELL-ENC-8 / REQ-FIX-ENC-1 / REQ-RAWKEY-A8: createShell through the REAL endpoint.
+//
+// These replace five tests that COPIED createShell's queryFn into the test body and
+// then asserted on their own copy. That shape cannot fail when the endpoint is broken:
+// it is exactly how artifact names and chain titles went to the wire in PLAINTEXT while
+// the suite stayed green. So the real mutation is dispatched through a real store with a
+// stubbed fetch, and every assertion is on the CAPTURED REQUEST BODY.
+//
+// The key is supplied the production way -- a non-extractable CryptoKey in the active-key
+// slot -- never by injecting hex into mock Redux state, which no production read reaches.
+// -----------------------------------------------------------------------------
+
+installWindowShim();
+const shellFetch = installFetchCapture();
+const { shellsApi } = await import('../src/ui/api/endpoints/shells.ts');
+
+const CREATE_SHELL_OK = { data: { session: { session_id: 'sh_test', kind: 'shell' } } };
+
+/** Dispatch the real createShell mutation and return the body that hit the wire. */
+async function captureCreateShell(store: any, args: Record<string, any>) {
+  shellFetch.reset();
+  shellFetch.setNextResponse(CREATE_SHELL_OK);
+  const res: any = await store.dispatch(
+    shellsApi.endpoints.createShell.initiate({ bridgeId: 'brg_test', ...args } as any),
+  );
+  assert.ok(!res?.error, `createShell returned an error: ${JSON.stringify(res?.error)}`);
+  return shellFetch.find((r) => r.method === 'POST' && /\/bridges\/brg_test\/shells$/.test(r.url)).body;
+}
+
+test('REQ-SHELL-ENC-8: createShell puts an armored enc_spec with cmd, cwd, timestamp and nonce on the wire when unlocked', async () => {
   const cmd = 'npm run dev';
   const cwd = '/home/user/project';
   const startTime = Date.now();
 
-  // Simulate queryFn execution when vault is unlocked
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+  const store = await makeVaultStore();
+  const key = await unlockVault(store, TEST_VAULT_KEY);
+  try {
+    const body = await captureCreateShell(store, { cmd, cwd, kind: 'shell' });
 
-  const body = { cmd, cwd, kind: 'shell' as const };
-  let requestBody: Record<string, any> = { ...body };
+    assert.ok(body.enc_spec, 'request body must carry enc_spec');
+    assert.ok(isVaultArmored(body.enc_spec), 'enc_spec must start with vault:v1:');
+    // NOTE ON SCOPE -- enc_spec is INTEGRITY/AUTHORIZATION, not confidentiality.
+    // cmd and cwd deliberately ALSO travel in plaintext: the hub persists them
+    // (shell_session_rest_handlers.odin:163-164) so sessions can be listed and
+    // labelled, while the bridge ignores those fields and takes the authoritative
+    // cmd/cwd from the decrypted spec, rejecting any request whose enc_spec is
+    // missing, unarmored, undecryptable or outside a 60s replay window
+    // (hub_runtime_client.odin:3361-3394). domain/bridge.odin:42-45 names this guard
+    // the authoritative authorization check. So assert what the mechanism promises:
+    // the ciphertext is real and independent of the plaintext copy.
+    assert.notEqual(body.enc_spec, cmd, 'enc_spec must be ciphertext, not the bare command');
+    assert.ok(!body.enc_spec.includes(cmd), 'the enc_spec ciphertext must not embed the plaintext command');
 
-  if (isUnlocked && rawKeyHex) {
-    const spec = {
-      cmd: body.cmd || '',
-      cwd: body.cwd || '',
-      timestamp: Date.now(),
-      nonce: crypto.randomUUID(),
-    };
-    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
-    requestBody = { ...body, enc_spec };
+    const parsedSpec = JSON.parse(await decryptVaultText(body.enc_spec, key));
+    assert.equal(parsedSpec.cmd, cmd, 'decrypted spec cmd must match input cmd');
+    assert.equal(parsedSpec.cwd, cwd, 'decrypted spec cwd must match input cwd');
+    assert.ok(typeof parsedSpec.timestamp === 'number', 'timestamp must be a number');
+    assert.ok(parsedSpec.timestamp >= startTime && parsedSpec.timestamp <= Date.now(), 'timestamp must be current');
+    assert.ok(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsedSpec.nonce),
+      `nonce must be a valid UUID string, got: ${parsedSpec.nonce}`,
+    );
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.ok(requestBody.enc_spec, 'requestBody must contain enc_spec');
-  assert.ok(isVaultArmored(requestBody.enc_spec), 'enc_spec must start with vault:v1:');
-
-  // Decrypt enc_spec with vault key
-  const decryptedJson = await decryptVaultText(requestBody.enc_spec, TEST_VAULT_KEY);
-  const parsedSpec = JSON.parse(decryptedJson);
-
-  assert.equal(parsedSpec.cmd, cmd, 'decrypted spec cmd must match input cmd');
-  assert.equal(parsedSpec.cwd, cwd, 'decrypted spec cwd must match input cwd');
-  assert.ok(typeof parsedSpec.timestamp === 'number', 'timestamp must be a number');
-  assert.ok(parsedSpec.timestamp >= startTime && parsedSpec.timestamp <= Date.now(), 'timestamp must be current');
-  assert.ok(typeof parsedSpec.nonce === 'string' && parsedSpec.nonce.length >= 16, 'nonce must be a non-empty string');
-  // Check UUID format
-  assert.ok(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsedSpec.nonce),
-    'nonce must be valid UUID string',
-  );
 });
 
-test('REQ-SHELL-ENC-8: createShell logic omits enc_spec when vault is locked (transparent fallback)', async () => {
-  const stateLocked: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
-  const isUnlocked = Boolean(stateLocked?.vault?.isUnlocked || stateLocked?.vault?.unlocked);
-  const rawKeyHex = stateLocked?.vault?.rawVaultKeyHex;
+test('REQ-FIX-ENC-1: createShell encrypts enc_spec with the CryptoKey from getActiveVaultKey(), with no hex anywhere', async () => {
+  const store = await makeVaultStore();
+  const key = await unlockVault(store, TEST_VAULT_KEY);
+  try {
+    // The production unlock path stores ONLY a non-extractable CryptoKey. Prove the
+    // endpoint encrypts from that, with no hex key reachable from state.
+    assert.ok(getActiveVaultKey() instanceof Object, 'an active CryptoKey must be present');
+    assert.equal((store.getState() as any).vault.rawVaultKeyHex, undefined,
+      'no hex key may exist in Redux state -- the endpoint must not need one');
 
-  const body = { cmd: 'ls -la', cwd: '/tmp', kind: 'run' as const };
-  let requestBody: Record<string, any> = { ...body };
-
-  if (isUnlocked && rawKeyHex) {
-    const spec = {
-      cmd: body.cmd || '',
-      cwd: body.cwd || '',
-      timestamp: Date.now(),
-      nonce: crypto.randomUUID(),
-    };
-    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
-    requestBody = { ...body, enc_spec };
+    const body = await captureCreateShell(store, { cmd: 'cargo test', cwd: '/workspace', kind: 'run' });
+    assert.ok(isVaultArmored(body.enc_spec), 'enc_spec must be armored');
+    const parsed = JSON.parse(await decryptVaultText(body.enc_spec, key));
+    assert.equal(parsed.cmd, 'cargo test');
+    assert.equal(parsed.cwd, '/workspace');
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.strictEqual(requestBody.enc_spec, undefined, 'enc_spec must be omitted when vault is locked');
-  assert.equal(requestBody.cmd, 'ls -la');
-  assert.equal(requestBody.cwd, '/tmp');
 });
 
-test('REQ-SHELL-ENC-8: createShell logic omits enc_spec when key is unavailable/null even if isUnlocked is true', async () => {
-  const stateNoKey: any = { vault: { isUnlocked: true, rawVaultKeyHex: null } };
-  const isUnlocked = Boolean(stateNoKey?.vault?.isUnlocked || stateNoKey?.vault?.unlocked);
-  const rawKeyHex = stateNoKey?.vault?.rawVaultKeyHex;
+test('REQ-SHELL-ENC-8: createShell omits enc_spec and sends plaintext when the vault is locked', async () => {
+  const store = await makeVaultStore();
+  await unlockVault(store, TEST_VAULT_KEY);
+  await lockVaultFully(store);
+  try {
+    assert.equal(getActiveVaultKey(), null, 'precondition: locking clears the active key');
+    const body = await captureCreateShell(store, { cmd: 'ls -la', cwd: '/tmp', kind: 'run' });
 
-  const body = { cmd: 'cat /etc/hosts', cwd: '/', kind: 'run' as const };
-  let requestBody: Record<string, any> = { ...body };
-
-  if (isUnlocked && rawKeyHex) {
-    const spec = {
-      cmd: body.cmd || '',
-      cwd: body.cwd || '',
-      timestamp: Date.now(),
-      nonce: crypto.randomUUID(),
-    };
-    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
-    requestBody = { ...body, enc_spec };
+    assert.strictEqual(body.enc_spec, undefined, 'enc_spec must be omitted when the vault is locked');
+    assert.equal(body.cmd, 'ls -la', 'cmd must pass through in plaintext');
+    assert.equal(body.cwd, '/tmp', 'cwd must pass through in plaintext');
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.strictEqual(requestBody.enc_spec, undefined, 'enc_spec must be omitted when rawKeyHex is missing');
 });
 
-test('REQ-SHELL-ENC-8: createShell defaults omitted cmd and cwd to empty strings in spec', async () => {
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
-  const body: { cmd?: string; cwd?: string; kind: 'shell' } = { kind: 'shell' };
-  let requestBody: Record<string, any> = { ...body };
-
-  if (isUnlocked && rawKeyHex) {
-    const spec = {
-      cmd: body.cmd || '',
-      cwd: body.cwd || '',
-      timestamp: Date.now(),
-      nonce: crypto.randomUUID(),
-    };
-    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
-    requestBody = { ...body, enc_spec };
+test('REQ-SHELL-ENC-8: createShell omits enc_spec when no key is active even though state says unlocked', async () => {
+  const store = await makeVaultStore();
+  await unlockVault(store, TEST_VAULT_KEY);
+  // The failure mode this guards: Redux still flags unlocked, but the key is gone (a
+  // reload, or a lock that did not propagate). Encryption must be skipped, not attempted.
+  await clearActiveKey();
+  try {
+    assert.equal(getActiveVaultKey(), null, 'precondition: no active key');
+    const body = await captureCreateShell(store, { cmd: 'cat /etc/hosts', cwd: '/', kind: 'run' });
+    assert.strictEqual(body.enc_spec, undefined, 'enc_spec must be omitted when no key is active');
+    assert.equal(body.cmd, 'cat /etc/hosts');
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.ok(requestBody.enc_spec);
-  const decryptedJson = await decryptVaultText(requestBody.enc_spec, TEST_VAULT_KEY);
-  const parsedSpec = JSON.parse(decryptedJson);
-
-  assert.strictEqual(parsedSpec.cmd, '', 'omitted cmd must default to empty string');
-  assert.strictEqual(parsedSpec.cwd, '', 'omitted cwd must default to empty string');
 });
 
-test('REQ-SHELL-ENC-8: createShell generates distinct randomized nonces across multiple calls', async () => {
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+test('REQ-SHELL-ENC-8: createShell defaults omitted cmd and cwd to empty strings in the encrypted spec', async () => {
+  const store = await makeVaultStore();
+  const key = await unlockVault(store, TEST_VAULT_KEY);
+  try {
+    const body = await captureCreateShell(store, { kind: 'shell' });
+    assert.ok(body.enc_spec, 'enc_spec must be present');
+    const parsedSpec = JSON.parse(await decryptVaultText(body.enc_spec, key));
+    assert.strictEqual(parsedSpec.cmd, '', 'omitted cmd must default to empty string');
+    assert.strictEqual(parsedSpec.cwd, '', 'omitted cwd must default to empty string');
+  } finally {
+    await clearActiveKey();
+  }
+});
 
-  const spec1 = { cmd: 'test', cwd: '/dir', timestamp: Date.now(), nonce: crypto.randomUUID() };
-  const spec2 = { cmd: 'test', cwd: '/dir', timestamp: Date.now(), nonce: crypto.randomUUID() };
+test('REQ-SHELL-ENC-8: two identical createShell calls produce distinct ciphertexts and distinct nonces', async () => {
+  const store = await makeVaultStore();
+  const key = await unlockVault(store, TEST_VAULT_KEY);
+  try {
+    const args = { cmd: 'test', cwd: '/dir', kind: 'run' as const };
+    const first = await captureCreateShell(store, args);
+    const second = await captureCreateShell(store, args);
 
-  const enc1 = await encryptVaultText(JSON.stringify(spec1), rawKeyHex);
-  const enc2 = await encryptVaultText(JSON.stringify(spec2), rawKeyHex);
-
-  assert.notEqual(enc1, enc2, 'encryptions must produce distinct ciphertexts');
-
-  const p1 = JSON.parse(await decryptVaultText(enc1, TEST_VAULT_KEY));
-  const p2 = JSON.parse(await decryptVaultText(enc2, TEST_VAULT_KEY));
-  assert.notEqual(p1.nonce, p2.nonce, 'nonces must be unique');
+    assert.notEqual(first.enc_spec, second.enc_spec, 'identical input must not yield identical ciphertext');
+    const p1 = JSON.parse(await decryptVaultText(first.enc_spec, key));
+    const p2 = JSON.parse(await decryptVaultText(second.enc_spec, key));
+    assert.notEqual(p1.nonce, p2.nonce, 'each spec must carry a fresh nonce');
+  } finally {
+    await clearActiveKey();
+  }
 });
 
 // -----------------------------------------------------------------------------
@@ -386,38 +434,55 @@ test('REQ-SHELL-ENC-10: sendShellInput static contract verification', () => {
   assert.ok(shellsSrc.includes('sendShellInput: build.mutation'), 'shells.ts must define sendShellInput mutation');
   assert.ok(shellsSrc.includes('encryptShellStreamPayload'), 'shells.ts must import encryptShellStreamPayload');
   assert.ok(shellsSrc.includes('selectIsVaultUnlocked'), 'shells.ts must import selectIsVaultUnlocked');
-  assert.ok(shellsSrc.includes('readSessionVaultKey'), 'shells.ts must import readSessionVaultKey');
+  assert.ok(shellsSrc.includes('getActiveVaultKey'), 'shells.ts must import getActiveVaultKey');
+  assert.ok(!shellsSrc.includes('readSessionVaultKey'),
+    'shells.ts must not read readSessionVaultKey -- it always returns null');
   assert.ok(shellsSrc.includes('payload.enc_b64 = resolvedEncB64'), 'sendShellInput must attach enc_b64 when encrypted');
 });
 
-test('REQ-SHELL-ENC-10: sendShellInput encrypts data when vault is unlocked', async () => {
+/** Dispatch the real sendShellInput mutation and return the body that hit the wire. */
+async function captureSendShellInput(store: any, data: string) {
+  shellFetch.reset();
+  shellFetch.setNextResponse({ data: { ok: true } });
+  const res: any = await store.dispatch(
+    shellsApi.endpoints.sendShellInput.initiate({ sessionId: 'sh_test', data } as any),
+  );
+  assert.ok(!res?.error, `sendShellInput returned an error: ${JSON.stringify(res?.error)}`);
+  return shellFetch.find((r) => r.method === 'POST' && /\/shells\/sh_test\/input$/.test(r.url)).body;
+}
+
+test('REQ-SHELL-ENC-10: sendShellInput puts enc_b64 and armored data_b64 on the wire when unlocked', async () => {
   const data = 'ls -la\n';
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+  const store = await makeVaultStore();
+  const key = await unlockVault(store, TEST_VAULT_KEY);
+  try {
+    const body = await captureSendShellInput(store, data);
 
-  let enc_b64: string | undefined;
-  if (isUnlocked && rawKeyHex) {
-    enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
+    assert.ok(body.enc_b64, 'enc_b64 must be attached to the request');
+    assert.ok(
+      String(body.data_b64).startsWith(VAULT_ARMOR_PREFIX),
+      `data_b64 must be armored, got: ${String(body.data_b64).slice(0, 32)}`,
+    );
+    const decrypted = await decryptShellStreamPayload(body.enc_b64, key);
+    assert.equal(new TextDecoder().decode(decrypted), data, 'enc_b64 must decrypt to the keystrokes');
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.ok(enc_b64, 'enc_b64 must be generated');
-  const decryptedBytes = await decryptShellStreamPayload(enc_b64, TEST_VAULT_KEY);
-  assert.equal(new TextDecoder().decode(decryptedBytes), data);
 });
 
-test('REQ-SHELL-ENC-10: sendShellInput omits enc_b64 when vault is locked', async () => {
+test('REQ-SHELL-ENC-10: sendShellInput omits enc_b64 and data_b64 when the vault is locked', async () => {
   const data = 'ls -la\n';
-  const state: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
-  let enc_b64: string | undefined;
-  if (isUnlocked && rawKeyHex) {
-    enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
+  const store = await makeVaultStore();
+  await unlockVault(store, TEST_VAULT_KEY);
+  await lockVaultFully(store);
+  try {
+    const body = await captureSendShellInput(store, data);
+    assert.strictEqual(body.enc_b64, undefined, 'enc_b64 must not be set when the vault is locked');
+    assert.strictEqual(body.data_b64, undefined, 'data_b64 must not be set when the vault is locked');
+    assert.equal(body.data, data, 'the plaintext input still has to reach the bridge');
+  } finally {
+    await clearActiveKey();
   }
-
-  assert.strictEqual(enc_b64, undefined, 'enc_b64 must not be set when vault is locked');
 });
 
 // -----------------------------------------------------------------------------
@@ -461,38 +526,10 @@ test('REQ-SHELL-ENC-12: sendShellInput sets data_b64 with vault:v1: prefix in sh
 // 7. REQ-FIX-ENC-1: createShell with CryptoKey from getActiveVaultKey()
 // -----------------------------------------------------------------------------
 
-test('REQ-FIX-ENC-1: createShell logic attaches enc_spec with CryptoKey from getActiveVaultKey()', async () => {
-  const cryptoKey = await importRawKeyHex(TEST_VAULT_KEY);
-  setActiveVaultKey(cryptoKey);
-  try {
-    const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: null } };
-    const activeKey = getActiveVaultKey() || state?.vault?.rawVaultKeyHex;
-    const isUnlocked = Boolean(state?.vault?.isUnlocked || activeKey);
-
-    const body = { cmd: 'cargo test', cwd: '/workspace', kind: 'run' as const };
-    let requestBody: Record<string, any> = { ...body };
-
-    if (isUnlocked && activeKey) {
-      const spec = {
-        cmd: body.cmd || '',
-        cwd: body.cwd || '',
-        timestamp: Date.now(),
-        nonce: crypto.randomUUID(),
-      };
-      const enc_spec = await encryptVaultText(JSON.stringify(spec), activeKey);
-      requestBody = { ...body, enc_spec };
-    }
-
-    assert.ok(requestBody.enc_spec, 'requestBody must contain enc_spec');
-    assert.ok(isVaultArmored(requestBody.enc_spec), 'enc_spec must start with vault:v1:');
-    const decrypted = await decryptVaultText(requestBody.enc_spec, cryptoKey);
-    const parsed = JSON.parse(decrypted);
-    assert.equal(parsed.cmd, 'cargo test');
-    assert.equal(parsed.cwd, '/workspace');
-  } finally {
-    setActiveVaultKey(null);
-  }
-});
+// REQ-FIX-ENC-1 is covered in section 3b by
+// "createShell encrypts enc_spec with the CryptoKey from getActiveVaultKey()", which
+// drives the REAL mutation instead of re-implementing its queryFn in the test body.
+// No coverage was dropped: that test additionally proves no hex key exists in state.
 
 // -----------------------------------------------------------------------------
 // 8. REQ-FIX-ENC-2: useAgentStream.ts Stream Decryption & Frame Parsing

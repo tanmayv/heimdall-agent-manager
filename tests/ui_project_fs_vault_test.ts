@@ -6,6 +6,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// Imported FIRST: registers the module resolve hook that lets node load
+// src/ui/api/endpoints/projectFs.ts, whose relative imports are extensionless.
+import {
+  installFetchCapture,
+  installWindowShim,
+  makeVaultStore,
+  unlockVault,
+  lockVaultFully,
+  clearActiveKey,
+} from './helpers/vaultEndpointHarness.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +24,7 @@ import {
   isVaultArmored,
   encryptVaultText,
   decryptVaultText,
+  getActiveVaultKey,
   VAULT_ARMOR_PREFIX,
 } from '../src/ui/utils/vaultContent.ts';
 import vaultReducer, {
@@ -59,9 +70,8 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'readProjectFile must check isVaultArmored(data.content)',
   );
   assert.ok(
-    content.includes('decryptVaultText(data.content, activeKey)') ||
-      content.includes('decryptVaultText(data.content, rawKeyHex)'),
-    'readProjectFile must decrypt data.content with activeKey or rawKeyHex',
+    content.includes('decryptVaultText(data.content, activeKey)'),
+    'readProjectFile must decrypt data.content with the active CryptoKey',
   );
 
   // Verify writeProjectFile client-side encryption
@@ -70,9 +80,8 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'projectFs.ts must define writeProjectFile mutation',
   );
   assert.ok(
-    content.includes('encryptVaultText(outgoingContent, activeKey)') ||
-      content.includes('encryptVaultText(outgoingContent, rawKeyHex)'),
-    'writeProjectFile must encrypt outgoingContent with activeKey or rawKeyHex before PUT mutation',
+    content.includes('encryptVaultText(outgoingContent, activeKey)'),
+    'writeProjectFile must encrypt outgoingContent with the active CryptoKey before the PUT',
   );
 
   // Verify batchWriteProjectFiles client-side encryption
@@ -81,9 +90,8 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'projectFs.ts must define batchWriteProjectFiles mutation',
   );
   assert.ok(
-    content.includes('encryptVaultText(file.content, activeKey)') ||
-      content.includes('encryptVaultText(file.content, rawKeyHex)'),
-    'batchWriteProjectFiles must encrypt each file.content with activeKey or rawKeyHex before batch PUT mutation',
+    content.includes('encryptVaultText(file.content, activeKey)'),
+    'batchWriteProjectFiles must encrypt each file.content with the active CryptoKey before the batch PUT',
   );
 
   // Verify searchProjectFiles grep matches decryption
@@ -98,311 +106,291 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
 });
 
 // -----------------------------------------------------------------------------
-// Section 2: Behavioral verification of readProjectFile decryption logic
+// Sections 2-5: REAL-ENDPOINT wire verification
 // -----------------------------------------------------------------------------
+// REQ-RAWKEY-A8: these sections used to RE-IMPLEMENT each queryFn's transform
+// inside the test body -- reading a fake `state.vault.rawVaultKeyHex` that no
+// production code can reach -- and then assert on their own copy. Such a test
+// cannot fail when projectFs.ts is broken, and that is the exact shape that let
+// the P0 (plaintext on the wire) survive review. They now dispatch the REAL
+// endpoints through a REAL store with a stubbed fetch and assert on the ACTUAL
+// WIRE PAYLOAD / the value the endpoint actually returns to the caller.
+//
+// The key is supplied the production way by `unlockVault()`: a non-extractable
+// CryptoKey in the module-level active-key slot, never hex in Redux state.
 
-test('readProjectFile logic: transparently decrypts vault:v1:... content when vault is unlocked', async () => {
+const cap = installFetchCapture();
+installWindowShim();
+
+const projectFs = await import('../src/ui/api/endpoints/projectFs.ts');
+const { endpoints } = projectFs.projectFsApi;
+
+/** Fresh store + fetch log per test; every test leaves the vault locked. */
+async function freshStore(): Promise<any> {
+  cap.reset();
+  const store = await makeVaultStore();
+  await clearActiveKey();
+  return store;
+}
+
+/** Dispatch a query, bypassing the RTK Query cache so each test really runs. */
+async function runQuery(store: any, thunk: any): Promise<any> {
+  const res = await store.dispatch(thunk);
+  assert.ok(!res?.error, `query returned an error: ${JSON.stringify(res?.error)}`);
+  return res.data;
+}
+
+const READ_ARGS = (path: string) => ({ projectId: 'proj_test', path });
+const q = { subscribe: false, forceRefetch: true };
+
+// ---- Section 2: readProjectFile decryption ----------------------------------
+
+test('readProjectFile: transparently decrypts vault:v1: content when the vault is unlocked', async () => {
   const secretFileText = 'DATABASE_URL="postgres://admin:supersecret@db:5432/main"\nJWT_SECRET="xyz-token"';
   const armoredCiphertext = await encryptVaultText(secretFileText, TEST_KEY_HEX);
+  assert.ok(isVaultArmored(armoredCiphertext), 'fixture ciphertext must start with vault:v1:');
 
-  assert.ok(isVaultArmored(armoredCiphertext), 'Ciphertext must start with vault:v1:');
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ ok: true, path: 'secrets/.env', content: armoredCiphertext });
 
-  // Simulated queryFn read transform with unlocked vault
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_KEY_HEX } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+  const data = await runQuery(store, endpoints.readProjectFile.initiate(READ_ARGS('secrets/.env'), q));
 
-  const data: { content?: string; ok: boolean } = { ok: true, content: armoredCiphertext };
-  if (data && typeof data.content === 'string' && isVaultArmored(data.content)) {
-    if (isUnlocked && rawKeyHex) {
-      try {
-        data.content = await decryptVaultText(data.content, rawKeyHex);
-      } catch {}
-    }
-  }
-
-  assert.strictEqual(data.content, secretFileText, 'Armored file content must be decrypted to original plaintext');
+  assert.equal(data.content, secretFileText, 'armored file content must reach the caller as plaintext');
+  await lockVaultFully(store);
 });
 
-test('readProjectFile logic: leaves content untouched or readable when vault is locked or key not present', async () => {
-  const secretFileText = 'SUPER_SECRET_TOKEN=abc12345';
-  const armoredCiphertext = await encryptVaultText(secretFileText, TEST_KEY_HEX);
+test('readProjectFile: leaves content armored when the vault is locked', async () => {
+  const armoredCiphertext = await encryptVaultText('SUPER_SECRET_TOKEN=abc12345', TEST_KEY_HEX);
 
-  // Case A: Vault locked
-  const stateLocked: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
-  const isUnlockedA = Boolean(stateLocked?.vault?.isUnlocked || stateLocked?.vault?.unlocked);
-  const rawKeyHexA = stateLocked?.vault?.rawVaultKeyHex;
+  const store = await freshStore();
+  // Locked: no active key, and the slice never unlocked.
+  cap.setNextResponse({ ok: true, path: 'locked/.env', content: armoredCiphertext });
 
-  const dataLocked: { content?: string } = { content: armoredCiphertext };
-  if (dataLocked && typeof dataLocked.content === 'string' && isVaultArmored(dataLocked.content)) {
-    if (isUnlockedA && rawKeyHexA) {
-      try {
-        dataLocked.content = await decryptVaultText(dataLocked.content, rawKeyHexA);
-      } catch {}
-    }
-  }
-  assert.strictEqual(dataLocked.content, armoredCiphertext, 'Armored content must remain intact when locked');
+  const data = await runQuery(store, endpoints.readProjectFile.initiate(READ_ARGS('locked/.env'), q));
 
-  // Case B: Key missing
-  const stateNoKey: any = { vault: { isUnlocked: true, rawVaultKeyHex: null } };
-  const isUnlockedB = Boolean(stateNoKey?.vault?.isUnlocked || stateNoKey?.vault?.unlocked);
-  const rawKeyHexB = stateNoKey?.vault?.rawVaultKeyHex;
-
-  const dataNoKey: { content?: string } = { content: armoredCiphertext };
-  if (dataNoKey && typeof dataNoKey.content === 'string' && isVaultArmored(dataNoKey.content)) {
-    if (isUnlockedB && rawKeyHexB) {
-      try {
-        dataNoKey.content = await decryptVaultText(dataNoKey.content, rawKeyHexB);
-      } catch {}
-    }
-  }
-  assert.strictEqual(dataNoKey.content, armoredCiphertext, 'Armored content must remain intact when key missing');
+  assert.equal(data.content, armoredCiphertext, 'armored content must stay armored while locked');
 });
 
-test('readProjectFile logic: leaves content untouched when decryption fails (wrong key)', async () => {
-  const secretFileText = 'CONFIDENTIAL_NOTE';
-  const armoredCiphertext = await encryptVaultText(secretFileText, TEST_KEY_HEX);
+test('readProjectFile: leaves content armored when no key is active even though state says unlocked', async () => {
+  // The A7 race shape: Redux still flags unlocked (a reload, or a lock that did
+  // not propagate) but the CryptoKey slot is empty. The gate must follow the KEY,
+  // not the flag -- the old `isUnlocked && rawVaultKeyHex` form could not express
+  // this at all, because its second operand was dead on every branch.
+  const armoredCiphertext = await encryptVaultText('SUPER_SECRET_TOKEN=abc12345', TEST_KEY_HEX);
 
-  const stateWrongKey: any = { vault: { isUnlocked: true, rawVaultKeyHex: DIFFERENT_KEY_HEX } };
-  const isUnlocked = Boolean(stateWrongKey?.vault?.isUnlocked || stateWrongKey?.vault?.unlocked);
-  const rawKeyHex = stateWrongKey?.vault?.rawVaultKeyHex;
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  await clearActiveKey();
+  assert.equal(getActiveVaultKey(), null, 'precondition: no active CryptoKey');
+  assert.equal(selectIsVaultUnlocked(store.getState()), true, 'precondition: slice still says unlocked');
+  cap.setNextResponse({ ok: true, path: 'nokey/.env', content: armoredCiphertext });
 
-  const data: { content?: string } = { content: armoredCiphertext };
-  if (data && typeof data.content === 'string' && isVaultArmored(data.content)) {
-    if (isUnlocked && rawKeyHex) {
-      try {
-        data.content = await decryptVaultText(data.content, rawKeyHex);
-      } catch {}
-    }
-  }
+  const data = await runQuery(store, endpoints.readProjectFile.initiate(READ_ARGS('nokey/.env'), q));
 
-  assert.strictEqual(
-    data.content,
-    armoredCiphertext,
-    'Armored content must remain untouched when decryption fails rather than crashing',
-  );
+  assert.equal(data.content, armoredCiphertext, 'no key means no decryption, regardless of the flag');
+  await lockVaultFully(store);
 });
 
-test('readProjectFile logic: leaves unarmored plain text untouched', async () => {
+test('readProjectFile: leaves content armored when decryption fails (wrong key) rather than throwing', async () => {
+  const armoredCiphertext = await encryptVaultText('CONFIDENTIAL_NOTE', TEST_KEY_HEX);
+
+  const store = await freshStore();
+  await unlockVault(store, DIFFERENT_KEY_HEX);
+  cap.setNextResponse({ ok: true, path: 'wrongkey/.env', content: armoredCiphertext });
+
+  const data = await runQuery(store, endpoints.readProjectFile.initiate(READ_ARGS('wrongkey/.env'), q));
+
+  assert.equal(data.content, armoredCiphertext, 'a failed decrypt must leave the armor intact, not crash the query');
+  await lockVaultFully(store);
+});
+
+test('readProjectFile: leaves unarmored plain text untouched when unlocked', async () => {
   const plainText = '# Public README\nThis is a standard repository.';
 
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_KEY_HEX } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ ok: true, path: 'README.md', content: plainText });
 
-  const data: { content?: string } = { content: plainText };
-  if (data && typeof data.content === 'string' && isVaultArmored(data.content)) {
-    if (isUnlocked && rawKeyHex) {
-      try {
-        data.content = await decryptVaultText(data.content, rawKeyHex);
-      } catch {}
-    }
-  }
+  const data = await runQuery(store, endpoints.readProjectFile.initiate(READ_ARGS('README.md'), q));
 
-  assert.strictEqual(data.content, plainText, 'Plain unarmored text must pass through untouched');
+  assert.equal(data.content, plainText, 'plain unarmored text must pass through untouched');
+  await lockVaultFully(store);
 });
 
-// -----------------------------------------------------------------------------
-// Section 3: Behavioral verification of writeProjectFile encryption logic
-// -----------------------------------------------------------------------------
+// ---- Section 3: writeProjectFile encryption ---------------------------------
 
-test('writeProjectFile logic: encrypts content to vault:v1:... before sending PUT request when vault is unlocked', async () => {
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_KEY_HEX } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
+test('writeProjectFile: puts armored content on the wire when the vault is unlocked', async () => {
   const plainContent = 'AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"';
-  let outgoingContent = plainContent;
 
-  if (isUnlocked && rawKeyHex && typeof outgoingContent === 'string') {
-    if (!isVaultArmored(outgoingContent)) {
-      outgoingContent = await encryptVaultText(outgoingContent, rawKeyHex);
-    }
-  }
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ ok: true });
 
-  assert.ok(isVaultArmored(outgoingContent), 'Transmitted content must be armored');
-  assert.notStrictEqual(outgoingContent, plainContent);
+  const res = await store.dispatch(
+    endpoints.writeProjectFile.initiate({ projectId: 'proj_test', path: 'secrets/prod.env', content: plainContent }),
+  );
+  assert.ok(!res?.error, `writeProjectFile errored: ${JSON.stringify(res?.error)}`);
 
-  const decrypted = await decryptVaultText(outgoingContent, TEST_KEY_HEX);
-  assert.strictEqual(decrypted, plainContent, 'Armored outgoing content must decrypt back to original text');
+  const wire = cap.find((r) => r.method === 'PUT' && /\/fs\/file/.test(r.url));
+  assert.ok(isVaultArmored(wire.body.content), `wire content must be armored, got: ${String(wire.body.content).slice(0, 60)}`);
+  assert.ok(!String(wire.body.content).includes('wJalrXUtnFEMI'), 'plaintext secret must NOT appear on the wire');
+  assert.equal(wire.body.path, 'secrets/prod.env', 'the path is metadata and stays plaintext');
+  assert.equal(
+    await decryptVaultText(wire.body.content, TEST_KEY_HEX),
+    plainContent,
+    'the armored payload must decrypt back to the original text',
+  );
+  await lockVaultFully(store);
 });
 
-test('writeProjectFile logic: preserves unencrypted content when vault is locked', async () => {
-  const state: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
+test('writeProjectFile: sends plaintext on the wire when the vault is locked', async () => {
   const plainContent = 'const a = 1;';
-  let outgoingContent = plainContent;
 
-  if (isUnlocked && rawKeyHex && typeof outgoingContent === 'string') {
-    if (!isVaultArmored(outgoingContent)) {
-      outgoingContent = await encryptVaultText(outgoingContent, rawKeyHex);
-    }
-  }
+  const store = await freshStore();
+  cap.setNextResponse({ ok: true });
 
-  assert.strictEqual(outgoingContent, plainContent, 'When vault is locked, outgoing content must remain unencrypted');
+  const res = await store.dispatch(
+    endpoints.writeProjectFile.initiate({ projectId: 'proj_test', path: 'src/a.ts', content: plainContent }),
+  );
+  assert.ok(!res?.error, `writeProjectFile errored: ${JSON.stringify(res?.error)}`);
+
+  const wire = cap.find((r) => r.method === 'PUT' && /\/fs\/file/.test(r.url));
+  assert.equal(wire.body.content, plainContent, 'a locked vault must not armor the write');
 });
 
-test('writeProjectFile logic: is idempotent and does not double-encrypt already-armored content', async () => {
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_KEY_HEX } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
+test('writeProjectFile: does not double-encrypt already-armored content', async () => {
   const alreadyArmored = await encryptVaultText('secret data', TEST_KEY_HEX);
-  let outgoingContent = alreadyArmored;
 
-  if (isUnlocked && rawKeyHex && typeof outgoingContent === 'string') {
-    if (!isVaultArmored(outgoingContent)) {
-      outgoingContent = await encryptVaultText(outgoingContent, rawKeyHex);
-    }
-  }
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ ok: true });
 
-  assert.strictEqual(outgoingContent, alreadyArmored, 'Already-armored content must not be double-encrypted');
+  const res = await store.dispatch(
+    endpoints.writeProjectFile.initiate({ projectId: 'proj_test', path: 'already/armored.env', content: alreadyArmored }),
+  );
+  assert.ok(!res?.error, `writeProjectFile errored: ${JSON.stringify(res?.error)}`);
+
+  const wire = cap.find((r) => r.method === 'PUT' && /\/fs\/file/.test(r.url));
+  assert.equal(wire.body.content, alreadyArmored, 'already-armored content must go out byte-identical');
+  assert.ok(
+    !wire.body.content.slice(VAULT_ARMOR_PREFIX.length).includes(VAULT_ARMOR_PREFIX),
+    'a second armor layer must not be nested inside the first',
+  );
+  await lockVaultFully(store);
 });
 
-// -----------------------------------------------------------------------------
-// Section 4: Behavioral verification of batchWriteProjectFiles encryption logic
-// -----------------------------------------------------------------------------
+// ---- Section 4: batchWriteProjectFiles encryption ---------------------------
 
-test('batchWriteProjectFiles logic: encrypts each file content before sending batch PUT request when vault is unlocked', async () => {
-  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_KEY_HEX } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
+test('batchWriteProjectFiles: armors every file content on the wire when unlocked', async () => {
   const files = [
     { path: 'secrets/prod.env', content: 'DB_PASS=xyz789' },
     { path: 'config/keys.json', content: '{"token": "secret_token_val"}' },
     { path: 'src/main.ts', content: 'console.log("hello");' },
   ];
 
-  let outgoingFiles = files;
-  if (isUnlocked && rawKeyHex && Array.isArray(files)) {
-    outgoingFiles = await Promise.all(
-      files.map(async (file) => {
-        if (typeof file.content === 'string') {
-          const content = isVaultArmored(file.content)
-            ? file.content
-            : await encryptVaultText(file.content, rawKeyHex);
-          return { ...file, content };
-        }
-        return file;
-      }),
-    );
-  }
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ ok: true });
 
-  assert.strictEqual(outgoingFiles.length, 3);
+  const res = await store.dispatch(endpoints.batchWriteProjectFiles.initiate({ projectId: 'proj_test', files }));
+  assert.ok(!res?.error, `batchWriteProjectFiles errored: ${JSON.stringify(res?.error)}`);
+
+  const wire = cap.find((r) => r.method === 'PUT' && /\/fs\/files/.test(r.url));
+  assert.equal(wire.body.files.length, 3, 'every file must survive the transform');
   for (let i = 0; i < files.length; i++) {
     const original = files[i];
-    const transformed = outgoingFiles[i];
-
-    assert.strictEqual(transformed.path, original.path);
-    assert.ok(isVaultArmored(transformed.content), `File ${original.path} must be armored`);
-
-    const decrypted = await decryptVaultText(transformed.content, TEST_KEY_HEX);
-    assert.strictEqual(decrypted, original.content, `File ${original.path} must decrypt to original plaintext`);
+    const sent = wire.body.files[i];
+    assert.equal(sent.path, original.path, `file ${i}: path must be preserved in order`);
+    assert.ok(isVaultArmored(sent.content), `${original.path} must be armored on the wire`);
+    assert.ok(!String(sent.content).includes(original.content), `${original.path}: plaintext must NOT appear on the wire`);
+    assert.equal(
+      await decryptVaultText(sent.content, TEST_KEY_HEX),
+      original.content,
+      `${original.path} must decrypt back to its original plaintext`,
+    );
   }
+  await lockVaultFully(store);
 });
 
-test('batchWriteProjectFiles logic: preserves plain file content when vault is locked', async () => {
-  const state: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
-  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-  const rawKeyHex = state?.vault?.rawVaultKeyHex;
-
+test('batchWriteProjectFiles: sends plain file content on the wire when locked', async () => {
   const files = [{ path: 'test.txt', content: 'plain unencrypted text' }];
 
-  let outgoingFiles = files;
-  if (isUnlocked && rawKeyHex && Array.isArray(files)) {
-    outgoingFiles = await Promise.all(
-      files.map(async (file) => {
-        if (typeof file.content === 'string') {
-          const content = isVaultArmored(file.content)
-            ? file.content
-            : await encryptVaultText(file.content, rawKeyHex);
-          return { ...file, content };
-        }
-        return file;
-      }),
-    );
-  }
+  const store = await freshStore();
+  cap.setNextResponse({ ok: true });
 
-  assert.strictEqual(outgoingFiles[0].content, 'plain unencrypted text');
+  const res = await store.dispatch(endpoints.batchWriteProjectFiles.initiate({ projectId: 'proj_test', files }));
+  assert.ok(!res?.error, `batchWriteProjectFiles errored: ${JSON.stringify(res?.error)}`);
+
+  const wire = cap.find((r) => r.method === 'PUT' && /\/fs\/files/.test(r.url));
+  assert.equal(wire.body.files[0].content, 'plain unencrypted text', 'a locked vault must not armor batch writes');
 });
 
-// -----------------------------------------------------------------------------
-// Section 5: Behavioral verification of searchProjectFiles grep matches decryption
-// -----------------------------------------------------------------------------
+// ---- Section 5: searchProjectFiles grep match decryption --------------------
 
-test('searchProjectFiles logic: decrypts armored line_content and line in grep matches when vault is unlocked', async () => {
-  const secretLine1 = 'const API_SECRET = "sk_live_999";';
-  const secretLine2 = 'export const DB_PASS = "admin_super_secret";';
-  const armored1 = await encryptVaultText(secretLine1, TEST_KEY_HEX);
-  const armored2 = await encryptVaultText(secretLine2, TEST_KEY_HEX);
+const SECRET_LINE_1 = 'const API_SECRET = "sk_live_999";';
+const SECRET_LINE_2 = 'export const DB_PASS = "admin_super_secret";';
+const PUBLIC_LINE = 'const PUBLIC_VAR = 42;';
 
-  const rawMatches = [
-    {
-      path: 'src/config.ts',
-      line_number: 10,
-      column: 1,
-      match_start: 0,
-      match_end: 15,
-      line: armored1,
-      line_content: armored1,
-    },
-    {
-      path: 'src/db.ts',
-      line_number: 25,
-      column: 1,
-      match_start: 0,
-      match_end: 20,
-      line: armored2,
-    },
-    {
-      path: 'src/public.ts',
-      line_number: 5,
-      column: 1,
-      match_start: 0,
-      match_end: 10,
-      line: 'const PUBLIC_VAR = 42;',
-      line_content: 'const PUBLIC_VAR = 42;',
-    },
+async function searchFixtureMatches(): Promise<any[]> {
+  const armored1 = await encryptVaultText(SECRET_LINE_1, TEST_KEY_HEX);
+  const armored2 = await encryptVaultText(SECRET_LINE_2, TEST_KEY_HEX);
+  return [
+    // both fields armored
+    { path: 'src/config.ts', line_number: 10, column: 1, match_start: 0, match_end: 15, line: armored1, line_content: armored1 },
+    // only `line` present -- the endpoint must mirror it into line_content
+    { path: 'src/db.ts', line_number: 25, column: 1, match_start: 0, match_end: 20, line: armored2 },
+    // unarmored, must pass through
+    { path: 'src/public.ts', line_number: 5, column: 1, match_start: 0, match_end: 10, line: PUBLIC_LINE, line_content: PUBLIC_LINE },
   ];
+}
 
-  // Helper matching projectFs.ts decryptSearchMatches
-  async function decryptSearchMatches(matches: any[], rawKeyHex: string) {
-    return await Promise.all(
-      matches.map(async (m: any) => {
-        const updated = { ...m };
-        if (typeof updated.line_content === 'string' && isVaultArmored(updated.line_content)) {
-          try {
-            updated.line_content = await decryptVaultText(updated.line_content, rawKeyHex);
-          } catch {}
-        }
-        if (typeof updated.line === 'string' && isVaultArmored(updated.line)) {
-          try {
-            updated.line = await decryptVaultText(updated.line, rawKeyHex);
-          } catch {}
-        }
-        if (updated.line_content !== undefined && updated.line === undefined) {
-          updated.line = updated.line_content;
-        }
-        if (updated.line !== undefined && updated.line_content === undefined) {
-          updated.line_content = updated.line;
-        }
-        return updated;
-      }),
+test('searchProjectFiles: decrypts armored line and line_content in grep matches when unlocked', async () => {
+  const store = await freshStore();
+  await unlockVault(store, TEST_KEY_HEX);
+  cap.setNextResponse({ matches: await searchFixtureMatches() });
+
+  const data = await runQuery(
+    store,
+    endpoints.searchProjectFiles.initiate({ projectId: 'proj_test', query: 'SECRET' }, q),
+  );
+
+  assert.equal(data.matches.length, 3);
+  assert.equal(data.matches[0].line, SECRET_LINE_1);
+  assert.equal(data.matches[0].line_content, SECRET_LINE_1);
+  // `line` only on the wire: decrypted AND mirrored into line_content.
+  assert.equal(data.matches[1].line, SECRET_LINE_2);
+  assert.equal(data.matches[1].line_content, SECRET_LINE_2, 'line_content must be mirrored from the decrypted line');
+  assert.equal(data.matches[2].line, PUBLIC_LINE, 'unarmored matches pass through untouched');
+  assert.equal(data.matches[2].line_content, PUBLIC_LINE);
+  await lockVaultFully(store);
+});
+
+test('searchProjectFiles: leaves grep matches armored when the vault is locked', async () => {
+  const fixture = await searchFixtureMatches();
+  const store = await freshStore();
+  cap.setNextResponse({ matches: fixture });
+
+  const data = await runQuery(
+    store,
+    endpoints.searchProjectFiles.initiate({ projectId: 'proj_test', query: 'SECRET', path: 'locked' }, q),
+  );
+
+  assert.equal(data.matches[0].line, fixture[0].line, 'armored match text must stay armored while locked');
+  assert.ok(isVaultArmored(data.matches[0].line_content));
+  assert.ok(!String(data.matches[0].line).includes('sk_live_999'), 'a locked vault must not reveal the secret line');
+});
+
+// ---- Counterfactual: the retired key sources are gone for good --------------
+
+test('COUNTERFACTUAL: projectFs.ts does not reference the retired rawKey sources at all', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/projectFs.ts'), 'utf8');
+  for (const dead of ['rawVaultKeyHex', 'selectRawVaultKeyHex', 'rawKeyHex', 'readSessionVaultKey']) {
+    assert.ok(
+      !src.includes(dead),
+      `projectFs.ts must not read ${dead} -- it is permanently null, so every gate using it silently disables encryption`,
     );
   }
-
-  const decryptedMatches = await decryptSearchMatches(rawMatches, TEST_KEY_HEX);
-
-  assert.strictEqual(decryptedMatches.length, 3);
-  assert.strictEqual(decryptedMatches[0].line, secretLine1);
-  assert.strictEqual(decryptedMatches[0].line_content, secretLine1);
-  assert.strictEqual(decryptedMatches[1].line, secretLine2);
-  assert.strictEqual(decryptedMatches[1].line_content, secretLine2);
-  assert.strictEqual(decryptedMatches[2].line, 'const PUBLIC_VAR = 42;');
-  assert.strictEqual(decryptedMatches[2].line_content, 'const PUBLIC_VAR = 42;');
 });
 
 // -----------------------------------------------------------------------------

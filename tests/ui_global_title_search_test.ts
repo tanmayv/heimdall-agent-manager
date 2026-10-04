@@ -477,7 +477,13 @@ test('CommandPalette and AppShell maintain static contracts for VaultText row re
 
   // CommandPalette must import vault selectors and searchTitleSlice dispatch
   assert.ok(cpContent.includes('selectIsVaultUnlocked'), 'CommandPalette.tsx must import selectIsVaultUnlocked');
-  assert.ok(cpContent.includes('selectRawVaultKeyHex'), 'CommandPalette.tsx must import selectRawVaultKeyHex');
+  // REQ-RAWKEY-A4: selectRawVaultKeyHex is retired -- it always returned null, so a palette
+  // gated on it decrypted nothing. The key now comes from getActiveVaultKey().
+  assert.ok(cpContent.includes('getActiveVaultKey'), 'CommandPalette.tsx must import getActiveVaultKey');
+  assert.ok(
+    !cpContent.includes('selectRawVaultKeyHex'),
+    'CommandPalette.tsx must not read the retired selectRawVaultKeyHex',
+  );
   assert.ok(cpContent.includes('setBulkChainTitles'), 'CommandPalette.tsx must import setBulkChainTitles');
 
   // CommandPalette must import VaultText and render labels through VaultText as="span"

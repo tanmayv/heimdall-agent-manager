@@ -42,9 +42,14 @@ test('all required files exist and contain precise vault-aware implementations',
     {
       file: 'src/ui/api/endpoints/issues.ts',
       tokens: [
-        'readSessionVaultKey',
+        // REQ-RAWKEY-A8: was 'readSessionVaultKey' and the literal expression
+        // `rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey()`. BOTH
+        // operands of that expression are permanently dead -- rawVaultKeyHex is never
+        // assigned on any branch and readSessionVaultKey() unconditionally returns null
+        // -- so the gate behind it never fired and decryption was silently skipped.
+        // Pinning the exact text of a broken expression is also what blocked the fix.
+        'getActiveVaultKey',
         'decryptIssueRecord',
-        'rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey()',
       ],
     },
     {
@@ -100,7 +105,7 @@ test('all required files exist and contain precise vault-aware implementations',
     {
       file: 'src/ui/services/notificationService.ts',
       tokens: [
-        'readSessionVaultKey',
+        'getActiveVaultKey',
         'truncateNotificationText',
       ],
     },
@@ -113,6 +118,35 @@ test('all required files exist and contain precise vault-aware implementations',
     for (const token of tokens) {
       assert.ok(content.includes(token), `Expected ${file} to contain token '${token}'`);
     }
+  }
+});
+
+test('REQ-RAWKEY-A8: no vault consumer reads a retired key source', () => {
+  // The two retired sources are not merely deprecated, they are INERT:
+  // state.vault.rawVaultKeyHex is never assigned by any reducer branch, and
+  // readSessionVaultKey() is hardened to unconditionally return null. A site that
+  // reads either one therefore has a gate that never opens, which is precisely how
+  // the plaintext-on-the-wire P0 hid. This sweep fails the build if one comes back.
+  const consumers = [
+    'src/ui/api/endpoints/issues.ts',
+    'src/ui/services/notificationService.ts',
+    'src/ui/api/endpoints/projectFs.ts',
+    'src/ui/api/endpoints/shells.ts',
+  ];
+  for (const file of consumers) {
+    const content = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+    for (const dead of ['rawVaultKeyHex', 'readSessionVaultKey']) {
+      const hits = content
+        .split('\n')
+        .map((line, i) => [i + 1, line] as [number, string])
+        .filter(([, line]) => line.includes(dead));
+      assert.equal(
+        hits.length,
+        0,
+        `${file} reads the inert ${dead} at ${hits.map(([n, l]) => `${n}: ${l.trim()}`).join(' | ')}`,
+      );
+    }
+    assert.ok(content.includes('getActiveVaultKey'), `${file} must resolve the key via getActiveVaultKey`);
   }
 });
 
@@ -233,7 +267,7 @@ test('decryptIssueRecord decrypts title, description, descriptionPreview, and co
   assert.equal(decryptedRecord.comments![0].body, secretComment);
 });
 
-test('decryptIssueRecord is a no-op when rawKeyHex is missing or null', async () => {
+test('decryptIssueRecord is a no-op when no active key is supplied', async () => {
   const secretTitle = 'Safe title';
   const armoredTitle = await encryptVaultText(secretTitle, TEST_KEY_HEX);
 
@@ -252,7 +286,7 @@ test('decryptIssueRecord is a no-op when rawKeyHex is missing or null', async ()
 // -----------------------------------------------------------------------------
 
 import { notificationForWsEvent } from '../src/ui/api/notificationMapper.ts';
-import { writeSessionVaultKey, clearSessionVaultKey, importAndValidateCryptoKey } from '../src/ui/store/vaultSlice.ts';
+import { clearSessionVaultKey, importAndValidateCryptoKey } from '../src/ui/store/vaultSlice.ts';
 
 // Browser global mocks for Notification & Session Storage
 const mockCreatedNotifications: Array<{ title: string; options: any }> = [];
@@ -318,16 +352,21 @@ test('notificationMapper.ts: truncate does NOT truncate vault armored tokens bef
   assert.ok(!plan!.body.endsWith('…'), 'Body must not have trailing ellipsis indicating premature truncation');
 });
 
-test('notificationService.ts: checks readSessionVaultKey() when Redux rawKeyHex is not populated', async () => {
+test('notificationService.ts: decrypts from the active CryptoKey even when Redux state carries no key', async () => {
+  // REQ-RAWKEY-A8: this test used to be titled "checks readSessionVaultKey()" and
+  // called writeSessionVaultKey() first. It never exercised that path: that writer is
+  // a hardened no-op and readSessionVaultKey() always returns null. What actually made
+  // it pass was importAndValidateCryptoKey(), which calls setActiveVaultKey() -- i.e.
+  // the production mechanism. Retitled and stripped of the misleading setup so the
+  // assertion names the mechanism it really covers.
   mockCreatedNotifications.length = 0;
   clearSessionVaultKey();
-  writeSessionVaultKey(TEST_KEY_HEX);
   await importAndValidateCryptoKey(TEST_KEY_HEX);
 
   const secretBody = 'Agent completed deployment without errors.';
   const armoredBody = await encryptVaultText(secretBody, TEST_KEY_HEX);
 
-  // Redux state where rawVaultKeyHex is null (e.g. not yet populated)
+  // Redux carries the unlock FLAG and nothing else -- there is no key field to populate.
   const unhydratedReduxState = () => ({
     notifications: {
       enabled: true,
@@ -337,7 +376,6 @@ test('notificationService.ts: checks readSessionVaultKey() when Redux rawKeyHex 
     vault: {
       isConfigured: true,
       isUnlocked: true,
-      rawVaultKeyHex: null, // Redux not yet populated!
     },
   });
 
@@ -358,7 +396,7 @@ test('notificationService.ts: checks readSessionVaultKey() when Redux rawKeyHex 
 
   assert.ok(mockCreatedNotifications.length >= 1, 'Native notification must be fired');
   const lastNotification = mockCreatedNotifications[mockCreatedNotifications.length - 1];
-  assert.equal(lastNotification.options.body, secretBody, 'Body must be decrypted via readSessionVaultKey()');
+  assert.equal(lastNotification.options.body, secretBody, 'Body must be decrypted via the active CryptoKey');
 
   clearSessionVaultKey();
 });
@@ -369,6 +407,7 @@ test('notificationService.ts: truncates title/body AFTER successful decryption',
 
   const extraLongSecret = 'A'.repeat(250);
   const armoredBody = await encryptVaultText(extraLongSecret, TEST_KEY_HEX);
+  await importAndValidateCryptoKey(TEST_KEY_HEX);
 
   const unlockedState = () => ({
     notifications: {
@@ -379,7 +418,6 @@ test('notificationService.ts: truncates title/body AFTER successful decryption',
     vault: {
       isConfigured: true,
       isUnlocked: true,
-      rawVaultKeyHex: TEST_KEY_HEX,
     },
   });
 

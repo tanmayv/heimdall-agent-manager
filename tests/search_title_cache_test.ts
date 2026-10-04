@@ -50,10 +50,16 @@ import {
 } from '../src/ui/utils/vaultContent.ts';
 
 import {
-  writeSessionVaultKey,
-  clearSessionVaultKey,
   default as vaultReducer,
 } from '../src/ui/store/vaultSlice.ts';
+
+// REQ-RAWKEY-A8: the key reaches wsInvalidation through getActiveVaultKey() only. The
+// sessionStorage route (writeSessionVaultKey / readSessionVaultKey) is hardened to a no-op,
+// so a fixture that writes the hex there installs nothing -- see the test at section 8.
+import {
+  importRawKeyHex,
+  setActiveVaultKey,
+} from '../src/ui/utils/vaultCrypto.ts';
 
 import { handleUserWsEvent } from '../src/ui/api/wsInvalidation.ts';
 
@@ -298,7 +304,7 @@ test('handleUserWsEvent dispatches upsertChainTitle when task_chain resource_cha
   const mockDispatch = (action: any) => {
     if (typeof action === 'function') {
       // In case a thunk is dispatched
-      return action(mockDispatch, () => ({ vault: { rawVaultKeyHex: null } }));
+      return action(mockDispatch, () => ({ vault: { isUnlocked: false } }));
     }
     dispatchedActions.push(action);
   };
@@ -333,7 +339,7 @@ test('handleUserWsEvent dispatches upsertConversationTitle and invalidates Conve
   const dispatchedActions: any[] = [];
   const mockDispatch = (action: any) => {
     if (typeof action === 'function') {
-      return action(mockDispatch, () => ({ vault: { rawVaultKeyHex: null } }));
+      return action(mockDispatch, () => ({ vault: { isUnlocked: false } }));
     }
     dispatchedActions.push(action);
   };
@@ -376,7 +382,7 @@ test('handleUserWsEvent dispatches upsertConversationTitle on chat_event title u
   const dispatchedActions: any[] = [];
   const mockDispatch = (action: any) => {
     if (typeof action === 'function') {
-      return action(mockDispatch, () => ({ vault: { rawVaultKeyHex: null } }));
+      return action(mockDispatch, () => ({ vault: { isUnlocked: false } }));
     }
     dispatchedActions.push(action);
   };
@@ -403,7 +409,7 @@ test('handleUserWsEvent dispatches upsertConversationTitle on chat_event title u
 // 8. Full Redux Store Integration with Encrypted WS Event
 // -----------------------------------------------------------------------------
 
-test('Full Store: encrypted resource_changed decrypts via session vault key and updates store', async () => {
+test('Full Store: encrypted resource_changed decrypts via the active CryptoKey and updates store', async () => {
   const store = configureStore({
     reducer: {
       searchTitle: searchTitleReducer,
@@ -414,8 +420,12 @@ test('Full Store: encrypted resource_changed decrypts via session vault key and 
   const plainTitle = 'Encrypted Chain Title Over WS';
   const armoredTitle = await encryptVaultText(plainTitle, TEST_KEY_HEX);
 
-  // Set session vault key so background decryption can resolve
-  writeSessionVaultKey(TEST_KEY_HEX);
+  // Install the key the PRODUCTION way so the background decryption in
+  // wsInvalidation.ts:380 can resolve it. This used to call writeSessionVaultKey(hex),
+  // which is now a hardened no-op -- the test therefore asserted a decrypted title while
+  // the store legitimately held `vault:v1:...`, i.e. it was failing for the mechanism and
+  // not for the behaviour under test (REQ-VAULT-HARDEN-1, REQ-RAWKEY-A8).
+  setActiveVaultKey(await importRawKeyHex(TEST_KEY_HEX), null);
 
   const payload = {
     type: 'resource_changed',
@@ -443,5 +453,7 @@ test('Full Store: encrypted resource_changed decrypts via session vault key and 
   assert.equal(item.decryptedTitle, plainTitle);
   assert.equal(item.projectId, 'proj_enc');
 
-  clearSessionVaultKey();
+  // The active key is MODULE-level state shared by every test in this file; leaving it set
+  // would silently arm any later "no key" case.
+  setActiveVaultKey(null, null);
 });
