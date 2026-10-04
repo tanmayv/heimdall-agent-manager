@@ -13,6 +13,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
   decryptList,
+  getActiveVaultKey,
 } from '../../utils/vaultContent';
 import Markdown from '../Markdown';
 
@@ -60,7 +61,8 @@ export function VaultText({
       return;
     }
 
-    if (!isUnlocked || !rawKey) {
+    const activeKey = rawKey || getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       setDecryptedText(
         isEmbedded ? rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : null
       );
@@ -70,8 +72,8 @@ export function VaultText({
 
     setIsDecrypting(true);
     const p = isArmored
-      ? decryptVaultText(rawString, rawKey)
-      : decryptEmbeddedVaultTokens(rawString, rawKey);
+      ? decryptVaultText(rawString, activeKey)
+      : decryptEmbeddedVaultTokens(rawString, activeKey);
     p.then((decrypted) => {
       if (mounted) {
         setDecryptedText(decrypted);
@@ -175,15 +177,16 @@ export function useDecryptedText(value?: string | null): {
       setIsDecrypting(false);
       return;
     }
-    if (!isUnlocked || !rawKey) {
+    const activeKey = rawKey || getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
       setIsDecrypting(false);
       return;
     }
     setIsDecrypting(true);
     const p = isArmored
-      ? decryptVaultText(raw, rawKey)
-      : decryptEmbeddedVaultTokens(raw, rawKey);
+      ? decryptVaultText(raw, activeKey)
+      : decryptEmbeddedVaultTokens(raw, activeKey);
     p.then((decrypted) => {
       if (mounted) {
         setText(decrypted.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
@@ -220,7 +223,8 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
 
   useEffect(() => {
     let mounted = true;
-    if (!isUnlocked || !rawKey || items.length === 0) {
+    const activeKey = rawKey || getActiveVaultKey();
+    if (!isUnlocked || !activeKey || items.length === 0) {
       setDecryptedList(items);
       return;
     }
@@ -241,7 +245,7 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
     decryptList(
       items,
       ['title', 'description', 'description_preview', 'descriptionPreview'] as (keyof T)[],
-      rawKey,
+      activeKey,
     )
       .then((res) => {
         if (mounted) setDecryptedList(res);

@@ -2,7 +2,7 @@ import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
-import { isVaultArmored, encryptVaultText } from '../../utils/vaultContent';
+import { isVaultArmored, encryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
 import { taskCreateBridgeFields, taskPatchBridgeFields } from '../../utils/taskBridgePin';
 
 // The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
@@ -594,7 +594,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let encTitle = title;
           let encDesc = description || '';
@@ -632,7 +632,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
@@ -697,7 +697,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let encTitle = title;
           let encDesc = description;
@@ -1046,7 +1046,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let encTitle = title;
           let encDesc = description || '';
@@ -1098,7 +1098,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let commentBody = body;
           if (isUnlocked && rawKeyHex && commentBody && !isVaultArmored(commentBody)) {
@@ -1148,7 +1148,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     updateTask: build.mutation<any, { taskId: string; chainId: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, title, description, acceptanceCriteria, dependsOn, agentToken }, { session, state }) => {
         const isUnlocked = Boolean(state?.vault?.isUnlocked);
-        const rawKeyHex = state?.vault?.rawVaultKeyHex;
+        const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
         let encTitle = title;
         let encDesc = description;

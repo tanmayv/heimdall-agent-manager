@@ -41,7 +41,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
@@ -271,13 +271,14 @@ function ThreadMessageBody({ body }: { body: string }) {
       setDecrypted(body);
       return;
     }
-    if (!isUnlocked || !rawKeyHex) {
+    const activeKey = rawKeyHex || getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       setDecrypted(null);
       return;
     }
     const decryptPromise = isArmored
-      ? decryptVaultText(body, rawKeyHex)
-      : decryptEmbeddedVaultTokens(body, rawKeyHex);
+      ? decryptVaultText(body, activeKey)
+      : decryptEmbeddedVaultTokens(body, activeKey);
     decryptPromise
       .then((res) => {
         if (mounted) setDecrypted(res);

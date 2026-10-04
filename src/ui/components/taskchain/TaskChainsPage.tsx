@@ -17,7 +17,7 @@ import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
 import { decryptProjectList } from '../../utils/vaultProjects';
 import { decryptChainList } from '../../utils/vaultChains';
 import { isVaultArmored } from '../../utils/vaultContent';
@@ -444,7 +444,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
   useEffect(() => {
     let active = true;
-    if (!isUnlocked || !rawKeyHex) {
+    const activeKey = rawKeyHex || getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       setDecryptedProjects(
         projects.map((p) => ({
           ...p,
@@ -453,7 +454,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       );
       return;
     }
-    decryptProjectList(projects, rawKeyHex).then((res) => {
+    decryptProjectList(projects, activeKey).then((res) => {
       if (active) setDecryptedProjects(res);
     });
     return () => {
@@ -480,7 +481,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
   useEffect(() => {
     let active = true;
-    if (!isUnlocked || !rawKeyHex) {
+    const activeKey = rawKeyHex || getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       const plain: Record<string, string> = {};
       for (const chain of allChains) {
         const raw = String(chain.title || '');
@@ -489,7 +491,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       setTitleByChainId(plain);
       return;
     }
-    decryptChainList(allChains, rawKeyHex)
+    decryptChainList(allChains, activeKey)
       .then((list) => {
         if (!active) return;
         const next: Record<string, string> = {};

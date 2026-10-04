@@ -1,6 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
-import { isVaultArmored, encryptVaultText, decryptVaultText } from '../../utils/vaultContent';
+import { isVaultArmored, encryptVaultText, decryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
 import { encryptProjectFields, decryptProjectRecord, decryptProjectList } from '../../utils/vaultProjects';
 
 export type ProjectBridgePath = {
@@ -36,7 +36,7 @@ export const projectsApi = heimdallApi.injectEndpoints({
           const data = await cookieJsonFetch('/projects');
           const rawProjects = Array.isArray(data) ? data : (data?.projects || []);
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           const projects = (isUnlocked && rawKeyHex)
             ? await decryptProjectList(rawProjects, rawKeyHex)
@@ -60,7 +60,7 @@ export const projectsApi = heimdallApi.injectEndpoints({
           let project = data?.project || data;
           const bridge_paths = project?.bridge_paths || data?.bridge_paths || [];
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           if (project && isUnlocked && rawKeyHex) {
             project = await decryptProjectRecord(project, rawKeyHex);
@@ -77,7 +77,7 @@ export const projectsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
           let name = payload.name;
           let description = payload.description;
 
@@ -111,7 +111,7 @@ export const projectsApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
           let name = payload.name;
           let description = payload.description;
 

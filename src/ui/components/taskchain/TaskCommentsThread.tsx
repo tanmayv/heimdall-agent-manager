@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored, containsVaultArmored, decryptVaultText, decryptEmbeddedVaultTokens } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
 import Markdown from '../Markdown';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { useFetchChainTaskCommentsQuery } from '../../api/endpoints/tasks';
@@ -83,13 +83,14 @@ export const TaskCommentBody: React.FC<{ body: string; debugId: string }> = ({ b
 
   useEffect(() => {
     let mounted = true;
-    if (!hasVault || !isUnlocked || !rawKeyHex) {
+    const activeKey = rawKeyHex || getActiveVaultKey();
+    if (!hasVault || !isUnlocked || !activeKey) {
       setDecryptedText(null);
       return;
     }
     const p = isArmored
-      ? decryptVaultText(body, rawKeyHex)
-      : decryptEmbeddedVaultTokens(body, rawKeyHex);
+      ? decryptVaultText(body, activeKey)
+      : decryptEmbeddedVaultTokens(body, activeKey);
     p.then((decrypted) => {
       if (mounted) setDecryptedText(decrypted);
     }).catch((err) => {

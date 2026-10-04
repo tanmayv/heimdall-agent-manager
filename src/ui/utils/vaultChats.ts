@@ -7,6 +7,7 @@ import {
   encryptVaultText,
   decryptVaultText,
   decryptEmbeddedVaultTokens,
+  getActiveVaultKey,
 } from './vaultContent.ts';
 
 export interface ChatMessagePayload {
@@ -23,51 +24,54 @@ export interface ConversationPayload {
 }
 
 /**
- * Encrypt chat message body if vault is unlocked using rawKeyHex.
+ * Encrypt chat message body if vault is unlocked using rawKeyHex or active CryptoKey.
  */
 export async function encryptChatFields<T extends ChatMessagePayload>(
   payload: T,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T> {
-  if (!rawKeyHex || !payload.body) return { ...payload };
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !payload.body) return { ...payload };
   const res = { ...payload };
   if (!isVaultArmored(res.body)) {
-    res.body = await encryptVaultText(res.body, rawKeyHex);
+    res.body = await encryptVaultText(res.body, activeKey);
   }
   return res;
 }
 
 /**
- * Encrypt conversation fields (title) if vault is unlocked using rawKeyHex.
+ * Encrypt conversation fields (title) if vault is unlocked using rawKeyHex or active CryptoKey.
  */
 export async function encryptConversationFields<T extends ConversationPayload>(
   payload: T,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T> {
-  if (!rawKeyHex) return { ...payload };
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey) return { ...payload };
   const res = { ...payload };
   if (res.title && !isVaultArmored(res.title)) {
-    res.title = await encryptVaultText(res.title, rawKeyHex);
+    res.title = await encryptVaultText(res.title, activeKey);
   }
   return res;
 }
 
 /**
- * Decrypt chat message body using rawKeyHex.
+ * Decrypt chat message body using rawKeyHex or active CryptoKey.
  * Supports both fully armored strings and strings with embedded vault:v1: tokens.
  * Gracefully preserves unarmored plaintext or returns original text if locked/failed.
  */
 export async function decryptChatMessage<T extends ChatMessagePayload>(
   message: T,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T> {
-  if (!rawKeyHex || !message.body || (!isVaultArmored(message.body) && !containsVaultArmored(message.body))) {
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !message.body || (!isVaultArmored(message.body) && !containsVaultArmored(message.body))) {
     return message;
   }
   try {
     const decryptedBody = isVaultArmored(message.body)
-      ? await decryptVaultText(message.body, rawKeyHex)
-      : await decryptEmbeddedVaultTokens(message.body, rawKeyHex);
+      ? await decryptVaultText(message.body, activeKey)
+      : await decryptEmbeddedVaultTokens(message.body, activeKey);
     return {
       ...message,
       body: decryptedBody,
@@ -82,21 +86,23 @@ export async function decryptChatMessage<T extends ChatMessagePayload>(
  */
 export async function decryptChatMessages<T extends ChatMessagePayload>(
   messages: T[],
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T[]> {
-  if (!rawKeyHex || !Array.isArray(messages)) return messages;
-  return Promise.all(messages.map((m) => decryptChatMessage(m, rawKeyHex)));
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !Array.isArray(messages)) return messages;
+  return Promise.all(messages.map((m) => decryptChatMessage(m, activeKey)));
 }
 
 /**
- * Decrypt conversation fields (title, last_message_preview, lastMessagePreview, bodyPreview, lastMessage) using rawKeyHex.
+ * Decrypt conversation fields (title, last_message_preview, lastMessagePreview, bodyPreview, lastMessage) using rawKeyHex or active CryptoKey.
  * Handles both fully armored strings and embedded ciphertext tokens (e.g. sender-prefixed previews).
  */
 export async function decryptConversationRecord<T extends ConversationPayload>(
   conv: T,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T> {
-  if (!rawKeyHex) return conv;
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey) return conv;
   let title = conv.title;
   let lastMessagePreview = conv.last_message_preview ?? conv.lastMessagePreview;
   let bodyPreview = conv.bodyPreview ?? (conv as any).body_preview;
@@ -105,22 +111,22 @@ export async function decryptConversationRecord<T extends ConversationPayload>(
   if (title && (isVaultArmored(title) || containsVaultArmored(title))) {
     try {
       title = isVaultArmored(title)
-        ? await decryptVaultText(title, rawKeyHex)
-        : await decryptEmbeddedVaultTokens(title, rawKeyHex);
+        ? await decryptVaultText(title, activeKey)
+        : await decryptEmbeddedVaultTokens(title, activeKey);
     } catch {}
   }
   if (lastMessagePreview && (isVaultArmored(lastMessagePreview) || containsVaultArmored(lastMessagePreview))) {
     try {
       lastMessagePreview = isVaultArmored(lastMessagePreview)
-        ? await decryptVaultText(lastMessagePreview, rawKeyHex)
-        : await decryptEmbeddedVaultTokens(lastMessagePreview, rawKeyHex);
+        ? await decryptVaultText(lastMessagePreview, activeKey)
+        : await decryptEmbeddedVaultTokens(lastMessagePreview, activeKey);
     } catch {}
   }
   if (bodyPreview && (isVaultArmored(bodyPreview) || containsVaultArmored(bodyPreview))) {
     try {
       bodyPreview = isVaultArmored(bodyPreview)
-        ? await decryptVaultText(bodyPreview, rawKeyHex)
-        : await decryptEmbeddedVaultTokens(bodyPreview, rawKeyHex);
+        ? await decryptVaultText(bodyPreview, activeKey)
+        : await decryptEmbeddedVaultTokens(bodyPreview, activeKey);
     } catch {}
   }
   if (lastMessage && typeof lastMessage === 'object') {
@@ -128,8 +134,8 @@ export async function decryptConversationRecord<T extends ConversationPayload>(
     if (lBody && (isVaultArmored(lBody) || containsVaultArmored(lBody))) {
       try {
         const decryptedBody = isVaultArmored(lBody)
-          ? await decryptVaultText(lBody, rawKeyHex)
-          : await decryptEmbeddedVaultTokens(lBody, rawKeyHex);
+          ? await decryptVaultText(lBody, activeKey)
+          : await decryptEmbeddedVaultTokens(lBody, activeKey);
         lastMessage = {
           ...lastMessage,
           ...(lastMessage.body !== undefined ? { body: decryptedBody } : {}),
@@ -157,8 +163,9 @@ export async function decryptConversationRecord<T extends ConversationPayload>(
  */
 export async function decryptConversationList<T extends ConversationPayload>(
   conversations: T[],
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<T[]> {
-  if (!rawKeyHex || !Array.isArray(conversations)) return conversations;
-  return Promise.all(conversations.map((c) => decryptConversationRecord(c, rawKeyHex)));
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !Array.isArray(conversations)) return conversations;
+  return Promise.all(conversations.map((c) => decryptConversationRecord(c, activeKey)));
 }

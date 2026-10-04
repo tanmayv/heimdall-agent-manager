@@ -43,7 +43,7 @@ import {
 import { useDispatch, useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
 import {
   upsertAgentInCaches,
   useCreateAgentInstanceInChainMutation,
@@ -130,11 +130,12 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
 
   useEffect(() => {
     let mounted = true;
-    if (!isArmored || !isUnlocked || !rawKeyHex) {
+    const activeKey = rawKeyHex || getActiveVaultKey();
+    if (!isArmored || !isUnlocked || !activeKey) {
       setDecryptedText(null);
       return;
     }
-    decryptVaultText(rawDescription, rawKeyHex)
+    decryptVaultText(rawDescription, activeKey)
       .then((decrypted) => {
         if (mounted) setDecryptedText(decrypted);
       })
@@ -342,11 +343,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       setDecryptedDescription(chainDesc || '');
       return;
     }
-    if (!isVaultUnlocked || !rawKey) {
+    const activeKey = rawKey || getActiveVaultKey();
+    if (!isVaultUnlocked || !activeKey) {
       setDecryptedDescription('');
       return;
     }
-    decryptVaultText(chainDesc, rawKey)
+    decryptVaultText(chainDesc, activeKey)
       .then((t) => {
         if (active) setDecryptedDescription(t);
       })

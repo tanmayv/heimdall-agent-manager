@@ -1,6 +1,6 @@
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 import { heimdallApi } from '../heimdallApi';
-import { encryptVaultText, decryptVaultText, isVaultArmored } from '../../utils/vaultContent';
+import { encryptVaultText, decryptVaultText, isVaultArmored, getActiveVaultKey } from '../../utils/vaultContent';
 import { readSessionVaultKey } from '../../store/vaultSlice';
 
 export type IssueStatus = 'new' | 'fixed' | 'obsolete';
@@ -280,7 +280,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
           const rawItems = Array.isArray(data) ? data : data?.items || [];
           let items = rawItems.map(normalizeIssue);
           const state: any = api.getState();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey() || readSessionVaultKey();
           if (rawKeyHex) {
             items = await Promise.all(items.map((iss) => decryptIssueRecord(iss, rawKeyHex)));
           }
@@ -305,7 +305,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
           if (!record) return { data: null };
           let issue = normalizeIssue(record);
           const state: any = api.getState();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey() || readSessionVaultKey();
           if (rawKeyHex) {
             issue = await decryptIssueRecord(issue, rawKeyHex);
           }
@@ -324,7 +324,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description || '';
@@ -360,7 +360,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           const body: Record<string, any> = {};
           if (payload.title !== undefined) {
@@ -439,7 +439,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let bodyText = payload.body;
           if (isUnlocked && rawKeyHex && bodyText && !isVaultArmored(bodyText)) {
@@ -599,26 +599,27 @@ export async function encryptCommentFields<T extends { body: string }>(
  */
 export async function decryptIssueRecord(
   issue: Issue,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<Issue> {
-  if (!rawKeyHex) return issue;
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey) return issue;
   let title = issue.title;
   let description = issue.description;
   let descriptionPreview = issue.descriptionPreview || issue.description_preview;
 
   if (isVaultArmored(title)) {
     try {
-      title = await decryptVaultText(title, rawKeyHex);
+      title = await decryptVaultText(title, activeKey);
     } catch {}
   }
   if (isVaultArmored(description)) {
     try {
-      description = await decryptVaultText(description, rawKeyHex);
+      description = await decryptVaultText(description, activeKey);
     } catch {}
   }
   if (descriptionPreview && isVaultArmored(descriptionPreview)) {
     try {
-      descriptionPreview = await decryptVaultText(descriptionPreview, rawKeyHex);
+      descriptionPreview = await decryptVaultText(descriptionPreview, activeKey);
     } catch {}
   }
 
@@ -628,7 +629,7 @@ export async function decryptIssueRecord(
       comments.map(async (c) => {
         if (isVaultArmored(c.body)) {
           try {
-            return { ...c, body: await decryptVaultText(c.body, rawKeyHex) };
+            return { ...c, body: await decryptVaultText(c.body, activeKey) };
           } catch {
             return c;
           }
@@ -653,12 +654,13 @@ export async function decryptIssueRecord(
  */
 export async function decryptCommentRecord(
   comment: IssueComment,
-  rawKeyHex?: string | null,
+  rawKeyHex?: string | CryptoKey | null,
 ): Promise<IssueComment> {
-  if (!rawKeyHex || !isVaultArmored(comment.body)) return comment;
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !isVaultArmored(comment.body)) return comment;
   return {
     ...comment,
-    body: await decryptVaultText(comment.body, rawKeyHex),
+    body: await decryptVaultText(comment.body, activeKey),
   };
 }
 
