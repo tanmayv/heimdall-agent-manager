@@ -1,22 +1,26 @@
 // Vault cache invalidation middleware (REQ-CACHE-1)
 //
 // Every vault-bearing endpoint decrypts inside its `queryFn`, gated on
-// `state.vault.isUnlocked && getActiveVaultKey()` -- see `sidebar.ts:238-242`,
-// `projects.ts:36-42`, `memory.ts:248-250` and nine more. That gate is evaluated
-// exactly once, at FETCH time. A list fetched while the vault was locked is
+// `state.vault.isUnlocked && getActiveVaultKey()` -- grep that expression under
+// `api/endpoints/` for the current set (`projects.ts` and `sidebar.ts` are the
+// clearest two to read). That gate is evaluated exactly once, at FETCH time.
+// A list fetched while the vault was locked is
 // therefore cached in its ARMORED form and nothing ever revisits it: unlocking
 // flips `isUnlocked`, but the cache entry is already settled, so the armored rows
 // stay on screen until some unrelated action happens to refetch them.
 //
 // WHY A MIDDLEWARE AND NOT EDITS AT THE DISPATCH SITES
-// There are eight `setVaultUnlocked` dispatch sites (`vaultSlice.ts:118` session
-// restore, `BridgeSettingsPanel.tsx:306`, `VaultOnboardingModal.tsx:259/:298/:339`,
-// `VaultPanel.tsx:229/:269/:312`) plus three paths that clear the flag
+// There are eight `setVaultUnlocked` dispatch sites (`vaultSlice.ts:124` session
+// restore, `BridgeSettingsPanel.tsx:370`, `VaultOnboardingModal.tsx:260/:299/:340`,
+// `VaultPanel.tsx:235/:275/:318`) plus three paths that clear the flag
 // (`lockVault`, `setVaultConfigured(false)`, and `setVaultUnlocked(undefined)`).
 // Per-site invalidation is what produced this bug class in the first place -- it is
 // correct only until the next site is added. This middleware keys on the STATE
 // TRANSITION instead, so it covers all eleven paths and every future one for free,
 // including transitions that originate outside the vault slice entirely.
+//
+// The line numbers above are a reading aid and nothing here depends on them -- they
+// drift as those components are edited, so re-grep rather than trusting them.
 //
 // WHY `resetApiState` AND NOT `invalidateTags`
 // The surgical option would be an `invalidateTags` over the vault-bearing tag
