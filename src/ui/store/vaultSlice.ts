@@ -282,6 +282,23 @@ export const vaultSlice = createSlice({
             },
           };
         }
+        // A bare CryptoKey, mirroring setVaultUnlocked.prepare above. Without this
+        // branch the object branch below reads `.hexKey`/`.key` off the CryptoKey --
+        // both undefined -- so `prepare` DESTROYED the key before the reducer saw it.
+        // The reducer's own `'algorithm' in payload` branch could not save it either,
+        // because the returned payload no longer carries `algorithm`. All three
+        // install branches missed while `state.isUnlocked = true` still ran, leaving
+        // the store claiming unlocked with nothing able to decrypt and no async
+        // recovery path. Latent rather than live: no current call site passes a bare
+        // key here.
+        if (typeof payloadOrHex === 'object' && 'algorithm' in payloadOrHex) {
+          return {
+            payload: {
+              key: payloadOrHex as CryptoKey,
+              rememberSession: maybeRemember !== false,
+            },
+          };
+        }
         return {
           payload: {
             hexKey: payloadOrHex.hexKey,
