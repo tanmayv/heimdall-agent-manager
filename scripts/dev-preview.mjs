@@ -324,8 +324,9 @@ server.on('upgrade', (req, clientSocket, head) => {
     cleanPath = cleanPath.slice(basePrefix.length) || '/';
   }
 
-  // Forward API WebSockets (e.g. /api/v1/user-ws, /api/v1/lsp/) to ham-dev-proxy (8080)
+  // Forward API WebSockets (e.g. /api/v1/user-ws, /api/v1/lsp/, /api/v1/shells/.../stream) to ham-dev-proxy (8080)
   if (cleanPath.startsWith('/api/v1/')) {
+    console.log(`[dev-preview-ws] Proxying API WebSocket upgrade to ham-dev-proxy: ${cleanPath}`);
     const headers = { ...req.headers, host: UPSTREAM.host };
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase().startsWith('x-authentik')) delete headers[key];
@@ -339,6 +340,7 @@ server.on('upgrade', (req, clientSocket, head) => {
       headers,
     });
     upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+      console.log(`[dev-preview-ws] Upstream WebSocket upgrade 101 Switching Protocols received for ${cleanPath}`);
       const statusLine = Object.entries(upstreamRes.headers)
         .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
         .join('\r\n');
@@ -347,13 +349,36 @@ server.on('upgrade', (req, clientSocket, head) => {
       if (head?.length) upstreamSocket.write(head);
       upstreamSocket.pipe(clientSocket);
       clientSocket.pipe(upstreamSocket);
-      upstreamSocket.on('error', () => clientSocket.destroy());
-      clientSocket.on('error', () => upstreamSocket.destroy());
+
+      upstreamSocket.on('close', (hadError) => {
+        console.log(`[dev-preview-ws] upstreamSocket closed for ${cleanPath}, hadError=${hadError}`);
+      });
+      upstreamSocket.on('end', () => {
+        console.log(`[dev-preview-ws] upstreamSocket end for ${cleanPath}`);
+      });
+      clientSocket.on('close', (hadError) => {
+        console.log(`[dev-preview-ws] clientSocket closed for ${cleanPath}, hadError=${hadError}`);
+      });
+      clientSocket.on('end', () => {
+        console.log(`[dev-preview-ws] clientSocket end for ${cleanPath}`);
+      });
+      upstreamSocket.on('error', (err) => {
+        console.error(`[dev-preview-ws] upstreamSocket error for ${cleanPath}:`, err.message);
+        clientSocket.destroy();
+      });
+      clientSocket.on('error', (err) => {
+        console.error(`[dev-preview-ws] clientSocket error for ${cleanPath}:`, err.message);
+        upstreamSocket.destroy();
+      });
     });
     upstreamReq.on('response', (upstreamRes) => {
+      console.warn(`[dev-preview-ws] upstreamReq non-upgrade response for ${cleanPath}: status=${upstreamRes.statusCode}`);
       clientSocket.end(`HTTP/1.1 ${upstreamRes.statusCode} ${upstreamRes.statusMessage}\r\n\r\n`);
     });
-    upstreamReq.on('error', () => clientSocket.destroy());
+    upstreamReq.on('error', (err) => {
+      console.error(`[dev-preview-ws] upstreamReq error for ${cleanPath}:`, err.message);
+      clientSocket.destroy();
+    });
     upstreamReq.end();
     return;
   }

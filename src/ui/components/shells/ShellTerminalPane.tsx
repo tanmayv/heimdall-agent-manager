@@ -92,6 +92,7 @@ export function ShellTerminalPane({
       return { rows: Math.max(term.rows, 1), cols: Math.max(term.cols, 40) };
     },
     onOutput: (bytes) => {
+      console.log('[ShellTerminalPane] onOutput received:', bytes.length, 'bytes, term attached:', Boolean(terminalRef.current));
       const term = terminalRef.current;
       if (!term) return;
       term.write(bytes);
@@ -100,12 +101,14 @@ export function ShellTerminalPane({
       }
     },
     onError: () => {
+      console.error('[ShellTerminalPane] stream onError -> triggering setFallbackToPolling(true)');
       // Graceful fallback: If WebSocket encounters error, fall back to polling
       if (isStreamingExperimentEnabled) {
         setFallbackToPolling(true);
       }
     },
     onClose: () => {
+      console.warn('[ShellTerminalPane] stream onClose -> triggering setFallbackToPolling(true)');
       // Graceful fallback: If WebSocket disconnects, fall back to polling
       if (isStreamingExperimentEnabled) {
         setFallbackToPolling(true);
@@ -114,6 +117,16 @@ export function ShellTerminalPane({
   });
 
   const isStreamingActive = isStreamingExperimentEnabled && streamConnected && !fallbackToPolling;
+
+  useEffect(() => {
+    console.log('[ShellTerminalPane] Streaming state update:', {
+      paneSessionId,
+      isStreamingExperimentEnabled,
+      streamConnected,
+      fallbackToPolling,
+      isStreamingActive,
+    });
+  }, [paneSessionId, isStreamingExperimentEnabled, streamConnected, fallbackToPolling, isStreamingActive]);
 
   // --------------------------------------------------------------------------
   // LEGACY POLLING PATH: 500ms polled capture with SHA-256 diff & term.reset()
@@ -151,6 +164,7 @@ export function ShellTerminalPane({
 
   // Unified retry handler that triggers both streaming reconnect and polling refetch
   const handleRetry = useCallback(() => {
+    console.log('[ShellTerminalPane] handleRetry clicked');
     setFallbackToPolling(false);
     reconnectStream();
     refetch();
@@ -159,6 +173,12 @@ export function ShellTerminalPane({
   // Unified input handler cleanly routing between streaming and legacy polling
   const handleInput = useCallback(
     (data: string) => {
+      console.log('[ShellTerminalPane] handleInput:', {
+        dataLength: data.length,
+        isStreamingActive,
+        fallbackToPolling,
+        targetId: sessionIdRef.current,
+      });
       if (isStreamingActive) {
         // STREAMING: Send keystrokes directly over WebSocket without debounce
         sendStreamInput(data);
@@ -196,6 +216,11 @@ export function ShellTerminalPane({
     (rows: number, cols: number) => {
       const effectiveCols = Math.max(cols, 40);
       const effectiveRows = Math.max(rows, 1);
+      console.log('[ShellTerminalPane] handleResize:', {
+        rows: effectiveRows,
+        cols: effectiveCols,
+        isStreamingActive,
+      });
       if (isStreamingActive) {
         sendStreamResize(effectiveRows, effectiveCols);
       } else {

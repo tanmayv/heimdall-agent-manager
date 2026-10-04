@@ -297,6 +297,7 @@ export function useShellStream({
   };
 
   const closeSocket = () => {
+    console.log('[useShellStream] closeSocket() called for session:', sessionId);
     activeConnectIdRef.current += 1;
     clearHeartbeat();
     clearReconnectTimer();
@@ -314,6 +315,7 @@ export function useShellStream({
   };
 
   const connect = useCallback(() => {
+    console.log('[useShellStream] connect() called:', { sessionId, enabled, stopped: stoppedRef.current });
     if (!sessionId || !enabled || stoppedRef.current) return;
     closeSocket();
 
@@ -322,15 +324,21 @@ export function useShellStream({
 
     shellStreamUrl(sessionId)
       .then((url) => {
-        if (activeConnectIdRef.current !== connectId || stoppedRef.current || !enabled) return;
+        if (activeConnectIdRef.current !== connectId || stoppedRef.current || !enabled) {
+          console.log('[useShellStream] aborting connect: state changed before socket creation');
+          return;
+        }
+        console.log('[useShellStream] creating WebSocket connection to:', url);
         socket = new WebSocket(url);
         socketRef.current = socket;
 
         socket.onopen = () => {
           if (activeConnectIdRef.current !== connectId) {
+            console.log('[useShellStream] onopen received for stale connectId, closing socket');
             try { socket.close(); } catch { /* ignore */ }
             return;
           }
+          console.log('[useShellStream] socket.onopen connected successfully for session:', sessionId);
           reconnectAttemptsRef.current = 0;
           vaultLockedNoticeShownRef.current = false;
           outputQueueRef.current = Promise.resolve();
@@ -346,6 +354,7 @@ export function useShellStream({
           try {
             msg = JSON.parse(event.data);
           } catch {
+            console.warn('[useShellStream] failed to parse incoming JSON frame');
             return;
           }
 
@@ -354,6 +363,12 @@ export function useShellStream({
             const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
             const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
             const data_b64 = !isArmored ? msg.data_b64 : undefined;
+            console.log('[useShellStream] received output frame:', {
+              isArmored,
+              hasEncB64: Boolean(enc_b64),
+              hasDataB64: Boolean(data_b64),
+              payloadLen: (rawPayload || '').length,
+            });
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
@@ -363,11 +378,13 @@ export function useShellStream({
                 if (isUnlocked && rawKeyHex) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
+                    console.log('[useShellStream] decrypted output chunk successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
-                  } catch {
-                    // Decrypt failure (e.g. key mismatch or corrupted frame) - do not crash
+                  } catch (err) {
+                    console.error('[useShellStream] decryption failed for output frame:', err);
                   }
                 } else {
+                  console.warn('[useShellStream] vault is locked; cannot decrypt encrypted output frame');
                   if (!vaultLockedNoticeShownRef.current) {
                     vaultLockedNoticeShownRef.current = true;
                     const notice = new TextEncoder().encode(
@@ -381,8 +398,11 @@ export function useShellStream({
                   const raw = atob(data_b64);
                   const bytes = new Uint8Array(raw.length);
                   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                  console.log('[useShellStream] decoded plaintext output chunk:', bytes.length, 'bytes');
                   onOutputRef.current?.(bytes);
-                } catch { /* ignore decode errors */ }
+                } catch (err) {
+                  console.error('[useShellStream] base64 decode failed for plaintext output frame:', err);
+                }
               }
             }).catch(() => { /* ignore queue errors */ });
           } else if (msg.type === 'screen') {
@@ -390,6 +410,12 @@ export function useShellStream({
             const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
             const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
             const b64 = !isArmored ? (msg.screen_b64 || msg.data_b64) : undefined;
+            console.log('[useShellStream] received screen snapshot frame:', {
+              isArmored,
+              hasEncB64: Boolean(enc_b64),
+              hasB64: Boolean(b64),
+              payloadLen: (rawPayload || '').length,
+            });
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
@@ -399,11 +425,13 @@ export function useShellStream({
                 if (isUnlocked && rawKeyHex) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
+                    console.log('[useShellStream] decrypted screen snapshot successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
-                  } catch {
-                    // Decrypt failure - do not crash
+                  } catch (err) {
+                    console.error('[useShellStream] decryption failed for screen frame:', err);
                   }
                 } else {
+                  console.warn('[useShellStream] vault is locked; cannot decrypt encrypted screen frame');
                   if (!vaultLockedNoticeShownRef.current) {
                     vaultLockedNoticeShownRef.current = true;
                     const notice = new TextEncoder().encode(
@@ -417,19 +445,37 @@ export function useShellStream({
                   const raw = atob(b64);
                   const bytes = new Uint8Array(raw.length);
                   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                  console.log('[useShellStream] decoded plaintext screen snapshot:', bytes.length, 'bytes');
                   onOutputRef.current?.(bytes);
-                } catch { /* ignore decode errors */ }
+                } catch (err) {
+                  console.error('[useShellStream] base64 decode failed for plaintext screen frame:', err);
+                }
               }
             }).catch(() => { /* ignore queue errors */ });
           } else if (msg.type === 'status') {
+            console.log('[useShellStream] received status frame:', msg.status);
             onStatusRef.current?.(msg.status);
           } else if (msg.type === 'error') {
+            console.error('[useShellStream] received error frame from server:', msg.message);
             onErrorRef.current?.(msg.message);
+          } else if ((msg as any).type === 'ready') {
+            console.log('[useShellStream] received ready frame for session:', (msg as any).session_id);
           }
         };
 
-        socket.onclose = () => {
-          if (activeConnectIdRef.current !== connectId) return;
+        socket.onclose = (event: CloseEvent) => {
+          if (activeConnectIdRef.current !== connectId) {
+            console.log('[useShellStream] socket.onclose ignored for stale connectId');
+            return;
+          }
+          console.warn('[useShellStream] socket.onclose triggered:', {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+            reconnectAttempts: reconnectAttemptsRef.current,
+            stopped: stoppedRef.current,
+            enabled,
+          });
           clearHeartbeat();
           setConnected(false);
 
@@ -439,6 +485,7 @@ export function useShellStream({
               INITIAL_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current),
               MAX_RECONNECT_DELAY_MS
             );
+            console.log(`[useShellStream] scheduling auto-reconnect attempt #${reconnectAttemptsRef.current + 1} in ${delay}ms`);
             reconnectAttemptsRef.current += 1;
             reconnectTimerRef.current = window.setTimeout(() => {
               if (!stoppedRef.current && enabled) {
@@ -446,12 +493,14 @@ export function useShellStream({
               }
             }, delay);
           } else {
+            console.warn('[useShellStream] reconnect exhausted or disabled, calling onClose');
             onCloseRef.current?.();
           }
         };
 
-        socket.onerror = () => {
+        socket.onerror = (event) => {
           if (activeConnectIdRef.current !== connectId) return;
+          console.error('[useShellStream] socket.onerror triggered:', event);
           if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
             onErrorRef.current?.('Shell stream connection error');
           }
@@ -459,6 +508,7 @@ export function useShellStream({
       })
       .catch((err) => {
         if (activeConnectIdRef.current !== connectId) return;
+        console.error('[useShellStream] shellStreamUrl resolution error:', err);
         onErrorRef.current?.(String(err?.message || err || 'Failed to connect to shell stream'));
       });
   }, [sessionId, enabled]);
@@ -467,12 +517,15 @@ export function useShellStream({
     stoppedRef.current = false;
     reconnectAttemptsRef.current = 0;
     if (enabled && sessionId) {
+      console.log('[useShellStream] useEffect mount/change triggering connect() for session:', sessionId);
       connect();
     } else {
+      console.log('[useShellStream] useEffect inactive (enabled=' + enabled + ', sessionId=' + sessionId + '), closing socket');
       closeSocket();
     }
 
     return () => {
+      console.log('[useShellStream] useEffect unmount/cleanup for session:', sessionId);
       stoppedRef.current = true;
       closeSocket();
     };
@@ -480,10 +533,19 @@ export function useShellStream({
 
   const sendInput = useCallback((data: string) => {
     const s = socketRef.current;
-    if (!s || s.readyState !== WebSocket.OPEN) return;
+    if (!s || s.readyState !== WebSocket.OPEN) {
+      console.warn('[useShellStream] sendInput called but socket is not open, readyState:', s?.readyState);
+      return;
+    }
 
     const isUnlocked = isVaultUnlockedRef.current;
     const rawKeyHex = rawVaultKeyHexRef.current;
+
+    console.log('[useShellStream] sendInput sending keystroke(s):', {
+      chars: data.length,
+      isUnlocked,
+      hasKey: Boolean(rawKeyHex),
+    });
 
     if (isUnlocked && rawKeyHex) {
       inputQueueRef.current = inputQueueRef.current.then(async () => {
@@ -492,8 +554,10 @@ export function useShellStream({
           const enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
           if (s.readyState === WebSocket.OPEN) {
             s.send(JSON.stringify({ type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` }));
+            console.log('[useShellStream] sendInput sent encrypted input frame');
           }
-        } catch {
+        } catch (err) {
+          console.warn('[useShellStream] input encryption failed, falling back to plaintext:', err);
           if (s.readyState === WebSocket.OPEN) {
             s.send(JSON.stringify({ type: 'input', data_b64: toBase64(data) }));
           }
@@ -501,16 +565,19 @@ export function useShellStream({
       }).catch(() => { /* ignore queue error */ });
     } else {
       s.send(JSON.stringify({ type: 'input', data_b64: toBase64(data) }));
+      console.log('[useShellStream] sendInput sent plaintext input frame');
     }
   }, []);
 
   const sendResize = useCallback((rows: number, cols: number) => {
     const s = socketRef.current;
+    console.log('[useShellStream] sendResize called:', { rows, cols, readyState: s?.readyState });
     if (!s || s.readyState !== WebSocket.OPEN) return;
     s.send(JSON.stringify({ type: 'resize', rows, cols }));
   }, []);
 
   const reconnect = useCallback(() => {
+    console.log('[useShellStream] reconnect() manually invoked for session:', sessionId);
     reconnectAttemptsRef.current = 0;
     vaultLockedNoticeShownRef.current = false;
     connect();
