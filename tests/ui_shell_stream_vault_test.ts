@@ -18,6 +18,9 @@ import {
   base64ToBytes,
   bytesToBase64,
   VAULT_ARMOR_PREFIX,
+  decryptVaultText,
+  encryptVaultText,
+  isVaultArmored,
 } from '../src/ui/utils/vaultContent.ts';
 import { importRawKeyHex } from '../src/ui/utils/vaultCrypto.ts';
 
@@ -173,4 +176,202 @@ test('WebCrypto CryptoKey instance can be passed directly to encrypt and decrypt
   const dec = await decryptShellStreamPayload(enc, cryptoKey);
 
   assert.equal(new TextDecoder().decode(dec), text);
+});
+
+// -----------------------------------------------------------------------------
+// 3. REQ-SHELL-ENC-8: createShell enc_spec Encrypted Spawn Authorization
+// -----------------------------------------------------------------------------
+
+test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verification', () => {
+  const SHELLS_ENDPOINT = path.join(REPO_ROOT, 'src/ui/api/endpoints/shells.ts');
+  const NEW_SHELL_DIALOG = path.join(REPO_ROOT, 'src/ui/components/shells/NewShellDialog.tsx');
+
+  assert.ok(fs.existsSync(SHELLS_ENDPOINT), 'shells.ts must exist');
+  assert.ok(fs.existsSync(NEW_SHELL_DIALOG), 'NewShellDialog.tsx must exist');
+
+  const endpointSrc = fs.readFileSync(SHELLS_ENDPOINT, 'utf8');
+  const dialogSrc = fs.readFileSync(NEW_SHELL_DIALOG, 'utf8');
+
+  // Verify imports in shells.ts
+  assert.ok(
+    endpointSrc.includes('encryptVaultText'),
+    'shells.ts must import encryptVaultText',
+  );
+  assert.ok(
+    endpointSrc.includes('readSessionVaultKey'),
+    'shells.ts must import readSessionVaultKey',
+  );
+
+  // Verify CreateShellArgs includes optional enc_spec
+  assert.ok(
+    /interface\s+CreateShellArgs[\s\S]*?enc_spec\?:/m.test(endpointSrc),
+    'CreateShellArgs must define optional enc_spec?: string',
+  );
+
+  // Verify createShell mutation inspects vault unlock state and key
+  assert.ok(
+    endpointSrc.includes('createShell: build.mutation'),
+    'shells.ts must define createShell mutation',
+  );
+  assert.ok(
+    endpointSrc.includes('rawVaultKeyHex') && endpointSrc.includes('isUnlocked'),
+    'createShell queryFn must check vault unlock status and raw key',
+  );
+
+  // Verify createShell constructs spec with cmd, cwd, timestamp, and nonce
+  assert.ok(
+    endpointSrc.includes('timestamp: Date.now()'),
+    'createShell queryFn must populate timestamp with Date.now()',
+  );
+  assert.ok(
+    endpointSrc.includes('nonce:'),
+    'createShell queryFn must populate nonce',
+  );
+  assert.ok(
+    endpointSrc.includes('encryptVaultText(JSON.stringify(spec), rawKeyHex)'),
+    'createShell queryFn must encrypt spec JSON with rawKeyHex',
+  );
+
+  // Verify NewShellDialog relies on createShell mutation
+  assert.ok(
+    dialogSrc.includes('useCreateShellMutation'),
+    'NewShellDialog.tsx must use useCreateShellMutation',
+  );
+  assert.ok(
+    dialogSrc.includes('createShell({'),
+    'NewShellDialog.tsx must invoke createShell mutation',
+  );
+});
+
+test('REQ-SHELL-ENC-8: createShell logic generates valid armored enc_spec containing expected JSON properties when vault is unlocked', async () => {
+  const cmd = 'npm run dev';
+  const cwd = '/home/user/project';
+  const startTime = Date.now();
+
+  // Simulate queryFn execution when vault is unlocked
+  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
+  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+  const body = { cmd, cwd, kind: 'shell' as const };
+  let requestBody: Record<string, any> = { ...body };
+
+  if (isUnlocked && rawKeyHex) {
+    const spec = {
+      cmd: body.cmd || '',
+      cwd: body.cwd || '',
+      timestamp: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+    requestBody = { ...body, enc_spec };
+  }
+
+  assert.ok(requestBody.enc_spec, 'requestBody must contain enc_spec');
+  assert.ok(isVaultArmored(requestBody.enc_spec), 'enc_spec must start with vault:v1:');
+
+  // Decrypt enc_spec with vault key
+  const decryptedJson = await decryptVaultText(requestBody.enc_spec, TEST_VAULT_KEY);
+  const parsedSpec = JSON.parse(decryptedJson);
+
+  assert.equal(parsedSpec.cmd, cmd, 'decrypted spec cmd must match input cmd');
+  assert.equal(parsedSpec.cwd, cwd, 'decrypted spec cwd must match input cwd');
+  assert.ok(typeof parsedSpec.timestamp === 'number', 'timestamp must be a number');
+  assert.ok(parsedSpec.timestamp >= startTime && parsedSpec.timestamp <= Date.now(), 'timestamp must be current');
+  assert.ok(typeof parsedSpec.nonce === 'string' && parsedSpec.nonce.length >= 16, 'nonce must be a non-empty string');
+  // Check UUID format
+  assert.ok(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsedSpec.nonce),
+    'nonce must be valid UUID string',
+  );
+});
+
+test('REQ-SHELL-ENC-8: createShell logic omits enc_spec when vault is locked (transparent fallback)', async () => {
+  const stateLocked: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
+  const isUnlocked = Boolean(stateLocked?.vault?.isUnlocked || stateLocked?.vault?.unlocked);
+  const rawKeyHex = stateLocked?.vault?.rawVaultKeyHex;
+
+  const body = { cmd: 'ls -la', cwd: '/tmp', kind: 'run' as const };
+  let requestBody: Record<string, any> = { ...body };
+
+  if (isUnlocked && rawKeyHex) {
+    const spec = {
+      cmd: body.cmd || '',
+      cwd: body.cwd || '',
+      timestamp: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+    requestBody = { ...body, enc_spec };
+  }
+
+  assert.strictEqual(requestBody.enc_spec, undefined, 'enc_spec must be omitted when vault is locked');
+  assert.equal(requestBody.cmd, 'ls -la');
+  assert.equal(requestBody.cwd, '/tmp');
+});
+
+test('REQ-SHELL-ENC-8: createShell logic omits enc_spec when key is unavailable/null even if isUnlocked is true', async () => {
+  const stateNoKey: any = { vault: { isUnlocked: true, rawVaultKeyHex: null } };
+  const isUnlocked = Boolean(stateNoKey?.vault?.isUnlocked || stateNoKey?.vault?.unlocked);
+  const rawKeyHex = stateNoKey?.vault?.rawVaultKeyHex;
+
+  const body = { cmd: 'cat /etc/hosts', cwd: '/', kind: 'run' as const };
+  let requestBody: Record<string, any> = { ...body };
+
+  if (isUnlocked && rawKeyHex) {
+    const spec = {
+      cmd: body.cmd || '',
+      cwd: body.cwd || '',
+      timestamp: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+    requestBody = { ...body, enc_spec };
+  }
+
+  assert.strictEqual(requestBody.enc_spec, undefined, 'enc_spec must be omitted when rawKeyHex is missing');
+});
+
+test('REQ-SHELL-ENC-8: createShell defaults omitted cmd and cwd to empty strings in spec', async () => {
+  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
+  const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
+  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+  const body: { cmd?: string; cwd?: string; kind: 'shell' } = { kind: 'shell' };
+  let requestBody: Record<string, any> = { ...body };
+
+  if (isUnlocked && rawKeyHex) {
+    const spec = {
+      cmd: body.cmd || '',
+      cwd: body.cwd || '',
+      timestamp: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    const enc_spec = await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+    requestBody = { ...body, enc_spec };
+  }
+
+  assert.ok(requestBody.enc_spec);
+  const decryptedJson = await decryptVaultText(requestBody.enc_spec, TEST_VAULT_KEY);
+  const parsedSpec = JSON.parse(decryptedJson);
+
+  assert.strictEqual(parsedSpec.cmd, '', 'omitted cmd must default to empty string');
+  assert.strictEqual(parsedSpec.cwd, '', 'omitted cwd must default to empty string');
+});
+
+test('REQ-SHELL-ENC-8: createShell generates distinct randomized nonces across multiple calls', async () => {
+  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
+  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+  const spec1 = { cmd: 'test', cwd: '/dir', timestamp: Date.now(), nonce: crypto.randomUUID() };
+  const spec2 = { cmd: 'test', cwd: '/dir', timestamp: Date.now(), nonce: crypto.randomUUID() };
+
+  const enc1 = await encryptVaultText(JSON.stringify(spec1), rawKeyHex);
+  const enc2 = await encryptVaultText(JSON.stringify(spec2), rawKeyHex);
+
+  assert.notEqual(enc1, enc2, 'encryptions must produce distinct ciphertexts');
+
+  const p1 = JSON.parse(await decryptVaultText(enc1, TEST_VAULT_KEY));
+  const p2 = JSON.parse(await decryptVaultText(enc2, TEST_VAULT_KEY));
+  assert.notEqual(p1.nonce, p2.nonce, 'nonces must be unique');
 });

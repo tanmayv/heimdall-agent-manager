@@ -1,5 +1,7 @@
 import { heimdallApi } from '../heimdallApi';
 import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
+import { encryptVaultText } from '../../utils/vaultContent';
+import { readSessionVaultKey } from '../../store/vaultSlice';
 
 // REQ-SHELL-1 collapsed the model to three kinds: `command` became `run`,
 // `interactive` became `shell`, and `agent` was dropped (agent terminal panes were
@@ -153,7 +155,7 @@ type ListShellsArgs = {
   limit?: number;
 };
 
-type CreateShellArgs = {
+export interface CreateShellArgs {
   bridgeId: string;
   kind: ShellSessionKind;
   cmd?: string;
@@ -161,7 +163,10 @@ type CreateShellArgs = {
   label?: string;
   server_port?: number;
   chain_id?: string;
-};
+  // REQ-SHELL-ENC-8: Encrypted shell spawn authorization envelope (vault:v1:...)
+  // containing { cmd, cwd, timestamp, nonce } for zero-trust bridge verification.
+  enc_spec?: string;
+}
 
 export interface GetShellPaneArgs {
   sessionId: string;
@@ -312,13 +317,35 @@ export const shellsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
+    // REQ-SHELL-ENC-8: Attach zero-trust armored enc_spec (vault:v1:...) when vault
+    // is unlocked so host bridge can authorize shell spawn, with transparent fallback when locked.
     createShell: build.mutation<ShellSession, CreateShellArgs>({
-      queryFn: async ({ bridgeId, ...body }) => {
+      queryFn: async ({ bridgeId, ...body }, api) => {
         try {
+          const state: any = api?.getState?.();
+          const isUnlocked = state?.vault != null
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked)
+            : Boolean(readSessionVaultKey());
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+
+          let requestBody: Record<string, any> = { ...body };
+          if (isUnlocked && rawKeyHex) {
+            const spec = {
+              cmd: body.cmd || '',
+              cwd: body.cwd || '',
+              timestamp: Date.now(),
+              nonce: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : (globalThis as any).crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            };
+            const enc_spec = body.enc_spec || await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+            requestBody = { ...body, enc_spec };
+          }
+
           const data = await cookieMutation(
             `/bridges/${encodeURIComponent(bridgeId)}/shells`,
             'POST',
-            body,
+            requestBody,
           );
           const session: ShellSession = data?.session ?? data;
           return { data: session };
