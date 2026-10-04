@@ -143,3 +143,92 @@ test_vault_content_webcrypto_interoperability :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "decryption of WebCrypto test vector must succeed")
 	testing.expect_value(t, decrypted, "Hello, Heimdall Zero-Knowledge Vault!")
 }
+
+// ---------------------------------------------------------------------------
+// F1 / REQ-JSONX-2 regression guard for `ctl_decrypt_json_string`.
+//
+// These tests exist because the first F1 fix was incomplete and the existing tests
+// COULD NOT SEE IT. `src/lib/jsonx` was made safe and every call site inside
+// `jsonx.odin` was rerouted, but `ctl_decrypt_json_string` reached
+// `core:encoding/json` on its own, so `artifact show --with-content` kept aborting at
+// parser.odin:494/:507 while `odin test src/lib/jsonx` stayed green at 18/18.
+//
+// The lesson is the shape of the test, not the bug: exercising `jsonx` directly can
+// never detect a path that BYPASSES jsonx. So these drive the CLI proc that the real
+// command calls, with the byte patterns that actually broke it.
+
+@(test)
+test_ctl_decrypt_json_string_passes_invalid_utf8_through_verbatim :: proc(t: ^testing.T) {
+	// No armor anywhere: the fast path must hand the bytes back untouched. Against the
+	// pre-fix code this aborted the process inside core's `unquote_string`.
+	blob := strings.builder_make(context.temp_allocator)
+	for _ in 0 ..< 64 {
+		for v in 0x80 ..< 0x100 do strings.write_byte(&blob, u8(v))
+	}
+	raw := strings.concatenate({`{"ok":true,"content":"`, strings.to_string(blob), `"}`}, context.temp_allocator)
+
+	got := ctl_decrypt_json_string(raw, TEST_VAULT_KEY_HEX, true, context.temp_allocator)
+	testing.expectf(
+		t,
+		got == raw,
+		"unarmored response must be byte-identical: got %d bytes, want %d",
+		len(got),
+		len(raw),
+	)
+}
+
+@(test)
+test_ctl_decrypt_json_string_decrypts_armor_beside_invalid_utf8 :: proc(t: ^testing.T) {
+	// THE case the first fix missed and the short-circuit alone does not cover: one
+	// response carrying BOTH an armored field and invalid UTF-8. This is not synthetic
+	// -- `artifact show --with-content art_18db52a612c4eb62` is exactly this shape, an
+	// armored `name` beside 1.89M of jpeg, and it aborted until this was fixed.
+	armored, enc_ok := vault_encrypt_text_hex("IMG_5494.jpeg", TEST_VAULT_KEY_HEX, context.temp_allocator)
+	testing.expect(t, enc_ok, "fixture encryption must succeed")
+
+	blob := strings.builder_make(context.temp_allocator)
+	for _ in 0 ..< 32 {
+		for v in 0x80 ..< 0x100 do strings.write_byte(&blob, u8(v))
+	}
+	binary := strings.to_string(blob)
+	raw := strings.concatenate(
+		{`{"ok":true,"name":"`, armored, `","content":"`, binary, `"}`},
+		context.temp_allocator,
+	)
+
+	got := ctl_decrypt_json_string(raw, TEST_VAULT_KEY_HEX, true, context.temp_allocator)
+
+	// 1. The armored field is decrypted and no ciphertext survives.
+	testing.expect(t, strings.contains(got, `"name":"IMG_5494.jpeg"`), "armored name must be decrypted")
+	testing.expect(t, !strings.contains(got, VAULT_ARMOR_PREFIX), "no armor may reach the output")
+
+	// 2. The binary field is preserved VERBATIM. Not aborting is not enough -- core's
+	//    marshal would have rewritten each invalid byte, so assert on the bytes.
+	testing.expect(t, strings.contains(got, binary), "binary content must survive byte-for-byte")
+	testing.expect(
+		t,
+		!strings.contains(got, "�"),
+		"no byte may be replaced by U+FFFD",
+	)
+}
+
+@(test)
+test_ctl_decrypt_json_string_locked_state_keeps_binary_intact :: proc(t: ^testing.T) {
+	// Locked vault (no key) beside invalid UTF-8: the armored field must fall back to
+	// the named locked state and the binary must still come through untouched.
+	armored, enc_ok := vault_encrypt_text_hex("secret-name", TEST_VAULT_KEY_HEX, context.temp_allocator)
+	testing.expect(t, enc_ok, "fixture encryption must succeed")
+
+	// Only bytes >= 0x20 plus high bytes: a RAW control byte inside a JSON string
+	// literal is a separate (tokenizer-level) concern and not what this test is about.
+	binary := "\x89PNG\xff\xfe\xfd\xfc\xfb"
+	raw := strings.concatenate(
+		{`{"ok":true,"name":"`, armored, `","content":"`, binary, `"}`},
+		context.temp_allocator,
+	)
+
+	got := ctl_decrypt_json_string(raw, "", false, context.temp_allocator)
+	testing.expect(t, strings.contains(got, "[Encrypted:"), "locked state must be named, not raw ciphertext")
+	testing.expect(t, strings.contains(got, VAULT_HINT_NO_KEY), "locked state must carry the remedy hint")
+	testing.expect(t, strings.contains(got, binary), "binary content must survive the locked path too")
+}

@@ -208,7 +208,9 @@ read_object_key :: proc(r: ^Reader) -> (key: string, ok: bool) {
 	case .Ident:
 		// JSON5 permits an unquoted identifier as a key.
 		if !advance(r) do return "", false
-		return clone_bytes(tok.text, r.allocator), true
+		key, clone_ok := clone_bytes(tok.text, r.allocator)
+		if !clone_ok do return "", false
+		return key, true
 	case .String:
 		if !advance(r) do return "", false
 		return decode_string_token(tok.text, r.allocator), true
@@ -246,11 +248,16 @@ read_array :: proc(r: ^Reader) -> (value: json.Value, ok: bool) {
 
 // clone_bytes copies s onto allocator so the tree owns it and
 // `json.destroy_value` can free it, with no interpretation of the bytes.
+//
+// Reports failure rather than returning "": an allocation failure used to be
+// indistinguishable from an empty key, and `read_object` DROPS empty-keyed members,
+// so OOM would have silently removed a field from the parsed response instead of
+// failing the parse.
 @(private = "file")
-clone_bytes :: proc(s: string, allocator: mem.Allocator) -> string {
-	if len(s) == 0 do return ""
+clone_bytes :: proc(s: string, allocator: mem.Allocator) -> (string, bool) {
+	if len(s) == 0 do return "", true
 	b, err := mem.alloc_bytes(len(s), 1, allocator)
-	if err != nil do return ""
+	if err != nil do return "", false
 	copy(b, s)
-	return string(b)
+	return string(b), true
 }
