@@ -7,7 +7,7 @@ import {
 } from '../api/endpoints/artifacts';
 import { useListAgentsQuery } from '../api/endpoints/agents';
 import { useListProjectsQuery } from '../api/endpoints/projects';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, selectActiveVaultKey } from '../store/vaultSlice';
+import { selectIsVaultUnlocked, selectActiveVaultKey } from '../store/vaultSlice';
 import { decryptProjectList } from '../utils/vaultProjects';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
@@ -126,13 +126,12 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   }, [projects, projectsQuery.data]);
 
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
-  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey() || rawVaultKeyHex;
+  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey();
   const [projectsList, setProjectsList] = useState<any[]>(rawProjectsList);
 
   useEffect(() => {
     let active = true;
-    const keyToUse = activeVaultKey || getActiveVaultKey() || rawVaultKeyHex;
+    const keyToUse = activeVaultKey || getActiveVaultKey();
     if (!isVaultUnlocked || !keyToUse) {
       setProjectsList(
         rawProjectsList.map((p: any) => ({
@@ -150,7 +149,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
     return () => {
       active = false;
     };
-  }, [rawProjectsList, isVaultUnlocked, activeVaultKey, rawVaultKeyHex]);
+  }, [rawProjectsList, isVaultUnlocked, activeVaultKey]);
   const chainsArray = Array.isArray(chains) ? chains : [];
 
   const kindOptions = useMemo(() => {

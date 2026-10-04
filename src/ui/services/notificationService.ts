@@ -24,7 +24,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../utils/vaultContent.ts';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey, getActiveVaultKey } from '../store/vaultSlice.ts';
+import { selectIsVaultUnlocked, getActiveVaultKey } from '../store/vaultSlice.ts';
 
 export function isNotificationSupported(): boolean {
   try {
@@ -341,7 +341,7 @@ export function fireNotificationForWsEvent(
 
   const rawState = typeof getState === 'function' ? getState() : undefined;
   const isUnlocked = rawState ? Boolean(selectIsVaultUnlocked(rawState)) : false;
-  const activeKey = (rawState ? selectRawVaultKeyHex(rawState) : null) || getActiveVaultKey() || readSessionVaultKey();
+  const activeKey = getActiveVaultKey();
 
   const hasArmoredBody = isVaultArmored(plan.body) || containsVaultArmored(plan.body);
   const hasArmoredTitle = isVaultArmored(plan.title) || containsVaultArmored(plan.title);

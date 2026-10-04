@@ -4,6 +4,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
   decryptList,
+  getActiveVaultKey,
 } from '../../utils/vaultContent.ts';
 
 export interface VaultTextModelProps {
@@ -62,16 +63,24 @@ export function resolveVaultText(
 
 /**
  * Async decryption helper for vault armored text strings.
+ *
+ * `key` accepts a non-extractable CryptoKey (the hardened path), a 64-char hex
+ * string (legacy/tests), or null. It defaults to the module-held active vault
+ * key, so callers no longer need to thread key material through props or state
+ * (REQ-RAWKEY-A5).
  */
 export async function decryptVaultTextContent(
   value: string | null | undefined,
-  rawKeyHex: string | null | undefined,
+  key?: CryptoKey | string | null,
   fallback = '',
 ): Promise<string> {
+  // Omitting `key` resolves the active vault key; passing an explicit null still
+  // means "no key available", which existing callers rely on for the locked state.
+  const resolvedKey = key === undefined ? getActiveVaultKey() : key;
   const raw = value ?? '';
   if (!isVaultArmored(raw)) return raw || fallback;
-  if (!rawKeyHex) return fallback || '[Locked content]';
-  return await decryptVaultText(raw, rawKeyHex);
+  if (!resolvedKey) return fallback || '[Locked content]';
+  return await decryptVaultText(raw, resolvedKey);
 }
 
 export interface DecryptedMarkdownResolved {
@@ -82,13 +91,18 @@ export interface DecryptedMarkdownResolved {
 
 /**
  * Pure helper function to resolve DecryptedMarkdown content reactively.
+ *
+ * `key` follows the same contract as decryptVaultTextContent: CryptoKey, hex
+ * string, or null, defaulting to the active vault key (REQ-RAWKEY-A5).
  */
 export async function resolveDecryptedMarkdownContent(
   source: string | null | undefined,
-  rawKeyHex: string | null | undefined,
+  key: CryptoKey | string | null | undefined,
   isUnlocked: boolean,
   fallback = '',
 ): Promise<DecryptedMarkdownResolved> {
+  // See decryptVaultTextContent: undefined => active key, explicit null => no key.
+  const resolvedKey = key === undefined ? getActiveVaultKey() : key;
   const raw = source ?? '';
   const isArmored = isVaultArmored(raw);
   const isEmbedded = !isArmored && containsVaultArmored(raw);
@@ -102,7 +116,7 @@ export async function resolveDecryptedMarkdownContent(
     };
   }
 
-  if (!isUnlocked || !rawKeyHex) {
+  if (!isUnlocked || !resolvedKey) {
     return {
       text: raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'),
       isArmored: true,
@@ -111,8 +125,8 @@ export async function resolveDecryptedMarkdownContent(
   }
 
   const decrypted = isArmored
-    ? await decryptVaultText(raw, rawKeyHex)
-    : await decryptEmbeddedVaultTokens(raw, rawKeyHex);
+    ? await decryptVaultText(raw, resolvedKey)
+    : await decryptEmbeddedVaultTokens(raw, resolvedKey);
 
   return {
     text: decrypted.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'),

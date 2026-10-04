@@ -63,11 +63,9 @@ import SettingsModal from '../settings/SettingsModal';
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
-  selectRawVaultKeyHex,
   selectIsUnlockModalOpen,
   setUnlockModalOpen,
   readOnboardingDismissed,
-  readSessionVaultKey,
   shouldOpenVaultOnboarding,
   getActiveVaultKey,
 } from '../../store/vaultSlice';
@@ -1336,13 +1334,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   // Vault state & onboarding modal
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
   const activeVaultKey = useMemo(() => {
     if (isVaultUnlocked) {
-      return getActiveVaultKey() || rawVaultKeyHex || readSessionVaultKey();
+      return getActiveVaultKey();
     }
     return null;
-  }, [isVaultUnlocked, rawVaultKeyHex]);
+  }, [isVaultUnlocked]);
   const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);
 

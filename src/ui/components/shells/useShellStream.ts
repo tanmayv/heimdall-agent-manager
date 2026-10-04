@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { apiAbsoluteUrl } from '../../api/apiBase.ts';
 import { shellResizeFrame } from './shellStreamFrames.ts';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey, getActiveVaultKey } from '../../store/vaultSlice.ts';
+import { getActiveVaultKey } from '../../store/vaultSlice.ts';
 import { importRawKeyHex, AES_GCM_NONCE_BYTES, AES_GCM_TAG_BYTES } from '../../utils/vaultCrypto.ts';
 import { bytesToBase64, base64ToBytes, VAULT_ARMOR_PREFIX, MIN_ARMOR_PAYLOAD_BYTES } from '../../utils/vaultContent.ts';
 
@@ -39,8 +39,6 @@ export type UseShellStreamOptions = {
    * read again on every reconnect — after a backoff reconnect the new PTY needs telling too.
    */
   getGeometry?: () => { rows: number; cols: number } | null;
-  /** Explicit vault key override (defaults to Redux vault / session storage). */
-  rawVaultKeyHex?: string | null;
   /** Explicit vault unlock state override (defaults to Redux vault). */
   isVaultUnlocked?: boolean;
 };
@@ -192,7 +190,6 @@ export function useShellStream({
   onError,
   onClose,
   getGeometry,
-  rawVaultKeyHex: propRawVaultKeyHex,
   isVaultUnlocked: propIsVaultUnlocked,
 }: UseShellStreamOptions): UseShellStreamResult {
   const [connected, setConnected] = useState(false);
@@ -215,28 +212,22 @@ export function useShellStream({
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => { getGeometryRef.current = getGeometry; }, [getGeometry]);
 
-  // Vault state subscription
+  // Vault state subscription. Key material itself is never held here: it lives
+  // only as a non-extractable CryptoKey reached via getActiveVaultKey()
+  // (REQ-VAULT-HARDEN-1 / REQ-RAWKEY-A5).
   let reduxUnlocked = false;
-  let reduxKeyHex: string | null = null;
   try {
     reduxUnlocked = useSelector((state: any) => Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked));
-    reduxKeyHex = useSelector((state: any) => state?.vault?.rawVaultKeyHex ?? null);
   } catch {
     // Non-fatal when rendered outside Redux Provider (e.g. standalone test)
   }
 
-  const sessionKey = readSessionVaultKey();
   const isVaultUnlocked = propIsVaultUnlocked !== undefined
     ? propIsVaultUnlocked
-    : (reduxUnlocked || Boolean(reduxKeyHex) || Boolean(sessionKey));
-  const rawVaultKeyHex = propRawVaultKeyHex !== undefined
-    ? propRawVaultKeyHex
-    : (reduxKeyHex || sessionKey);
+    : reduxUnlocked;
 
   const isVaultUnlockedRef = useRef(isVaultUnlocked);
   isVaultUnlockedRef.current = isVaultUnlocked;
-  const rawVaultKeyHexRef = useRef(rawVaultKeyHex);
-  rawVaultKeyHexRef.current = rawVaultKeyHex;
   const vaultLockedNoticeShownRef = useRef(false);
   const outputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -247,10 +238,6 @@ export function useShellStream({
       vaultLockedNoticeShownRef.current = false;
     }
   }, [isVaultUnlocked]);
-
-  useEffect(() => {
-    rawVaultKeyHexRef.current = rawVaultKeyHex;
-  }, [rawVaultKeyHex]);
 
   const clearHeartbeat = () => {
     if (heartbeatRef.current) window.clearInterval(heartbeatRef.current);
@@ -385,11 +372,10 @@ export function useShellStream({
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
                 const activeKey = getActiveVaultKey();
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
-                const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
-                if (isUnlocked && keyToUse) {
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(activeKey);
+                if (isUnlocked && activeKey) {
                   try {
-                    const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
+                    const bytes = await decryptShellStreamPayload(enc_b64, activeKey);
                     console.log('[useShellStream] decrypted output chunk successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
                   } catch (err) {
@@ -431,11 +417,10 @@ export function useShellStream({
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
                 const activeKey = getActiveVaultKey();
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
-                const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
-                if (isUnlocked && keyToUse) {
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(activeKey);
+                if (isUnlocked && activeKey) {
                   try {
-                    const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
+                    const bytes = await decryptShellStreamPayload(enc_b64, activeKey);
                     console.log('[useShellStream] decrypted screen snapshot successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
                   } catch (err) {
@@ -540,20 +525,19 @@ export function useShellStream({
     }
 
     const activeKey = getActiveVaultKey();
-    const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
-    const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+    const isUnlocked = isVaultUnlockedRef.current || Boolean(activeKey);
 
     console.log('[useShellStream] sendInput sending keystroke(s):', {
       chars: data.length,
       isUnlocked,
-      hasKey: Boolean(keyToUse),
+      hasKey: Boolean(activeKey),
     });
 
-    if (isUnlocked && keyToUse) {
+    if (isUnlocked && activeKey) {
       inputQueueRef.current = inputQueueRef.current.then(async () => {
         if (s.readyState !== WebSocket.OPEN) return;
         try {
-          const enc_b64 = await encryptShellStreamPayload(data, keyToUse);
+          const enc_b64 = await encryptShellStreamPayload(data, activeKey);
           if (s.readyState === WebSocket.OPEN) {
             s.send(JSON.stringify({ type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` }));
             console.log('[useShellStream] sendInput sent encrypted input frame');

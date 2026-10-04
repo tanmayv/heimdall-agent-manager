@@ -28,9 +28,9 @@ import {
 } from '../../api/endpoints/cards';
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import Markdown from '../Markdown';
-import { isVaultArmored } from '../../utils/vaultContent';
+import { isVaultArmored, getActiveVaultKey } from '../../utils/vaultContent';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { decryptProjectList } from '../../utils/vaultProjects';
 import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 
@@ -99,12 +99,15 @@ export function ActionItemsTab() {
   const projects: Project[] = projectsData?.projects || [];
 
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKey = useSelector(selectRawVaultKeyHex);
   const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
 
   useEffect(() => {
     let active = true;
-    if (!isUnlocked || !rawKey) {
+    // Gate on the real non-extractable key, not the permanently-null raw hex:
+    // the old `!rawKey` test was always true, so unlocked users saw ciphertext
+    // placeholders for every project name (REQ-RAWKEY-A5).
+    const activeKey = getActiveVaultKey();
+    if (!isUnlocked || !activeKey) {
       setDecryptedProjects(
         projects.map((p) => ({
           ...p,
@@ -113,7 +116,7 @@ export function ActionItemsTab() {
       );
       return;
     }
-    decryptProjectList(projects, rawKey).then((res) => {
+    decryptProjectList(projects, activeKey).then((res) => {
       if (active) setDecryptedProjects(res);
     }).catch(() => {
       if (active) setDecryptedProjects(projects);
@@ -121,7 +124,7 @@ export function ActionItemsTab() {
     return () => {
       active = false;
     };
-  }, [projects, isUnlocked, rawKey]);
+  }, [projects, isUnlocked]);
 
   const projectMap = useMemo(() => {
     const map = new Map<string, Project>();
