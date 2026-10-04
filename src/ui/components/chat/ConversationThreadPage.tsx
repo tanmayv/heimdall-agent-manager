@@ -669,6 +669,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
+  const [isSmallComposer, setIsSmallComposer] = useState(false);
   // Flatten the live projects->chains->agents tree into a single @-mention list
   // (agents, projects, and task chains). liveProjects is LiveProject[] with the
   // camelCase shape from api/endpoints/agentsLive.ts.
@@ -777,6 +778,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       return () => clearTimeout(timer);
     }
   }, [keyboardInset]);
+
+  // REQ-COMPOSER-MODEL-ICON-33: Track composer container width for compact model/provider selector icon button
+  useEffect(() => {
+    const el = composerContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const checkWidth = () => {
+      if (typeof el.getBoundingClientRect === 'function') {
+        const rect = el.getBoundingClientRect();
+        setIsSmallComposer(rect.width > 0 && rect.width < 540);
+      }
+    };
+    checkWidth();
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width;
+        setIsSmallComposer(width > 0 && width < 540);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [conversation?.conversation_id, conversation?.conversationId, agentInstanceId]);
 
   // REQ-SIDEBAR-5, REQ-SIDEBAR-TOGGLE-SINGLE-CLICK-10: coordinator conversations with a chainId default the right sidebar
   // to the 'chain' tab. Fires once when chainId first becomes available and the panel
@@ -1614,7 +1636,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   const tierMeta: Record<string, { icon: 'rocket' | 'spark' | 'zap'; blurb: string }> = {
     cheap: { icon: 'rocket', blurb: 'Fast, lower cost' },
-    normal: { icon: 'rocket', blurb: 'Balanced' },
+    normal: { icon: 'spark', blurb: 'Balanced' },
     smart: { icon: 'zap', blurb: 'Best reasoning' },
   };
   const pendingReconfig = selectionChangesConfig;
@@ -1642,7 +1664,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       {tierOptions.map((t) => {
         const selected = (tier || instanceTier) === t;
         const current = instanceTier === t;
-        const meta = tierMeta[t] || { icon: 'rocket' as const, blurb: 'Model tier' };
+        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Model tier' };
         return (
           <button key={t} type="button" data-debug-id={`conversation-tier-option-${t}`} onClick={() => setTier(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name={meta.icon} size={16} /></span>
@@ -1906,7 +1928,25 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <Icon name="chevron-down" size={13} className="shrink-0" />
       </button>
     );
-    const runtimeMenuTrigger = (
+    const activeTier = tier || instanceTier || 'normal';
+    const activeTierMeta = tierMeta[activeTier] || { icon: 'spark' as const, blurb: 'Model tier' };
+    const activeTierIcon = activeTierMeta.icon;
+    const useCompactModelTrigger = isMobile || isSmallComposer;
+
+    const runtimeMenuTrigger = useCompactModelTrigger ? (
+      <button
+        type="button"
+        data-debug-id="conversation-runtime-menu-btn"
+        aria-label="Change provider and tier"
+        title={`${instanceProvider || 'model'} · ${instanceTier || '—'} — click to change runtime`}
+        aria-haspopup={isMobile ? 'dialog' : undefined}
+        aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
+        onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-primary hover:bg-neutral-soft"
+      >
+        <Icon name={activeTierIcon} size={16} />
+      </button>
+    ) : (
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
@@ -1917,6 +1957,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
         className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
       >
+        <Icon name={activeTierIcon} size={14} className="shrink-0 text-muted" />
         <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
         <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
         <Icon name="chevron-down" size={14} className="shrink-0" />
@@ -2099,7 +2140,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 )}
               </div>
 
-              <div className="flex-1 min-w-0 sm:flex-initial sm:order-6">
+              <div className={useCompactModelTrigger ? "shrink-0 sm:flex-initial sm:order-6" : "flex-1 min-w-0 sm:flex-initial sm:order-6"}>
                 {!isMobile ? (
                   <Popover
                     side="top"
