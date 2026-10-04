@@ -201,6 +201,28 @@ export function memoryErrorText(err: unknown, fallback = "Something went wrong")
   return apiErrorText(err, fallback);
 }
 
+/**
+ * Collapse any surviving `vault:v1:` token to the locked marker.
+ *
+ * The decrypt above is the real fix and covers every record fetched while the vault
+ * is unlocked. This is the guard for the states it cannot reach, and it exists
+ * because a memory title is consumed as a plain STRING in several places —
+ * `PageShell`'s `<h1>`, a breadcrumb label, an `aria-label`, toast and modal prose —
+ * where `VaultText` cannot be used because there is no element to render into.
+ *
+ * Two states need it. (1) Vault enabled but LOCKED: no key, so the record stays
+ * armored by design. (2) The first synchronous render of `useDecryptedText`, whose
+ * `useState(raw)` initializer returns the raw value and only masks inside its
+ * `useEffect` — so a token is in the committed DOM until effects flush. Brief, but an
+ * `aria-label` is exactly where a brief leak goes unnoticed: it is invisible to both
+ * a screenshot and a text-content assertion.
+ *
+ * It is a mask, never a decrypt — it only ever removes information.
+ */
+export function maskVaultArmored(value: string): string {
+  return value.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, "[🔒 Encrypted]");
+}
+
 export type RejectMemoryInput = {
   memoryId: string;
   reason?: string;
@@ -218,7 +240,15 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const res = await cookieJsonFetch(memoryListPath(arg));
           const rawItems = res?.items || res?.memories || (Array.isArray(res) ? res : []);
-          const items = rawItems.map(normalizeMemory);
+          let items = rawItems.map(normalizeMemory);
+          // The vault stores title/description/body/evidence armored, so the query
+          // layer is the single choke point that has to undo it — mirroring
+          // `issues.ts`. Decrypting here (rather than per render site) is what keeps
+          // a sibling path from quietly rendering ciphertext.
+          const activeKey = getActiveVaultKey();
+          if (activeKey) {
+            items = await Promise.all(items.map((mem: any) => decryptMemoryRecord(mem, activeKey)));
+          }
           return { data: { items, next_cursor: res?.next_cursor || res?.nextCursor || "" } };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -236,7 +266,13 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const res = await cookieJsonFetch(`/memories/${encodeURIComponent(memoryId)}`);
           const record = res?.memory || res?.record || res;
-          return { data: record ? normalizeMemory(record) : null };
+          if (!record) return { data: null };
+          let memory = normalizeMemory(record);
+          const activeKey = getActiveVaultKey();
+          if (activeKey) {
+            memory = await decryptMemoryRecord(memory, activeKey);
+          }
+          return { data: memory };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
         }

@@ -33,7 +33,8 @@ import {
   type MemoryVerb,
 } from './memoryModel';
 import { targetingFromRecord } from '@ui';
-import { VaultText } from '../vault/VaultText';
+import { VaultText, useDecryptedText } from '../vault/VaultText';
+import { maskVaultArmored } from '../../api/endpoints/memory';
 
 export interface MemoryRowProps {
   row: any;
@@ -70,6 +71,14 @@ export function MemoryRow({
   const memoryId = String(row.memoryId || row.id || '');
   const title = memoryTitle(row);
   const snippet = memorySnippet(row);
+  // The visible label goes through `VaultText` below, but an `aria-label` is a plain
+  // string attribute — it cannot. A screen reader would read the ciphertext aloud
+  // while the sighted label looked right, and neither a text-content assertion nor a
+  // screenshot would catch it. The endpoint covers unlocked; this covers locked.
+  // `useDecryptedText` upgrades to plaintext once its effect runs; the mask is what
+  // holds on its first synchronous render, where its `useState(raw)` initializer
+  // would otherwise put the token straight into the committed attribute.
+  const accessibleTitle = maskVaultArmored(useDecryptedText(title).text);
 
   const menuActions = menuVerbs.map((verb) => ({
     label: VERB_LABEL[verb],
@@ -99,7 +108,7 @@ export function MemoryRow({
               checked={selected}
               disabled={!selectable}
               onChange={onSelectedChange}
-              aria-label={`Select ${title}`}
+              aria-label={`Select ${accessibleTitle}`}
             />
           </span>
         ) : null

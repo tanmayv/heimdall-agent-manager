@@ -19,7 +19,7 @@
  */
 import React from 'react';
 import { Button, EmptyState, Icon, PageShell, Text, useViewport } from '@ui';
-import { memoryErrorText } from '../../api/endpoints/memory';
+import { maskVaultArmored, memoryErrorText } from '../../api/endpoints/memory';
 import MemoryListPage from './MemoryListPage';
 import {
   MemoryDetailActions,
@@ -38,6 +38,7 @@ import {
   parseMemoryListUrl,
   viewCrumbs,
 } from './memoryModel';
+import { useDecryptedText } from '../vault/VaultText';
 import { getRouteSearch } from '../../utils/appLocation';
 
 export default function MemoryViewPage({ memoryId }: { memoryId: string }) {
@@ -49,6 +50,14 @@ export default function MemoryViewPage({ memoryId }: { memoryId: string }) {
   // carries none, and `detailCrumbs` falls back to the tab the record's own status
   // belongs to rather than rendering an empty crumb.
   const listState = React.useMemo(() => parseMemoryListUrl(getRouteSearch()), []);
+  // `PageShell` promotes the terminal crumb into the <h1> and `detailCrumbs` takes a
+  // STRING, so `VaultText` (which renders JSX) fits neither consumer. The endpoint
+  // decrypts whenever the vault is unlocked; the hook covers the state it cannot
+  // reach — enabled but LOCKED — and re-runs on unlock, so a record cached while
+  // locked still resolves without a refetch. The mask covers the hook's own first
+  // synchronous render, where `useState(raw)` returns the token before the effect
+  // replaces it. Declared above the desktop early return so hook order never shifts.
+  const title = maskVaultArmored(useDecryptedText(memoryTitle(record)).text);
 
   // At >=1024 the detail belongs in the list's right-hand pane (spec › Desktop
   // layout). The ROUTE stays `#/memory/:id`, so a pasted link and a row click land in
@@ -75,8 +84,6 @@ export default function MemoryViewPage({ memoryId }: { memoryId: string }) {
       </PageShell>
     );
   }
-
-  const title = memoryTitle(record);
 
   return (
     <PageShell

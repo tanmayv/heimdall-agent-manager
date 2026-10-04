@@ -54,6 +54,7 @@ import { normalizeMemory } from '../../api/memoryCatalog';
 import {
   fetchMemoryPage,
   searchMemoryPage,
+  maskVaultArmored,
   memoryErrorText,
   useApproveMemoryMutation,
   useArchiveMemoryMutation,
@@ -328,7 +329,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
           pushToast({
             tone: 'info',
             title: 'Proposal rejected',
-            message: memoryTitle(row),
+            message: maskVaultArmored(memoryTitle(row)),
             duration: UNDO_MS,
             undo: () => {
               void runVerb(memoryId, 'approve').catch((err) =>
@@ -1108,7 +1109,7 @@ function ConfirmModal({
     .map((id) => rows.find((row) => String(row.memoryId || row.id || '') === id))
     .filter(Boolean)
     .slice(0, 3)
-    .map((row) => memoryTitle(row));
+    .map((row) => maskVaultArmored(memoryTitle(row)));
   const count = ids.length;
   const single = count === 1;
   const label = verb === 'archive' ? (single ? 'Archive' : `Archive ${count}`) : `Reject ${count}`;
