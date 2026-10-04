@@ -412,9 +412,10 @@ test('vaultSlice transitions correctly control unlocked and keyHex states', () =
   assert.strictEqual(selectRawVaultKeyHex({ vault: state }), null);
 
   state = vaultReducer(state, setVaultConfigured(true));
-  state = vaultReducer(state, setVaultUnlocked({ rawVaultKeyHex: TEST_KEY_HEX }));
+  state = vaultReducer(state, setVaultUnlocked());
   assert.strictEqual(selectIsVaultUnlocked({ vault: state }), true);
-  assert.strictEqual(selectRawVaultKeyHex({ vault: state }), TEST_KEY_HEX);
+  assert.strictEqual((state as any).rawVaultKeyHex, undefined);
+  assert.strictEqual(selectRawVaultKeyHex({ vault: state }), null);
 
   state = vaultReducer(state, lockVault());
   assert.strictEqual(selectIsVaultUnlocked({ vault: state }), false);

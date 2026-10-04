@@ -24,7 +24,7 @@ import {
   decryptVaultText,
   decryptEmbeddedVaultTokens,
 } from '../utils/vaultContent.ts';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey } from '../store/vaultSlice.ts';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey, getActiveVaultKey } from '../store/vaultSlice.ts';
 
 export function isNotificationSupported(): boolean {
   try {
@@ -341,25 +341,25 @@ export function fireNotificationForWsEvent(
 
   const rawState = typeof getState === 'function' ? getState() : undefined;
   const isUnlocked = rawState ? Boolean(selectIsVaultUnlocked(rawState)) : false;
-  const rawKeyHex = (rawState ? selectRawVaultKeyHex(rawState) : null) || readSessionVaultKey();
+  const activeKey = (rawState ? selectRawVaultKeyHex(rawState) : null) || getActiveVaultKey() || readSessionVaultKey();
 
   const hasArmoredBody = isVaultArmored(plan.body) || containsVaultArmored(plan.body);
   const hasArmoredTitle = isVaultArmored(plan.title) || containsVaultArmored(plan.title);
 
   if (hasArmoredBody || hasArmoredTitle) {
-    if (rawKeyHex) {
+    if (activeKey || isUnlocked) {
       // Fire-and-forget: asynchronously decrypt before invoking showNativeNotification
       void (async () => {
         try {
           if (hasArmoredBody) {
             plan.body = isVaultArmored(plan.body)
-              ? await decryptVaultText(plan.body, rawKeyHex)
-              : await decryptEmbeddedVaultTokens(plan.body, rawKeyHex);
+              ? await decryptVaultText(plan.body, activeKey)
+              : await decryptEmbeddedVaultTokens(plan.body, activeKey);
           }
           if (hasArmoredTitle) {
             plan.title = isVaultArmored(plan.title)
-              ? await decryptVaultText(plan.title, rawKeyHex)
-              : await decryptEmbeddedVaultTokens(plan.title, rawKeyHex);
+              ? await decryptVaultText(plan.title, activeKey)
+              : await decryptEmbeddedVaultTokens(plan.title, activeKey);
           }
           plan.title = truncateNotificationText(plan.title);
           plan.body = truncateNotificationText(plan.body);

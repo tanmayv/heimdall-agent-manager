@@ -1,6 +1,8 @@
 // Zero-Knowledge WebCrypto Vault Client Library
 // Implements 256-bit AES-GCM vault key generation, PBKDF2 key derivation,
-// BIP-39 12-word mnemonic recovery phrase generation, and envelope wrapping/unwrapping.
+// BIP-39 12-word mnemonic recovery phrase generation, envelope wrapping/unwrapping,
+// non-extractable CryptoKey management, and transient memory zeroing.
+// REQ-VAULT-HARDEN-1, REQ-VAULT-HARDEN-2
 
 import { BIP39_WORDS } from './bip39Words.ts';
 
@@ -10,6 +12,64 @@ export const AES_GCM_NONCE_BYTES = 12;
 export const AES_GCM_TAG_BYTES = 16;
 export const VAULT_KEY_BYTES = 32;
 export const RECOVERY_ENTROPY_BYTES = 16;
+
+export const VAULT_ARMOR_PREFIX = 'vault:v1:';
+export const MIN_ARMOR_PAYLOAD_BYTES = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES; // 28 bytes
+
+// Module-scoped active CryptoKey reference (in-memory C++ browser reference)
+let activeVaultCryptoKey: CryptoKey | null = null;
+
+export function getActiveVaultKey(): CryptoKey | null {
+  return activeVaultCryptoKey;
+}
+
+export function setActiveVaultKey(key: CryptoKey | null): void {
+  activeVaultCryptoKey = key;
+}
+
+/** Check if a string is armored with the vault content encryption prefix */
+export function isVaultArmored(text: unknown): boolean {
+  return typeof text === 'string' && text.startsWith(VAULT_ARMOR_PREFIX);
+}
+
+/** Check if a string contains any vault armored token */
+export function containsVaultArmored(text: unknown): boolean {
+  return typeof text === 'string' && /vault:v1:[A-Za-z0-9+/=_-]+/.test(text);
+}
+
+/** Validate standard base64 string syntax */
+export function isValidBase64(str: string): boolean {
+  if (!str || str.length % 4 !== 0) return false;
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(str);
+}
+
+/** Convert Uint8Array to base64 string across browser and Node.js environments */
+export function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
+/** Convert base64 string to Uint8Array across browser and Node.js environments */
+export function base64ToBytes(base64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    const buf = Buffer.from(base64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
 
 /** Convert Uint8Array to lowercase hex string */
 export function bytesToHex(bytes: Uint8Array): string {
@@ -129,16 +189,6 @@ BIP39_WORDS.forEach((word, idx) => {
 
 /**
  * Whether SubtleCrypto is actually available in this context (REQ-VAULT-UNSUP-1).
- *
- * The User Vault is built entirely on `crypto.subtle`, which browsers gate behind a
- * secure context: over plain HTTP on a non-localhost origin `window.crypto` still
- * exists (so `getRandomValues` works) but `crypto.subtle` is `undefined`, and every
- * vault operation dies on its first call.
- *
- * This probes for `subtle` itself rather than branching on `window.isSecureContext`,
- * because presence at the call site is what actually matters and the two can diverge
- * (Electron, `file://`, embedded webviews). This is the single canonical availability
- * predicate — do not add a second one.
  */
 export function isVaultSupported(): boolean {
   return typeof globalThis.crypto?.subtle?.generateKey === 'function';
@@ -146,6 +196,7 @@ export function isVaultSupported(): boolean {
 
 /**
  * Generate a new 256-bit symmetric AES-GCM Vault Key (KV).
+ * Kept extractable during setup wizard so it can be wrapped into envelopes.
  */
 export async function generateVaultKey(): Promise<CryptoKey> {
   return await crypto.subtle.generateKey(
@@ -157,6 +208,7 @@ export async function generateVaultKey(): Promise<CryptoKey> {
 
 /**
  * Export raw key bytes as a 64-character lowercase hex string.
+ * Calling this on a non-extractable key throws InvalidAccessError.
  */
 export async function exportRawKeyHex(key: CryptoKey): Promise<string> {
   const raw = await crypto.subtle.exportKey('raw', key);
@@ -165,66 +217,75 @@ export async function exportRawKeyHex(key: CryptoKey): Promise<string> {
 
 /**
  * Import a 256-bit AES-GCM key from a 64-character hex string.
+ * By default imports with extractable: false (non-extractable) to prevent JS exfiltration (REQ-VAULT-HARDEN-1).
+ * Immediately and securely wipes the transient byte buffer with .fill(0).
  */
-export async function importRawKeyHex(hex: string): Promise<CryptoKey> {
+export async function importRawKeyHex(hex: string, extractable = false): Promise<CryptoKey> {
   const bytes = hexToBytes(hex);
   if (bytes.length !== VAULT_KEY_BYTES) {
+    bytes.fill(0);
     throw new Error(
       `Invalid vault key length: expected ${VAULT_KEY_BYTES} bytes (64 hex characters), got ${bytes.length} bytes`,
     );
   }
-  return await crypto.subtle.importKey(
-    'raw',
-    bytes as unknown as BufferSource,
-    { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
-    true,
-    ['encrypt', 'decrypt'],
-  );
+  try {
+    return await crypto.subtle.importKey(
+      'raw',
+      bytes as unknown as BufferSource,
+      { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
+      extractable,
+      ['encrypt', 'decrypt'],
+    );
+  } finally {
+    // Securely wipe transient Uint8Array buffers using .fill(0) immediately after import
+    bytes.fill(0);
+  }
 }
 
 /**
  * Derive a 256-bit AES-GCM key from a master password using PBKDF2-SHA256.
- *
- * @param password The master password string.
- * @param saltHex The salt as a hex string (at least 16 bytes recommended).
- * @param iterations The PBKDF2 iteration count (defaults to 100,000).
+ * Generates key with extractable: false by default (REQ-VAULT-HARDEN-1).
+ * Securely wipes transient passwordBytes and saltBytes with .fill(0).
  */
 export async function deriveKeyFromPassword(
   password: string,
   saltHex: string,
   iterations: number = DEFAULT_KDF_ITERATIONS,
+  extractable = false,
 ): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const passwordBytes = enc.encode(password);
   const saltBytes = hexToBytes(saltHex);
 
-  const baseKey = await crypto.subtle.importKey(
-    'raw',
-    passwordBytes as unknown as BufferSource,
-    { name: 'PBKDF2' },
-    false,
-    ['deriveKey', 'deriveBits'],
-  );
+  try {
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      passwordBytes as unknown as BufferSource,
+      { name: 'PBKDF2' },
+      false,
+      ['deriveKey', 'deriveBits'],
+    );
 
-  return await crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: saltBytes as unknown as BufferSource,
-      iterations,
-      hash: 'SHA-256',
-    },
-    baseKey,
-    { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
-    true,
-    ['encrypt', 'decrypt'],
-  );
+    return await crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: saltBytes as unknown as BufferSource,
+        iterations,
+        hash: 'SHA-256',
+      },
+      baseKey,
+      { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
+      extractable,
+      ['encrypt', 'decrypt'],
+    );
+  } finally {
+    passwordBytes.fill(0);
+    saltBytes.fill(0);
+  }
 }
 
 /**
  * Generate 12 BIP-39 mnemonic recovery words from 128-bit cryptographically secure entropy.
- *
- * @param entropyBytes Optional 16-byte entropy array (generated with crypto.getRandomValues if omitted).
- * @returns Object with words array (12 words) and entropyHex (32 hex characters).
  */
 export function generate12RecoveryWords(entropyBytes?: Uint8Array): {
   words: string[];
@@ -236,14 +297,13 @@ export function generate12RecoveryWords(entropyBytes?: Uint8Array): {
   }
 
   const hash = sha256Sync(entropy);
-  // High 4 bits of the first byte of SHA-256 hash form the 4-bit checksum
   const checksumBits = (hash[0] >> 4).toString(2).padStart(4, '0');
 
   let bits = '';
   for (let i = 0; i < entropy.length; i++) {
     bits += entropy[i].toString(2).padStart(8, '0');
   }
-  bits += checksumBits; // Total 132 bits
+  bits += checksumBits;
 
   const words: string[] = [];
   for (let i = 0; i < 12; i++) {
@@ -290,26 +350,19 @@ export function validateRecoveryWords(words: string[]): boolean {
 
 /**
  * Derive a 256-bit AES-GCM recovery key (KR) from 12 recovery words and a recovery salt.
- *
- * @param words The 12 recovery words.
- * @param saltHex The recovery salt as a hex string.
- * @param iterations The PBKDF2 iteration count (defaults to 100,000).
  */
 export async function deriveKeyFromRecoveryWords(
   words: string[],
   saltHex: string,
   iterations: number = DEFAULT_KDF_ITERATIONS,
+  extractable = false,
 ): Promise<CryptoKey> {
   const normalizedPhrase = words.map((w) => w.trim().toLowerCase()).join(' ');
-  return await deriveKeyFromPassword(normalizedPhrase, saltHex, iterations);
+  return await deriveKeyFromPassword(normalizedPhrase, saltHex, iterations, extractable);
 }
 
 /**
  * Encrypt the raw 256-bit vaultKey using wrappingKey (AES-GCM).
- * Outputs separate hex representations for ciphertext, nonce, and authentication tag.
- *
- * @param wrappingKey The 256-bit AES-GCM wrapping key (KM or KR).
- * @param vaultKey The 256-bit AES-GCM vault key (KV).
  */
 export async function encryptVaultKeyEnvelope(
   wrappingKey: CryptoKey,
@@ -318,7 +371,6 @@ export async function encryptVaultKeyEnvelope(
   const rawVaultKey = await crypto.subtle.exportKey('raw', vaultKey);
   const nonce = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_BYTES));
 
-  // WebCrypto encrypt with AES-GCM appends the 16-byte tag to the ciphertext
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: nonce as unknown as BufferSource, tagLength: 128 },
     wrappingKey,
@@ -338,38 +390,167 @@ export async function encryptVaultKeyEnvelope(
 
 /**
  * Decrypt a vault key envelope using wrappingKey (AES-GCM) and reconstruct the Vault Key (KV).
- *
- * @param wrappingKey The 256-bit AES-GCM wrapping key (KM or KR).
- * @param ciphertextHex The ciphertext in hex format.
- * @param nonceHex The 12-byte nonce in hex format.
- * @param tagHex The 16-byte authentication tag in hex format.
+ * By default imports with extractable: false to ensure the decrypted key cannot be exfiltrated.
+ * Securely wipes transient decrypted raw buffers.
  */
 export async function decryptVaultKeyEnvelope(
   wrappingKey: CryptoKey,
   ciphertextHex: string,
   nonceHex: string,
   tagHex: string,
+  extractable = false,
 ): Promise<CryptoKey> {
   const ciphertextBytes = hexToBytes(ciphertextHex);
   const nonceBytes = hexToBytes(nonceHex);
   const tagBytes = hexToBytes(tagHex);
 
-  // Combine ciphertext and auth tag for WebCrypto AES-GCM decrypt
   const combined = new Uint8Array(ciphertextBytes.length + tagBytes.length);
   combined.set(ciphertextBytes, 0);
   combined.set(tagBytes, ciphertextBytes.length);
 
-  const decryptedRaw = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonceBytes as unknown as BufferSource, tagLength: 128 },
-    wrappingKey,
-    combined as unknown as BufferSource,
-  );
+  try {
+    const decryptedRaw = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonceBytes as unknown as BufferSource, tagLength: 128 },
+      wrappingKey,
+      combined as unknown as BufferSource,
+    );
 
-  return await crypto.subtle.importKey(
-    'raw',
-    decryptedRaw,
-    { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
-    true,
-    ['encrypt', 'decrypt'],
-  );
+    const decryptedBytes = new Uint8Array(decryptedRaw);
+    try {
+      return await crypto.subtle.importKey(
+        'raw',
+        decryptedBytes as unknown as BufferSource,
+        { name: 'AES-GCM', length: AES_GCM_KEY_LENGTH },
+        extractable,
+        ['encrypt', 'decrypt'],
+      );
+    } finally {
+      decryptedBytes.fill(0);
+    }
+  } finally {
+    ciphertextBytes.fill(0);
+    nonceBytes.fill(0);
+    tagBytes.fill(0);
+    combined.fill(0);
+  }
+}
+
+/**
+ * Resolve a hex string, CryptoKey, or fallback to active in-memory CryptoKey instance.
+ * Accepts CryptoKey directly without re-importing raw hex strings (REQ-VAULT-HARDEN-1).
+ */
+export async function resolveCryptoKey(key?: string | CryptoKey | null): Promise<CryptoKey> {
+  if (key && typeof key === 'object' && 'algorithm' in key) {
+    return key;
+  }
+  if (typeof key === 'string' && key.trim()) {
+    return await importRawKeyHex(key.trim());
+  }
+  const activeKey = getActiveVaultKey();
+  if (activeKey) {
+    return activeKey;
+  }
+  throw new Error('Invalid vault key: expected a 64-character hex string or CryptoKey instance');
+}
+
+/**
+ * Encrypt plaintext using 256-bit AES-GCM and return self-describing armored string:
+ * 'vault:v1:<base64(12B_nonce + 16B_tag + ciphertext)>'
+ * Accepts CryptoKey directly without re-importing raw strings.
+ * Securely wipes transient byte arrays immediately after use.
+ */
+export async function encryptVaultText(
+  plaintext: string,
+  key?: string | CryptoKey | null,
+): Promise<string> {
+  const cryptoKey = await resolveCryptoKey(key);
+  const nonce = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_BYTES));
+
+  const enc = new TextEncoder();
+  const plaintextBytes = enc.encode(plaintext);
+
+  let encrypted: ArrayBuffer;
+  try {
+    encrypted = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce as unknown as BufferSource, tagLength: 128 },
+      cryptoKey,
+      plaintextBytes as unknown as BufferSource,
+    );
+  } finally {
+    plaintextBytes.fill(0);
+  }
+
+  const encryptedBytes = new Uint8Array(encrypted);
+  const ciphertextLen = encryptedBytes.length - AES_GCM_TAG_BYTES;
+  const ciphertextBytes = encryptedBytes.subarray(0, ciphertextLen);
+  const tagBytes = encryptedBytes.subarray(ciphertextLen);
+
+  const payload = new Uint8Array(MIN_ARMOR_PAYLOAD_BYTES + ciphertextLen);
+  payload.set(nonce, 0);
+  payload.set(tagBytes, AES_GCM_NONCE_BYTES);
+  payload.set(ciphertextBytes, MIN_ARMOR_PAYLOAD_BYTES);
+
+  const result = `${VAULT_ARMOR_PREFIX}${bytesToBase64(payload)}`;
+
+  nonce.fill(0);
+  payload.fill(0);
+  encryptedBytes.fill(0);
+
+  return result;
+}
+
+/**
+ * Decrypt a vault armored string. If input is not armored with 'vault:v1:',
+ * returns original input string as-is (transparent fallback).
+ * Accepts CryptoKey directly without re-importing raw strings.
+ * Securely wipes transient byte arrays immediately after use.
+ */
+export async function decryptVaultText(
+  armored: string,
+  key?: string | CryptoKey | null,
+): Promise<string> {
+  if (!isVaultArmored(armored)) {
+    return armored;
+  }
+
+  const b64 = armored.slice(VAULT_ARMOR_PREFIX.length).trim();
+  if (!isValidBase64(b64)) {
+    throw new Error('Invalid vault armored ciphertext: malformed base64 payload');
+  }
+
+  const payload = base64ToBytes(b64);
+  if (payload.length < MIN_ARMOR_PAYLOAD_BYTES) {
+    payload.fill(0);
+    throw new Error(
+      `Invalid vault armored ciphertext: payload length (${payload.length} bytes) is less than header (${MIN_ARMOR_PAYLOAD_BYTES} bytes)`,
+    );
+  }
+
+  const nonce = payload.subarray(0, AES_GCM_NONCE_BYTES);
+  const tag = payload.subarray(AES_GCM_NONCE_BYTES, MIN_ARMOR_PAYLOAD_BYTES);
+  const ciphertext = payload.subarray(MIN_ARMOR_PAYLOAD_BYTES);
+
+  const combined = new Uint8Array(ciphertext.length + tag.length);
+  combined.set(ciphertext, 0);
+  combined.set(tag, ciphertext.length);
+
+  try {
+    const cryptoKey = await resolveCryptoKey(key);
+    const decryptedRaw = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce as unknown as BufferSource, tagLength: 128 },
+      cryptoKey,
+      combined as unknown as BufferSource,
+    );
+
+    const decryptedBytes = new Uint8Array(decryptedRaw);
+    try {
+      const dec = new TextDecoder();
+      return dec.decode(decryptedBytes);
+    } finally {
+      decryptedBytes.fill(0);
+    }
+  } finally {
+    payload.fill(0);
+    combined.fill(0);
+  }
 }

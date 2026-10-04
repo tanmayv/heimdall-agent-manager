@@ -17,6 +17,8 @@ import {
   deriveKeyFromRecoveryWords,
   encryptVaultKeyEnvelope,
   decryptVaultKeyEnvelope,
+  encryptVaultText,
+  decryptVaultText,
   generateSaltHex,
   generateNonceHex,
   bytesToHex,
@@ -108,7 +110,7 @@ test('generateVaultKey creates an extractable 256-bit AES-GCM key', async () => 
   assert.equal(key.extractable, true);
 });
 
-test('exportRawKeyHex and importRawKeyHex round-trip successfully', async () => {
+test('importRawKeyHex imports non-extractable 256-bit AES-GCM key (REQ-VAULT-HARDEN-1)', async () => {
   const originalKey = await generateVaultKey();
   const hex = await exportRawKeyHex(originalKey);
 
@@ -116,9 +118,17 @@ test('exportRawKeyHex and importRawKeyHex round-trip successfully', async () => 
   assert.ok(/^[0-9a-f]{64}$/.test(hex), 'Raw key hex must be lowercase hex characters');
 
   const importedKey = await importRawKeyHex(hex);
-  const reExportedHex = await exportRawKeyHex(importedKey);
+  assert.equal(importedKey.extractable, false);
 
-  assert.equal(reExportedHex, hex, 'Re-exported key hex must match original');
+  // Calling crypto.subtle.exportKey('raw', key) throws InvalidAccessError (REQ-VAULT-HARDEN-1)
+  await assert.rejects(async () => {
+    await crypto.subtle.exportKey('raw', importedKey);
+  }, (err: any) => err.name === 'InvalidAccessError' || String(err).includes('not extractable'));
+
+  // Round-trip encryption and decryption functions correctly with non-extractable key
+  const testCipher = await encryptVaultText('roundtrip test', importedKey);
+  const testPlain = await decryptVaultText(testCipher, importedKey);
+  assert.equal(testPlain, 'roundtrip test');
 
   // Input validation
   await assert.rejects(async () => {
@@ -130,27 +140,38 @@ test('exportRawKeyHex and importRawKeyHex round-trip successfully', async () => 
 // 4. PBKDF2 Password Derivation
 // -----------------------------------------------------------------------------
 
-test('deriveKeyFromPassword deterministically derives 256-bit AES-GCM key', async () => {
+test('deriveKeyFromPassword deterministically derives non-extractable 256-bit AES-GCM key', async () => {
   const password = 'SuperSecretMasterPassword!2026';
   const saltHex = generateSaltHex(16);
 
   const key1 = await deriveKeyFromPassword(password, saltHex, 10_000);
   const key2 = await deriveKeyFromPassword(password, saltHex, 10_000);
 
-  const raw1 = await exportRawKeyHex(key1);
-  const raw2 = await exportRawKeyHex(key2);
-  assert.equal(raw1, raw2, 'Same password and salt must derive identical keys');
+  assert.equal(key1.extractable, false);
+  assert.equal(key2.extractable, false);
 
-  // Different password produces different key
+  // Calling crypto.subtle.exportKey('raw', key) throws InvalidAccessError
+  await assert.rejects(async () => {
+    await crypto.subtle.exportKey('raw', key1);
+  }, (err: any) => err.name === 'InvalidAccessError' || String(err).includes('not extractable'));
+
+  // Verify key1 and key2 are functionally identical: encrypt with key1, decrypt with key2
+  const cipher1 = await encryptVaultText('deterministic check', key1);
+  const plain2 = await decryptVaultText(cipher1, key2);
+  assert.equal(plain2, 'deterministic check');
+
+  // Different password produces different key (decryption fails)
   const keyDiffPass = await deriveKeyFromPassword('DifferentPassword!2026', saltHex, 10_000);
-  const rawDiffPass = await exportRawKeyHex(keyDiffPass);
-  assert.notEqual(raw1, rawDiffPass, 'Different password must derive different key');
+  await assert.rejects(async () => {
+    await decryptVaultText(cipher1, keyDiffPass);
+  });
 
-  // Different salt produces different key
+  // Different salt produces different key (decryption fails)
   const saltHex2 = generateSaltHex(16);
   const keyDiffSalt = await deriveKeyFromPassword(password, saltHex2, 10_000);
-  const rawDiffSalt = await exportRawKeyHex(keyDiffSalt);
-  assert.notEqual(raw1, rawDiffSalt, 'Different salt must derive different key');
+  await assert.rejects(async () => {
+    await decryptVaultText(cipher1, keyDiffSalt);
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -220,8 +241,10 @@ test('encryptVaultKeyEnvelope and decryptVaultKeyEnvelope round-trip with passwo
     envelope.nonceHex,
     envelope.tagHex,
   );
-  const decryptedVaultHex = await exportRawKeyHex(decryptedVaultKey);
-  assert.equal(decryptedVaultHex, originalVaultHex, 'Decrypted vault key hex must match original');
+  assert.equal(decryptedVaultKey.extractable, false);
+  const testCipher = await encryptVaultText('envelope test', vaultKey);
+  const testDecrypted = await decryptVaultText(testCipher, decryptedVaultKey);
+  assert.equal(testDecrypted, 'envelope test');
 
   // Wrong password fails
   const wrongKey = await deriveKeyFromPassword('WrongPassword', saltHex, 50_000);
@@ -288,8 +311,10 @@ test('deriveKeyFromRecoveryWords enables full recovery envelope round-trip', asy
     recoveryEnvelope.tagHex,
   );
 
-  const recoveredVaultHex = await exportRawKeyHex(recoveredVaultKey);
-  assert.equal(recoveredVaultHex, originalVaultHex, 'Recovered vault key must match original');
+  assert.equal(recoveredVaultKey.extractable, false);
+  const recCipher = await encryptVaultText('recovery test', vaultKey);
+  const recDecrypted = await decryptVaultText(recCipher, recoveredVaultKey);
+  assert.equal(recDecrypted, 'recovery test');
 
   // Wrong recovery phrase fails
   const otherWords = [...words];
@@ -313,26 +338,27 @@ test('vaultSlice transitions between unconfigured, configured, unlocked, and loc
   let state = vaultReducer(undefined, { type: '@@init' });
   assert.equal(state.isConfigured, false);
   assert.equal(state.isUnlocked, false);
-  assert.equal(state.rawVaultKeyHex, null);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
 
   // Configure vault
   state = vaultReducer(state, setVaultConfigured(true));
   assert.equal(state.isConfigured, true);
   assert.equal(state.isUnlocked, false);
-  assert.equal(state.rawVaultKeyHex, null);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
 
   // Unlock vault
   const sampleKeyHex = 'a'.repeat(64);
   state = vaultReducer(state, setVaultUnlocked(sampleKeyHex));
   assert.equal(state.isConfigured, true);
   assert.equal(state.isUnlocked, true);
-  assert.equal(state.rawVaultKeyHex, sampleKeyHex);
+  // Redux state must be serializable and NOT store raw key strings (REQ-VAULT-HARDEN-1)
+  assert.equal((state as any).rawVaultKeyHex, undefined);
 
   // Lock vault
   state = vaultReducer(state, lockVault());
   assert.equal(state.isConfigured, true);
   assert.equal(state.isUnlocked, false);
-  assert.equal(state.rawVaultKeyHex, null);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
 
   // Reset configured state to false resets unlocked state and key
   state = vaultReducer(state, setVaultUnlocked(sampleKeyHex));
@@ -340,7 +366,7 @@ test('vaultSlice transitions between unconfigured, configured, unlocked, and loc
   state = vaultReducer(state, setVaultConfigured(false));
   assert.equal(state.isConfigured, false);
   assert.equal(state.isUnlocked, false);
-  assert.equal(state.rawVaultKeyHex, null);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
 });
 
 test('store mounts vaultSlice and selectors work correctly', () => {
@@ -356,7 +382,7 @@ test('store mounts vaultSlice and selectors work correctly', () => {
   const vault = selectVaultState(rootState);
   assert.equal(selectIsVaultConfigured(rootState), vault.isConfigured);
   assert.equal(selectIsVaultUnlocked(rootState), vault.isUnlocked);
-  assert.equal(selectRawVaultKeyHex(rootState), vault.rawVaultKeyHex);
+  assert.equal(selectRawVaultKeyHex(rootState), null);
 
   // Dispatch actions to store
   const sampleKey = 'f'.repeat(64);
@@ -366,7 +392,9 @@ test('store mounts vaultSlice and selectors work correctly', () => {
   const updatedState = testStore.getState();
   assert.equal(selectIsVaultConfigured(updatedState), true);
   assert.equal(selectIsVaultUnlocked(updatedState), true);
-  assert.equal(selectRawVaultKeyHex(updatedState), sampleKey);
+  // Redux state must be serializable and NOT contain raw key
+  assert.equal((updatedState.vault as any).rawVaultKeyHex, undefined);
+  assert.equal(selectRawVaultKeyHex(updatedState), null);
 
   testStore.dispatch(lockVault());
   const lockedState = testStore.getState();

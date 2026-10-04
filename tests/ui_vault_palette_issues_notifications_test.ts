@@ -252,7 +252,7 @@ test('decryptIssueRecord is a no-op when rawKeyHex is missing or null', async ()
 // -----------------------------------------------------------------------------
 
 import { notificationForWsEvent } from '../src/ui/api/notificationMapper.ts';
-import { writeSessionVaultKey, clearSessionVaultKey } from '../src/ui/store/vaultSlice.ts';
+import { writeSessionVaultKey, clearSessionVaultKey, importAndValidateCryptoKey } from '../src/ui/store/vaultSlice.ts';
 
 // Browser global mocks for Notification & Session Storage
 const mockCreatedNotifications: Array<{ title: string; options: any }> = [];
@@ -322,6 +322,7 @@ test('notificationService.ts: checks readSessionVaultKey() when Redux rawKeyHex 
   mockCreatedNotifications.length = 0;
   clearSessionVaultKey();
   writeSessionVaultKey(TEST_KEY_HEX);
+  await importAndValidateCryptoKey(TEST_KEY_HEX);
 
   const secretBody = 'Agent completed deployment without errors.';
   const armoredBody = await encryptVaultText(secretBody, TEST_KEY_HEX);

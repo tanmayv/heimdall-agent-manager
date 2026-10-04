@@ -18,6 +18,12 @@ import {
   bytesToHex,
   hexToBytes,
 } from '../src/ui/utils/vaultCrypto.ts';
+import {
+  persistVaultKey,
+  restoreVaultKey,
+  deleteVaultKey,
+  createMockIndexedDB,
+} from '../src/ui/utils/vaultPersistence.ts';
 import vaultReducer, {
   setVaultConfigured,
   setVaultUnlocked,
@@ -242,7 +248,8 @@ test('Direct 64-char hex key import validates, imports CryptoKey, and unlocks Re
   state = vaultReducer(state, importLocalKey(validHexKey, false));
   assert.equal(selectIsVaultConfigured({ vault: state }), true);
   assert.equal(selectIsVaultUnlocked({ vault: state }), true);
-  assert.equal(selectRawVaultKeyHex({ vault: state }), validHexKey);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
+  assert.equal(selectRawVaultKeyHex({ vault: state }), null);
   assert.equal(readSessionVaultKey(), null, 'Key must not be in sessionStorage when rememberSession is false');
 
   // Lock vault
@@ -255,8 +262,9 @@ test('Direct 64-char hex key import validates, imports CryptoKey, and unlocks Re
 // Test 4: Functional verification of session persistence & hydration
 // -----------------------------------------------------------------------------
 
-test('Session persistence saves key to sessionStorage and hydrates on initial load', async () => {
+test('Session persistence saves non-extractable key to IndexedDB and ensures sessionStorage has no raw key (REQ-VAULT-HARDEN-1, REQ-VAULT-HARDEN-2)', async () => {
   const store = setupMockSessionStorage();
+  (globalThis as any).indexedDB = createMockIndexedDB();
 
   const vaultKey = await generateVaultKey();
   const hexKey = await exportRawKeyHex(vaultKey);
@@ -267,41 +275,44 @@ test('Session persistence saves key to sessionStorage and hydrates on initial lo
 
   assert.equal(selectIsVaultConfigured({ vault: state }), true);
   assert.equal(selectIsVaultUnlocked({ vault: state }), true);
-  assert.equal(selectRawVaultKeyHex({ vault: state }), hexKey);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
+  assert.equal(selectRawVaultKeyHex({ vault: state }), null);
 
-  // Verify sessionStorage content
-  assert.equal(store.get(VAULT_SESSION_KEY), hexKey);
-  assert.equal(readSessionVaultKey(), hexKey);
+  // Verify sessionStorage NEVER contains raw key
+  assert.equal(store.get(VAULT_SESSION_KEY), undefined, 'sessionStorage must not contain raw key');
+  assert.equal(readSessionVaultKey(), null);
 
-  // 2. Simulate page reload: loadInitialVaultState() should hydrate unlocked state
-  const reloadedInitialState = loadInitialVaultState();
-  assert.equal(reloadedInitialState.isConfigured, true);
-  assert.equal(reloadedInitialState.isUnlocked, true);
-  assert.equal(reloadedInitialState.rawVaultKeyHex, hexKey);
+  // 2. Persist non-extractable CryptoKey directly to IndexedDB
+  const nonExtractableKey = await importRawKeyHex(hexKey);
+  assert.equal(nonExtractableKey.extractable, false);
+  await persistVaultKey(nonExtractableKey);
 
-  // 3. hydrateVaultFromSession action test
-  let emptyState = {
-    isConfigured: false,
-    isUnlocked: false,
-    rawVaultKeyHex: null,
-  };
-  emptyState = vaultReducer(emptyState, hydrateVaultFromSession());
-  assert.equal(emptyState.isConfigured, true);
-  assert.equal(emptyState.isUnlocked, true);
-  assert.equal(emptyState.rawVaultKeyHex, hexKey);
+  // 3. Simulate page reload: restore non-extractable CryptoKey from IndexedDB
+  const restoredKey = await restoreVaultKey();
+  assert.ok(restoredKey, 'IndexedDB must restore CryptoKey');
+  assert.equal(restoredKey.extractable, false, 'Restored key must remain non-extractable');
 
-  // 4. Locking the vault clears sessionStorage
+  // Calling crypto.subtle.exportKey('raw', restoredKey) throws InvalidAccessError
+  await assert.rejects(async () => {
+    await crypto.subtle.exportKey('raw', restoredKey);
+  }, (err: any) => err.name === 'InvalidAccessError' || String(err).includes('not extractable'));
+
+  // 4. Locking the vault clears IndexedDB and resets unlocked state
   state = vaultReducer(state, lockVault());
   assert.equal(selectIsVaultUnlocked({ vault: state }), false);
   assert.equal(selectRawVaultKeyHex({ vault: state }), null);
-  assert.equal(store.get(VAULT_SESSION_KEY), undefined, 'lockVault must remove key from sessionStorage');
+  await deleteVaultKey();
+  const keyAfterLock = await restoreVaultKey();
+  assert.equal(keyAfterLock, null, 'Locking vault must purge IndexedDB record');
+  assert.equal(store.get(VAULT_SESSION_KEY), undefined);
   assert.equal(readSessionVaultKey(), null);
 
-  // 5. Setting vault configured to false also clears sessionStorage
-  writeSessionVaultKey(hexKey);
-  assert.equal(readSessionVaultKey(), hexKey);
+  // 5. Setting vault configured to false also clears IndexedDB
+  await persistVaultKey(nonExtractableKey);
+  assert.ok(await restoreVaultKey());
   state = vaultReducer(state, setVaultConfigured(false));
-  assert.equal(readSessionVaultKey(), null, 'setVaultConfigured(false) must clear sessionStorage');
+  await deleteVaultKey();
+  assert.equal(await restoreVaultKey(), null, 'setVaultConfigured(false) must clear IndexedDB');
 });
 
 // -----------------------------------------------------------------------------

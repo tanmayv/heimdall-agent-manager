@@ -18,6 +18,8 @@ import {
   deriveKeyFromRecoveryWords,
   encryptVaultKeyEnvelope,
   decryptVaultKeyEnvelope,
+  encryptVaultText,
+  decryptVaultText,
   generateSaltHex,
   DEFAULT_KDF_ITERATIONS,
 } from '../src/ui/utils/vaultCrypto.ts';
@@ -200,8 +202,10 @@ test('End-to-End Vault lifecycle: Setup -> Master Password Unlock -> Recovery Ph
     storedVaultRecord.vault_key_nonce,
     storedVaultRecord.vault_key_tag,
   );
-  const unlockedHexPw = await exportRawKeyHex(decryptedVaultKeyPw);
-  assert.equal(unlockedHexPw, rawVaultKeyHex, 'Password unlock must yield identical 256-bit vault key hex');
+  assert.equal(decryptedVaultKeyPw.extractable, false, 'Password unlock must yield non-extractable key');
+  const pwCipher = await encryptVaultText('pw test', vaultKey);
+  const pwDecrypted = await decryptVaultText(pwCipher, decryptedVaultKeyPw);
+  assert.equal(pwDecrypted, 'pw test');
 
   // 3. Unlock with wrong Master Password must fail
   const kmWrong = await deriveKeyFromPassword(
@@ -234,8 +238,10 @@ test('End-to-End Vault lifecycle: Setup -> Master Password Unlock -> Recovery Ph
     storedVaultRecord.recovery_nonce,
     storedVaultRecord.recovery_tag,
   );
-  const unlockedHexRec = await exportRawKeyHex(decryptedVaultKeyRec);
-  assert.equal(unlockedHexRec, rawVaultKeyHex, 'Recovery words unlock must yield identical 256-bit vault key hex');
+  assert.equal(decryptedVaultKeyRec.extractable, false, 'Recovery words unlock must yield non-extractable key');
+  const recCipher = await encryptVaultText('rec test', vaultKey);
+  const recDecrypted = await decryptVaultText(recCipher, decryptedVaultKeyRec);
+  assert.equal(recDecrypted, 'rec test');
 
   // 5. Redux state transitions
   let state = vaultReducer(undefined, { type: '@@INIT' });
@@ -245,10 +251,11 @@ test('End-to-End Vault lifecycle: Setup -> Master Password Unlock -> Recovery Ph
 
   // Configure & Unlock
   state = vaultReducer(state, setVaultConfigured(true));
-  state = vaultReducer(state, setVaultUnlocked(rawVaultKeyHex));
+  state = vaultReducer(state, setVaultUnlocked());
   assert.equal(selectIsVaultConfigured({ vault: state }), true);
   assert.equal(selectIsVaultUnlocked({ vault: state }), true);
-  assert.equal(selectRawVaultKeyHex({ vault: state }), rawVaultKeyHex);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
+  assert.equal(selectRawVaultKeyHex({ vault: state }), null);
 
   // Lock
   state = vaultReducer(state, lockVault());

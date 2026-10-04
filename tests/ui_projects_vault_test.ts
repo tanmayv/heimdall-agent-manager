@@ -292,9 +292,10 @@ test('Vault locked state displays interactive placeholder and triggers unlock mo
   assert.equal(selectIsUnlockModalOpen({ vault: state }), false);
 
   // Unlock with key
-  state = vaultReducer(state, setVaultUnlocked({ rawVaultKeyHex: TEST_KEY_HEX }));
+  state = vaultReducer(state, setVaultUnlocked());
   assert.equal(selectIsVaultUnlocked({ vault: state }), true);
-  assert.equal(selectRawVaultKeyHex({ vault: state }), TEST_KEY_HEX);
+  assert.equal((state as any).rawVaultKeyHex, undefined);
+  assert.equal(selectRawVaultKeyHex({ vault: state }), null);
 
   // Lock vault
   state = vaultReducer(state, lockVault());

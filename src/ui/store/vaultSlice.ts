@@ -1,5 +1,17 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import { importRawKeyHex, isVaultSupported } from '../utils/vaultCrypto.ts';
+import {
+  importRawKeyHex,
+  isVaultSupported,
+  getActiveVaultKey,
+  setActiveVaultKey,
+} from '../utils/vaultCrypto.ts';
+import {
+  persistVaultKey,
+  restoreVaultKey,
+  deleteVaultKey,
+} from '../utils/vaultPersistence.ts';
+
+export { getActiveVaultKey, setActiveVaultKey };
 
 export const VAULT_SESSION_KEY = 'heimdall:vault:raw-key';
 export const VAULT_ONBOARDING_DISMISSED_KEY = 'heimdall:vault:onboarding-dismissed';
@@ -14,26 +26,24 @@ function getSessionStorage(): Storage | null {
   return null;
 }
 
+/**
+ * Deprecated: raw keys are never stored in sessionStorage (REQ-VAULT-HARDEN-1).
+ * Always returns null to ensure no script or XSS can retrieve raw keys from storage.
+ */
 export function readSessionVaultKey(): string | null {
-  try {
-    const storage = getSessionStorage();
-    if (!storage) return null;
-    const key = storage.getItem(VAULT_SESSION_KEY);
-    if (key && /^[0-9a-fA-F]{64}$/.test(key.trim())) {
-      return key.trim().toLowerCase();
-    }
-  } catch {}
   return null;
 }
 
-export function writeSessionVaultKey(rawHex: string): void {
-  try {
-    const storage = getSessionStorage();
-    if (!storage) return;
-    storage.setItem(VAULT_SESSION_KEY, rawHex.trim().toLowerCase());
-  } catch {}
+/**
+ * Deprecated: raw keys are never written to sessionStorage (REQ-VAULT-HARDEN-1).
+ */
+export function writeSessionVaultKey(_rawHex: string): void {
+  // No-op for security hardening: key material is held exclusively in non-extractable CryptoKey handles
 }
 
+/**
+ * Clear any legacy vault key from sessionStorage.
+ */
 export function clearSessionVaultKey(): void {
   try {
     const storage = getSessionStorage();
@@ -72,32 +82,64 @@ export function validateHexVaultKey(hexKey: string): string {
   return clean;
 }
 
+/**
+ * Validate and import a hex key as a non-extractable WebCrypto CryptoKey.
+ * Wipes transient buffers immediately.
+ */
 export async function importAndValidateCryptoKey(hexKey: string): Promise<CryptoKey> {
   const clean = validateHexVaultKey(hexKey);
-  return await importRawKeyHex(clean);
+  const key = await importRawKeyHex(clean);
+  setActiveVaultKey(key);
+  return key;
 }
 
+/**
+ * Unlock vault with a hex key, storing the non-extractable handle and optionally persisting to IndexedDB.
+ */
+export async function unlockVaultWithHex(hexKey: string, remember = true): Promise<CryptoKey> {
+  const key = await importAndValidateCryptoKey(hexKey);
+  if (remember) {
+    await persistVaultKey(key);
+  }
+  return key;
+}
+
+/**
+ * Restore non-extractable CryptoKey from IndexedDB on page load/init (REQ-VAULT-HARDEN-2).
+ */
+export async function initializeVaultPersistence(
+  dispatch?: (action: any) => void,
+): Promise<CryptoKey | null> {
+  try {
+    const key = await restoreVaultKey();
+    if (key) {
+      setActiveVaultKey(key);
+      if (dispatch) {
+        dispatch(setVaultUnlocked({ key }));
+      }
+      return key;
+    }
+  } catch (err) {
+    console.warn('Failed to restore vault key from IndexedDB:', err);
+  }
+  return null;
+}
+
+/**
+ * Strictly serializable Redux state for the Vault slice.
+ * Contains no raw keys and no non-serializable objects (REQ-VAULT-HARDEN-1).
+ */
 export interface VaultState {
   isConfigured: boolean;
   isUnlocked: boolean;
-  rawVaultKeyHex: string | null;
+  rawVaultKeyHex?: string | null;
   isUnlockModalOpen?: boolean;
 }
 
 export function loadInitialVaultState(): VaultState {
-  const savedKey = readSessionVaultKey();
-  if (savedKey) {
-    return {
-      isConfigured: true,
-      isUnlocked: true,
-      rawVaultKeyHex: savedKey,
-      isUnlockModalOpen: false,
-    };
-  }
   return {
     isConfigured: false,
-    isUnlocked: false,
-    rawVaultKeyHex: null,
+    isUnlocked: Boolean(getActiveVaultKey()),
     isUnlockModalOpen: false,
   };
 }
@@ -112,9 +154,10 @@ export const vaultSlice = createSlice({
       state.isConfigured = action.payload;
       if (!action.payload) {
         state.isUnlocked = false;
-        state.rawVaultKeyHex = null;
         state.isUnlockModalOpen = false;
+        setActiveVaultKey(null);
         clearSessionVaultKey();
+        deleteVaultKey().catch(() => {});
       }
     },
     openUnlockModal(state) {
@@ -129,35 +172,65 @@ export const vaultSlice = createSlice({
     setVaultUnlocked: {
       reducer(
         state,
-        action: PayloadAction<{ rawVaultKeyHex: string; rememberSession?: boolean }>,
+        action: PayloadAction<{
+          key?: CryptoKey;
+          rawVaultKeyHex?: string;
+          rememberSession?: boolean;
+        } | void>,
       ) {
-        const cleanKey = action.payload.rawVaultKeyHex.trim().toLowerCase();
         state.isConfigured = true;
         state.isUnlocked = true;
-        state.rawVaultKeyHex = cleanKey;
         state.isUnlockModalOpen = false;
-        if (action.payload.rememberSession === true) {
-          writeSessionVaultKey(cleanKey);
-        } else if (action.payload.rememberSession === false) {
-          clearSessionVaultKey();
+
+        const payload = action.payload;
+        if (payload && typeof payload === 'object') {
+          if ('algorithm' in payload) {
+            setActiveVaultKey(payload as CryptoKey);
+            persistVaultKey(payload as CryptoKey).catch(() => {});
+          } else if (payload.key) {
+            setActiveVaultKey(payload.key);
+            if (payload.rememberSession !== false) {
+              persistVaultKey(payload.key).catch(() => {});
+            }
+          } else if (payload.rawVaultKeyHex) {
+            // Asynchronously import hex key for backward compatibility with tests
+            importRawKeyHex(payload.rawVaultKeyHex).then((key) => {
+              setActiveVaultKey(key);
+              if (payload.rememberSession) {
+                persistVaultKey(key).catch(() => {});
+              }
+            }).catch(() => {});
+          }
         }
       },
       prepare(
-        payloadOrHex: string | { rawVaultKeyHex: string; rememberSession?: boolean },
+        payloadOrKey?: any,
         maybeRemember?: boolean,
       ) {
-        if (typeof payloadOrHex === 'string') {
+        if (!payloadOrKey) {
+          return { payload: undefined };
+        }
+        if (typeof payloadOrKey === 'string') {
           return {
             payload: {
-              rawVaultKeyHex: payloadOrHex,
+              rawVaultKeyHex: payloadOrKey,
               rememberSession: maybeRemember,
+            },
+          };
+        }
+        if (typeof payloadOrKey === 'object' && 'algorithm' in payloadOrKey) {
+          return {
+            payload: {
+              key: payloadOrKey as CryptoKey,
+              rememberSession: maybeRemember !== false,
             },
           };
         }
         return {
           payload: {
-            rawVaultKeyHex: payloadOrHex.rawVaultKeyHex,
-            rememberSession: payloadOrHex.rememberSession,
+            key: payloadOrKey.key,
+            rawVaultKeyHex: payloadOrKey.rawVaultKeyHex,
+            rememberSession: payloadOrKey.rememberSession ?? maybeRemember,
           },
         };
       },
@@ -165,23 +238,43 @@ export const vaultSlice = createSlice({
     importLocalKey: {
       reducer(
         state,
-        action: PayloadAction<{ hexKey: string; rememberSession?: boolean }>,
+        action: PayloadAction<{
+          hexKey?: string;
+          key?: CryptoKey;
+          rememberSession?: boolean;
+        } | void>,
       ) {
-        const cleanKey = validateHexVaultKey(action.payload.hexKey);
         state.isConfigured = true;
         state.isUnlocked = true;
-        state.rawVaultKeyHex = cleanKey;
         state.isUnlockModalOpen = false;
-        if (action.payload.rememberSession) {
-          writeSessionVaultKey(cleanKey);
-        } else {
-          clearSessionVaultKey();
+
+        const payload = action.payload;
+        if (payload && typeof payload === 'object') {
+          if ('algorithm' in payload) {
+            setActiveVaultKey(payload as CryptoKey);
+            persistVaultKey(payload as CryptoKey).catch(() => {});
+          } else if (payload.key) {
+            setActiveVaultKey(payload.key);
+            if (payload.rememberSession !== false) {
+              persistVaultKey(payload.key).catch(() => {});
+            }
+          } else if (payload.hexKey) {
+            importRawKeyHex(payload.hexKey).then((key) => {
+              setActiveVaultKey(key);
+              if (payload.rememberSession) {
+                persistVaultKey(key).catch(() => {});
+              }
+            }).catch(() => {});
+          }
         }
       },
       prepare(
-        payloadOrHex: string | { hexKey: string; rememberSession?: boolean },
+        payloadOrHex?: any,
         maybeRemember?: boolean,
       ) {
+        if (!payloadOrHex) {
+          return { payload: undefined };
+        }
         if (typeof payloadOrHex === 'string') {
           return {
             payload: {
@@ -193,24 +286,24 @@ export const vaultSlice = createSlice({
         return {
           payload: {
             hexKey: payloadOrHex.hexKey,
-            rememberSession: Boolean(payloadOrHex.rememberSession),
+            key: payloadOrHex.key,
+            rememberSession: Boolean(payloadOrHex.rememberSession ?? maybeRemember),
           },
         };
       },
     },
     hydrateVaultFromSession(state) {
-      const savedKey = readSessionVaultKey();
-      if (savedKey) {
+      if (getActiveVaultKey()) {
         state.isConfigured = true;
         state.isUnlocked = true;
-        state.rawVaultKeyHex = savedKey;
       }
     },
     lockVault(state) {
       state.isUnlocked = false;
-      state.rawVaultKeyHex = null;
       state.isUnlockModalOpen = false;
+      setActiveVaultKey(null);
       clearSessionVaultKey();
+      deleteVaultKey().catch(() => {});
     },
   },
 });
@@ -232,12 +325,6 @@ export const VAULT_UNSUPPORTED_REASON =
 
 export type VaultStatusLabel = 'Unsupported' | 'Unlocked' | 'Locked' | 'Unconfigured';
 
-/**
- * Text for the bottom-dock vault badge (REQ-VAULT-UNSUP-3).
- *
- * `Unsupported` takes precedence over every other state: without SubtleCrypto the
- * configured/unlocked flags describe a vault that cannot be operated at all.
- */
 export function vaultStatusLabel(args: {
   isVaultUnlocked: boolean;
   isVaultConfigured: boolean;
@@ -249,14 +336,6 @@ export function vaultStatusLabel(args: {
   return args.isVaultConfigured ? 'Locked' : 'Unconfigured';
 }
 
-/**
- * Whether the vault onboarding modal may open (REQ-VAULT-UNSUP-2).
- *
- * Gates both AppShell entry points: the first-visit auto-pop and the
- * `isUnlockModalOpen` path driven by vault placeholders. When SubtleCrypto is missing
- * the modal must never open — its first action would throw a raw TypeError at
- * `generateVaultKey()`, which is a user-visible dead end.
- */
 export function shouldOpenVaultOnboarding(args: {
   isVaultUnlocked: boolean;
   dismissed: boolean;
@@ -270,7 +349,8 @@ export function shouldOpenVaultOnboarding(args: {
 export const selectVaultState = (state: { vault?: VaultState }) => state?.vault;
 export const selectIsVaultConfigured = (state: { vault?: VaultState }) => Boolean(state?.vault?.isConfigured);
 export const selectIsVaultUnlocked = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlocked);
-export const selectRawVaultKeyHex = (state: { vault?: VaultState }) => state?.vault?.rawVaultKeyHex ?? null;
+export const selectRawVaultKeyHex = (state?: { vault?: VaultState }) => (state?.vault as any)?.rawVaultKeyHex ?? null;
+export const selectActiveVaultKey = () => getActiveVaultKey();
 export const selectIsUnlockModalOpen = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlockModalOpen);
 
 export default vaultSlice.reducer;
