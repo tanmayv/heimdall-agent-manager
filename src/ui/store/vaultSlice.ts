@@ -89,7 +89,13 @@ export function validateHexVaultKey(hexKey: string): string {
 export async function importAndValidateCryptoKey(hexKey: string): Promise<CryptoKey> {
   const clean = validateHexVaultKey(hexKey);
   const key = await importRawKeyHex(clean);
-  setActiveVaultKey(key, clean);
+  // REQ-UNSEAL-1/REQ-UNSEAL-3: `clean` is NOT retained anywhere. This call used to
+  // pass it as a second argument into a module-level hex cache, which is the only
+  // reason a bridge unseal worked in the session where the operator typed the key
+  // and threw after a reload -- the restore path had no hex to cache. Both paths now
+  // hold exactly the same thing, a non-extractable handle, and a bridge unseal asks
+  // the operator for key material on either one.
+  setActiveVaultKey(key);
   return key;
 }
 
@@ -194,7 +200,7 @@ export const vaultSlice = createSlice({
           } else if (payload.rawVaultKeyHex) {
             // Asynchronously import hex key for backward compatibility with tests
             importRawKeyHex(payload.rawVaultKeyHex).then((key) => {
-              setActiveVaultKey(key, payload.rawVaultKeyHex);
+              setActiveVaultKey(key);
               if (payload.rememberSession) {
                 persistVaultKey(key).catch(() => {});
               }

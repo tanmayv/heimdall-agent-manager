@@ -34,6 +34,95 @@ export interface UnsealOptions {
   commandId?: string;
 }
 
+/** Discriminator for `VaultKeyNotExportableError`, stable across module instances. */
+export const VAULT_KEY_NOT_EXPORTABLE = 'vault_key_not_exportable';
+
+/**
+ * A bridge unseal was asked to wrap a `CryptoKey` whose raw bytes cannot be read.
+ *
+ * This is the EXPECTED outcome for a hardened key (REQ-VAULT-HARDEN-1) and for any
+ * key restored from IndexedDB, not a malfunction -- the unseal protocol has to
+ * transmit the master key itself, so a handle that cannot yield its bytes is simply
+ * not usable key material. The caller's job is to obtain the key from the operator
+ * and pass it in; it must never degrade to a weaker payload (REQ-UNSEAL-4).
+ *
+ * `code` is checked rather than `instanceof` because callers reach this module
+ * through a dynamic `import()` and must not depend on sharing one class identity.
+ */
+export class VaultKeyNotExportableError extends Error {
+  readonly code = VAULT_KEY_NOT_EXPORTABLE;
+
+  constructor() {
+    super(
+      'This browser holds the vault key as a non-extractable handle, which cannot be wrapped for a bridge. ' +
+        'Re-enter your master password to unseal this bridge.',
+    );
+    this.name = 'VaultKeyNotExportableError';
+  }
+}
+
+/** True when `err` is the not-exportable signal, across module instances. */
+export function isVaultKeyNotExportableError(err: unknown): boolean {
+  return Boolean(err) && (err as { code?: string }).code === VAULT_KEY_NOT_EXPORTABLE;
+}
+
+/**
+ * What a completed unseal attempt actually did, as opposed to what the operator was
+ * about to be told it did.
+ *
+ * REQ-UNSEAL-4/5: the UI must never report an unseal that did not happen. The case
+ * that makes this worth a function rather than a chain of ternaries inline in the
+ * panel is `targeted-bridge-missing`: the operator answers the password prompt raised
+ * by ONE bridge row, and in the time they were typing that bridge left the list (the
+ * poll refreshes it). Nothing is then attempted and nothing fails, so a "did anything
+ * fail?" test sees a clean run and reports success for an unseal that was never built
+ * or sent. That is a silent skip, which REQ-UNSEAL-4 forbids, so it is its own outcome
+ * and the caller must say so explicitly.
+ *
+ * Lives here, not in the panel, for two reasons: it is unseal semantics rather than
+ * presentation, and `node --test` cannot load `.tsx`, so a decision kept inline in the
+ * component is a decision that cannot be tested at all.
+ */
+export type UnsealOutcome =
+  /** The row the prompt was raised for is gone; nothing was attempted. */
+  | { kind: 'targeted-bridge-missing' }
+  /** At least one bridge took the payload. `count` is how many. */
+  | { kind: 'unsealed'; count: number }
+  /** Nothing succeeded and at least one bridge failed; the failures are reported. */
+  | { kind: 'failed' }
+  /** Nothing was targeted and nothing failed -- the vault is unlocked, nothing was sent. */
+  | { kind: 'dispatched' };
+
+export function resolveUnsealOutcome(args: {
+  /** The bridge row that raised the prompt, or null when it came from the bulk control. */
+  pendingUnsealBridgeId: string | null;
+  /** Whether that bridge is still present in the list at submit time. */
+  pendingBridgeFound: boolean;
+  unsealedCount: number;
+  failedCount: number;
+}): UnsealOutcome {
+  if (args.pendingUnsealBridgeId && !args.pendingBridgeFound) {
+    return { kind: 'targeted-bridge-missing' };
+  }
+  if (args.unsealedCount > 0) return { kind: 'unsealed', count: args.unsealedCount };
+  if (args.failedCount > 0) return { kind: 'failed' };
+  return { kind: 'dispatched' };
+}
+
+/**
+ * Whether `vaultKey` can actually produce the bytes an unseal payload needs.
+ *
+ * Callers use this to decide whether to prompt the operator BEFORE starting any
+ * network work, so the rule lives here next to the code that enforces it rather
+ * than being re-derived (and drifting) in each UI surface.
+ */
+export function canUnsealWithKey(vaultKey: string | CryptoKey | Uint8Array | null | undefined): boolean {
+  if (!vaultKey) return false;
+  if (typeof vaultKey === 'string') return vaultKey.trim().length > 0;
+  if (vaultKey instanceof Uint8Array) return vaultKey.length > 0;
+  return vaultKey.extractable === true;
+}
+
 /**
  * Builds the canonical AAD binding envelope for E2EE unseal requests (REQ-VAULT-HARDEN-3, REQ-VAULT-HARDEN-8).
  * Binds bridge_id, timestamp, and nonce to guarantee anti-replay integrity.
@@ -120,25 +209,31 @@ export async function prepareUnsealPayload(
   const aadBytes = buildUnsealAad(bridgeId, timestamp, nonce);
   const ivBytes = crypto.getRandomValues(new Uint8Array(12));
 
+  // REQ-UNSEAL-1, REQ-UNSEAL-4: the bytes come from the `vaultKey` the caller passed
+  // and from nowhere else.
+  //
+  // This block used to be `try { exportKey } catch { module-level hex cache }`. For a
+  // non-extractable key -- which is the hardened default (REQ-VAULT-HARDEN-1) -- the
+  // `catch` was the NORMAL path, so a thrown DOMException was load-bearing control
+  // flow and the real key source was a global that some unrelated earlier call site
+  // may or may not have populated. That is what made unseal succeed in the session
+  // where the operator typed the key and fail after a reload, with no difference in
+  // the call itself. The fallback is deleted: both paths now reach these bytes the
+  // same way, and `extractable` is read directly instead of being probed by
+  // exception.
   let plaintextBytes: Uint8Array;
   if (typeof vaultKey === 'string') {
     plaintextBytes = new TextEncoder().encode(vaultKey.trim());
   } else if (vaultKey instanceof Uint8Array) {
     plaintextBytes = vaultKey;
+  } else if (!vaultKey.extractable) {
+    // Loud and specific, never a weaker payload: there is no key material to wrap, so
+    // the caller must obtain it from the operator. Callers branch on `code`.
+    throw new VaultKeyNotExportableError();
   } else {
-    try {
-      const raw = await crypto.subtle.exportKey('raw', vaultKey);
-      const hexStr = bytesToHex(new Uint8Array(raw));
-      plaintextBytes = new TextEncoder().encode(hexStr);
-    } catch {
-      const { getActiveVaultKeyHex } = await import('./vaultCrypto.ts');
-      const cachedHex = getActiveVaultKeyHex();
-      if (cachedHex) {
-        plaintextBytes = new TextEncoder().encode(cachedHex);
-      } else {
-        throw new Error('Vault key is a non-extractable CryptoKey and no active key hex is cached.');
-      }
-    }
+    const raw = await crypto.subtle.exportKey('raw', vaultKey);
+    const hexStr = bytesToHex(new Uint8Array(raw));
+    plaintextBytes = new TextEncoder().encode(hexStr);
   }
 
   const encryptedBuf = await crypto.subtle.encrypt(

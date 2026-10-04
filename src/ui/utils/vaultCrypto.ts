@@ -16,25 +16,36 @@ export const RECOVERY_ENTROPY_BYTES = 16;
 export const VAULT_ARMOR_PREFIX = 'vault:v1:';
 export const MIN_ARMOR_PAYLOAD_BYTES = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES; // 28 bytes
 
-// Module-scoped active CryptoKey reference (in-memory C++ browser reference)
+// Module-scoped active CryptoKey reference (in-memory C++ browser reference).
+//
+// REQ-UNSEAL-2: this used to be a PAIR of module variables -- the key plus a
+// `activeVaultKeyHex` copy of its raw bytes -- and `setActiveVaultKey(key, hex?)`
+// wrote them with an optional second parameter. That signature read as two branches
+// but had three: a truthy key with `hex` OMITTED (as opposed to explicitly `null`)
+// updated the key and left the hex copy at whatever the previous caller had put
+// there. Of the ten call sites, six took that silent third branch, including the
+// IndexedDB restore at app boot -- so whether a bridge unseal worked depended only
+// on which call site had last run, i.e. on page-reload history.
+//
+// The asymmetric parameter is gone rather than documented: there is no hex copy to
+// keep in sync, so the third state is unrepresentable instead of merely guarded, and
+// no future caller can re-arm the trap by omitting an argument. Key material for a
+// bridge unseal is now passed explicitly by the caller that holds it
+// (`prepareUnsealPayload`), never read back out of module state.
 let activeVaultCryptoKey: CryptoKey | null = null;
-let activeVaultKeyHex: string | null = null;
 
 export function getActiveVaultKey(): CryptoKey | null {
   return activeVaultCryptoKey;
 }
 
-export function getActiveVaultKeyHex(): string | null {
-  return activeVaultKeyHex;
-}
-
-export function setActiveVaultKey(key: CryptoKey | null, hex?: string | null): void {
+/**
+ * Install (or, with `null`, purge) the active vault key.
+ *
+ * One parameter, one assignment, no derived state -- see the note above the module
+ * variable for why this deliberately has no `hex` companion (REQ-UNSEAL-2).
+ */
+export function setActiveVaultKey(key: CryptoKey | null): void {
   activeVaultCryptoKey = key;
-  if (hex !== undefined) {
-    activeVaultKeyHex = hex;
-  } else if (!key) {
-    activeVaultKeyHex = null;
-  }
 }
 
 /** Check if a string is armored with the vault content encryption prefix */

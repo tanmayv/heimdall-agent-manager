@@ -36,8 +36,10 @@ import {
 import {
   deriveKeyFromPassword,
   decryptVaultKeyEnvelope,
+  decryptVaultKeyEnvelopeHex,
   DEFAULT_KDF_ITERATIONS,
 } from '../../utils/vaultCrypto';
+import { canUnsealWithKey, resolveUnsealOutcome } from '../../utils/vaultBridgeUnseal';
 import {
   resolveBridgeVaultStatus,
   canLockBridgeVault,
@@ -124,6 +126,14 @@ export default function BridgeSettingsPanel({
   const [bridgeError, setBridgeError] = useState<Record<string, string>>({});
   const [bridgeNotice, setBridgeNotice] = useState<Record<string, string>>({});
 
+  // REQ-UNSEAL-1: when the key this client holds cannot be wrapped for a bridge, the
+  // operator is asked for it through the ONE existing key-entry surface (the master
+  // password modal below). This records which single bridge that prompt was raised
+  // for, so submitting it unseals that row rather than silently widening to every
+  // bridge; `null` means the prompt came from the client-scoped control and targets
+  // all of `targetBridges`, which is the pre-existing behaviour.
+  const [pendingUnsealBridgeId, setPendingUnsealBridgeId] = useState<string | null>(null);
+
   // REQ-BVS-3: the per-bridge rows — the single source of truth for "which bridges does
   // this panel act on". Each row's badge is derived from THAT bridge's reported
   // `vault_status` plus hub liveness, never from this client's `isUnlocked`.
@@ -197,9 +207,32 @@ export default function BridgeSettingsPanel({
   }, [refreshBridges]);
 
   /**
-   * Unseals ONE bridge with the key this client already holds. Requires an active
-   * CryptoKey — there is nothing to send without one, which is why the control is
-   * disabled (with the reason shown) while the client vault is locked.
+   * Opens the master-password prompt so the operator can supply key material for an
+   * unseal (REQ-UNSEAL-1, REQ-UNSEAL-4).
+   *
+   * `bridgeId` scopes it to one row; `null` means the client-scoped control raised it
+   * and every target bridge is unsealed on submit. This reuses the modal that already
+   * existed for "Unlock this client" -- there is deliberately no second key-entry
+   * surface, and nothing is cached so that a later unseal can skip the prompt.
+   */
+  const promptForUnsealKey = useCallback((bridgeId: string | null) => {
+    setPendingUnsealBridgeId(bridgeId);
+    setMasterPassword('');
+    setUnlockError('');
+    setUnsealSuccessMsg('');
+    setUnlockModalOpen(true);
+  }, []);
+
+  /**
+   * Unseals ONE bridge.
+   *
+   * REQ-UNSEAL-1: the two ways this client can come to hold a key -- the operator
+   * typed/derived it this session, or it was restored from IndexedDB at boot -- both
+   * end up holding a NON-extractable handle, and the unseal protocol has to transmit
+   * the master key itself. So neither path can unseal from the handle alone, and both
+   * take exactly the same branch below into the password prompt. They converge on one
+   * code path rather than one of them happening to work: the hex side-channel that
+   * used to make the typed path succeed (and only until the next reload) is gone.
    */
   const handleBridgeUnlock = useCallback(async (bridgeId: string) => {
     if (!bridgeId) return;
@@ -209,6 +242,16 @@ export default function BridgeSettingsPanel({
         ...prev,
         [bridgeId]: 'This client holds no vault key. Unlock the client vault first, then unseal this bridge.',
       }));
+      return;
+    }
+    if (!canUnsealWithKey(activeKey)) {
+      setBridgeError((prev) => ({ ...prev, [bridgeId]: '' }));
+      setBridgeNotice((prev) => ({
+        ...prev,
+        [bridgeId]:
+          'Re-enter your master password to unseal this bridge: the key held in this browser is a non-extractable handle and cannot be wrapped for a bridge.',
+      }));
+      promptForUnsealKey(bridgeId);
       return;
     }
     setBridgeBusy((prev) => ({ ...prev, [bridgeId]: 'unlock' }));
@@ -234,15 +277,18 @@ export default function BridgeSettingsPanel({
         return next;
       });
     }
-  }, [refreshBridges]);
+  }, [refreshBridges, promptForUnsealKey]);
 
   const handleUnlockClick = useCallback(async () => {
     setUnlockError('');
     setUnsealSuccessMsg('');
 
-    // If key is already in memory/unlocked in UI, directly unseal connected bridges
+    // If the key already in memory can actually be wrapped for a bridge, unseal
+    // directly. REQ-UNSEAL-1: a non-extractable handle cannot, whether it was derived
+    // this session or restored from IndexedDB, so both of those fall through to the
+    // prompt below instead of one of them reaching into a cached hex copy.
     const activeKey = getActiveVaultKey();
-    if (isUnlocked && activeKey) {
+    if (isUnlocked && activeKey && canUnsealWithKey(activeKey)) {
       setUnlockBusy(true);
       try {
         let unsealedCount = 0;
@@ -276,10 +322,9 @@ export default function BridgeSettingsPanel({
       return;
     }
 
-    // Otherwise, prompt for master password
-    setMasterPassword('');
-    setUnlockModalOpen(true);
-  }, [isUnlocked, targetBridges, bridges]);
+    // Otherwise, prompt for the master password. Client-scoped, so no single bridge.
+    promptForUnsealKey(null);
+  }, [isUnlocked, targetBridges, bridges, promptForUnsealKey]);
 
   const handlePasswordUnlockSubmit = useCallback(async (e: FormEvent) => {
     e.preventDefault();
@@ -295,49 +340,124 @@ export default function BridgeSettingsPanel({
         vaultEnvelope.kdf_iterations || DEFAULT_KDF_ITERATIONS
       );
 
+      // REQ-UNSEAL-3: the master key is obtained TWICE from the same envelope, in two
+      // deliberately different shapes, and neither widens what is kept at rest:
+      //
+      //  * `unsealHex` is the raw hex the unseal protocol has to transmit. It is a
+      //    local `const` for the duration of this submit and is never cached, stored,
+      //    or put in Redux -- the module-level hex cache that used to serve this role
+      //    is deleted. It dies with this closure, so the next unseal in a later
+      //    session prompts again.
+      //  * `decryptedVaultKey` is the handle installed as the active key, imported
+      //    NON-extractable. This previously asked for `extractable: true` purely so
+      //    that `exportKey` could later recover the hex for an unseal; now that the
+      //    hex is passed explicitly, the long-lived key no longer has to be
+      //    exfiltratable, which narrows the exposure this path leaves behind.
+      const unsealHex = await decryptVaultKeyEnvelopeHex(
+        derivedKey,
+        vaultEnvelope.encrypted_vault_key,
+        vaultEnvelope.vault_key_nonce,
+        vaultEnvelope.vault_key_tag
+      );
+
       const decryptedVaultKey = await decryptVaultKeyEnvelope(
         derivedKey,
         vaultEnvelope.encrypted_vault_key,
         vaultEnvelope.vault_key_nonce,
-        vaultEnvelope.vault_key_tag,
-        true
+        vaultEnvelope.vault_key_tag
       );
 
       dispatch(setVaultUnlocked({ key: decryptedVaultKey, rememberSession }));
 
-      // Now unseal target bridges with the decrypted master key
+      // Unseal with the hex just derived. When the prompt was raised by a single
+      // bridge row, unseal only that row: a prompt the operator answered for one
+      // bridge is not consent to push the key to every other one.
+      const pendingBridge = pendingUnsealBridgeId
+        ? bridges.find((b) => bridgeIdOf(b) === pendingUnsealBridgeId)
+        : undefined;
+      const candidates = pendingUnsealBridgeId
+        ? (pendingBridge ? [pendingBridge] : [])
+        : (targetBridges.length > 0 ? targetBridges : bridges);
+
       let unsealedCount = 0;
-      const candidates = targetBridges.length > 0 ? targetBridges : bridges;
+      const failedUnseals: string[] = [];
       for (const bridge of candidates) {
         const bridgeId = bridgeIdOf(bridge);
         if (!bridgeId) continue;
         try {
           const pubKey = await fetchBridgePublicKey(bridgeId);
-          if (pubKey) {
-            await unsealBridgeE2EE(bridgeId, pubKey, decryptedVaultKey);
-            unsealedCount++;
+          if (!pubKey) {
+            throw new Error('Bridge advertised no public key — it may have gone offline.');
           }
-        } catch (bridgeErr) {
+          await unsealBridgeE2EE(bridgeId, pubKey, unsealHex);
+          unsealedCount++;
+        } catch (bridgeErr: any) {
+          // REQ-UNSEAL-4: a failed unseal is reported, not just logged to a console
+          // nobody is reading, and never retried with a weaker payload.
           console.warn(`[BridgeSettingsPanel] failed unsealing bridge ${bridgeId}:`, bridgeErr);
+          failedUnseals.push(bridgeNameOf(bridge));
+          if (pendingUnsealBridgeId === bridgeId) {
+            setBridgeError((prev) => ({
+              ...prev,
+              [bridgeId]: `Failed to unseal this bridge: ${bridgeErr?.message || String(bridgeErr)}`,
+            }));
+          }
         }
       }
-      if (unsealedCount === 0 && candidates.length === 0) {
-        unsealedCount = await unsealAllConnectedBridges(decryptedVaultKey);
+      if (unsealedCount === 0 && candidates.length === 0 && !pendingUnsealBridgeId) {
+        unsealedCount = await unsealAllConnectedBridges(unsealHex);
       }
 
       setUnlockModalOpen(false);
       setMasterPassword('');
+      setPendingUnsealBridgeId(null);
+
+      // REQ-UNSEAL-4/5: say what actually happened. The vault is unlocked by this
+      // point either way, so the only question left is whether an unseal was really
+      // sent -- and `targeted-bridge-missing` is the case where none was, with
+      // nothing having failed to make that obvious.
+      const outcome = resolveUnsealOutcome({
+        pendingUnsealBridgeId,
+        pendingBridgeFound: Boolean(pendingBridge),
+        unsealedCount,
+        failedCount: failedUnseals.length,
+      });
+
+      if (outcome.kind === 'targeted-bridge-missing') {
+        setBridgeError((prev) => ({
+          ...prev,
+          [pendingUnsealBridgeId as string]:
+            'This bridge is no longer listed, so nothing was unsealed. Refresh and try again.',
+        }));
+        setUnlockError('That bridge is no longer listed, so no unseal was sent. The vault is unlocked.');
+        setUnsealSuccessMsg('');
+        refreshBridges();
+        return;
+      }
+
+      if (failedUnseals.length > 0) {
+        setUnlockError(`Could not unseal ${failedUnseals.length} bridge(s): ${failedUnseals.join(', ')}.`);
+      }
+      if (outcome.kind === 'unsealed' && pendingUnsealBridgeId) {
+        setBridgeNotice((prev) => ({
+          ...prev,
+          [pendingUnsealBridgeId]: 'Unseal payload delivered to this bridge.',
+        }));
+      }
       setUnsealSuccessMsg(
-        unsealedCount > 0
-          ? `Successfully unsealed ${unsealedCount} bridge${unsealedCount === 1 ? '' : 's'}.`
-          : 'Bridge unlocked and unseal dispatched.'
+        outcome.kind === 'unsealed'
+          ? `Successfully unsealed ${outcome.count} bridge${outcome.count === 1 ? '' : 's'}.`
+          : outcome.kind === 'failed'
+            ? ''
+            : 'Bridge unlocked and unseal dispatched.'
       );
+      refreshBridges();
     } catch (err: any) {
       setUnlockError(err?.message || 'Incorrect master password. Failed to unlock vault.');
     } finally {
       setUnlockBusy(false);
     }
-  }, [masterPassword, vaultEnvelope, rememberSession, dispatch, targetBridges, bridges]);
+  }, [masterPassword, vaultEnvelope, rememberSession, dispatch, targetBridges, bridges, pendingUnsealBridgeId, refreshBridges]);
 
   const handleLockClick = useCallback(async () => {
     setLockBusy(true);
@@ -612,6 +732,7 @@ export default function BridgeSettingsPanel({
               setUnlockModalOpen(false);
               setMasterPassword('');
               setUnlockError('');
+              setPendingUnsealBridgeId(null);
             }
           }}
           title="Unlock Bridge Vault"
@@ -625,7 +746,9 @@ export default function BridgeSettingsPanel({
               </div>
 
               <p className="text-xs text-muted leading-relaxed">
-                Enter your master password to decrypt the vault key and dispatch an authenticated E2EE unseal payload to the bridge.
+                {pendingUnsealBridgeId
+                  ? 'Enter your master password to dispatch an authenticated E2EE unseal payload to this one bridge. The key this browser holds is a non-extractable handle, so it cannot be wrapped for a bridge — nothing re-usable is kept, which is why this is asked each session.'
+                  : 'Enter your master password to decrypt the vault key and dispatch an authenticated E2EE unseal payload to the bridge.'}
               </p>
 
               <div>
@@ -671,6 +794,7 @@ export default function BridgeSettingsPanel({
                   setUnlockModalOpen(false);
                   setMasterPassword('');
                   setUnlockError('');
+                  setPendingUnsealBridgeId(null);
                 }}
                 disabled={unlockBusy}
                 className="min-h-[44px] min-w-[44px] touch-manipulation"

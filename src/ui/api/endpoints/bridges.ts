@@ -64,6 +64,14 @@ export async function lockBridge(bridgeId: string): Promise<{ ok: boolean }> {
 
 /**
  * Unseals all online bridges using the provided or active vault key.
+ *
+ * REQ-UNSEAL-1: pass the key material as HEX where you have it. The `getActiveVaultKey()`
+ * fallback only works when the active key happens to be extractable; a hardened or
+ * IndexedDB-restored handle cannot be wrapped for a bridge, and `prepareUnsealPayload`
+ * then throws `VaultKeyNotExportableError` per bridge. That is reported here as a count
+ * of 0 rather than as an error, so this bulk helper is NOT a way to find out why an
+ * unseal did not happen — a surface that must tell the operator (and prompt them) should
+ * call `unsealBridgeE2EE` per bridge and handle the error, as BridgeSettingsPanel does.
  */
 export async function unsealAllConnectedBridges(vaultKey?: CryptoKey | string | null): Promise<number> {
   const { getActiveVaultKey } = await import('../../store/vaultSlice');
