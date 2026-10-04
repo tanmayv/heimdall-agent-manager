@@ -4585,6 +4585,166 @@ def test_socat_probe_assertion_binds(ctx):
         f'is what breaks these runs:\n{control.stderr}')
 
 
+def test_install_sh_enrollment_interactive_scenarios(ctx):
+    """REQ-INST-ENROLL-1 through REQ-INST-ENROLL-4: Interactive onboarding ceremony
+    including Hub URL prompt, bridge token pre-check, enrollment command invocation,
+    service startup verification, and client vault master-password setup."""
+    work = ctx['work'] / 'interactive-enroll'
+    home = work / 'home'
+    runtime = work / 'runtime'
+    bin_dir = work / 'bin'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mock heimdall binary
+    mock_heimdall = bin_dir / 'heimdall'
+    mock_heimdall.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [ "$1" = "enroll" ]; then\n'
+        '  token="$2"\n'
+        '  mkdir -p "$HOME/.config/heimdall"\n'
+        '  echo "token_$token" > "$HOME/.config/heimdall/bridge-token"\n'
+        '  echo "mock: enrolled with $token"\n'
+        '  exit 0\n'
+        'elif [ "$1" = "vault" ]; then\n'
+        '  if [ "${2:-}" = "--help" ]; then\n'
+        '    echo "Commands:"\n'
+        '    echo "  master-password  Configure vault master password"\n'
+        '    exit 0\n'
+        '  elif [ "${2:-}" = "master-password" ]; then\n'
+        '    read -r pwd\n'
+        '    echo "vault_configured:$pwd" > "$HOME/.config/heimdall/vault_status"\n'
+        '    exit 0\n'
+        '  fi\n'
+        'fi\n'
+        'exit 0\n'
+    )
+    mock_heimdall.chmod(0o755)
+
+    # Mock systemctl binary
+    mock_systemctl = bin_dir / 'systemctl'
+    mock_systemctl.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [ "$1" = "--user" ] && [ "$2" = "enable" ] && [ "$3" = "--now" ] && [ "$4" = "heimdall-bridge" ]; then\n'
+        '  echo "mock: bridge started"\n'
+        '  exit 0\n'
+        'elif [ "$1" = "--user" ] && [ "$2" = "is-active" ] && [ "$3" = "heimdall-bridge" ]; then\n'
+        '  echo "active"\n'
+        '  exit 0\n'
+        'fi\n'
+        'exit 0\n'
+    )
+    mock_systemctl.chmod(0o755)
+
+    env = sandbox_install_env(home, runtime)
+    cur_path = env['PATH']
+    env['PATH'] = f"{bin_dir}{os.pathsep}{cur_path}"
+    env['HEIMDALL_INTERACTIVE'] = '1'
+
+    # Scenario A: Full interactive flow (Hub URL prompt, enrollment token, bridge startup, vault password)
+    simulated_inputs = (
+        "  http://my-test-hub.example.com///  \n"
+        "hbe_abc123xyz\n"
+        "y\n"
+        "test-secret-password\n"
+        "test-secret-password\n"
+    )
+
+    test_harness = (
+        f'source <(sed "/^main \\"\\$@\\"/d" "{INSTALL_SCRIPT}")\n'
+        f'service_home="{home}"\n'
+        f'install_dir="{bin_dir}"\n'
+        'os="linux"\n'
+        'service_user=""\n'
+        'path_needs_action=false\n'
+        'hub_url=""\n'
+        'run_interactive_onboarding\n'
+        'echo "END_TEST_HUB_URL: $hub_url"\n'
+    )
+
+    proc = subprocess.run(
+        ['bash', '-c', test_harness],
+        input=simulated_inputs,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, f'interactive onboarding failed:\n{proc.stderr}'
+    out = proc.stdout + proc.stderr
+    assert 'Enter Hub URL:' in out, 'Missing Hub URL prompt'
+    assert 'END_TEST_HUB_URL: http://my-test-hub.example.com' in out, 'Hub URL trailing slashes or spaces not cleaned'
+    assert 'Enter one-time enrollment token (hbe_...):' in out, 'Missing enrollment token prompt'
+    assert 'Node successfully enrolled.' in out, 'Missing enrollment success message'
+    assert 'Bridge service started via systemctl --user.' in out, 'Missing bridge service start message'
+    assert 'Enrollment verified: bridge token is present' in out, 'Missing bridge token verification'
+    assert 'Bridge service is running (active).' in out, 'Missing bridge active verification'
+    assert 'Vault encryption successfully configured.' in out, 'Missing vault success message'
+
+    token_file = home / '.config' / 'heimdall' / 'bridge-token'
+    assert token_file.exists() and 'hbe_abc123xyz' in token_file.read_text(), 'Bridge token file was not written'
+    vault_file = home / '.config' / 'heimdall' / 'vault_status'
+    assert vault_file.exists() and 'test-secret-password' in vault_file.read_text(), 'Vault password was not delivered'
+
+    # Scenario B: Existing token pre-check skips enrollment
+    simulated_inputs_b = "n\n"
+    test_harness_b = (
+        f'source <(sed "/^main \\"\\$@\\"/d" "{INSTALL_SCRIPT}")\n'
+        f'service_home="{home}"\n'
+        f'install_dir="{bin_dir}"\n'
+        'os="linux"\n'
+        'service_user=""\n'
+        'path_needs_action=false\n'
+        'hub_url="http://existing-hub.example.com"\n'
+        'run_interactive_onboarding\n'
+    )
+    proc_b = subprocess.run(
+        ['bash', '-c', test_harness_b],
+        input=simulated_inputs_b,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc_b.returncode == 0, f'pre-check test failed:\n{proc_b.stderr}'
+    out_b = proc_b.stdout + proc_b.stderr
+    assert 'Found existing bridge token at' in out_b, 'Existing token was not reported'
+    assert 'node is already enrolled.' in out_b, 'Existing enrollment message missing'
+    assert 'Enter one-time enrollment token' not in out_b, 'Prompted for token when already enrolled'
+    assert 'Client vault encryption skipped.' in out_b, 'Opt-out message missing'
+
+
+def test_install_sh_enrollment_noninteractive_invariants(ctx):
+    """REQ-INST-ENROLL-5, REQ-INST-ENROLL-6: Non-interactive pipeline, subshell,
+    CI, and flag invariants for scripts/install.sh.
+    Ensures that when stdin is not a tty, or when HEIMDALL_NON_INTERACTIVE=1,
+    DEBIAN_FRONTEND=noninteractive, --dry-run, or --uninstall are set,
+    interactive prompts are cleanly bypassed and fallback instructions are printed."""
+    work = ctx['work'] / 'noninteractive-enroll'
+    home = work / 'home'
+    runtime = work / 'runtime'
+    home.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+
+    # 1. Non-interactive stdin via pipe/subprocess must skip prompts and print onboarding
+    env = sandbox_install_env(home, runtime)
+    res_dry = run(['bash', str(INSTALL_SCRIPT), '--dry-run'], env=env, timeout=60)
+    assert res_dry.returncode == 0, f'--dry-run failed:\n{res_dry.stderr}'
+    assert 'Enter Hub URL:' not in res_dry.stdout, '--dry-run must not prompt for Hub URL'
+    assert 'Enter one-time enrollment token' not in res_dry.stdout, '--dry-run must not prompt for enrollment token'
+    assert 'Do you wish to enable client vault encryption?' not in res_dry.stdout, '--dry-run must not prompt for vault'
+
+    # 2. Run standalone enrollment test suite covering all 12 scenario checks
+    test_script = ROOT / 'tests' / 'test_installer_enrollment.sh'
+    assert test_script.exists(), 'test_installer_enrollment.sh missing'
+    res_script = run(['bash', str(test_script)], env=env, timeout=120)
+    assert res_script.returncode == 0, (
+        f'test_installer_enrollment.sh failed (exit={res_script.returncode}):\n'
+        f'stdout:\n{res_script.stdout}\nstderr:\n{res_script.stderr}'
+    )
+
+
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
@@ -4704,7 +4864,15 @@ def main() -> int:
          test_fish_uninstall_removes_quoted_spaced_install_dir),
         ('socat probe assertion binds: mutation + control (REQ-INST-27)',
          test_socat_probe_assertion_binds),
+        ('install.sh interactive enrollment scenarios (REQ-INST-ENROLL-1..4)',
+         test_install_sh_enrollment_interactive_scenarios),
+        ('install.sh non-interactive & dry-run invariants (REQ-INST-ENROLL-5..6)',
+         test_install_sh_enrollment_noninteractive_invariants),
     ]
+
+    filter_pattern = sys.argv[1].lower() if len(sys.argv) > 1 else None
+    if filter_pattern:
+        tests = [(name, fn) for name, fn in tests if filter_pattern in name.lower()]
 
     ctx = {}
     work = Path(tempfile.mkdtemp(prefix='heimdall-dist-test-'))

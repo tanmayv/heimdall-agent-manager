@@ -44,15 +44,16 @@ NET_DOWNLOAD_MAX_TIME=600
 TELEGRAF_VERSION="${TELEGRAF_VERSION:-1.32.1}"
 
 usage() {
-  cat <<'USAGE'
-usage: install.sh [--version <tag>] [--hub <url>] [--dry-run] [--force-service]
+  cat <<'USAGE' >&2
+usage: install.sh [--version <tag>] [--hub <url>] [--hub-url <url>] [--dry-run] [--force-service]
                   [--update, --apply-update] [--check] [--bundle <path>] [--uninstall]
 
 Installs prebuilt heimdall binaries (heimdall, ham-bridge, ham-pty-host,
 ham-ctl, telegraf), wires PATH, and registers a user-level heimdall-bridge service.
+In an interactive terminal, prompts for Hub onboarding, enrollment, and vault setup.
 
   --version <tag>      install release <tag> instead of the latest GitHub release
-  --hub <url>          download <url>/heimdall-local-<target>.tar.gz and
+  --hub <url>, --hub-url <url> download <url>/heimdall-local-<target>.tar.gz and
                        <url>/SHA256SUMS (self-hosted hub mirror) and start the
                        service with --hub <url> as an explicit override.
                        Without --hub the service reads the hub URL from
@@ -1045,6 +1046,226 @@ EOF
   fi
 }
 
+# REQ-INST-ENROLL-5: determine whether running in an interactive terminal.
+# In non-interactive contexts (no TTY, CI pipelines, automated tests),
+# --dry-run, or --uninstall, skip interactive prompts and fall back cleanly
+# to instructions without blocking or hanging.
+is_interactive() {
+  if "${dry_run:-false}" || "${uninstall:-false}"; then
+    return 1
+  fi
+  if [ "${HEIMDALL_NON_INTERACTIVE:-0}" = "1" ] || [ "${DEBIAN_FRONTEND:-}" = "noninteractive" ]; then
+    return 1
+  fi
+  if [ "${HEIMDALL_INTERACTIVE:-0}" = "1" ] || [ "${HEIMDALL_FORCE_INTERACTIVE:-0}" = "1" ]; then
+    return 0
+  fi
+  [ -t 0 ] && [ -t 1 ]
+}
+
+# REQ-INST-ENROLL-1 through REQ-INST-ENROLL-4: interactive onboarding ceremony.
+run_interactive_onboarding() {
+  say "Starting interactive onboarding and node setup..."
+  echo ""
+
+  # --- REQ-INST-ENROLL-1: Hub URL Support & Prompt ---
+  if [ -z "$hub_url" ]; then
+    printf 'Enter Hub URL: '
+    IFS= read -r input_hub || input_hub=""
+    input_hub="$(printf '%s' "$input_hub" | tr -d '[:space:]')"
+    while [ "${input_hub%/}" != "$input_hub" ]; do
+      input_hub="${input_hub%/}"
+    done
+    if [ -n "$input_hub" ]; then
+      hub_url="$input_hub"
+    else
+      warn "No Hub URL provided; skipping interactive enrollment."
+      print_onboarding
+      return 0
+    fi
+  fi
+
+  # --- REQ-INST-ENROLL-2: Bridge Token Pre-check ---
+  token_file="$service_home/.config/heimdall/bridge-token"
+  already_enrolled=false
+  if [ -s "$token_file" ]; then
+    existing_token="$(tr -d '[:space:]' < "$token_file" 2>/dev/null || true)"
+    if [ -n "$existing_token" ]; then
+      already_enrolled=true
+      say "Found existing bridge token at $token_file; node is already enrolled."
+    fi
+  fi
+
+  # --- REQ-INST-ENROLL-3: Enrollment Ceremony & Bridge Startup ---
+  if ! "$already_enrolled"; then
+    cat <<EOF
+
+To enroll this node with Hub ($hub_url):
+1. On the HUB, create a one-time enrollment token:
+     ham-ctl bridge enroll-token --new
+
+EOF
+    printf 'Enter one-time enrollment token (hbe_...): '
+    IFS= read -r enroll_token || enroll_token=""
+    enroll_token="$(printf '%s' "$enroll_token" | tr -d '[:space:]')"
+    if [ -z "$enroll_token" ]; then
+      warn "No enrollment token provided; skipping automatic enrollment."
+      print_onboarding
+      return 0
+    fi
+
+    say "Enrolling node with Hub ($hub_url)..."
+    enroll_bin="$install_dir/heimdall"
+    if [ ! -x "$enroll_bin" ]; then
+      enroll_bin="$(command -v heimdall 2>/dev/null || true)"
+    fi
+
+    enroll_ok=false
+    if [ -n "$enroll_bin" ] && [ -x "$enroll_bin" ]; then
+      enroll_cmd=("$enroll_bin" enroll "$enroll_token" --hub "$hub_url")
+      if [ -n "$service_user" ]; then
+        enroll_cmd+=(--config "$service_home/.config/heimdall/config.toml")
+      fi
+      if "${enroll_cmd[@]}"; then
+        enroll_ok=true
+      fi
+    elif [ -x "$install_dir/ham-bridge" ]; then
+      if "$install_dir/ham-bridge" enroll --hub "$hub_url" --enrollment-token "$enroll_token" --bridge-token-file "$token_file"; then
+        enroll_ok=true
+      fi
+    fi
+
+    if "$enroll_ok"; then
+      say "Node successfully enrolled."
+      if [ -n "$service_user" ]; then
+        take_ownership "$service_home/.config/heimdall"
+      fi
+    else
+      warn "Enrollment failed. You can retry manually with:"
+      warn "  $install_dir/heimdall enroll <token> --hub $hub_url"
+      print_onboarding
+      return 0
+    fi
+  fi
+
+  # Start registered bridge service
+  say "Starting bridge service..."
+  if [ "$os" = "linux" ]; then
+    if [ -n "$service_user" ]; then
+      say "Bridge service registered for user $service_user."
+      say "Start it as $service_user: systemctl --user enable --now heimdall-bridge"
+    elif command -v systemctl >/dev/null 2>&1; then
+      if systemctl --user enable --now heimdall-bridge 2>/dev/null; then
+        say "Bridge service started via systemctl --user."
+      else
+        warn "Could not start bridge service via 'systemctl --user enable --now heimdall-bridge'."
+      fi
+    fi
+  else
+    launchctl bootstrap "gui/$(id -u)" "$service_file" 2>/dev/null || launchctl load "$service_file" 2>/dev/null || true
+    launchctl kickstart -k "gui/$(id -u)/works.earendil.heimdall-bridge" 2>/dev/null || true
+    say "Bridge service started via launchctl."
+  fi
+
+  # Verify bridge is running and enrolled
+  say "Verifying bridge service and enrollment..."
+  if [ -s "$token_file" ]; then
+    say "Enrollment verified: bridge token is present at $token_file."
+  else
+    warn "Bridge token not found at $token_file."
+  fi
+
+  if [ "$os" = "linux" ] && [ -z "$service_user" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl --user is-active heimdall-bridge >/dev/null 2>&1; then
+      say "Bridge service is running (active)."
+    else
+      warn "Bridge service is not reporting active; check: systemctl --user status heimdall-bridge"
+    fi
+  elif [ "$os" = "darwin" ]; then
+    if launchctl list 2>/dev/null | grep -q "works.earendil.heimdall-bridge"; then
+      say "Bridge service is running (active)."
+    fi
+  fi
+
+  # --- REQ-INST-ENROLL-4: Encryption & Master Password Setup ---
+  echo ""
+  printf 'Do you wish to enable client vault encryption? [y/N]: '
+  IFS= read -r enable_vault || enable_vault=""
+  case "$enable_vault" in
+    [yY]|[yY][eE][sS])
+      # Check whether master password setup is supported by local tooling
+      vault_tool=""
+      if [ -x "$install_dir/heimdall" ]; then
+        vault_tool="$install_dir/heimdall"
+      elif command -v heimdall >/dev/null 2>&1; then
+        vault_tool="$(command -v heimdall)"
+      fi
+
+      vault_supports_master_pwd=false
+      vault_help=""
+      if [ -n "$vault_tool" ]; then
+        vault_help="$("$vault_tool" vault --help 2>&1 || true)"
+        if echo "$vault_help" | grep -iqE "master-password|setup-password|password"; then
+          vault_supports_master_pwd=true
+        fi
+      fi
+
+      if "$vault_supports_master_pwd"; then
+        printf 'Enter master password: '
+        IFS= read -s -r master_pwd || master_pwd=""
+        echo ""
+        printf 'Confirm master password: '
+        IFS= read -s -r master_pwd_confirm || master_pwd_confirm=""
+        echo ""
+        if [ "$master_pwd" != "$master_pwd_confirm" ]; then
+          warn "Passwords do not match; skipping vault encryption setup."
+        elif [ -z "$master_pwd" ]; then
+          warn "Master password cannot be empty; skipping vault encryption setup."
+        else
+          say "Configuring vault keys..."
+          vault_cmd=()
+          if echo "$vault_help" | grep -iq "master-password"; then
+            vault_cmd=("$vault_tool" vault master-password)
+          elif echo "$vault_help" | grep -iq "setup-password"; then
+            vault_cmd=("$vault_tool" vault setup-password)
+          elif echo "$vault_help" | grep -iq "set-password"; then
+            vault_cmd=("$vault_tool" vault set-password)
+          else
+            vault_cmd=("$vault_tool" vault setup)
+          fi
+          if [ -n "$service_user" ]; then
+            vault_cmd+=(--config "$service_home/.config/heimdall/config.toml")
+          fi
+          if printf '%s\n' "$master_pwd" | "${vault_cmd[@]}" 2>/dev/null; then
+            say "Vault encryption successfully configured."
+            if [ -n "$service_user" ]; then
+              take_ownership "$service_home/.config/heimdall"
+            fi
+          else
+            warn "Failed to configure vault key via local tooling."
+          fi
+        fi
+      else
+        say "Master password setup is not currently supported by local tooling (heimdall vault); client vault encryption was not configured."
+      fi
+      ;;
+    *)
+      say "Client vault encryption skipped."
+      ;;
+  esac
+
+  echo ""
+  say "Onboarding complete."
+  if "${path_needs_action:-false}"; then
+    cat <<EOF
+
+NOTE: the install SUCCEEDED — the binaries and the service file are in place.
+Only PATH still needs your action: no shell config file could be written, so
+add the line from the snippet above to your own shell configuration.
+EOF
+  fi
+}
+
 # REQ-INST-3: under `curl | sudo bash` the binaries go to /usr/local/bin, but
 # the service file and PATH rc lines must land in the invoking user's home (the
 # session that will actually run `systemctl --user`), owned by that user.
@@ -1698,7 +1919,11 @@ main() {
         version="$2"; shift 2 ;;
       --hub|--hub-url)
         [ "$#" -ge 2 ] || fail "--hub requires a url"
-        hub_url="${2%/}"; shift 2 ;;
+        hub_url="$2"
+        while [ "${hub_url%/}" != "$hub_url" ]; do
+          hub_url="${hub_url%/}"
+        done
+        shift 2 ;;
       --dry-run) dry_run=true; shift ;;
       --force-service) force_service=true; shift ;;
       --force|-f) force=true; force_service=true; shift ;;
@@ -2075,7 +2300,11 @@ This installer will never remove or modify $system_unit."
     fi
   fi
 
-  print_onboarding
+  if is_interactive; then
+    run_interactive_onboarding
+  else
+    print_onboarding
+  fi
 }
 
 main "$@"
