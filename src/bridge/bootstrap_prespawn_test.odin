@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:sys/posix"
 
@@ -159,6 +160,10 @@ bridge_prespawn_test_env_has :: proc(env: []string, want: string) -> bool {
 // Asserted on the variable NAME so that re-adding the bake under any value fails.
 @(test)
 bridge_bootstrap_shim_omits_vault_key :: proc(t: ^testing.T) {
+	// HEIMDALL_VAULT_KEY is a PROCESS-GLOBAL and this test mutated it while holding no
+	// lock at all, racing every other env-mutating test (iss_18db48473fc5cb6d, 2026-10-04).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	// Point the resolver at a real executable so rendering can succeed; the shim
 	// only embeds this path, it never runs it.
 	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
@@ -210,6 +215,10 @@ bridge_bootstrap_shim_omits_vault_key :: proc(t: ^testing.T) {
 // not the builder, so it also covers the write.
 @(test)
 bridge_bootstrap_written_wrapper_omits_vault_key :: proc(t: ^testing.T) {
+	// HEIMDALL_VAULT_KEY is a PROCESS-GLOBAL and this test mutated it while holding no
+	// lock at all, racing every other env-mutating test (iss_18db48473fc5cb6d, 2026-10-04).
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
 	defer {
 		if had {

@@ -75,6 +75,13 @@ test_create_unseal_envelope :: proc(
 
 @(test)
 test_unseal_protocol_success_and_unlock :: proc(t: ^testing.T) {
+	// HEIMDALL_VAULT_KEY is a PROCESS-GLOBAL. keystore_test_mutex alone does not
+	// serialise this test against the ~29 env-mutating tests that hold
+	// bridge_test_config_mutex instead - two disjoint locks exclude nobody, so those
+	// two sets raced on one shared value (iss_18db48473fc5cb6d, 2026-10-04).
+	// Taken OUTERMOST, before keystore_test_mutex: the acquisition graph stays acyclic.
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
 	defer bridge_vault_lock()

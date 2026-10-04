@@ -21,6 +21,24 @@ import base64 "core:encoding/base64"
 import json "core:encoding/json"
 import "core:path/filepath"
 
+// WHY THE LENGTH ASSERTIONS BELOW ARE WRITTEN `if !testing.expect_value(...) do return`
+//
+// testing.expect_value does NOT abort the test; it records the failure and returns false.
+// So `expect_value(t, len(xs), 1)` followed by `xs[0]` does not stop at the failed
+// assertion - it proceeds to index an empty slice and takes a BOUNDS PANIC.
+//
+// That panic is not contained. Every test here holds bridge_test_config_mutex (declared in
+// agent_token_store_test.odin) across its body via `defer sync.mutex_unlock(...)`, and the
+// panic unwinds WITHOUT running that defer. The mutex is leaked held, so the next test to
+// acquire it blocks forever and the whole src/bridge suite hangs without printing its
+// `Finished N tests` line. That is how one empty slice silently costs every other test its
+// result.
+//
+// Guarding with an early return keeps the defers running, so a failed expectation stays a
+// clean reported failure. 2026-10-04, iss_18da1a626405e3d1; the structural problem - a
+// global mutex held across panicking assertions, ~147 sites across 10 test files - is
+// tracked separately and deliberately NOT reworked here.
+
 // fs_test_base resolves (and pins) the shared temp base as the GLOBAL sandbox
 // root. Idempotent across concurrent tests: they all compute + write the same
 // absolute path. Per-test isolation comes from unique subdirs (see make_root).
@@ -95,7 +113,7 @@ fs_list_sorts_dirs_first_then_name :: proc(t: ^testing.T) {
 
 	res := bridge_fs_list_dir("", true, "", 200, root)
 	testing.expect(t, res.ok, "list ok")
-	testing.expect_value(t, len(res.entries), 4)
+	if !testing.expect_value(t, len(res.entries), 4) do return
 	// dirs first, name asc: banana, mango, then files apple.txt, zebra.txt
 	testing.expect_value(t, res.entries[0].name, "banana")
 	testing.expect(t, res.entries[0].is_dir, "banana is dir")
@@ -119,7 +137,7 @@ fs_list_paginates_with_opaque_cursor :: proc(t: ^testing.T) {
 	// Page 1: limit 2 -> a,b + has_more + next_cursor
 	p1 := bridge_fs_list_dir("", true, "", 2, root)
 	testing.expect(t, p1.ok, "p1 ok")
-	testing.expect_value(t, len(p1.entries), 2)
+	if !testing.expect_value(t, len(p1.entries), 2) do return
 	testing.expect_value(t, p1.entries[0].name, "a.txt")
 	testing.expect_value(t, p1.entries[1].name, "b.txt")
 	testing.expect(t, p1.has_more, "p1 has_more")
@@ -130,14 +148,14 @@ fs_list_paginates_with_opaque_cursor :: proc(t: ^testing.T) {
 
 	// Page 2: same limit, using cursor -> c,d + has_more
 	p2 := bridge_fs_list_dir("", true, p1.next_cursor, 2, root)
-	testing.expect_value(t, len(p2.entries), 2)
+	if !testing.expect_value(t, len(p2.entries), 2) do return
 	testing.expect_value(t, p2.entries[0].name, "c.txt")
 	testing.expect_value(t, p2.entries[1].name, "d.txt")
 	testing.expect(t, p2.has_more, "p2 has_more")
 
 	// Page 3: last entry, no more
 	p3 := bridge_fs_list_dir("", true, p2.next_cursor, 2, root)
-	testing.expect_value(t, len(p3.entries), 1)
+	if !testing.expect_value(t, len(p3.entries), 1) do return
 	testing.expect_value(t, p3.entries[0].name, "e.txt")
 	testing.expect(t, !p3.has_more, "p3 no more")
 	testing.expect_value(t, p3.next_cursor, "")
@@ -151,7 +169,7 @@ fs_list_malformed_cursor_falls_back_to_first_page :: proc(t: ^testing.T) {
 	fs_test_seed_file(t, root, "b.txt", "b")
 	res := bridge_fs_list_dir("", true, "not-valid-base64!!", 200, root)
 	testing.expect(t, res.ok, "ok")
-	testing.expect_value(t, len(res.entries), 2)
+	if !testing.expect_value(t, len(res.entries), 2) do return
 	testing.expect_value(t, res.entries[0].name, "a.txt")
 }
 
@@ -168,7 +186,7 @@ fs_list_hidden_filter_omits_dotfiles :: proc(t: ^testing.T) {
 	// include_hidden=false -> only visible.txt
 	hidden_off := bridge_fs_list_dir("", false, "", 200, root)
 	testing.expect(t, hidden_off.ok, "ok")
-	testing.expect_value(t, len(hidden_off.entries), 1)
+	if !testing.expect_value(t, len(hidden_off.entries), 1) do return
 	testing.expect_value(t, hidden_off.entries[0].name, "visible.txt")
 	testing.expect(t, !hidden_off.entries[0].hidden, "visible not hidden")
 
@@ -376,7 +394,7 @@ fs_project_root_override_scopes_listing :: proc(t: ^testing.T) {
 	res := bridge_fs_list_dir("", true, "", 200, proj_root)
 	testing.expect(t, res.ok, "list ok")
 	testing.expect_value(t, res.root, proj_root)
-	testing.expect_value(t, len(res.entries), 1)
+	if !testing.expect_value(t, len(res.entries), 1) do return
 	testing.expect_value(t, res.entries[0].name, "inside.txt")
 	// parent of the project root is "" (breadcrumb stops at project root).
 	testing.expect_value(t, res.parent, "")
@@ -659,7 +677,7 @@ fs_wire_commands_unmarshal_whitespace_and_reversed_keys :: proc(t: ^testing.T) {
 	err = json.unmarshal_string(raw_batch, &cmd_batch, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 	testing.expect(t, err == nil, "unmarshal batch write command ok")
 	testing.expect_value(t, cmd_batch.command_id, "cmd_batch_1")
-	testing.expect_value(t, len(cmd_batch.files), 2)
+	if !testing.expect_value(t, len(cmd_batch.files), 2) do return
 	testing.expect_value(t, cmd_batch.files[0].path, "f1.txt")
 	testing.expect_value(t, cmd_batch.files[0].content, "c1")
 	testing.expect_value(t, cmd_batch.files[1].path, "f2.txt")
@@ -799,7 +817,7 @@ fs_wire_results_round_trip_all_11_operations :: proc(t: ^testing.T) {
 	testing.expect_value(t, var_list.path, "/tmp/root")
 	testing.expect_value(t, var_list.has_more, true)
 	testing.expect_value(t, var_list.next_cursor.?, "cursor_token")
-	testing.expect_value(t, len(var_list.entries), 2)
+	if !testing.expect_value(t, len(var_list.entries), 2) do return
 	testing.expect_value(t, var_list.entries[0].name, "alpha.txt")
 	testing.expect_value(t, var_list.entries[1].has_git, true)
 
@@ -888,9 +906,9 @@ fs_wire_results_round_trip_all_11_operations :: proc(t: ^testing.T) {
 	testing.expect(t, err == nil, "unmarshal batch wire ok")
 	testing.expect_value(t, var_batch.type, "fs_batch_write_result")
 	testing.expect_value(t, var_batch.command_id, "cmd_batch")
-	testing.expect_value(t, len(var_batch.saved), 1)
+	if !testing.expect_value(t, len(var_batch.saved), 1) do return
 	testing.expect_value(t, var_batch.saved[0].path, "s1.txt")
-	testing.expect_value(t, len(var_batch.errors), 1)
+	if !testing.expect_value(t, len(var_batch.errors), 1) do return
 	testing.expect_value(t, var_batch.errors[0].error_code, "permission_denied")
 	testing.expect_value(t, var_batch.error.code, "batch_write_partial")
 
@@ -977,7 +995,7 @@ fs_wire_results_round_trip_all_11_operations :: proc(t: ^testing.T) {
 	testing.expect(t, err == nil, "unmarshal find wire ok")
 	testing.expect_value(t, var_find.type, "fs_find_files_result")
 	testing.expect_value(t, var_find.command_id, "cmd_find")
-	testing.expect_value(t, len(var_find.files), 2)
+	if !testing.expect_value(t, len(var_find.files), 2) do return
 	testing.expect_value(t, var_find.files[0], "a.odin")
 
 	// 11. grep
@@ -997,7 +1015,7 @@ fs_wire_results_round_trip_all_11_operations :: proc(t: ^testing.T) {
 	testing.expect(t, err == nil, "unmarshal grep wire ok")
 	testing.expect_value(t, var_grep.type, "fs_grep_result")
 	testing.expect_value(t, var_grep.command_id, "cmd_grep")
-	testing.expect_value(t, len(var_grep.matches), 1)
+	if !testing.expect_value(t, len(var_grep.matches), 1) do return
 	testing.expect_value(t, var_grep.matches[0].line_number, 42)
 	testing.expect_value(t, var_grep.matches[0].line, "target match")
 
@@ -1098,7 +1116,7 @@ fs_wire_special_characters_escaping :: proc(t: ^testing.T) {
 	delete(json_out)
 	testing.expect(t, err == nil, "unmarshaling special characters must succeed")
 	testing.expect_value(t, var_list.path, "/path/with \"quotes\"/and \\backslashes\\")
-	testing.expect_value(t, len(var_list.entries), 1)
+	if !testing.expect_value(t, len(var_list.entries), 1) do return
 	testing.expect_value(t, var_list.entries[0].name, "file \"quoted\" \\ backslash \t tab \u2764.txt")
 
 	testing.expectf(t, len(track.allocation_map) == 0, "leak: %d live allocations", len(track.allocation_map))
@@ -1285,7 +1303,7 @@ fs_vault_batch_write_enforces_decryption_per_item :: proc(t: ^testing.T) {
 	testing.expect(t, !batch_res.ok, "batch write with one bad file should not be ok")
 	testing.expect_value(t, batch_res.error_code, "batch_write_partial")
 	testing.expect_value(t, len(batch_res.saved), 1)
-	testing.expect_value(t, len(batch_res.errors), 1)
+	if !testing.expect_value(t, len(batch_res.errors), 1) do return
 	testing.expect_value(t, batch_res.errors[0].error_code, "invalid_vault_key")
 	testing.expect_value(t, batch_res.errors[0].message, "Vault decryption failed for file write")
 
@@ -1326,7 +1344,7 @@ fs_vault_grep_encrypts_matched_lines :: proc(t: ^testing.T) {
 	defer bridge_fs_grep_result_delete(&grep_enc)
 
 	testing.expect(t, grep_enc.ok, "grep ok")
-	testing.expect_value(t, len(grep_enc.matches), 1)
+	if !testing.expect_value(t, len(grep_enc.matches), 1) do return
 	testing.expect(t, strings.has_prefix(grep_enc.matches[0].line, VAULT_ARMOR_PREFIX), "grep match line must have vault:v1: prefix")
 	decrypted_line, dec_ok := bridge_decrypt_vault_ciphertext_hex(grep_enc.matches[0].line, test_key)
 	testing.expect(t, dec_ok, "decryption of grep match line ok")
@@ -1339,7 +1357,7 @@ fs_vault_grep_encrypts_matched_lines :: proc(t: ^testing.T) {
 	defer bridge_fs_grep_result_delete(&grep_plain)
 
 	testing.expect(t, grep_plain.ok, "grep plain ok")
-	testing.expect_value(t, len(grep_plain.matches), 1)
+	if !testing.expect_value(t, len(grep_plain.matches), 1) do return
 	testing.expect(t, !strings.has_prefix(grep_plain.matches[0].line, VAULT_ARMOR_PREFIX), "grep match line must NOT have vault:v1: prefix")
 	testing.expect_value(t, grep_plain.matches[0].line, "def sensitive_function():")
 }
@@ -1531,7 +1549,7 @@ test_bridge_fs_batch_write_vault_armored :: proc(t: ^testing.T) {
 	testing.expect(t, !batch_res.ok, "batch write with tampered item should have ok == false")
 	testing.expect_value(t, batch_res.error_code, "batch_write_partial")
 	testing.expect_value(t, len(batch_res.saved), 1)
-	testing.expect_value(t, len(batch_res.errors), 1)
+	if !testing.expect_value(t, len(batch_res.errors), 1) do return
 	testing.expect_value(t, batch_res.errors[0].path, "tampered.txt")
 	testing.expect_value(t, batch_res.errors[0].error_code, "invalid_vault_key")
 
@@ -1577,7 +1595,7 @@ test_bridge_fs_grep_vault_encrypted :: proc(t: ^testing.T) {
 	defer bridge_fs_grep_result_delete(&grep_res)
 
 	testing.expect(t, grep_res.ok, "grep should succeed")
-	testing.expect_value(t, len(grep_res.matches), 1)
+	if !testing.expect_value(t, len(grep_res.matches), 1) do return
 	testing.expect(t, strings.has_prefix(grep_res.matches[0].line, VAULT_ARMOR_PREFIX), "grep match line must have VAULT_ARMOR_PREFIX")
 
 	decrypted_line, dec_ok := bridge_decrypt_vault_ciphertext_hex(grep_res.matches[0].line, test_key)
