@@ -240,6 +240,9 @@ export function ShellTerminalPane({
     term.loadAddon(fitAddon);
     term.open(container);
     term.focus();
+    if (session.kind === 'shell') {
+      term.write('\x1b[?25h');
+    }
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -297,7 +300,10 @@ export function ShellTerminalPane({
     // Initial paint on mount for polled output if available
     if (!isStreamingActive && output) {
       term.reset();
-      term.write('\x1b[?25l' + output);
+      term.write(output);
+      if (session.kind === 'shell') {
+        term.write('\x1b[?25h');
+      }
       lastWrittenOutputRef.current = output;
     }
 
@@ -330,7 +336,10 @@ export function ShellTerminalPane({
 
     lastWrittenOutputRef.current = output;
     term.reset();
-    term.write('\x1b[?25l' + (output || ''), () => {
+    term.write(output || '', () => {
+      if (session.kind === 'shell') {
+        term.write('\x1b[?25h');
+      }
       if (!userScrolledUpRef.current) {
         term.scrollToBottom();
       }

@@ -211,13 +211,15 @@ bridge_shell_input_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	data := json_string(req.body, "data")
 	defer delete(data)
+	enc_b64 := json_string(req.body, "enc_b64")
+	defer delete(enc_b64)
 
 	sink_override: project_service.Bridge_Command_Sink = {}
 	if h.agents != nil {
 		sink_override = h.agents.bridge_command_sink
 	}
 
-	sent, err := bridge_service.send_shell_input(h.bridges, auth_ctx, bridge_id, shell_id, data, sink_override)
+	sent, err := bridge_service.send_shell_input(h.bridges, auth_ctx, bridge_id, shell_id, data, enc_b64, sink_override)
 	if !sent do return respond_error(err, req.request_id)
 
 	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))

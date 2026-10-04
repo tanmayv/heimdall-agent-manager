@@ -318,7 +318,7 @@ write_service_json_string :: proc(b: ^strings.Builder, value: string) {
 	contracts.write_json_string(b, value)
 }
 
-shell_pty_input_command_json :: proc(command_id, shell_id, data: string) -> string {
+shell_pty_input_command_json :: proc(command_id, shell_id, data: string, enc_b64: string = "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_pty_input\",\"command_id\":\"")
 	write_service_json_string(&b, command_id)
@@ -328,7 +328,13 @@ shell_pty_input_command_json :: proc(command_id, shell_id, data: string) -> stri
 	write_service_json_string(&b, shell_id)
 	strings.write_string(&b, "\",\"data\":\"")
 	write_service_json_string(&b, data)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\"")
+	if enc_b64 != "" {
+		strings.write_string(&b, ",\"enc_b64\":\"")
+		write_service_json_string(&b, enc_b64)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
@@ -348,7 +354,7 @@ shell_pty_resize_command_json :: proc(command_id, shell_id: string, rows, cols: 
 	return strings.to_string(b)
 }
 
-send_shell_input :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, shell_id, data: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+send_shell_input :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, shell_id, data: string, enc_b64: string = "", sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
 	if strings.trim_space(shell_id) == "" {
 		return false, domain.domain_error(.Validation_Failed, "shell_id is required")
 	}
@@ -372,7 +378,7 @@ send_shell_input :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context,
 		cmd_id = platform.generate_id(service.ids, "cmd_sh_input_")
 	}
 
-	cmd_json := shell_pty_input_command_json(cmd_id, shell_id, data)
+	cmd_json := shell_pty_input_command_json(cmd_id, shell_id, data, enc_b64)
 	defer delete(cmd_json)
 
 	sent, send_err := project_service.bridge_command_send_runtime(

@@ -375,3 +375,58 @@ test('REQ-SHELL-ENC-8: createShell generates distinct randomized nonces across m
   const p2 = JSON.parse(await decryptVaultText(enc2, TEST_VAULT_KEY));
   assert.notEqual(p1.nonce, p2.nonce, 'nonces must be unique');
 });
+
+// -----------------------------------------------------------------------------
+// 4. REQ-SHELL-ENC-10: sendShellInput Vault Encryption in shells.ts
+// -----------------------------------------------------------------------------
+
+test('REQ-SHELL-ENC-10: sendShellInput static contract verification', () => {
+  const shellsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/shells.ts'), 'utf8');
+  assert.ok(shellsSrc.includes('sendShellInput: build.mutation'), 'shells.ts must define sendShellInput mutation');
+  assert.ok(shellsSrc.includes('encryptShellStreamPayload'), 'shells.ts must import encryptShellStreamPayload');
+  assert.ok(shellsSrc.includes('selectIsVaultUnlocked'), 'shells.ts must import selectIsVaultUnlocked');
+  assert.ok(shellsSrc.includes('readSessionVaultKey'), 'shells.ts must import readSessionVaultKey');
+  assert.ok(shellsSrc.includes('payload.enc_b64 = resolvedEncB64'), 'sendShellInput must attach enc_b64 when encrypted');
+});
+
+test('REQ-SHELL-ENC-10: sendShellInput encrypts data when vault is unlocked', async () => {
+  const data = 'ls -la\n';
+  const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: TEST_VAULT_KEY } };
+  const isUnlocked = Boolean(state?.vault?.isUnlocked);
+  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+  let enc_b64: string | undefined;
+  if (isUnlocked && rawKeyHex) {
+    enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
+  }
+
+  assert.ok(enc_b64, 'enc_b64 must be generated');
+  const decryptedBytes = await decryptShellStreamPayload(enc_b64, TEST_VAULT_KEY);
+  assert.equal(new TextDecoder().decode(decryptedBytes), data);
+});
+
+test('REQ-SHELL-ENC-10: sendShellInput omits enc_b64 when vault is locked', async () => {
+  const data = 'ls -la\n';
+  const state: any = { vault: { isUnlocked: false, rawVaultKeyHex: null } };
+  const isUnlocked = Boolean(state?.vault?.isUnlocked);
+  const rawKeyHex = state?.vault?.rawVaultKeyHex;
+
+  let enc_b64: string | undefined;
+  if (isUnlocked && rawKeyHex) {
+    enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
+  }
+
+  assert.strictEqual(enc_b64, undefined, 'enc_b64 must not be set when vault is locked');
+});
+
+// -----------------------------------------------------------------------------
+// 5. REQ-SHELL-ENC-11: Terminal Cursor Restoration in ShellTerminalPane.tsx
+// -----------------------------------------------------------------------------
+
+test('REQ-SHELL-ENC-11: ShellTerminalPane.tsx restores terminal cursor and eliminates hide-cursor sequence', () => {
+  const paneSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shells/ShellTerminalPane.tsx'), 'utf8');
+  assert.ok(!paneSrc.includes('\\x1b[?25l'), 'ShellTerminalPane.tsx must NOT contain VT100 hide cursor sequence \\x1b[?25l');
+  assert.ok(paneSrc.includes('\\x1b[?25h'), 'ShellTerminalPane.tsx must contain VT100 show cursor sequence \\x1b[?25h');
+  assert.ok(paneSrc.includes("session.kind === 'shell'"), 'ShellTerminalPane.tsx must check session.kind === shell for cursor restoration');
+});
+

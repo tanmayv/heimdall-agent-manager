@@ -1,7 +1,8 @@
 import { heimdallApi } from '../heimdallApi';
 import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 import { encryptVaultText } from '../../utils/vaultContent';
-import { readSessionVaultKey } from '../../store/vaultSlice';
+import { readSessionVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
+import { encryptShellStreamPayload } from '../../components/shells/useShellStream';
 
 // REQ-SHELL-1 collapsed the model to three kinds: `command` became `run`,
 // `interactive` became `shell`, and `agent` was dropped (agent terminal panes were
@@ -498,13 +499,33 @@ export const shellsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
-    sendShellInput: build.mutation<{ ok?: boolean; [key: string]: any }, { sessionId: string; data: string }>({
-      queryFn: async ({ sessionId, data }) => {
+    sendShellInput: build.mutation<{ ok?: boolean; [key: string]: any }, { sessionId: string; data: string; enc_b64?: string }>({
+      queryFn: async ({ sessionId, data, enc_b64 }, api) => {
         if (!sessionId) {
           return { error: { status: 'CUSTOM_ERROR', error: 'Missing sessionId' } as any };
         }
         try {
-          const res = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}/input`, 'POST', { data });
+          const state: any = api?.getState?.();
+          const isUnlocked = state?.vault != null
+            ? Boolean(selectIsVaultUnlocked(state))
+            : Boolean(readSessionVaultKey());
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+
+          let resolvedEncB64 = enc_b64;
+          if (!resolvedEncB64 && isUnlocked && rawKeyHex) {
+            try {
+              resolvedEncB64 = await encryptShellStreamPayload(data, rawKeyHex);
+            } catch {
+              // fallback to unencrypted if encryption fails
+            }
+          }
+
+          const payload: { data: string; enc_b64?: string } = { data };
+          if (resolvedEncB64) {
+            payload.enc_b64 = resolvedEncB64;
+          }
+
+          const res = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}/input`, 'POST', payload);
           return { data: res || { ok: true } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

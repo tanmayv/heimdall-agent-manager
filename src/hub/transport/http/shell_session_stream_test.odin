@@ -650,6 +650,10 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 	input_json := "{\"type\":\"input\",\"data_b64\":\"Y2xlYXIK\"}"
 	_ = write_ws_text_frame(pair.client, input_json)
 
+	// Send an encrypted input frame: {"type":"input","enc_b64":"dmF1bHQ6djE6d3NfZW5j"}
+	enc_input_json := "{\"type\":\"input\",\"enc_b64\":\"dmF1bHQ6djE6d3NfZW5j\"}"
+	_ = write_ws_text_frame(pair.client, enc_input_json)
+
 	// Send a resize frame from client: {"type":"resize","rows":35,"cols":110}
 	resize_json := "{\"type\":\"resize\",\"rows\":35,\"cols\":110}"
 	_ = write_ws_text_frame(pair.client, resize_json)
@@ -660,7 +664,7 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 		sync.mutex_lock(&sink_state.mu)
 		count := len(sink_state.commands)
 		sync.mutex_unlock(&sink_state.mu)
-		if count >= 3 do break
+		if count >= 4 do break
 		time.sleep(10 * time.Millisecond)
 	}
 
@@ -668,15 +672,22 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 	// Commands received should include:
 	// 1. shell_stream_attach (from 0->1 viewer transition)
 	// 2. shell_pty_input (from input frame)
-	// 3. shell_pty_resize (from resize frame)
-	testing.expect(t, len(sink_state.commands) >= 3, "expected at least 3 commands in sink")
+	// 3. shell_pty_input (from enc_b64 input frame)
+	// 4. shell_pty_resize (from resize frame)
+	testing.expect(t, len(sink_state.commands) >= 4, "expected at least 4 commands in sink")
 	has_input := false
+	has_enc_input := false
 	has_resize := false
 	for cmd in sink_state.commands {
 		if strings.contains(cmd.body_json, "\"type\":\"shell_pty_input\"") {
-			has_input = true
-			testing.expect_value(t, cmd.bridge_id, "brg_input_target")
-			testing.expect(t, strings.contains(cmd.body_json, "clear"), "input payload must be forwarded")
+			if strings.contains(cmd.body_json, "clear") {
+				has_input = true
+				testing.expect_value(t, cmd.bridge_id, "brg_input_target")
+			}
+			if strings.contains(cmd.body_json, "\"enc_b64\":\"dmF1bHQ6djE6d3NfZW5j\"") {
+				has_enc_input = true
+				testing.expect_value(t, cmd.bridge_id, "brg_input_target")
+			}
 		}
 		if strings.contains(cmd.body_json, "\"type\":\"shell_pty_resize\"") {
 			has_resize = true
@@ -686,6 +697,7 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, has_input, "must have dispatched shell_pty_input")
+	testing.expect(t, has_enc_input, "must have dispatched shell_pty_input with enc_b64")
 	testing.expect(t, has_resize, "must have dispatched shell_pty_resize")
 	sync.mutex_unlock(&sink_state.mu)
 

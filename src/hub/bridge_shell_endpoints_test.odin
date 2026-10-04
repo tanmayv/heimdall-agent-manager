@@ -199,6 +199,20 @@ test_bridge_shell_input_and_resize_routes :: proc(t: ^testing.T) {
 	testing.expect_value(t, call_count, 1)
 	testing.expect(t, strings.contains(last_command.body_json, "\\u0003"), "must preserve escaped control characters")
 
+	// 6b. Input with enc_b64
+	call_count = 0
+	enc_input := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = input_path,
+		body = `{"data":"","enc_b64":"dmF1bHQ6djE6dGVzdA=="}`,
+		request_id = "req_in_6b",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	testing.expect_value(t, enc_input.status, 200)
+	testing.expect_value(t, call_count, 1)
+	testing.expect(t, strings.contains(last_command.body_json, "\"enc_b64\":\"dmF1bHQ6djE6dGVzdA==\""), "must forward enc_b64")
+
 	// --- RESIZE ENDPOINT TESTS ---
 	// 7. Unauthenticated -> 401
 	unauth_resize := api_http.router_dispatch(&graph.router, api_http.Request{

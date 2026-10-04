@@ -151,22 +151,24 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 
 		switch frame_type {
 		case "input":
+			enc_b64 := json_string(text, "enc_b64")
+			defer delete(enc_b64)
 			data_b64 := json_string(text, "data_b64")
 			if data_b64 != "" {
 				decoded, decode_err := base64.decode(data_b64)
 				delete(data_b64)
 				if decode_err == nil && decoded != nil {
 					raw_data := string(decoded)
-					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, sink_override)
+					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
 					delete(decoded)
 				}
 			} else {
 				delete(data_b64)
 				raw_data := json_string(text, "data")
-				if raw_data != "" {
-					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, sink_override)
-					delete(raw_data)
+				if raw_data != "" || enc_b64 != "" {
+					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
 				}
+				delete(raw_data)
 			}
 		case "resize":
 			rows := json_int(text, "rows", 0)
@@ -220,9 +222,11 @@ shell_session_input_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	data := json_string(req.body, "data")
 	defer delete(data)
+	enc_b64 := json_string(req.body, "enc_b64")
+	defer delete(enc_b64)
 
 	sink_override: project_service.Bridge_Command_Sink = {}
-	sent, err := bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, data, sink_override)
+	sent, err := bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, data, enc_b64, sink_override)
 	if !sent do return respond_error(err, req.request_id)
 	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))
 }
