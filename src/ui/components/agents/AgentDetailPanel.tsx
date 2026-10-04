@@ -17,6 +17,8 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
+import { useListFlatTaskChainsQuery } from '../../api/endpoints/taskChains';
+import { VaultText } from '../vault/VaultText';
 import { Button, Input, Link, PageShell, Select, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
@@ -48,6 +50,16 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const supports = supportQuery.data?.entries || [];
   const supportByBridge = useMemo(() => new Map(supports.map((s: any) => [s.bridgeId, s])), [supports]);
   const instances = instancesQuery.data?.instances || [];
+  const chainsQuery = useListFlatTaskChainsQuery();
+  const rawChains = (Array.isArray(chainsQuery.data) ? chainsQuery.data : (chainsQuery.data?.chains || [])) as any[];
+  const chainMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of rawChains) {
+      const id = String(c.chain_id || c.chainId || c.id || '');
+      if (id) map.set(id, String(c.title || c.name || id));
+    }
+    return map;
+  }, [rawChains]);
   const projects = projectsQuery.data || [];
   const templates = useMemo(() => (templatesQuery.data?.templates || []).map(normalizeTemplateOption).filter((tmpl: { id: string }) => tmpl.id), [templatesQuery.data?.templates]);
   const enabledSupportRows = useMemo(() => enabledRows(bridges, supportByBridge), [bridges, supportByBridge]);
@@ -334,7 +346,8 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           {instances.map((instance: any) => {
             const id = instanceIdOf(instance);
             const chainId = String(instance.chain_id || instance.chainId || '');
-            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="min-w-0"><div className="font-mono text-xs text-primary">{id}</div><div className="mt-1 text-xs text-muted">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.tier || '—'} · chain {instance.chain_id || '—'}</div></div><div className="flex items-center gap-2"><CoordinatorChainsDropdown agentInstanceId={id} currentChainId={chainId} /><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-neutral-soft px-2 py-0.5 text-xs text-muted">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-info/30 bg-info-soft px-2.5 py-1 text-xs font-semibold text-info hover:bg-info-soft/80">Task chain</a> : null}{id ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${encodeURIComponent(id)}`)} className="rounded-lg border border-subtle px-2.5 py-1 text-xs text-muted hover:bg-neutral-soft">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-warning/30 px-2.5 py-1 text-xs text-warning hover:bg-warning-soft">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-info/30 px-2.5 py-1 text-xs text-info hover:bg-info-soft">Restart</button></div></div>;
+            const chainName = chainMap.get(chainId) || chainId;
+            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="min-w-0"><div className="font-mono text-xs text-primary">{id}</div><div className="mt-1 text-xs text-muted">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.tier || '—'} · chain {chainId ? <span title={chainId}><VaultText value={chainName} fallback={chainId} /></span> : '—'}</div></div><div className="flex items-center gap-2"><CoordinatorChainsDropdown agentInstanceId={id} currentChainId={chainId} /><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-neutral-soft px-2 py-0.5 text-xs text-muted">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-info/30 bg-info-soft px-2.5 py-1 text-xs font-semibold text-info hover:bg-info-soft/80">Task chain</a> : null}{id ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${encodeURIComponent(id)}`)} className="rounded-lg border border-subtle px-2.5 py-1 text-xs text-muted hover:bg-neutral-soft">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-warning/30 px-2.5 py-1 text-xs text-warning hover:bg-warning-soft">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-info/30 px-2.5 py-1 text-xs text-info hover:bg-info-soft">Restart</button></div></div>;
           })}
           {!instances.length ? <div className="rounded-xl border border-dashed border-subtle p-5 text-sm text-muted">No instances yet. Launch one to create a private chain and conversation.</div> : null}
         </div>

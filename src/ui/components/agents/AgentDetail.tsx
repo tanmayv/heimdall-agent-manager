@@ -51,6 +51,7 @@ import {
 } from '../../api/endpoints/agents';
 import { useListProjectsQuery } from '../../api/endpoints/projects';
 import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
+import { VaultText } from '../vault/VaultText';
 import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
@@ -676,7 +677,7 @@ export function LiveInstanceDetailPane({
               className="group block min-w-0"
             >
               <Text as="div" role="body" className="font-medium text-primary hover:underline truncate">
-                {chainTitle}
+                <VaultText value={chainTitle} fallback={chainId} />
               </Text>
               <Text as="div" role="caption" tone="muted" className="truncate font-mono">
                 {chainId}

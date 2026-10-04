@@ -65,6 +65,8 @@ import {
   type AgentRecord,
 } from '../../api/endpoints/agents';
 import { useListProjectsQuery } from '../../api/endpoints/projects';
+import { useListFlatTaskChainsQuery } from '../../api/endpoints/taskChains';
+import { VaultText } from '../vault/VaultText';
 import {
   AGENT_TABS,
   EMPTY_LIST_URL_STATE,
@@ -280,6 +282,17 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     return map;
   }, [projects]);
 
+  const chainsQuery = useListFlatTaskChainsQuery();
+  const rawChains = (Array.isArray(chainsQuery.data) ? chainsQuery.data : (chainsQuery.data?.chains || [])) as any[];
+  const chainMap = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of rawChains) {
+      const id = String(c.chain_id || c.chainId || c.id || '');
+      if (id) map.set(id, String(c.title || c.name || id));
+    }
+    return map;
+  }, [rawChains]);
+
   const rawInstances = (liveInstancesQuery.data?.instances || []) as any[];
   const liveInstances = React.useMemo(
     () => rawInstances.filter((inst) => isLiveRuntimeStatus(inst.runtime_status || inst.runtimeStatus)),
@@ -295,7 +308,9 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
       const agtId = String(inst.agent_id || inst.agentId || '').toLowerCase();
       const projId = String(inst.project_id || inst.projectId || '').toLowerCase();
       const projName = String(projectMap.get(projId) || '').toLowerCase();
-      const chId = String(inst.chain_id || inst.chainId || '').toLowerCase();
+      const rawChId = String(inst.chain_id || inst.chainId || '');
+      const chId = rawChId.toLowerCase();
+      const chName = String(chainMap.get(rawChId) || rawChId).toLowerCase();
       const prov = String(inst.provider || '').toLowerCase();
       return (
         name.includes(searchNormalized) ||
@@ -303,11 +318,12 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
         agtId.includes(searchNormalized) ||
         projId.includes(searchNormalized) ||
         projName.includes(searchNormalized) ||
+        chName.includes(searchNormalized) ||
         chId.includes(searchNormalized) ||
         prov.includes(searchNormalized)
       );
     });
-  }, [liveInstances, searchNormalized, projectMap]);
+  }, [liveInstances, searchNormalized, projectMap, chainMap]);
 
   const activeInstanceId = React.useMemo(() => {
     if (urlState.instanceId) return urlState.instanceId;
@@ -678,6 +694,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
               const projId = String(inst.project_id || inst.projectId || '');
               const projName = projectMap.get(projId) || projId;
               const chId = String(inst.chain_id || inst.chainId || '');
+              const chName = chainMap.get(chId) || chId;
               const timestamp = String(inst.started_at || inst.startedAt || inst.last_seen_at || inst.lastSeenAt || '');
               const isSelected = instId === activeInstanceId;
               const isRestartBusy = rowActionBusy[instId] === 'restart';
@@ -738,12 +755,12 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       {projId ? (
                         <Badge data-debug-id={`live-instance-project-${instId}`}>
-                          {projName}
+                          <VaultText value={projName} fallback={projId} />
                         </Badge>
                       ) : null}
                       {chId ? (
-                        <Badge data-debug-id={`live-instance-chain-${instId}`}>
-                          {chId}
+                        <Badge data-debug-id={`live-instance-chain-${instId}`} title={chId}>
+                          <VaultText value={chName} fallback={chId} />
                         </Badge>
                       ) : null}
                       {agtId ? (
