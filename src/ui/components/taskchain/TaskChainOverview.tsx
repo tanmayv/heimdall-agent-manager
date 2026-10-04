@@ -43,7 +43,7 @@ import {
 import { useDispatch, useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, getActiveVaultKey } from '../../store/vaultSlice';
 import {
   upsertAgentInCaches,
   useCreateAgentInstanceInChainMutation,
@@ -122,7 +122,6 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
     { skip: !chainId || !taskId },
   );
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const rawDescription = String(data?.task?.description ?? fallback ?? '').trim();
   const isArmored = isVaultArmored(rawDescription);
 
@@ -130,7 +129,7 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
 
   useEffect(() => {
     let mounted = true;
-    const activeKey = rawKeyHex || getActiveVaultKey();
+    const activeKey = getActiveVaultKey();
     if (!isArmored || !isUnlocked || !activeKey) {
       setDecryptedText(null);
       return;
@@ -148,7 +147,7 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
     return () => {
       mounted = false;
     };
-  }, [rawDescription, isArmored, isUnlocked, rawKeyHex]);
+  }, [rawDescription, isArmored, isUnlocked]);
 
   if (isFetching && !rawDescription) {
     return (
@@ -333,7 +332,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const members: any[] = chain?.members || [];
 
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKey = useSelector(selectRawVaultKeyHex);
   const [decryptedDescription, setDecryptedDescription] = useState<string>('');
 
   useEffect(() => {
@@ -343,7 +341,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       setDecryptedDescription(chainDesc || '');
       return;
     }
-    const activeKey = rawKey || getActiveVaultKey();
+    const activeKey = getActiveVaultKey();
     if (!isVaultUnlocked || !activeKey) {
       setDecryptedDescription('');
       return;
@@ -358,7 +356,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     return () => {
       active = false;
     };
-  }, [chain?.description, isVaultUnlocked, rawKey]);
+  }, [chain?.description, isVaultUnlocked]);
 
   const [decryptedTitle, setDecryptedTitle] = useState<string>('');
 
@@ -369,11 +367,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       setDecryptedTitle(chainTitle || '');
       return;
     }
-    if (!isVaultUnlocked || !rawKey) {
+    const activeKey = getActiveVaultKey();
+    if (!isVaultUnlocked || !activeKey) {
       setDecryptedTitle('');
       return;
     }
-    decryptVaultText(chainTitle, rawKey)
+    decryptVaultText(chainTitle, activeKey)
       .then((t) => {
         if (active) setDecryptedTitle(t);
       })
@@ -383,7 +382,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     return () => {
       active = false;
     };
-  }, [chain?.title, isVaultUnlocked, rawKey]);
+  }, [chain?.title, isVaultUnlocked]);
 
   // Inline title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -394,9 +393,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const startEditingTitle = async () => {
     let currentTitle = decryptedTitle || chain?.title || '';
     if (chain?.title && isVaultArmored(chain.title) && (!decryptedTitle || isVaultArmored(decryptedTitle))) {
-      if (isVaultUnlocked && rawKey) {
+      const activeKey = getActiveVaultKey();
+      if (isVaultUnlocked && activeKey) {
         try {
-          currentTitle = await decryptVaultText(chain.title, rawKey);
+          currentTitle = await decryptVaultText(chain.title, activeKey);
         } catch (e) {
           console.error('Failed to decrypt chain title for editing:', e);
         }

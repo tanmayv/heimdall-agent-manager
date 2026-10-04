@@ -8,8 +8,6 @@ import {
 } from '../../store/searchTitleSlice';
 import {
   selectIsVaultUnlocked,
-  selectRawVaultKeyHex,
-  readSessionVaultKey,
   getActiveVaultKey,
 } from '../../store/vaultSlice';
 import { isVaultArmored } from '../../utils/vaultContent';
@@ -76,20 +74,12 @@ export function TaskChainSelectorModal({
     }
   });
 
-  const rawVaultKeyHex = useSelector((state: any) => {
-    try {
-      return selectRawVaultKeyHex(state);
-    } catch {
-      return state?.vault?.rawVaultKeyHex || null;
-    }
-  });
-
   const activeVaultKey = useMemo(() => {
     if (isVaultUnlocked) {
-      return getActiveVaultKey() || rawVaultKeyHex || readSessionVaultKey();
+      return getActiveVaultKey();
     }
     return null;
-  }, [isVaultUnlocked, rawVaultKeyHex]);
+  }, [isVaultUnlocked]);
 
   const searchChains = useSelector((state: any) => {
     try {

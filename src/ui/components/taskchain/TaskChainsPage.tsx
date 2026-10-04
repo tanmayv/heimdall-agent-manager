@@ -17,7 +17,7 @@ import { useIsMobile } from '../shell/responsive';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, getActiveVaultKey } from '../../store/vaultSlice';
+import { selectIsVaultUnlocked, getActiveVaultKey } from '../../store/vaultSlice';
 import { decryptProjectList } from '../../utils/vaultProjects';
 import { decryptChainList } from '../../utils/vaultChains';
 import { isVaultArmored } from '../../utils/vaultContent';
@@ -439,12 +439,11 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   }, [projectsQuery.data, showArchivedProjects, archivedProjectIds]);
 
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
   const [decryptedProjects, setDecryptedProjects] = useState<Project[]>(projects);
 
   useEffect(() => {
     let active = true;
-    const activeKey = rawKeyHex || getActiveVaultKey();
+    const activeKey = getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
       setDecryptedProjects(
         projects.map((p) => ({
@@ -460,7 +459,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     return () => {
       active = false;
     };
-  }, [projects, isUnlocked, rawKeyHex]);
+  }, [projects, isUnlocked]);
 
   const rawGroups: ChainProjectGroup[] = useMemo(() => {
     const raw = filterProjectId
@@ -481,7 +480,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
   useEffect(() => {
     let active = true;
-    const activeKey = rawKeyHex || getActiveVaultKey();
+    const activeKey = getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
       const plain: Record<string, string> = {};
       for (const chain of allChains) {
@@ -508,7 +507,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     return () => {
       active = false;
     };
-  }, [allChains, isUnlocked, rawKeyHex]);
+  }, [allChains, isUnlocked]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const matchesSearch = useCallback(
