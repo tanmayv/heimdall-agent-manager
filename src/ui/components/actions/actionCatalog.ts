@@ -13,6 +13,7 @@
  * render blank when a lookup fails.
  */
 import React from 'react';
+import { containsVaultArmored, maskVaultArmored } from '../../utils/vaultContent.ts';
 import { buildRouteHash } from '../../utils/appLocation';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
@@ -145,7 +146,20 @@ export function useActionCatalog(): ActionCatalog {
     const entries = rows
       .map((project) => {
         const id = String(project?.project_id || project?.projectId || project?.id || '');
-        const label = String(project?.name || id);
+        // REQ-CACHE-1: project names are vault-armored (`encryptProjectFields` at
+        // `vaultProjects.ts:23`) and the projects query decrypts them inside its
+        // `queryFn` only when the vault was already unlocked at FETCH time, so while
+        // locked this catalog receives `vault:v1:...` strings. Masked HERE because
+        // every consumer funnels through `projectLabel` below and `keywords` is derived
+        // from the same string -- so one line covers all five consumers and keeps
+        // armored text out of the searchable index too. Masking, not decrypting: these
+        // strings go into option lists, `aria-label`s and a search haystack, where a
+        // React decrypt hook cannot go; the decrypted form arrives on the refetch that
+        // `vaultCacheInvalidationMiddleware` triggers on the unlock transition.
+        // Project is the only armored dimension -- agent, bridge and instance names
+        // have no `encryptVaultText` path.
+        const rawName = String(project?.name || id);
+        const label = containsVaultArmored(rawName) ? maskVaultArmored(rawName) : rawName;
         return {
           id,
           label,

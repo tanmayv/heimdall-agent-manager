@@ -34,6 +34,7 @@ import {
 } from '../src/ui/store/vaultSlice.ts';
 import { vaultCacheInvalidationMiddleware } from '../src/ui/api/vaultCacheInvalidation.ts';
 import { heimdallApi } from '../src/ui/api/heimdallApi.ts';
+import { encryptVaultText, VAULT_MASK_PLACEHOLDER, containsVaultArmored, maskVaultArmored } from '../src/ui/utils/vaultContent.ts';
 
 const TEST_KEY_HEX = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const RESET_TYPE = heimdallApi.util.resetApiState().type;
@@ -140,4 +141,50 @@ test('A10: no raw key material is left in vault state by the bare-key path', asy
   const state = vaultSlice.reducer(undefined as any, importLocalKey(key));
   assert.equal(JSON.stringify(state).includes(TEST_KEY_HEX), false, 'hex must not appear in serialized state');
   assert.equal((state as any).rawVaultKeyHex, undefined, 'no rawVaultKeyHex field');
+});
+
+// ---------------------------------------------------------------------------
+// The catalog bypass (iss_18db4fc560653555). Two independent scope catalogs map
+// armored project names into plain strings -- option lists, aria-labels and a
+// search haystack -- where a React decrypt hook cannot reach. Both mask at the
+// catalog, so every consumer is covered by one line each:
+//   useMemoryScopeCatalog  (ScopeField.tsx)      -> 5 consumers
+//   useActionCatalog       (actionCatalog.ts)    -> 5 consumers
+// These tests pin the MASKING RULE the two catalogs share. The hooks themselves
+// are React and cannot be rendered here (see the file header on .tsx loading).
+
+test('REQ-CACHE-1: a real armored project name masks rather than reaching a plain string', async () => {
+  const key = await importTestKey();
+  const armored = await encryptVaultText('Classified Project', key);
+
+  // Precondition: a genuinely armored value, not a hand-written lookalike.
+  assert.ok(containsVaultArmored(armored), 'fixture must really be armored');
+  assert.ok(armored.startsWith('vault:v1:'));
+
+  const masked = containsVaultArmored(armored) ? maskVaultArmored(armored) : armored;
+
+  assert.equal(masked, VAULT_MASK_PLACEHOLDER, 'armored name must degrade to the placeholder');
+  assert.equal(masked.includes('vault:v1:'), false, 'no ciphertext may survive into the label');
+  assert.equal(masked.includes('Classified Project'), false, 'and no plaintext either, while locked');
+});
+
+test('REQ-CACHE-1: masking is a no-op on an unarmored name, so unlocked labels are untouched', () => {
+  for (const plain of ['heimdall-hub', 'Unnamed project', 'proj_18c6879e443756f1', '']) {
+    const masked = containsVaultArmored(plain) ? maskVaultArmored(plain) : plain;
+    assert.equal(masked, plain, `"${plain}" must pass through unchanged`);
+  }
+});
+
+test('REQ-CACHE-1: the masked label is what feeds the search haystack, so armored text is not searchable', async () => {
+  const key = await importTestKey();
+  const armored = await encryptVaultText('Classified Project', key);
+  const id = 'proj_18c6879e443756f1';
+
+  // Mirrors actionCatalog.ts:151 -- `keywords` derives from the SAME masked label,
+  // which is why fixing the label closes the ActionListPage searchableText leak.
+  const label = containsVaultArmored(armored) ? maskVaultArmored(armored) : armored;
+  const keywords = [id, label].filter(Boolean).join(' ');
+
+  assert.equal(keywords.includes('vault:v1:'), false, 'armored text must not enter the keyword index');
+  assert.ok(keywords.includes(id), 'the id stays searchable, so a row is still findable while locked');
 });
