@@ -1073,7 +1073,9 @@ run_interactive_onboarding() {
     printf 'Enter Hub URL: '
     IFS= read -r input_hub || input_hub=""
     input_hub="$(printf '%s' "$input_hub" | tr -d '[:space:]')"
-    input_hub="${input_hub%/}"
+    while [ "${input_hub%/}" != "$input_hub" ]; do
+      input_hub="${input_hub%/}"
+    done
     if [ -n "$input_hub" ]; then
       hub_url="$input_hub"
     else
@@ -1917,7 +1919,11 @@ main() {
         version="$2"; shift 2 ;;
       --hub|--hub-url)
         [ "$#" -ge 2 ] || fail "--hub requires a url"
-        hub_url="${2%/}"; shift 2 ;;
+        hub_url="$2"
+        while [ "${hub_url%/}" != "$hub_url" ]; do
+          hub_url="${hub_url%/}"
+        done
+        shift 2 ;;
       --dry-run) dry_run=true; shift ;;
       --force-service) force_service=true; shift ;;
       --force|-f) force=true; force_service=true; shift ;;
