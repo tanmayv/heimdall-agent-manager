@@ -42,7 +42,7 @@
 // WebSocket owned by `useShellStream`/`useAgentStream` (`useShellStream.ts:196`),
 // not over an RTK Query cache entry.
 
-import { heimdallApi } from './heimdallApi';
+import { heimdallApi } from './heimdallApi.ts';
 
 function readIsUnlocked(state: unknown): boolean {
   return Boolean((state as { vault?: { isUnlocked?: boolean } } | undefined)?.vault?.isUnlocked);
