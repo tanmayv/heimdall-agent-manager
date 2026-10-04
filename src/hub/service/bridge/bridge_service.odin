@@ -333,6 +333,10 @@ shell_pty_input_command_json :: proc(command_id, shell_id, data: string, enc_b64
 		strings.write_string(&b, ",\"enc_b64\":\"")
 		write_service_json_string(&b, enc_b64)
 		strings.write_string(&b, "\"")
+		armored := enc_b64 if strings.has_prefix(enc_b64, "vault:v1:") else strings.concatenate({"vault:v1:", enc_b64}, context.temp_allocator)
+		strings.write_string(&b, ",\"data_b64\":\"")
+		write_service_json_string(&b, armored)
+		strings.write_string(&b, "\"")
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)

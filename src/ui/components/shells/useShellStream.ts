@@ -225,15 +225,18 @@ export function useShellStream({
     // Non-fatal when rendered outside Redux Provider (e.g. standalone test)
   }
 
+  const sessionKey = readSessionVaultKey();
   const isVaultUnlocked = propIsVaultUnlocked !== undefined
     ? propIsVaultUnlocked
-    : (reduxUnlocked || Boolean(reduxKeyHex));
+    : (reduxUnlocked || Boolean(reduxKeyHex) || Boolean(sessionKey));
   const rawVaultKeyHex = propRawVaultKeyHex !== undefined
     ? propRawVaultKeyHex
-    : (reduxKeyHex || (isVaultUnlocked ? readSessionVaultKey() : null));
+    : (reduxKeyHex || sessionKey);
 
   const isVaultUnlockedRef = useRef(isVaultUnlocked);
+  isVaultUnlockedRef.current = isVaultUnlocked;
   const rawVaultKeyHexRef = useRef(rawVaultKeyHex);
+  rawVaultKeyHexRef.current = rawVaultKeyHex;
   const vaultLockedNoticeShownRef = useRef(false);
   const outputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -373,8 +376,8 @@ export function useShellStream({
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
-                const isUnlocked = isVaultUnlockedRef.current;
-                const rawKeyHex = rawVaultKeyHexRef.current;
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
+                const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
                 if (isUnlocked && rawKeyHex) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
@@ -420,8 +423,8 @@ export function useShellStream({
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
-                const isUnlocked = isVaultUnlockedRef.current;
-                const rawKeyHex = rawVaultKeyHexRef.current;
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
+                const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
                 if (isUnlocked && rawKeyHex) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
@@ -538,8 +541,8 @@ export function useShellStream({
       return;
     }
 
-    const isUnlocked = isVaultUnlockedRef.current;
-    const rawKeyHex = rawVaultKeyHexRef.current;
+    const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
+    const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
 
     console.log('[useShellStream] sendInput sending keystroke(s):', {
       chars: data.length,

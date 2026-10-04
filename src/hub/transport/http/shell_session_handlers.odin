@@ -154,16 +154,20 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 			enc_b64 := json_string(text, "enc_b64")
 			defer delete(enc_b64)
 			data_b64 := json_string(text, "data_b64")
-			if data_b64 != "" {
+			defer delete(data_b64)
+			if strings.has_prefix(data_b64, "vault:v1:") {
+				armored := enc_b64 != "" ? enc_b64 : data_b64
+				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", armored, sink_override)
+			} else if data_b64 != "" {
 				decoded, decode_err := base64.decode(data_b64)
-				delete(data_b64)
 				if decode_err == nil && decoded != nil {
 					raw_data := string(decoded)
 					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
 					delete(decoded)
+				} else if enc_b64 != "" {
+					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", enc_b64, sink_override)
 				}
 			} else {
-				delete(data_b64)
 				raw_data := json_string(text, "data")
 				if raw_data != "" || enc_b64 != "" {
 					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
