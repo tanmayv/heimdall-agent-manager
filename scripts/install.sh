@@ -1060,8 +1060,60 @@ is_interactive() {
   if [ "${HEIMDALL_INTERACTIVE:-0}" = "1" ] || [ "${HEIMDALL_FORCE_INTERACTIVE:-0}" = "1" ]; then
     return 0
   fi
-  [ -t 0 ] && [ -t 1 ]
+  if [ -t 0 ] && [ -t 1 ]; then
+    return 0
+  fi
+  # Piped execution (e.g. curl ... | bash): stdin (fd 0) is the script stream rather than
+  # a terminal, but stdout is connected to a terminal, /dev/tty is available, and the
+  # shell is executing commands from stdin rather than an existing script file.
+  if [ -t 1 ] && (: < /dev/tty) 2>/dev/null; then
+    local last_src="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-}"
+    if [ -z "$last_src" ] || [ "$last_src" = "bash" ] || [ "$last_src" = "sh" ] || [ ! -f "$last_src" ]; then
+      return 0
+    fi
+  fi
+  return 1
 }
+
+# REQ-INST-ENROLL-5: read interactive prompt response from /dev/tty when running
+# in a piped terminal session (curl | bash), or from stdin when redirected or tested.
+prompt_read() {
+  local silent=false
+  if [ "${1:-}" = "-s" ]; then
+    silent=true
+    shift
+  fi
+  local var_name="$1"
+
+  local use_tty=false
+  if [ ! -t 0 ] && [ -t 1 ] && (: < /dev/tty) 2>/dev/null; then
+    local last_src="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-}"
+    if [ -z "$last_src" ] || [ "$last_src" = "bash" ] || [ "$last_src" = "sh" ] || [ ! -f "$last_src" ]; then
+      use_tty=true
+    fi
+  fi
+  if [ "${HEIMDALL_FORCE_TTY_PROMPT:-0}" = "1" ] && (: < /dev/tty) 2>/dev/null; then
+    use_tty=true
+  fi
+  if [ "${HEIMDALL_FORCE_STDIN_PROMPT:-0}" = "1" ]; then
+    use_tty=false
+  fi
+
+  if "$use_tty"; then
+    if "$silent"; then
+      IFS= read -s -r "$var_name" < /dev/tty || eval "$var_name=\"\""
+    else
+      IFS= read -r "$var_name" < /dev/tty || eval "$var_name=\"\""
+    fi
+  else
+    if "$silent"; then
+      IFS= read -s -r "$var_name" || eval "$var_name=\"\""
+    else
+      IFS= read -r "$var_name" || eval "$var_name=\"\""
+    fi
+  fi
+}
+
 
 # REQ-INST-ENROLL-1 through REQ-INST-ENROLL-4: interactive onboarding ceremony.
 run_interactive_onboarding() {
@@ -1071,7 +1123,7 @@ run_interactive_onboarding() {
   # --- REQ-INST-ENROLL-1: Hub URL Support & Prompt ---
   if [ -z "$hub_url" ]; then
     printf 'Enter Hub URL: '
-    IFS= read -r input_hub || input_hub=""
+    prompt_read input_hub
     input_hub="$(printf '%s' "$input_hub" | tr -d '[:space:]')"
     while [ "${input_hub%/}" != "$input_hub" ]; do
       input_hub="${input_hub%/}"
@@ -1106,7 +1158,7 @@ To enroll this node with Hub ($hub_url):
 
 EOF
     printf 'Enter one-time enrollment token (hbe_...): '
-    IFS= read -r enroll_token || enroll_token=""
+    prompt_read enroll_token
     enroll_token="$(printf '%s' "$enroll_token" | tr -d '[:space:]')"
     if [ -z "$enroll_token" ]; then
       warn "No enrollment token provided; skipping automatic enrollment."
@@ -1190,7 +1242,7 @@ EOF
   # --- REQ-INST-ENROLL-4: Encryption & Master Password Setup ---
   echo ""
   printf 'Do you wish to enable client vault encryption? [y/N]: '
-  IFS= read -r enable_vault || enable_vault=""
+  prompt_read enable_vault
   case "$enable_vault" in
     [yY]|[yY][eE][sS])
       # Check whether master password setup is supported by local tooling
@@ -1212,10 +1264,10 @@ EOF
 
       if "$vault_supports_master_pwd"; then
         printf 'Enter master password: '
-        IFS= read -s -r master_pwd || master_pwd=""
+        prompt_read -s master_pwd
         echo ""
         printf 'Confirm master password: '
-        IFS= read -s -r master_pwd_confirm || master_pwd_confirm=""
+        prompt_read -s master_pwd_confirm
         echo ""
         if [ "$master_pwd" != "$master_pwd_confirm" ]; then
           warn "Passwords do not match; skipping vault encryption setup."
