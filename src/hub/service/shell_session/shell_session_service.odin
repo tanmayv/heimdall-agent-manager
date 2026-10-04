@@ -433,6 +433,7 @@ Shell_Session_Create_Input :: struct {
 	// so there is no path by which a foreground run becomes background without
 	// somebody asking.
 	background:        bool,
+	enc_spec:          string,
 }
 
 // _shell_session_starter_from_auth derives WHO is asking to start a process, for
@@ -698,7 +699,7 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	// gain — clone only when you intend to OWN the value, e.g. when it must outlive the
 	// request (see the wire_id clone in lsp_session_handlers.odin).
 	cmd_id := platform.generate_id(svc.ids, "cmd_sh_start_")
-	cmd_json := _shell_start_command_json(cmd_id, session_id, kind, input.cmd, input.cwd, input.label, input.project_id, input.chain_id, input.agent_instance_id, string(owner), now, input.server_port, input.background, session.run_seq)
+	cmd_json := _shell_start_command_json(cmd_id, session_id, kind, input.cmd, input.cwd, input.label, input.project_id, input.chain_id, input.agent_instance_id, string(owner), now, input.server_port, input.background, session.run_seq, input.enc_spec)
 	defer delete(cmd_json)
 
 	reply, reply_ok, reply_err := project_service.bridge_command_send_runtime_wait(
@@ -2037,7 +2038,7 @@ shell_session_background_runs_for_agent :: proc(svc: ^Shell_Session_Service, own
 // started_at is the HUB-assigned timestamp (REQ-SHELL-1 §8), sent so the bridge
 // records the hub's value on its spec instead of stamping its own. One clock owns
 // every age decision on both sides.
-_shell_start_command_json :: proc(cmd_id, session_id, kind, cmd, cwd, label, project_id, chain_id, agent_instance_id, owner_user_id, started_at: string, server_port: int, background: bool, run_seq: int) -> string {
+_shell_start_command_json :: proc(cmd_id, session_id, kind, cmd, cwd, label, project_id, chain_id, agent_instance_id, owner_user_id, started_at: string, server_port: int, background: bool, run_seq: int, enc_spec: string = "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_start\",\"command_id\":\"")
 	contracts.write_json_string(&b, cmd_id)
@@ -2070,6 +2071,11 @@ _shell_start_command_json :: proc(cmd_id, session_id, kind, cmd, cwd, label, pro
 	// predates this key parses it as 0, which is the first run.
 	strings.write_string(&b, ",\"run_seq\":")
 	strings.write_int(&b, run_seq)
+	if enc_spec != "" {
+		strings.write_string(&b, ",\"enc_spec\":\"")
+		contracts.write_json_string(&b, enc_spec)
+		strings.write_string(&b, "\"")
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }

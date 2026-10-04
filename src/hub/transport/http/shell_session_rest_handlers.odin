@@ -169,6 +169,7 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		conversation_id   = json_string(req.body, "conversation_id"),
 		server_port       = json_int(req.body, "server_port", 0),
 		background        = json_bool(req.body, "background"),
+		enc_spec          = json_string(req.body, "enc_spec"),
 	}
 	defer {
 		delete(input.kind)
@@ -179,6 +180,7 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		delete(input.chain_id)
 		delete(input.agent_instance_id)
 		delete(input.conversation_id)
+		delete(input.enc_spec)
 	}
 
 	session, created, err := shell_session_svc.shell_session_create(h.shell_sessions, auth_ctx, input)

@@ -340,3 +340,50 @@ test_shell_session_create_agent_omitting_kind_is_told_what_it_may_start :: proc(
 	testing.expect(t, strings.contains(err.message, "user"), "the refusal names who may start a shell")
 	testing.expect_value(t, fx.f.writes, 0)
 }
+
+// --- REQ-SHELL-ENC-7: enc_spec forwarding ------------------------------------
+
+@(test)
+test_shell_session_create_forwards_enc_spec_to_the_bridge :: proc(t: ^testing.T) {
+	fx: Fixture
+	fixture_make(&fx)
+	defer fixture_free(&fx)
+
+	TEST_ENC_SPEC :: "vault:v1:test_armored_ciphertext_spec"
+	_, _, _ = shell_session_create(&fx.svc, test_auth(), Shell_Session_Create_Input{
+		bridge_id = "brg_1",
+		kind      = domain.Shell_Session_Kind_Shell,
+		cmd       = "zsh",
+		enc_spec  = TEST_ENC_SPEC,
+	})
+
+	sync.mutex_lock(&fx.sink.mu)
+	body := strings.clone(fx.sink.last_body, context.temp_allocator)
+	sends := fx.sink.sends
+	sync.mutex_unlock(&fx.sink.mu)
+
+	testing.expect_value(t, sends, 1)
+	testing.expect(t, strings.contains(body, "\"enc_spec\":\"" + TEST_ENC_SPEC + "\""), "shell_start spec carries enc_spec")
+}
+
+@(test)
+test_shell_session_create_omits_enc_spec_when_empty :: proc(t: ^testing.T) {
+	fx: Fixture
+	fixture_make(&fx)
+	defer fixture_free(&fx)
+
+	_, _, _ = shell_session_create(&fx.svc, test_auth(), Shell_Session_Create_Input{
+		bridge_id = "brg_1",
+		kind      = domain.Shell_Session_Kind_Shell,
+		cmd       = "zsh",
+	})
+
+	sync.mutex_lock(&fx.sink.mu)
+	body := strings.clone(fx.sink.last_body, context.temp_allocator)
+	sends := fx.sink.sends
+	sync.mutex_unlock(&fx.sink.mu)
+
+	testing.expect_value(t, sends, 1)
+	testing.expect(t, !strings.contains(body, "\"enc_spec\":"), "shell_start spec omits enc_spec when empty")
+}
+
