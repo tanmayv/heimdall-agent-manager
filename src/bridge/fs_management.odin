@@ -852,6 +852,15 @@ bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset
 	if !within {
 		return Bridge_Fs_Read_File_Result{ok = false, path = requested, error_code = "path_outside_root", message = "Path is outside the allowed root"}
 	}
+	if bridge_vault_status() == .Locked {
+		delete(canonical)
+		return Bridge_Fs_Read_File_Result{
+			ok = false,
+			path = requested,
+			error_code = "vault_locked",
+			message = "Bridge vault is locked. Unseal required to read files.",
+		}
+	}
 	if !os.exists(canonical) {
 		return Bridge_Fs_Read_File_Result{ok = false, path = canonical, error_code = "path_not_found", message = "Path does not exist"}
 	}
@@ -971,6 +980,16 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 	parent := filepath.dir(canonical)
 	if !os.exists(parent) || !os.is_dir(parent) {
 		return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "path_not_found", message = "Parent directory does not exist"}
+	}
+
+	if bridge_vault_status() == .Locked {
+		return Bridge_Fs_Write_File_Result{
+			ok = false,
+			path = requested,
+			within_root = true,
+			error_code = "vault_locked",
+			message = "Bridge vault is locked. Unseal required to write files.",
+		}
 	}
 
 	payload_to_write := content
@@ -1365,9 +1384,9 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 	if !within {
 		return Bridge_Fs_Grep_Result{ok = false, root = root, error_code = "path_outside_root", message = "Path is outside the allowed root"}
 	}
-	if !os.exists(canonical) || !os.is_dir(canonical) {
+	if bridge_vault_status() == .Locked {
 		delete(canonical)
-		return Bridge_Fs_Grep_Result{ok = false, root = root, error_code = "path_not_directory", message = "Path is not a directory"}
+		return Bridge_Fs_Grep_Result{ok = false, root = root, error_code = "vault_locked", message = "Bridge vault is locked. Unseal required."}
 	}
 
 	if len(query) == 0 {

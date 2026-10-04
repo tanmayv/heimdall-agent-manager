@@ -27,6 +27,7 @@ import {
   isBridgeUpdating,
   getActiveTaskCount,
 } from './bridgeUpdate';
+import BridgeSettingsPanel from './BridgeSettingsPanel';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -282,6 +283,9 @@ export default function BridgesPanel() {
           </div>
         </div>
       ) : null}
+
+      {/* Bridge Encryption & Vault Settings */}
+      <BridgeSettingsPanel bridges={bridges} />
 
       {/* Global Telemetry Setting */}
       <div data-debug-id="settings-bridges-global-telemetry" className="mt-4 rounded-xl border border-subtle bg-surface-raised/40 p-3.5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

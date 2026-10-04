@@ -295,8 +295,7 @@ export default function VaultOnboardingModal({
         record.vaultKeyNonce,
         record.vaultKeyTag,
       );
-      const rawHex = await exportRawKeyHex(vaultKey);
-      dispatch(setVaultUnlocked({ rawVaultKeyHex: rawHex, rememberSession }));
+      dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
       setUnlockPassword('');
       handleClose();
     } catch (_err) {
@@ -337,8 +336,7 @@ export default function VaultOnboardingModal({
         record.recoveryNonce,
         record.recoveryTag,
       );
-      const rawHex = await exportRawKeyHex(vaultKey);
-      dispatch(setVaultUnlocked({ rawVaultKeyHex: rawHex, rememberSession }));
+      dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
       setRecoveryPhraseInput('');
       handleClose();
     } catch (_err) {
@@ -502,9 +500,9 @@ export default function VaultOnboardingModal({
 
             {/* 12 Recovery Words Section */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <Text as="div" role="overline" tone="muted">2. 12-Word Recovery Phrase</Text>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     size="sm"
@@ -512,6 +510,7 @@ export default function VaultOnboardingModal({
                     data-debug-id="vault-onboarding-regenerate-words-btn"
                     onClick={handleRegenerateWords}
                     disabled={isSubmittingSetup}
+                    className="min-h-[44px] min-w-[44px] touch-manipulation"
                   >
                     <Icon name="refresh" size="sm" />
                     Regenerate
@@ -523,6 +522,7 @@ export default function VaultOnboardingModal({
                     data-debug-id="vault-onboarding-copy-words-btn"
                     onClick={handleCopyWords}
                     disabled={isSubmittingSetup}
+                    className="min-h-[44px] min-w-[44px] touch-manipulation"
                   >
                     <Icon name="copy" size="sm" />
                     {copiedWords ? 'Copied!' : 'Copy Words'}
@@ -532,7 +532,7 @@ export default function VaultOnboardingModal({
 
               <div
                 data-debug-id="vault-onboarding-recovery-words-grid"
-                className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 pt-1"
+                className="grid grid-cols-1 min-[360px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 pt-1"
               >
                 {recoveryWords.map((word, idx) => (
                   <div

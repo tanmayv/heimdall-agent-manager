@@ -249,6 +249,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Local, local_op = "vault.status"}
 	case "agent.vault.get":
 		return Bridge_Agent_Route{kind = .Local, local_op = "vault.get"}
+	case "agent.vault.lock":
+		return Bridge_Agent_Route{kind = .Local, local_op = "vault.lock"}
 
 	// ---- telemetry -------------------------------------------------------------
 	case "agent.telemetry.agents_count":
@@ -297,7 +299,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // shell sessions (bridge-local block on a hub-created run)
 	     "agent.shell.wait",
 	     // vault commands (bridge-local)
-	     "agent.vault.status", "agent.vault.get",
+	     "agent.vault.status", "agent.vault.get", "agent.vault.lock",
 	     // telemetry (bridge-local)
 	     "agent.telemetry.agents_count":
 		return true
@@ -395,16 +397,26 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 	}
 	if op == "shell.wait" do return bridge_shell_wait_rpc(request_id, params, rec)
 	if op == "vault.status" {
+		status := bridge_vault_status()
+		status_str := bridge_vault_status_string(status)
 		configured, permissions_valid, key_length := bridge_vault_key_status()
 		b := strings.builder_make()
-		strings.write_string(&b, "{\"configured\":")
-		strings.write_string(&b, "true" if configured else "false")
+		strings.write_string(&b, "{\"status\":\"")
+		strings.write_string(&b, status_str)
+		strings.write_string(&b, "\",\"vault_status\":\"")
+		strings.write_string(&b, status_str)
+		strings.write_string(&b, "\",\"configured\":")
+		strings.write_string(&b, "true" if status != .Disabled else "false")
 		strings.write_string(&b, ",\"permissions_valid\":")
 		strings.write_string(&b, "true" if permissions_valid else "false")
 		strings.write_string(&b, ",\"key_length\":")
 		bridge_agent_write_int(&b, key_length)
 		strings.write_byte(&b, '}')
 		return bridge_local_response_data(request_id, strings.to_string(b))
+	}
+	if op == "vault.lock" {
+		bridge_vault_lock()
+		return bridge_local_response_data(request_id, "{\"ok\":true,\"status\":\"locked\"}")
 	}
 	if op == "vault.get" {
 		key, ok := bridge_read_vault_key()

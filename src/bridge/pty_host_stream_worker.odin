@@ -18,13 +18,14 @@ import ws "odin_test:lib/ws"
 // (permanently resolving BUG-10 / false agent reaper timeouts), each streaming session
 // opens its own dedicated UNIX domain socket connection to ham-pty-host.
 Bridge_PTY_Stream_Worker :: struct {
-	session_id: string,
-	shell_id:   string,
-	fd:         posix.FD,
-	active:     bool,
-	conn:       ^ws.Connection,
-	salt:       [4]byte,
-	seq:        u64,
+	session_id:            string,
+	shell_id:              string,
+	fd:                    posix.FD,
+	active:                bool,
+	conn:                  ^ws.Connection,
+	salt:                  [4]byte,
+	seq:                   u64,
+	locked_banner_emitted: bool,
 }
 
 bridge_pty_stream_fallback_mu: sync.Mutex
@@ -480,63 +481,7 @@ bridge_pty_stream_decrypt_chunk :: proc(
 	return dst, true
 }
 
-// bridge_pty_stream_emit_frame encodes data chunk to base64 and formats shell_pty_output JSON.
-// When vault key is active, it encrypts the chunk with AES-256-GCM using a monotonic counter nonce,
-// emitting enc_b64. If vault key is unconfigured, it falls back to plaintext data_b64.
-bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_id: string, data: []byte) {
-	if len(data) == 0 do return
-	heap := runtime.heap_allocator()
-
-	key_hex, vault_active := bridge_read_vault_key()
-	defer if vault_active do delete(key_hex)
-
-	frame: string
-	if vault_active {
-		salt: [4]byte
-		seq: u64
-		if worker != nil {
-			worker.seq += 1
-			seq = worker.seq
-			salt = worker.salt
-		} else {
-			sync.mutex_lock(&bridge_pty_stream_fallback_mu)
-			if !bridge_pty_stream_fallback_inited {
-				crypto.rand_bytes(bridge_pty_stream_fallback_salt[:])
-				bridge_pty_stream_fallback_inited = true
-			}
-			bridge_pty_stream_fallback_seq += 1
-			seq = bridge_pty_stream_fallback_seq
-			salt = bridge_pty_stream_fallback_salt
-			sync.mutex_unlock(&bridge_pty_stream_fallback_mu)
-		}
-
-		if enc_b64, ok := bridge_pty_stream_encrypt_chunk(data, salt, seq, key_hex, context.temp_allocator); ok {
-			armored := strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
-			b := strings.builder_make(heap)
-			strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
-			bridge_runtime_write_json_string(&b, session_id)
-			strings.write_string(&b, "\",\"data_b64\":\"")
-			bridge_runtime_write_json_string(&b, armored)
-			strings.write_string(&b, "\",\"enc_b64\":\"")
-			bridge_runtime_write_json_string(&b, enc_b64)
-			strings.write_string(&b, "\"}")
-			frame = strings.to_string(b)
-		}
-	}
-
-	if frame == "" {
-		encoded := base64.encode(data, allocator = heap)
-		defer delete(encoded, heap)
-
-		b := strings.builder_make(heap)
-		strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
-		bridge_runtime_write_json_string(&b, session_id)
-		strings.write_string(&b, "\",\"data_b64\":\"")
-		bridge_runtime_write_json_string(&b, string(encoded))
-		strings.write_string(&b, "\"}")
-		frame = strings.to_string(b)
-	}
-
+_bridge_pty_stream_deliver_or_queue :: proc(worker: ^Bridge_PTY_Stream_Worker, frame: string, heap: runtime.Allocator) {
 	sent := false
 	if worker != nil && worker.active && worker.conn != nil && worker.conn.connected {
 		sent = bridge_hub_send(worker.conn, frame)
@@ -553,6 +498,91 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 	} else {
 		delete(frame, heap)
 	}
+}
+
+// bridge_pty_stream_emit_frame encodes data chunk to base64 and formats shell_pty_output JSON.
+// When vault status is Locked, it emits a locked warning banner and suppresses raw stream bytes.
+// When Unlocked, it encrypts the chunk with AES-256-GCM using a monotonic counter nonce emitting enc_b64.
+// When Disabled (or unconfigured fallback), it emits plaintext data_b64 without encryption or delay.
+bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_id: string, data: []byte) {
+	if len(data) == 0 do return
+	heap := runtime.heap_allocator()
+
+	status := bridge_vault_status()
+	#partial switch status {
+	case .Locked:
+		if worker != nil {
+			if worker.locked_banner_emitted do return
+			worker.locked_banner_emitted = true
+		}
+		banner := "\r\n\x1b[33m[Vault locked: terminal stream is suspended. Unlock bridge vault to continue.]\x1b[0m\r\n"
+		encoded := base64.encode(transmute([]byte)banner, allocator = heap)
+		defer delete(encoded, heap)
+
+		b := strings.builder_make(heap)
+		strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"data_b64\":\"")
+		bridge_runtime_write_json_string(&b, string(encoded))
+		strings.write_string(&b, "\"}")
+		frame := strings.to_string(b)
+		_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+		return
+
+	case .Unlocked:
+		if worker != nil {
+			worker.locked_banner_emitted = false
+		}
+		key_hex, vault_active := bridge_read_vault_key()
+		defer if vault_active do delete(key_hex)
+		if vault_active {
+			salt: [4]byte
+			seq: u64
+			if worker != nil {
+				worker.seq += 1
+				seq = worker.seq
+				salt = worker.salt
+			} else {
+				sync.mutex_lock(&bridge_pty_stream_fallback_mu)
+				if !bridge_pty_stream_fallback_inited {
+					crypto.rand_bytes(bridge_pty_stream_fallback_salt[:])
+					bridge_pty_stream_fallback_inited = true
+				}
+				bridge_pty_stream_fallback_seq += 1
+				seq = bridge_pty_stream_fallback_seq
+				salt = bridge_pty_stream_fallback_salt
+				sync.mutex_unlock(&bridge_pty_stream_fallback_mu)
+			}
+
+			if enc_b64, ok := bridge_pty_stream_encrypt_chunk(data, salt, seq, key_hex, context.temp_allocator); ok {
+				armored := strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
+				b := strings.builder_make(heap)
+				strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
+				bridge_runtime_write_json_string(&b, session_id)
+				strings.write_string(&b, "\",\"data_b64\":\"")
+				bridge_runtime_write_json_string(&b, armored)
+				strings.write_string(&b, "\",\"enc_b64\":\"")
+				bridge_runtime_write_json_string(&b, enc_b64)
+				strings.write_string(&b, "\"}")
+				frame := strings.to_string(b)
+				_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+				return
+			}
+		}
+	}
+
+	// Plaintext fallback (e.g. Disabled status): zero encryption overhead or blocking
+	encoded := base64.encode(data, allocator = heap)
+	defer delete(encoded, heap)
+
+	b := strings.builder_make(heap)
+	strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"data_b64\":\"")
+	bridge_runtime_write_json_string(&b, string(encoded))
+	strings.write_string(&b, "\"}")
+	frame := strings.to_string(b)
+	_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
 }
 
 // bridge_pty_stream_drain_outgoing flushes queued shell_pty_output frames to the hub connection.

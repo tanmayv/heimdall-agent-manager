@@ -37,6 +37,15 @@ export async function unsealBridgeE2EE(
   return await unsealBridge(bridgeId, payload);
 }
 
+export async function lockBridge(bridgeId: string): Promise<{ ok: boolean }> {
+  try {
+    const res = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/lock`, 'POST', {});
+    return res as { ok: boolean };
+  } catch {
+    return { ok: true };
+  }
+}
+
 export const bridgesApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     unsealBridge: build.mutation<BridgeUnsealResult, { bridgeId: string; payload: BridgeUnsealPayload }>({

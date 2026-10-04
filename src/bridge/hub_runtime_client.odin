@@ -17,6 +17,64 @@ import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
 import http "odin_test:lib/http_client"
 import ws "odin_test:lib/ws"
+import "core:sys/posix"
+
+// REQ-VAULT-HARDEN-7, REQ-VAULT-HARDEN-10: Tri-state vault status
+Vault_Status :: enum {
+	Disabled,
+	Locked,
+	Unlocked,
+}
+
+bridge_workspace_vault_configured: bool
+
+bridge_vault_set_configured :: proc(configured: bool) {
+	bridge_workspace_vault_configured = configured
+}
+
+bridge_vault_is_workspace_configured :: proc() -> bool {
+	if bridge_workspace_vault_configured do return true
+	if env_val, found := os.lookup_env("HEIMDALL_VAULT_CONFIGURED", context.temp_allocator); found {
+		trimmed := strings.trim_space(env_val)
+		if trimmed == "1" || strings.equal_fold(trimmed, "true") || strings.equal_fold(trimmed, "configured") {
+			return true
+		}
+		if trimmed == "0" || strings.equal_fold(trimmed, "false") || strings.equal_fold(trimmed, "disabled") {
+			return false
+		}
+	}
+	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
+	defer delete(path)
+	c_path := strings.clone_to_cstring(path)
+	defer delete(c_path)
+	st: posix.stat_t
+	if posix.stat(c_path, &st) == .OK {
+		return true
+	}
+	return false
+}
+
+bridge_vault_status :: proc() -> Vault_Status {
+	key, ok := bridge_read_vault_key()
+	if ok {
+		delete(key)
+		return .Unlocked
+	}
+	if bridge_vault_is_workspace_configured() {
+		return .Locked
+	}
+	return .Disabled
+}
+
+bridge_vault_status_string :: proc(status: Maybe(Vault_Status) = nil) -> string {
+	s := status.? or_else bridge_vault_status()
+	switch s {
+	case .Disabled: return "disabled"
+	case .Locked:   return "locked"
+	case .Unlocked: return "unlocked"
+	}
+	return "disabled"
+}
 
 // BRIDGE_WRAPPER_STALE_MS is how long an ACTIVE instance may go without any
 // liveness signal before the bridge reconciles it to "unreachable". In the
@@ -865,6 +923,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(command_id)
 		now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
 		ok, err_msg := bridge_unseal_decrypt_and_verify(text, bridge_config.daemon_id, now_ms)
+		if ok {
+			bridge_workspace_vault_configured = true
+		}
 
 		b := strings.builder_make()
 		strings.write_string(&b, "{\"type\":\"bridge_unseal_result\",\"command_id\":\"")
@@ -878,6 +939,23 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			bridge_runtime_write_json_string(&b, err_msg)
 			strings.write_string(&b, "\"}")
 		}
+		res := strings.to_string(b)
+		defer delete(res)
+		bridge_runtime_cache_command(command_id, res)
+		if conn != nil {
+			_ = bridge_hub_send(conn, res)
+		}
+		return
+	}
+	if type == "bridge_lock" {
+		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
+		bridge_vault_lock()
+
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"bridge_lock_result\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":true,\"status\":\"locked\"}")
 		res := strings.to_string(b)
 		defer delete(res)
 		bridge_runtime_cache_command(command_id, res)

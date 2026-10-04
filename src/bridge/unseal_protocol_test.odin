@@ -6,6 +6,7 @@ import "core:crypto/ecdh"
 import "core:crypto/hkdf"
 import "core:encoding/hex"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -77,6 +78,9 @@ test_unseal_protocol_success_and_unlock :: proc(t: ^testing.T) {
 	sync.mutex_lock(&keystore_test_mutex)
 	defer sync.mutex_unlock(&keystore_test_mutex)
 	defer bridge_vault_lock()
+
+	os.unset_env("HEIMDALL_VAULT_KEY")
+	defer os.unset_env("HEIMDALL_VAULT_KEY")
 
 	bridge_vault_lock()
 	unseal_nonce_cache_clear(&g_unseal_nonce_cache)

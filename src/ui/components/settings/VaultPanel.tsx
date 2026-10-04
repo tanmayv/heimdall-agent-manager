@@ -259,8 +259,7 @@ export default function VaultPanel() {
         record.vaultKeyNonce,
         record.vaultKeyTag,
       );
-      const rawHex = await exportRawKeyHex(vaultKey);
-      dispatch(setVaultUnlocked(rawHex));
+      dispatch(setVaultUnlocked(vaultKey));
       setUnlockPassword('');
       setIsUnlockModalOpen(false);
     } catch (_err) {
@@ -301,8 +300,7 @@ export default function VaultPanel() {
         record.recoveryNonce,
         record.recoveryTag,
       );
-      const rawHex = await exportRawKeyHex(vaultKey);
-      dispatch(setVaultUnlocked(rawHex));
+      dispatch(setVaultUnlocked(vaultKey));
       setRecoveryPhraseInput('');
       setIsUnlockModalOpen(false);
     } catch (_err) {
@@ -421,7 +419,7 @@ export default function VaultPanel() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Text as="div" role="overline" tone="muted">2. 12-Word Recovery Phrase</Text>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
@@ -429,6 +427,7 @@ export default function VaultPanel() {
                   data-debug-id="vault-regenerate-words-btn"
                   onClick={handleRegenerateWords}
                   disabled={isSubmittingSetup}
+                  className="min-h-[44px] min-w-[44px] touch-manipulation"
                 >
                   <Icon name="refresh" size="sm" />
                   Regenerate
@@ -440,6 +439,7 @@ export default function VaultPanel() {
                   data-debug-id="vault-copy-words-btn"
                   onClick={handleCopyWords}
                   disabled={isSubmittingSetup}
+                  className="min-h-[44px] min-w-[44px] touch-manipulation"
                 >
                   <Icon name="copy" size="sm" />
                   {copiedWords ? 'Copied Words!' : 'Copy Words'}
@@ -453,7 +453,7 @@ export default function VaultPanel() {
 
             <div
               data-debug-id="vault-recovery-words-grid"
-              className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 pt-2"
+              className="grid grid-cols-1 min-[360px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 pt-2"
             >
               {recoveryWords.map((word, idx) => (
                 <div
@@ -629,7 +629,7 @@ export default function VaultPanel() {
   const renderLockedView = () => (
     <div data-debug-id="vault-unlock-view" className="space-y-6">
       <Panel tone="raised" padding="lg" className="border border-subtle">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <h3 className="text-base font-semibold text-primary">Zero-Knowledge Vault is Locked</h3>
@@ -642,6 +642,7 @@ export default function VaultPanel() {
           <Button
             variant="secondary"
             data-debug-id="vault-open-unlock-dialog-btn"
+            className="min-h-[44px] min-w-[44px] touch-manipulation w-full sm:w-auto"
             onClick={() => {
               setUnlockError('');
               setIsUnlockModalOpen(true);
@@ -664,7 +665,7 @@ export default function VaultPanel() {
     <div data-debug-id="vault-unlocked-view" className="space-y-6">
       <Panel tone="raised" padding="lg" className="border border-subtle">
         {/* Status Header */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <h3 className="text-base font-semibold text-primary">Zero-Knowledge Vault Unlocked</h3>
@@ -677,6 +678,7 @@ export default function VaultPanel() {
           <Button
             variant="secondary"
             data-debug-id="vault-lock-btn"
+            className="min-h-[44px] min-w-[44px] touch-manipulation w-full sm:w-auto"
             onClick={() => dispatch(lockVault())}
           >
             <Icon name="lock" size="sm" />

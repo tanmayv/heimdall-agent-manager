@@ -3,7 +3,9 @@ package main
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:testing"
+import cfg_lib "odin_test:lib/config"
 
 TEST_VAULT_KEY_HEX :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
@@ -113,8 +115,128 @@ test_bridge_read_vault_key_from_disk :: proc(t: ^testing.T) {
 	keystore_lock_and_purge()
 	defer keystore_lock_and_purge()
 
+	prev_env, had_env := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_env {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_env)
+			delete(prev_env)
+		} else {
+			_ = os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
 	os.unset_env("HEIMDALL_VAULT_KEY")
+
+	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
+	defer delete(path)
+	dir := cfg_lib.expand_home("~/.config/heimdall")
+	defer delete(dir)
+	_ = os.make_directory(dir)
+
+	prev_data, err := os.read_entire_file(path, context.allocator)
+	defer {
+		if err == nil {
+			_ = os.write_entire_file(path, prev_data)
+			delete(prev_data)
+		} else {
+			_ = os.remove(path)
+		}
+	}
+
+	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	c_path := strings.clone_to_cstring(path)
+	defer delete(c_path)
+
+	fd := posix.open(c_path, posix.O_Flags{.CREAT, .WRONLY, .TRUNC}, posix.mode_t{.IRUSR, .IWUSR})
+	if fd >= 0 {
+		_ = posix.write(fd, raw_data(test_key), len(test_key))
+		_ = posix.close(fd)
+	}
+
 	key, ok := bridge_read_vault_key()
 	testing.expect(t, ok, "bridge_read_vault_key should read disk key")
-	defer if ok do delete(key)
+	if ok {
+		testing.expect_value(t, key, test_key)
+		delete(key)
+	}
+}
+
+@(test)
+test_bridge_vault_tri_state_lifecycle :: proc(t: ^testing.T) {
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+
+	keystore_lock_and_purge()
+	defer keystore_lock_and_purge()
+
+	prev_env, had_env := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_env {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_env)
+			delete(prev_env)
+		} else {
+			_ = os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+	os.unset_env("HEIMDALL_VAULT_KEY")
+
+	// 1. When workspace vault is not configured -> Disabled
+	bridge_workspace_vault_configured = false
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Disabled)
+	testing.expect_value(t, bridge_vault_status_string(), "disabled")
+
+	// 2. When workspace vault is configured but no key is present -> Locked
+	bridge_workspace_vault_configured = true
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Locked)
+	testing.expect_value(t, bridge_vault_status_string(), "locked")
+
+	// 3. When unsealed / key is set -> Unlocked
+	keystore_store_vault_key(TEST_VAULT_KEY_HEX)
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Unlocked)
+	testing.expect_value(t, bridge_vault_status_string(), "unlocked")
+
+	// 4. When bridge_vault_lock() is called -> key purged, returns to Locked
+	bridge_vault_lock()
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Locked)
+	testing.expect_value(t, bridge_vault_status_string(), "locked")
+
+	// Reset
+	bridge_workspace_vault_configured = false
+}
+
+@(test)
+test_bridge_fs_rejects_when_vault_locked :: proc(t: ^testing.T) {
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+
+	keystore_lock_and_purge()
+	defer keystore_lock_and_purge()
+
+	prev_env, had_env := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_env {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_env)
+			delete(prev_env)
+		} else {
+			_ = os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+	os.unset_env("HEIMDALL_VAULT_KEY")
+
+	bridge_workspace_vault_configured = true
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Locked)
+
+	// fs_management reject check
+	read_res := bridge_fs_read_file("test.txt", "/tmp", 0, 100)
+	testing.expect(t, !read_res.ok, "read_file must fail when locked")
+	testing.expect_value(t, read_res.error_code, "vault_locked")
+
+	write_res := bridge_fs_write_file("test.txt", "content", "/tmp")
+	testing.expect(t, !write_res.ok, "write_file must fail when locked")
+	testing.expect_value(t, write_res.error_code, "vault_locked")
+
+	grep_res := bridge_fs_grep("pattern", false, 10, "/tmp")
+	testing.expect(t, !grep_res.ok, "grep must fail when locked")
+	testing.expect_value(t, grep_res.error_code, "vault_locked")
+
+	bridge_workspace_vault_configured = false
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { apiAbsoluteUrl } from '../../api/apiBase.ts';
 import { shellResizeFrame } from './shellStreamFrames.ts';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey } from '../../store/vaultSlice.ts';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, readSessionVaultKey, getActiveVaultKey } from '../../store/vaultSlice.ts';
 import { importRawKeyHex, AES_GCM_NONCE_BYTES, AES_GCM_TAG_BYTES } from '../../utils/vaultCrypto.ts';
 import { bytesToBase64, base64ToBytes, VAULT_ARMOR_PREFIX, MIN_ARMOR_PAYLOAD_BYTES } from '../../utils/vaultContent.ts';
 
@@ -366,21 +366,30 @@ export function useShellStream({
             const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
             const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
             const data_b64 = !isArmored ? msg.data_b64 : undefined;
-            console.log('[useShellStream] received output frame:', {
-              isArmored,
-              hasEncB64: Boolean(enc_b64),
-              hasDataB64: Boolean(data_b64),
-              payloadLen: (rawPayload || '').length,
-            });
+
+            // If unarmored plaintext base64 arrives, decode immediately via atob() with zero delay.
+            if (!isArmored && data_b64) {
+              try {
+                const raw = atob(data_b64);
+                const bytes = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                console.log('[useShellStream] decoded plaintext output chunk immediately:', bytes.length, 'bytes');
+                onOutputRef.current?.(bytes);
+              } catch (err) {
+                console.error('[useShellStream] base64 decode failed for plaintext output frame:', err);
+              }
+              return;
+            }
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
-                const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
-                if (isUnlocked && rawKeyHex) {
+                const activeKey = getActiveVaultKey();
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
+                const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+                if (isUnlocked && keyToUse) {
                   try {
-                    const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
+                    const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
                     console.log('[useShellStream] decrypted output chunk successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
                   } catch (err) {
@@ -396,16 +405,6 @@ export function useShellStream({
                     onOutputRef.current?.(notice);
                   }
                 }
-              } else if (data_b64) {
-                try {
-                  const raw = atob(data_b64);
-                  const bytes = new Uint8Array(raw.length);
-                  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                  console.log('[useShellStream] decoded plaintext output chunk:', bytes.length, 'bytes');
-                  onOutputRef.current?.(bytes);
-                } catch (err) {
-                  console.error('[useShellStream] base64 decode failed for plaintext output frame:', err);
-                }
               }
             }).catch(() => { /* ignore queue errors */ });
           } else if (msg.type === 'screen') {
@@ -413,21 +412,30 @@ export function useShellStream({
             const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
             const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
             const b64 = !isArmored ? (msg.screen_b64 || msg.data_b64) : undefined;
-            console.log('[useShellStream] received screen snapshot frame:', {
-              isArmored,
-              hasEncB64: Boolean(enc_b64),
-              hasB64: Boolean(b64),
-              payloadLen: (rawPayload || '').length,
-            });
+
+            // If unarmored plaintext base64 arrives, decode immediately via atob() with zero delay.
+            if (!isArmored && b64) {
+              try {
+                const raw = atob(b64);
+                const bytes = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                console.log('[useShellStream] decoded plaintext screen snapshot immediately:', bytes.length, 'bytes');
+                onOutputRef.current?.(bytes);
+              } catch (err) {
+                console.error('[useShellStream] base64 decode failed for plaintext screen frame:', err);
+              }
+              return;
+            }
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
-                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
-                const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
-                if (isUnlocked && rawKeyHex) {
+                const activeKey = getActiveVaultKey();
+                const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
+                const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
+                if (isUnlocked && keyToUse) {
                   try {
-                    const bytes = await decryptShellStreamPayload(enc_b64, rawKeyHex);
+                    const bytes = await decryptShellStreamPayload(enc_b64, keyToUse);
                     console.log('[useShellStream] decrypted screen snapshot successfully:', bytes.length, 'bytes');
                     onOutputRef.current?.(bytes);
                   } catch (err) {
@@ -442,16 +450,6 @@ export function useShellStream({
                     );
                     onOutputRef.current?.(notice);
                   }
-                }
-              } else if (b64) {
-                try {
-                  const raw = atob(b64);
-                  const bytes = new Uint8Array(raw.length);
-                  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                  console.log('[useShellStream] decoded plaintext screen snapshot:', bytes.length, 'bytes');
-                  onOutputRef.current?.(bytes);
-                } catch (err) {
-                  console.error('[useShellStream] base64 decode failed for plaintext screen frame:', err);
                 }
               }
             }).catch(() => { /* ignore queue errors */ });
@@ -541,20 +539,21 @@ export function useShellStream({
       return;
     }
 
-    const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey());
-    const rawKeyHex = rawVaultKeyHexRef.current || readSessionVaultKey();
+    const activeKey = getActiveVaultKey();
+    const isUnlocked = isVaultUnlockedRef.current || Boolean(readSessionVaultKey()) || Boolean(activeKey);
+    const keyToUse = activeKey || rawVaultKeyHexRef.current || readSessionVaultKey();
 
     console.log('[useShellStream] sendInput sending keystroke(s):', {
       chars: data.length,
       isUnlocked,
-      hasKey: Boolean(rawKeyHex),
+      hasKey: Boolean(keyToUse),
     });
 
-    if (isUnlocked && rawKeyHex) {
+    if (isUnlocked && keyToUse) {
       inputQueueRef.current = inputQueueRef.current.then(async () => {
         if (s.readyState !== WebSocket.OPEN) return;
         try {
-          const enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
+          const enc_b64 = await encryptShellStreamPayload(data, keyToUse);
           if (s.readyState === WebSocket.OPEN) {
             s.send(JSON.stringify({ type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` }));
             console.log('[useShellStream] sendInput sent encrypted input frame');

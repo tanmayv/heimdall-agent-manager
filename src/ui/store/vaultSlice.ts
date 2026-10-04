@@ -323,6 +323,16 @@ export const VAULT_UNSUPPORTED_TITLE = 'User Vault unavailable';
 export const VAULT_UNSUPPORTED_REASON =
   'User Vault unavailable: this page is not a secure context, so Web Crypto (crypto.subtle) is missing. Open Heimdall over HTTPS or on localhost.';
 
+export type VaultStatus = 'Disabled' | 'Locked' | 'Unlocked';
+
+export function resolveVaultStatus(args: {
+  isConfigured: boolean;
+  isUnlocked: boolean;
+}): VaultStatus {
+  if (!args.isConfigured) return 'Disabled';
+  return args.isUnlocked ? 'Unlocked' : 'Locked';
+}
+
 export type VaultStatusLabel = 'Unsupported' | 'Unlocked' | 'Locked' | 'Unconfigured';
 
 export function vaultStatusLabel(args: {
