@@ -1,6 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
-import { encryptVaultText, VAULT_ARMOR_PREFIX } from '../../utils/vaultContent';
+import { encryptVaultText, VAULT_ARMOR_PREFIX, getActiveVaultKey } from '../../utils/vaultContent';
 import { readSessionVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptShellStreamPayload } from '../../components/shells/useShellStream';
 
@@ -324,13 +324,13 @@ export const shellsApi = heimdallApi.injectEndpoints({
       queryFn: async ({ bridgeId, ...body }, api) => {
         try {
           const state: any = api?.getState?.();
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
           const isUnlocked = state?.vault != null
-            ? Boolean(state.vault.isUnlocked || state.vault.unlocked)
-            : Boolean(readSessionVaultKey());
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
 
           let requestBody: Record<string, any> = { ...body };
-          if (isUnlocked && rawKeyHex) {
+          if (isUnlocked && activeKey) {
             const spec = {
               cmd: body.cmd || '',
               cwd: body.cwd || '',
@@ -339,7 +339,7 @@ export const shellsApi = heimdallApi.injectEndpoints({
                 ? crypto.randomUUID()
                 : (globalThis as any).crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
             };
-            const enc_spec = body.enc_spec || await encryptVaultText(JSON.stringify(spec), rawKeyHex);
+            const enc_spec = body.enc_spec || await encryptVaultText(JSON.stringify(spec), activeKey);
             requestBody = { ...body, enc_spec };
           }
 
@@ -506,15 +506,15 @@ export const shellsApi = heimdallApi.injectEndpoints({
         }
         try {
           const state: any = api?.getState?.();
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
           const isUnlocked = state?.vault != null
-            ? Boolean(selectIsVaultUnlocked(state))
-            : Boolean(readSessionVaultKey());
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+            ? Boolean(selectIsVaultUnlocked(state) || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
 
           let resolvedEncB64 = enc_b64;
-          if (!resolvedEncB64 && isUnlocked && rawKeyHex) {
+          if (!resolvedEncB64 && isUnlocked && activeKey) {
             try {
-              resolvedEncB64 = await encryptShellStreamPayload(data, rawKeyHex);
+              resolvedEncB64 = await encryptShellStreamPayload(data, activeKey);
             } catch {
               // fallback to unencrypted if encryption fails
             }

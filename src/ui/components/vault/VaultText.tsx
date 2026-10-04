@@ -5,6 +5,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   selectIsVaultUnlocked,
   selectRawVaultKeyHex,
+  selectActiveVaultKey,
   openUnlockModal,
 } from '../../store/vaultSlice';
 import {
@@ -44,6 +45,7 @@ export function VaultText({
   const dispatch = useDispatch();
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKey = useSelector(selectRawVaultKeyHex);
+  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey() || rawKey;
 
   const rawString = value ?? '';
   const isArmored = isVaultArmored(rawString);
@@ -61,7 +63,7 @@ export function VaultText({
       return;
     }
 
-    const activeKey = rawKey || getActiveVaultKey();
+    const activeKey = activeVaultKey || getActiveVaultKey() || rawKey;
     if (!isUnlocked || !activeKey) {
       setDecryptedText(
         isEmbedded ? rawString.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]') : null
@@ -90,7 +92,7 @@ export function VaultText({
     return () => {
       mounted = false;
     };
-  }, [rawString, hasVault, isArmored, isEmbedded, isUnlocked, rawKey, fallback]);
+  }, [rawString, hasVault, isArmored, isEmbedded, isUnlocked, activeVaultKey, rawKey, fallback]);
 
   const Tag = as;
 
@@ -104,7 +106,7 @@ export function VaultText({
   }
 
   // 2. Vault content and vault is locked
-  const activeKey = rawKey || getActiveVaultKey();
+  const activeKey = activeVaultKey || getActiveVaultKey() || rawKey;
   if (!isUnlocked || !activeKey) {
     if (isArmored) {
       return (
@@ -163,6 +165,7 @@ export function useDecryptedText(value?: string | null): {
 } {
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKey = useSelector(selectRawVaultKeyHex);
+  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey() || rawKey;
   const raw = value ?? '';
   const isArmored = isVaultArmored(raw);
   const isEmbedded = !isArmored && containsVaultArmored(raw);
@@ -178,7 +181,7 @@ export function useDecryptedText(value?: string | null): {
       setIsDecrypting(false);
       return;
     }
-    const activeKey = rawKey || getActiveVaultKey();
+    const activeKey = activeVaultKey || getActiveVaultKey() || rawKey;
     if (!isUnlocked || !activeKey) {
       setText(raw.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, '[🔒 Encrypted]'));
       setIsDecrypting(false);
@@ -202,7 +205,7 @@ export function useDecryptedText(value?: string | null): {
     return () => {
       mounted = false;
     };
-  }, [raw, isArmored, isEmbedded, hasVault, isUnlocked, rawKey]);
+  }, [raw, isArmored, isEmbedded, hasVault, isUnlocked, activeVaultKey, rawKey]);
 
   return {
     text,
@@ -220,11 +223,12 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
 ): T[] {
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawKey = useSelector(selectRawVaultKeyHex);
+  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey() || rawKey;
   const [decryptedList, setDecryptedList] = useState<T[]>(items);
 
   useEffect(() => {
     let mounted = true;
-    const activeKey = rawKey || getActiveVaultKey();
+    const activeKey = activeVaultKey || getActiveVaultKey() || rawKey;
     if (!isUnlocked || !activeKey || items.length === 0) {
       setDecryptedList(items);
       return;
@@ -259,7 +263,7 @@ export function useDecryptedIssues<T extends { title?: string; description?: str
     return () => {
       mounted = false;
     };
-  }, [items, isUnlocked, rawKey]);
+  }, [items, isUnlocked, activeVaultKey, rawKey]);
 
   return decryptedList;
 }

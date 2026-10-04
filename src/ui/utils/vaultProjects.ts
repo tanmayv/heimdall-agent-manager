@@ -10,45 +10,45 @@ export interface ProjectPayload {
 }
 
 /**
- * Encrypt project fields (name, description) if vault is unlocked using rawKeyHex or active CryptoKey.
+ * Encrypt project fields (name, description) if vault is unlocked using active CryptoKey or key string.
  */
 export async function encryptProjectFields<T extends ProjectPayload>(
   payload: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return { ...payload };
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return { ...payload };
   const res = { ...payload };
   if (res.name && !isVaultArmored(res.name)) {
-    res.name = await encryptVaultText(res.name, activeKey);
+    res.name = await encryptVaultText(res.name, resolvedKey);
   }
   if (res.description && !isVaultArmored(res.description)) {
-    res.description = await encryptVaultText(res.description, activeKey);
+    res.description = await encryptVaultText(res.description, resolvedKey);
   }
   return res;
 }
 
 /**
- * Decrypt project fields (name, description) using rawKeyHex or active CryptoKey.
+ * Decrypt project fields (name, description) using active CryptoKey or key string.
  * If vault is locked or key is not provided, leaves armored strings as-is (graceful fallback).
  */
 export async function decryptProjectRecord<T extends ProjectPayload>(
   project: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return project;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return project;
   let name = project.name;
   let description = project.description;
 
   if (name && isVaultArmored(name)) {
     try {
-      name = await decryptVaultText(name, activeKey);
+      name = await decryptVaultText(name, resolvedKey);
     } catch {}
   }
   if (description && isVaultArmored(description)) {
     try {
-      description = await decryptVaultText(description, activeKey);
+      description = await decryptVaultText(description, resolvedKey);
     } catch {}
   }
 
@@ -64,9 +64,9 @@ export async function decryptProjectRecord<T extends ProjectPayload>(
  */
 export async function decryptProjectList<T extends ProjectPayload>(
   projects: T[],
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T[]> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !Array.isArray(projects)) return projects;
-  return Promise.all(projects.map((project) => decryptProjectRecord(project, activeKey)));
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !Array.isArray(projects)) return projects;
+  return Promise.all(projects.map((project) => decryptProjectRecord(project, resolvedKey)));
 }

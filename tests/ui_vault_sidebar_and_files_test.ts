@@ -135,7 +135,9 @@ test('REQ-VAULT-ARTIFACTS-LIBRARY: LibraryPage wraps project column in VaultText
 
   // Verify project list decryption for options
   assert.ok(
-    content.includes('decryptProjectList(rawProjectsList, rawVaultKeyHex)'),
+    content.includes('decryptProjectList(rawProjectsList, keyToUse)') ||
+      content.includes('decryptProjectList(rawProjectsList, activeKey)') ||
+      content.includes('decryptProjectList(rawProjectsList, rawVaultKeyHex)'),
     'LibraryPage.tsx must decrypt projectsList using decryptProjectList',
   );
 });

@@ -22,7 +22,7 @@ import {
   encryptVaultText,
   isVaultArmored,
 } from '../src/ui/utils/vaultContent.ts';
-import { importRawKeyHex } from '../src/ui/utils/vaultCrypto.ts';
+import { importRawKeyHex, getActiveVaultKey, setActiveVaultKey } from '../src/ui/utils/vaultCrypto.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -228,8 +228,9 @@ test('REQ-SHELL-ENC-8: shells.ts and NewShellDialog.tsx static contract verifica
     'createShell queryFn must populate nonce',
   );
   assert.ok(
+    endpointSrc.includes('encryptVaultText(JSON.stringify(spec), activeKey)') ||
     endpointSrc.includes('encryptVaultText(JSON.stringify(spec), rawKeyHex)'),
-    'createShell queryFn must encrypt spec JSON with rawKeyHex',
+    'createShell queryFn must encrypt spec JSON with activeKey or rawKeyHex',
   );
 
   // Verify NewShellDialog relies on createShell mutation
@@ -455,4 +456,161 @@ test('REQ-SHELL-ENC-12: sendShellInput sets data_b64 with vault:v1: prefix in sh
   const shellsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/shells.ts'), 'utf8');
   assert.ok(shellsSrc.includes('payload.data_b64 = `${VAULT_ARMOR_PREFIX}${resolvedEncB64}`'), 'sendShellInput must set armored data_b64');
 });
+
+// -----------------------------------------------------------------------------
+// 7. REQ-FIX-ENC-1: createShell with CryptoKey from getActiveVaultKey()
+// -----------------------------------------------------------------------------
+
+test('REQ-FIX-ENC-1: createShell logic attaches enc_spec with CryptoKey from getActiveVaultKey()', async () => {
+  const cryptoKey = await importRawKeyHex(TEST_VAULT_KEY);
+  setActiveVaultKey(cryptoKey);
+  try {
+    const state: any = { vault: { isUnlocked: true, rawVaultKeyHex: null } };
+    const activeKey = getActiveVaultKey() || state?.vault?.rawVaultKeyHex;
+    const isUnlocked = Boolean(state?.vault?.isUnlocked || activeKey);
+
+    const body = { cmd: 'cargo test', cwd: '/workspace', kind: 'run' as const };
+    let requestBody: Record<string, any> = { ...body };
+
+    if (isUnlocked && activeKey) {
+      const spec = {
+        cmd: body.cmd || '',
+        cwd: body.cwd || '',
+        timestamp: Date.now(),
+        nonce: crypto.randomUUID(),
+      };
+      const enc_spec = await encryptVaultText(JSON.stringify(spec), activeKey);
+      requestBody = { ...body, enc_spec };
+    }
+
+    assert.ok(requestBody.enc_spec, 'requestBody must contain enc_spec');
+    assert.ok(isVaultArmored(requestBody.enc_spec), 'enc_spec must start with vault:v1:');
+    const decrypted = await decryptVaultText(requestBody.enc_spec, cryptoKey);
+    const parsed = JSON.parse(decrypted);
+    assert.equal(parsed.cmd, 'cargo test');
+    assert.equal(parsed.cwd, '/workspace');
+  } finally {
+    setActiveVaultKey(null);
+  }
+});
+
+// -----------------------------------------------------------------------------
+// 8. REQ-FIX-ENC-2: useAgentStream.ts Stream Decryption & Frame Parsing
+// -----------------------------------------------------------------------------
+
+test('REQ-FIX-ENC-2: useAgentStream.ts static contract verification', () => {
+  const agentStreamPath = path.join(REPO_ROOT, 'src/ui/components/chat/useAgentStream.ts');
+  assert.ok(fs.existsSync(agentStreamPath), 'useAgentStream.ts must exist');
+  const src = fs.readFileSync(agentStreamPath, 'utf8');
+
+  assert.ok(src.includes('export function useAgentStream'), 'must export useAgentStream');
+  assert.ok(src.includes('decryptShellStreamPayload'), 'must import decryptShellStreamPayload');
+  assert.ok(src.includes('encryptShellStreamPayload'), 'must import encryptShellStreamPayload');
+  assert.ok(src.includes('getActiveVaultKey'), 'must import getActiveVaultKey');
+  assert.ok(src.includes('VAULT_ARMOR_PREFIX'), 'must import VAULT_ARMOR_PREFIX');
+
+  // Verify stream message handling
+  assert.ok(src.includes("msg.type === 'output'"), 'must handle output messages');
+  assert.ok(src.includes("msg.type === 'screen'"), 'must handle screen messages');
+  assert.ok(src.includes('rawPayload.startsWith(VAULT_ARMOR_PREFIX)'), 'must check for armored vault:v1: payload');
+  assert.ok(src.includes('decryptShellStreamPayload(enc_b64, keyToUse)'), 'must decrypt stream chunk with keyToUse');
+
+  // Verify sendInput encryption
+  assert.ok(src.includes('encryptShellStreamPayload(data, keyToUse)'), 'must encrypt input with keyToUse');
+  assert.ok(src.includes("type: 'input', enc_b64"), 'must send encrypted enc_b64 frame');
+  assert.ok(src.includes("type: 'input', data_b64: toBase64(data)"), 'must fall back to plaintext when locked');
+});
+
+test('REQ-FIX-ENC-2: useAgentStream message decoding handles armored output and screen frames', async () => {
+  const cryptoKey = await importRawKeyHex(TEST_VAULT_KEY);
+  const sampleOutput = '\r\nAgent output stream line 1\r\n';
+  const enc_b64 = await encryptShellStreamPayload(sampleOutput, cryptoKey);
+  const armored = `${VAULT_ARMOR_PREFIX}${enc_b64}`;
+
+  // Test decrypting armored output payload
+  const decryptedOutputBytes = await decryptShellStreamPayload(armored, cryptoKey);
+  assert.equal(new TextDecoder().decode(decryptedOutputBytes), sampleOutput);
+
+  // Test decrypting screen snapshot payload
+  const screenContent = '\x1b[2J\x1b[HWelcome to Heimdall Terminal';
+  const encScreen = await encryptShellStreamPayload(screenContent, cryptoKey);
+  const decryptedScreenBytes = await decryptShellStreamPayload(encScreen, cryptoKey);
+  assert.equal(new TextDecoder().decode(decryptedScreenBytes), screenContent);
+});
+
+// -----------------------------------------------------------------------------
+// 9. REQ-FIX-ENC-3: useAgentStream.ts sendInput Keystroke Encryption
+// -----------------------------------------------------------------------------
+
+test('REQ-FIX-ENC-3: sendInput payload generation matches zero-trust protocol', async () => {
+  const cryptoKey = await importRawKeyHex(TEST_VAULT_KEY);
+  const keystroke = 'cargo build\r';
+  const enc_b64 = await encryptShellStreamPayload(keystroke, cryptoKey);
+  const frame = { type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` };
+
+  assert.equal(frame.type, 'input');
+  assert.ok(frame.data_b64.startsWith('vault:v1:'));
+  const decrypted = await decryptShellStreamPayload(frame.enc_b64, cryptoKey);
+  assert.equal(new TextDecoder().decode(decrypted), keystroke);
+});
+
+// -----------------------------------------------------------------------------
+// 10. REQ-FIX-ENC-4: projectFs.ts and UI components active key resolution
+// -----------------------------------------------------------------------------
+
+test('REQ-FIX-ENC-4: projectFs.ts and UI components resolve getActiveVaultKey()', () => {
+  const projectFsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/projectFs.ts'), 'utf8');
+  assert.ok(projectFsSrc.includes('getActiveVaultKey'), 'projectFs.ts must import getActiveVaultKey');
+  assert.ok(projectFsSrc.includes('decryptSearchMatches(rawMatches, activeKey)'), 'projectFs.ts must pass activeKey to decryptSearchMatches');
+
+  const librarySrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/LibraryPage.tsx'), 'utf8');
+  assert.ok(librarySrc.includes('getActiveVaultKey'), 'LibraryPage.tsx must use getActiveVaultKey');
+
+  const appShellSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shell/AppShell.tsx'), 'utf8');
+  assert.ok(appShellSrc.includes('getActiveVaultKey()'), 'AppShell.tsx must use getActiveVaultKey');
+
+  const selectorSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/chains/TaskChainSelectorModal.tsx'), 'utf8');
+  assert.ok(selectorSrc.includes('getActiveVaultKey()'), 'TaskChainSelectorModal.tsx must use getActiveVaultKey');
+
+  const paletteSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/ui/patterns/CommandPalette.tsx'), 'utf8');
+  assert.ok(paletteSrc.includes('getActiveVaultKey()'), 'CommandPalette.tsx must use getActiveVaultKey');
+
+  const vaultTextSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/vault/VaultText.tsx'), 'utf8');
+  assert.ok(vaultTextSrc.includes('getActiveVaultKey'), 'VaultText.tsx must use getActiveVaultKey');
+});
+
+test('REQ-FIX-ENC-4: vault*.ts utility functions accept activeKey parameter', () => {
+  const taskSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultTasks.ts'), 'utf8');
+  assert.ok(taskSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultTasks.ts must use activeKey parameter');
+  assert.ok(!taskSrc.includes('rawKeyHex?:'), 'vaultTasks.ts must not have rawKeyHex parameter');
+
+  const chatSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultChats.ts'), 'utf8');
+  assert.ok(chatSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultChats.ts must use activeKey parameter');
+  assert.ok(!chatSrc.includes('rawKeyHex?:'), 'vaultChats.ts must not have rawKeyHex parameter');
+
+  const issueSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultIssues.ts'), 'utf8');
+  assert.ok(issueSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultIssues.ts must use activeKey parameter');
+  assert.ok(!issueSrc.includes('rawKeyHex?:'), 'vaultIssues.ts must not have rawKeyHex parameter');
+
+  const memSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultMemories.ts'), 'utf8');
+  assert.ok(memSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultMemories.ts must use activeKey parameter');
+  assert.ok(!memSrc.includes('rawKeyHex?:'), 'vaultMemories.ts must not have rawKeyHex parameter');
+
+  const projSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultProjects.ts'), 'utf8');
+  assert.ok(projSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultProjects.ts must use activeKey parameter');
+  assert.ok(!projSrc.includes('rawKeyHex?:'), 'vaultProjects.ts must not have rawKeyHex parameter');
+
+  const artSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultArtifacts.ts'), 'utf8');
+  assert.ok(artSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultArtifacts.ts must use activeKey parameter');
+  assert.ok(!artSrc.includes('rawKeyHex?:'), 'vaultArtifacts.ts must not have rawKeyHex parameter');
+
+  const chainSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultChains.ts'), 'utf8');
+  assert.ok(chainSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultChains.ts must use activeKey parameter');
+  assert.ok(!chainSrc.includes('rawKeyHex?:'), 'vaultChains.ts must not have rawKeyHex parameter');
+
+  const searchSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/utils/vaultSearch.ts'), 'utf8');
+  assert.ok(searchSrc.includes('activeKey?: CryptoKey | string | null'), 'vaultSearch.ts must use activeKey parameter');
+  assert.ok(!searchSrc.includes('rawKeyHex?:'), 'vaultSearch.ts must not have rawKeyHex parameter');
+});
+
 

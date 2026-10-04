@@ -10,6 +10,7 @@ import {
   selectIsVaultUnlocked,
   selectRawVaultKeyHex,
   readSessionVaultKey,
+  getActiveVaultKey,
 } from '../../store/vaultSlice';
 import { isVaultArmored } from '../../utils/vaultContent';
 import { batchDecryptTitles, type RawSearchItemInput } from '../../utils/vaultSearch';
@@ -84,8 +85,10 @@ export function TaskChainSelectorModal({
   });
 
   const activeVaultKey = useMemo(() => {
-    if (isVaultUnlocked && rawVaultKeyHex) return rawVaultKeyHex;
-    return readSessionVaultKey();
+    if (isVaultUnlocked) {
+      return getActiveVaultKey() || rawVaultKeyHex || readSessionVaultKey();
+    }
+    return null;
   }, [isVaultUnlocked, rawVaultKeyHex]);
 
   const searchChains = useSelector((state: any) => {

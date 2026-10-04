@@ -12,39 +12,39 @@ export interface MemoryPayload {
 }
 
 /**
- * Encrypt memory content fields (title, description, body, evidence) if vault is unlocked using rawKeyHex or active CryptoKey.
+ * Encrypt memory content fields (title, description, body, evidence) if vault is unlocked using active CryptoKey or key string.
  */
 export async function encryptMemoryFields<T extends MemoryPayload>(
   payload: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return { ...payload };
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return { ...payload };
   const res = { ...payload };
   if (res.title && !isVaultArmored(res.title)) {
-    res.title = await encryptVaultText(res.title, activeKey);
+    res.title = await encryptVaultText(res.title, resolvedKey);
   }
   if (res.description && !isVaultArmored(res.description)) {
-    res.description = await encryptVaultText(res.description, activeKey);
+    res.description = await encryptVaultText(res.description, resolvedKey);
   }
   if (res.body && !isVaultArmored(res.body)) {
-    res.body = await encryptVaultText(res.body, activeKey);
+    res.body = await encryptVaultText(res.body, resolvedKey);
   }
   if (res.evidence && !isVaultArmored(res.evidence)) {
-    res.evidence = await encryptVaultText(res.evidence, activeKey);
+    res.evidence = await encryptVaultText(res.evidence, resolvedKey);
   }
   return res;
 }
 
 /**
- * Decrypt memory content fields (title, description, body, evidence) using rawKeyHex or active CryptoKey.
+ * Decrypt memory content fields (title, description, body, evidence) using active CryptoKey or key string.
  */
 export async function decryptMemoryRecord<T extends MemoryPayload>(
   memory: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return memory;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return memory;
   let title = memory.title;
   let description = memory.description;
   let body = memory.body;
@@ -52,22 +52,22 @@ export async function decryptMemoryRecord<T extends MemoryPayload>(
 
   if (title && isVaultArmored(title)) {
     try {
-      title = await decryptVaultText(title, activeKey);
+      title = await decryptVaultText(title, resolvedKey);
     } catch {}
   }
   if (description && isVaultArmored(description)) {
     try {
-      description = await decryptVaultText(description, activeKey);
+      description = await decryptVaultText(description, resolvedKey);
     } catch {}
   }
   if (body && isVaultArmored(body)) {
     try {
-      body = await decryptVaultText(body, activeKey);
+      body = await decryptVaultText(body, resolvedKey);
     } catch {}
   }
   if (evidence && isVaultArmored(evidence)) {
     try {
-      evidence = await decryptVaultText(evidence, activeKey);
+      evidence = await decryptVaultText(evidence, resolvedKey);
     } catch {}
   }
 

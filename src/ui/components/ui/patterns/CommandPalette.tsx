@@ -32,6 +32,7 @@ import {
   selectIsVaultUnlocked,
   selectRawVaultKeyHex,
   readSessionVaultKey,
+  getActiveVaultKey,
 } from '../../../store/vaultSlice';
 import { isVaultArmored, decryptVaultText } from '../../../utils/vaultContent';
 import { batchDecryptTitles, type RawSearchItemInput } from '../../../utils/vaultSearch';
@@ -141,8 +142,10 @@ export function CommandPalette({
   });
 
   const activeVaultKey = useMemo(() => {
-    if (isVaultUnlocked && rawVaultKeyHex) return rawVaultKeyHex;
-    return readSessionVaultKey();
+    if (isVaultUnlocked) {
+      return getActiveVaultKey() || rawVaultKeyHex || readSessionVaultKey();
+    }
+    return null;
   }, [isVaultUnlocked, rawVaultKeyHex]);
 
   // Retrieve client-side decrypted task chains from Redux title cache

@@ -20,33 +20,33 @@ export interface ArtifactPayload {
 
 /**
  * Encrypt artifact content fields (name, description, content / contentBase64)
- * if vault is unlocked using rawKeyHex or active CryptoKey.
+ * if vault is unlocked using active CryptoKey or key string.
  * Non-content metadata (mime, kind, ext, size, dates) remain plaintext.
  */
 export async function encryptArtifactFields<T extends ArtifactPayload>(
   payload: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return { ...payload };
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return { ...payload };
   const res = { ...payload };
 
   if (res.name && !isVaultArmored(res.name)) {
-    res.name = await encryptVaultText(res.name, activeKey);
+    res.name = await encryptVaultText(res.name, resolvedKey);
   }
 
   if (res.description && !isVaultArmored(res.description)) {
-    res.description = await encryptVaultText(res.description, activeKey);
+    res.description = await encryptVaultText(res.description, resolvedKey);
   }
 
   if (res.content && !isVaultArmored(res.content)) {
-    res.content = await encryptVaultText(res.content, activeKey);
+    res.content = await encryptVaultText(res.content, resolvedKey);
     res.contentBase64 = bytesToBase64(new TextEncoder().encode(res.content));
   } else if (res.contentBase64) {
     try {
       const decoded = new TextDecoder('utf-8', { fatal: true }).decode(base64ToBytes(res.contentBase64));
       if (decoded && !isVaultArmored(decoded)) {
-        const encrypted = await encryptVaultText(decoded, activeKey);
+        const encrypted = await encryptVaultText(decoded, resolvedKey);
         res.content = encrypted;
         res.contentBase64 = bytesToBase64(new TextEncoder().encode(encrypted));
       }
@@ -59,34 +59,34 @@ export async function encryptArtifactFields<T extends ArtifactPayload>(
 }
 
 /**
- * Decrypt artifact record fields (name, description, content) using rawKeyHex or active CryptoKey.
+ * Decrypt artifact record fields (name, description, content) using active CryptoKey or key string.
  * Unencrypted/legacy plaintext fields remain untouched.
  */
 export async function decryptArtifactRecord<T extends ArtifactPayload>(
   artifact: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return artifact;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return artifact;
   let name = artifact.name;
   let description = artifact.description;
   let content = artifact.content;
 
   if (name && isVaultArmored(name)) {
     try {
-      name = await decryptVaultText(name, activeKey);
+      name = await decryptVaultText(name, resolvedKey);
     } catch {}
   }
 
   if (description && isVaultArmored(description)) {
     try {
-      description = await decryptVaultText(description, activeKey);
+      description = await decryptVaultText(description, resolvedKey);
     } catch {}
   }
 
   if (content && isVaultArmored(content)) {
     try {
-      content = await decryptVaultText(content, activeKey);
+      content = await decryptVaultText(content, resolvedKey);
     } catch {}
   }
 
@@ -103,12 +103,12 @@ export async function decryptArtifactRecord<T extends ArtifactPayload>(
  */
 export async function decryptArtifactText(
   text: string,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<string> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !text || !isVaultArmored(text)) return text;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !text || !isVaultArmored(text)) return text;
   try {
-    return await decryptVaultText(text, activeKey);
+    return await decryptVaultText(text, resolvedKey);
   } catch {
     return text;
   }

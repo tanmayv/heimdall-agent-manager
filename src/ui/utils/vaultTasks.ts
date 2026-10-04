@@ -22,71 +22,71 @@ export interface TaskCommentPayload {
 }
 
 /**
- * Encrypt task fields (title, description) if vault is unlocked using rawKeyHex or active CryptoKey.
+ * Encrypt task fields (title, description) if vault is unlocked using active CryptoKey or key string.
  */
 export async function encryptTaskFields<T extends TaskPayload>(
   payload: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return { ...payload };
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return { ...payload };
   const res = { ...payload };
   if (res.title && !isVaultArmored(res.title)) {
-    res.title = await encryptVaultText(res.title, activeKey);
+    res.title = await encryptVaultText(res.title, resolvedKey);
   }
   if (res.description && !isVaultArmored(res.description)) {
-    res.description = await encryptVaultText(res.description, activeKey);
+    res.description = await encryptVaultText(res.description, resolvedKey);
   }
   return res;
 }
 
 /**
- * Encrypt task comment body if vault is unlocked using rawKeyHex or active CryptoKey.
+ * Encrypt task comment body if vault is unlocked using active CryptoKey or key string.
  */
 export async function encryptTaskCommentFields<T extends TaskCommentPayload>(
   payload: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !payload.body) return { ...payload };
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !payload.body) return { ...payload };
   const res = { ...payload };
   if (!isVaultArmored(res.body)) {
-    res.body = await encryptVaultText(res.body, activeKey);
+    res.body = await encryptVaultText(res.body, resolvedKey);
   }
   return res;
 }
 
 /**
- * Decrypt task fields (title, description, last_comment_preview) using rawKeyHex or active CryptoKey.
+ * Decrypt task fields (title, description, last_comment_preview) using active CryptoKey or key string.
  */
 export async function decryptTaskRecord<T extends TaskPayload>(
   task: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey) return task;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey) return task;
   let title = task.title;
   let description = task.description;
 
   if (title) {
     if (isVaultArmored(title)) {
       try {
-        title = await decryptVaultText(title, activeKey);
+        title = await decryptVaultText(title, resolvedKey);
       } catch {}
     } else if (containsVaultArmored(title)) {
       try {
-        title = await decryptEmbeddedVaultTokens(title, activeKey);
+        title = await decryptEmbeddedVaultTokens(title, resolvedKey);
       } catch {}
     }
   }
   if (description) {
     if (isVaultArmored(description)) {
       try {
-        description = await decryptVaultText(description, activeKey);
+        description = await decryptVaultText(description, resolvedKey);
       } catch {}
     } else if (containsVaultArmored(description)) {
       try {
-        description = await decryptEmbeddedVaultTokens(description, activeKey);
+        description = await decryptEmbeddedVaultTokens(description, resolvedKey);
       } catch {}
     }
   }
@@ -98,7 +98,7 @@ export async function decryptTaskRecord<T extends TaskPayload>(
     if (preview) {
       if (isVaultArmored(preview)) {
         try {
-          const decryptedPreview = await decryptVaultText(preview, activeKey);
+          const decryptedPreview = await decryptVaultText(preview, resolvedKey);
           commentSummary = {
             ...commentSummary,
             last_comment_preview: decryptedPreview,
@@ -107,7 +107,7 @@ export async function decryptTaskRecord<T extends TaskPayload>(
         } catch {}
       } else if (containsVaultArmored(preview)) {
         try {
-          const decryptedPreview = await decryptEmbeddedVaultTokens(preview, activeKey);
+          const decryptedPreview = await decryptEmbeddedVaultTokens(preview, resolvedKey);
           commentSummary = {
             ...commentSummary,
             last_comment_preview: decryptedPreview,
@@ -127,18 +127,18 @@ export async function decryptTaskRecord<T extends TaskPayload>(
 }
 
 /**
- * Decrypt task comment record body using rawKeyHex or active CryptoKey.
+ * Decrypt task comment record body using active CryptoKey or key string.
  */
 export async function decryptTaskCommentRecord<T extends TaskCommentPayload>(
   comment: T,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || (!isVaultArmored(comment.body) && !containsVaultArmored(comment.body))) return comment;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || (!isVaultArmored(comment.body) && !containsVaultArmored(comment.body))) return comment;
   try {
     const decrypted = isVaultArmored(comment.body)
-      ? await decryptVaultText(comment.body, activeKey)
-      : await decryptEmbeddedVaultTokens(comment.body, activeKey);
+      ? await decryptVaultText(comment.body, resolvedKey)
+      : await decryptEmbeddedVaultTokens(comment.body, resolvedKey);
     return {
       ...comment,
       body: decrypted,
@@ -150,19 +150,18 @@ export async function decryptTaskCommentRecord<T extends TaskCommentPayload>(
 
 export async function decryptTaskList<T extends TaskPayload>(
   tasks: T[],
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T[]> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !Array.isArray(tasks)) return tasks;
-  return Promise.all(tasks.map((t) => decryptTaskRecord(t, activeKey)));
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !Array.isArray(tasks)) return tasks;
+  return Promise.all(tasks.map((t) => decryptTaskRecord(t, resolvedKey)));
 }
 
 export async function decryptTaskComments<T extends TaskCommentPayload>(
   comments: T[],
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<T[]> {
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !Array.isArray(comments)) return comments;
-  return Promise.all(comments.map((c) => decryptTaskCommentRecord(c, activeKey)));
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !Array.isArray(comments)) return comments;
+  return Promise.all(comments.map((c) => decryptTaskCommentRecord(c, resolvedKey)));
 }
-

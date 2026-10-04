@@ -7,12 +7,12 @@ import {
 } from '../api/endpoints/artifacts';
 import { useListAgentsQuery } from '../api/endpoints/agents';
 import { useListProjectsQuery } from '../api/endpoints/projects';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../store/vaultSlice';
+import { selectIsVaultUnlocked, selectRawVaultKeyHex, selectActiveVaultKey } from '../store/vaultSlice';
 import { decryptProjectList } from '../utils/vaultProjects';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 import { VaultText } from './vault/VaultText';
-import { isVaultArmored } from '../utils/vaultContent.ts';
+import { isVaultArmored, getActiveVaultKey } from '../utils/vaultContent.ts';
 
 import { Button, Icon, Input, Select } from '@ui';
 export type LibraryPageProps = {
@@ -127,11 +127,13 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
 
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
   const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
+  const activeVaultKey = useSelector(selectActiveVaultKey) || getActiveVaultKey() || rawVaultKeyHex;
   const [projectsList, setProjectsList] = useState<any[]>(rawProjectsList);
 
   useEffect(() => {
     let active = true;
-    if (!isVaultUnlocked || !rawVaultKeyHex) {
+    const keyToUse = activeVaultKey || getActiveVaultKey() || rawVaultKeyHex;
+    if (!isVaultUnlocked || !keyToUse) {
       setProjectsList(
         rawProjectsList.map((p: any) => ({
           ...p,
@@ -140,7 +142,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
       );
       return;
     }
-    decryptProjectList(rawProjectsList, rawVaultKeyHex).then((res) => {
+    decryptProjectList(rawProjectsList, keyToUse).then((res) => {
       if (active) setProjectsList(res);
     }).catch(() => {
       if (active) setProjectsList(rawProjectsList);
@@ -148,7 +150,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
     return () => {
       active = false;
     };
-  }, [rawProjectsList, isVaultUnlocked, rawVaultKeyHex]);
+  }, [rawProjectsList, isVaultUnlocked, activeVaultKey, rawVaultKeyHex]);
   const chainsArray = Array.isArray(chains) ? chains : [];
 
   const kindOptions = useMemo(() => {

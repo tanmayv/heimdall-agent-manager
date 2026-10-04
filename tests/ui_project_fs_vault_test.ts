@@ -59,8 +59,9 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'readProjectFile must check isVaultArmored(data.content)',
   );
   assert.ok(
-    content.includes('decryptVaultText(data.content, rawKeyHex)'),
-    'readProjectFile must decrypt data.content with rawKeyHex',
+    content.includes('decryptVaultText(data.content, activeKey)') ||
+      content.includes('decryptVaultText(data.content, rawKeyHex)'),
+    'readProjectFile must decrypt data.content with activeKey or rawKeyHex',
   );
 
   // Verify writeProjectFile client-side encryption
@@ -69,8 +70,9 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'projectFs.ts must define writeProjectFile mutation',
   );
   assert.ok(
-    content.includes('encryptVaultText(outgoingContent, rawKeyHex)'),
-    'writeProjectFile must encrypt outgoingContent with rawKeyHex before PUT mutation',
+    content.includes('encryptVaultText(outgoingContent, activeKey)') ||
+      content.includes('encryptVaultText(outgoingContent, rawKeyHex)'),
+    'writeProjectFile must encrypt outgoingContent with activeKey or rawKeyHex before PUT mutation',
   );
 
   // Verify batchWriteProjectFiles client-side encryption
@@ -79,8 +81,9 @@ test('REQ-FS-ENC-4: projectFs.ts imports vault crypto utilities and implements a
     'projectFs.ts must define batchWriteProjectFiles mutation',
   );
   assert.ok(
-    content.includes('encryptVaultText(file.content, rawKeyHex)'),
-    'batchWriteProjectFiles must encrypt each file.content with rawKeyHex before batch PUT mutation',
+    content.includes('encryptVaultText(file.content, activeKey)') ||
+      content.includes('encryptVaultText(file.content, rawKeyHex)'),
+    'batchWriteProjectFiles must encrypt each file.content with activeKey or rawKeyHex before batch PUT mutation',
   );
 
   // Verify searchProjectFiles grep matches decryption

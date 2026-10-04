@@ -17,7 +17,7 @@
 
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
-import { isVaultArmored, decryptVaultText, encryptVaultText } from '../../utils/vaultContent';
+import { isVaultArmored, decryptVaultText, encryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
 import { readSessionVaultKey } from '../../store/vaultSlice';
 
 // ---- Contract types (mirror the LOCKED contract exactly) --------------------
@@ -272,11 +272,13 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/file?${qs.toString()}`)) as FsReadFileResult;
           if (data && typeof data.content === 'string' && isVaultArmored(data.content)) {
             const state: any = api?.getState?.();
-            const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-            const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
-            if (isUnlocked && rawKeyHex) {
+            const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+            const isUnlocked = state?.vault != null
+              ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+              : Boolean(readSessionVaultKey() || activeKey);
+            if (isUnlocked && activeKey) {
               try {
-                data.content = await decryptVaultText(data.content, rawKeyHex);
+                data.content = await decryptVaultText(data.content, activeKey);
               } catch {
                 // If locked or decryption fails, leave armored (or set error).
               }
@@ -369,11 +371,13 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           const bp = bridgeParam(bridgeId);
           let outgoingContent = content;
           const state: any = api?.getState?.();
-          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
-          if (isUnlocked && rawKeyHex && typeof outgoingContent === 'string') {
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const isUnlocked = state?.vault != null
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
+          if (isUnlocked && activeKey && typeof outgoingContent === 'string') {
             if (!isVaultArmored(outgoingContent)) {
-              outgoingContent = await encryptVaultText(outgoingContent, rawKeyHex);
+              outgoingContent = await encryptVaultText(outgoingContent, activeKey);
             }
           }
           const data = await cookieMutation(
@@ -398,16 +402,18 @@ export const projectFsApi = heimdallApi.injectEndpoints({
         try {
           const bp = bridgeParam(bridgeId);
           const state: any = api?.getState?.();
-          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const isUnlocked = state?.vault != null
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
           let outgoingFiles = files;
-          if (isUnlocked && rawKeyHex && Array.isArray(files)) {
+          if (isUnlocked && activeKey && Array.isArray(files)) {
             outgoingFiles = await Promise.all(
               files.map(async (file) => {
                 if (typeof file.content === 'string') {
                   const content = isVaultArmored(file.content)
                     ? file.content
-                    : await encryptVaultText(file.content, rawKeyHex);
+                    : await encryptVaultText(file.content, activeKey);
                   return { ...file, content };
                 }
                 return file;
@@ -473,12 +479,14 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/search${suffix}`)) as any;
           const rawMatches = Array.isArray(data?.matches) ? data.matches : [];
           const state: any = api?.getState?.();
-          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const isUnlocked = state?.vault != null
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
 
           let matches = rawMatches;
-          if (isUnlocked && rawKeyHex) {
-            matches = await decryptSearchMatches(rawMatches, rawKeyHex);
+          if (isUnlocked && activeKey) {
+            matches = await decryptSearchMatches(rawMatches, activeKey);
           }
           return { data: { ...data, matches } as FsSearchResult };
         } catch (error: any) {
@@ -500,12 +508,14 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           const data = (await cookieJsonFetch(`/agent-instances/${encodeURIComponent(agentInstanceId)}/fs/search${suffix}`)) as any;
           const rawMatches = Array.isArray(data?.matches) ? data.matches : [];
           const state: any = api?.getState?.();
-          const isUnlocked = Boolean(state?.vault?.isUnlocked || state?.vault?.unlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || (isUnlocked ? readSessionVaultKey() : null);
+          const activeKey = getActiveVaultKey() || readSessionVaultKey() || state?.vault?.rawVaultKeyHex;
+          const isUnlocked = state?.vault != null
+            ? Boolean(state.vault.isUnlocked || state.vault.unlocked || activeKey)
+            : Boolean(readSessionVaultKey() || activeKey);
 
           let matches = rawMatches;
-          if (isUnlocked && rawKeyHex) {
-            matches = await decryptSearchMatches(rawMatches, rawKeyHex);
+          if (isUnlocked && activeKey) {
+            matches = await decryptSearchMatches(rawMatches, activeKey);
           }
           return { data: { ...data, matches } as FsSearchResult };
         } catch (error: any) {
@@ -525,18 +535,18 @@ function parentOf(path: string): string {
 }
 
 // Decrypt line_content and line for grep search matches when vault is unlocked
-async function decryptSearchMatches(rawMatches: any[], rawKeyHex: string): Promise<any[]> {
+async function decryptSearchMatches(rawMatches: any[], activeKey?: CryptoKey | string | null): Promise<any[]> {
   return await Promise.all(
     rawMatches.map(async (m: any) => {
       const updated = { ...m };
       if (typeof updated.line_content === 'string' && isVaultArmored(updated.line_content)) {
         try {
-          updated.line_content = await decryptVaultText(updated.line_content, rawKeyHex);
+          updated.line_content = await decryptVaultText(updated.line_content, activeKey);
         } catch {}
       }
       if (typeof updated.line === 'string' && isVaultArmored(updated.line)) {
         try {
-          updated.line = await decryptVaultText(updated.line, rawKeyHex);
+          updated.line = await decryptVaultText(updated.line, activeKey);
         } catch {}
       }
       if (updated.line_content !== undefined && updated.line === undefined) {

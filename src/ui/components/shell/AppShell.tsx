@@ -69,6 +69,7 @@ import {
   readOnboardingDismissed,
   readSessionVaultKey,
   shouldOpenVaultOnboarding,
+  getActiveVaultKey,
 } from '../../store/vaultSlice';
 import { isVaultSupported } from '../../utils/vaultCrypto';
 import {
@@ -1337,8 +1338,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
   const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
   const activeVaultKey = useMemo(() => {
-    if (isVaultUnlocked && rawVaultKeyHex) return rawVaultKeyHex;
-    return readSessionVaultKey();
+    if (isVaultUnlocked) {
+      return getActiveVaultKey() || rawVaultKeyHex || readSessionVaultKey();
+    }
+    return null;
   }, [isVaultUnlocked, rawVaultKeyHex]);
   const isUnlockModalOpen = useSelector(selectIsUnlockModalOpen);
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState(false);

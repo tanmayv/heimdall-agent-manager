@@ -26,13 +26,13 @@ const yieldEventLoop = (): Promise<void> =>
 
 export async function decryptSearchTitle(
   rawTitle: string,
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
 ): Promise<string> {
   if (!rawTitle) return '';
-  const activeKey = rawKeyHex || getActiveVaultKey();
-  if (!activeKey || !isVaultArmored(rawTitle)) return rawTitle;
+  const resolvedKey = activeKey || getActiveVaultKey();
+  if (!resolvedKey || !isVaultArmored(rawTitle)) return rawTitle;
   try {
-    return await decryptVaultText(rawTitle, activeKey);
+    return await decryptVaultText(rawTitle, resolvedKey);
   } catch {
     return rawTitle;
   }
@@ -40,14 +40,14 @@ export async function decryptSearchTitle(
 
 export async function batchDecryptTitles(
   items: RawSearchItemInput[],
-  rawKeyHex?: string | CryptoKey | null,
+  activeKey?: CryptoKey | string | null,
   batchSize: number = SEARCH_DECRYPT_BATCH_SIZE,
 ): Promise<SearchItem[]> {
   if (!items || items.length === 0) {
     return [];
   }
 
-  const activeKey = rawKeyHex || getActiveVaultKey();
+  const resolvedKey = activeKey || getActiveVaultKey();
   const results: SearchItem[] = [];
 
   for (let i = 0; i < items.length; i += batchSize) {
@@ -59,9 +59,9 @@ export async function batchDecryptTitles(
       chunk.map(async (item): Promise<SearchItem> => {
         const rawTitle = String(item.rawTitle ?? item.title ?? '');
         let decryptedTitle = rawTitle;
-        if (activeKey && isVaultArmored(rawTitle)) {
+        if (resolvedKey && isVaultArmored(rawTitle)) {
           try {
-            decryptedTitle = await decryptVaultText(rawTitle, activeKey);
+            decryptedTitle = await decryptVaultText(rawTitle, resolvedKey);
           } catch {
             decryptedTitle = rawTitle;
           }
