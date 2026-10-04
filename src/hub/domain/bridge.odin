@@ -35,6 +35,15 @@ Bridge :: struct {
 	update_status: string,
 	update_error: string,
 	telemetry_enabled: string,
+	// vault_status is the bridge's SELF-REPORTED vault tri-state (REQ-BVS-1):
+	// "unlocked" | "locked" | "disabled", or "" for a bridge that has never reported
+	// one (an older build, or one not yet heard from since the hub started).
+	//
+	// IT IS A UX AND LIVENESS INDICATOR ONLY. Nothing may gate on it. The
+	// authoritative authorization check is the bridge-side enc_spec guard, which runs
+	// on the machine that actually holds the key; a value that travelled over the wire
+	// from the party being authorized cannot be the basis for authorizing it.
+	vault_status: string,
 }
 
 Bridge_Provider_Capability :: struct {
@@ -73,6 +82,7 @@ bridge_destroy :: proc(b: ^Bridge) {
 	if len(b.update_status) > 0 do delete(b.update_status)
 	if len(b.update_error) > 0 do delete(b.update_error)
 	if len(b.telemetry_enabled) > 0 do delete(b.telemetry_enabled)
+	if len(b.vault_status) > 0 do delete(b.vault_status)
 	b^ = Bridge{}
 }
 

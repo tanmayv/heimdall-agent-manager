@@ -264,6 +264,76 @@ update_runtime_capabilities :: proc(service: ^Bridge_Service, bridge_id, capabil
 	return iface.bridge_save_bridge(service.repo, bridge)
 }
 
+// BRIDGE_VAULT_STATUS_VALUES are the only values a bridge may report (REQ-BVS-1),
+// matching bridge_vault_status_string on the bridge side. Anything else is dropped
+// rather than stored: the field is rendered straight into the UI, and a bridge is
+// free to send whatever it likes down the WS, so the hub pins the vocabulary here.
+BRIDGE_VAULT_STATUS_VALUES :: [3]string{"unlocked", "locked", "disabled"}
+
+bridge_vault_status_valid :: proc(value: string) -> bool {
+	for allowed in BRIDGE_VAULT_STATUS_VALUES {
+		if value == allowed do return true
+	}
+	return false
+}
+
+// update_vault_status stores a bridge's self-reported vault tri-state (REQ-BVS-1).
+//
+// changed is true ONLY when the stored value actually moved, and the DB write is
+// skipped entirely when it did not. That is what makes the "invalidate on change, not
+// on every heartbeat" requirement true at the source rather than at each call site:
+// a bridge reports this in every heartbeat, ~45s, forever, and a caller that had to
+// remember to diff first would eventually forget and flood every connected browser.
+//
+// An empty or unrecognised value is a no-op, NOT an error and NOT a write: an older
+// bridge omits the field, and that must leave an existing reported value alone rather
+// than erasing it to "".
+//
+// Unauthenticated and internal, like update_runtime_capabilities above and for the
+// same reason: the caller is the bridge's own WS frame handler, already authenticated
+// as this bridge by its token.
+//
+// THE RETURNED ROW IS FULLY OWNED ON EVERY SUCCESSFUL PATH and the caller must
+// destroy it with domain.bridge_destroy.
+//
+// NOTHING MAY GATE ON THE RESULT. See the field comment on domain.Bridge.vault_status.
+update_vault_status :: proc(service: ^Bridge_Service, bridge_id, vault_status: string) -> (bridge: domain.Bridge, changed: bool, err: domain.Domain_Error) {
+	if service == nil || service.repo == nil || bridge_id == "" do return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required")
+	if !bridge_vault_status_valid(vault_status) do return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "vault_status must be 'unlocked', 'locked', or 'disabled'")
+	existing, ok, get_err := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !ok do return domain.Bridge{}, false, get_err
+	if existing.status == .Revoked {
+		e := existing
+		domain.bridge_destroy(&e)
+		return domain.Bridge{}, false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	}
+	if existing.vault_status == vault_status {
+		// Unchanged: hand the row back so a caller can still read owner_user_id, but
+		// report changed=false so no event is published and no row is rewritten.
+		// The row is owned on every path out of here, so the caller destroys it
+		// without having to know which path it came from.
+		return existing, false, domain.Domain_Error{}
+	}
+	// CLONED, not borrowed. patch_bridge and update_runtime_capabilities both assign
+	// the caller's string straight into the row, which leaves the returned row a mix of
+	// owned and borrowed fields that nothing can safely destroy — so their callers
+	// leak the whole row instead. Cloning here keeps every field owned, which is what
+	// lets the caller do the obvious thing and call domain.bridge_destroy on it.
+	if len(existing.vault_status) > 0 do delete(existing.vault_status)
+	existing.vault_status = strings.clone(vault_status)
+	// updated_at is CLONED for the same reason, and this one is a trap worth naming:
+	// platform.clock_now returns a fmt.tprintf string, so it lives in the TEMP
+	// allocator, not the heap. Every other service proc here assigns it straight into
+	// the row — which is safe only because none of them destroy the row afterwards.
+	// Pairing that idiom with a bridge_destroy frees a temp pointer, and the test
+	// suite reports it as `bad free @ bridge.odin:76`.
+	if len(existing.updated_at) > 0 do delete(existing.updated_at)
+	existing.updated_at = strings.clone(platform.clock_now(service.clock))
+	saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, existing)
+	if !save_ok do return domain.Bridge{}, false, save_err
+	return saved, true, domain.Domain_Error{}
+}
+
 revoke_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err

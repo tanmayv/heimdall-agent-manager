@@ -1,0 +1,13 @@
+-- REQ-BVS-1: the bridge's self-reported vault tri-state, so the vault settings page
+-- can show PER BRIDGE whether that bridge's vault is unlocked, locked or not
+-- configured.
+--
+-- DEFAULT '' IS DELIBERATE and is not the same mistake as defaulting to 'unlocked'.
+-- Every bridge that exists when this migration runs is, by definition, one the hub has
+-- never heard a vault status from. '' means exactly "unreported", which the API passes
+-- through verbatim so the UI can render "unknown" instead of claiming a state it was
+-- never told. A status word as the default would make every pre-existing bridge lie.
+--
+-- This column is a UX/liveness indicator only. No authorization decision reads it; the
+-- authoritative check is the bridge-side enc_spec guard.
+ALTER TABLE bridges ADD COLUMN vault_status TEXT NOT NULL DEFAULT '';

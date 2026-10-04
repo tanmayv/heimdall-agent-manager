@@ -945,6 +945,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if conn != nil {
 			_ = bridge_hub_send(conn, res)
 		}
+		// Only a SUCCESSFUL unseal moved the vault; a failed one left it where it was,
+		// and reporting there would be a no-op the hub would have to filter out.
+		if ok do bridge_hub_send_vault_status(conn)
 		return
 	}
 	if type == "bridge_lock" {
@@ -962,6 +965,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if conn != nil {
 			_ = bridge_hub_send(conn, res)
 		}
+		// bridge_vault_lock() above always succeeds (it drops the in-memory key and
+		// the keyring entry), so the report is unconditional here.
+		bridge_hub_send_vault_status(conn)
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return
@@ -2410,16 +2416,54 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	return strings.to_string(b)
 }
 
+// bridge_vault_status_report_json is the IMMEDIATE vault report (REQ-BVS-1), sent
+// right after a successful unseal or lock so the UI does not wait up to a heartbeat
+// interval to see the new state.
+//
+// WHY A DEDICATED FRAME RATHER THAN RE-SENDING bridge_heartbeat, which also carries
+// the field: the hub's bridge_heartbeat arm is not a status write. It runs the
+// instance-digest reconciliation, the cross-bridge supersede detection and the
+// stale-instance reap, and answers with a heartbeat ack. Firing all of that as a side
+// effect of a vault operation would couple the vault path to instance lifecycle
+// decisions whose wrong answer reaps live instances. This frame reports exactly the
+// one thing that changed; the hub stores it through the same service proc the
+// heartbeat uses, so there is still a single store-and-publish path.
+bridge_vault_status_report_json :: proc() -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"bridge_vault_status\",\"protocol_version\":1,\"vault_status\":\"")
+	bridge_runtime_write_json_string(&b, bridge_vault_status_string())
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// bridge_hub_send_vault_status pushes the immediate vault report (REQ-BVS-1).
+// Best-effort by design: a failed send is not an error for the vault operation that
+// triggered it, because the next bridge_heartbeat carries the same field and the hub
+// converges either way. conn == nil is the replayed-from-cache path, where there is
+// no socket to write to.
+bridge_hub_send_vault_status :: proc(conn: ^ws.Connection) {
+	if conn == nil do return
+	frame := bridge_vault_status_report_json()
+	defer delete(frame)
+	_ = bridge_hub_send(conn, frame)
+}
+
 bridge_hub_heartbeat_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
 	defer delete(caps)
 	features := bridge_runtime_features_json()
+	// REQ-BVS-1: read the vault tri-state BEFORE taking bridge_runtime_mutex.
+	// bridge_vault_status() touches the kernel keyring and the filesystem, and no
+	// blocking I/O belongs inside a lock the per-instance reporters also contend on.
+	vault_status := bridge_vault_status_string()
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	bridge_runtime_expire_stale_locked(now)
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"capabilities\":")
+	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"vault_status\":\"")
+	bridge_runtime_write_json_string(&b, vault_status)
+	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)
 	strings.write_string(&b, ",\"features\":")
 	strings.write_string(&b, features)

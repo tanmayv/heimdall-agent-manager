@@ -1637,6 +1637,10 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	switch type {
 	case "bridge_heartbeat":
 		if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
+		// REQ-BVS-1. Runs AFTER update_runtime_capabilities, which rewrites the row:
+		// this one re-reads it, so it sees the fresh value and its own write is not
+		// clobbered by the capabilities save.
+		bridge_apply_vault_status_report(h, bridge_id, text)
 		active := json_string_array(text, "active_instance_ids")
 		digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text)
 		used_digest := false
@@ -1764,6 +1768,13 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		}
 	case "capability_report":
 		_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
+	case "bridge_vault_status":
+		// REQ-BVS-1: the immediate report the bridge pushes after a successful unseal
+		// or lock, so the vault settings page does not wait for the next heartbeat.
+		// Deliberately NOT a synthetic bridge_heartbeat: that arm also reconciles the
+		// instance digest and reaps stale instances, which a vault operation has no
+		// business triggering.
+		bridge_apply_vault_status_report(h, bridge_id, text)
 	case "lsp_data", "lsp_error", "lsp_started", "lsp_stopped":
 		// REQ-LSP-RLY-1. Every lsp_* type the bridge can send MUST have an arm in
 		// this switch: a type with no arm falls through and is dropped silently,
@@ -2180,6 +2191,10 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
 	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
 	strings.write_string(b, "\",\"telemetry_enabled\":\""); write_handler_json_string(b, br.telemetry_enabled if br.telemetry_enabled != "" else "inherit")
+	// REQ-BVS-2: emitted VERBATIM, with no default substitution. A bridge that has
+	// never reported yields "", and the key is always present, so the UI can tell
+	// "not reported" apart from a real state instead of being told "unlocked".
+	strings.write_string(b, "\",\"vault_status\":\""); write_handler_json_string(b, br.vault_status)
 	pub_key := ""
 	if agents != nil && agents.bridge_runtime_registry != nil {
 		pub_key = project_service.bridge_runtime_registry_public_key(agents.bridge_runtime_registry, br.bridge_id)
@@ -2278,6 +2293,41 @@ agent_instance_status_summary_json :: proc(runtime_status, startup_status, activ
 	strings.write_string(&b, "{\"runtime_status\":\""); write_handler_json_string(&b, runtime_status)
 	strings.write_string(&b, "\",\"startup_status\":\""); write_handler_json_string(&b, startup_status)
 	strings.write_string(&b, "\",\"activity_status\":\""); write_handler_json_string(&b, activity_status)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// bridge_apply_vault_status_report stores a bridge's self-reported vault tri-state and
+// publishes the bridge invalidation ONLY when the stored value actually moved
+// (REQ-BVS-1). Shared by the bridge_heartbeat arm, which carries the field on every
+// ~45s beat, and the dedicated bridge_vault_status arm the bridge sends immediately
+// after an unseal or a lock. Both go through here so there is one store-and-publish
+// path and the change detection cannot drift between them.
+//
+// A frame with no vault_status (an older bridge build) is a no-op: the empty value is
+// rejected by the service, which leaves any previously reported value in place rather
+// than erasing it.
+//
+// update_vault_status returns a FULLY OWNED row on every successful path, including
+// the unchanged one, so it is destroyed unconditionally here. This proc runs on the
+// bridge WS runtime loop, which has no per-request arena to reclaim it: a row kept
+// instead of freed would leak on every heartbeat of every bridge, forever.
+bridge_apply_vault_status_report :: proc(h: ^Bridge_Handlers, bridge_id, text: string) {
+	if h == nil || h.bridges == nil do return
+	value := json_string(text, "vault_status")
+	defer delete(value)
+	if value == "" do return
+	bridge, changed, _ := bridge_service.update_vault_status(h.bridges, bridge_id, value)
+	defer { b := bridge; domain.bridge_destroy(&b) }
+	if !changed do return
+	summary := bridge_vault_status_summary_json(bridge.vault_status)
+	defer delete(summary)
+	events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "vault_status_changed", summary)
+}
+
+bridge_vault_status_summary_json :: proc(vault_status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"vault_status\":\""); write_handler_json_string(&b, vault_status)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
