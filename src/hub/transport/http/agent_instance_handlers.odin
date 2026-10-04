@@ -1,6 +1,6 @@
 package http
 
-import base64 "core:encoding/base64"
+import "core:fmt"
 import "core:net"
 import "core:strconv"
 import "core:strings"
@@ -195,22 +195,29 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 
 		switch frame_type {
 		case "input":
-			data_b64 := json_string(text, "data_b64")
-			if data_b64 != "" {
-				decoded, decode_err := base64.decode(data_b64)
-				delete(data_b64)
-				if decode_err == nil && decoded != nil {
-					raw_data := string(decoded)
-					agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, raw_data)
-					delete(decoded)
-				}
-			} else {
-				delete(data_b64)
-				raw_data := json_string(text, "data")
-				if raw_data != "" {
-					agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, raw_data)
-					delete(raw_data)
-				}
+			// REQ-PANE-INPUT-1/5: decoded by the ONE shared decoder in
+			// shell_stream_input_frame.odin, which the shells pane consults too. This site
+			// used to carry its own copy of the contract that knew neither `vault:v1:` nor
+			// `enc_b64`, so with the vault UNLOCKED every keystroke was base64-decoded as if
+			// it were plaintext, failed, and vanished without a log — a total input outage.
+			frame := shell_stream_decode_input_frame(text)
+			defer shell_stream_input_destroy(&frame)
+			switch frame.kind {
+			case .Armored:
+				// REQ-PANE-INPUT-2/6: relay the ciphertext. The Hub holds no vault key; the
+				// bridge decrypts it or rejects-and-logs, so the pty is never fed ciphertext.
+				agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, "", frame.armored)
+			case .Plain:
+				agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, frame.plain, frame.enc_b64)
+			case .Undecodable:
+				// REQ-PANE-INPUT-3: a dropped keystroke is never silent again.
+				fmt.eprintfln(
+					"ham-hub WARN agent pane input frame dropped instance_id=%s reason=%s",
+					instance_id,
+					frame.reason,
+				)
+			case .Empty:
+				// No payload on the frame — nothing to forward.
 			}
 		case "resize":
 			rows := json_int(text, "rows", 0)

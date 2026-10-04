@@ -3,1320 +3,818 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Heimdall — Coordinate AI Coding Agents Across Your Devices</title>
-  <meta name="description" content="Bring your own AI coding agents across multiple devices. Heimdall orchestrates autonomous teams to work together with built-in editor, VCS, zero-knowledge encryption, and zero-config remote access without SSH or VPN.">
+  <title>Heimdall — One developer. A fleet of agents.</title>
+  <meta name="description" content="Heimdall coordinates AI coding agents across every machine you own — delegated, reviewed, remembered, and encrypted end to end. Invites open soon.">
+  <meta property="og:title" content="Heimdall — One developer. A fleet of agents.">
+  <meta property="og:description" content="Coordinate AI coding agents across every machine you own. Invites open soon.">
+  <link rel="icon" href="../public/icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-base: #0a0c10;
-      --bg-subtle: #11141a;
-      --bg-surface: #151922;
-      --bg-surface-hover: #1a202c;
-      --bg-code: #0d1017;
-      
-      --border-subtle: #1e2430;
-      --border-default: #293242;
-      --border-focus: #3b82f6;
-      
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-faint: #64748b;
-      
-      --accent: #38bdf8;
-      --accent-bg: rgba(56, 189, 248, 0.08);
-      --accent-border: rgba(56, 189, 248, 0.25);
-      
-      --status-green: #10b981;
-      --status-green-bg: rgba(16, 185, 129, 0.1);
-      --status-amber: #f59e0b;
-      --status-amber-bg: rgba(245, 158, 11, 0.1);
-      
+      /* Warm, soft dark palette — a single desaturated accent. */
+      --bg: #0e0d0b;
+      --bg-raise: #14120f;
+      --bg-frame: #181612;
+      --line: rgba(236, 231, 223, 0.07);
+      --line-strong: rgba(236, 231, 223, 0.14);
+      --text: #ece7df;
+      --text-muted: #9c958b;
+      --text-faint: #5f5a53;
+      --accent: #d2a965;
+      --accent-soft: rgba(210, 169, 101, 0.12);
+      --accent-line: rgba(210, 169, 101, 0.35);
+      --ok: #8fbf9f;
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --ease: cubic-bezier(.22, .61, .36, 1);
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    html {
-      scroll-behavior: smooth;
-      background-color: var(--bg-base);
-      color: var(--text-main);
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
       font-family: var(--font-sans);
-      font-size: 15px;
+      font-size: 16px;
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
-    }
-
-    body {
-      min-height: 100vh;
-      position: relative;
       overflow-x: hidden;
     }
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
 
-    .bg-grid {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background-image: linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-                        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-      background-size: 40px 40px;
+    /* ---------- background canvas ---------- */
+    #bg {
+      position: fixed; inset: 0; z-index: 0;
+      width: 100%; height: 100%;
       pointer-events: none;
-      z-index: 0;
     }
+    .vignette {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background: radial-gradient(ellipse 80% 60% at 50% 0%, transparent 40%, var(--bg) 100%);
+    }
+    main { position: relative; z-index: 1; }
 
-    /* Top Sticky Nav */
+    /* ---------- shared ---------- */
+    .wrap { width: min(1080px, calc(100% - 48px)); margin: 0 auto; }
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 12px; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .reveal { opacity: 0; transform: translateY(14px); transition: opacity .9s var(--ease), transform .9s var(--ease); }
+    .reveal.in { opacity: 1; transform: none; }
+
+    /* ---------- nav ---------- */
     .nav {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      background: rgba(10, 12, 16, 0.9);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border-subtle);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 28px 0;
     }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 500; letter-spacing: .01em; }
+    .brand svg { width: 22px; height: 22px; }
+    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 13px; }
+    .nav-links a { color: var(--text-muted); transition: color .3s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-mail { font-family: var(--font-mono); }
+    @media (max-width: 560px) { .nav-mail { display: none; } }
 
-    .nav-progress {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      height: 2px;
-      background: var(--accent);
-      width: 0%;
-      transition: width 0.1s linear;
-    }
-
-    .nav-container {
-      max-width: 1160px;
-      margin: 0 auto;
-      padding: 0.9rem 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      text-decoration: none;
-      color: var(--text-main);
-    }
-
-    .brand-logo {
-      width: 20px;
-      height: 20px;
-      border: 2px solid var(--accent);
-      border-radius: 4px;
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .brand-logo::after {
-      content: '';
-      width: 6px;
-      height: 6px;
-      background: var(--status-green);
-      border-radius: 50%;
-    }
-
-    .brand-name {
-      font-weight: 700;
-      font-size: 1.05rem;
-      letter-spacing: -0.02em;
-    }
-
-    .version-pill {
-      font-size: 0.72rem;
-      padding: 2px 7px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      border-radius: 12px;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 1.75rem;
-      list-style: none;
-    }
-
-    .nav-links a {
-      color: var(--text-muted);
-      text-decoration: none;
-      font-size: 0.88rem;
-      font-weight: 500;
-      transition: color 0.15s ease;
-    }
-
-    .nav-links a:hover {
-      color: var(--text-main);
-    }
-
-    .nav-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 1rem;
-      font-size: 0.85rem;
-      font-weight: 500;
-      border-radius: 6px;
-      text-decoration: none;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .btn-outline {
-      background: transparent;
-      border: 1px solid var(--border-default);
-      color: var(--text-main);
-    }
-
-    .btn-outline:hover {
-      border-color: var(--text-muted);
-      background: var(--bg-surface);
-    }
-
-    .btn-primary {
-      background: var(--text-main);
-      border: 1px solid var(--text-main);
-      color: #0a0c10;
-      font-weight: 600;
-    }
-
-    .btn-primary:hover {
-      background: #ffffff;
-      transform: translateY(-1px);
-    }
-
-    .btn-discord {
-      background: #5865F2;
-      border: 1px solid #5865F2;
-      color: #fff;
-    }
-
-    .btn-discord:hover {
-      background: #4752c4;
-    }
-
-    .container {
-      max-width: 1160px;
-      margin: 0 auto;
-      padding: 0 1.5rem;
-      position: relative;
-      z-index: 10;
-    }
-
-    /* Hero Section */
+    /* ---------- hero ---------- */
     .hero {
-      padding: 5rem 0 3rem;
-      text-align: center;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-
-    .badge-strip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      justify-content: center;
-      margin-bottom: 2rem;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
-      border-radius: 20px;
-      font-size: 0.8rem;
-      text-decoration: none;
-    }
-
-    .badge-invite {
-      background: var(--status-green-bg);
-      border: 1px solid rgba(16, 185, 129, 0.25);
-      color: var(--status-green);
-    }
-
-    .badge-release {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      color: var(--text-muted);
-    }
-
-    .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      display: inline-block;
-    }
-
-    .dot.live {
-      background: var(--status-green);
-    }
-
-    .hero-title {
-      font-size: clamp(2.2rem, 4.5vw, 3.8rem);
-      font-weight: 700;
-      line-height: 1.15;
-      letter-spacing: -0.03em;
-      margin-bottom: 1.5rem;
-      max-width: 900px;
-      color: var(--text-main);
-    }
-
-    .hero-title .highlight {
-      color: var(--accent);
-    }
-
-    .hero-subhead {
-      font-size: 1.15rem;
-      color: var(--text-muted);
-      max-width: 760px;
-      line-height: 1.6;
-      margin-bottom: 2.25rem;
-    }
-
-    .install-bar {
-      display: flex;
-      align-items: center;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
-      padding: 0.4rem 0.5rem 0.4rem 1.25rem;
-      max-width: 600px;
-      width: 100%;
-      margin-bottom: 2rem;
-      font-family: var(--font-mono);
-      transition: border-color 0.2s ease;
-    }
-
-    .install-bar:hover {
-      border-color: var(--text-muted);
-    }
-
-    .install-prompt {
-      color: var(--text-faint);
-      margin-right: 0.75rem;
-      user-select: none;
-    }
-
-    .install-cmd {
-      color: var(--text-main);
-      font-size: 0.88rem;
-      overflow-x: auto;
-      white-space: nowrap;
-      flex-grow: 1;
-      text-align: left;
-    }
-
-    .install-copy-btn {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-muted);
-      padding: 0.45rem 0.85rem;
-      border-radius: 6px;
-      font-family: var(--font-sans);
-      font-size: 0.8rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .install-copy-btn:hover {
-      color: var(--text-main);
-      background: var(--bg-surface-hover);
-      border-color: var(--border-default);
-    }
-
-    .hero-ctas {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 1rem;
-      justify-content: center;
-      margin-bottom: 2.5rem;
-    }
-
-    .byoa-label {
-      font-size: 0.75rem;
-      color: var(--text-faint);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.75rem;
-      font-weight: 600;
-    }
-
-    .byoa-strip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      justify-content: center;
-      max-width: 860px;
-    }
-
-    .byoa-item {
-      font-size: 0.76rem;
-      padding: 4px 10px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-    }
-
-    .byoa-item span {
-      color: var(--status-green);
-    }
-
-    /* Hero GIF Placeholder Window */
-    .hero-media-section {
-      padding: 1rem 0 4.5rem;
-    }
-
-    .media-window {
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
-    }
-
-    .media-chrome {
-      background: var(--bg-base);
-      border-bottom: 1px solid var(--border-subtle);
-      padding: 0.75rem 1.25rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .window-dots {
-      display: flex;
-      gap: 6px;
-    }
-
-    .window-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-    }
-
-    .dot-red { background: #ef4444; }
-    .dot-yellow { background: #f59e0b; }
-    .dot-green { background: #10b981; }
-
-    .media-title {
-      font-size: 0.78rem;
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-    }
-
-    .media-badge {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-family: var(--font-mono);
-    }
-
-    .media-badge span {
-      color: var(--status-green);
-    }
-
-    .gif-placeholder {
-      aspect-ratio: 16 / 9;
-      max-height: 600px;
-      width: 100%;
-      background: var(--bg-code);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2.5rem;
-      text-align: center;
-      position: relative;
-      border: 1px dashed var(--border-default);
-      margin: 1rem;
-      width: calc(100% - 2rem);
-      border-radius: 6px;
-    }
-
-    .gif-placeholder-icon {
-      width: 54px;
-      height: 54px;
-      border-radius: 50%;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 1.25rem;
-      color: var(--accent);
-    }
-
-    .gif-placeholder-title {
-      font-size: 1.15rem;
-      font-weight: 600;
-      color: var(--text-main);
-      margin-bottom: 0.5rem;
-      font-family: var(--font-mono);
-    }
-
-    .gif-placeholder-desc {
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      max-width: 580px;
-      line-height: 1.6;
-      margin-bottom: 1.25rem;
-    }
-
-    .gif-specs {
-      display: inline-flex;
-      gap: 1rem;
-      font-size: 0.78rem;
-      font-family: var(--font-mono);
-      color: var(--text-faint);
-      background: var(--bg-surface);
-      padding: 0.4rem 1rem;
-      border-radius: 20px;
-      border: 1px solid var(--border-subtle);
-    }
-
-    /* Architecture Capabilities */
-    .caps-section {
-      padding: 4rem 0;
-      border-top: 1px solid var(--border-subtle);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .section-header {
-      text-align: center;
-      max-width: 680px;
-      margin: 0 auto 3rem;
-    }
-
-    .section-title {
-      font-size: 2rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      margin-bottom: 0.75rem;
-      color: var(--text-main);
-    }
-
-    .section-sub {
-      color: var(--text-muted);
-      font-size: 1rem;
-    }
-
-    .caps-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .cap-card {
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 1.25rem 1.5rem;
-      text-align: left;
-    }
-
-    .cap-header {
-      display: flex;
-      align-items: center;
-      gap: 0.65rem;
-      margin-bottom: 0.5rem;
-    }
-
-    .cap-tag {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      color: var(--accent);
-      background: var(--accent-bg);
-      border: 1px solid var(--accent-border);
-      padding: 2px 7px;
-      border-radius: 4px;
-    }
-
-    .cap-title {
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--text-main);
-    }
-
-    .cap-desc {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      line-height: 1.55;
-    }
-
-    /* The 5 Core Pillars */
-    .pillars-section {
-      padding: 5rem 0;
-    }
-
-    .pillars-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .pillar-card {
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 1.75rem;
-      display: flex;
-      flex-direction: column;
-      transition: border-color 0.15s ease;
-    }
-
-    .pillar-card:hover {
-      border-color: var(--border-default);
-    }
-
-    .pillar-num {
-      font-size: 0.75rem;
-      font-family: var(--font-mono);
-      color: var(--accent);
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-
-    .pillar-title {
-      font-size: 1.15rem;
-      font-weight: 600;
-      color: var(--text-main);
-      margin-bottom: 0.75rem;
-      line-height: 1.4;
-    }
-
-    .pillar-problem {
-      background: rgba(239, 68, 68, 0.04);
-      border-left: 2px solid #ef4444;
-      padding: 0.65rem 0.85rem;
-      border-radius: 0 4px 4px 0;
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      margin-bottom: 1rem;
-    }
-
-    .pillar-solution {
-      font-size: 0.88rem;
-      color: var(--text-muted);
-      line-height: 1.6;
-      flex-grow: 1;
-    }
-
-    .pillar-features {
-      margin-top: 1.25rem;
-      list-style: none;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .pillar-features li {
-      position: relative;
-      padding-left: 1.2rem;
-      margin-bottom: 0.4rem;
-      font-size: 0.82rem;
-      color: var(--text-main);
-    }
-
-    .pillar-features li::before {
-      content: '✓';
-      position: absolute;
-      left: 0;
-      color: var(--status-green);
-      font-weight: bold;
-    }
-
-    /* Cheatsheet Section */
-    .cheatsheet-section {
-      padding: 5rem 0;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .code-box {
-      background: var(--bg-code);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
-      padding: 1.5rem;
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      line-height: 1.7;
-      overflow-x: auto;
-      color: var(--text-muted);
-    }
-
-    .code-box .cmd {
-      color: var(--accent);
-      font-weight: 600;
-    }
-
-    .code-box .comment {
-      color: var(--text-faint);
-    }
-
-    /* FAQ Section */
-    .faq-section {
-      padding: 5rem 0;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .faq-list {
-      max-width: 820px;
-      margin: 0 auto;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-
-    .faq-item {
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      overflow: hidden;
-      transition: border-color 0.15s ease;
-    }
-
-    .faq-item:hover {
-      border-color: var(--border-default);
-    }
-
-    .faq-question {
-      padding: 1.25rem 1.5rem;
-      font-weight: 600;
-      font-size: 0.95rem;
-      color: var(--text-main);
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      user-select: none;
-    }
-
-    .faq-toggle {
-      color: var(--text-muted);
-      font-size: 1.2rem;
-      transition: transform 0.2s ease;
-    }
-
-    .faq-answer {
-      padding: 0 1.5rem 1.25rem;
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      line-height: 1.6;
-      display: none;
-    }
-
-    .faq-item.open .faq-answer {
-      display: block;
-    }
-
-    .faq-item.open .faq-toggle {
-      transform: rotate(45deg);
-      color: var(--accent);
-    }
-
-    /* Modal */
-    .modal-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(6px);
-      z-index: 1000;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 1rem;
-    }
-
-    .modal-overlay.active {
-      display: flex;
-    }
-
-    .modal-card {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      border-radius: 10px;
-      max-width: 460px;
-      width: 100%;
-      padding: 2rem;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
-      position: relative;
-    }
-
-    .modal-close {
-      position: absolute;
-      top: 1rem;
-      right: 1.25rem;
-      background: transparent;
-      border: none;
-      color: var(--text-faint);
-      font-size: 1.4rem;
-      cursor: pointer;
-    }
-
-    .modal-close:hover {
-      color: var(--text-main);
-    }
-
-    .modal-title {
-      font-size: 1.3rem;
-      font-weight: 700;
-      margin-bottom: 0.4rem;
-      color: var(--text-main);
-    }
-
-    .modal-sub {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .input-group {
-      margin-bottom: 1.25rem;
-    }
-
-    .input-label {
-      display: block;
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.4rem;
-      color: var(--text-muted);
-    }
-
-    .text-input {
-      width: 100%;
-      background: var(--bg-base);
-      border: 1px solid var(--border-default);
-      border-radius: 6px;
-      padding: 0.65rem 0.85rem;
-      color: var(--text-main);
-      font-family: var(--font-sans);
-      font-size: 0.9rem;
-      outline: none;
-    }
-
-    .text-input:focus {
-      border-color: var(--border-focus);
-    }
-
-    /* Footer */
-    .footer {
-      border-top: 1px solid var(--border-subtle);
-      background: var(--bg-base);
-      padding: 3rem 0;
-      font-size: 0.82rem;
-      color: var(--text-faint);
-    }
-
-    .footer-content {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1.5rem;
-    }
-
-    .footer-links {
-      display: flex;
-      gap: 1.5rem;
-      list-style: none;
-    }
-
-    .footer-links a {
-      color: var(--text-muted);
-      text-decoration: none;
-    }
-
-    .footer-links a:hover {
-      color: var(--text-main);
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      color: var(--text-muted);
+      min-height: calc(100vh - 90px);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      text-align: center; padding: 48px 0 96px;
+    }
+    .hero h1 {
+      font-size: clamp(34px, 6vw, 64px);
+      font-weight: 500; line-height: 1.08; letter-spacing: -0.025em;
+      max-width: 16ch;
+    }
+    .hero h1 em { font-style: normal; color: var(--text-muted); }
+    .hero p.lede {
+      margin-top: 22px; max-width: 46ch;
+      font-size: clamp(16px, 2vw, 19px); color: var(--text-muted);
+    }
+
+    .countdown {
+      margin-top: 56px;
+      display: inline-grid; grid-auto-flow: column; gap: clamp(14px, 3vw, 32px);
+      align-items: start;
+    }
+    .unit { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .unit .n {
+      font-family: var(--font-mono); font-weight: 400;
+      font-size: clamp(40px, 8vw, 72px); line-height: 1; letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      min-width: 2ch; text-align: center;
+    }
+    .unit .l { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-faint); }
+    .sep { font-family: var(--font-mono); font-size: clamp(40px, 8vw, 72px); line-height: 1; color: var(--text-faint); padding-top: 0; }
+    .sep::after { content: ':'; animation: blink 2s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: .25; } }
+
+    .when { margin-top: 18px; font-family: var(--font-mono); font-size: 13px; color: var(--text-faint); }
+    .when b { color: var(--text-muted); font-weight: 500; }
+
+    .cta { margin-top: 40px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 14px 26px; border-radius: 999px;
+      border: 1px solid var(--accent-line); background: var(--accent-soft);
+      color: var(--text); font-size: 15px; font-weight: 500;
+      transition: background .3s, border-color .3s, transform .3s var(--ease), opacity .3s;
+    }
+    .btn:hover { background: rgba(210,169,101,.18); border-color: var(--accent); transform: translateY(-1px); }
+    .btn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+    .btn[aria-disabled="true"] {
+      opacity: .55; cursor: not-allowed; pointer-events: none;
+      border-color: var(--line-strong); background: transparent;
+    }
+    .btn[aria-disabled="true"] .dot { background: var(--text-faint); }
+    .open .btn .dot { background: var(--ok); box-shadow: 0 0 0 0 rgba(143,191,159,.5); animation: pulse 2.4s infinite; }
+    @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(143,191,159,0); } 100% { box-shadow: 0 0 0 0 rgba(143,191,159,0); } }
+    .cta .hint { font-size: 13px; color: var(--text-faint); }
+    .cta .hint a { color: var(--text-muted); border-bottom: 1px solid var(--line-strong); }
+    .cta .hint a:hover { color: var(--text); }
+
+    .open .countdown { display: none; }
+    .open .when { display: none; }
+    .live-badge { display: none; margin-top: 48px; font-family: var(--font-mono); font-size: 14px; color: var(--ok); letter-spacing: .08em; }
+    .open .live-badge { display: block; }
+
+    /* ---------- principles ---------- */
+    .principles {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+      margin-bottom: 40px;
+    }
+    .pr { padding: 26px 22px 28px 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; color: var(--text-muted); }
+    .pr + .pr { padding-left: 22px; border-left: 1px solid var(--line); }
+    .pr .k { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: .1em; margin-bottom: 4px; }
+    .pr b { font-weight: 500; color: var(--text); }
+    @media (max-width: 900px) {
+      .principles { grid-template-columns: 1fr 1fr; }
+      .pr:nth-child(3) { border-left: 0; padding-left: 0; }
+      .pr:nth-child(n+3) { border-top: 1px solid var(--line); }
+    }
+    @media (max-width: 480px) {
+      .principles { grid-template-columns: 1fr; }
+      .pr + .pr { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); }
+    }
+
+    /* ---------- features ---------- */
+    .features { padding: 40px 0 80px; display: flex; flex-direction: column; gap: clamp(96px, 14vw, 160px); }
+    .feature {
+      display: grid; grid-template-columns: 1fr 1fr; gap: clamp(32px, 6vw, 80px); align-items: center;
+    }
+    .feature.flip .copy { order: 2; }
+    .feature .copy h2 { font-size: clamp(24px, 3vw, 32px); font-weight: 500; letter-spacing: -0.02em; line-height: 1.2; margin-top: 12px; }
+    .feature .copy p { margin-top: 14px; color: var(--text-muted); max-width: 40ch; }
+    .feature .explainer { margin-top: 28px; }
+    .feature .explainer svg { width: 100%; max-width: 360px; height: auto; display: block; overflow: visible; }
+
+    .frame {
+      position: relative; border-radius: 14px; overflow: hidden;
+      background: var(--bg-frame); border: 1px solid var(--line);
+      box-shadow: 0 30px 80px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(0,0,0,.4) inset;
+      aspect-ratio: 16 / 10.5;
+    }
+    .frame::before {
+      content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+      background: linear-gradient(180deg, rgba(255,255,255,.04), transparent 30%);
+    }
+    .frame .chrome {
+      position: absolute; top: 0; left: 0; right: 0; height: 30px; z-index: 3;
+      display: flex; align-items: center; gap: 6px; padding: 0 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), transparent);
+      border-bottom: 1px solid var(--line);
+    }
+    .frame .chrome i { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); display: block; }
+    .frame img { position: absolute; inset: 30px 0 0 0; width: 100%; height: calc(100% - 30px); object-fit: cover; object-position: top left; }
+    .ph {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); text-align: center; padding: 8px;
+      background:
+        linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 24px,
+        linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 24px 100%;
+    }
+    .frame .ph { inset: 30px 0 0 0; }
+    .loaded .ph { display: none; }
+
+    /* desktop + phone pair */
+    .shot { position: relative; padding: 0 0 56px 0; }
+    .phone {
+      position: absolute; right: -8px; bottom: 0; z-index: 4;
+      width: 24%; min-width: 96px; max-width: 150px; aspect-ratio: 9 / 19;
+      border-radius: 18px; overflow: hidden;
+      background: var(--bg-frame); border: 1px solid var(--line-strong);
+      box-shadow: 0 24px 60px -20px rgba(0,0,0,.9), 0 0 0 3px var(--bg);
+    }
+    .phone::before {
+      content: ''; position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3;
+      width: 34%; height: 6px; border-radius: 3px; background: var(--bg);
+    }
+    .phone img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+    .phone .ph { font-size: 10px; padding: 4px; word-break: break-all; }
+    @media (max-width: 760px) { .shot { padding-bottom: 40px; } .phone { right: 4px; } }
+
+    /* ---------- explainer svg animation ---------- */
+    .explainer .stroke { stroke: var(--line-strong); fill: none; stroke-width: 1.2; }
+    .explainer .node { fill: var(--bg-raise); stroke: var(--line-strong); stroke-width: 1.2; }
+    .explainer .label { font-family: var(--font-mono); font-size: 9px; fill: var(--text-faint); letter-spacing: .06em; }
+    .explainer .label.hi { fill: var(--text-muted); }
+    .explainer .pkt { fill: var(--accent); }
+    .explainer .hub { stroke: var(--accent-line); fill: var(--accent-soft); }
+    .explainer .ok { fill: var(--ok); }
+    .explainer .flow {
+      stroke: var(--accent); stroke-width: 1.6; fill: none; stroke-linecap: round;
+      stroke-dasharray: 1 3 2 3 4 110; /* a short comet with a faint tail */
+      filter: drop-shadow(0 0 3px rgba(210,169,101,.55));
+      animation: flow 3.6s cubic-bezier(.4,0,.6,1) infinite;
+    }
+    .explainer .flow.d1 { animation-delay: -1.2s; }
+    .explainer .flow.d2 { animation-delay: -2.4s; }
+    @keyframes flow { to { stroke-dashoffset: -123; } }
+    .explainer .breathe { animation: breathe 4s ease-in-out infinite; }
+    @keyframes breathe { 50% { stroke: var(--accent); fill: rgba(210,169,101,.2); } }
+    /* worker lifecycle: appear, run, disappear — staggered so one is always alive */
+    .explainer .worker { animation: life 7.2s var(--ease) infinite; transform-origin: 175px 80px; }
+    .explainer .worker.w1 { animation-delay: -2.4s; }
+    .explainer .worker.w2 { animation-delay: -4.8s; }
+    @keyframes life {
+      0%        { opacity: 0; transform: translateX(-6px); }
+      8%, 78%   { opacity: 1; transform: none; }
+      88%, 100% { opacity: 0; transform: translateX(6px); }
+    }
+    .explainer .dotlife { animation: dotlife 1.2s ease-in-out infinite; }
+    @keyframes dotlife { 50% { opacity: .2; } }
+    .explainer .lgtm { animation: lgtm 7.2s var(--ease) infinite; transform-origin: 314px 31px; }
+    @keyframes lgtm { 0%, 60% { opacity: 0; transform: translateY(4px) scale(.92); } 68%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+
+    /* frames: gentle float + pointer tilt on desktop */
+    .phone { animation: float 7s ease-in-out infinite; }
+    @keyframes float { 50% { transform: translateY(-6px); } }
+    @media (pointer: fine) {
+      .shot { perspective: 1200px; }
+      .frame { transition: transform .5s var(--ease); transform: rotateX(var(--rx, 0)) rotateY(var(--ry, 0)); will-change: transform; }
+    }
+    /* digit change */
+    .unit .n { transition: opacity .18s, transform .18s var(--ease); }
+    .unit .n.flip { opacity: .35; transform: translateY(-4px); }
+
+    .vault-demo {
+      margin-top: 28px; max-width: 360px;
+      font-family: var(--font-mono); font-size: 12px; line-height: 1.9;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raise); overflow: hidden;
+    }
+    .vault-demo .row { display: grid; grid-template-columns: 92px 1fr; padding: 8px 14px; gap: 12px; }
+    .vault-demo .row + .row { border-top: 1px solid var(--line); }
+    .vault-demo .k { color: var(--text-faint); }
+    .vault-demo .v { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .vault-demo .v.cipher { color: var(--accent); }
+    .vault-demo .sealed { font-size: 10px; color: var(--ok); opacity: 0; transition: opacity .4s; }
+    .vault-demo .sealed.on { opacity: 1; }
+
+    /* ---------- terminal demo ---------- */
+    .term {
+      margin-top: 28px; max-width: 360px; border: 1px solid var(--line); border-radius: 10px;
+      background: var(--bg-raise); overflow: hidden; font-family: var(--font-mono); font-size: 12px;
+    }
+    .term-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 11px; }
+    .term-bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); display: block; }
+    .term-bar span { margin-left: 8px; }
+    .term pre { margin: 0; padding: 12px 14px; min-height: 128px; line-height: 1.8; color: var(--text-muted); white-space: pre-wrap; }
+    .term .p { color: var(--accent); }
+    .term .add { color: var(--ok); }
+    .term .del { color: #c98585; }
+    .term .dim { color: var(--text-faint); }
+    .term .cur { display: inline-block; width: 7px; height: 13px; background: var(--text-muted); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+
+    /* ---------- footer ---------- */
+    footer {
+      border-top: 1px solid var(--line); padding: 36px 0 48px;
+      display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+      font-size: 13px; color: var(--text-faint);
+    }
+    .foot-links { display: flex; gap: 22px; }
+    footer a { color: var(--text-muted); font-family: var(--font-mono); }
+    footer a:hover { color: var(--text); }
+
+    /* ---------- responsive ---------- */
+    @media (max-width: 760px) {
+      .feature, .feature.flip { grid-template-columns: 1fr; }
+      .feature.flip .copy { order: 0; }
+      .feature .copy p { max-width: none; }
+      .hero { min-height: auto; padding: 56px 0 72px; }
+      .unit .l { font-size: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .reveal { opacity: 1; transform: none; transition: none; }
+      .explainer .flow, .explainer .lgtm, .explainer .worker, .explainer .dotlife, .explainer .breathe,
+      .phone, .sep::after, .open .btn .dot, .term .cur { animation: none; }
+      .explainer .lgtm, .explainer .worker { opacity: 1; }
+      .frame { transform: none !important; }
     }
   </style>
 </head>
 <body>
-  <div class="bg-grid"></div>
+  <canvas id="bg" aria-hidden="true"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
 
-  <!-- Navigation -->
-  <nav class="nav">
-    <div class="nav-progress" id="scroll-progress"></div>
-    <div class="nav-container">
-      <a href="#" class="brand">
-        <div class="brand-logo"></div>
-        <span class="brand-name">heimdall</span>
-        <span class="version-pill">v0.3.0</span>
-      </a>
-      <ul class="nav-links">
-        <li><a href="#demo">Overview</a></li>
-        <li><a href="#capabilities">Architecture</a></li>
-        <li><a href="#pillars">Pillars</a></li>
-        <li><a href="#cheatsheet">Quick Start</a></li>
-        <li><a href="#faq">FAQ</a></li>
-      </ul>
-      <div class="nav-actions">
-        <a href="https://discord.gg/heimdall" target="_blank" class="btn btn-discord">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+  <main>
+    <div class="wrap">
+      <nav class="nav">
+        <a class="brand" href="#">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9.5" stroke="var(--accent)" stroke-width="1.2"/>
+            <circle cx="12" cy="12" r="3" fill="var(--accent)"/>
+            <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4" stroke="var(--accent)" stroke-width="1.2" stroke-linecap="round" opacity=".6"/>
           </svg>
-          Discord
+          heimdall
         </a>
-        <a href="https://github.com" target="_blank" class="btn btn-outline">
-          GitHub
-        </a>
-      </div>
+        <div class="nav-links">
+          <a href="https://github.com/tanmayv/heimdall-agent-manager" target="_blank" rel="noopener">GitHub</a>
+          <a id="discord-nav" href="#" target="_blank" rel="noopener">Discord</a>
+          <a class="nav-mail" href="mailto:hello@brolabs.ai">hello@brolabs.ai</a>
+        </div>
+      </nav>
+
+      <section class="hero" id="hero">
+        <div class="eyebrow reveal">Private beta · invite only</div>
+        <h1 class="reveal" style="margin-top:20px">One developer.<br>A fleet of agents.</h1>
+        <p class="lede reveal">Bring your own LLM. Agents run on your machines, reachable from anywhere — coordinated, reviewed, remembered.</p>
+
+        <div class="countdown reveal" id="countdown" role="timer" aria-live="off">
+          <div class="unit"><span class="n" id="d">00</span><span class="l">days</span></div>
+          <div class="sep"></div>
+          <div class="unit"><span class="n" id="h">00</span><span class="l">hours</span></div>
+          <div class="sep"></div>
+          <div class="unit"><span class="n" id="m">00</span><span class="l">min</span></div>
+          <div class="sep"></div>
+          <div class="unit"><span class="n" id="s">00</span><span class="l">sec</span></div>
+        </div>
+        <div class="when reveal">Invites open <b id="when-text"></b></div>
+        <div class="live-badge">● invites are open</div>
+
+        <div class="cta reveal">
+          <a class="btn" id="invite-btn" aria-disabled="true" href="#">
+            <span class="dot"></span>
+            <span id="invite-label">Request an invite</span>
+          </a>
+          <div class="hint" id="invite-hint">Opens when the timer ends.</div>
+        </div>
+      </section>
+
+      <section class="principles reveal" aria-label="Principles">
+        <div class="pr"><span class="k">01</span><b>Bring your own LLM</b><span>Claude Code, Cursor, or your own harness. Mix providers per agent.</span></div>
+        <div class="pr"><span class="k">02</span><b>Runs on your machines</b><span>Agents, shells and files live on hardware you own.</span></div>
+        <div class="pr"><span class="k">03</span><b>Reachable from anywhere</b><span>Steer the fleet from a phone or another laptop. No SSH, no VPN.</span></div>
+        <div class="pr"><span class="k">04</span><b>Nothing shared</b><span>No login handed over, no API key leaves your device.</span></div>
+      </section>
+
+      <section class="features" id="features">
+
+        <!-- 1. Multi-device fleet -->
+        <article class="feature reveal">
+          <div class="copy">
+            <div class="eyebrow">Fleet</div>
+            <h2>Every machine, one board.</h2>
+            <p>Laptop, desktop, homelab. Every device dials out to one hub, so the whole fleet shows up on a single board — no SSH, no VPN, no open ports.</p>
+            <div class="explainer" aria-hidden="true">
+              <svg viewBox="0 0 360 150">
+                <!-- devices -->
+                <g>
+                  <rect class="node" x="12" y="14" width="78" height="32" rx="7"/>
+                  <text class="label" x="51" y="34" text-anchor="middle">laptop</text>
+                  <rect class="node" x="12" y="59" width="78" height="32" rx="7"/>
+                  <text class="label" x="51" y="79" text-anchor="middle">desktop</text>
+                  <rect class="node" x="12" y="104" width="78" height="32" rx="7"/>
+                  <text class="label" x="51" y="124" text-anchor="middle">homelab</text>
+                </g>
+                <!-- links -->
+                <path class="stroke" d="M90 30 C 170 30, 190 75, 262 75"/>
+                <path class="stroke" d="M90 75 L 262 75"/>
+                <path class="stroke" d="M90 120 C 170 120, 190 75, 262 75"/>
+                <path class="flow"    d="M90 30 C 170 30, 190 75, 262 75"/>
+                <path class="flow d1" d="M90 75 L 262 75"/>
+                <path class="flow d2" d="M90 120 C 170 120, 190 75, 262 75"/>
+                <!-- hub -->
+                <circle class="node hub" cx="296" cy="75" r="30"/>
+                <text class="label hi" x="296" y="78" text-anchor="middle">hub</text>
+                <text class="label" x="176" y="66" text-anchor="middle">outbound only</text>
+              </svg>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="frame" data-src="assets/fleet-desktop.png">
+              <div class="chrome"><i></i><i></i><i></i></div>
+              <div class="ph">fleet-desktop.png</div>
+            </div>
+            <div class="phone" data-src="assets/fleet-phone.png">
+              <div class="ph">fleet-phone.png</div>
+            </div>
+          </div>
+        </article>
+
+        <!-- 2. Zero-knowledge vault -->
+        <article class="feature flip reveal">
+          <div class="copy">
+            <div class="eyebrow">Vault</div>
+            <h2>Encrypted before it leaves the device.</h2>
+            <p>API keys and workspace secrets are sealed on your device. The hub only ever holds ciphertext it cannot read — and never your provider login.</p>
+            <div class="vault-demo" aria-hidden="true">
+              <div class="row"><span class="k">on device</span><span class="v" id="plain">ANTHROPIC_API_KEY=sk-ant-api03-…</span></div>
+              <div class="row"><span class="k">on hub <span class="sealed" id="sealed">· sealed</span></span><span class="v cipher" id="cipher"></span></div>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="frame" data-src="assets/vault-desktop.png">
+              <div class="chrome"><i></i><i></i><i></i></div>
+              <div class="ph">vault-desktop.png</div>
+            </div>
+            <div class="phone" data-src="assets/vault-phone.png">
+              <div class="ph">vault-phone.png</div>
+            </div>
+          </div>
+        </article>
+
+        <!-- 3. Task chain -->
+        <article class="feature reveal">
+          <div class="copy">
+            <div class="eyebrow">Chain</div>
+            <h2>Delegated. Built. Peer-reviewed.</h2>
+            <p>A coordinator splits the work into a chain. Workers spin up only while their task is actionable and shut down when it is done. Nothing completes until a peer — another agent, or you — votes LGTM.</p>
+            <div class="explainer" aria-hidden="true">
+              <svg viewBox="0 0 360 160">
+                <circle class="node hub breathe" cx="40" cy="80" r="24"/>
+                <text class="label hi" x="40" y="83" text-anchor="middle">coord</text>
+                <!-- workers: boot → work → exit -->
+                <g class="worker w0">
+                  <rect class="node" x="140" y="23" width="70" height="28" rx="7"/>
+                  <text class="label" x="175" y="41" text-anchor="middle">worker</text>
+                  <circle class="pkt dotlife" cx="147" cy="30" r="2"/>
+                </g>
+                <g class="worker w1">
+                  <rect class="node" x="140" y="66" width="70" height="28" rx="7"/>
+                  <text class="label" x="175" y="84" text-anchor="middle">worker</text>
+                  <circle class="pkt dotlife" cx="147" cy="73" r="2"/>
+                </g>
+                <g class="worker w2">
+                  <rect class="node" x="140" y="109" width="70" height="28" rx="7"/>
+                  <text class="label" x="175" y="127" text-anchor="middle">worker</text>
+                  <circle class="pkt dotlife" cx="147" cy="116" r="2"/>
+                </g>
+                <text class="label" x="175" y="154" text-anchor="middle">boot · work · exit</text>
+                <!-- reviewer -->
+                <circle class="node" cx="310" cy="80" r="24"/>
+                <text class="label hi" x="310" y="78" text-anchor="middle">peer</text>
+                <text class="label" x="310" y="90" text-anchor="middle">review</text>
+                <text class="label" x="310" y="128" text-anchor="middle">agent · or you</text>
+                <!-- links -->
+                <path class="stroke" d="M64 80 C 100 80, 110 37, 140 37"/>
+                <path class="stroke" d="M64 80 L 140 80"/>
+                <path class="stroke" d="M64 80 C 100 80, 110 123, 140 123"/>
+                <path class="stroke" d="M210 37 C 250 37, 255 80, 286 80"/>
+                <path class="stroke" d="M210 80 L 286 80"/>
+                <path class="stroke" d="M210 123 C 250 123, 255 80, 286 80"/>
+                <path class="flow"    d="M64 80 C 100 80, 110 37, 140 37 L 210 37 C 250 37, 255 80, 286 80"/>
+                <path class="flow d1" d="M64 80 L 286 80"/>
+                <path class="flow d2" d="M64 80 C 100 80, 110 123, 140 123 L 210 123 C 250 123, 255 80, 286 80"/>
+                <!-- vote badge -->
+                <g class="lgtm">
+                  <rect x="292" y="22" width="44" height="18" rx="9" fill="rgba(143,191,159,.14)" stroke="rgba(143,191,159,.5)" stroke-width="1"/>
+                  <text class="label" x="314" y="34" text-anchor="middle" style="fill:var(--ok)">LGTM</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="frame" data-src="assets/chain-desktop.png">
+              <div class="chrome"><i></i><i></i><i></i></div>
+              <div class="ph">chain-desktop.png</div>
+            </div>
+            <div class="phone" data-src="assets/chain-phone.png">
+              <div class="ph">chain-phone.png</div>
+            </div>
+          </div>
+        </article>
+
+        <!-- 4. Persistent memory -->
+        <article class="feature flip reveal">
+          <div class="copy">
+            <div class="eyebrow">Memory</div>
+            <h2>Fresh context, nothing forgotten.</h2>
+            <p>Every task starts from a clean window. Facts, habits and skills live in scoped memory that is injected at boot — per agent, per project, or across the fleet.</p>
+            <div class="explainer" aria-hidden="true">
+              <svg viewBox="0 0 360 150">
+                <rect class="node" x="12" y="52" width="86" height="46" rx="9"/>
+                <text class="label hi" x="55" y="71" text-anchor="middle">agent</text>
+                <text class="label" x="55" y="86" text-anchor="middle">task #1</text>
+                <rect class="node hub" x="137" y="40" width="86" height="70" rx="9"/>
+                <text class="label hi" x="180" y="64" text-anchor="middle">memory</text>
+                <text class="label" x="180" y="80" text-anchor="middle">facts · skills</text>
+                <text class="label" x="180" y="94" text-anchor="middle">episodes</text>
+                <rect class="node" x="262" y="52" width="86" height="46" rx="9"/>
+                <text class="label hi" x="305" y="71" text-anchor="middle">agent</text>
+                <text class="label" x="305" y="86" text-anchor="middle">task #2</text>
+                <path class="stroke" d="M98 65 L 137 65"/>
+                <path class="stroke" d="M223 85 L 262 85"/>
+                <path class="flow" d="M98 65 L 137 65"/>
+                <path class="flow d1" d="M223 85 L 262 85"/>
+                <text class="label" x="117" y="56" text-anchor="middle">propose</text>
+                <text class="label" x="242" y="104" text-anchor="middle">inject</text>
+              </svg>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="frame" data-src="assets/memory-desktop.png">
+              <div class="chrome"><i></i><i></i><i></i></div>
+              <div class="ph">memory-desktop.png</div>
+            </div>
+            <div class="phone" data-src="assets/memory-phone.png">
+              <div class="ph">memory-phone.png</div>
+            </div>
+          </div>
+        </article>
+
+
+        <!-- 5. Work alongside -->
+        <article class="feature reveal">
+          <div class="copy">
+            <div class="eyebrow">Alongside</div>
+            <h2>Step in whenever you want.</h2>
+            <p>Open a tracked shell, edit files, and read diffs on any machine in the fleet — from the same board the agents use. Every command and every commit is recorded next to the task it belongs to.</p>
+            <div class="term" aria-hidden="true">
+              <div class="term-bar"><i></i><i></i><i></i><span>homelab · ~/repo</span></div>
+              <pre id="term-body"></pre>
+            </div>
+          </div>
+          <div class="shot">
+            <div class="frame" data-src="assets/shell-desktop.png">
+              <div class="chrome"><i></i><i></i><i></i></div>
+              <div class="ph">shell-desktop.png</div>
+            </div>
+            <div class="phone" data-src="assets/shell-phone.png">
+              <div class="ph">shell-phone.png</div>
+            </div>
+          </div>
+        </article>
+
+      </section>
+
+      <footer>
+        <span>© <span id="yr"></span> Brolabs. Heimdall is in private beta.</span>
+        <span class="foot-links">
+          <a href="https://github.com/tanmayv/heimdall-agent-manager" target="_blank" rel="noopener">GitHub</a>
+          <a id="discord-foot" href="#" target="_blank" rel="noopener">Discord</a>
+          <a href="mailto:hello@brolabs.ai">hello@brolabs.ai</a>
+        </span>
+      </footer>
     </div>
-  </nav>
-
-  <main class="container">
-    <!-- Hero Section -->
-    <section class="hero">
-      <div class="badge-strip">
-        <div class="badge badge-invite">
-          <span class="dot live"></span>
-          <span>Heimdall Cloud is invite-only · Self-host with 1 command →</span>
-        </div>
-        <a href="#changelog" class="badge badge-release">
-          <span>v0.3.0 released: native binary installer & vault CLI</span>
-        </a>
-      </div>
-      
-      <h1 class="hero-title">
-        Your multi-device AI agent fleet.<br>
-        <span class="highlight">Coordinated. Encrypted. Accessible anywhere.</span>
-      </h1>
-
-      <p class="hero-subhead">
-        Run Claude Code, Cursor, Antigravity, or custom agents across your laptop, desktop, and homelab. Heimdall lets you manage them in one place, coordinates them to work together, and protects all workspace data with client-side Zero-Knowledge encryption—with seamless remote access without SSH or VPNs.
-      </p>
-
-      <div class="install-bar">
-        <span class="install-prompt">$</span>
-        <span class="install-cmd" id="install-cmd">curl -fsSL https://get.heimdall.dev/install.sh | bash</span>
-        <button class="install-copy-btn" id="copy-btn" onclick="copyInstallCmd()">
-          <span id="copy-text">Copy</span>
-        </button>
-      </div>
-
-      <div class="hero-ctas">
-        <a href="#cheatsheet" class="btn btn-primary">Self-Host in 60s →</a>
-        <button class="btn btn-outline" onclick="openInviteModal()">Request Cloud Invite</button>
-        <a href="https://discord.gg/heimdall" target="_blank" class="btn btn-outline">Join Discord</a>
-      </div>
-
-      <div class="byoa-label">Bring Your Own Agent (Harness Agnostic)</div>
-      <div class="byoa-strip">
-        <div class="byoa-item"><span>●</span> Antigravity</div>
-        <div class="byoa-item"><span>●</span> Claude Code</div>
-        <div class="byoa-item"><span>●</span> Gemini CLI</div>
-        <div class="byoa-item"><span>●</span> Cursor Agent</div>
-        <div class="byoa-item"><span>●</span> OpenCode</div>
-        <div class="byoa-item"><span>●</span> Aider</div>
-        <div class="byoa-item"><span>●</span> OpenAI Codex</div>
-        <div class="byoa-item"><span>●</span> Goose</div>
-        <div class="byoa-item"><span>●</span> Custom Shell Script</div>
-      </div>
-    </section>
-
-    <!-- Hero Media / GIF Placeholder -->
-    <section class="hero-media-section" id="demo">
-      <div class="media-window">
-        <div class="media-chrome">
-          <div class="window-dots">
-            <span class="window-dot dot-red"></span>
-            <span class="window-dot dot-yellow"></span>
-            <span class="window-dot dot-green"></span>
-          </div>
-
-          <div class="media-title">
-            heimdall — multi-device coordination & review quorum demo
-          </div>
-
-          <div class="media-badge">
-            <span>●</span> Live Fleet Session
-          </div>
-        </div>
-
-        <div class="gif-placeholder">
-          <div class="gif-placeholder-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="5 3 19 12 5 21 5 3"></polygon>
-            </svg>
-          </div>
-          <div class="gif-placeholder-title">[ hero-demo.gif placeholder ]</div>
-          <p class="gif-placeholder-desc">
-            Product walk-through recording placeholder: showing coordinator task chain planning, worker parallel execution in isolated PTYs across multiple devices, and reviewer LGTM quorum verification.
-          </p>
-          <div class="gif-specs">
-            <span>Asset: ./assets/hero-demo.gif</span>
-            <span>Target: 1200 × 680 px</span>
-            <span>Loop: 6–8s</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Grounded Architectural Capabilities -->
-    <section class="caps-section" id="capabilities">
-      <div class="section-header">
-        <h2 class="section-title">Architectural Guarantees</h2>
-        <p class="section-sub">A native systems approach designed from the ground up for multi-device workflows.</p>
-      </div>
-
-      <div class="caps-grid">
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Systems</span>
-            <div class="cap-title">Native Odin Binary</div>
-          </div>
-          <div class="cap-desc">Compiled directly to native C-ABI machine code. Runs with zero external runtime dependencies—no Docker, Python, or Node daemons required on your host.</div>
-        </div>
-
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Footprint</span>
-            <div class="cap-title">~20MB Resident Memory</div>
-          </div>
-          <div class="cap-desc">Runs silently as a native systemd user service (Linux) or launchd agent (macOS) with minimal host CPU and memory overhead.</div>
-        </div>
-
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Networking</span>
-            <div class="cap-title">Outbound-Only Tunnels</div>
-          </div>
-          <div class="cap-desc">Bridges initiate outbound TLS WebSockets to the Hub. Traverses NAT and firewalls without opening inbound ports or running VPN clients.</div>
-        </div>
-
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Security</span>
-            <div class="cap-title">Client-Side 256-bit AES</div>
-          </div>
-          <div class="cap-desc">Zero-knowledge encryption for all egress data. Prompts, diffs, and workspace secrets leave your machine encrypted with locally held keys (strict 0600 mode).</div>
-        </div>
-
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Reliability</span>
-            <div class="cap-title">Enforced Review Gates</div>
-          </div>
-          <div class="cap-desc">Tasks follow a strict lifecycle. Autonomous workers cannot commit changes directly—independent reviewer agents must test and verify before merging.</div>
-        </div>
-
-        <div class="cap-card">
-          <div class="cap-header">
-            <span class="cap-tag">Control</span>
-            <div class="cap-title">Work Alongside Fleet</div>
-          </div>
-          <div class="cap-desc">Built-in file editor, native Git diff inspector, and streaming PTY terminals allow you to inspect, edit, or steer agents at any moment.</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- The 5 Core Feature Pillars -->
-    <section class="pillars-section" id="pillars">
-      <div class="section-header">
-        <h2 class="section-title">How Heimdall Works</h2>
-        <p class="section-sub">A disciplined workflow for running autonomous AI agents on real codebases.</p>
-      </div>
-
-      <div class="pillars-grid">
-        <div class="pillar-card">
-          <div class="pillar-num">01 / FLEET</div>
-          <h3 class="pillar-title">Bring Your Own Agents Across Devices</h3>
-          <div class="pillar-problem">
-            <strong>The Problem:</strong> Managing agents across your laptop, desktop, and cloud server requires juggling separate terminal windows, leading to context drift and lost changes.
-          </div>
-          <div class="pillar-solution">
-            Install the lightweight bridge on any machine with one command. Register and run any agent harness—Claude Code, Cursor, Antigravity, or custom scripts—under one unified dashboard.
-          </div>
-          <ul class="pillar-features">
-            <li>Single-command node enrollment (`heimdall enroll`)</li>
-            <li>Universal PTY bridge supports any CLI harness</li>
-            <li>Multi-machine status and health diagnostics</li>
-          </ul>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">02 / COORDINATION</div>
-          <h3 class="pillar-title">Multi-Agent Coordination & Review Gates</h3>
-          <div class="pillar-problem">
-            <strong>The Problem:</strong> Solo agents operating in isolation hallucinate requirements, make assumptions without checking, and break existing tests.
-          </div>
-          <div class="pillar-solution">
-            Coordinator agents break objectives into structured task DAGs. Workers execute in parallel, and dedicated reviewer agents must independently test and cast verifiable LGTMs before changes land.
-          </div>
-          <ul class="pillar-features">
-            <li>Living specification tracked inside task chain descriptions</li>
-            <li>Two-tier review protocol (QUICK vs COMPREHENSIVE)</li>
-            <li>Unanimous quorum auto-finalization engine</li>
-          </ul>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">03 / SECURITY</div>
-          <h3 class="pillar-title">Zero-Knowledge Security Architecture</h3>
-          <div class="pillar-problem">
-            <strong>The Problem:</strong> Centralized agent platforms store workspace credentials, repository code, and API keys in plaintext on remote cloud servers.
-          </div>
-          <div class="pillar-solution">
-            All data leaving your machine is wrapped in client-side 256-bit AES-GCM ciphertext (`vault:v1:...`). The central Hub coordinates tasks without ever seeing plaintext code or keys.
-          </div>
-          <ul class="pillar-features">
-            <li>PBKDF2-SHA256 client wrapping key derivation</li>
-            <li>Strict POSIX 0600 file permission enforcement</li>
-            <li>Hub stores zero-knowledge encrypted envelopes only</li>
-          </ul>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">04 / REMOTE</div>
-          <h3 class="pillar-title">Zero-Config Remote Access</h3>
-          <div class="pillar-problem">
-            <strong>The Problem:</strong> Accessing your development machine or homelab on the go requires brittle SSH tunnels, dynamic DNS, or punching holes in firewalls.
-          </div>
-          <div class="pillar-solution">
-            Engineered from day one for remote development. Heimdall bridges establish secure outbound TLS WebSocket tunnels to the Hub. Access your fleet and terminals anywhere without VPNs or port forwarding.
-          </div>
-          <ul class="pillar-features">
-            <li>100% outbound-only WebSocket architecture</li>
-            <li>No SSH keys, router port opening, or VPN clients</li>
-            <li>Pick up active coding sessions from any browser</li>
-          </ul>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">05 / PAIR PROGRAMMING</div>
-          <h3 class="pillar-title">Work Alongside Your Fleet</h3>
-          <div class="pillar-problem">
-            <strong>The Problem:</strong> Black-box AI tools hide behind chat windows, disconnecting developers from their repository state until something breaks.
-          </div>
-          <div class="pillar-solution">
-            Full human-in-the-loop pair programming. Built-in syntax-highlighted editor, native Git VCS diff viewer, and low-latency interactive PTY terminals allow you to step in and guide agents in real time.
-          </div>
-          <ul class="pillar-features">
-            <li>Native Git diff inspector with line-by-line review</li>
-            <li>Real-time terminal streaming via `ham-pty-host`</li>
-            <li>Interactive shell takeover and live signal delivery</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <!-- CLI Cheatsheet -->
-    <section class="cheatsheet-section" id="cheatsheet">
-      <div class="section-header">
-        <h2 class="section-title">Quick Start</h2>
-        <p class="section-sub">Simple, predictable CLI for managing your local bridge and daemon lifecycle.</p>
-      </div>
-
-      <div class="code-box">
-<span class="comment"># 1. Install precompiled binaries (Linux / macOS)</span>
-<span class="cmd">curl</span> -fsSL https://get.heimdall.dev/install.sh | bash
-
-<span class="comment"># 2. Configure local 256-bit Zero-Knowledge Vault Key (strict 0600 mode)</span>
-<span class="cmd">heimdall</span> vault set-key &lt;64-character-hex-key&gt;
-
-<span class="comment"># 3. Enroll your host bridge with your central Hub</span>
-<span class="cmd">heimdall</span> enroll &lt;one-time-token&gt; --hub https://hub.yourdomain.com
-
-<span class="comment"># 4. Check fleet connectivity and daemon status</span>
-<span class="cmd">heimdall</span> status
-<span class="cmd">heimdall</span> doctor
-      </div>
-    </section>
-
-    <!-- Developer FAQ -->
-    <section class="faq-section" id="faq">
-      <div class="section-header">
-        <h2 class="section-title">Frequently Asked Questions</h2>
-        <p class="section-sub">Details on self-hosting, remote access, and zero-knowledge encryption.</p>
-      </div>
-
-      <div class="faq-list">
-        <div class="faq-item open">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>How does remote access work without SSH or VPNs?</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-answer">
-            Heimdall bridges initiate outbound TLS WebSocket connections to your Hub. Because all connections are outbound, you can access your workstation or homelab agent fleet from anywhere without configuring router port-forwarding, dynamic DNS, or VPN clients like Tailscale.
-          </div>
-        </div>
-
-        <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>How does Heimdall protect source code and secrets?</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-answer">
-            Heimdall uses a Zero-Knowledge Vault architecture. Your Master Password derives a 256-bit AES-GCM wrapping key entirely in your client browser/UI. All data that leaves your local device is encrypted ciphertext (`vault:v1:...`). The Hub never sees plaintext prompts, code, or API keys.
-          </div>
-        </div>
-
-        <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>Can I bring my own existing coding agents?</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-answer">
-            Yes. Heimdall is completely harness-agnostic (Bring Your Own Agent). It seamlessly manages Antigravity, Claude Code, Gemini CLI, Cursor Agent, OpenCode, Aider, and custom agent runtimes through its universal PTY bridge (`ham-pty-host`).
-          </div>
-        </div>
-
-        <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>Can I work alongside my agents while they code?</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-answer">
-            Yes. Heimdall includes a built-in code editor, native Git VCS diff viewer, and interactive PTY terminal streaming. You can review intermediate diffs, make manual edits, or jump into an agent's shell at any time.
-          </div>
-        </div>
-
-        <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>Does Heimdall require Docker or Kubernetes?</span>
-            <span class="faq-toggle">+</span>
-          </div>
-          <div class="faq-answer">
-            No. Heimdall compiles to static native binaries with zero external runtime dependencies and runs as a lightweight user systemd unit (Linux) or launchd service (macOS) using ~20MB of RAM.
-          </div>
-        </div>
-      </div>
-    </section>
   </main>
 
-  <div class="modal-overlay" id="invite-modal">
-    <div class="modal-card">
-      <button class="modal-close" onclick="closeInviteModal()">×</button>
-      <h3 class="modal-title">Request Cloud Invite</h3>
-      <p class="modal-sub">Heimdall Cloud is currently rolling out in batches. Join the early access queue to get your hosted hub.</p>
-      
-      <div class="input-group">
-        <label class="input-label">Work Email</label>
-        <input type="email" class="text-input" placeholder="developer@company.com" id="invite-email">
-      </div>
-
-      <div class="input-group">
-        <label class="input-label">Primary Agent Harness</label>
-        <input type="text" class="text-input" placeholder="Claude Code, Cursor, Antigravity..." id="invite-harness">
-      </div>
-
-      <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="submitInvite()">
-        Join Early Access Queue →
-      </button>
-      <div id="invite-msg" style="margin-top: 0.75rem; font-size: 0.78rem; text-align: center; color: var(--status-green); display: none;">
-        ✓ Request registered! We will reach out with your enrollment token.
-      </div>
-    </div>
-  </div>
-
-  <footer class="footer">
-    <div class="container footer-content">
-      <div style="display: flex; align-items: center; gap: 1rem;">
-        <span class="brand-name">heimdall</span>
-        <span>© 2026 Earendil Works. MIT Licensed.</span>
-      </div>
-
-      <div class="status-badge">
-        <span class="dot live"></span>
-        <span>Native Odin Daemon (Single Binary)</span>
-      </div>
-
-      <ul class="footer-links">
-        <li><a href="https://discord.gg/heimdall" target="_blank">Discord</a></li>
-        <li><a href="https://github.com" target="_blank">GitHub</a></li>
-        <li><a href="#capabilities">Architecture</a></li>
-        <li><a href="#faq">FAQ</a></li>
-      </ul>
-    </div>
-  </footer>
-
   <script>
-    window.addEventListener('scroll', () => {
-      const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
-      const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
-      const scrolled = (winScroll / height) * 100;
-      document.getElementById('scroll-progress').style.width = scrolled + '%';
+    /* ===================== config ===================== */
+    const INVITE_OPENS_AT = '2026-10-11T09:00:00+05:30'; // Sat 11 Oct 2026, 09:00 IST
+    const INVITE_EMAIL = 'hello@brolabs.ai';
+    const DISCORD_URL = 'https://discord.gg/heimdall'; // TODO: replace with the real invite link
+    const MAIL_SUBJECT = 'Heimdall invite request';
+    const MAIL_BODY = [
+      'Hi,',
+      '',
+      "I'd like an invite to Heimdall.",
+      '',
+      "What I'm looking for / building:",
+      '',
+      '',
+      'Machines I would run agents on (laptop / desktop / server):',
+      '',
+      '',
+      'Agent harness I use (Claude Code / Cursor / other):',
+      '',
+    ].join('\n');
+
+    /* ===================== countdown ===================== */
+    const target = new Date(INVITE_OPENS_AT).getTime();
+    const $ = id => document.getElementById(id);
+    const pad = n => String(n).padStart(2, '0');
+    const btn = $('invite-btn');
+
+    $('when-text').textContent = new Date(target).toLocaleString(undefined, {
+      weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    });
+    $('yr').textContent = new Date().getFullYear();
+    $('discord-nav').href = $('discord-foot').href = DISCORD_URL;
+
+    const mailHref = `mailto:${INVITE_EMAIL}?subject=${encodeURIComponent(MAIL_SUBJECT)}&body=${encodeURIComponent(MAIL_BODY)}`;
+
+    function openInvites() {
+      document.body.classList.add('open');
+      btn.removeAttribute('aria-disabled');
+      btn.href = mailHref;
+      $('invite-hint').innerHTML = `Opens your mail client. Or write to <a href="${mailHref}">${INVITE_EMAIL}</a> with what you're looking for.`;
+    }
+
+    function setNum(id, v) {
+      const el = $(id);
+      if (el.textContent === v) return;
+      el.classList.add('flip');
+      setTimeout(() => { el.textContent = v; el.classList.remove('flip'); }, 120);
+    }
+
+    function tick() {
+      const diff = target - Date.now();
+      if (diff <= 0) { openInvites(); return; }
+      const s = Math.floor(diff / 1000);
+      setNum('d', pad(Math.floor(s / 86400)));
+      setNum('h', pad(Math.floor(s / 3600) % 24));
+      setNum('m', pad(Math.floor(s / 60) % 60));
+      setNum('s', pad(s % 60));
+      setTimeout(tick, 1000 - (Date.now() % 1000));
+    }
+    tick();
+
+    /* ===================== screenshots ===================== */
+    document.querySelectorAll('[data-src]').forEach(f => {
+      const img = new Image();
+      img.alt = '';
+      img.onload = () => { f.appendChild(img); f.classList.add('loaded'); };
+      img.src = f.dataset.src;
     });
 
-    function copyInstallCmd() {
-      const cmd = document.getElementById('install-cmd').innerText;
-      navigator.clipboard.writeText(cmd).then(() => {
-        const text = document.getElementById('copy-text');
-        text.innerText = 'Copied! ✓';
-        text.style.color = 'var(--status-green)';
+    /* ===================== reveal on scroll ===================== */
+    const io = new IntersectionObserver(es => es.forEach(e => {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    }), { threshold: 0.12 });
+    document.querySelectorAll('.feature').forEach(f => {
+      f.querySelector('.shot').classList.add('reveal');
+      f.querySelector('.shot').style.transitionDelay = '160ms';
+    });
+    document.querySelectorAll('.reveal').forEach((el, i) => {
+      if (el.closest('.hero')) el.style.transitionDelay = i * 90 + 'ms';
+      io.observe(el);
+    });
+
+    /* ===================== vault: plaintext seals into ciphertext, left to right ===================== */
+    (() => {
+      const el = $('cipher'), tag = $('sealed');
+      const hex = '0123456789abcdef';
+      const LEN = 34, PREFIX = 'aes-gcm:';
+      const rnd = () => hex[Math.random() * 16 | 0];
+      let out = Array.from({ length: LEN }, rnd);
+      el.textContent = PREFIX + out.join('');
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) { tag.classList.add('on'); return; }
+      let head = 0, phase = 'seal';
+      setInterval(() => {
+        if (phase === 'seal') {
+          // the wavefront: a few chars ahead of head churn, everything behind it is settled
+          for (let k = head; k < Math.min(LEN, head + 4); k++) out[k] = rnd();
+          el.textContent = PREFIX + out.slice(0, head + 4).join('') + '·'.repeat(Math.max(0, LEN - head - 4));
+          head++;
+          if (head > LEN) { phase = 'hold'; tag.classList.add('on'); setTimeout(() => { phase = 'seal'; head = 0; tag.classList.remove('on'); }, 3200); }
+        }
+      }, 55);
+    })();
+
+    /* ===================== terminal demo: tracked shell, then a diff ===================== */
+    (() => {
+      const body = $('term-body');
+      const script = [
+        ['<span class="p">$</span> ham-ctl shell --device homelab', 0],
+        ['<span class="dim">session sh_41 · recorded to task #118</span>', 400],
+        ['<span class="p">$</span> git diff --stat', 900],
+        [' src/hub/service/agent.odin <span class="add">+12</span> <span class="del">−3</span>', 300],
+        ['<span class="p">$</span> git commit -m "wire review gate"', 1100],
+        ['<span class="dim">[main 3f2a1c9] wire review gate · attached to #118</span>', 500],
+      ];
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduced) { body.innerHTML = script.map(l => l[0]).join('\n'); return; }
+      let i = 0;
+      function step() {
+        if (i >= script.length) { setTimeout(() => { i = 0; body.innerHTML = ''; step(); }, 4000); return; }
+        const [html, delay] = script[i++];
         setTimeout(() => {
-          text.innerText = 'Copy';
-          text.style.color = '';
-        }, 2000);
+          body.innerHTML = body.innerHTML.replace('<span class="cur"></span>', '') + (body.innerHTML ? '\n' : '') + html + '<span class="cur"></span>';
+          step();
+        }, delay + 350);
+      }
+      step();
+    })();
+
+    /* ===================== frames: tilt toward the pointer (desktop only) ===================== */
+    if (matchMedia('(pointer: fine)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      document.querySelectorAll('.shot').forEach(shot => {
+        const frame = shot.querySelector('.frame');
+        shot.addEventListener('pointermove', e => {
+          const r = shot.getBoundingClientRect();
+          const x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+          frame.style.setProperty('--ry', (x * 5).toFixed(2) + 'deg');
+          frame.style.setProperty('--rx', (-y * 5).toFixed(2) + 'deg');
+        });
+        shot.addEventListener('pointerleave', () => { frame.style.removeProperty('--rx'); frame.style.removeProperty('--ry'); });
       });
     }
 
-    function toggleFaq(element) {
-      const item = element.parentElement;
-      item.classList.toggle('open');
-    }
+    /* ===================== background: constellation + sentinel sweep ===================== */
+    (() => {
+      const canvas = $('bg');
+      const ctx = canvas.getContext('2d');
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const fine = matchMedia('(pointer: fine)').matches;
 
-    function openInviteModal() {
-      document.getElementById('invite-modal').classList.add('active');
-    }
+      let W, H, dpr, nodes = [];
+      const pointer = { x: 0.5, y: 0.35, tx: 0.5, ty: 0.35, active: false };
 
-    function closeInviteModal() {
-      document.getElementById('invite-modal').classList.remove('active');
-    }
+      function resize() {
+        dpr = Math.min(devicePixelRatio || 1, 2);
+        W = innerWidth; H = innerHeight;
+        canvas.width = W * dpr; canvas.height = H * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const count = Math.round(Math.min(90, Math.max(36, (W * H) / 22000)));
+        nodes = Array.from({ length: count }, () => ({
+          x: Math.random() * W, y: Math.random() * H,
+          vx: (Math.random() - .5) * .12, vy: (Math.random() - .5) * .12,
+          r: .8 + Math.random() * 1.2,
+        }));
+      }
+      resize();
+      addEventListener('resize', resize);
 
-    function submitInvite() {
-      const email = document.getElementById('invite-email').value;
-      if (!email) return;
-      document.getElementById('invite-msg').style.display = 'block';
-      setTimeout(() => {
-        closeInviteModal();
-        document.getElementById('invite-msg').style.display = 'none';
-      }, 2500);
-    }
+      if (fine) {
+        addEventListener('pointermove', e => {
+          pointer.tx = e.clientX / W; pointer.ty = e.clientY / H; pointer.active = true;
+        }, { passive: true });
+        addEventListener('pointerleave', () => { pointer.active = false; });
+      }
+
+      let t = 0;
+      function frame() {
+        t += 1 / 60;
+        // pointer: ease toward cursor on desktop; slow Lissajous drift otherwise
+        if (!pointer.active) {
+          pointer.tx = 0.5 + Math.sin(t * 0.11) * 0.25;
+          pointer.ty = 0.35 + Math.cos(t * 0.07) * 0.18;
+        }
+        pointer.x += (pointer.tx - pointer.x) * 0.04;
+        pointer.y += (pointer.ty - pointer.y) * 0.04;
+        const px = pointer.x * W, py = pointer.y * H;
+
+        ctx.clearRect(0, 0, W, H);
+
+        // --- sentinel sweep: one slow beam from above the hero, angle nudged by pointer x
+        const ox = W * 0.5, oy = -H * 0.25;
+        const base = Math.PI / 2 + (pointer.x - 0.5) * 0.9;
+        const sweep = base + Math.sin(t * 0.18) * 0.55;
+        const g = ctx.createConicGradient(sweep - 0.18, ox, oy);
+        g.addColorStop(0, 'rgba(210,169,101,0)');
+        g.addColorStop(0.5, 'rgba(210,169,101,0.045)');
+        g.addColorStop(1, 'rgba(210,169,101,0)');
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.arc(ox, oy, Math.hypot(W, H) * 1.3, sweep - 0.18, sweep + 0.18);
+        ctx.closePath();
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.restore();
+
+        // --- constellation
+        const LINK = Math.min(150, W * 0.14);
+        const PULL = Math.min(260, W * 0.25);
+        for (const n of nodes) {
+          n.x += n.vx; n.y += n.vy;
+          // gentle lean toward the pointer
+          const dx = px - n.x, dy = py - n.y, d = Math.hypot(dx, dy);
+          if (d < PULL && d > 1) { const f = (1 - d / PULL) * 0.006; n.x += dx * f; n.y += dy * f; }
+          if (n.x < -20) n.x = W + 20; else if (n.x > W + 20) n.x = -20;
+          if (n.y < -20) n.y = H + 20; else if (n.y > H + 20) n.y = -20;
+        }
+        ctx.lineWidth = 1;
+        for (let i = 0; i < nodes.length; i++) {
+          const a = nodes[i];
+          for (let j = i + 1; j < nodes.length; j++) {
+            const b = nodes[j];
+            const dx = a.x - b.x, dy = a.y - b.y;
+            if (Math.abs(dx) > LINK || Math.abs(dy) > LINK) continue;
+            const d = Math.hypot(dx, dy);
+            if (d > LINK) continue;
+            const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+            const near = 1 - Math.min(1, Math.hypot(px - mx, py - my) / PULL);
+            const alpha = (1 - d / LINK) * (0.05 + near * 0.12);
+            ctx.strokeStyle = `rgba(236,231,223,${alpha.toFixed(3)})`;
+            ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          }
+        }
+        for (const n of nodes) {
+          const near = 1 - Math.min(1, Math.hypot(px - n.x, py - n.y) / PULL);
+          ctx.fillStyle = near > 0.4 ? `rgba(210,169,101,${(0.25 + near * 0.5).toFixed(3)})` : 'rgba(236,231,223,0.28)';
+          ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
+        }
+
+        if (!reduced) requestAnimationFrame(frame);
+      }
+      frame();
+    })();
   </script>
 </body>
 </html>

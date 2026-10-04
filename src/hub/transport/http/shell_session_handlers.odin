@@ -151,28 +151,28 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 
 		switch frame_type {
 		case "input":
-			enc_b64 := json_string(text, "enc_b64")
-			defer delete(enc_b64)
-			data_b64 := json_string(text, "data_b64")
-			defer delete(data_b64)
-			if strings.has_prefix(data_b64, "vault:v1:") {
-				armored := enc_b64 != "" ? enc_b64 : data_b64
-				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", armored, sink_override)
-			} else if data_b64 != "" {
-				decoded, decode_err := base64.decode(data_b64)
-				if decode_err == nil && decoded != nil {
-					raw_data := string(decoded)
-					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
-					delete(decoded)
-				} else if enc_b64 != "" {
-					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", enc_b64, sink_override)
-				}
-			} else {
-				raw_data := json_string(text, "data")
-				if raw_data != "" || enc_b64 != "" {
-					bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, raw_data, enc_b64, sink_override)
-				}
-				delete(raw_data)
+			// REQ-PANE-INPUT-1/5: the wire contract is decoded by the ONE shared decoder in
+			// shell_stream_input_frame.odin, which the agent pane consults too. It used to be
+			// spelled out here only, and the agent pane's divergent copy understood neither
+			// `vault:v1:` nor `enc_b64` — a total input outage while the vault was unlocked.
+			frame := shell_stream_decode_input_frame(text)
+			defer shell_stream_input_destroy(&frame)
+			switch frame.kind {
+			case .Armored:
+				// The Hub has no vault key; the bridge decrypts or rejects-and-logs.
+				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", frame.armored, sink_override)
+			case .Plain:
+				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, frame.plain, frame.enc_b64, sink_override)
+			case .Undecodable:
+				// REQ-PANE-INPUT-3: a dropped keystroke is never silent. This site used to
+				// discard an undecodable data_b64 without a word.
+				fmt.eprintfln(
+					"ham-hub WARN shell input frame dropped session_id=%s reason=%s",
+					session_id,
+					frame.reason,
+				)
+			case .Empty:
+				// No payload on the frame — nothing to forward.
 			}
 		case "resize":
 			rows := json_int(text, "rows", 0)

@@ -698,7 +698,13 @@ get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 	return reply, true, domain.Domain_Error{}
 }
 
-agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> string {
+// REQ-PANE-INPUT-1/2: `enc_b64` carries vault ciphertext straight through to the bridge,
+// which owns the vault key and decrypts it in bridge_hub_handle_shell_pty_input
+// (src/bridge/hub_runtime_client.odin:1327-1395). The Hub never decrypts keystrokes — it
+// holds only an encrypted vault key — so this is a relay, not a plaintext hop.
+// Mirror of bridge_service.shell_pty_input_command_json (src/hub/service/bridge/bridge_service.odin:391):
+// both panes emit the same `shell_pty_input` wire shape and must stay in step.
+agent_pty_input_command_json :: proc(command_id, instance_id, data: string, enc_b64: string = "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"shell_pty_input\",\"command_id\":\"")
 	write_service_json_string(&b, command_id)
@@ -708,13 +714,29 @@ agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> s
 	write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"data\":\"")
 	write_service_json_string(&b, data)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\"")
+	if enc_b64 != "" {
+		strings.write_string(&b, ",\"enc_b64\":\"")
+		write_service_json_string(&b, enc_b64)
+		strings.write_string(&b, "\"")
+		// The bridge accepts the bare ciphertext or the armored form; send both, as the
+		// shells pane does, so an older bridge that only reads data_b64 still works.
+		armored :=
+			enc_b64 if strings.has_prefix(enc_b64, domain.VAULT_ARMOR_PREFIX) else strings.concatenate({domain.VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
+		strings.write_string(&b, ",\"data_b64\":\"")
+		write_service_json_string(&b, armored)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
 shell_pty_input_command_json :: agent_pty_input_command_json
 
-agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, data: string) -> (bool, domain.Domain_Error) {
+// agent_service_send_pty_input forwards keystrokes to the instance's bridge. `data` is
+// plaintext and `enc_b64` is vault ciphertext; exactly one of them is normally set — see
+// agent_pty_input_command_json above for why the ciphertext is relayed rather than decrypted.
+agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, data: string, enc_b64: string = "") -> (bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return false, err
 
@@ -727,7 +749,7 @@ agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Au
 		cmd_id = platform.generate_id(service.ids, "cmd_input_")
 	}
 
-	cmd_json := agent_pty_input_command_json(cmd_id, instance_id, data)
+	cmd_json := agent_pty_input_command_json(cmd_id, instance_id, data, enc_b64)
 	sent, send_err := project_service.bridge_command_send_runtime(
 		service.bridge_command_sink,
 		project_service.Runtime_Command{

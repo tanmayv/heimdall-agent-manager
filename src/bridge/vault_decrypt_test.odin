@@ -140,21 +140,30 @@ test_bridge_read_vault_key_from_disk :: proc(t: ^testing.T) {
 	}
 	os.unset_env("HEIMDALL_VAULT_KEY")
 
-	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
-	defer delete(path)
-	dir := cfg_lib.expand_home("~/.config/heimdall")
-	defer delete(dir)
-	_ = os.make_directory(dir)
+	// This test used to write its fixture over the OPERATOR'S REAL key: it resolved
+	// the true `~/.config/heimdall/vault_key`, O_TRUNC'd it, wrote a dummy key on
+	// top, and put the original back only from a `defer` — with an `os.remove(path)`
+	// on the error branch. `defer` does not run on a panic, abort, timeout or
+	// SIGKILL, so a run that died at the wrong moment DESTROYED the credential
+	// outright. That is strictly worse than the rename in unseal_security_test.odin,
+	// which at least left the bytes on disk under a backup name (iss_18db4d8f4b153b62).
+	//
+	// The sandbox redirects HOME and HEIMDALL_HOME, so `cfg_lib.expand_home` below
+	// resolves inside a temp dir and the real key is unreachable by construction.
+	// Nothing of the operator's is in scope any more, so there is no longer anything
+	// to back up or restore — the read-and-restore block this replaces is gone, not
+	// merely hardened.
+	sb, sandbox_ok := bridge_vault_test_sandbox_open(t, "read_from_disk")
+	defer bridge_vault_test_sandbox_close(&sb)
+	if !sandbox_ok do return
 
-	prev_data, err := os.read_entire_file(path, context.allocator)
-	defer {
-		if err == nil {
-			_ = os.write_entire_file(path, prev_data)
-			delete(prev_data)
-		} else {
-			_ = os.remove(path)
-		}
-	}
+	// Only heap-allocated when expansion actually happened; see the note on the
+	// guarded deletes in unseal_security_test.odin. The sandbox above sets both
+	// HOME and HEIMDALL_HOME, so expansion normally does happen -- the guard keeps
+	// this correct if the sandbox ever fails to open rather than freeing a literal.
+	key_rel := "~/.config/heimdall/vault_key"
+	path := cfg_lib.expand_home(key_rel)
+	defer if raw_data(path) != raw_data(key_rel) do delete(path)
 
 	test_key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	c_path := strings.clone_to_cstring(path)
@@ -188,6 +197,16 @@ test_bridge_vault_tri_state_lifecycle :: proc(t: ^testing.T) {
 
 	keystore_lock_and_purge()
 	defer keystore_lock_and_purge()
+
+	// bridge_vault_status() falls back to bridge_read_vault_key(), which resolves
+	// ~/.config/heimdall/vault_key through cfg_lib.expand_home. Without this
+	// redirect it finds the OPERATOR'S REAL KEY and reports Unlocked at step 2,
+	// where this test requires Locked -- so the test both read a real credential
+	// and only passed on hosts that happened not to have one. Opened INSIDE
+	// bridge_test_config_mutex, which is already held outermost above.
+	sb, sandbox_ok := bridge_vault_test_sandbox_open(t, "tri_state")
+	defer bridge_vault_test_sandbox_close(&sb)
+	if !sandbox_ok do return
 
 	prev_env, had_env := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
 	defer {
@@ -238,6 +257,12 @@ test_bridge_fs_rejects_when_vault_locked :: proc(t: ^testing.T) {
 
 	keystore_lock_and_purge()
 	defer keystore_lock_and_purge()
+
+	// Same reason as test_bridge_vault_tri_state_lifecycle: the Locked assertion
+	// below is only true if bridge_read_vault_key() cannot find a key on disk.
+	sb, sandbox_ok := bridge_vault_test_sandbox_open(t, "fs_locked")
+	defer bridge_vault_test_sandbox_close(&sb)
+	if !sandbox_ok do return
 
 	prev_env, had_env := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
 	defer {
