@@ -1,7 +1,7 @@
 import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from "../cookieFetch";
 import { heimdallApi } from "../heimdallApi";
 import { normalizeMemory } from "../memoryCatalog";
-import { encryptVaultText, decryptVaultText, isVaultArmored } from "../../utils/vaultContent";
+import { encryptVaultText, decryptVaultText, isVaultArmored, getActiveVaultKey } from "../../utils/vaultContent";
 import { encryptMemoryFields, decryptMemoryRecord } from "../../utils/vaultMemories";
 export { type Memory, isMemoryExpired } from "../../components/memory/memoryModel";
 
@@ -250,7 +250,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description;
@@ -293,7 +293,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           let title = payload.title;
           let description = payload.description;
@@ -336,7 +336,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
           const body: Record<string, any> = { ...rest };
@@ -386,7 +386,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
           }
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
 
           const { memoryId: _m, proposalId: _p, decision: _d, agentIds, projectIds, bridgeIds, templateIds, ...edits } = arg;
           const body: Record<string, any> = { ...edits };

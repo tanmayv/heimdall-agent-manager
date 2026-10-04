@@ -280,7 +280,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
           const rawItems = Array.isArray(data) ? data : data?.items || [];
           let items = rawItems.map(normalizeIssue);
           const state: any = api.getState();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey() || readSessionVaultKey();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey() || getActiveVaultKey();
           if (rawKeyHex) {
             items = await Promise.all(items.map((iss) => decryptIssueRecord(iss, rawKeyHex)));
           }
@@ -305,7 +305,7 @@ export const issuesApi = heimdallApi.injectEndpoints({
           if (!record) return { data: null };
           let issue = normalizeIssue(record);
           const state: any = api.getState();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey() || readSessionVaultKey();
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || readSessionVaultKey() || getActiveVaultKey();
           if (rawKeyHex) {
             issue = await decryptIssueRecord(issue, rawKeyHex);
           }

@@ -113,4 +113,3 @@ export async function decryptArtifactText(
     return text;
   }
 }
-}

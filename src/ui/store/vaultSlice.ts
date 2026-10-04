@@ -359,8 +359,8 @@ export function shouldOpenVaultOnboarding(args: {
 export const selectVaultState = (state: { vault?: VaultState }) => state?.vault;
 export const selectIsVaultConfigured = (state: { vault?: VaultState }) => Boolean(state?.vault?.isConfigured);
 export const selectIsVaultUnlocked = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlocked);
-export const selectRawVaultKeyHex = (state?: { vault?: VaultState }): string | CryptoKey | null =>
-  (state?.vault as any)?.rawVaultKeyHex ?? getActiveVaultKey();
+export const selectRawVaultKeyHex = (state?: { vault?: VaultState }): string | null =>
+  (state?.vault as any)?.rawVaultKeyHex ?? null;
 export const selectActiveVaultKey = (_state?: { vault?: VaultState }): CryptoKey | null => getActiveVaultKey();
 export const selectIsUnlockModalOpen = (state: { vault?: VaultState }) => Boolean(state?.vault?.isUnlockModalOpen);
 

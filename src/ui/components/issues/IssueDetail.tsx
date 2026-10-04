@@ -58,7 +58,7 @@ function IssueCommentContent({
 }: {
   body: string;
   isUnlocked?: boolean;
-  rawKey?: string | null;
+  rawKey?: string | CryptoKey | null;
 }) {
   return <DecryptedMarkdown source={body} />;
 }

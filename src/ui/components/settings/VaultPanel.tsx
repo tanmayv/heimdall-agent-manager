@@ -85,6 +85,7 @@ export default function VaultPanel() {
   const isVaultConfiguredInRedux = useSelector(selectIsVaultConfigured);
   const isUnlocked = useSelector(selectIsVaultUnlocked);
   const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
+  const rawKeyString = typeof rawVaultKeyHex === 'string' ? rawVaultKeyHex : '';
 
   const { data: vaultData, isLoading: isVaultLoading, refetch: refetchVault } = useGetUserVaultQuery();
   const [setUserVault, { isLoading: isSavingVault }] = useSetUserVaultMutation();
@@ -144,23 +145,23 @@ export default function VaultPanel() {
   }, [recoveryWords]);
 
   const handleCopyKey = useCallback(async () => {
-    if (!rawVaultKeyHex) return;
-    const ok = await copyTextToClipboard(rawVaultKeyHex);
+    if (!rawKeyString) return;
+    const ok = await copyTextToClipboard(rawKeyString);
     if (ok) {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
     }
-  }, [rawVaultKeyHex]);
+  }, [rawKeyString]);
 
   const handleCopyBridgeCmd = useCallback(async () => {
-    if (!rawVaultKeyHex) return;
-    const cmd = `ham-ctl vault set-key ${rawVaultKeyHex}`;
+    if (!rawKeyString) return;
+    const cmd = `ham-ctl vault set-key ${rawKeyString}`;
     const ok = await copyTextToClipboard(cmd);
     if (ok) {
       setCopiedBridgeCmd(true);
       setTimeout(() => setCopiedBridgeCmd(false), 2000);
     }
-  }, [rawVaultKeyHex]);
+  }, [rawKeyString]);
 
   // Setup Wizard Submit Handler
   async function handleSetupSubmit(e: FormEvent) {
@@ -721,7 +722,7 @@ export default function VaultPanel() {
             data-debug-id="vault-key-hex-display"
             className="break-all rounded-xl border border-subtle bg-surface-raised/40 p-3.5 font-mono text-xs text-primary select-all tracking-wider"
           >
-            {isKeyVisible ? rawVaultKeyHex : '•'.repeat(64)}
+            {isKeyVisible ? (rawKeyString || 'Protected in WebCrypto (non-extractable)') : '•'.repeat(64)}
           </div>
         </div>
 
@@ -749,7 +750,7 @@ export default function VaultPanel() {
             data-debug-id="vault-bridge-cmd-display"
             className="break-all rounded-xl border border-subtle bg-surface-raised/60 p-3 font-mono text-xs text-accent select-all"
           >
-            ham-ctl vault set-key {rawVaultKeyHex || '<hex-vault-key>'}
+            ham-ctl vault set-key {rawKeyString || '<hex-vault-key>'}
           </div>
 
           <p className="text-xs text-faint">
