@@ -343,8 +343,10 @@ server.on('upgrade', (req, clientSocket, head) => {
         .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
         .join('\r\n');
       clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${statusLine}\r\n\r\n`);
-      if (upstreamHead?.length) clientSocket.unshift(upstreamHead);
-      upstreamSocket.pipe(clientSocket).pipe(upstreamSocket);
+      if (upstreamHead?.length) clientSocket.write(upstreamHead);
+      if (head?.length) upstreamSocket.write(head);
+      upstreamSocket.pipe(clientSocket);
+      clientSocket.pipe(upstreamSocket);
       upstreamSocket.on('error', () => clientSocket.destroy());
       clientSocket.on('error', () => upstreamSocket.destroy());
     });
@@ -352,7 +354,6 @@ server.on('upgrade', (req, clientSocket, head) => {
       clientSocket.end(`HTTP/1.1 ${upstreamRes.statusCode} ${upstreamRes.statusMessage}\r\n\r\n`);
     });
     upstreamReq.on('error', () => clientSocket.destroy());
-    if (head?.length) upstreamReq.write(head);
     upstreamReq.end();
     return;
   }
