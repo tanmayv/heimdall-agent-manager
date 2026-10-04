@@ -147,3 +147,22 @@ export async function decryptTaskCommentRecord<T extends TaskCommentPayload>(
     return comment;
   }
 }
+
+export async function decryptTaskList<T extends TaskPayload>(
+  tasks: T[],
+  rawKeyHex?: string | CryptoKey | null,
+): Promise<T[]> {
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !Array.isArray(tasks)) return tasks;
+  return Promise.all(tasks.map((t) => decryptTaskRecord(t, activeKey)));
+}
+
+export async function decryptTaskComments<T extends TaskCommentPayload>(
+  comments: T[],
+  rawKeyHex?: string | CryptoKey | null,
+): Promise<T[]> {
+  const activeKey = rawKeyHex || getActiveVaultKey();
+  if (!activeKey || !Array.isArray(comments)) return comments;
+  return Promise.all(comments.map((c) => decryptTaskCommentRecord(c, activeKey)));
+}
+

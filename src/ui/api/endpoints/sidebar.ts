@@ -1,6 +1,8 @@
 import { heimdallApi } from '../heimdallApi';
 import { apiUrl, cookieJsonFetch } from '../cookieFetch';
 import { decryptProjectList } from '../../utils/vaultProjects';
+import { decryptConversationRecord } from '../../utils/vaultChats';
+import { getActiveVaultKey } from '../../utils/vaultContent';
 
 // UI-14: cookie-authenticated sidebar data for the live shell. The shell serves
 // the rewrite behind the trusted proxy, so these use `credentials: 'include'`
@@ -173,14 +175,20 @@ export const sidebarApi = heimdallApi.injectEndpoints({
     // Conversations list for the sidebar tree. Tagged so the user-WS chat-event
     // path can invalidate it and refresh unread badges.
     listSidebarConversations: build.query<SidebarConversation[], { limit?: number; activeOnly?: boolean } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 30;
           const activeOnly = Boolean(arg && typeof arg === 'object' && arg.activeOnly);
           // ?active=true asks the hub to return only conversations whose bound
           // agent instance is in a live runtime state (running agents only).
           const rows = await fetchCookieList(`/chats?limit=${limit}${activeOnly ? '&active=true' : ''}`, ['conversations', 'chats']);
-          const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
+          let conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
+          const state: any = api?.getState?.();
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          if (isUnlocked && activeKey) {
+            conversations = await Promise.all(conversations.map((c) => decryptConversationRecord(c, activeKey)));
+          }
           return { data: conversations };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
@@ -192,7 +200,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
       ],
     }),
     listConversationInbox: build.query<ConversationInboxPage, { limit?: number; cursor?: string } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 50;
           const cursor = (arg && typeof arg === 'object' && arg.cursor) || '';
@@ -203,7 +211,13 @@ export const sidebarApi = heimdallApi.injectEndpoints({
           });
           if (cursor) params.set('cursor', cursor);
           const { rows, page } = await fetchCookiePage(`/chats?${params.toString()}`, ['conversations', 'chats']);
-          const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
+          let conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
+          const state: any = api?.getState?.();
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          if (isUnlocked && activeKey) {
+            conversations = await Promise.all(conversations.map((c) => decryptConversationRecord(c, activeKey)));
+          }
           return { data: { conversations, nextCursor: String(page?.next_cursor ?? page?.nextCursor ?? ''), hasMore: Boolean(page?.has_more ?? page?.hasMore ?? conversations.length >= limit) } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
@@ -221,7 +235,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
           const rows = await fetchCookieList(`/projects?limit=${limit}`, ['projects']);
           const rawProjects = rows.map(normalizeSidebarProject);
           const state: any = api?.getState?.();
-          const rawKeyHex = state?.vault?.rawVaultKeyHex;
+          const rawKeyHex = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           const projects = (isUnlocked && rawKeyHex)
             ? await decryptProjectList(rawProjects, rawKeyHex)

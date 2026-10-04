@@ -1,5 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch } from '../cookieFetch';
+import { isVaultArmored, decryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
 
 // UI: consolidated sidebar tree from GET /api/v1/agents/live — EVERY project
 // (alphabetical, even with nothing live) -> the chains with >=1 live agent ->
@@ -98,11 +99,39 @@ export const agentsLiveApi = heimdallApi.injectEndpoints({
     // SidebarConversations id so the same user-WS invalidation path that refreshes
     // conversation state also refreshes the live tree (project/chain/agent set).
     getAgentsLive: build.query<LiveProject[], void>({
-      queryFn: async () => {
+      queryFn: async (_arg, api) => {
         try {
           const payload = await cookieJsonFetch('/agents/live');
           const rows = Array.isArray(payload?.projects) ? payload.projects : Array.isArray(payload) ? payload : [];
-          return { data: rows.map(normalizeLiveProject) };
+          let projects = rows.map(normalizeLiveProject);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            projects = await Promise.all(
+              projects.map(async (p) => {
+                let name = p.name;
+                if (isVaultArmored(name)) {
+                  try {
+                    name = await decryptVaultText(name, activeKey);
+                  } catch {}
+                }
+                const chains = await Promise.all(
+                  (p.chains || []).map(async (c) => {
+                    let title = c.title;
+                    if (isVaultArmored(title)) {
+                      try {
+                        title = await decryptVaultText(title, activeKey);
+                      } catch {}
+                    }
+                    return { ...c, title };
+                  }),
+                );
+                return { ...p, name, chains };
+              }),
+            );
+          }
+          return { data: projects };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
         }

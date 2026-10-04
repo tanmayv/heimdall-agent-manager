@@ -1,6 +1,7 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
-import { encryptVaultText, isVaultArmored } from '../../utils/vaultContent';
+import { encryptVaultText, isVaultArmored, getActiveVaultKey } from '../../utils/vaultContent';
+import { decryptChainRecord, decryptChainList } from '../../utils/vaultChains';
 
 export interface FleetRestartFailure {
   instance_id: string;
@@ -130,12 +131,18 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
     }),
 
     getTaskChain: build.query<any, { chainId: string } | string>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         const chainId = typeof arg === 'string' ? arg : arg?.chainId;
         if (!chainId) return { data: null };
         try {
           const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}`);
-          const data = raw?.data ?? raw;
+          let data = raw?.data ?? raw;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && data) {
+            data = await decryptChainRecord(data, activeKey);
+          }
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -148,7 +155,7 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
     }),
 
     getTaskChains: build.query<any, { projectId?: string; hasTasks?: boolean; includeArchived?: boolean; pinned?: boolean } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const options = typeof arg === 'object' && arg !== null ? arg : undefined;
           const params = new URLSearchParams();
@@ -158,7 +165,13 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           if (options?.pinned) params.set('pinned', '1');
           const qs = params.toString();
           const raw = await cookieJsonFetch(`/task-chains${qs ? `?${qs}` : ''}`);
-          const data = raw?.data ?? raw;
+          let data = raw?.data ?? raw;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && Array.isArray(data)) {
+            data = await decryptChainList(data, activeKey);
+          }
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

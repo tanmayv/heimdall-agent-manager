@@ -2,6 +2,7 @@ import * as daemonApi from '../daemonApi';
 import { apiUrl, cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { isVaultArmored, encryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
+import { decryptConversationRecord } from '../../utils/vaultChats';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
 
@@ -249,18 +250,26 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
     // string); when it is unavailable (deep link by conversation id only) we fall
     // back to the list scan for correctness.
     fetchConversation: build.query<any, { conversationId: string; agentInstanceId?: string }>({
-      queryFn: async ({ conversationId, agentInstanceId }) => {
+      queryFn: async ({ conversationId, agentInstanceId }, api) => {
         if (!conversationId && !agentInstanceId) return { data: { conversation: null } };
         try {
+          let conversation: any = null;
           const instanceId = String(agentInstanceId || '').trim();
           if (instanceId) {
-            const conversation = await cookieJsonFetch(`/chats/by-instance/${encodeURIComponent(instanceId)}`);
-            const conv = conversation?.data ?? conversation ?? null;
-            if (conv && String(conv?.conversation_id || conv?.conversationId || '')) return { data: { conversation: conv } };
+            const res = await cookieJsonFetch(`/chats/by-instance/${encodeURIComponent(instanceId)}`);
+            conversation = res?.data ?? res ?? null;
           }
-          const list = await cookieJsonFetch('/chats');
-          const rows = Array.isArray(list) ? list : (list?.data || list?.conversations || []);
-          const conversation = rows.find((c: any) => String(c?.conversation_id || c?.conversationId) === conversationId) || null;
+          if (!conversation || !String(conversation?.conversation_id || conversation?.conversationId || '')) {
+            const list = await cookieJsonFetch('/chats');
+            const rows = Array.isArray(list) ? list : (list?.data || list?.conversations || []);
+            conversation = rows.find((c: any) => String(c?.conversation_id || c?.conversationId) === conversationId) || null;
+          }
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && conversation) {
+            conversation = await decryptConversationRecord(conversation, activeKey);
+          }
           return { data: { conversation } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -736,11 +745,17 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       },
     }),
     listAllChatConversations: build.query<any, { limit?: number } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const limit = typeof arg === 'object' && arg !== null && typeof arg.limit === 'number' ? arg.limit : 200;
           const raw = await cookieJsonFetch(`/chats?limit=${encodeURIComponent(limit)}`);
-          const data = raw?.data ?? raw;
+          let data = raw?.data ?? raw;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && Array.isArray(data)) {
+            data = await Promise.all(data.map((c) => decryptConversationRecord(c, activeKey)));
+          }
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

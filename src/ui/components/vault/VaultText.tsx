@@ -104,7 +104,8 @@ export function VaultText({
   }
 
   // 2. Vault content and vault is locked
-  if (!isUnlocked || !rawKey) {
+  const activeKey = rawKey || getActiveVaultKey();
+  if (!isUnlocked || !activeKey) {
     if (isArmored) {
       return (
         <button

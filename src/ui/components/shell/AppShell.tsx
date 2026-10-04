@@ -1378,10 +1378,17 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       dispatch(
         heimdallApi.util.invalidateTags([
           'Projects',
+          'Project',
           'SidebarProjects',
           'SidebarConversations',
           'Cards',
           'ChainList',
+          'Chain',
+          'ChainTasks',
+          'Task',
+          'TaskComments',
+          'ConversationSummaries',
+          'Chat',
           'Issue',
         ]),
       );

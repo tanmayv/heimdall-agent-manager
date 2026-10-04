@@ -2,7 +2,9 @@ import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
-import { isVaultArmored, encryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
+import { isVaultArmored, encryptVaultText, decryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
+import { decryptChainRecord, decryptChainList } from '../../utils/vaultChains';
+import { decryptTaskRecord, decryptTaskList, decryptTaskComments } from '../../utils/vaultTasks';
 import { taskCreateBridgeFields, taskPatchBridgeFields } from '../../utils/taskBridgePin';
 
 // The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
@@ -397,12 +399,39 @@ function normalizeChainProjectGroup(g: any): ChainProjectGroup {
   };
 }
 
+async function decryptChainListItem<T extends ChainListItem>(c: T, key: CryptoKey | string): Promise<T> {
+  let title = c.title;
+  let projectName = c.projectName;
+  if (title && isVaultArmored(title)) {
+    try {
+      title = await decryptVaultText(title, key);
+    } catch {}
+  }
+  if (projectName && isVaultArmored(projectName)) {
+    try {
+      projectName = await decryptVaultText(projectName, key);
+    } catch {}
+  }
+  return { ...c, title, projectName };
+}
+
+async function decryptChainProjectGroup(g: ChainProjectGroup, key: CryptoKey | string): Promise<ChainProjectGroup> {
+  let projectName = g.projectName;
+  if (projectName && isVaultArmored(projectName)) {
+    try {
+      projectName = await decryptVaultText(projectName, key);
+    } catch {}
+  }
+  const chains = await Promise.all((g.chains || []).map((c) => decryptChainListItem(c, key)));
+  return { ...g, projectName, chains };
+}
+
 export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // TC-PAGE: default project-grouped task-chains list (no params) -> array of
     // groups, each previewing up to 5 chains with has_more/next_cursor for paging.
     fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void | { hasTasks?: boolean; includeArchived?: boolean }>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           // ?has_tasks=1 drops chains with no tasks server-side, so chain_total and
           // the paging cursors stay consistent with what is displayed.
@@ -413,7 +442,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const qs = params.toString();
           const raw = await cookieJsonFetch(`/task-chains${qs ? `?${qs}` : ''}`);
           const arr = Array.isArray(raw) ? raw : (raw?.groups || []);
-          return { data: { groups: arr.map(normalizeChainProjectGroup) } };
+          let groups = arr.map(normalizeChainProjectGroup);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            groups = await Promise.all(groups.map((g) => decryptChainProjectGroup(g, activeKey)));
+          }
+          return { data: { groups } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -426,7 +462,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // TC-PAGE: single-project page with cursor pagination (Load more + project
     // filter). cursor is the composite (updated_at|chain_id) from TC-API.
     fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean; includeArchived?: boolean }>({
-      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }) => {
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }, api) => {
         try {
           const params = new URLSearchParams();
           params.set('project_id', projectId);
@@ -435,7 +471,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
           if (hasTasks) params.set('has_tasks', '1');
           if (includeArchived) params.set('include_archived', '1');
           const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
-          return { data: normalizeChainProjectGroup(raw) };
+          let group = normalizeChainProjectGroup(raw);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            group = await decryptChainProjectGroup(group, activeKey);
+          }
+          return { data: group };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -446,7 +489,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       ],
     }),
     listTaskChains: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean; includeArchived?: boolean }>({
-      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }) => {
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false, includeArchived = false }, api) => {
         try {
           const params = new URLSearchParams();
           params.set('project_id', projectId);
@@ -455,7 +498,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
           if (hasTasks) params.set('has_tasks', '1');
           if (includeArchived) params.set('include_archived', '1');
           const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
-          return { data: normalizeChainProjectGroup(raw) };
+          let group = normalizeChainProjectGroup(raw);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            group = await decryptChainProjectGroup(group, activeKey);
+          }
+          return { data: group };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -466,12 +516,19 @@ export const tasksApi = heimdallApi.injectEndpoints({
       ],
     }),
     listPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
-      queryFn: async () => {
+      queryFn: async (_arg, api) => {
         try {
           const raw = await cookieJsonFetch('/task-chains?pinned=1');
           const data = unwrapData(raw);
           const arr = Array.isArray(data) ? data : (Array.isArray(raw) ? raw : (raw?.chains || []));
-          return { data: { chains: arr.map(normalizeChainListItem) } };
+          let chains = arr.map(normalizeChainListItem);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            chains = await Promise.all(chains.map((c) => decryptChainListItem(c, activeKey)));
+          }
+          return { data: { chains } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -482,12 +539,19 @@ export const tasksApi = heimdallApi.injectEndpoints({
       ],
     }),
     fetchPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
-      queryFn: async () => {
+      queryFn: async (_arg, api) => {
         try {
           const raw = await cookieJsonFetch('/task-chains?pinned=1');
           const data = unwrapData(raw);
           const arr = Array.isArray(data) ? data : (Array.isArray(raw) ? raw : (raw?.chains || []));
-          return { data: { chains: arr.map(normalizeChainListItem) } };
+          let chains = arr.map(normalizeChainListItem);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            chains = await Promise.all(chains.map((c) => decryptChainListItem(c, activeKey)));
+          }
+          return { data: { chains } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -499,12 +563,22 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
-      queryFn: async ({ chainId }) => {
+      queryFn: async ({ chainId }, api) => {
         if (!chainId) return { data: { chain: null } };
         try {
           const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}`);
           const data = unwrapData(raw);
-          return { data: { chain: data ? normalizeTaskChainDetail(data) : null } };
+          let chain = data ? normalizeTaskChainDetail(data) : null;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && chain) {
+            chain = await decryptChainRecord(chain, activeKey);
+            if (Array.isArray(chain.tasks)) {
+              chain.tasks = await decryptTaskList(chain.tasks, activeKey);
+            }
+          }
+          return { data: { chain } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -519,12 +593,19 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // Markdown description — is loaded on demand when a task row is expanded.
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTaskDetail: build.query<any, { chainId: string; taskId: string }>({
-      queryFn: async ({ chainId, taskId }) => {
+      queryFn: async ({ chainId, taskId }, api) => {
         if (!chainId || !taskId) return { data: { task: null } };
         try {
           const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`);
           const data = unwrapData(raw);
-          return { data: { task: data ? normalizeTask(data) : null } };
+          let task = data ? normalizeTask(data) : null;
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && task) {
+            task = await decryptTaskRecord(task, activeKey);
+          }
+          return { data: { task } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -536,13 +617,19 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // loaded on demand (task expand) via GET .../comments?last=N.
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTaskComments: build.query<any, { chainId: string; taskId: string; last?: number }>({
-      queryFn: async ({ chainId, taskId, last }) => {
+      queryFn: async ({ chainId, taskId, last }, api) => {
         if (!chainId || !taskId) return { data: { taskId, comments: [] } };
         try {
           const q = last && last > 0 ? `?last=${last}` : '';
           const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/comments${q}`);
           const rows = unwrapData(raw);
-          const comments = (Array.isArray(rows) ? rows : (rows?.comments || [])).map(normalizeTaskComments);
+          let comments = (Array.isArray(rows) ? rows : (rows?.comments || [])).map(normalizeTaskComments);
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey && comments.length > 0) {
+            comments = await decryptTaskComments(comments, activeKey);
+          }
           return { data: { taskId, comments } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -555,20 +642,26 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // multiple chains, so this returns a list normalized to { chainId, title,
     // status } for the coordinator-chains dropdown.
     listChainsByCoordinator: build.query<Array<{ chainId: string; title: string; status: string }>, { agentInstanceId: string }>({
-      queryFn: async ({ agentInstanceId }) => {
+      queryFn: async ({ agentInstanceId }, api) => {
         if (!agentInstanceId) return { data: [] };
         try {
           const raw = await cookieJsonFetch(`/task-chains?coordinated_by=${encodeURIComponent(agentInstanceId)}`);
           const data = unwrapData(raw);
           const list = Array.isArray(data) ? data : [];
+          let chains = list.map((c: any) => ({
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+            chainId: c.chain_id || c.chainId || '',
+            title: c.title || '',
+            status: c.status || 'active',
+          }));
+          const state: any = api?.getState?.();
+          const isUnlocked = Boolean(state?.vault?.isUnlocked);
+          const activeKey = state?.vault?.rawVaultKeyHex || getActiveVaultKey();
+          if (isUnlocked && activeKey) {
+            chains = await decryptChainList(chains, activeKey);
+          }
           return {
-            // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-            data: list.map((c: any) => ({
-              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-              chainId: c.chain_id || c.chainId || '',
-              title: c.title || '',
-              status: c.status || 'active',
-            })),
+            data: chains,
           };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
