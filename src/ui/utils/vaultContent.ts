@@ -27,6 +27,30 @@ import {
   getActiveVaultKey,
 } from './vaultCrypto.ts';
 
+/** Placeholder substituted for vault-armored text that is not available in plaintext. */
+export const VAULT_MASK_PLACEHOLDER = '[🔒 Encrypted]';
+
+/** Matches one armored vault token. Module-scoped; only ever used with `String.replace`,
+ *  which resets `lastIndex`, so the `g` flag carries no state between calls. */
+const VAULT_ARMORED_TOKEN_RE = /vault:v1:[A-Za-z0-9+/=_-]+/g;
+
+/**
+ * Replace every armored vault token in `value` with the locked placeholder.
+ *
+ * It is a mask, never a decrypt -- it only ever removes information. Use it for any
+ * surface that must not leak ciphertext, notably `aria-label` and other accessible
+ * names: the common `useState(raw)` + mask-in-`useEffect` pattern leaves a token in
+ * the committed DOM until effects flush, and an accessible name is exactly where a
+ * brief leak goes unnoticed -- invisible to both a screenshot and a text-content
+ * assertion.
+ *
+ * Single definition for the app. Previously duplicated as `maskVaultArmored` in
+ * `api/endpoints/memory.ts` and `maskVaultTokens` in `components/vault/VaultText.tsx`.
+ */
+export function maskVaultArmored(value: string): string {
+  return value.replace(VAULT_ARMORED_TOKEN_RE, VAULT_MASK_PLACEHOLDER);
+}
+
 /**
  * Decrypt any embedded vault armored tokens (/vault:v1:[A-Za-z0-9+/=]+/) found inside a string.
  * Tokens that successfully decrypt are replaced with their plaintext; tokens that fail
@@ -68,7 +92,7 @@ export async function decryptEmbeddedVaultTokens(
         const decrypted = await decryptVaultText(token, cryptoKey);
         return { token, decrypted };
       } catch {
-        return { token, decrypted: '[🔒 Encrypted]' };
+        return { token, decrypted: VAULT_MASK_PLACEHOLDER };
       }
     }),
   );

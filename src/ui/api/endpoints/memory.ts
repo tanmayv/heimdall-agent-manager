@@ -219,9 +219,9 @@ export function memoryErrorText(err: unknown, fallback = "Something went wrong")
  *
  * It is a mask, never a decrypt — it only ever removes information.
  */
-export function maskVaultArmored(value: string): string {
-  return value.replace(/vault:v1:[A-Za-z0-9+/=_-]+/g, "[🔒 Encrypted]");
-}
+// Single definition lives in utils/vaultContent.ts; re-exported here so existing
+// `from '../../api/endpoints/memory'` importers keep working.
+export { maskVaultArmored } from '../../utils/vaultContent.ts';
 
 export type RejectMemoryInput = {
   memoryId: string;

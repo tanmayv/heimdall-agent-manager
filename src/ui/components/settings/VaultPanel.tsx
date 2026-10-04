@@ -17,7 +17,6 @@ import {
 import {
   selectIsVaultConfigured,
   selectIsVaultUnlocked,
-  selectRawVaultKeyHex,
   setVaultConfigured,
   setVaultUnlocked,
   lockVault,
@@ -69,6 +68,23 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * The vault key is imported as a NON-EXTRACTABLE WebCrypto `CryptoKey`
+ * (REQ-VAULT-HARDEN-1), so no raw hex for it exists anywhere this component could
+ * read. The key viewer is therefore a status surface, not a key display: it reports
+ * that the key is protected and offers no copy affordance for material that cannot
+ * exist. Driven by a constant rather than a selector so it cannot silently start
+ * rendering key material again.
+ */
+const VAULT_KEY_PROTECTED_LABEL = 'Protected in WebCrypto (non-extractable)';
+
+/**
+ * Bridge setup command template. The `<hex-vault-key>` placeholder is literal and
+ * deliberate -- the operator substitutes their own key. Display and clipboard both
+ * read this one constant so what is shown is exactly what is copied.
+ */
+const VAULT_BRIDGE_CMD_TEMPLATE = 'ham-ctl vault set-key <hex-vault-key>';
+
 function extractVaultRecord(record: any) {
   if (!record) return null;
   return {
@@ -88,8 +104,6 @@ export default function VaultPanel() {
   const dispatch = useDispatch();
   const isVaultConfiguredInRedux = useSelector(selectIsVaultConfigured);
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawVaultKeyHex = useSelector(selectRawVaultKeyHex);
-  const rawKeyString = typeof rawVaultKeyHex === 'string' ? rawVaultKeyHex : '';
 
   const { data: vaultData, isLoading: isVaultLoading, refetch: refetchVault } = useGetUserVaultQuery();
   const [setUserVault, { isLoading: isSavingVault }] = useSetUserVaultMutation();
@@ -122,7 +136,6 @@ export default function VaultPanel() {
 
   // Unlocked State View
   const [isKeyVisible, setIsKeyVisible] = useState(false);
-  const [copiedKey, setCopiedKey] = useState(false);
   const [copiedBridgeCmd, setCopiedBridgeCmd] = useState(false);
 
   // Initialize 12 recovery words on mount
@@ -148,24 +161,13 @@ export default function VaultPanel() {
     }
   }, [recoveryWords]);
 
-  const handleCopyKey = useCallback(async () => {
-    if (!rawKeyString) return;
-    const ok = await copyTextToClipboard(rawKeyString);
-    if (ok) {
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
-    }
-  }, [rawKeyString]);
-
   const handleCopyBridgeCmd = useCallback(async () => {
-    if (!rawKeyString) return;
-    const cmd = `ham-ctl vault set-key ${rawKeyString}`;
-    const ok = await copyTextToClipboard(cmd);
+    const ok = await copyTextToClipboard(VAULT_BRIDGE_CMD_TEMPLATE);
     if (ok) {
       setCopiedBridgeCmd(true);
       setTimeout(() => setCopiedBridgeCmd(false), 2000);
     }
-  }, [rawKeyString]);
+  }, []);
 
   // Setup Wizard Submit Handler
   async function handleSetupSubmit(e: FormEvent) {
@@ -726,10 +728,11 @@ export default function VaultPanel() {
                 size="sm"
                 variant="secondary"
                 data-debug-id="vault-key-copy-btn"
-                onClick={handleCopyKey}
+                disabled
+                title="The vault key is a non-extractable WebCrypto key: there is no raw key material to copy."
               >
                 <Icon name="copy" size="sm" />
-                {copiedKey ? 'Copied Key!' : 'Copy Key'}
+                Copy Key
               </Button>
             </div>
           </div>
@@ -738,7 +741,7 @@ export default function VaultPanel() {
             data-debug-id="vault-key-hex-display"
             className="break-all rounded-xl border border-subtle bg-surface-raised/40 p-3.5 font-mono text-xs text-primary select-all tracking-wider"
           >
-            {isKeyVisible ? (rawKeyString || 'Protected in WebCrypto (non-extractable)') : '•'.repeat(64)}
+            {isKeyVisible ? VAULT_KEY_PROTECTED_LABEL : '•'.repeat(64)}
           </div>
         </div>
 
@@ -766,7 +769,7 @@ export default function VaultPanel() {
             data-debug-id="vault-bridge-cmd-display"
             className="break-all rounded-xl border border-subtle bg-surface-raised/60 p-3 font-mono text-xs text-accent select-all"
           >
-            ham-ctl vault set-key {rawKeyString || '<hex-vault-key>'}
+            {VAULT_BRIDGE_CMD_TEMPLATE}
           </div>
 
           <p className="text-xs text-faint">
@@ -780,7 +783,7 @@ export default function VaultPanel() {
   return (
     <PageShell
       title="User Vault"
-      description="Zero-Knowledge client vault with Master Password encryption, 12-word recovery phrase, and hex Vault Key viewer."
+      description="Zero-Knowledge client vault with Master Password encryption, 12-word recovery phrase, and non-extractable key status."
     >
       <div data-debug-id="settings-vault-panel" className="space-y-6 text-left">
         {!isConfigured && renderSetupWizard()}

@@ -14,14 +14,9 @@ import {
   decryptEmbeddedVaultTokens,
   decryptList,
   getActiveVaultKey,
+  maskVaultArmored,
 } from '../../utils/vaultContent';
 import Markdown from '../Markdown';
-
-/** Replace every armored vault token in `text` with the locked placeholder. */
-const VAULT_TOKEN_RE = /vault:v1:[A-Za-z0-9+/=_-]+/g;
-function maskVaultTokens(text: string): string {
-  return text.replace(VAULT_TOKEN_RE, '[🔒 Encrypted]');
-}
 
 /**
  * Mask the vault-armored fields of a list of records. Returns the input array
@@ -35,7 +30,7 @@ function maskVaultFields<T extends Record<string, any>>(items: T[], fields: stri
       const value = item[field];
       if (typeof value === 'string' && containsVaultArmored(value)) {
         next = next ?? ({ ...item } as T);
-        (next as Record<string, any>)[field] = maskVaultTokens(value);
+        (next as Record<string, any>)[field] = maskVaultArmored(value);
       }
     }
     if (next) {
@@ -96,7 +91,7 @@ export function VaultText({
     const activeKey = activeVaultKey || getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
       setDecryptedText(
-        isEmbedded ? maskVaultTokens(rawString) : null
+        isEmbedded ? maskVaultArmored(rawString) : null
       );
       setIsDecrypting(false);
       return;
@@ -114,7 +109,7 @@ export function VaultText({
     }).catch((err) => {
       if (mounted) {
         console.error('Failed to decrypt vault armored text:', err);
-        setDecryptedText(fallback || maskVaultTokens(rawString));
+        setDecryptedText(fallback || maskVaultArmored(rawString));
         setIsDecrypting(false);
       }
     });
@@ -162,7 +157,7 @@ export function VaultText({
     }
     return (
       <Tag className={className} title={title}>
-        {decryptedText !== null ? decryptedText : maskVaultTokens(rawString)}
+        {decryptedText !== null ? decryptedText : maskVaultArmored(rawString)}
       </Tag>
     );
   }
@@ -203,7 +198,7 @@ export function useDecryptedText(value?: string | null): {
   // Seed masked, never raw: React commits initial state before effects run, so
   // seeding `raw` paints one frame of vault:v1: ciphertext on every consumer --
   // locked vaults included (iss_18db4e292b0c5b57).
-  const [text, setText] = useState<string>(() => (hasVault ? maskVaultTokens(raw) : raw));
+  const [text, setText] = useState<string>(() => (hasVault ? maskVaultArmored(raw) : raw));
   const [isDecrypting, setIsDecrypting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -215,7 +210,7 @@ export function useDecryptedText(value?: string | null): {
     }
     const activeKey = activeVaultKey || getActiveVaultKey();
     if (!isUnlocked || !activeKey) {
-      setText(maskVaultTokens(raw));
+      setText(maskVaultArmored(raw));
       setIsDecrypting(false);
       return;
     }
@@ -225,12 +220,12 @@ export function useDecryptedText(value?: string | null): {
       : decryptEmbeddedVaultTokens(raw, activeKey);
     p.then((decrypted) => {
       if (mounted) {
-        setText(maskVaultTokens(decrypted));
+        setText(maskVaultArmored(decrypted));
         setIsDecrypting(false);
       }
     }).catch(() => {
       if (mounted) {
-        setText(maskVaultTokens(raw));
+        setText(maskVaultArmored(raw));
         setIsDecrypting(false);
       }
     });
