@@ -188,6 +188,25 @@ pty_host_user_message_interrupts_with_esc :: proc(t: ^testing.T) {
 	for i in 0..<len(want) do testing.expect_value(t, ep[i], want[i])
 }
 
+// pty_host_nudge_payload_allocator is the allocator the two deliver_task_nudge
+// tests below use for frame payloads, on BOTH sides of their accept thread.
+//
+// A thread started by thread.create_and_start_with_data does not inherit the
+// starting thread's context. Letting the implicit context.allocator stand would
+// therefore allocate each payload from the default heap on the accept thread and
+// free it through the test runner's per-test tracking allocator on the test
+// thread -- a `+++ bad free`, followed by `free(): invalid pointer`, which
+// aborted the whole src/bridge suite before it could print its result.
+//
+// The heap allocator rather than the test's own context allocator: the runner's
+// per-test allocator is a mem.Rollback_Stack, serialised only incidentally by the
+// tracking allocator's mutex and left unguarded under
+// -define:ODIN_TEST_TRACK_MEMORY=false, so sharing it across threads would trade
+// the bad free for a data race.
+pty_host_nudge_payload_allocator :: proc() -> runtime.Allocator {
+	return runtime.heap_allocator()
+}
+
 // pty_host_deliver_task_nudge_interrupt_sends_esc verifies that
 // bridge_pty_host_deliver_task_nudge sends the ESC key frame when interrupt is true.
 @(test)
@@ -213,15 +232,20 @@ pty_host_deliver_task_nudge_interrupt_sends_esc :: proc(t: ^testing.T) {
 	testing.expect_value(t, listen_res, posix.result.OK)
 
 	Server_Ctx :: struct {
-		listener_fd: posix.FD,
-		first_payload: []byte,
-		total_conns: int,
+		listener_fd:       posix.FD,
+		first_payload:     []byte,
+		total_conns:       int,
+		// Named explicitly because frame payloads cross a thread boundary: they
+		// are allocated on the accept thread below and freed on the test thread.
+		// See the note above pty_host_nudge_payload_allocator.
+		payload_allocator: runtime.Allocator,
 	}
-	ctx := Server_Ctx{listener_fd = listener_fd}
-	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload)
+	ctx := Server_Ctx{listener_fd = listener_fd, payload_allocator = pty_host_nudge_payload_allocator()}
+	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload, ctx.payload_allocator)
 
 	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
 		s := (^Server_Ctx)(data)
+		context.allocator = s.payload_allocator
 		for s.total_conns < 3 {
 			client := posix.accept(s.listener_fd, nil, nil)
 			if client < 0 do break
@@ -230,7 +254,7 @@ pty_host_deliver_task_nudge_interrupt_sends_esc :: proc(t: ^testing.T) {
 			if ok && s.total_conns == 1 {
 				s.first_payload = payload
 			} else if ok {
-				delete(payload)
+				delete(payload, s.payload_allocator)
 			}
 			posix.close(client)
 		}
@@ -277,15 +301,20 @@ pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
 	testing.expect_value(t, listen_res, posix.result.OK)
 
 	Server_Ctx :: struct {
-		listener_fd: posix.FD,
-		first_payload: []byte,
-		total_conns: int,
+		listener_fd:       posix.FD,
+		first_payload:     []byte,
+		total_conns:       int,
+		// Named explicitly because frame payloads cross a thread boundary: they
+		// are allocated on the accept thread below and freed on the test thread.
+		// See the note above pty_host_nudge_payload_allocator.
+		payload_allocator: runtime.Allocator,
 	}
-	ctx := Server_Ctx{listener_fd = listener_fd}
-	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload)
+	ctx := Server_Ctx{listener_fd = listener_fd, payload_allocator = pty_host_nudge_payload_allocator()}
+	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload, ctx.payload_allocator)
 
 	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
 		s := (^Server_Ctx)(data)
+		context.allocator = s.payload_allocator
 		for s.total_conns < 2 {
 			client := posix.accept(s.listener_fd, nil, nil)
 			if client < 0 do break
@@ -294,7 +323,7 @@ pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
 			if ok && s.total_conns == 1 {
 				s.first_payload = payload
 			} else if ok {
-				delete(payload)
+				delete(payload, s.payload_allocator)
 			}
 			posix.close(client)
 		}
