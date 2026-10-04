@@ -1,8 +1,10 @@
 package main
 
+import "core:crypto"
 import json "core:encoding/json"
 import "core:fmt"
 import "core:strings"
+import "core:time"
 
 // ── shell verb group ─────────────────────────────────────────────────────────
 // Subcommands managing the three session kinds on the Bridge host. All calls
@@ -62,6 +64,25 @@ ctl_shell_rest :: proc(endpoint, token, method, path, body: string) {
 	))
 }
 
+ctl_shell_attach_enc_spec :: proc(args: []string, cmd_str, cwd_str: string, fields: ^[dynamic]string) {
+	if key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator); key_ok && len(key_hex) == 64 {
+		now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
+		nonce_bytes: [16]byte
+		crypto.rand_bytes(nonce_bytes[:])
+		nonce_hex := fmt.tprintf("%x", nonce_bytes)
+		spec_json := json_object(
+			json_kv("cmd", cmd_str),
+			json_kv("cwd", cwd_str),
+			json_kv_raw("timestamp", fmt.tprintf("%d", now_ms)),
+			json_kv("nonce", nonce_hex),
+		)
+		defer delete(spec_json)
+		if enc_spec, enc_ok := vault_encrypt_text_hex(spec_json, key_hex, context.temp_allocator); enc_ok {
+			append(fields, json_kv("enc_spec", enc_spec))
+		}
+	}
+}
+
 // start — POST /api/v1/bridges/{bridge_id}/shells
 // Flags: --kind, --cmd, --cwd, --label, --port, --project, --chain, --agent
 // Prints: {session_id, status, pid}
@@ -77,13 +98,16 @@ ctl_shell_start :: proc(endpoint, token: string, tokens, args: []string) {
 	fields := make([dynamic]string)
 	defer delete(fields)
 	append(&fields, json_kv("kind", kind))
-	if v := option_value(args, "--cmd", ""); v != "" do append(&fields, json_kv("cmd", v))
-	if v := option_value(args, "--cwd", ""); v != "" do append(&fields, json_kv("cwd", v))
+	cmd_val := option_value(args, "--cmd", "")
+	cwd_val := option_value(args, "--cwd", "")
+	if cmd_val != "" do append(&fields, json_kv("cmd", cmd_val))
+	if cwd_val != "" do append(&fields, json_kv("cwd", cwd_val))
 	if v := option_value(args, "--label", ""); v != "" do append(&fields, json_kv("label", v))
 	if v := ctl_shell_uint_flag(args, "--port", ""); v != "" do append(&fields, json_kv_raw("server_port", v))
 	if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
 	if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 	if v := option_value(args, "--agent", ""); v != "" do append(&fields, json_kv("agent_instance_id", v))
+	ctl_shell_attach_enc_spec(args, cmd_val, cwd_val, &fields)
 	ctl_shell_rest(endpoint, token, "POST",
 		fmt.tprintf("/api/v1/bridges/%s/shells", safe_path_part(bridge_id)),
 		json_object_from_slice(fields[:]))
@@ -234,9 +258,11 @@ ctl_shell_run :: proc(endpoint, token: string, tokens, args: []string) {
 	if v := option_value(args, "--project", ctx.project_id); v != "" do append(&fields, json_kv("project_id", v))
 	// chain_id is deliberately NOT sent: a run is agent-scoped and the hub refuses
 	// one that carries a chain rather than storing a column that describes nothing.
-	if v := option_value(args, "--cwd", ""); v != "" do append(&fields, json_kv("cwd", v))
+	cwd_val := option_value(args, "--cwd", "")
+	if cwd_val != "" do append(&fields, json_kv("cwd", cwd_val))
 	if v := option_value(args, "--label", ""); v != "" do append(&fields, json_kv("label", v))
 	if background do append(&fields, json_kv_raw("background", "true"))
+	ctl_shell_attach_enc_spec(args, cmd, cwd_val, &fields)
 
 	response, ok := ctl_agent_local_call(endpoint, token, "agent.rest.request", json_object(
 		json_kv("http_method", "POST"),
@@ -311,9 +337,11 @@ ctl_shell_serve :: proc(endpoint, token: string, tokens, args: []string) {
 	if v := option_value(args, "--project", ctx.project_id); v != "" do append(&fields, json_kv("project_id", v))
 	// agent_instance_id is deliberately NOT sent: a server is chain-scoped, and the
 	// hub refuses one that names an agent instance.
-	if v := option_value(args, "--cwd", ""); v != "" do append(&fields, json_kv("cwd", v))
+	cwd_val := option_value(args, "--cwd", "")
+	if cwd_val != "" do append(&fields, json_kv("cwd", cwd_val))
 	if v := option_value(args, "--label", ""); v != "" do append(&fields, json_kv("label", v))
 	if v := ctl_shell_uint_flag(args, "--port", ""); v != "" do append(&fields, json_kv_raw("server_port", v))
+	ctl_shell_attach_enc_spec(args, cmd, cwd_val, &fields)
 
 	ctl_shell_rest(endpoint, token, "POST",
 		fmt.tprintf("/api/v1/bridges/%s/shells", safe_path_part(bridge_id)),

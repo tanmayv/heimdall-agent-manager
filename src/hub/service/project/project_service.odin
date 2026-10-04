@@ -97,6 +97,7 @@ bridge_runtime_registry_mark_offline :: proc(registry: ^Bridge_Runtime_Registry,
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] != bridge_id do continue
 		if generation != 0 && registry.connection_generations[i] != generation do return
+		if registry.public_keys[i] != "" do delete(registry.public_keys[i])
 		last := registry.live_bridge_count - 1
 		registry.live_bridge_ids[i] = registry.live_bridge_ids[last]
 		registry.path_validation_adapter_registered[i] = registry.path_validation_adapter_registered[last]
@@ -119,13 +120,14 @@ bridge_runtime_registry_set_public_key :: proc(registry: ^Bridge_Runtime_Registr
 	if registry == nil || bridge_id == "" do return
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] == bridge_id {
-			registry.public_keys[i] = public_key
+			if registry.public_keys[i] != "" do delete(registry.public_keys[i])
+			registry.public_keys[i] = strings.clone(public_key)
 			return
 		}
 	}
 	if registry.live_bridge_count < len(registry.live_bridge_ids) {
 		registry.live_bridge_ids[registry.live_bridge_count] = bridge_id
-		registry.public_keys[registry.live_bridge_count] = public_key
+		registry.public_keys[registry.live_bridge_count] = strings.clone(public_key)
 		registry.live_bridge_count += 1
 	}
 }
