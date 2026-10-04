@@ -43,6 +43,8 @@ export interface Bridge {
   updated_at?: string;
   revoked_at?: string;
   telemetry_enabled?: 'inherit' | 'enabled' | 'disabled' | string;
+  public_key?: string;
+  bridge_public_key?: string;
 }
 
 export type BridgeCapability = {

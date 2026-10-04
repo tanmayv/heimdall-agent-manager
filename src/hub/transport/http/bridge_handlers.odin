@@ -325,6 +325,89 @@ mkdir_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// Hub-blind E2EE unseal relay handler (REQ-VAULT-HARDEN-3, REQ-VAULT-HARDEN-8).
+// Relays blind ciphertext directly to Bridge via WS send_runtime_command_wait.
+bridge_unseal_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth_ctx, auth_ok, auth_resp := require_auth(h.auth, req)
+	if !auth_ok do return auth_resp
+
+	bridge_id := path_part(req.path, 4)
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	if bridge.status == .Revoked do return respond_error(domain.domain_error(.Bridge_Revoked, "bridge is revoked"), req.request_id)
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
+		return respond_error(domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id)), req.request_id)
+	}
+
+	command_id := json_string(req.body, "command_id")
+	defer delete(command_id)
+	cmd_id := command_id
+	allocated_cmd_id := false
+	if cmd_id == "" {
+		cmd_id = fmt.aprintf("cmd_unseal_%d", time.to_unix_nanoseconds(time.now()))
+		allocated_cmd_id = true
+	}
+	defer if allocated_cmd_id do delete(cmd_id)
+
+	cmd_body: string
+	allocated_body := false
+	trimmed := strings.trim_space(req.body)
+	if strings.contains(trimmed, "\"type\"") && strings.contains(trimmed, "\"command_id\"") {
+		cmd_body = trimmed
+	} else {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"bridge_unseal\",\"command_id\":\"")
+		write_handler_json_string(&b, cmd_id)
+		strings.write_string(&b, "\"")
+		if strings.has_prefix(trimmed, "{") {
+			strings.write_string(&b, ",")
+			strings.write_string(&b, trimmed[1:])
+		} else {
+			strings.write_string(&b, "}")
+		}
+		cmd_body = strings.to_string(b)
+		allocated_body = true
+	}
+	defer if allocated_body do delete(cmd_body)
+
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(
+		h.bridge_runtime_registry,
+		project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = cmd_id, body_json = cmd_body},
+		10000,
+	)
+	if !reply_ok do return respond_error(reply_err, req.request_id)
+	return respond_success(reply, req.request_id, auth_ctx_server_time(req))
+}
+
+bridge_public_key_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth_ctx, auth_ok, auth_resp := require_auth(h.auth, req)
+	if !auth_ok do return auth_resp
+
+	bridge_id := path_part(req.path, 4)
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+
+	pub_key := ""
+	if h.bridge_runtime_registry != nil {
+		pub_key = project_service.bridge_runtime_registry_public_key(h.bridge_runtime_registry, bridge.bridge_id)
+	}
+	if pub_key == "" && bridge.capabilities_json != "" {
+		pub_key = json_string(bridge.capabilities_json, "public_key", context.temp_allocator)
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"bridge_id\":\"")
+	write_handler_json_string(&b, bridge.bridge_id)
+	strings.write_string(&b, "\",\"public_key\":\"")
+	write_handler_json_string(&b, pub_key)
+	strings.write_string(&b, "\",\"bridge_public_key\":\"")
+	write_handler_json_string(&b, pub_key)
+	strings.write_string(&b, "\"}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 // --- Project-scoped filesystem browser (browse/read/CRUD) -----------------
 // Resolves (project_id -> bridge_id, root_path) via Project_Bridge_Path, then
 // relays a WS command carrying that project root so the bridge re-sandboxes every
@@ -1240,6 +1323,11 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url)
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
 	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client)
+	hello_pub_key := json_string(hello_text, "public_key")
+	if hello_pub_key != "" {
+		project_service.bridge_runtime_registry_set_public_key(h.bridge_runtime_registry, bridge.bridge_id, hello_pub_key)
+	}
+	delete(hello_pub_key)
 	// From here the socket is registered, so other threads (fs/file commands) may
 	// write it — serialize this and every subsequent write.
 	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
@@ -1597,7 +1685,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {
@@ -2053,6 +2141,15 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
 	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
 	strings.write_string(b, "\",\"telemetry_enabled\":\""); write_handler_json_string(b, br.telemetry_enabled if br.telemetry_enabled != "" else "inherit")
+	pub_key := ""
+	if agents != nil && agents.bridge_runtime_registry != nil {
+		pub_key = project_service.bridge_runtime_registry_public_key(agents.bridge_runtime_registry, br.bridge_id)
+	}
+	if pub_key == "" && br.capabilities_json != "" {
+		pub_key = json_string(br.capabilities_json, "public_key", context.temp_allocator)
+	}
+	strings.write_string(b, "\",\"public_key\":\""); write_handler_json_string(b, pub_key)
+	strings.write_string(b, "\",\"bridge_public_key\":\""); write_handler_json_string(b, pub_key)
 	strings.write_string(b, "\"}")
 }
 

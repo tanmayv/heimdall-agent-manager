@@ -15,3 +15,4 @@ export * from './shells';
 export * from './issues';
 export * from './taskChains';
 export * from './userVault';
+export * from './bridges';

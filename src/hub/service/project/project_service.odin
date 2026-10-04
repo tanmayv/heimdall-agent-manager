@@ -33,6 +33,7 @@ Bridge_Runtime_Registry :: struct {
 	live_bridge_ids: [128]string,
 	path_validation_adapter_registered: [128]bool,
 	path_validation_urls: [128]string,
+	public_keys: [128]string,
 	connection_generations: [128]int,
 	command_sockets: [128]net.TCP_Socket,
 	live_bridge_count: int,
@@ -100,16 +101,41 @@ bridge_runtime_registry_mark_offline :: proc(registry: ^Bridge_Runtime_Registry,
 		registry.live_bridge_ids[i] = registry.live_bridge_ids[last]
 		registry.path_validation_adapter_registered[i] = registry.path_validation_adapter_registered[last]
 		registry.path_validation_urls[i] = registry.path_validation_urls[last]
+		registry.public_keys[i] = registry.public_keys[last]
 		registry.connection_generations[i] = registry.connection_generations[last]
 		registry.command_sockets[i] = registry.command_sockets[last]
 		registry.live_bridge_ids[last] = ""
 		registry.path_validation_adapter_registered[last] = false
 		registry.path_validation_urls[last] = ""
+		registry.public_keys[last] = ""
 		registry.connection_generations[last] = 0
 		registry.command_sockets[last] = net.TCP_Socket(0)
 		registry.live_bridge_count -= 1
 		return
 	}
+}
+
+bridge_runtime_registry_set_public_key :: proc(registry: ^Bridge_Runtime_Registry, bridge_id, public_key: string) {
+	if registry == nil || bridge_id == "" do return
+	for i in 0..<registry.live_bridge_count {
+		if registry.live_bridge_ids[i] == bridge_id {
+			registry.public_keys[i] = public_key
+			return
+		}
+	}
+	if registry.live_bridge_count < len(registry.live_bridge_ids) {
+		registry.live_bridge_ids[registry.live_bridge_count] = bridge_id
+		registry.public_keys[registry.live_bridge_count] = public_key
+		registry.live_bridge_count += 1
+	}
+}
+
+bridge_runtime_registry_public_key :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> string {
+	if registry == nil || bridge_id == "" do return ""
+	for i in 0..<registry.live_bridge_count {
+		if registry.live_bridge_ids[i] == bridge_id do return registry.public_keys[i]
+	}
+	return ""
 }
 
 bridge_runtime_registry_has_path_validation_adapter :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> bool {

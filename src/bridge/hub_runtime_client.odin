@@ -860,6 +860,32 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_proxy_close(text)
 		return
 	}
+	if type == "bridge_unseal" {
+		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
+		now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
+		ok, err_msg := bridge_unseal_decrypt_and_verify(text, bridge_config.daemon_id, now_ms)
+
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"bridge_unseal_result\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":")
+		strings.write_string(&b, "true" if ok else "false")
+		if ok {
+			strings.write_string(&b, ",\"status\":\"unlocked\"}")
+		} else {
+			strings.write_string(&b, ",\"status\":\"error\",\"error\":\"")
+			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_string(&b, "\"}")
+		}
+		res := strings.to_string(b)
+		defer delete(res)
+		bridge_runtime_cache_command(command_id, res)
+		if conn != nil {
+			_ = bridge_hub_send(conn, res)
+		}
+		return
+	}
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_lsp_handle_command(conn, type, text) do return
@@ -2717,6 +2743,9 @@ bridge_hub_hello_json :: proc() -> string {
 	bridge_runtime_write_json_string(&b, bridge_target_string())
 	strings.write_string(&b, "\",\"bootstrap_fragment_cache\":true,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
+	pub_key := bridge_get_public_key_hex()
+	strings.write_string(&b, "\",\"public_key\":\"")
+	bridge_runtime_write_json_string(&b, pub_key)
 	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)
 	strings.write_string(&b, ",\"features\":")
