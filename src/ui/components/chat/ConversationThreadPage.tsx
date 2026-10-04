@@ -662,6 +662,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerContainerRef = useRef<HTMLFormElement | HTMLDivElement | null>(null);
   const [error, setError] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
@@ -765,6 +766,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setError('');
     setFocusedTaskId(null);
   }, [routeInstanceId]);
+
+  // REQ-MOBILE-KEYBOARD-SCROLL-30: Synchronized scroll when keyboardInset transitions
+  useEffect(() => {
+    if (keyboardInset > 0 && document.activeElement === textareaRef.current) {
+      const timer = setTimeout(() => {
+        const target = composerContainerRef.current || textareaRef.current;
+        target?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [keyboardInset]);
 
   // REQ-SIDEBAR-5, REQ-SIDEBAR-TOGGLE-SINGLE-CLICK-10: coordinator conversations with a chainId default the right sidebar
   // to the 'chain' tab. Fires once when chainId first becomes available and the panel
@@ -1912,6 +1924,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     );
     return (
       <form
+        ref={composerContainerRef as any}
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
         className="w-full max-w-4xl mx-auto px-3 sm:px-0 py-4"
@@ -2017,7 +2030,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               data-debug-id="conversation-composer-input"
               value={draft}
               onFocus={() => {
-                requestAnimationFrame(() => textareaRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+                const scrollComposer = () => {
+                  const target = composerContainerRef.current || textareaRef.current;
+                  target?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+                };
+                requestAnimationFrame(scrollComposer);
+                // Handle mobile virtual keyboard slide-up transition delays (150ms, 300ms, 450ms)
+                [150, 300, 450].forEach((delay) => {
+                  setTimeout(() => {
+                    if (document.activeElement === textareaRef.current) {
+                      scrollComposer();
+                    }
+                  }, delay);
+                });
               }}
               onChange={(e) => {
                 updateDraft(e.target.value);
