@@ -126,9 +126,19 @@ export async function prepareUnsealPayload(
   } else if (vaultKey instanceof Uint8Array) {
     plaintextBytes = vaultKey;
   } else {
-    const raw = await crypto.subtle.exportKey('raw', vaultKey);
-    const hexStr = bytesToHex(new Uint8Array(raw));
-    plaintextBytes = new TextEncoder().encode(hexStr);
+    try {
+      const raw = await crypto.subtle.exportKey('raw', vaultKey);
+      const hexStr = bytesToHex(new Uint8Array(raw));
+      plaintextBytes = new TextEncoder().encode(hexStr);
+    } catch {
+      const { getActiveVaultKeyHex } = await import('./vaultCrypto.ts');
+      const cachedHex = getActiveVaultKeyHex();
+      if (cachedHex) {
+        plaintextBytes = new TextEncoder().encode(cachedHex);
+      } else {
+        throw new Error('Vault key is a non-extractable CryptoKey and no active key hex is cached.');
+      }
+    }
   }
 
   const encryptedBuf = await crypto.subtle.encrypt(

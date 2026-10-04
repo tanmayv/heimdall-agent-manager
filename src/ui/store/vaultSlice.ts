@@ -89,7 +89,7 @@ export function validateHexVaultKey(hexKey: string): string {
 export async function importAndValidateCryptoKey(hexKey: string): Promise<CryptoKey> {
   const clean = validateHexVaultKey(hexKey);
   const key = await importRawKeyHex(clean);
-  setActiveVaultKey(key);
+  setActiveVaultKey(key, clean);
   return key;
 }
 
@@ -195,7 +195,7 @@ export const vaultSlice = createSlice({
           } else if (payload.rawVaultKeyHex) {
             // Asynchronously import hex key for backward compatibility with tests
             importRawKeyHex(payload.rawVaultKeyHex).then((key) => {
-              setActiveVaultKey(key);
+              setActiveVaultKey(key, payload.rawVaultKeyHex);
               if (payload.rememberSession) {
                 persistVaultKey(key).catch(() => {});
               }

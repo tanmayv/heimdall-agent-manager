@@ -29,6 +29,10 @@ import {
   useSetUserVaultMutation,
 } from '../../api/endpoints/userVault';
 import {
+  unsealAllConnectedBridges,
+  lockAllConnectedBridges,
+} from '../../api/endpoints/bridges';
+import {
   generateVaultKey,
   exportRawKeyHex,
   deriveKeyFromPassword,
@@ -223,6 +227,7 @@ export default function VaultPanel() {
       // 5. Update Redux store
       dispatch(setVaultConfigured(true));
       dispatch(setVaultUnlocked(rawHex));
+      void unsealAllConnectedBridges(rawHex);
 
       // Reset sensitive password inputs
       setMasterPassword('');
@@ -259,8 +264,10 @@ export default function VaultPanel() {
         record.encryptedVaultKey,
         record.vaultKeyNonce,
         record.vaultKeyTag,
+        true,
       );
       dispatch(setVaultUnlocked(vaultKey));
+      void unsealAllConnectedBridges(vaultKey);
       setUnlockPassword('');
       setIsUnlockModalOpen(false);
     } catch (_err) {
@@ -300,8 +307,10 @@ export default function VaultPanel() {
         record.recoveryEncryptedVaultKey,
         record.recoveryNonce,
         record.recoveryTag,
+        true,
       );
       dispatch(setVaultUnlocked(vaultKey));
+      void unsealAllConnectedBridges(vaultKey);
       setRecoveryPhraseInput('');
       setIsUnlockModalOpen(false);
     } catch (_err) {
@@ -680,7 +689,10 @@ export default function VaultPanel() {
             variant="secondary"
             data-debug-id="vault-lock-btn"
             className="min-h-[44px] min-w-[44px] touch-manipulation w-full sm:w-auto"
-            onClick={() => dispatch(lockVault())}
+            onClick={() => {
+              void lockAllConnectedBridges();
+              dispatch(lockVault());
+            }}
           >
             <Icon name="lock" size="sm" />
             Lock Vault

@@ -46,6 +46,75 @@ export async function lockBridge(bridgeId: string): Promise<{ ok: boolean }> {
   }
 }
 
+/**
+ * Unseals all online bridges using the provided or active vault key.
+ */
+export async function unsealAllConnectedBridges(vaultKey?: CryptoKey | string | null): Promise<number> {
+  const { getActiveVaultKey } = await import('../../store/vaultSlice');
+  const key = vaultKey || getActiveVaultKey();
+  if (!key) return 0;
+
+  try {
+    const data = await cookieJsonFetch('/bridges');
+    const rawBridges: any[] = data?.bridges || (Array.isArray(data) ? data : []);
+    const onlineBridges = rawBridges.filter((b) => {
+      const id = String(b?.bridge_id || b?.bridgeId || b?.id || '');
+      if (!id) return false;
+      const status = String(b?.status || b?.runtime_status || '').toLowerCase();
+      return status !== 'revoked';
+    });
+
+    let successCount = 0;
+    for (const bridge of onlineBridges) {
+      const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
+      try {
+        const pubKey = await fetchBridgePublicKey(bridgeId);
+        if (pubKey) {
+          await unsealBridgeE2EE(bridgeId, pubKey, key);
+          successCount++;
+        }
+      } catch (err) {
+        console.warn(`[unsealAllConnectedBridges] failed unsealing bridge ${bridgeId}:`, err);
+      }
+    }
+    return successCount;
+  } catch (err) {
+    console.warn('[unsealAllConnectedBridges] failed to list bridges:', err);
+    return 0;
+  }
+}
+
+/**
+ * Locks all online bridges and purges vault keys on remote bridges.
+ */
+export async function lockAllConnectedBridges(): Promise<number> {
+  try {
+    const data = await cookieJsonFetch('/bridges');
+    const rawBridges: any[] = data?.bridges || (Array.isArray(data) ? data : []);
+    const onlineBridges = rawBridges.filter((b) => {
+      const id = String(b?.bridge_id || b?.bridgeId || b?.id || '');
+      if (!id) return false;
+      const status = String(b?.status || b?.runtime_status || '').toLowerCase();
+      return status !== 'revoked';
+    });
+
+    let lockedCount = 0;
+    for (const bridge of onlineBridges) {
+      const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
+      try {
+        await lockBridge(bridgeId);
+        lockedCount++;
+      } catch (err) {
+        console.warn(`[lockAllConnectedBridges] failed locking bridge ${bridgeId}:`, err);
+      }
+    }
+    return lockedCount;
+  } catch (err) {
+    console.warn('[lockAllConnectedBridges] failed to list bridges:', err);
+    return 0;
+  }
+}
+
 export const bridgesApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     unsealBridge: build.mutation<BridgeUnsealResult, { bridgeId: string; payload: BridgeUnsealPayload }>({

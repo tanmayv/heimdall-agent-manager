@@ -549,6 +549,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/revoke", rawptr(&graph.bridge_handlers), http.revoke_bridge_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/update", rawptr(&graph.bridge_handlers), http.bridge_update_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/unseal", rawptr(&graph.bridge_handlers), http.bridge_unseal_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/lock", rawptr(&graph.bridge_handlers), http.bridge_lock_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/public-key", rawptr(&graph.bridge_handlers), http.bridge_public_key_handler)
 	// Actions API
 	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)

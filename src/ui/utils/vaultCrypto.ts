@@ -18,13 +18,23 @@ export const MIN_ARMOR_PAYLOAD_BYTES = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES; 
 
 // Module-scoped active CryptoKey reference (in-memory C++ browser reference)
 let activeVaultCryptoKey: CryptoKey | null = null;
+let activeVaultKeyHex: string | null = null;
 
 export function getActiveVaultKey(): CryptoKey | null {
   return activeVaultCryptoKey;
 }
 
-export function setActiveVaultKey(key: CryptoKey | null): void {
+export function getActiveVaultKeyHex(): string | null {
+  return activeVaultKeyHex;
+}
+
+export function setActiveVaultKey(key: CryptoKey | null, hex?: string | null): void {
   activeVaultCryptoKey = key;
+  if (hex !== undefined) {
+    activeVaultKeyHex = hex;
+  } else if (!key) {
+    activeVaultKeyHex = null;
+  }
 }
 
 /** Check if a string is armored with the vault content encryption prefix */
@@ -427,6 +437,43 @@ export async function decryptVaultKeyEnvelope(
     } finally {
       decryptedBytes.fill(0);
     }
+  } finally {
+    ciphertextBytes.fill(0);
+    nonceBytes.fill(0);
+    tagBytes.fill(0);
+    combined.fill(0);
+  }
+}
+
+/**
+ * Decrypts vault key envelope and returns raw 64-character hex string.
+ * Used to unseal bridges and populate Redux vault key safely.
+ */
+export async function decryptVaultKeyEnvelopeHex(
+  wrappingKey: CryptoKey,
+  ciphertextHex: string,
+  nonceHex: string,
+  tagHex: string,
+): Promise<string> {
+  const ciphertextBytes = hexToBytes(ciphertextHex);
+  const nonceBytes = hexToBytes(nonceHex);
+  const tagBytes = hexToBytes(tagHex);
+
+  const combined = new Uint8Array(ciphertextBytes.length + tagBytes.length);
+  combined.set(ciphertextBytes, 0);
+  combined.set(tagBytes, ciphertextBytes.length);
+
+  try {
+    const decryptedRaw = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonceBytes as unknown as BufferSource, tagLength: 128 },
+      wrappingKey,
+      combined as unknown as BufferSource,
+    );
+
+    const decryptedBytes = new Uint8Array(decryptedRaw);
+    const hex = bytesToHex(decryptedBytes);
+    decryptedBytes.fill(0);
+    return hex;
   } finally {
     ciphertextBytes.fill(0);
     nonceBytes.fill(0);

@@ -18,6 +18,7 @@ import { useListSidebarConversationsQuery, type SidebarConversation } from '../.
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
 import { useFetchTaskChainGroupsQuery } from '../../api/endpoints/tasks';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { unsealAllConnectedBridges } from '../../api/endpoints/bridges';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import {
   readLastSeenUserId,
@@ -1375,6 +1376,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // Invalidate cached RTK Query tags when vault unlocks (REQ-VAULT-TAGS-INVALIDATE)
   useEffect(() => {
     if (isVaultUnlocked) {
+      void unsealAllConnectedBridges();
       dispatch(
         heimdallApi.util.invalidateTags([
           'Projects',

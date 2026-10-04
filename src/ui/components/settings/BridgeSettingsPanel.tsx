@@ -29,6 +29,8 @@ import {
   fetchBridgePublicKey,
   unsealBridgeE2EE,
   lockBridge,
+  unsealAllConnectedBridges,
+  lockAllConnectedBridges,
 } from '../../api/endpoints/bridges';
 import {
   deriveKeyFromPassword,
@@ -49,8 +51,8 @@ export default function BridgeSettingsPanel({
   onOpenVaultSetup,
 }: BridgeSettingsPanelProps) {
   const dispatch = useDispatch();
-  const queryBridgesResult = useListBridgesQuery(undefined, { skip: Boolean(propBridges) });
-  const bridges: Bridge[] = propBridges || queryBridgesResult.data?.bridges || [];
+  const queryBridgesResult = useListBridgesQuery(undefined, { skip: Boolean(propBridges && propBridges.length > 0) });
+  const bridges: Bridge[] = (propBridges && propBridges.length > 0) ? propBridges : (queryBridgesResult.data?.bridges || []);
 
   const isConfigured = useSelector(selectIsVaultConfigured);
   const isUnlocked = useSelector(selectIsVaultUnlocked);
@@ -91,7 +93,8 @@ export default function BridgeSettingsPanel({
       setUnlockBusy(true);
       try {
         let unsealedCount = 0;
-        for (const bridge of targetBridges) {
+        const candidates = targetBridges.length > 0 ? targetBridges : bridges;
+        for (const bridge of candidates) {
           const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
           if (!bridgeId) continue;
           try {
@@ -103,6 +106,9 @@ export default function BridgeSettingsPanel({
           } catch (bridgeErr) {
             console.warn(`[BridgeSettingsPanel] failed unsealing bridge ${bridgeId}:`, bridgeErr);
           }
+        }
+        if (unsealedCount === 0 && candidates.length === 0) {
+          unsealedCount = await unsealAllConnectedBridges(activeKey);
         }
         setUnsealSuccessMsg(
           unsealedCount > 0
@@ -120,7 +126,7 @@ export default function BridgeSettingsPanel({
     // Otherwise, prompt for master password
     setMasterPassword('');
     setUnlockModalOpen(true);
-  }, [isUnlocked, targetBridges]);
+  }, [isUnlocked, targetBridges, bridges]);
 
   const handlePasswordUnlockSubmit = useCallback(async (e: FormEvent) => {
     e.preventDefault();
@@ -140,14 +146,16 @@ export default function BridgeSettingsPanel({
         derivedKey,
         vaultEnvelope.encrypted_vault_key,
         vaultEnvelope.vault_key_nonce,
-        vaultEnvelope.vault_key_tag
+        vaultEnvelope.vault_key_tag,
+        true
       );
 
       dispatch(setVaultUnlocked({ key: decryptedVaultKey, rememberSession }));
 
       // Now unseal target bridges with the decrypted master key
       let unsealedCount = 0;
-      for (const bridge of targetBridges) {
+      const candidates = targetBridges.length > 0 ? targetBridges : bridges;
+      for (const bridge of candidates) {
         const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
         if (!bridgeId) continue;
         try {
@@ -159,6 +167,9 @@ export default function BridgeSettingsPanel({
         } catch (bridgeErr) {
           console.warn(`[BridgeSettingsPanel] failed unsealing bridge ${bridgeId}:`, bridgeErr);
         }
+      }
+      if (unsealedCount === 0 && candidates.length === 0) {
+        unsealedCount = await unsealAllConnectedBridges(decryptedVaultKey);
       }
 
       setUnlockModalOpen(false);
@@ -173,7 +184,7 @@ export default function BridgeSettingsPanel({
     } finally {
       setUnlockBusy(false);
     }
-  }, [masterPassword, vaultEnvelope, rememberSession, dispatch, targetBridges]);
+  }, [masterPassword, vaultEnvelope, rememberSession, dispatch, targetBridges, bridges]);
 
   const handleLockClick = useCallback(async () => {
     setLockBusy(true);
@@ -181,11 +192,9 @@ export default function BridgeSettingsPanel({
     setUnsealSuccessMsg('');
 
     try {
-      // 1. Purge UI vault key from Redux and memory
-      dispatch(lockVault());
-
-      // 2. Lock target bridges
-      for (const bridge of targetBridges) {
+      // 1. Lock target bridges first over network
+      const candidates = targetBridges.length > 0 ? targetBridges : bridges;
+      for (const bridge of candidates) {
         const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
         if (!bridgeId) continue;
         try {
@@ -194,6 +203,12 @@ export default function BridgeSettingsPanel({
           console.warn(`[BridgeSettingsPanel] lock request failed for bridge ${bridgeId}:`, err);
         }
       }
+      if (candidates.length === 0) {
+        await lockAllConnectedBridges();
+      }
+
+      // 2. Purge UI vault key from Redux and memory
+      dispatch(lockVault());
 
       setUnsealSuccessMsg('Bridge locked and memory purged.');
     } catch (err: any) {
@@ -201,7 +216,7 @@ export default function BridgeSettingsPanel({
     } finally {
       setLockBusy(false);
     }
-  }, [dispatch, targetBridges]);
+  }, [dispatch, targetBridges, bridges]);
 
   return (
     <div
