@@ -158,3 +158,169 @@ test_jsonx_json_unescape_string_binary_and_surrogates :: proc(t: ^testing.T) {
 	testing.expect_value(t, decoded, raw_byte_str)
 }
 
+
+// ---------------------------------------------------------------------------
+// F1 / REQ-JSONX-1..2: invalid UTF-8 in a response string must not panic.
+//
+// core:encoding/json's `unquote_string` sizes its output buffer from the
+// ESCAPED token: `len(s) + 2*utf8.UTF_MAX`, i.e. len+8 of slack. Its pre-scan
+// loop bails out the moment it meets invalid UTF-8, forcing the slow decode
+// path, which re-encodes every invalid byte as U+FFFD: `decode_rune_in_string`
+// returns (RUNE_ERROR, width=1) so 1 input byte is consumed, while
+// `encode_rune(RUNE_ERROR)` emits 3. The guarding `assert(buf_width <= width)`
+// is deliberately skipped for RUNE_ERROR, so each invalid byte nets +2 output
+// bytes. The overflow condition is therefore
+//
+//     decoded_len + 2*invalid_bytes  >  len(escaped_token) + 8
+//
+// NOT simply "five invalid bytes". Five is the boundary only when nothing in
+// the token is escaped, because escapes BUY slack: the Hub emits control bytes
+// as `\u00XX`, six source characters that decode to one, so every control byte
+// in the payload offsets five bytes of U+FFFD expansion. That is exactly why
+// the defect looked content-dependent rather than size-dependent -- a 188K PNG
+// survived while a 68.7K PNG died.
+//
+// Measured on the two artifacts from the user report, against the shipped
+// toolchain (odin dev-2026-07a, share/core/encoding/json/parser.odin):
+//
+//   68.7K png : escaped 111820 -> buffer 111828, output 125937  = +14109 OVERFLOW
+//   1.89M jpeg: escaped 3078215 -> buffer 3078223, output 3511710 = +433487 OVERFLOW
+//
+// and those buffer sizes are verbatim the bounds in the user's panics
+// ("0..<111828" at :507 and "Index 3078223" at :494).
+//
+// The three PNGs that did NOT panic were not unaffected: they came back with
+// 38728 / 52960 / 66906 U+FFFD substitutions and were no longer valid PNGs at
+// all. Surviving the buffer and decoding correctly are different things, which
+// is why these tests assert on the BYTES, not just on the absence of a crash.
+//
+// This reaches every ham-ctl response, because extract_string_found calls
+// json.parse_string on all of them -- binary artifact content is merely the
+// easiest way to get five bad bytes into a string.
+
+// invalid_utf8_run builds `n` bytes that can never begin a valid UTF-8
+// sequence. 0xFF is a continuation-less lead byte, so decode_rune_in_string
+// returns (RUNE_ERROR, 1) for each one individually.
+invalid_utf8_run :: proc(n: int, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	for _ in 0 ..< n do strings.write_byte(&b, 0xFF)
+	return strings.to_string(b)
+}
+
+@(test)
+test_jsonx_four_invalid_utf8_bytes_fit_in_the_slack :: proc(t: ^testing.T) {
+	// The boundary from below: 4 bad bytes net +8, exactly the slack available.
+	// This case passes even against the unfixed core path, which is precisely
+	// why the defect went unnoticed -- it is the FIFTH byte that kills.
+	run := invalid_utf8_run(4)
+	defer delete(run)
+	body := strings.concatenate({`{"content":"`, run, `"}`})
+	defer delete(body)
+
+	got := extract_string(body, "content")
+	defer delete(got)
+	testing.expect(t, len(got) > 0, "4 invalid bytes must still decode to something")
+}
+
+@(test)
+test_jsonx_invalid_utf8_does_not_panic :: proc(t: ^testing.T) {
+	// REQ-JSONX-1: the minimal reproduction. Five invalid bytes overflow the
+	// len+8 buffer by 2. Against HEAD this does not fail the assertion -- it
+	// takes the whole test binary down inside core:encoding/json.
+	run := invalid_utf8_run(5)
+	defer delete(run)
+	body := strings.concatenate({`{"content":"`, run, `"}`})
+	defer delete(body)
+
+	got := extract_string(body, "content")
+	defer delete(got)
+	testing.expect(t, len(got) > 0, "5 invalid bytes must decode without panicking")
+}
+
+@(test)
+test_jsonx_binary_payload_does_not_panic :: proc(t: ^testing.T) {
+	// The user's actual shape: a response string carrying raw binary. The Hub
+	// escaper passes every byte >= 0x20 through verbatim, so a jpeg/png body
+	// arrives as thousands of invalid UTF-8 bytes.
+	blob := strings.builder_make()
+	defer strings.builder_destroy(&blob)
+	// 0x80..0xFF repeated: all continuation/invalid lead bytes, no escaping needed.
+	for _ in 0 ..< 64 {
+		for v in 0x80 ..< 0x100 do strings.write_byte(&blob, u8(v))
+	}
+	body := strings.concatenate({`{"content":"`, strings.to_string(blob), `"}`})
+	defer delete(body)
+
+	got := extract_string(body, "content")
+	defer delete(got)
+	testing.expect(t, len(got) > 0, "a binary response body must decode without panicking")
+}
+
+@(test)
+test_jsonx_invalid_utf8_preserves_the_original_bytes :: proc(t: ^testing.T) {
+	// REQ-JSONX-2: not panicking is not enough -- `artifact download` has to
+	// write the file back byte-for-byte, so the bytes must survive verbatim
+	// rather than being replaced by U+FFFD.
+	raw := "\x89PNG\xff\xfe\xfd\xfc\xfb\xfa head"
+	body := strings.concatenate({`{"content":"`, raw, `"}`})
+	defer delete(body)
+
+	got := extract_string(body, "content")
+	defer delete(got)
+	testing.expectf(t, got == raw, "binary bytes must round-trip verbatim, got %d bytes: %x", len(got), transmute([]byte)got)
+}
+
+@(test)
+test_jsonx_escaped_controls_mixed_with_invalid_bytes_round_trip :: proc(t: ^testing.T) {
+	// The real artifact shape, and the case the "five bytes" rule misses: a
+	// payload where `\u00XX`-escaped control bytes sit alongside raw invalid
+	// bytes. Here the escapes make the token far LONGER than the decoded
+	// output, so core's buffer is nowhere near overflowing -- and core still
+	// returns the wrong bytes, substituting U+FFFD for every high byte. Binary
+	// artifacts are mostly this, so round-tripping it verbatim is what makes a
+	// byte-complete `artifact download` possible.
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	expected := strings.builder_make()
+	defer strings.builder_destroy(&expected)
+	for i in 0 ..< 64 {
+		// One escaped control byte (6 source chars -> 1 byte) ...
+		strings.write_string(&b, "\\u0001")
+		strings.write_byte(&expected, 0x01)
+		// ... and one raw invalid lead byte (1 source char -> 1 byte).
+		strings.write_byte(&b, 0xC3)
+		strings.write_byte(&expected, 0xC3)
+	}
+	body := strings.concatenate({`{"content":"`, strings.to_string(b), `"}`})
+	defer delete(body)
+
+	got := extract_string(body, "content")
+	defer delete(got)
+	want := strings.to_string(expected)
+	testing.expectf(
+		t,
+		got == want,
+		"escaped controls + invalid bytes must round-trip verbatim: got %d bytes %x, want %d bytes %x",
+		len(got),
+		transmute([]byte)got,
+		len(want),
+		transmute([]byte)want,
+	)
+}
+
+@(test)
+test_jsonx_valid_utf8_and_escapes_still_decode :: proc(t: ^testing.T) {
+	// Guard against the fix regressing the paths that already worked --
+	// notably vault-armored content, which is pure-ASCII base64 and currently
+	// takes core's fast clone_string path.
+	armored := `vault:v1:YWJjZGVmZ2hpamtsbW5vcA==`
+	body := strings.concatenate({`{"content":"`, armored, `"}`})
+	defer delete(body)
+	got := extract_string(body, "content")
+	defer delete(got)
+	testing.expect(t, got == armored, "armored ASCII content must be unchanged")
+
+	esc := extract_string(`{"content":"a\"b\\c\nd\tz \u0041 é 😀"}`, "content")
+	defer delete(esc)
+	testing.expect(t, esc == "a\"b\\c\nd\tz A é \U0001F600", esc)
+}

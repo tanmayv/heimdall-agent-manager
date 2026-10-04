@@ -659,13 +659,57 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	ctl_agent_call_task(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]), args)
 }
 
+// artifact_require_ok prints a non-ok response and exits NON-ZERO (REQ-JSONX-3).
+//
+// Every artifact path used to `return` here, so a failed lookup printed its error and
+// still exited 0:
+//
+//     $ ham-ctl artifact content art_doesnotexist000; echo $?
+//     {"ok":false,"error":{"code":"hub_error","message":"...artifact not found..."}}
+//     0
+//
+// A script or agent branching on the exit code read that as a clean read. Note the
+// bounds-check panic was never the swallowed case -- an Odin trap exits 132, and `$?`
+// only reads 0 for it inside a pipeline, where POSIX hands back the LAST command's
+// status. This error path is the one that genuinely reported success on failure.
+//
+// NOTE: the identical pattern still exists in the `memory` paths
+// (ctl_agent_memory_call_and_decrypt, ctl_agent_memory_content). That is the same
+// defect in a sibling command family, outside F1's file scope; reported to the
+// coordinator rather than changed here.
+artifact_require_ok :: proc(response: string) {
+	if strings.contains(response, `"ok":true`) do return
+	fmt.println(response)
+	os.exit(1)
+}
+
+// artifact_verify_written checks the POSTCONDITION of a download rather than trusting
+// the write's return (REQ-JSONX-4): `artifact download` must either leave a
+// byte-complete file behind or fail loudly. A short or missing file reported as a
+// successful download is a defect in its own right, so it exits non-zero here.
+artifact_verify_written :: proc(path: string, expected: int) {
+	f, open_err := os.open(path)
+	if open_err != nil {
+		fmt.printf("{\"ok\":false,\"message\":\"artifact was not written\",\"path\":\"%s\"}\n", path)
+		os.exit(1)
+	}
+	defer os.close(f)
+	size, size_err := os.file_size(f)
+	if size_err != nil || int(size) != expected {
+		fmt.printf(
+			"{\"ok\":false,\"message\":\"artifact written incompletely\",\"path\":\"%s\",\"expected_bytes\":%d,\"written_bytes\":%d}\n",
+			path,
+			expected,
+			size,
+		)
+		os.exit(1)
+	}
+}
+
 ctl_agent_artifact_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string) {
 	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(response, `"ok":true`) {
-		fmt.println(response)
-		return
-	}
+	artifact_require_ok(response)
 	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 	decrypted_json := ctl_decrypt_json_string(response, key_hex, key_ok)
 	defer delete(decrypted_json)
@@ -793,10 +837,7 @@ ctl_agentmode_artifact_list_params :: proc(args: []string) -> string {
 ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string, args: []string = nil) {
 	response, ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(response, `"ok":true`) {
-		fmt.println(response)
-		return
-	}
+	artifact_require_ok(response)
 	content := extract_json_string_unescaped(response, "content", "")
 	key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 	decrypted := ctl_decrypt_or_fallback_armored(content, key_hex, key_ok, context.temp_allocator)
@@ -806,10 +847,10 @@ ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string, args: [
 ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string, args: []string = nil) {
 	meta_response, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.show", json_object(json_kv("artifact_id", artifact_id)))
 	if !meta_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(meta_response, `"ok":true`) { fmt.println(meta_response); return }
+	artifact_require_ok(meta_response)
 	content_response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !content_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
-	if !strings.contains(content_response, `"ok":true`) { fmt.println(content_response); return }
+	artifact_require_ok(content_response)
 	// make_directory_all reports an error when the directory ALREADY exists, so the
 	// result cannot be the failure test — treating it as one rejected every
 	// pre-created --dir. What matters is the postcondition: a usable directory.
@@ -825,7 +866,9 @@ ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string, a
 			content = decrypted
 		}
 	}
-	if os.write_entire_file(path, transmute([]byte)content) != nil { fmt.println(`{"ok":false,"message":"artifact could not be written"}`); os.exit(1) }
+	data := transmute([]byte)content
+	if os.write_entire_file(path, data) != nil { fmt.println(`{"ok":false,"message":"artifact could not be written"}`); os.exit(1) }
+	artifact_verify_written(path, len(data))
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"filename":"`); json_write_string(&b, filename)
 	strings.write_string(&b, `","path":"`); json_write_string(&b, path)

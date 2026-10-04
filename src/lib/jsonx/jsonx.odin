@@ -71,8 +71,8 @@ extract_string :: proc(body, key: string, fallback := "", top_level_only := fals
 
 // extract_string_found parses body and returns (cloned_string, true) if key exists and is string/scalar.
 extract_string_found :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> (string, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return "", false
+	parsed, parse_ok := parse_body(body, allocator)
+	if !parse_ok do return "", false
 	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -100,8 +100,8 @@ extract_int :: proc(body, key: string, fallback := 0, top_level_only := false) -
 
 // extract_int_found returns (int_val, true) if key exists as Integer, Float, or integer-formatted String.
 extract_int_found :: proc(body, key: string, top_level_only := false) -> (int, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.allocator)
-	if err != .None do return 0, false
+	parsed, parse_ok := parse_body(body, context.allocator)
+	if !parse_ok do return 0, false
 	defer json.destroy_value(parsed, context.allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -128,8 +128,8 @@ extract_i64 :: proc(body, key: string, fallback: i64 = 0, top_level_only := fals
 
 // extract_i64_found returns (i64_val, true) if key exists as Integer, Float, or integer-formatted String.
 extract_i64_found :: proc(body, key: string, top_level_only := false) -> (i64, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.allocator)
-	if err != .None do return 0, false
+	parsed, parse_ok := parse_body(body, context.allocator)
+	if !parse_ok do return 0, false
 	defer json.destroy_value(parsed, context.allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -156,8 +156,8 @@ extract_bool :: proc(body, key: string, fallback := false, top_level_only := fal
 
 // extract_bool_found returns (bool_val, true) if key exists as Boolean or boolean String ("true"/"false").
 extract_bool_found :: proc(body, key: string, top_level_only := false) -> (bool, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.allocator)
-	if err != .None do return false, false
+	parsed, parse_ok := parse_body(body, context.allocator)
+	if !parse_ok do return false, false
 	defer json.destroy_value(parsed, context.allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -178,8 +178,8 @@ extract_bool_found :: proc(body, key: string, top_level_only := false) -> (bool,
 
 // extract_bool_literal requires the field to be present and strictly a JSON boolean literal (true or false).
 extract_bool_literal :: proc(body, key: string, top_level_only := false) -> (value: bool, ok: bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.allocator)
-	if err != .None do return false, false
+	parsed, parse_ok := parse_body(body, context.allocator)
+	if !parse_ok do return false, false
 	defer json.destroy_value(parsed, context.allocator)
 
 	val, found := find_value(parsed, key, top_level_only)
@@ -194,8 +194,8 @@ extract_bool_literal :: proc(body, key: string, top_level_only := false) -> (val
 
 // has_key returns true if key exists in the parsed JSON object (even if value is json.Null).
 has_key :: proc(body, key: string, top_level_only := false) -> bool {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, context.allocator)
-	if err != .None do return false
+	parsed, parse_ok := parse_body(body, context.allocator)
+	if !parse_ok do return false
 	defer json.destroy_value(parsed, context.allocator)
 
 	_, ok := find_value(parsed, key, top_level_only)
@@ -205,8 +205,8 @@ has_key :: proc(body, key: string, top_level_only := false) -> bool {
 // extract_string_array parses body and returns cloned strings in a dynamic array.
 extract_string_array :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> [dynamic]string {
 	out := make([dynamic]string, allocator)
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return out
+	parsed, parse_ok := parse_body(body, allocator)
+	if !parse_ok do return out
 	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -224,8 +224,8 @@ extract_string_array :: proc(body, key: string, top_level_only := false, allocat
 // decode_string_array parses a flat JSON array directly (e.g. `["a","b"]`) into cloned strings.
 decode_string_array :: proc(text: string, allocator := context.allocator) -> [dynamic]string {
 	out := make([dynamic]string, allocator)
-	parsed, err := json.parse_string(text, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return out
+	parsed, parse_ok := parse_body(text, allocator)
+	if !parse_ok do return out
 	defer json.destroy_value(parsed, allocator)
 
 	if arr, is_arr := parsed.(json.Array); is_arr {
@@ -240,8 +240,8 @@ decode_string_array :: proc(text: string, allocator := context.allocator) -> [dy
 
 // extract_raw_object serializes the sub-object value at key back to valid JSON.
 extract_raw_object :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> (string, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return "", false
+	parsed, parse_ok := parse_body(body, allocator)
+	if !parse_ok do return "", false
 	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -254,8 +254,8 @@ extract_raw_object :: proc(body, key: string, top_level_only := false, allocator
 
 // extract_raw_array serializes the sub-array value at key back to valid JSON.
 extract_raw_array :: proc(body, key: string, top_level_only := false, allocator := context.allocator) -> (string, bool) {
-	parsed, err := json.parse_string(body, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return "", false
+	parsed, parse_ok := parse_body(body, allocator)
+	if !parse_ok do return "", false
 	defer json.destroy_value(parsed, allocator)
 
 	val, ok := find_value(parsed, key, top_level_only)
@@ -277,8 +277,8 @@ unescape_string :: proc(raw_inner_or_quoted: string, allocator := context.alloca
 	}
 	defer if to_parse != trimmed do delete(to_parse, allocator)
 
-	parsed, err := json.parse_string(to_parse, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None do return "", false
+	parsed, parse_ok := parse_body(to_parse, allocator)
+	if !parse_ok do return "", false
 	defer json.destroy_value(parsed, allocator)
 
 	if str, ok := parsed.(json.String); ok {
