@@ -1,5 +1,6 @@
 import { combineReducers, configureStore, createAction } from '@reduxjs/toolkit';
 import { heimdallApi, setupHeimdallApiListeners } from '../api/heimdallApi';
+import { vaultCacheInvalidationMiddleware } from '../api/vaultCacheInvalidation';
 import '../api/endpoints/tasks';
 import '../api/endpoints/chats';
 import '../api/endpoints/agents';
@@ -66,7 +67,14 @@ const actionLogger = (store: any) => (next: any) => (action: any) => {
 export const store = configureStore({
   reducer: rootReducer,
   middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware().concat(actionLogger, heimdallApi.middleware),
+    // REQ-CACHE-1: vaultCacheInvalidationMiddleware runs BEFORE heimdallApi.middleware
+    // so the reset it dispatches on a lock/unlock transition is handled by the API
+    // middleware in the same pass. See api/vaultCacheInvalidation.ts.
+    getDefaultMiddleware().concat(
+      actionLogger,
+      vaultCacheInvalidationMiddleware,
+      heimdallApi.middleware,
+    ),
 });
 
 setupHeimdallApiListeners(store.dispatch);
