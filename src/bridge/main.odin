@@ -759,27 +759,29 @@ bridge_now_unix_ms :: proc() -> i64 {
 }
 
 bridge_read_vault_key :: proc() -> (string, bool) {
+	// a) Check HEIMDALL_VAULT_KEY env var
 	if env_val, found := os.lookup_env("HEIMDALL_VAULT_KEY", context.temp_allocator); found {
 		trimmed := strings.trim_space(env_val)
 		if trimmed != "" {
-			if len(trimmed) == 64 {
-				valid := true
-				for i in 0 ..< len(trimmed) {
-					ch := trimmed[i]
-					switch ch {
-					case '0'..='9', 'a'..='f', 'A'..='F':
-					case:
-						valid = false
-					}
-					if !valid do break
-				}
-				if valid do return strings.clone(trimmed), true
+			if len(trimmed) == 64 && bridge_is_valid_hex_key(trimmed) {
+				return strings.clone(trimmed), true
 			}
-			// Explicit env var set but invalid: do not fall through to file
+			// Explicit env var set but invalid: do not fall through to other sources
 			return "", false
 		}
 	}
 
+	// b) Check Linux kernel keyring @u (KEY_SPEC_USER_KEYRING)
+	if key_k, ok := keystore_read_keyring_vault_key(); ok {
+		return key_k, true
+	}
+
+	// c) Check process in-memory JIT unsealed buffer
+	if key_m, ok := keystore_read_in_memory_vault_key(); ok {
+		return key_m, true
+	}
+
+	// d) Deprecate reading from ~/.config/heimdall/vault_key
 	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
 	defer delete(path)
 	c_path := strings.clone_to_cstring(path)
@@ -797,19 +799,21 @@ bridge_read_vault_key :: proc() -> (string, bool) {
 	defer delete(data)
 
 	trimmed := strings.trim_space(string(data))
-	if len(trimmed) != 64 do return "", false
-	for i in 0 ..< len(trimmed) {
-		ch := trimmed[i]
-		switch ch {
-		case '0'..='9', 'a'..='f', 'A'..='F':
-		case:
-			return "", false
-		}
-	}
+	if len(trimmed) != 64 || !bridge_is_valid_hex_key(trimmed) do return "", false
+
+	fmt.eprintln("WARN: Reading vault key from ~/.config/heimdall/vault_key is deprecated for security. Use Linux kernel keyring (@u) or HEIMDALL_VAULT_KEY.")
+	// Automatically migrate disk key into kernel keyring / process-locked memory cache
+	keystore_store_vault_key(trimmed)
+
 	return strings.clone(trimmed), true
 }
 
 bridge_vault_key_status :: proc() -> (configured: bool, permissions_valid: bool, key_length: int) {
+	if key, ok := bridge_read_vault_key(); ok {
+		defer delete(key)
+		return true, true, len(key)
+	}
+
 	path := cfg_lib.expand_home("~/.config/heimdall/vault_key")
 	defer delete(path)
 	c_path := strings.clone_to_cstring(path)
@@ -831,17 +835,6 @@ bridge_vault_key_status :: proc() -> (configured: bool, permissions_valid: bool,
 
 	trimmed := strings.trim_space(string(data))
 	key_length = len(trimmed)
-	configured = key_length == 64
-	if configured {
-		for i in 0 ..< len(trimmed) {
-			ch := trimmed[i]
-			switch ch {
-			case '0'..='9', 'a'..='f', 'A'..='F':
-			case:
-				configured = false
-				break
-			}
-		}
-	}
+	configured = key_length == 64 && bridge_is_valid_hex_key(trimmed)
 	return configured, permissions_valid, key_length
 }

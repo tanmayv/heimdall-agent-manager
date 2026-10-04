@@ -2,9 +2,12 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 TEST_VAULT_KEY_HEX :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+keystore_test_mutex: sync.Mutex
 
 @(test)
 test_bridge_vault_encrypt_decrypt_roundtrip :: proc(t: ^testing.T) {
@@ -43,6 +46,9 @@ test_bridge_vault_decrypt_unarmored_fallback :: proc(t: ^testing.T) {
 
 @(test)
 test_bridge_vault_embedded_decryption_suite :: proc(t: ^testing.T) {
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+
 	os.set_env("HEIMDALL_VAULT_KEY", TEST_VAULT_KEY_HEX)
 	defer os.unset_env("HEIMDALL_VAULT_KEY")
 
@@ -101,6 +107,12 @@ test_bridge_vault_embedded_decryption_suite :: proc(t: ^testing.T) {
 
 @(test)
 test_bridge_read_vault_key_from_disk :: proc(t: ^testing.T) {
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+
+	keystore_lock_and_purge()
+	defer keystore_lock_and_purge()
+
 	os.unset_env("HEIMDALL_VAULT_KEY")
 	key, ok := bridge_read_vault_key()
 	testing.expect(t, ok, "bridge_read_vault_key should read disk key")
