@@ -14,6 +14,29 @@ import {
 } from '../../../api/endpoints/agents';
 import { useListSidebarProjectsQuery } from '../../../api/endpoints/sidebar';
 import { useListBridgesQuery } from '../../../api/endpoints/bridgeSupport';
+import { containsVaultArmored, maskVaultArmored } from '../../../utils/vaultContent';
+
+/**
+ * REQ-CACHE-1: project names are vault-armored (`encryptProjectFields` at
+ * `vaultProjects.ts:23`), and `useListSidebarProjectsQuery` decrypts them inside
+ * its `queryFn` only when the vault was already unlocked at FETCH time
+ * (`sidebar.ts:238-242`). While locked, the catalog therefore receives
+ * `vault:v1:...` strings. The catalog is the choke point for every scope control
+ * -- the chips, their `aria-label`s, the comboboxes and the `byId` lookups all
+ * read these names -- so the armored form is masked HERE rather than at each
+ * render site, which is the per-site inconsistency this bug class came from.
+ *
+ * Masking, not decrypting: the catalog feeds plain strings into option lists and
+ * `aria-label`s, where a React decrypt hook cannot go. The decrypted form arrives
+ * via the query itself, which `vaultCacheInvalidationMiddleware` now refetches on
+ * the unlock transition.
+ *
+ * Only the project dimension needs this. Agent, bridge and template names are not
+ * vault-bearing -- there is no `encryptVaultText` call for any of them.
+ */
+function maskArmoredName(name: string): string {
+  return containsVaultArmored(name) ? maskVaultArmored(name) : name;
+}
 
 // Targeting is a fully-populated shape internally (each dimension is always an
 // array; empty = all). Components spread this straight into the memory API.
@@ -129,7 +152,7 @@ export function useMemoryScopeCatalog(): ScopeCatalog {
     return list
       // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-      .map((item: any) => ({ id: String(item.projectId || item.project_id || item.id || ''), name: String(item.name || item.title || item.projectId || 'Unnamed project') }))
+      .map((item: any) => ({ id: String(item.projectId || item.project_id || item.id || ''), name: maskArmoredName(String(item.name || item.title || item.projectId || 'Unnamed project')) }))
       .filter((item) => Boolean(item.id));
   }, [projectsQuery.data]);
 
