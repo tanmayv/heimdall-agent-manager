@@ -101,7 +101,8 @@ test('REQ-MOBILE-KEYBOARD-COMPOSER-26: ConversationThreadPage wires keyboardInse
   // Composer textarea scrolls into view on focus
   assert.ok(
     content.includes("onFocus={() => {") &&
-      content.includes("requestAnimationFrame(() => textareaRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));"),
+      content.includes("requestAnimationFrame(scrollComposer)") &&
+      content.includes("scrollIntoView({ block: 'end', behavior: 'smooth' })"),
     'Composer textarea must call requestAnimationFrame scrollIntoView onFocus'
   );
 });
