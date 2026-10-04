@@ -854,12 +854,8 @@ system_unit_dirs() {
 #   tmux    src/lib/tmux/tmux.odin (every os.process_exec there)
 #   git     src/lib/vcs/git.odin, src/bridge/vcs_provider.odin
 #   sh      src/bridge/hub_runtime_client.odin:2251/:2529, bridge/shell_cmd.odin:94
-#   setsid  src/bridge/shell_cmd.odin:96 -- linux only; that spawn is guarded by
-#           `when ODIN_OS == .Darwin` (:93-97), which drops setsid on macOS where
-#           it does not exist. Listing it is therefore safe on both: discovery
-#           simply finds nothing to contribute on darwin.
 service_path_tools() {
-  printf '%s\n' socat tmux git sh setsid
+  printf '%s\n' socat tmux git sh
 }
 
 # The fallback tail, per platform. Mirrors each service manager's own default
@@ -1114,6 +1110,146 @@ prompt_read() {
   fi
 }
 
+write_service_file() {
+  if [ -z "${service_dir:-}" ] || [ -z "${service_file:-}" ]; then
+    if [ "$os" = "linux" ]; then
+      service_dir="$service_home/.config/systemd/user"
+      service_file="$service_dir/heimdall-bridge.service"
+    else
+      service_dir="$service_home/Library/LaunchAgents"
+      service_file="$service_dir/works.earendil.heimdall-bridge.plist"
+    fi
+  fi
+
+  # --- service file (REQ-INST-2: never silently clobber) -------------------------
+  mkdir -p "$service_home/.config/heimdall"
+  take_ownership "$service_home/.config/heimdall"
+  mkdir -p "$service_dir"
+  take_ownership "$service_dir"
+  local rendered
+  rendered="$(mktemp)"
+  if [ "$os" = "linux" ]; then
+    render_systemd_unit > "$rendered"
+  else
+    render_launchd_plist > "$rendered"
+  fi
+  if [ -e "$service_file" ] && cmp -s "$rendered" "$service_file"; then
+    say "service file $service_file is already up to date; leaving it untouched"
+  else
+    if [ -e "$service_file" ] && ! "${force_service:-false}"; then
+      local backup
+      backup="$service_file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+      cp -p "$service_file" "$backup"
+      say "existing service file differs; saved a copy to $backup"
+      take_ownership "$backup"
+    fi
+    cat "$rendered" > "$service_file"
+    chmod 0644 "$service_file"
+    say "wrote service file $service_file"
+  fi
+  rm -f "$rendered"
+  take_ownership "$service_file"
+
+  if [ "$os" = "linux" ]; then
+    if [ -n "$service_user" ]; then
+      say "run 'systemctl --user daemon-reload' as $service_user before starting the service"
+    elif command -v systemctl >/dev/null 2>&1; then
+      # Best effort: user systemd may not be available in every context (root,
+      # containers); the printed instructions cover the manual path.
+      systemctl --user daemon-reload 2>/dev/null \
+        && say "systemd user unit registered (not started)" \
+        || warn "could not run 'systemctl --user daemon-reload'; run it manually before starting the service"
+    fi
+  fi
+}
+
+ensure_config_toml_hub_url() {
+  local target_config="$1"
+  local target_hub="$2"
+  [ -n "$target_hub" ] || return 0
+
+  mkdir -p "$(dirname "$target_config")"
+  local tmp_cfg
+  tmp_cfg="$(mktemp)"
+
+  local input_file="/dev/null"
+  if [ -f "$target_config" ]; then
+    input_file="$target_config"
+  fi
+
+  awk -v hub="$target_hub" '
+BEGIN {
+  section = ""
+  wrapper_seen = 0
+  wrapper_url_done = 0
+  ctl_seen = 0
+  ctl_url_done = 0
+  has_lines = 0
+}
+{
+  has_lines = 1
+  line = $0
+  trimmed = line
+  sub(/^[ \t]+/, "", trimmed)
+  sub(/[ \t]+$/, "", trimmed)
+
+  if (trimmed ~ /^\[[a-zA-Z0-9_.-]+\]$/) {
+    if (section == "[wrapper]" && !wrapper_url_done) {
+      print "daemon_url = \"" hub "\""
+      wrapper_url_done = 1
+    } else if (section == "[ctl]" && !ctl_url_done) {
+      print "daemon_url = \"" hub "\""
+      ctl_url_done = 1
+    }
+    section = trimmed
+    if (section == "[wrapper]") wrapper_seen = 1
+    if (section == "[ctl]") ctl_seen = 1
+    print line
+    next
+  }
+
+  if (section == "[wrapper]" && trimmed ~ /^daemon_url[ \t]*=/) {
+    print "daemon_url = \"" hub "\""
+    wrapper_url_done = 1
+    next
+  }
+
+  if (section == "[ctl]" && trimmed ~ /^daemon_url[ \t]*=/) {
+    print "daemon_url = \"" hub "\""
+    ctl_url_done = 1
+    next
+  }
+
+  print line
+}
+END {
+  if (section == "[wrapper]" && !wrapper_url_done) {
+    print "daemon_url = \"" hub "\""
+    wrapper_url_done = 1
+  } else if (section == "[ctl]" && !ctl_url_done) {
+    print "daemon_url = \"" hub "\""
+    ctl_url_done = 1
+  }
+
+  if (!wrapper_seen || !wrapper_url_done) {
+    if (has_lines) print ""
+    print "[wrapper]"
+    print "daemon_url = \"" hub "\""
+    has_lines = 1
+  }
+  if (!ctl_seen || !ctl_url_done) {
+    if (has_lines) print ""
+    print "[ctl]"
+    print "daemon_url = \"" hub "\""
+  }
+}
+' "$input_file" > "$tmp_cfg"
+
+  cat "$tmp_cfg" > "$target_config"
+  rm -f "$tmp_cfg"
+  chmod 0644 "$target_config" 2>/dev/null || true
+  take_ownership "$target_config"
+}
 
 # REQ-INST-ENROLL-1 through REQ-INST-ENROLL-4: interactive onboarding ceremony.
 run_interactive_onboarding() {
@@ -1137,6 +1273,15 @@ run_interactive_onboarding() {
     fi
   fi
 
+  # REQ-HUB-URL-1: Now that hub_url is obtained, update the service unit file
+  # with --hub "$hub_url" and reload systemd daemon.
+  force_service=true write_service_file
+
+  # REQ-HUB-URL-2: Ensure $service_home/.config/heimdall/config.toml is updated
+  # with [wrapper] daemon_url = "$hub_url" and [ctl] daemon_url = "$hub_url".
+  config_file="$service_home/.config/heimdall/config.toml"
+  ensure_config_toml_hub_url "$config_file" "$hub_url"
+
   # --- REQ-INST-ENROLL-2: Bridge Token Pre-check ---
   token_file="$service_home/.config/heimdall/bridge-token"
   already_enrolled=false
@@ -1145,6 +1290,8 @@ run_interactive_onboarding() {
     if [ -n "$existing_token" ]; then
       already_enrolled=true
       say "Found existing bridge token at $token_file; node is already enrolled."
+      # REQ-HUB-URL-2: Pre-check still ensures config.toml has daemon_url = <url>
+      ensure_config_toml_hub_url "$config_file" "$hub_url"
     fi
   fi
 
@@ -1189,6 +1336,7 @@ EOF
 
     if "$enroll_ok"; then
       say "Node successfully enrolled."
+      ensure_config_toml_hub_url "$config_file" "$hub_url"
       if [ -n "$service_user" ]; then
         take_ownership "$service_home/.config/heimdall"
       fi
@@ -1207,7 +1355,13 @@ EOF
       say "Bridge service registered for user $service_user."
       say "Start it as $service_user: systemctl --user enable --now heimdall-bridge"
     elif command -v systemctl >/dev/null 2>&1; then
-      if systemctl --user enable --now heimdall-bridge 2>/dev/null; then
+      if systemctl --user is-active heimdall-bridge >/dev/null 2>&1; then
+        if systemctl --user restart heimdall-bridge 2>/dev/null; then
+          say "Bridge service restarted via systemctl --user."
+        else
+          warn "Could not restart bridge service via 'systemctl --user restart heimdall-bridge'."
+        fi
+      elif systemctl --user enable --now heimdall-bridge 2>/dev/null; then
         say "Bridge service started via systemctl --user."
       else
         warn "Could not start bridge service via 'systemctl --user enable --now heimdall-bridge'."
@@ -2314,42 +2468,9 @@ This installer will never remove or modify $system_unit."
   wire_path
 
   # --- service file (REQ-INST-2: never silently clobber) -------------------------
-  mkdir -p "$service_home/.config/heimdall"
-  take_ownership "$service_home/.config/heimdall"
-  mkdir -p "$service_dir"
-  take_ownership "$service_dir"
-  rendered="$(mktemp)"
-  if [ "$os" = "linux" ]; then
-    render_systemd_unit > "$rendered"
-  else
-    render_launchd_plist > "$rendered"
-  fi
-  if [ -e "$service_file" ] && cmp -s "$rendered" "$service_file"; then
-    say "service file $service_file is already up to date; leaving it untouched"
-  else
-    if [ -e "$service_file" ] && ! "$force_service"; then
-      backup="$service_file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-      cp -p "$service_file" "$backup"
-      say "existing service file differs; saved a copy to $backup"
-      take_ownership "$backup"
-    fi
-    cat "$rendered" > "$service_file"
-    chmod 0644 "$service_file"
-    say "wrote service file $service_file"
-  fi
-  rm -f "$rendered"
-  take_ownership "$service_file"
-
-  if [ "$os" = "linux" ]; then
-    if [ -n "$service_user" ]; then
-      say "run 'systemctl --user daemon-reload' as $service_user before starting the service"
-    elif command -v systemctl >/dev/null 2>&1; then
-      # Best effort: user systemd may not be available in every context (root,
-      # containers); the printed instructions cover the manual path.
-      systemctl --user daemon-reload 2>/dev/null \
-        && say "systemd user unit registered (not started)" \
-        || warn "could not run 'systemctl --user daemon-reload'; run it manually before starting the service"
-    fi
+  write_service_file
+  if [ -n "$hub_url" ]; then
+    ensure_config_toml_hub_url "$service_home/.config/heimdall/config.toml" "$hub_url"
   fi
 
   if is_interactive; then

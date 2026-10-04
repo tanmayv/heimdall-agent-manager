@@ -200,55 +200,85 @@ bridge_hub_url_supported :: proc(hub_url: string) -> bool {
 	return true
 }
 
+bridge_config_line_key :: proc(trimmed_line: string) -> string {
+	eq := strings.index_byte(trimmed_line, '=')
+	if eq <= 0 do return ""
+	return strings.trim_space(trimmed_line[:eq])
+}
+
+bridge_config_write_assignment :: proc(b: ^strings.Builder, key, value: string) {
+	strings.write_string(b, key)
+	strings.write_string(b, " = \"")
+	json_write_string(b, value)
+	strings.write_string(b, "\"")
+}
+
+bridge_config_merge :: proc(existing, hub_url, bridge_token, bridge_id: string) -> string {
+	b := strings.builder_make()
+	section := ""
+	wrapper_written := false
+	daemon_id_written := false
+	token_written := false
+	has_token := strings.trim_space(bridge_token) != ""
+	text := existing
+	for line in strings.split_lines_iterator(&text) {
+		trimmed := strings.trim_space(line)
+		if strings.has_prefix(trimmed, "[") && strings.has_suffix(trimmed, "]") {
+			section = trimmed
+		}
+		key := bridge_config_line_key(trimmed)
+		if section == "[wrapper]" && key == "daemon_url" {
+			bridge_config_write_assignment(&b, "daemon_url", hub_url)
+			wrapper_written = true
+			strings.write_byte(&b, '\n')
+			continue
+		}
+		if section == "[daemon]" && key == "daemon_id" {
+			bridge_config_write_assignment(&b, "daemon_id", bridge_id)
+			daemon_id_written = true
+			strings.write_byte(&b, '\n')
+			continue
+		}
+		if has_token && section == "[daemon]" && key == "bridge_token" {
+			bridge_config_write_assignment(&b, "bridge_token", bridge_token)
+			token_written = true
+			strings.write_byte(&b, '\n')
+			continue
+		}
+		strings.write_string(&b, line)
+		strings.write_byte(&b, '\n')
+	}
+	if !wrapper_written {
+		if strings.builder_len(b) > 0 do strings.write_byte(&b, '\n')
+		strings.write_string(&b, "[wrapper]\n")
+		bridge_config_write_assignment(&b, "daemon_url", hub_url)
+		strings.write_byte(&b, '\n')
+	}
+	if !daemon_id_written || (has_token && !token_written) {
+		if strings.builder_len(b) > 0 do strings.write_byte(&b, '\n')
+		strings.write_string(&b, "[daemon]\n")
+		if has_token && !token_written {
+			bridge_config_write_assignment(&b, "bridge_token", bridge_token)
+			strings.write_byte(&b, '\n')
+		}
+		if !daemon_id_written {
+			bridge_config_write_assignment(&b, "daemon_id", bridge_id)
+			strings.write_byte(&b, '\n')
+		}
+	}
+	return strings.to_string(b)
+}
+
 bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: string) -> bool {
 	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" do return false
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
-	if existing_bytes, err := os.read_entire_file(path, context.allocator); err == nil && len(existing_bytes) > 0 {
-		existing_str := string(existing_bytes)
-		defer delete(existing_bytes)
-		new_str := existing_str
-		daemon_id_target := fmt.tprintf("daemon_id = \"%s\"", bridge_id)
-		if idx := strings.index(new_str, "daemon_id = \""); idx >= 0 {
-			end_quote := strings.index_byte(new_str[idx + len("daemon_id = \""):], '"')
-			if end_quote >= 0 {
-				full_end := idx + len("daemon_id = \"") + end_quote + 1
-				prefix := new_str[:idx]
-				suffix := new_str[full_end:]
-				new_str = strings.concatenate({prefix, daemon_id_target, suffix})
-			}
-		} else if d_idx := strings.index(new_str, "[daemon]"); d_idx >= 0 {
-			prefix := new_str[:d_idx + len("[daemon]")]
-			suffix := new_str[d_idx + len("[daemon]"):]
-			new_str = strings.concatenate({prefix, "\ndaemon_id = \"", bridge_id, "\"", suffix})
-		}
-		if strings.trim_space(bridge_token) != "" {
-			tok_target := fmt.tprintf("bridge_token = \"%s\"", bridge_token)
-			if idx := strings.index(new_str, "bridge_token = \""); idx >= 0 {
-				end_quote := strings.index_byte(new_str[idx + len("bridge_token = \""):], '"')
-				if end_quote >= 0 {
-					full_end := idx + len("bridge_token = \"") + end_quote + 1
-					prefix := new_str[:idx]
-					suffix := new_str[full_end:]
-					new_str = strings.concatenate({prefix, tok_target, suffix})
-				}
-			} else if d_idx := strings.index(new_str, "[daemon]"); d_idx >= 0 {
-				prefix := new_str[:d_idx + len("[daemon]")]
-				suffix := new_str[d_idx + len("[daemon]"):]
-				new_str = strings.concatenate({prefix, "\n", tok_target, suffix})
-			}
-		}
-		return os.write_entire_file(path, new_str) == nil
+	existing := ""
+	if data, err := os.read_entire_file(path, context.allocator); err == nil {
+		existing = string(data)
+		defer delete(data)
 	}
-	b := strings.builder_make()
-	strings.write_string(&b, "[wrapper]\ndaemon_url = \""); json_write_string(&b, hub_url)
-	strings.write_string(&b, "\"\n\n[daemon]\n")
-	if strings.trim_space(bridge_token) != "" {
-		strings.write_string(&b, "bridge_token = \""); json_write_string(&b, bridge_token)
-		strings.write_string(&b, "\"\n")
-	}
-	strings.write_string(&b, "daemon_id = \""); json_write_string(&b, bridge_id)
-	strings.write_string(&b, "\"\n")
-	return os.write_entire_file(path, strings.to_string(b)) == nil
+	merged := bridge_config_merge(existing, hub_url, bridge_token, bridge_id)
+	return os.write_entire_file(path, transmute([]byte)merged) == nil
 }
 
 bridge_write_token_file :: proc(path, token: string) -> bool {
