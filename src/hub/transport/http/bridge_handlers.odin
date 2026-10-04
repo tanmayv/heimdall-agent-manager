@@ -1651,12 +1651,14 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	case "shell_pty_output":
 		if h.shell_sessions != nil {
 			session_id := json_string(text, "session_id")
+			defer delete(session_id)
 			data_b64 := json_string(text, "data_b64")
-			if session_id != "" && data_b64 != "" {
-				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64)
+			defer delete(data_b64)
+			enc_b64 := json_string(text, "enc_b64")
+			defer delete(enc_b64)
+			if session_id != "" && (data_b64 != "" || enc_b64 != "") {
+				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64, enc_b64)
 			}
-			delete(session_id)
-			delete(data_b64)
 		}
 	case "shell_exited":
 		if h.shell_sessions != nil {

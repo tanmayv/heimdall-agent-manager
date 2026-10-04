@@ -369,12 +369,12 @@ shell_session_write_viewer_frame :: proc(
 
 // shell_session_broadcast_output fans PTY output (already base64-encoded by the bridge)
 // to all WS clients attached to session_id.
-shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, data_b64: string) {
+shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, data_b64: string, enc_b64: string = "") {
 	if svc == nil || session_id == "" do return
 	sockets := _copy_viewers(svc, session_id)
 	defer delete(sockets)
 	if len(sockets) == 0 do return
-	frame := _output_frame_json(data_b64)
+	frame := _output_frame_json(data_b64, enc_b64)
 	defer delete(frame)
 	for sock in sockets {
 		// The write happens under the session write lock; the detach deliberately does
@@ -1794,11 +1794,20 @@ _copy_viewers :: proc(svc: ^Shell_Session_Service, session_id: string) -> []net.
 	return out
 }
 
-_output_frame_json :: proc(data_b64: string) -> string {
+_output_frame_json :: proc(data_b64: string, enc_b64: string = "") -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"output\",\"data_b64\":\"")
-	contracts.write_json_string(&b, data_b64)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "{\"type\":\"output\"")
+	if data_b64 != "" {
+		strings.write_string(&b, ",\"data_b64\":\"")
+		contracts.write_json_string(&b, data_b64)
+		strings.write_string(&b, "\"")
+	}
+	if enc_b64 != "" {
+		strings.write_string(&b, ",\"enc_b64\":\"")
+		contracts.write_json_string(&b, enc_b64)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 

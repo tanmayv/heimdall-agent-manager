@@ -1,6 +1,6 @@
 import { heimdallApi } from '../heimdallApi';
 import { ApiError, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
-import { encryptVaultText } from '../../utils/vaultContent';
+import { encryptVaultText, VAULT_ARMOR_PREFIX } from '../../utils/vaultContent';
 import { readSessionVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptShellStreamPayload } from '../../components/shells/useShellStream';
 
@@ -520,9 +520,10 @@ export const shellsApi = heimdallApi.injectEndpoints({
             }
           }
 
-          const payload: { data: string; enc_b64?: string } = { data };
+          const payload: { data: string; enc_b64?: string; data_b64?: string } = { data };
           if (resolvedEncB64) {
             payload.enc_b64 = resolvedEncB64;
+            payload.data_b64 = `${VAULT_ARMOR_PREFIX}${resolvedEncB64}`;
           }
 
           const res = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}/input`, 'POST', payload);

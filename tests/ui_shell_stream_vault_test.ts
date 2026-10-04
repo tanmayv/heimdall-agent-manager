@@ -430,3 +430,29 @@ test('REQ-SHELL-ENC-11: ShellTerminalPane.tsx restores terminal cursor and elimi
   assert.ok(paneSrc.includes("session.kind === 'shell'"), 'ShellTerminalPane.tsx must check session.kind === shell for cursor restoration');
 });
 
+// -----------------------------------------------------------------------------
+// 6. REQ-SHELL-ENC-12: Standardized vault:v1: Armored data_b64
+// -----------------------------------------------------------------------------
+
+test('REQ-SHELL-ENC-12: useShellStream.ts inspects data_b64 for vault:v1: prefix', () => {
+  const streamSrc = fs.readFileSync(USE_SHELL_STREAM, 'utf8');
+  assert.ok(streamSrc.includes('msg.data_b64 || msg.enc_b64'), 'must inspect data_b64 or enc_b64');
+  assert.ok(streamSrc.includes('rawPayload.startsWith(VAULT_ARMOR_PREFIX)'), 'must check for VAULT_ARMOR_PREFIX');
+  assert.ok(streamSrc.includes('data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}`'), 'sendInput must send armored data_b64');
+});
+
+test('REQ-SHELL-ENC-12: decryptShellStreamPayload transparently decrypts vault:v1: armored data_b64', async () => {
+  const plaintext = '\x1b[32mhello from encrypted pty\x1b[0m\r\n';
+  const enc_b64 = await encryptShellStreamPayload(plaintext, TEST_VAULT_KEY);
+  const armored_data_b64 = `${VAULT_ARMOR_PREFIX}${enc_b64}`;
+
+  assert.ok(armored_data_b64.startsWith('vault:v1:'), 'must have vault:v1: prefix');
+  const decrypted = await decryptShellStreamPayload(armored_data_b64, TEST_VAULT_KEY);
+  assert.equal(new TextDecoder().decode(decrypted), plaintext);
+});
+
+test('REQ-SHELL-ENC-12: sendShellInput sets data_b64 with vault:v1: prefix in shells.ts', () => {
+  const shellsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/api/endpoints/shells.ts'), 'utf8');
+  assert.ok(shellsSrc.includes('payload.data_b64 = `${VAULT_ARMOR_PREFIX}${resolvedEncB64}`'), 'sendShellInput must set armored data_b64');
+});
+

@@ -423,13 +423,16 @@ test_pty_stream_emit_frame_encrypted_when_vault_active :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(frame, `"type":"shell_pty_output"`), "frame type is shell_pty_output")
 		testing.expect(t, strings.contains(frame, `"session_id":"sh_stream_enc_1"`), "frame has session_id")
 		testing.expect(t, strings.contains(frame, `"enc_b64":`), "frame contains enc_b64 field")
-		testing.expect(t, !strings.contains(frame, `"data_b64":`), "frame does not contain plaintext data_b64")
+		testing.expect(t, strings.contains(frame, `"data_b64":"vault:v1:`), "frame contains armored data_b64")
 
 		enc_b64 := extract_json_string(frame, "enc_b64", "")
 		testing.expect(t, enc_b64 != "", "enc_b64 must not be empty")
 
-		decrypted, dec_ok := bridge_pty_stream_decrypt_chunk(enc_b64, TEST_ENC_VAULT_KEY, context.temp_allocator)
-		testing.expect(t, dec_ok, "decryption of emitted frame must succeed")
+		data_b64 := extract_json_string(frame, "data_b64", "")
+		testing.expect(t, strings.has_prefix(data_b64, VAULT_ARMOR_PREFIX), "data_b64 must start with vault:v1:")
+
+		decrypted, dec_ok := bridge_pty_stream_decrypt_chunk(data_b64, TEST_ENC_VAULT_KEY, context.temp_allocator)
+		testing.expect(t, dec_ok, "decryption of emitted frame from data_b64 must succeed")
 		testing.expect_value(t, string(decrypted), test_data)
 	}
 }
@@ -653,6 +656,41 @@ test_shell_pty_input_decrypts_valid_enc_b64 :: proc(t: ^testing.T) {
 	res, res_ok := bridge_runtime_cached_command("cmd_input_valid")
 	testing.expect(t, res_ok, "command result cached")
 	testing.expect(t, strings.contains(res, "succeeded"), "valid encrypted input is decrypted and dispatched to pty")
+}
+
+@(test)
+test_shell_pty_input_decrypts_valid_armored_data_b64 :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	prev_key, had_key := os.lookup_env("HEIMDALL_VAULT_KEY", context.allocator)
+	defer {
+		if had_key {
+			_ = os.set_env("HEIMDALL_VAULT_KEY", prev_key)
+			delete(prev_key)
+		} else {
+			os.unset_env("HEIMDALL_VAULT_KEY")
+		}
+	}
+	_ = os.set_env("HEIMDALL_VAULT_KEY", TEST_ENC_VAULT_KEY)
+
+	input_keystrokes := "echo armored\n"
+	enc_b64, enc_ok := bridge_pty_stream_encrypt_chunk(
+		transmute([]byte)input_keystrokes,
+		[4]byte{0x05, 0x06, 0x07, 0x08},
+		101,
+		TEST_ENC_VAULT_KEY,
+		context.temp_allocator,
+	)
+	testing.expect(t, enc_ok, "encryption of input keystrokes must succeed")
+
+	armored := strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
+	cmd := fmt.tprintf(`{{"type":"shell_pty_input","command_id":"cmd_input_armored_valid","shell_id":"sh_nonexistent_valid","data_b64":"%s"}}`, armored)
+	bridge_hub_handle_shell_pty_input(nil, cmd)
+
+	res, res_ok := bridge_runtime_cached_command("cmd_input_armored_valid")
+	testing.expect(t, res_ok, "command result cached")
+	testing.expect(t, strings.contains(res, "succeeded"), "valid armored data_b64 input is decrypted and dispatched to pty")
 }
 
 @(test)

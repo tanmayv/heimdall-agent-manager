@@ -1229,16 +1229,28 @@ bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
 	data := extract_json_string(text, "data", "")
 	if data == "" && has_payload do data = extract_json_string(payload, "data", "")
 
+	data_b64 := extract_json_string(text, "data_b64", "")
+	if data_b64 == "" && has_payload do data_b64 = extract_json_string(payload, "data_b64", "")
+
 	enc_b64 := extract_json_string(text, "enc_b64", "")
 	if enc_b64 == "" && has_payload do enc_b64 = extract_json_string(payload, "enc_b64", "")
 
-	// REQ-SHELL-ENC-3: When vault key is configured, incoming keystrokes must be encrypted with AES-256-GCM.
-	// Drop and reject unauthenticated or tampered input frames without delivering to ham-pty-host.
+	// REQ-SHELL-ENC-12: Standardized vault:v1: armored data_b64 for terminal input.
+	// When vault key is configured, incoming keystrokes must be encrypted with AES-256-GCM.
 	key_hex, vault_active := bridge_read_vault_key()
 	defer if vault_active do delete(key_hex)
 
 	if vault_active {
-		if enc_b64 == "" {
+		armored := ""
+		if strings.has_prefix(data_b64, VAULT_ARMOR_PREFIX) {
+			armored = data_b64
+		} else if strings.has_prefix(data, VAULT_ARMOR_PREFIX) {
+			armored = data
+		} else if enc_b64 != "" {
+			armored = enc_b64 if strings.has_prefix(enc_b64, VAULT_ARMOR_PREFIX) else strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
+		}
+
+		if armored == "" {
 			fmt.println("bridge shell_pty_input rejected: missing enc_b64 while vault key active for shell", shell_id)
 			if command_id != "" {
 				result := bridge_command_result_json(command_id, "failed", "")
@@ -1249,7 +1261,6 @@ bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
 			return
 		}
 
-		armored := enc_b64 if strings.has_prefix(enc_b64, VAULT_ARMOR_PREFIX) else strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
 		decrypted, dec_ok := bridge_decrypt_vault_ciphertext_hex(armored, key_hex, context.temp_allocator)
 		if !dec_ok {
 			fmt.println("bridge shell_pty_input rejected: invalid vault encryption / auth tag verification failed for shell", shell_id)
@@ -1262,6 +1273,12 @@ bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
 			return
 		}
 		data = decrypted
+	} else {
+		if data == "" && data_b64 != "" {
+			if decoded, dec_err := base64.decode(data_b64, allocator = context.temp_allocator); dec_err == nil {
+				data = string(decoded)
+			}
+		}
 	}
 
 	ok := bridge_pty_host_deliver_shell_input(shell_id, data)

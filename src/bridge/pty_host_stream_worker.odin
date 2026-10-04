@@ -511,9 +511,12 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 		}
 
 		if enc_b64, ok := bridge_pty_stream_encrypt_chunk(data, salt, seq, key_hex, context.temp_allocator); ok {
+			armored := strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
 			b := strings.builder_make(heap)
 			strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
 			bridge_runtime_write_json_string(&b, session_id)
+			strings.write_string(&b, "\",\"data_b64\":\"")
+			bridge_runtime_write_json_string(&b, armored)
 			strings.write_string(&b, "\",\"enc_b64\":\"")
 			bridge_runtime_write_json_string(&b, enc_b64)
 			strings.write_string(&b, "\"}")

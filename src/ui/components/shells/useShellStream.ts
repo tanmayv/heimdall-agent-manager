@@ -350,8 +350,10 @@ export function useShellStream({
           }
 
           if (msg.type === 'output') {
-            const enc_b64 = msg.enc_b64;
-            const data_b64 = msg.data_b64;
+            const rawPayload = msg.data_b64 || msg.enc_b64;
+            const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
+            const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
+            const data_b64 = !isArmored ? msg.data_b64 : undefined;
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
@@ -384,8 +386,10 @@ export function useShellStream({
               }
             }).catch(() => { /* ignore queue errors */ });
           } else if (msg.type === 'screen') {
-            const enc_b64 = msg.enc_b64;
-            const b64 = msg.screen_b64 || msg.data_b64;
+            const rawPayload = msg.data_b64 || msg.screen_b64 || msg.enc_b64;
+            const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
+            const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
+            const b64 = !isArmored ? (msg.screen_b64 || msg.data_b64) : undefined;
 
             outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
@@ -487,7 +491,7 @@ export function useShellStream({
         try {
           const enc_b64 = await encryptShellStreamPayload(data, rawKeyHex);
           if (s.readyState === WebSocket.OPEN) {
-            s.send(JSON.stringify({ type: 'input', enc_b64 }));
+            s.send(JSON.stringify({ type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` }));
           }
         } catch {
           if (s.readyState === WebSocket.OPEN) {

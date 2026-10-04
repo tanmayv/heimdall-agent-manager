@@ -546,6 +546,124 @@ test_shell_stream_broadcast_output :: proc(t: ^testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// Test 3b: Output broadcast with enc_b64 (REQ-SHELL-ENC-12)
+// -----------------------------------------------------------------------------
+@(test)
+test_shell_stream_broadcast_enc_output :: proc(t: ^testing.T) {
+	pair1, ok1 := make_stream_pair(t)
+	testing.expect(t, ok1)
+	defer close_stream_pair(&pair1)
+
+	pair2, ok2 := make_stream_pair(t)
+	testing.expect(t, ok2)
+	defer close_stream_pair(&pair2)
+
+	svc := shell_session_svc.new_shell_session_service()
+	defer shell_session_svc.shell_session_service_free(&svc)
+
+	session_id := "sh_broadcast_enc_test"
+	shell_session_svc.shell_session_attach(&svc, session_id, pair1.hub)
+	shell_session_svc.shell_session_attach(&svc, session_id, pair2.hub)
+	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 2)
+
+	// Simulate encrypted output broadcast from Bridge
+	test_enc_b64 := "dmF1bHQ6djE6YWJjZGVmZ2hpams="
+	shell_session_svc.shell_session_broadcast_output(&svc, session_id, "", test_enc_b64)
+
+	// Verify both client sockets received the unmasked output frame containing enc_b64
+	frame1, r1 := read_server_stream_frame(pair1.client, 2 * time.Second)
+	testing.expect(t, r1, "client 1 must receive encrypted output frame")
+	if r1 {
+		testing.expect(t, strings.contains(frame1, "\"type\":\"output\""))
+		testing.expect(t, strings.contains(frame1, "\"enc_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
+		testing.expect(t, !strings.contains(frame1, "data_b64"))
+		delete(frame1)
+	}
+
+	frame2, r2 := read_server_stream_frame(pair2.client, 2 * time.Second)
+	testing.expect(t, r2, "client 2 must receive encrypted output frame")
+	if r2 {
+		testing.expect(t, strings.contains(frame2, "\"type\":\"output\""))
+		testing.expect(t, strings.contains(frame2, "\"enc_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
+		testing.expect(t, !strings.contains(frame2, "data_b64"))
+		delete(frame2)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Test 3c: Bridge shell_pty_output frame with enc_b64 forwards to viewers (REQ-SHELL-ENC-12)
+// -----------------------------------------------------------------------------
+@(test)
+test_bridge_shell_pty_output_enc_b64_forwarding :: proc(t: ^testing.T) {
+	pair, ok := make_stream_pair(t)
+	testing.expect(t, ok)
+	defer close_stream_pair(&pair)
+
+	svc := shell_session_svc.new_shell_session_service()
+	defer shell_session_svc.shell_session_service_free(&svc)
+
+	session_id := "sh_bridge_enc_test"
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
+
+	bh := Bridge_Handlers{
+		shell_sessions = &svc,
+	}
+
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
+
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_enc_test\",\"enc_b64\":\"dmF1bHQ6djE6dGVzdA==\"}")
+	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
+	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_output")
+
+	frame, r := read_server_stream_frame(pair.client, 2 * time.Second)
+	testing.expect(t, r, "client must receive output frame")
+	if r {
+		testing.expect(t, strings.contains(frame, "\"type\":\"output\""), "frame must have type output")
+		testing.expect(t, strings.contains(frame, "\"enc_b64\":\"dmF1bHQ6djE6dGVzdA==\""), "frame must contain enc_b64")
+		testing.expect(t, !strings.contains(frame, "data_b64"), "frame must not contain data_b64 when omitted")
+		delete(frame)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Test 3d: Bridge shell_pty_output with armored data_b64 forwards transparently (REQ-SHELL-ENC-12)
+// -----------------------------------------------------------------------------
+@(test)
+test_bridge_shell_pty_output_armored_data_b64_forwarding :: proc(t: ^testing.T) {
+	pair, ok := make_stream_pair(t)
+	testing.expect(t, ok)
+	defer close_stream_pair(&pair)
+
+	svc := shell_session_svc.new_shell_session_service()
+	defer shell_session_svc.shell_session_service_free(&svc)
+
+	session_id := "sh_bridge_armored_test"
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
+
+	bh := Bridge_Handlers{
+		shell_sessions = &svc,
+	}
+
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
+
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_armored_test\",\"data_b64\":\"vault:v1:YWJjZGVmZ2hpams=\"}")
+	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
+	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_output")
+
+	frame, r := read_server_stream_frame(pair.client, 2 * time.Second)
+	testing.expect(t, r, "client must receive output frame")
+	if r {
+		testing.expect(t, strings.contains(frame, "\"type\":\"output\""), "frame must have type output")
+		testing.expect(t, strings.contains(frame, "\"data_b64\":\"vault:v1:YWJjZGVmZ2hpams=\""), "frame must contain armored data_b64")
+		delete(frame)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Test 4: Inbound input and resize frame forwarding to Bridge sink
 // -----------------------------------------------------------------------------
 @(test)
