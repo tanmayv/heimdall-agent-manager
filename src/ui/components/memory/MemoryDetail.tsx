@@ -42,7 +42,7 @@ import {
 import { ScopeChips, SCOPE_DIMS, targetingFromRecord, useMemoryScopeCatalog } from '@ui';
 import type { ScopeCatalog, ScopeDimKey } from '@ui';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import { VaultText } from '../vault/VaultText';
 import MarkdownBody from '../MarkdownBody';
@@ -364,15 +364,20 @@ export function MemoryDetailBody({
   wide: boolean;
 }) {
   const catalog = useMemoryScopeCatalog();
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKey = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned, so the old selectRawVaultKeyHex
+  // always returned null. Both the decrypt gates and the render gates below now test
+  // the real key, so an unlocked vault can no longer fall through to raw ciphertext.
+  const activeKey = useSelector(selectActiveVaultKey);
 
   const memoryId = String(record.memoryId || '');
   const body = String(record.body || '');
   const evidence = String(record.evidence || '');
 
-  const [decryptedBody, setDecryptedBody] = React.useState<string>(body);
-  const [decryptedEvidence, setDecryptedEvidence] = React.useState<string>(evidence);
+  // Seed empty for armored input so the first paint cannot flash ciphertext while the
+  // decrypt effect is still in flight.
+  const [decryptedBody, setDecryptedBody] = React.useState<string>(isVaultArmored(body) ? '' : body);
+  const [decryptedEvidence, setDecryptedEvidence] = React.useState<string>(isVaultArmored(evidence) ? '' : evidence);
 
   React.useEffect(() => {
     let active = true;
@@ -380,21 +385,23 @@ export function MemoryDetailBody({
       setDecryptedBody(body);
       return;
     }
-    if (!isVaultUnlocked || !rawKey) {
+    if (!activeKey) {
       setDecryptedBody('');
       return;
     }
-    decryptVaultText(body, rawKey)
+    decryptVaultText(body, activeKey)
       .then((t) => {
         if (active) setDecryptedBody(t);
       })
       .catch(() => {
-        if (active) setDecryptedBody(body);
+        // Never fall back to the armored source: that is how `vault:v1:` strings reach
+        // the screen. Empty routes the render below to the VaultText placeholder.
+        if (active) setDecryptedBody('');
       });
     return () => {
       active = false;
     };
-  }, [body, isVaultUnlocked, rawKey]);
+  }, [body, activeKey]);
 
   React.useEffect(() => {
     let active = true;
@@ -402,21 +409,21 @@ export function MemoryDetailBody({
       setDecryptedEvidence(evidence);
       return;
     }
-    if (!isVaultUnlocked || !rawKey) {
+    if (!activeKey) {
       setDecryptedEvidence('');
       return;
     }
-    decryptVaultText(evidence, rawKey)
+    decryptVaultText(evidence, activeKey)
       .then((t) => {
         if (active) setDecryptedEvidence(t);
       })
       .catch(() => {
-        if (active) setDecryptedEvidence(evidence);
+        if (active) setDecryptedEvidence('');
       });
     return () => {
       active = false;
     };
-  }, [evidence, isVaultUnlocked, rawKey]);
+  }, [evidence, activeKey]);
 
   const main = (
     <>
@@ -424,14 +431,14 @@ export function MemoryDetailBody({
         title="Body"
         helper="The text your agents receive."
         debugId="memory-view-body-card"
-        action={<CopyButton value={decryptedBody || body} label="Copy body" debugId="memory-view-copy-body" />}
+        action={<CopyButton value={decryptedBody} label="Copy body" debugId="memory-view-copy-body" />}
       >
-        {isVaultArmored(body) && !isVaultUnlocked ? (
+        {isVaultArmored(body) && !decryptedBody ? (
           <div className="py-2">
             <VaultText value={body} as="div" />
           </div>
         ) : (
-          <MarkdownBody source={decryptedBody || body} copyAll={false} data-debug-id="memory-view-body" />
+          <MarkdownBody source={decryptedBody} copyAll={false} data-debug-id="memory-view-body" />
         )}
       </Card>
 
@@ -441,15 +448,15 @@ export function MemoryDetailBody({
         <Card
           title="Evidence"
           debugId="memory-view-evidence-card"
-          action={<CopyButton value={decryptedEvidence || evidence} label="Copy evidence" debugId="memory-view-copy-evidence" />}
+          action={<CopyButton value={decryptedEvidence} label="Copy evidence" debugId="memory-view-copy-evidence" />}
         >
-          {isVaultArmored(evidence) && !isVaultUnlocked ? (
+          {isVaultArmored(evidence) && !decryptedEvidence ? (
             <div className="py-2">
               <VaultText value={evidence} as="div" />
             </div>
           ) : (
             <div data-debug-id="memory-view-evidence" className="flex flex-col gap-1 font-mono text-[length:var(--text-code-size)] leading-[var(--text-code-leading)]">
-              {(decryptedEvidence || evidence).split('\n').map((line, i) =>
+              {decryptedEvidence.split('\n').map((line, i) =>
                 line.trim() ? (
                   <div key={i} className="overflow-x-auto whitespace-pre text-primary">
                     <VaultText value={line} as="span" />

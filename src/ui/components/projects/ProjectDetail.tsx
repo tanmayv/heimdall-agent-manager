@@ -50,7 +50,7 @@ import MarkdownBody from '../MarkdownBody';
 import { useSelector } from 'react-redux';
 import { VaultText } from '../vault/VaultText';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import {
   projectErrorText,
   useArchiveProjectMutation,
@@ -530,19 +530,23 @@ export function ProjectDetailBody({
   wide: boolean;
 }) {
   const description = record.description;
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned, so the old selectRawVaultKeyHex
+  // always returned null. Both gates now test the real key.
+  const activeKey = useSelector(selectActiveVaultKey);
   const [decryptedDescription, setDecryptedDescription] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let active = true;
-    if (description && isVaultArmored(description) && isVaultUnlocked && rawKeyHex) {
-      decryptVaultText(description, rawKeyHex)
+    if (description && isVaultArmored(description) && activeKey) {
+      decryptVaultText(description, activeKey)
         .then((text) => {
           if (active) setDecryptedDescription(text);
         })
         .catch(() => {
-          if (active) setDecryptedDescription(description);
+          // Never fall back to the armored source: null routes the render below to the
+          // VaultText placeholder instead of printing `vault:v1:` on screen.
+          if (active) setDecryptedDescription(null);
         });
     } else {
       setDecryptedDescription(null);
@@ -550,13 +554,13 @@ export function ProjectDetailBody({
     return () => {
       active = false;
     };
-  }, [description, isVaultUnlocked, rawKeyHex]);
+  }, [description, activeKey]);
 
   const main = (
     <>
       <Card title="Description" debugId="project-view-description-card">
         {description ? (
-          isVaultArmored(description) && !isVaultUnlocked ? (
+          isVaultArmored(description) && !decryptedDescription ? (
             <div data-debug-id="project-view-description">
               <VaultText value={description} as="div" />
             </div>

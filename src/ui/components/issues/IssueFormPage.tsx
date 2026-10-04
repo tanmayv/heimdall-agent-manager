@@ -16,7 +16,7 @@ import {
   useUpdateIssueMutation,
 } from '../../api/endpoints/issues';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   editCrumbs,
@@ -54,8 +54,11 @@ export function IssueFormPage({ issueId }: IssueFormPageProps) {
   const [errorMsg, setErrorMsg] = useState('');
   const [isDirty, setIsDirty] = useState(false);
 
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned, so the old selectRawVaultKeyHex
+  // always returned null. getIssue already decrypts, so these calls are a second line
+  // of defence for any field that still arrives armored.
+  const activeKey = useSelector(selectActiveVaultKey);
 
   useEffect(() => {
     let active = true;
@@ -69,17 +72,17 @@ export function IssueFormPage({ issueId }: IssueFormPageProps) {
       const populate = async () => {
         let t = existingIssue.title || '';
         let d = existingIssue.description || '';
-        if (isVaultUnlocked && rawKeyHex) {
+        if (activeKey) {
           if (isVaultArmored(t)) {
             try {
-              t = await decryptVaultText(t, rawKeyHex);
+              t = await decryptVaultText(t, activeKey);
             } catch (err) {
               console.error('Failed to decrypt issue title for edit:', err);
             }
           }
           if (isVaultArmored(d)) {
             try {
-              d = await decryptVaultText(d, rawKeyHex);
+              d = await decryptVaultText(d, activeKey);
             } catch (err) {
               console.error('Failed to decrypt issue description for edit:', err);
             }
@@ -96,7 +99,7 @@ export function IssueFormPage({ issueId }: IssueFormPageProps) {
     return () => {
       active = false;
     };
-  }, [existingIssue, isEdit, isVaultUnlocked, rawKeyHex]);
+  }, [existingIssue, isEdit, activeKey]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

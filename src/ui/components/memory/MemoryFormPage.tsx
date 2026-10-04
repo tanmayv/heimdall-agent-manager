@@ -40,7 +40,7 @@ import {
   type Targeting,
 } from '@ui';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   memoryErrorText,
@@ -189,8 +189,10 @@ export default function MemoryFormPage({ memoryId }: { memoryId?: string }) {
   const [updateMemory] = useUpdateMemoryMutation();
   const [approveMemory] = useApproveMemoryMutation();
 
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKeyHex = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned, so the old selectRawVaultKeyHex
+  // always returned null and this seed never decrypted. Gate on the real key.
+  const activeKey = useSelector(selectActiveVaultKey);
 
   // Seed from the record once it arrives. Keyed on identity, never on the whole
   // record: re-seeding on a cache refresh would clobber edits in progress.
@@ -204,18 +206,18 @@ export default function MemoryFormPage({ memoryId }: { memoryId?: string }) {
       let body = String(record.body || '');
       let evidence = String(record.evidence || '');
 
-      if (isVaultUnlocked && rawKeyHex) {
+      if (activeKey) {
         if (isVaultArmored(title)) {
-          try { title = await decryptVaultText(title, rawKeyHex); } catch {}
+          try { title = await decryptVaultText(title, activeKey); } catch {}
         }
         if (isVaultArmored(description)) {
-          try { description = await decryptVaultText(description, rawKeyHex); } catch {}
+          try { description = await decryptVaultText(description, activeKey); } catch {}
         }
         if (isVaultArmored(body)) {
-          try { body = await decryptVaultText(body, rawKeyHex); } catch {}
+          try { body = await decryptVaultText(body, activeKey); } catch {}
         }
         if (isVaultArmored(evidence)) {
-          try { evidence = await decryptVaultText(evidence, rawKeyHex); } catch {}
+          try { evidence = await decryptVaultText(evidence, activeKey); } catch {}
         }
       }
 
@@ -236,7 +238,7 @@ export default function MemoryFormPage({ memoryId }: { memoryId?: string }) {
     return () => {
       active = false;
     };
-  }, [record?.memoryId, isVaultUnlocked, rawKeyHex]);
+  }, [record?.memoryId, activeKey]);
 
   const guard = useUnsavedChangesGuard(dirty && !gated);
 
@@ -317,7 +319,12 @@ export default function MemoryFormPage({ memoryId }: { memoryId?: string }) {
   }
 
   const heading = editing ? 'Edit memory' : 'New memory';
-  const crumbs = editing ? editCrumbs(memoryTitle(record), memoryId || '') : newCrumbs();
+  // Prefer the seeded (already decrypted) title: memoryTitle(record) is the raw field,
+  // which is armored whenever the vault encrypted it, and the crumb is a render path
+  // like any other. Falls back to the record for the pre-seed frame and plaintext data.
+  const crumbs = editing
+    ? editCrumbs(form.title || memoryTitle(record), memoryId || '')
+    : newCrumbs();
 
   /* ---------------- The scope sentence (§7) ----------------
    * The AND is carried by the sentence's grammar — one sentence, four clauses, all

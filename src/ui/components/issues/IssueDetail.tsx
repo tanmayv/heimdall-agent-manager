@@ -29,8 +29,8 @@ import {
 } from '../../api/endpoints/issues';
 import MarkdownBody from '../MarkdownBody';
 import { useSelector } from 'react-redux';
-import { selectIsVaultUnlocked, selectRawVaultKeyHex } from '../../store/vaultSlice';
-import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
+import { selectActiveVaultKey } from '../../store/vaultSlice';
+import { isVaultArmored } from '../../utils/vaultContent';
 import { VaultText, DecryptedMarkdown } from '../vault/VaultText';
 import {
   absoluteTime,
@@ -53,13 +53,9 @@ export interface IssueDetailProps {
   onDelete?: (issue: Issue) => void;
 }
 
-function IssueCommentContent({
-  body,
-}: {
-  body: string;
-  isUnlocked?: boolean;
-  rawKey?: string | CryptoKey | null;
-}) {
+// DecryptedMarkdown resolves the active CryptoKey itself and passes unarmored text
+// through untouched, so this needs no key or lock props of its own.
+function IssueCommentContent({ body }: { body: string }) {
   return <DecryptedMarkdown source={body} />;
 }
 
@@ -67,8 +63,11 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
 
-  const isVaultUnlocked = useSelector(selectIsVaultUnlocked);
-  const rawKey = useSelector(selectRawVaultKeyHex);
+  // Key material lives only as a non-extractable CryptoKey (REQ-VAULT-HARDEN-1):
+  // state.vault.rawVaultKeyHex is never assigned, so the old selectRawVaultKeyHex
+  // always returned null. The comment gate below tests the real key, so a vault that
+  // reports unlocked without a key now shows the unlock placeholder, not ciphertext.
+  const activeKey = useSelector(selectActiveVaultKey);
 
   const { data: issue, isLoading, error } = useGetIssueQuery({ issueId }, { skip: !issueId });
   const embeddedComments = issue?.comments || [];
@@ -392,10 +391,10 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
                     </button>
                   </div>
                   <div className="prose prose-invert text-xs max-w-none text-secondary">
-                    {isVaultArmored(comment.body) && !isVaultUnlocked ? (
+                    {isVaultArmored(comment.body) && !activeKey ? (
                       <VaultText value={comment.body} as="div" />
                     ) : (
-                      <IssueCommentContent body={comment.body} isUnlocked={isVaultUnlocked} rawKey={rawKey} />
+                      <IssueCommentContent body={comment.body} />
                     )}
                   </div>
                 </div>
