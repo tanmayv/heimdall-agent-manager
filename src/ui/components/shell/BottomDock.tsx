@@ -24,7 +24,36 @@ import {
   writeBottomDockOpen,
   BOTTOM_DOCK_MIN_HEIGHT,
 } from '../../utils/clientPersistence';
-import { useViewport } from './responsive';
+import { readAppViewportHeight } from '../../utils/appViewportHeight';
+
+/** Chrome above the dock we never size into: the app's top bar. */
+const DOCK_VIEWPORT_RESERVE = 48;
+
+/**
+ * The tallest the dock may be right now, in px.
+ *
+ * REQ-DOCK-TOUCH-1: this used to bound against `window.innerHeight`, the LAYOUT viewport,
+ * which on iOS does not shrink for the software keyboard — REQ-KBD-1 measured it holding at
+ * 812 while the visible region fell to 409, so a drag could size the dock far past the fold.
+ * `readAppViewportHeight` is the single source of truth for the visible region (it is what
+ * publishes `--app-viewport-height`), so there is no second sampler here. The `0.8 * layout`
+ * term mirrors the `80vh` ceiling in the container's CSS, since `vh` is layout-based.
+ *
+ * Deliberately NOT gated on a width breakpoint: `isMobile` was `innerWidth <= 767`, which
+ * takes the desktop branch for an iPhone in landscape and for every iPad. There is no surface
+ * where capping the dock at the visible region is wrong.
+ */
+function dockMaxHeight(): number {
+  if (typeof window === 'undefined') return BOTTOM_DOCK_MIN_HEIGHT;
+  const visible = readAppViewportHeight(window) - DOCK_VIEWPORT_RESERVE;
+  const softCap = Math.floor(window.innerHeight * 0.8);
+  return Math.max(BOTTOM_DOCK_MIN_HEIGHT, Math.min(visible, softCap));
+}
+
+/** Clamp a candidate dock height into the currently legal range. */
+function clampDockHeight(next: number): number {
+  return Math.min(dockMaxHeight(), Math.max(BOTTOM_DOCK_MIN_HEIGHT, next));
+}
 
 export interface BottomDockProps {
   isOpen?: boolean;
@@ -38,11 +67,11 @@ export default function BottomDock({
   defaultBridgeId,
 }: BottomDockProps = {}) {
   const dispatch = useDispatch();
-  const viewport = useViewport();
-  const isMobile = viewport === 'mobile';
 
-  // Dock sizing & window state
-  const [height, setHeight] = useState<number>(() => readBottomDockHeight());
+  // Dock sizing & window state. The stored height is clamped against the CURRENT visible
+  // region on restore (REQ-DOCK-TOUCH-1) — desktop and phone share a storage origin, so a
+  // height dragged on a laptop would otherwise paint past the fold on a phone.
+  const [height, setHeight] = useState<number>(() => readBottomDockHeight(dockMaxHeight()));
   const [isMinimized, setIsMinimized] = useState<boolean>(() => !readBottomDockOpen());
   const [isResizing, setIsResizing] = useState<boolean>(false);
 
@@ -232,40 +261,65 @@ export default function BottomDock({
     [killShell, activeTab, visibleSessions, closingSessionIds]
   );
 
-  // Resize handling (REQ-DOCK-BOUNDS-3)
+  // Resize handling (REQ-DOCK-BOUNDS-3, REQ-DOCK-TOUCH-1)
+  //
+  // ONE Pointer Events path for mouse, touch and pen. The previous implementation was
+  // mouse-only (`onMouseDown` + `window` `mousemove`/`mouseup`) and iOS emits no synthetic
+  // `mousemove` during a touch drag, so the drag never tracked on a phone. Listeners go on
+  // the CAPTURED element rather than `window`: `setPointerCapture` retargets every
+  // subsequent event for this pointer to it, so the drag survives the pointer leaving the
+  // 12px strip without us tracking it globally.
   const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (isMinimized) return;
-      if (isMobile) return;
+      // Ignore secondary mouse buttons; touch and pen report button 0.
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       e.preventDefault();
-      setIsResizing(true);
+
+      const el = e.currentTarget;
+      const { pointerId } = e;
       const startY = e.clientY;
       const startHeight = height;
+      // Tracked locally so the pointerup handler can persist the final value without
+      // reaching into state via a setter callback.
+      let latestHeight = startHeight;
 
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        const delta = startY - moveEvent.clientY;
-        const maxHeight = Math.min(
-          Math.floor(window.innerHeight * 0.8),
-          window.innerHeight - 100
-        );
-        const next = Math.min(maxHeight, Math.max(BOTTOM_DOCK_MIN_HEIGHT, startHeight + delta));
-        setHeight(next);
+      setIsResizing(true);
+      try {
+        el.setPointerCapture(pointerId);
+      } catch {
+        // Capture is a nicety; without it the element listeners still fire while the
+        // pointer is over the handle, so fall through rather than abandoning the drag.
+      }
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        latestHeight = clampDockHeight(startHeight + (startY - moveEvent.clientY));
+        setHeight(latestHeight);
       };
 
-      const handleMouseUp = () => {
+      // Shared by pointerup AND pointercancel — the system can steal a touch (an edge
+      // gesture, an incoming call), and without this the dock would stay stuck in the
+      // resizing state with the capture still held.
+      const handlePointerEnd = (endEvent: PointerEvent) => {
+        if (endEvent.pointerId !== pointerId) return;
+        el.removeEventListener('pointermove', handlePointerMove);
+        el.removeEventListener('pointerup', handlePointerEnd);
+        el.removeEventListener('pointercancel', handlePointerEnd);
+        try {
+          if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+        } catch {
+          /* already released, or never captured */
+        }
         setIsResizing(false);
-        setHeight((cur) => {
-          writeBottomDockHeight(cur);
-          return cur;
-        });
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
+        writeBottomDockHeight(latestHeight);
       };
 
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      el.addEventListener('pointermove', handlePointerMove);
+      el.addEventListener('pointerup', handlePointerEnd);
+      el.addEventListener('pointercancel', handlePointerEnd);
     },
-    [height, isMinimized, isMobile]
+    [height, isMinimized]
   );
 
   // Active session object
@@ -305,32 +359,46 @@ export default function BottomDock({
 
   if (!isOpen) return null;
 
-  // REQ-KBD-2 (H4): was `calc(100vh - 48px)`. `vh` is the LARGE viewport and never
-  // shrinks for a soft keyboard at all — not even as much as `dvh`. Size from
-  // `--app-viewport-height` (= `visualViewport.height`) so the dock cannot grow into
-  // the keyboard. Desktop keeps `vh`: there is no software keyboard there.
-  const effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(var(--app-viewport-height) - 48px)' : height);
+  // REQ-DOCK-TOUCH-1: the dock is now user-resizable on EVERY surface, so `height` is the
+  // single source of the restored height — the `isMobile ? 'calc(...)'` pin that hardcoded
+  // mobile to full height is gone, which is what made `height` dead state on a phone.
+  const effectiveHeight = isMinimized ? 36 : height;
+
+  // The cap is where `--app-viewport-height` does its work, and it is applied on every
+  // surface rather than behind the `isMobile` width breakpoint (REQ-KBD-2 H4 established
+  // that `vh` never shrinks for a soft keyboard; the breakpoint missed landscape phones and
+  // every iPad). `min()` means desktop lands on exactly the 80vh it had before — the visible
+  // region equals the layout viewport there — while a phone with the keyboard up lands on the
+  // visible region instead. Because this is CSS, a stored height taller than the visible
+  // region simply paints clamped when the keyboard opens: no JS listener, no keyboard
+  // detection, stock behaviour doing the work.
+  const maxDockHeight = `min(calc(var(--app-viewport-height) - ${DOCK_VIEWPORT_RESERVE}px), 80vh)`;
 
   return (
     <div
       data-debug-id="bottom-dock-container"
       style={{
         height: effectiveHeight,
-        maxHeight: isMobile ? 'calc(var(--app-viewport-height) - 48px)' : 'min(calc(100vh - 100px), 80vh)',
+        maxHeight: maxDockHeight,
       }}
-      className={`relative z-20 flex w-full shrink-0 flex-col border-t border-subtle bg-surface transition-[height] duration-150 ease-out ${
-        isMobile ? 'max-h-[calc(var(--app-viewport-height)_-_48px)]' : 'max-h-[80vh]'
-      } ${
-        isResizing ? 'select-none pointer-events-none' : ''
+      className={`relative z-20 flex w-full shrink-0 flex-col border-t border-subtle bg-surface max-h-[80vh] ${
+        // No height transition mid-drag, or the dock lags 150ms behind the finger.
+        isResizing ? 'select-none pointer-events-none' : 'transition-[height] duration-150 ease-out'
       }`}
     >
-      {/* Top resize handle (only active when restored on desktop) */}
-      {!isMinimized && !isMobile && (
+      {/* Top resize handle — drag to resize, on mouse, touch and pen alike.
+          `dock-resizer` carries `touch-action: none` (without it the browser claims the
+          vertical gesture for scrolling before a move ever reaches us), re-enables
+          `pointer-events` against the container's drag-time `pointer-events-none`, and grows
+          to a 44px target with a visible grab pill under `(pointer: coarse)`. */}
+      {!isMinimized && (
         <div
           data-debug-id="bottom-dock-resizer"
-          onMouseDown={handleResizeStart}
-          className="absolute inset-x-0 -top-1.5 h-3 cursor-row-resize transition-colors hover:bg-accent/40 z-30"
+          onPointerDown={handleResizeStart}
+          className="dock-resizer absolute inset-x-0 -top-1.5 h-3 cursor-row-resize transition-colors hover:bg-accent/40 z-30"
           title="Drag to resize dock"
+          aria-label="Resize dock"
+          role="separator"
         />
       )}
 

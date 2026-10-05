@@ -71,6 +71,49 @@ body,
   max-height: var(--app-viewport-height);
 }
 
+/*
+ * REQ-DOCK-TOUCH-1: the bottom dock's drag-to-resize handle.
+ *
+ * `touch-action: none` is load-bearing, not a nicety — without it the browser claims the
+ * vertical gesture for scrolling and the `pointermove` stream stops after the first event,
+ * so a touch drag never tracks. `pointer-events: auto` counters the container's drag-time
+ * `pointer-events-none` (which exists to stop the terminal below swallowing the drag); the
+ * captured element must stay hittable or the capture is dropped mid-gesture.
+ */
+.dock-resizer {
+  touch-action: none;
+  pointer-events: auto;
+}
+
+/*
+ * On a touch device the 12px strip is both unhittable (this codebase sets a 44px floor) and
+ * invisible (it announced itself only through `hover:`, which does not exist on touch). Keyed
+ * on `(pointer: coarse)` rather than a width breakpoint, because touch capability — not
+ * window width — is the thing that actually decides this.
+ *
+ * The 44px target grows UPWARD (40px above the dock edge, 4px inside it) so it does not
+ * overlay the dock header's own 36px-tall buttons. The pill is the visible affordance.
+ */
+@media (pointer: coarse) {
+  .dock-resizer {
+    top: -2.5rem; /* 40px above the dock edge; with h-3 below → 44px total */
+    height: 2.75rem; /* 44px */
+  }
+
+  .dock-resizer::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: 0.375rem;
+    transform: translateX(-50%);
+    width: 2.5rem;
+    height: 0.25rem;
+    border-radius: 9999px;
+    background: var(--color-text-secondary, var(--fd-ink));
+    opacity: 0.4;
+  }
+}
+
 body {
   /* overflow: hidden alone does not stop window panning on iOS/iPadOS Safari;
      pinning the body removes the document scroll box entirely. */

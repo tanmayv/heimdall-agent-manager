@@ -814,43 +814,14 @@ test('REQ-TEST-VERIFICATION-17: Startup phase triggers capture pane expansion an
   );
 });
 
-// ---------------------------------------------------------------------------
-// REQ-MOBILE-DOCK-FULLHEIGHT-18: Make BottomDock default to full vertical height on mobile viewports
-// ---------------------------------------------------------------------------
-
-test('REQ-MOBILE-DOCK-FULLHEIGHT-18: BottomDock imports useViewport and checks isMobile', () => {
-  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
-  assert.ok(
-    content.includes("import { useViewport } from './responsive';") ||
-    (content.includes('useViewport') && (content.includes('@ui') || content.includes('./responsive'))),
-    'BottomDock must import useViewport'
-  );
-  assert.ok(
-    content.includes("viewport === 'mobile'"),
-    'BottomDock must determine isMobile using viewport === \'mobile\''
-  );
-});
-
-test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, resizing drag handle is disabled and desktop retains draggable resizing', () => {
-  const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
-  assert.ok(
-    content.includes('if (isMobile) return;') || content.includes('if (isMinimized || isMobile) return;'),
-    'handleResizeStart must return early and disable drag when isMobile is true'
-  );
-  assert.ok(
-    content.includes('!isMinimized && !isMobile && (') ||
-    content.includes('data-debug-id="bottom-dock-resizer"'),
-    'bottom-dock-resizer handle must be disabled on mobile'
-  );
-  assert.ok(
-    content.includes('readBottomDockHeight()'),
-    'Desktop must retain persisted default height'
-  );
-  assert.ok(
-    content.includes('BOTTOM_DOCK_MIN_HEIGHT'),
-    'Desktop must retain minimum height clamping'
-  );
-});
+// REQ-MOBILE-DOCK-FULLHEIGHT-18 ("On mobile viewport, container maxHeight expands to full
+// vertical space") was SUPERSEDED by REQ-DOCK-TOUCH-1, which makes the dock user-resizable
+// on every surface — full height became one draggable position rather than a pin. Its two
+// guards pinned the three gates that REQ-DOCK-TOUCH-1 removes (the mobile render guard, the
+// `if (isMobile) return;` early return, and the hardcoded mobile height), so they were
+// deleted rather than rewritten, per the chain's standing directive D1. This sizing is
+// UNGUARDED from here: a future refactor can restore the original defect with nothing
+// going red.
 
 test('REQ-CHAT-EXPECTED-ANSWERS-19: extractMessageOptions parses options from array, string metadata, and metadata_json', async () => {
   const { extractMessageOptions } = await import('../src/ui/components/chat/types.ts');

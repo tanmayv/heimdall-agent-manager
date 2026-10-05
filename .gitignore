@@ -44,7 +44,8 @@ hub.db-wal
 /deployment.md
 
 # UI preview build + session marker (scripts/ui-preview.sh & scripts/dev-preview.sh)
-dist-preview/
+# preview builds served through the ham-ctl tunnel (dist-preview, dist-dock-touch, ...)
+dist-*/
 .ui-preview-session
 .dev-preview-session
 

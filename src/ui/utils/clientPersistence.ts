@@ -304,18 +304,31 @@ export function writeBottomDockOpen(open: boolean): void {
   }
 }
 
-export function readBottomDockHeight(): number {
-  if (typeof window === 'undefined') return BOTTOM_DOCK_DEFAULT_HEIGHT;
+/**
+ * Restore the stored dock height, clamped into `[BOTTOM_DOCK_MIN_HEIGHT, maxHeight]`.
+ *
+ * REQ-DOCK-TOUCH-1: the floor used to be the only bound, and desktop and phone share a
+ * storage origin — so a 650px height dragged on a laptop was restored verbatim on a 402px
+ * phone and painted a dock taller than the screen. Callers pass the CURRENT visible region
+ * as `maxHeight` so a stale value cannot outlive the viewport it was chosen on. Omitting
+ * `maxHeight` keeps the old floor-only behaviour for callers with no viewport to measure.
+ */
+export function readBottomDockHeight(maxHeight?: number): number {
+  const ceiling = Number.isFinite(maxHeight) && (maxHeight as number) >= BOTTOM_DOCK_MIN_HEIGHT
+    ? (maxHeight as number)
+    : Number.POSITIVE_INFINITY;
+  const clamp = (value: number) => Math.min(ceiling, Math.max(BOTTOM_DOCK_MIN_HEIGHT, value));
+  if (typeof window === 'undefined') return clamp(BOTTOM_DOCK_DEFAULT_HEIGHT);
   try {
     const raw = window.localStorage.getItem(BOTTOM_DOCK_HEIGHT_KEY);
-    if (!raw) return BOTTOM_DOCK_DEFAULT_HEIGHT;
+    if (!raw) return clamp(BOTTOM_DOCK_DEFAULT_HEIGHT);
     const parsed = Number(raw);
     if (Number.isFinite(parsed) && parsed >= BOTTOM_DOCK_MIN_HEIGHT) {
-      return parsed;
+      return clamp(parsed);
     }
-    return BOTTOM_DOCK_DEFAULT_HEIGHT;
+    return clamp(BOTTOM_DOCK_DEFAULT_HEIGHT);
   } catch {
-    return BOTTOM_DOCK_DEFAULT_HEIGHT;
+    return clamp(BOTTOM_DOCK_DEFAULT_HEIGHT);
   }
 }
 
