@@ -203,7 +203,6 @@
       background: var(--bg-frame); border: 1px solid var(--line);
       box-shadow: 0 30px 80px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(0,0,0,.4) inset;
       aspect-ratio: 16 / 11.2;
-      cursor: zoom-in;
     }
     .frame::before {
       content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
@@ -240,7 +239,6 @@
       border-radius: 26px; overflow: hidden;
       background: var(--bg-frame); border: 1px solid var(--line-strong);
       box-shadow: 0 32px 80px -16px rgba(0,0,0,.95), 0 0 0 3px var(--bg);
-      cursor: zoom-in;
     }
     .phone::before {
       content: ''; position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3;
@@ -285,33 +283,10 @@
       background: var(--accent); transform: scale(1.25);
     }
 
-    /* Lightbox Modal */
-    .lightbox {
-      position: fixed; inset: 0; z-index: 9999;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(10, 12, 16, 0.94);
-      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-      opacity: 0; pointer-events: none;
-      transition: opacity 0.25s ease;
-      padding: 30px;
-    }
-    .lightbox.open { opacity: 1; pointer-events: auto; }
-    .lightbox img {
-      max-width: min(1500px, 94vw); max-height: 92vh;
-      border-radius: 12px; border: 1px solid var(--line-strong);
-      box-shadow: 0 40px 100px -20px rgba(0,0,0,0.95);
-      object-fit: contain; cursor: zoom-out;
-      transform: scale(0.96); transition: transform 0.25s var(--ease);
-    }
-    .lightbox.open img { transform: scale(1); }
-    .lightbox-close {
-      position: absolute; top: 24px; right: 28px;
-      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-      color: var(--text); border-radius: 50%; width: 40px; height: 40px;
-      display: flex; align-items: center; justify-content: center;
-      cursor: pointer; font-size: 20px; transition: background 0.2s, transform 0.2s;
-    }
-    .lightbox-close:hover { background: rgba(255,255,255,0.2); transform: scale(1.05); }
+    /* Only containers the script actually bound a click handler to look clickable.
+       `can-advance` is added in the same `urls.length > 1` branch that binds the
+       handler, so the cursor can never advertise an advance that will not happen. */
+    .frame.can-advance, .phone.can-advance { cursor: pointer; }
 
     /* ---------- explainer svg animation ---------- */
     .explainer .stroke { stroke: var(--line-strong); fill: none; stroke-width: 1.2; }
@@ -857,6 +832,19 @@
         }
       }
 
+      // Click/tap advances one image, mirroring what the dots above already do.
+      // Bound on `container` itself, so the dots' own e.stopPropagation() keeps a
+      // dot click from also advancing here. Only multi-image containers bind at
+      // all: single-image ones are inert by construction rather than by an early
+      // return, and they never get the `can-advance` cursor.
+      if (urls.length > 1) {
+        container.classList.add('can-advance');
+        container.addEventListener('click', () => {
+          step();
+          resetTimer();
+        });
+      }
+
       let firstLoaded = false;
       function markLoaded() {
         if (!firstLoaded) {
@@ -882,15 +870,6 @@
         imgs.push(img);
       });
       setTimeout(markLoaded, 800);
-
-      if (window.matchMedia('(pointer: fine)').matches) {
-        container.addEventListener('mouseenter', () => {
-          if (timer) clearInterval(timer);
-        });
-        container.addEventListener('mouseleave', () => {
-          resetTimer();
-        });
-      }
     });
 
     /* ===================== reveal on scroll ===================== */
@@ -1071,60 +1050,7 @@
       frame();
     })();
 
-    /* ===================== fullscreen lightbox ===================== */
-    (() => {
-      const lb = $('lightbox');
-      const lbImg = $('lightbox-img');
-      const closeBtn = lb.querySelector('.lightbox-close');
-
-      function openLb(src) {
-        if (!src) return;
-        lbImg.src = src;
-        lb.classList.add('open');
-        lb.setAttribute('aria-hidden', 'false');
-        document.body.style.overflow = 'hidden';
-      }
-
-      function closeLb() {
-        lb.classList.remove('open');
-        lb.setAttribute('aria-hidden', 'true');
-        document.body.style.overflow = '';
-        setTimeout(() => { if (!lb.classList.contains('open')) lbImg.src = ''; }, 250);
-      }
-
-      document.querySelectorAll('.frame, .phone').forEach(box => {
-        box.addEventListener('click', e => {
-          if (e.target.closest('.slide-dots')) return;
-          const activeImg = box.querySelector('img.active') || box.querySelector('img');
-          if (activeImg && activeImg.src) {
-            openLb(activeImg.src);
-          }
-        });
-      });
-
-      closeBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        closeLb();
-      });
-
-      lb.addEventListener('click', e => {
-        if (e.target === lb || e.target === lbImg) {
-          closeLb();
-        }
-      });
-
-      window.addEventListener('keydown', e => {
-        if (e.key === 'Escape' && lb.classList.contains('open')) {
-          closeLb();
-        }
-      });
-    })();
   </script>
 
-  <!-- Lightbox Modal -->
-  <div id="lightbox" class="lightbox" aria-hidden="true" role="dialog" aria-modal="true">
-    <button class="lightbox-close" aria-label="Close image viewer">✕</button>
-    <img id="lightbox-img" src="" alt="Enlarged screenshot view">
-  </div>
 </body>
 </html>
