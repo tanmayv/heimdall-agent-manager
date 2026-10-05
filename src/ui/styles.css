@@ -28,6 +28,13 @@
   --fd-radius-xxl: 30px;
   --fd-radius-pill: 9999px;
 
+  /* REQ-KBD-2: the app's usable height. `src/ui/utils/appViewportHeight.ts` overwrites
+     this on `<html>` with `visualViewport.height` in px, which is the ONLY height a
+     software keyboard actually shrinks on iOS. `100dvh` is the pre-JS fallback and the
+     correct value on any surface without a software keyboard — it is NOT the live value;
+     do not reintroduce `100dvh` at the use sites. */
+  --app-viewport-height: 100dvh;
+
   font-family: var(--fd-font-body);
   background: var(--color-canvas, var(--fd-canvas));
 }
@@ -39,11 +46,29 @@ body,
   padding: 0;
   width: 100%;
   height: 100%;
-  height: 100dvh;
+  /* REQ-KBD-2 (was `100dvh`): `dvh` does NOT shrink for a software keyboard — iOS shrinks
+     only the visual viewport — so a `100dvh` box left 403px of the app permanently behind
+     the keyboard with the composer pinned inside it. REQ-IPAD-1's viewport lock is intact:
+     this is still a single fixed-height, non-scrolling document box; only the source of
+     the height changed. */
+  height: var(--app-viewport-height);
   max-width: 100vw;
-  max-height: 100dvh;
+  max-height: var(--app-viewport-height);
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/*
+ * REQ-KBD-2: size a `position: fixed` box from the visual viewport.
+ *
+ * A fixed element resolves percentage heights against the LAYOUT viewport, not against
+ * `#root`, so sizing `#root` above does nothing for `app-shell` — it needs the height
+ * itself. This is the box that actually pinned the composer into the keyboard's dead
+ * zone (REQ-KBD-1 §1), so it is the one edit that cannot be skipped.
+ */
+.app-viewport-height {
+  height: var(--app-viewport-height);
+  max-height: var(--app-viewport-height);
 }
 
 body {

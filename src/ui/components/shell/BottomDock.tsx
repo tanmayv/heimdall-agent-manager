@@ -305,17 +305,21 @@ export default function BottomDock({
 
   if (!isOpen) return null;
 
-  const effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(100vh - 48px)' : height);
+  // REQ-KBD-2 (H4): was `calc(100vh - 48px)`. `vh` is the LARGE viewport and never
+  // shrinks for a soft keyboard at all — not even as much as `dvh`. Size from
+  // `--app-viewport-height` (= `visualViewport.height`) so the dock cannot grow into
+  // the keyboard. Desktop keeps `vh`: there is no software keyboard there.
+  const effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(var(--app-viewport-height) - 48px)' : height);
 
   return (
     <div
       data-debug-id="bottom-dock-container"
       style={{
         height: effectiveHeight,
-        maxHeight: isMobile ? 'calc(100vh - 48px)' : 'min(calc(100vh - 100px), 80vh)',
+        maxHeight: isMobile ? 'calc(var(--app-viewport-height) - 48px)' : 'min(calc(100vh - 100px), 80vh)',
       }}
       className={`relative z-20 flex w-full shrink-0 flex-col border-t border-subtle bg-surface transition-[height] duration-150 ease-out ${
-        isMobile ? 'max-h-[calc(100vh-48px)]' : 'max-h-[80vh]'
+        isMobile ? 'max-h-[calc(var(--app-viewport-height)_-_48px)]' : 'max-h-[80vh]'
       } ${
         isResizing ? 'select-none pointer-events-none' : ''
       }`}

@@ -1633,7 +1633,17 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   }
 
   return (
-    <div data-debug-id="app-shell" className="fixed inset-0 flex h-full w-full max-w-full overflow-hidden bg-canvas text-primary">
+    /* REQ-KBD-2: was `fixed inset-0 … h-full`. `inset-0` pinned this box's BOTTOM edge to
+       the layout viewport, which iOS never shrinks for a soft keyboard, and `h-full` on a
+       fixed element resolves against that same layout viewport rather than `#root` — so
+       the shell stayed 812px tall while only the top 409px were visible, leaving the
+       composer at 540..776 inside the invisible 403px (REQ-KBD-1 §1). Pinning only the top
+       and taking the height from `--app-viewport-height` (= `visualViewport.height`) makes
+       the shell end where the keyboard begins. Keep `inset-x-0 top-0`, NOT `inset-0`. */
+    <div
+      data-debug-id="app-shell"
+      className="fixed inset-x-0 top-0 app-viewport-height flex w-full max-w-full overflow-hidden bg-canvas text-primary"
+    >
       {/* On mobile, reserve space for the slim left sidebar so main content doesn't shift when drawer expands */}
       {isMobile ? <div className="w-12 shrink-0 md:hidden pointer-events-none" aria-hidden="true" /> : null}
 

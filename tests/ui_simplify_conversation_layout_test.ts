@@ -837,10 +837,22 @@ test('REQ-MOBILE-DOCK-FULLHEIGHT-18: BottomDock imports useViewport and checks i
 
 test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, open BottomDock expands to full vertical space and collapses to 36px when minimized', () => {
   const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  // REQ-KBD-2 updated the unit, NOT the requirement. REQ-MOBILE-DOCK-FULLHEIGHT-18 still
+  // says "full vertical space minus 48px on mobile, 36px minimized" — but `100vh` is the
+  // LARGE viewport and never shrinks for a soft keyboard, so on mobile it was never
+  // actually the full vertical space. `--app-viewport-height` is `visualViewport.height`
+  // (see src/ui/utils/appViewportHeight.ts), which is. Do not revert this to `100vh`.
   assert.ok(
-    content.includes("effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(100vh - 48px)' : height)") ||
-    (content.includes('effectiveHeight') && content.includes('isMobile') && content.includes('calc(100vh - 48px)') && content.includes('36')),
-    'BottomDock effectiveHeight must occupy full vertical space calc(100vh - 48px) on mobile when open, and 36px when minimized'
+    content.includes("effectiveHeight = isMinimized ? 36 : (isMobile ? 'calc(var(--app-viewport-height) - 48px)' : height)") ||
+    (content.includes('effectiveHeight') && content.includes('isMobile') && content.includes('calc(var(--app-viewport-height) - 48px)') && content.includes('36')),
+    'BottomDock effectiveHeight must occupy full vertical space calc(var(--app-viewport-height) - 48px) on mobile when open, and 36px when minimized'
+  );
+  // Checked against CODE only: the line-comment above `effectiveHeight` names the old
+  // `calc(100vh - 48px)` it replaced, and that explanation must not trip this guard.
+  const code = content.replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(
+    !code.includes('calc(100vh - 48px)') && !code.includes('max-h-[calc(100vh-48px)]'),
+    'BottomDock must not size itself from 100vh on mobile: vh does not shrink for a soft keyboard (REQ-KBD-2, H4)'
   );
   assert.ok(
     content.includes('data-debug-id="bottom-dock-minimize-btn"'),
@@ -850,10 +862,12 @@ test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, open BottomDock expands
 
 test('REQ-MOBILE-DOCK-FULLHEIGHT-18: On mobile viewport, container maxHeight expands to full vertical space and desktop caps at 80vh', () => {
   const content = fs.readFileSync(BOTTOM_DOCK_FILE, 'utf8');
+  // REQ-KBD-2: mobile cap now tracks the visual viewport (see the note above). The
+  // desktop cap deliberately keeps `vh` — there is no software keyboard there.
   assert.ok(
-    content.includes("maxHeight: isMobile ? 'calc(100vh - 48px)' : 'min(calc(100vh - 100px), 80vh)'") ||
-    (content.includes('maxHeight') && content.includes('isMobile') && content.includes('calc(100vh - 48px)')),
-    'BottomDock container style must set maxHeight to calc(100vh - 48px) on mobile and min(calc(100vh - 100px), 80vh) on desktop'
+    content.includes("maxHeight: isMobile ? 'calc(var(--app-viewport-height) - 48px)' : 'min(calc(100vh - 100px), 80vh)'") ||
+    (content.includes('maxHeight') && content.includes('isMobile') && content.includes('calc(var(--app-viewport-height) - 48px)')),
+    'BottomDock container style must set maxHeight to calc(var(--app-viewport-height) - 48px) on mobile and min(calc(100vh - 100px), 80vh) on desktop'
   );
   assert.ok(
     content.includes('max-h-[80vh]'),

@@ -10,6 +10,7 @@ import { registerNotificationServiceWorker } from './services/notificationServic
 import { resubscribeOnLoad } from './services/pushSubscriptionService';
 import { selectNotificationsState } from './store/notificationsSlice';
 import { initializeVaultPersistence } from './store/vaultSlice';
+import { installAppViewportHeightSync } from './utils/appViewportHeight';
 import './debugCapture';
 import './styles.css';
 
@@ -31,6 +32,14 @@ import './styles.css';
     // Non-fatal: fall back to default routing.
   }
 })();
+
+// REQ-KBD-2: publish `--app-viewport-height` from `visualViewport.height` and keep it
+// current. Everything that used to be sized `100dvh` reads that var instead, so the app
+// shell ends where the soft keyboard begins. Installed before render — and deliberately
+// NOT as a React hook — because `html`/`body`/`#root` are sized from it too, and those
+// are outside the React tree. See src/ui/utils/appViewportHeight.ts for why this needs a
+// settling tick and why it must never subtract `visualViewport.offsetTop`.
+if (typeof window !== 'undefined') installAppViewportHeightSync(window as never);
 
 (window as any).__debugStore = store;
 installElectronApiFetchBridge();
