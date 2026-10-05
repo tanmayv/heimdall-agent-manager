@@ -711,7 +711,7 @@
             <h2>Your files and your shell, from anywhere.</h2>
             <p class="lead">The machines you work on at your desk, reachable from a browser or a phone — edit a file yourself, or drop into a real terminal and use the editor you already know.</p>
             <ul class="caps">
-              <li><b>Edit files in the browser</b> — a file tree, tabs, and Vim keybindings if you want them, saving straight to the machine the project lives on.</li>
+              <li><b>Edit files in the browser</b> — a file browser, tabs, and Vim keybindings if you want them, saving straight to the machine the project lives on.</li>
               <li><b>Or open a real shell</b> on any machine in the fleet — an interactive terminal, so vim, emacs or helix run exactly as they do when you are sitting in front of it.</li>
               <li><b>A session is yours alone.</b> Attaching to a terminal or sending it input is refused unless you own it — the hub checks the owner on both, every time.</li>
               <li><b>Edits stay inside the project.</b> Every write is resolved against the project root and refused if it lands outside it.</li>
@@ -798,7 +798,13 @@
       setNum('h', pad(Math.floor(s / 3600) % 24));
       setNum('m', pad(Math.floor(s / 60) % 60));
       setNum('s', pad(s % 60));
-      setTimeout(tick, 1000 - (Date.now() % 1000));
+      // Aim 20 ms PAST the next decrement of `s`, never exactly AT it. `diff % 1000`
+      // is the time until `s` changes; a tick landing on that instant still reads
+      // the pre-decrement value, so setNum() no-ops and the digit holds for 2 s and
+      // then skips one. The old epoch-aligned delay aimed exactly at that knife edge.
+      // Deriving the delay from diff also keeps this correct for an INVITE_OPENS_AT
+      // that is not a whole second, which the old form only ever was by accident.
+      setTimeout(tick, (diff % 1000) + 20);
     }
     tick();
 
@@ -847,7 +853,7 @@
       function resetTimer() {
         if (timer) clearInterval(timer);
         if (urls.length > 1 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-          timer = setInterval(step, 4200);
+          timer = setInterval(step, 4000);
         }
       }
 
