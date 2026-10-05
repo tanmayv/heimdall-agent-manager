@@ -199,7 +199,7 @@ export default function ElectronDeviceAuthGate({ children }: { children: ReactNo
 
 function DeviceAuthShell({ title, body, children }: { title: string; body: string; children?: ReactNode }) {
   return (
-    <main data-debug-id="electron-device-auth" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+    <main data-debug-id="electron-device-auth" className="grid app-viewport-min-height place-items-center bg-canvas px-6 text-primary">
       <section className="w-full max-w-xl rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
         <Text as="p" role="overline" tone="accent">Device authorization</Text>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>

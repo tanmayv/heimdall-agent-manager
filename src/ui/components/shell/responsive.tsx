@@ -125,7 +125,12 @@ export function MobileTabBar({
       // what everything else on the bottom edge measures itself against. The safe
       // area is padding on the bar itself, so the tabs sit above the home indicator
       // rather than under it.
-      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-subtle bg-surface transition-transform duration-300 ease-in-out md:hidden ${className}`}
+      // REQ-VIEWPORT-SWEEP-1: `app-viewport-bottom`, NOT `bottom-0`. `bottom-0` resolved
+      // against the layout viewport, which a soft keyboard does not shrink, so with the
+      // keyboard up this bar sat at 758..814 against a visible region ending at 409 — the
+      // app's primary navigation did not exist while typing. `ui-safe-bottom` still handles
+      // the home indicator; the two are alternatives the browser resolves independently.
+      className={`ui-safe-bottom fixed inset-x-0 app-viewport-bottom z-40 grid grid-cols-5 items-stretch border-t border-subtle bg-surface transition-transform duration-300 ease-in-out md:hidden ${className}`}
     >
       {TABS.slice(0, 2).map((tab) => (
         <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />

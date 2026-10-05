@@ -975,7 +975,7 @@ function AuthGate() {
 
 function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: string; body: string }) {
   return (
-    <main data-debug-id={debugId} className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+    <main data-debug-id={debugId} className="grid app-viewport-min-height place-items-center bg-canvas px-6 text-primary">
       <section className="w-full max-w-md rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
         <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted"><Icon name="search" size={22} /></div>
         <h1 className="text-2xl font-semibold">{title}</h1>
@@ -993,7 +993,7 @@ function UnauthenticatedLanding({ loginUrl }: { loginUrl: string }) {
     return () => window.clearTimeout(timer);
   }, [target]);
   return (
-    <main data-debug-id="unauthenticated-landing" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+    <main data-debug-id="unauthenticated-landing" className="grid app-viewport-min-height place-items-center bg-canvas px-6 text-primary">
       <section className="w-full max-w-lg rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Trusted-proxy sign in</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Redirecting to sign in…</h1>
@@ -1010,7 +1010,7 @@ function UnauthenticatedLanding({ loginUrl }: { loginUrl: string }) {
 
 function AccessDenied() {
   return (
-    <main data-debug-id="access-denied" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+    <main data-debug-id="access-denied" className="grid app-viewport-min-height place-items-center bg-canvas px-6 text-primary">
       <section className="w-full max-w-md rounded-[2rem] border border-danger/30 bg-danger-soft p-8 text-center shadow-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-danger">403 forbidden</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
@@ -1626,7 +1626,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // WITHOUT the shell sidebar/chrome (like a standalone dashboard).
   if (path === '/agent-monitor') {
     return (
-      <main data-debug-id="shell-main-agent-monitor" className="h-screen w-screen overflow-hidden">
+      /* REQ-VIEWPORT-SWEEP-1: was `h-screen` (= `height: 100vh`). This box sits INSIDE the
+         `app-viewport-height` shell, so with the keyboard up it was 812px tall inside a 409px
+         parent — it overflowed its own container, and REQ-MODAL-2's grid-row fix lives inside
+         it. `w-screen` stays: a keyboard does not change width. */
+      <main data-debug-id="shell-main-agent-monitor" className="app-viewport-height w-screen overflow-hidden">
         <AgentMonitorPage />
       </main>
     );
@@ -1660,7 +1664,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         data-debug-id={isEffectiveCollapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
         className={`flex shrink-0 flex-col border-r border-subtle bg-surface transition-[width] duration-200 ${
           isEffectiveCollapsed ? (isMobile ? 'w-12' : 'w-16') : 'w-80 max-w-[calc(100vw-1rem)]'
-        } ${isMobile ? 'fixed inset-y-0 left-0 z-50 md:static md:z-auto' : 'md:static'} translate-x-0`}
+        } ${isMobile ? 'fixed top-0 left-0 z-50 app-viewport-height md:static md:z-auto md:h-auto md:max-h-none' : 'md:static'} translate-x-0`}
         aria-label="Primary navigation"
       >
         <div className={`flex items-center gap-3 ${isMobile && isEffectiveCollapsed ? 'p-1.5' : 'p-3'} ${isEffectiveCollapsed ? 'justify-center' : 'justify-between'}`}>

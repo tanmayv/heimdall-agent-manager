@@ -54,6 +54,7 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './Icon';
+import { readAppViewportHeight } from '../../../utils/appViewportHeight';
 import type {
   ChangeHandler,
   DisableableProps,
@@ -174,7 +175,14 @@ interface PopupCoords {
  * viewport, and bound the height by whichever side we landed on.
  */
 function computeCoords(rect: DOMRect): PopupCoords {
-  const spaceBelow = window.innerHeight - rect.bottom;
+  // REQ-VIEWPORT-SWEEP-1: the room BELOW is measured against the VISIBLE region, not
+  // `window.innerHeight`. A soft keyboard does not shrink the layout viewport (REQ-KBD-1
+  // measured it holding at 812 while the visible region fell to 409), so `innerHeight`
+  // overstated `spaceBelow` by the keyboard's height: a Select near the bottom of a form
+  // never flipped above, and the `maxHeight` derived from it was ~403px too generous, so the
+  // listbox opened downwards into the dead zone. `readAppViewportHeight` is the same source
+  // of truth that publishes `--app-viewport-height` — no second sampler.
+  const spaceBelow = readAppViewportHeight(window) - rect.bottom;
   const spaceAbove = rect.top;
   const flip = spaceBelow < FLIP_THRESHOLD && spaceAbove > spaceBelow;
   const available = (flip ? spaceAbove : spaceBelow) - TRIGGER_GAP - VIEWPORT_MARGIN;
@@ -188,6 +196,13 @@ function computeCoords(rect: DOMRect): PopupCoords {
     maxHeight: Math.max(MIN_POPUP_HEIGHT, Math.min(MAX_POPUP_HEIGHT, available)),
   };
 
+  // REQ-VIEWPORT-SWEEP-1 — `window.innerHeight` HERE IS CORRECT. DO NOT "FIX" IT.
+  // The popup is `position: fixed`, and for a fixed box `bottom: B` places the LOWER EDGE at
+  // `layoutHeight - B`. To land that edge at `rect.top - TRIGGER_GAP` the offset must be
+  // measured from the LAYOUT viewport's bottom, which is what `innerHeight` is. Substituting
+  // `readAppViewportHeight` would move the flipped popup DOWN by the keyboard's height —
+  // i.e. it would create the very defect this sweep exists to remove. `top` below needs no
+  // such term: it is measured from the top edge, which the keyboard does not move.
   return flip
     ? { ...box, bottom: window.innerHeight - rect.top + TRIGGER_GAP }
     : { ...box, top: rect.bottom + TRIGGER_GAP };

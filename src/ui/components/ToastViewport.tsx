@@ -38,7 +38,7 @@ export function ToastViewport() {
   if (typeof document === 'undefined' || toasts.length === 0) return null;
 
   return createPortal(
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-toast flex flex-col items-center gap-2 p-4 sm:items-end">
+    <div className="pointer-events-none fixed inset-x-0 app-viewport-bottom z-toast flex flex-col items-center gap-2 p-4 sm:items-end">
       {toasts.map((t) => (
         <Toast
           key={t.id}

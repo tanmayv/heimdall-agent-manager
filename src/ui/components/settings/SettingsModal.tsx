@@ -426,7 +426,7 @@ export function SettingsModal({
   return createPortal(
     <div
       data-debug-id="settings-modal-overlay"
-      className="fixed inset-0 z-modal bg-surface-overlay/80 backdrop-blur-sm flex items-center justify-center p-0 md:p-4"
+      className="fixed inset-x-0 top-0 app-viewport-height z-modal bg-surface-overlay/80 backdrop-blur-sm flex items-center justify-center p-0 md:p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           close();

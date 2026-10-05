@@ -167,7 +167,11 @@ export function AgentMonitorPage() {
   const cells = useMemo(() => pinned, [pinned]);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas">
+    /* REQ-VIEWPORT-SWEEP-1: was `h-screen`. Same defect as its `shell-main-agent-monitor`
+       parent — `100vh` does not shrink for a soft keyboard, so this page's own flex column
+       (and the REQ-MODAL-2 grid rows in it) measured against a viewport 403px taller than
+       the visible one. */
+    <div className="flex app-viewport-height w-screen flex-col overflow-hidden bg-canvas">
       {/* Header */}
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-subtle bg-surface px-3">
         <span className="text-[14px] font-semibold text-primary">Agent Monitor</span>

@@ -505,7 +505,7 @@ export function AgentDetailMobileActions({
   if (!verbsForState(agentState(record)).includes('edit')) return null;
   return (
     <div
-      className="fixed bottom-0 left-0 right-0 z-sticky border-t border-subtle bg-surface px-4 pb-[max(var(--ui-bottom-chrome,0px),env(safe-area-inset-bottom,0px))] pt-2 md:hidden"
+      className="fixed inset-x-0 app-viewport-bottom z-sticky border-t border-subtle bg-surface px-4 pb-[max(var(--ui-bottom-chrome,0px),env(safe-area-inset-bottom,0px))] pt-2 md:hidden"
       data-debug-id="agent-view-mobile-bar"
     >
       <Button

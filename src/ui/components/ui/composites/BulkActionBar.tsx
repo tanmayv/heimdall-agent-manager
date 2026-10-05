@@ -29,8 +29,11 @@
  * page on all five resources, and the height is the SHELL's fact, not the page's.
  * Absent the variable the fallback is `0px`, so `@ui` keeps zero knowledge of the
  * shell and the bar still docks correctly in a bare host (Storybook, tests).
- * The software keyboard wins while it is open: it covers the tab bar too, so the bar
- * sits on the keyboard rather than stacking both insets.
+ * The software keyboard wins while it is open: it covers the tab bar too, so the bar sits
+ * on the keyboard rather than stacking both insets. REQ-VIEWPORT-SWEEP-1: that is now true
+ * because the offset says so (`--app-viewport-bottom-offset`); it was previously asserted
+ * by a comment and was false, because this bar is portaled out of the shell and a fixed box
+ * takes `bottom` from the layout viewport, which no keyboard shrinks.
  *
  * NOT for: per-row actions (they belong in the row), or a page-level toolbar.
  *
@@ -145,16 +148,31 @@ const BulkActionBarBase: React.FC<BulkActionBarProps> = ({
   // supply, so the label says "loaded" rather than implying a total.
   const countLabel = `${selectedCount} selected (of the ${loadedCount} loaded)`;
 
-  // Sit on whatever persistent bottom chrome the shell has declared. Chrome height and
-  // the device's own safe area are alternatives, not addends: the tab bar already sits
-  // inside the safe area, so `max()` picks whichever is taller. On desktop both resolve
-  // to 0 and the bar sits on the window edge.
+  // Sit on whatever persistent bottom chrome the shell has declared.
   //
-  // REQ-KBD-3: there is no longer a keyboard branch. The shell is sized from
-  // `--app-viewport-height` (src/ui/utils/appViewportHeight.ts), so the visible region
+  // REQ-VIEWPORT-SWEEP-1 — THE COMMENT THAT USED TO BE HERE WAS FALSE, AND IT COST US.
+  // It claimed: "the shell is sized from --app-viewport-height, so the visible region
   // already ends above the keyboard and a bar pinned to its bottom clears the keyboard
-  // without measuring it.
-  const bottomOffset = 'max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px))';
+  // without measuring it." The first half is true and the conclusion does not follow. This
+  // bar is PORTALED TO document.body (see below), so it is not inside the shell at all, and
+  // a `position: fixed` box resolves `bottom` against the LAYOUT viewport regardless of any
+  // ancestor. "Its bottom" was never the shell's bottom -- it was 812 while the visible
+  // region ended at 409, putting the bar fully behind the keyboard.
+  //
+  // Own the consequence: REQ-KBD-3 deleted this component's keyboard branch partly on that
+  // comment's reasoning. The deletion did not change behaviour (the branch was dead -- the
+  // hook it depended on returned 0 forever), but we removed the code that pretended to
+  // handle this while leaving a comment asserting it was handled. That is worse than a
+  // stale comment: it is a comment that stops the next person from looking.
+  //
+  // The occluded height is an ADDEND, not an alternative: the keyboard covers the tab bar
+  // too, so clear the keyboard first and then whatever chrome or safe area remains. Chrome
+  // height and the device safe area stay alternatives to each other -- the tab bar already
+  // sits inside the safe area -- so `max()` still picks whichever of those two is taller.
+  // `--app-viewport-bottom-offset` is `0px` whenever nothing is occluding, so on desktop
+  // this is exactly the expression it replaces.
+  const bottomOffset =
+    'calc(var(--app-viewport-bottom-offset, 0px) + max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)))';
 
   const rootClassName = [
     'fixed inset-x-0 z-sticky flex items-center gap-3 border-t border-subtle bg-surface-raised px-4 py-3 shadow-panel',

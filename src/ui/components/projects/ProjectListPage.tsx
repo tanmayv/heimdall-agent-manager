@@ -760,7 +760,7 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
       ) : null}
 
       {toasts.length ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-toast flex flex-col items-center gap-2 p-4 sm:items-end">
+        <div className="pointer-events-none fixed inset-x-0 app-viewport-bottom z-toast flex flex-col items-center gap-2 p-4 sm:items-end">
           {toasts.map((entry) => (
             <div key={entry.id} className="pointer-events-auto">
               <Toast tone={entry.tone} title={entry.title} duration={4000} onDismiss={() => dismissToast(entry.id)}>

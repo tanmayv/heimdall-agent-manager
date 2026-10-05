@@ -157,7 +157,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   return (
     <div
       data-debug-id="create-task-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4 overflow-y-auto"
+      className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4 overflow-y-auto"
       onClick={onClose}
     >
       <div

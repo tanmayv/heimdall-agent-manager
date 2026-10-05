@@ -120,8 +120,13 @@ test('SettingsModal implements portal overlay with backdrop blur and focus trapp
   // Portal overlay
   assert.ok(content.includes('createPortal'), 'Must render via React createPortal');
   assert.ok(
-    content.includes('fixed inset-0 z-modal bg-surface-overlay/80 backdrop-blur-sm'),
-    'Overlay must have fixed inset-0 z-modal bg-surface-overlay/80 backdrop-blur-sm tokens',
+    // REQ-VIEWPORT-SWEEP-1: `inset-x-0 top-0 app-viewport-height`, NOT `inset-0`. `inset-0`
+    // pins the overlay's bottom edge to the layout viewport, which a soft keyboard does not
+    // shrink, and this overlay is `items-center` — so the panel centres at layoutHeight/2
+    // (406 on the REQ-KBD-1 device) while the visible region ends at 409, putting most of a
+    // correctly-capped panel behind the keyboard. Pinned to the literal so a revert fails.
+    content.includes('fixed inset-x-0 top-0 app-viewport-height z-modal bg-surface-overlay/80 backdrop-blur-sm'),
+    'Overlay must be sized from --app-viewport-height, not inset-0 (REQ-VIEWPORT-SWEEP-1)',
   );
 
   // Esc key and focus trapping via useDialogA11y
@@ -323,7 +328,10 @@ test('SettingsModal implements mobile master-detail navigation with >=44px touch
   const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
 
   // Full viewport on mobile
-  assert.ok(content.includes('fixed inset-0'), 'Must support full viewport overlay');
+  assert.ok(
+    content.includes('fixed inset-x-0 top-0 app-viewport-height'),
+    'Must cover the VISIBLE viewport — `app-viewport-height`, not `inset-0` (REQ-VIEWPORT-SWEEP-1)',
+  );
   assert.ok(
     content.includes('settings-mobile-master-view'),
     'Must have mobile master view',

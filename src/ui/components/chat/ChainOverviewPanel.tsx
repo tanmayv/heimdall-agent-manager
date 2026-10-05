@@ -1353,7 +1353,7 @@ export default function ChainOverviewPanel({
       {maximizedTerminalInstanceId && (
         <div
           data-debug-id="chain-overview-maximized-terminal-modal"
-          className="fixed inset-0 z-50 flex flex-col bg-canvas/95 backdrop-blur-md p-4 sm:p-6"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex flex-col bg-canvas/95 backdrop-blur-md p-4 sm:p-6"
         >
           <div className="flex items-center justify-between border-b border-subtle pb-3">
             <div className="flex items-center gap-2">

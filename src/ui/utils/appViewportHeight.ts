@@ -27,6 +27,21 @@
 export const APP_VIEWPORT_HEIGHT_VAR = '--app-viewport-height';
 
 /**
+ * REQ-VIEWPORT-SWEEP-1: the companion property, for boxes pinned to the BOTTOM edge.
+ *
+ * A `position: fixed` box resolves `bottom` against the LAYOUT viewport, so `bottom: 0`
+ * puts its lower edge at `innerHeight` — 812 on the REQ-KBD-1 device, while the visible
+ * region ended at 409. That is the same defect as `height: 100dvh`, in a spelling none of
+ * the height greps can see: there is no `vh`, no `h-screen` and no `innerHeight` in
+ * `fixed inset-x-0 bottom-0`. It put the app's entire mobile tab bar, every toast viewport
+ * and the mobile sticky action bars at 758..814 — not clipped, fully past the fold.
+ *
+ * This property is how far up from the layout viewport's bottom edge such a box must sit:
+ * the occluded height. See `appViewportBottomOffsetFrom` for why it is NOT `100lvh - var()`.
+ */
+export const APP_VIEWPORT_BOTTOM_OFFSET_VAR = '--app-viewport-bottom-offset';
+
+/**
  * REQUIREMENT 1 — RE-READ ON A SETTLING TICK, NOT ONLY ON EVENTS.
  *
  * `visualViewport` events on this surface fire only MID-TRANSIENT. The complete event
@@ -86,6 +101,36 @@ export function appViewportHeightFrom(reading: AppViewportReading): number {
   return Math.round(visualHeight);
 }
 
+/**
+ * How far above the layout viewport's bottom edge the visible region ends, in CSS pixels —
+ * i.e. the occluded height. `0` whenever nothing is occluding.
+ *
+ * WHY THIS AND NOT `calc(100lvh - var(--app-viewport-height))`, which needs no JS at all:
+ * `lvh` is the LARGE viewport, the one with browser chrome RETRACTED, and it is a STATIC
+ * unit — it does not move when the keyboard opens and it does not move when chrome
+ * retracts mid-session. In a standalone PWA (the surface REQ-KBD-1 measured) there is no
+ * retractable chrome, so `100lvh == innerHeight` and the two agree. In TABBED Safari,
+ * `100lvh > innerHeight` by the chrome height permanently, so `100lvh - visible` overstates
+ * the offset and floats the bar above where it belongs. Tabbed Safari is on REQ-KBD-1's
+ * NOT-MEASURED list, so the `lvh` spelling would be correct only on the surface we happened
+ * to measure. Subtracting within one sample cannot diverge from the height the shell is
+ * already sized by, because it is the same number minus the same number.
+ *
+ * This is NOT a second sampler: it takes the same `AppViewportReading` and calls
+ * `appViewportHeightFrom`. That also makes pinch-zoom fall out for free — there the height
+ * function returns `innerHeight`, so the offset is exactly 0 and nothing is displaced.
+ *
+ * Like `app-shell`'s own `top-0` + `height: var(--app-viewport-height)`, this is exact while
+ * `visualViewport.offsetTop` is 0 (measured 0 on the REQ-KBD-1 surface, §1). It inherits
+ * that assumption from the shell rather than adding a new one, and deliberately does NOT
+ * read `offsetTop` — see REQUIREMENT 2 above for what happens when you do.
+ */
+export function appViewportBottomOffsetFrom(reading: AppViewportReading): number {
+  const { innerHeight } = reading;
+  const layout = Number.isFinite(innerHeight) && innerHeight > 0 ? Math.round(innerHeight) : 0;
+  return Math.max(0, layout - appViewportHeightFrom(reading));
+}
+
 /** The subset of `Window` this module touches, so tests can pass a fake. */
 export type AppViewportWindow = {
   innerHeight: number;
@@ -104,13 +149,23 @@ export type AppViewportWindow = {
   clearInterval: (handle: never) => void;
 };
 
-export function readAppViewportHeight(win: AppViewportWindow): number {
+/** One sample of `win`. Both published values derive from this, so they cannot disagree. */
+export function readAppViewport(win: AppViewportWindow): AppViewportReading {
   const vv = win.visualViewport ?? null;
-  return appViewportHeightFrom({
+  return {
     innerHeight: win.innerHeight,
     visualHeight: vv ? vv.height : null,
     scale: vv && typeof vv.scale === 'number' ? vv.scale : null,
-  });
+  };
+}
+
+export function readAppViewportHeight(win: AppViewportWindow): number {
+  return appViewportHeightFrom(readAppViewport(win));
+}
+
+/** REQ-VIEWPORT-SWEEP-1. The occluded height, for a box pinned to the bottom edge. */
+export function readAppViewportBottomOffset(win: AppViewportWindow): number {
+  return appViewportBottomOffsetFrom(readAppViewport(win));
 }
 
 /**
@@ -123,17 +178,30 @@ export function readAppViewportHeight(win: AppViewportWindow): number {
 export function installAppViewportHeightSync(win: AppViewportWindow): () => void {
   const vv = win.visualViewport ?? null;
   const timers = new Set<unknown>();
-  let lastWritten = -1;
+  let lastHeight = -1;
+  let lastOffset = -1;
   let stopped = false;
 
   const apply = () => {
     if (stopped) return;
-    const height = readAppViewportHeight(win);
-    // Suppressing no-op writes is what keeps the standing poll free, and it also keeps
-    // us from invalidating layout 4x/second for a value that has not moved.
-    if (height === lastWritten || height <= 0) return;
-    lastWritten = height;
-    win.document.documentElement.style.setProperty(APP_VIEWPORT_HEIGHT_VAR, `${height}px`);
+    // ONE sample for both properties. Reading twice could straddle a keyboard transition
+    // and publish a height and an offset that do not describe the same viewport.
+    const reading = readAppViewport(win);
+    const height = appViewportHeightFrom(reading);
+    if (height <= 0) return;
+    const offset = appViewportBottomOffsetFrom(reading);
+    // Suppressing no-op writes is what keeps the standing poll free, and it also keeps us
+    // from invalidating layout 4x/second for values that have not moved. REQ-VIEWPORT-SWEEP-1:
+    // the gate tests BOTH, because the offset also depends on `innerHeight` — a change that
+    // moves the layout viewport and the visible region by the same amount (chrome retracting
+    // as the keyboard closes) leaves the height identical while the offset moves, and gating
+    // on the height alone would publish a stale offset.
+    if (height === lastHeight && offset === lastOffset) return;
+    lastHeight = height;
+    lastOffset = offset;
+    const style = win.document.documentElement.style;
+    style.setProperty(APP_VIEWPORT_HEIGHT_VAR, `${height}px`);
+    style.setProperty(APP_VIEWPORT_BOTTOM_OFFSET_VAR, `${offset}px`);
   };
 
   const settle = () => {

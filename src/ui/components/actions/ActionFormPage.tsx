@@ -360,7 +360,7 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
           role="dialog"
           aria-modal="true"
           aria-label="Unsaved changes"
-          className="fixed inset-0 z-modal flex items-center justify-center bg-overlay p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-overlay p-4"
         >
           <div className="w-full max-w-sm rounded-[var(--radius-lg)] bg-surface p-6 shadow-lg">
             <p className="mb-4 text-body text-primary">You have unsaved changes. Leave this page?</p>

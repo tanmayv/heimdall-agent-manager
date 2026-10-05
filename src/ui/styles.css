@@ -35,6 +35,13 @@
      do not reintroduce `100dvh` at the use sites. */
   --app-viewport-height: 100dvh;
 
+  /* REQ-VIEWPORT-SWEEP-1: how far above the LAYOUT viewport's bottom edge the visible
+     region ends — the occluded height. `src/ui/utils/appViewportHeight.ts` overwrites this
+     on `<html>` from the same sample it takes for `--app-viewport-height`. `0px` is the
+     pre-JS fallback and the correct value on every surface with nothing occluding, which is
+     why a box that uses it is unchanged on desktop. See the BOTTOM-PINNED note below. */
+  --app-viewport-bottom-offset: 0px;
+
   font-family: var(--fd-font-body);
   background: var(--color-canvas, var(--fd-canvas));
 }
@@ -97,6 +104,56 @@ body,
 .app-viewport-height {
   height: var(--app-viewport-height);
   max-height: var(--app-viewport-height);
+}
+
+/*
+ * REQ-VIEWPORT-SWEEP-1: for a full-page box that must not exceed the visible region but
+ * whose content may be shorter (the auth / landing / access-denied screens, which centre a
+ * card in the page). `min-height: 100vh` was the old spelling and it overflowed `body` —
+ * `body` is `height: var(--app-viewport-height); overflow: hidden`, so a 100vh child is
+ * 403px taller than its only scroll container with the keyboard up, and that 403px is
+ * unreachable rather than merely off screen.
+ */
+.app-viewport-min-height {
+  min-height: var(--app-viewport-height);
+}
+
+/*
+ * ---------------------------------------------------------------------------------------
+ * BOTTOM-PINNED — `fixed … bottom-0` IS THE SAME BUG, IN THE SPELLING NO GREP FINDS.
+ * (REQ-VIEWPORT-SWEEP-1)
+ * ---------------------------------------------------------------------------------------
+ * Four rounds of this chain each swept one spelling of "sized to a viewport the keyboard
+ * does not shrink" — `100vh`, `100dvh`, `h-screen`, `window.innerHeight` — and each time
+ * the grep for one spelling missed the next. This is the fifth, and it is the only one with
+ * NO height unit in it at all:
+ *
+ *     fixed inset-x-0 bottom-0        <- no vh, no h-screen, no innerHeight
+ *     fixed bottom-0 left-0 right-0
+ *     fixed inset-y-0
+ *     fixed  + style={{ bottom: … }}
+ *
+ * For a fixed box, `bottom` resolves against the LAYOUT viewport, exactly like `height:
+ * 100vh` does. `bottom: 0` means "y = innerHeight" = 812 on the REQ-KBD-1 device, while the
+ * visible region ended at 409. Measured against the real built stylesheet at those numbers,
+ * the mobile tab bar, all six toast viewports and the three mobile sticky action bars all
+ * spanned 758..814 — the app's primary navigation did not exist while typing.
+ *
+ * So: a bottom-pinned fixed box offsets itself by the occluded height.
+ *
+ *     bottom: var(--app-viewport-bottom-offset)                  <- `.app-viewport-bottom`
+ *     bottom: calc(var(--app-viewport-bottom-offset) + <chrome>) <- when it also clears chrome
+ *
+ * Both reduce to the previous behaviour on any surface with nothing occluding, because the
+ * property is then `0px`. This is sizing/positioning from the visible region, the same and
+ * only sanctioned mechanism as `--app-viewport-height` — NOT keyboard detection, NOT scroll
+ * management, NOT a focus handler. Those were tried and deleted in REQ-KBD-3.
+ *
+ * `inset-y-0` is this bug AND the `inset-0` bug at once (it pins top and bottom): give such
+ * a box `top-0` + `app-viewport-height` instead, as `AppShell`'s mobile sidebar now does.
+ */
+.app-viewport-bottom {
+  bottom: var(--app-viewport-bottom-offset);
 }
 
 /*

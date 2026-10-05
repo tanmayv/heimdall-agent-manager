@@ -715,7 +715,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   return (
     <div
       data-debug-id="fleet-management-drawer-backdrop"
-      className="fixed inset-0 z-50 flex justify-end bg-surface-overlay/80 backdrop-blur-sm transition-opacity"
+      className="fixed inset-x-0 top-0 app-viewport-height z-50 flex justify-end bg-surface-overlay/80 backdrop-blur-sm transition-opacity"
       onMouseDown={(e) => {
         backdropPressStartedRef.current = e.target === e.currentTarget;
       }}

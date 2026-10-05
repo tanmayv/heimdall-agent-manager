@@ -2281,7 +2281,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {/* Add Agent to Chain popup: launch a new instance (identity + bridge +
           provider + tier) and add it to this chain with the chosen role. */}
       {showAddMemberModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4">
+        <div className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4">
           <form
             onSubmit={handleAddMember}
             className="w-full max-w-md rounded-xl border border-subtle bg-surface p-5 text-xs text-primary shadow-panel"
@@ -2448,7 +2448,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingAssigneeTask && (
         <div
           data-debug-id="taskchain-edit-assignee-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveAssignee}
@@ -2566,7 +2566,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingReviewersTask && (
         <div
           data-debug-id="taskchain-edit-reviewers-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveReviewers}
@@ -2753,7 +2753,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingDependenciesTask && (
         <div
           data-debug-id="taskchain-edit-dependencies-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveDependencies}
@@ -2861,7 +2861,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingBridgeTask && (
         <div
           data-debug-id="taskchain-edit-bridge-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveBridge}

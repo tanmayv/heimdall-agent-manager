@@ -554,7 +554,11 @@ export function MemoryDetailMobileActions({
       role="group"
       aria-label="Memory actions"
       className="fixed inset-x-0 z-sticky flex gap-2 border-t border-subtle bg-surface-raised p-2 md:hidden"
-      style={{ bottom: 'max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px))' }}
+      // REQ-VIEWPORT-SWEEP-1: the occluded height is an ADDEND here, not an alternative —
+      // the keyboard covers the tab bar too, so the bar clears the keyboard first and then
+      // whatever chrome or safe area remains. `--app-viewport-bottom-offset` is `0px` when
+      // nothing is occluding, so this is unchanged on desktop.
+      style={{ bottom: 'calc(var(--app-viewport-bottom-offset, 0px) + max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)))' }}
     >
       {bar.map((verb) => (
         <Button

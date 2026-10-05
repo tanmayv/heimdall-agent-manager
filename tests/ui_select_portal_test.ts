@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readAppViewportHeight } from '../src/ui/utils/appViewportHeight.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,7 +78,10 @@ const POSITIONING_CONSTANTS = [
 
 interface FakeWindow {
   innerWidth: number;
+  /** The LAYOUT viewport. A soft keyboard does NOT shrink this. */
   innerHeight: number;
+  /** REQ-VIEWPORT-SWEEP-1: present only when a case models an occluded visual viewport. */
+  visualViewport?: { height: number; scale?: number };
 }
 
 interface FakeRect {
@@ -107,8 +111,15 @@ function compileComputeCoords(win: FakeWindow): (rect: FakeRect) => Coords {
   const body = extractFunction(selectSrc, 'computeCoords')
     .replace(/: DOMRect/g, '')
     .replace(/: PopupCoords/g, '');
-  const factory = new Function('window', `${consts}\n${body}\nreturn computeCoords;`);
-  return factory(win) as (rect: FakeRect) => Coords;
+  // REQ-VIEWPORT-SWEEP-1: `computeCoords` now calls `readAppViewportHeight`. The REAL
+  // function is injected rather than a stand-in, so these cases exercise the production
+  // visual-viewport logic (including its pinch-zoom fallback) and not a second copy of it.
+  const factory = new Function(
+    'window',
+    'readAppViewportHeight',
+    `${consts}\n${body}\nreturn computeCoords;`,
+  );
+  return factory(win, readAppViewportHeight) as (rect: FakeRect) => Coords;
 }
 
 // -----------------------------------------------------------------------------
@@ -271,6 +282,45 @@ test('computeCoords never shrinks the popup below MIN_POPUP_HEIGHT', () => {
   const coords = computeCoords({ top: 40, bottom: 70, left: 10, width: 120 });
 
   assert.equal(coords.maxHeight, minHeight, 'maxHeight floors at MIN_POPUP_HEIGHT');
+});
+
+test('REQ-VIEWPORT-SWEEP-1: computeCoords measures the room below against the VISIBLE viewport, so a Select near the keyboard flips instead of opening into the dead zone', () => {
+  const gap = numericConst(selectSrc, 'TRIGGER_GAP');
+  const margin = numericConst(selectSrc, 'VIEWPORT_MARGIN');
+  // The REQ-KBD-1 device with the keyboard up: the layout viewport holds at 812 while the
+  // visible region collapses to 409. The trigger sits at 330..360, just above the fold.
+  const win = { innerWidth: 390, innerHeight: 812, visualViewport: { height: 409, scale: 1 } };
+  const computeCoords = compileComputeCoords(win);
+
+  const coords = computeCoords({ top: 330, bottom: 360, left: 20, width: 200 });
+
+  // Against `innerHeight` the room below reads as 452px — ample — so the popup opened
+  // downwards from y=368 into a region the user cannot see. Against the visible height it is
+  // 49px, below FLIP_THRESHOLD, with 330px above: it flips.
+  assert.equal(coords.top, undefined, 'must not open downwards into the keyboard dead zone');
+  assert.equal(
+    coords.bottom,
+    // Still measured from the LAYOUT viewport's bottom edge, because that is what `bottom`
+    // means for a `position: fixed` box. See the comment on this line in Select.tsx.
+    812 - 330 + gap,
+    'the flipped anchor is a layout-viewport offset, not a visible-region one',
+  );
+  assert.ok(
+    coords.maxHeight <= 330 - gap - margin,
+    'height is bounded by the room actually visible above the trigger',
+  );
+});
+
+test('REQ-VIEWPORT-SWEEP-1: a pinch-zoomed visual viewport is not treated as a keyboard', () => {
+  const gap = numericConst(selectSrc, 'TRIGGER_GAP');
+  // `visualViewport.height` reports the zoomed-in slice here. `readAppViewportHeight` falls
+  // back to `innerHeight` above its unzoomed-scale threshold, so placement is unchanged.
+  const win = { innerWidth: 1280, innerHeight: 1000, visualViewport: { height: 300, scale: 2 } };
+  const computeCoords = compileComputeCoords(win);
+
+  const coords = computeCoords({ top: 100, bottom: 130, left: 50, width: 200 });
+
+  assert.equal(coords.top, 130 + gap, 'pinch-zoom must not flip the popup');
 });
 
 test('computeCoords clamps the popup horizontally inside the viewport', () => {
