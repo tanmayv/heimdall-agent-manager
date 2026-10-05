@@ -322,6 +322,7 @@ impl Daemon {
         // per-instance Output flood.
         let exit_watch = {
             let watchers = Arc::clone(&self.watchers);
+            let subs = Arc::clone(&self.subs);
             let alive = Arc::clone(&alive);
             let stop = Arc::clone(&stop);
             let host = Arc::clone(&host);
@@ -344,6 +345,15 @@ impl Daemon {
                     &CtlReply::ChildExited {
                         instance: instance.clone(),
                         code,
+                    },
+                );
+                // REQ-STREAM-EVENT-2: Emit StreamClosed to attached stream subscribers
+                broadcast_instance_subs(
+                    &subs,
+                    &instance,
+                    &CtlReply::StreamClosed {
+                        instance: instance.clone(),
+                        code: Some(code),
                     },
                 );
             })
@@ -386,6 +396,14 @@ impl Daemon {
 
     /// SIGTERM -> wait -> SIGKILL the instance, then unregister it.
     pub fn close(&self, instance: &str) -> Result<()> {
+        broadcast_instance_subs(
+            &self.subs,
+            instance,
+            &CtlReply::StreamClosed {
+                instance: instance.to_string(),
+                code: None,
+            },
+        );
         let mut agent = self
             .agents
             .lock()
@@ -408,6 +426,14 @@ impl Daemon {
             .remove(instance)
             .ok_or_else(|| anyhow!("restart: no such instance {instance}"))?;
         let spec = old.spec.clone();
+        broadcast_instance_subs(
+            &self.subs,
+            instance,
+            &CtlReply::StreamClosed {
+                instance: instance.to_string(),
+                code: None,
+            },
+        );
         old.shutdown();
 
         // Re-spawn the same spec + re-register under the same id.
@@ -623,6 +649,10 @@ impl Daemon {
             instance: shell_id.to_string(),
             screen: snap.clone(),
         });
+        // REQ-STREAM-EVENT-2: Emit StreamReady immediately following attach screen snapshot.
+        let _ = tx.send(CtlReply::StreamReady {
+            instance: shell_id.to_string(),
+        });
         let mut subs = self.subs.lock().unwrap();
         let sub = subs.entry(id).or_insert_with(|| Subscriber {
             tx,
@@ -738,6 +768,16 @@ fn broadcast_all_sinks(sinks: &Sinks, reply: &CtlReply) {
     let map = sinks.lock().unwrap();
     for tx in map.values() {
         let _ = tx.send(reply.clone());
+    }
+}
+
+/// REQ-STREAM-EVENT-2: Broadcast to every subscriber attached to `instance`.
+fn broadcast_instance_subs(subs: &Subscribers, instance: &str, reply: &CtlReply) {
+    let map = subs.lock().unwrap();
+    for sub in map.values() {
+        if sub.instances.contains(instance) {
+            let _ = sub.tx.send(reply.clone());
+        }
     }
 }
 
@@ -2379,6 +2419,18 @@ mod tests {
             other => panic!("first frame must be CtlReply::Screen, got {other:?}"),
         }
 
+        // The second reply frame immediately following Screen MUST be CtlReply::StreamReady (REQ-STREAM-EVENT-2)
+        let second_reply = match dproto::read_ctl_reply(&mut c) {
+            Ok(Some(r)) => r,
+            other => panic!("expected StreamReady reply, got {other:?}"),
+        };
+        match second_reply {
+            CtlReply::StreamReady { instance } => {
+                assert_eq!(instance, "fifo_inst");
+            }
+            other => panic!("second frame must be CtlReply::StreamReady, got {other:?}"),
+        }
+
         // Subsequent frames should be Output containing SUBSEQUENT_LINE
         let mut saw_subsequent = false;
         let start = std::time::Instant::now();
@@ -2398,6 +2450,90 @@ mod tests {
             }
         }
         assert!(saw_subsequent, "never received subsequent output after screen snapshot");
+        server.shutdown();
+    }
+
+    #[test]
+    fn test_stream_lifecycle_events_ready_and_closed() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("lifecycle_events");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let d = server.daemon();
+        d.spawn(SpawnRequest {
+            instance: "lifecycle_exit".into(),
+            argv: vec![sh.clone(), "-c".into(), "sleep 0.15; echo lifecycle_ok; exit 0".into()],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 24,
+            cols: 80,
+            display_name: None,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut c = UnixStream::connect(&sock).unwrap();
+        c.set_read_timeout(Some(Duration::from_millis(500))).ok();
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "lifecycle_exit".into() }).unwrap();
+
+        // 1. Initial Screen snapshot
+        let frame1 = dproto::read_ctl_reply(&mut c).unwrap().expect("expected Screen reply");
+        assert!(matches!(frame1, CtlReply::Screen { ref instance, .. } if instance == "lifecycle_exit"));
+
+        // 2. StreamReady immediately following Screen
+        let frame2 = dproto::read_ctl_reply(&mut c).unwrap().expect("expected StreamReady reply");
+        match frame2 {
+            CtlReply::StreamReady { instance } => assert_eq!(instance, "lifecycle_exit"),
+            other => panic!("expected StreamReady, got {other:?}"),
+        }
+
+        // 3. Child exits with code 0 -> StreamClosed received with code Some(0)
+        let closed = await_reply(
+            &mut c,
+            |r| matches!(r, CtlReply::StreamClosed { instance, code } if instance == "lifecycle_exit" && code == &Some(0)),
+            Duration::from_secs(5),
+        );
+        assert!(closed.is_some(), "never received StreamClosed with exit code 0 on child exit");
+
+        // 4. Test explicit close teardown sends StreamClosed with None
+        d.spawn(SpawnRequest {
+            instance: "lifecycle_teardown".into(),
+            argv: vec![sh.clone(), "-c".into(), "sleep 60".into()],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 24,
+            cols: 80,
+            display_name: None,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut c2 = UnixStream::connect(&sock).unwrap();
+        c2.set_read_timeout(Some(Duration::from_millis(500))).ok();
+        dproto::write_ctl_msg(&mut c2, &CtlMsg::Attach { instance: "lifecycle_teardown".into() }).unwrap();
+
+        let f1 = dproto::read_ctl_reply(&mut c2).unwrap().expect("expected Screen");
+        assert!(matches!(f1, CtlReply::Screen { .. }));
+        let f2 = dproto::read_ctl_reply(&mut c2).unwrap().expect("expected StreamReady");
+        assert!(matches!(f2, CtlReply::StreamReady { .. }));
+
+        // Explicit close
+        d.close("lifecycle_teardown").unwrap();
+
+        let teardown_closed = await_reply(
+            &mut c2,
+            |r| matches!(r, CtlReply::StreamClosed { instance, code } if instance == "lifecycle_teardown" && code == &None),
+            Duration::from_secs(3),
+        );
+        assert!(teardown_closed.is_some(), "never received StreamClosed with None on explicit close");
+
         server.shutdown();
     }
 

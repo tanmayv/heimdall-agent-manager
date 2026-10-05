@@ -346,6 +346,8 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 	local_shell_id := strings.clone(worker.shell_id, heap)
 	defer delete(local_shell_id, heap)
 
+	saw_stream_closed := false
+
 	for {
 		payload, pok := pty_host_read_frame(local_fd)
 		if !pok do break
@@ -368,10 +370,19 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 				bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content)
 			}
 			delete(content)
+		case .Stream_Ready:
+			bridge_pty_stream_emit_lifecycle_event(worker, "shell_pty_stream_ready", local_session_id, local_shell_id)
+		case .Stream_Closed:
+			saw_stream_closed = true
+			bridge_pty_stream_emit_lifecycle_event(worker, "shell_pty_stream_closed", local_session_id, local_shell_id, reply.has_code, reply.code)
 		case .Error:
 			fmt.println("bridge pty stream error:", reply.message)
 		}
 		pty_host_reply_delete(reply)
+	}
+
+	if !saw_stream_closed {
+		bridge_pty_stream_emit_lifecycle_event(worker, "shell_pty_stream_closed", local_session_id, local_shell_id, false, 0)
 	}
 
 	// Teardown: send CtlMsg::Detach and close dedicated socket descriptor
@@ -582,6 +593,44 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 	bridge_runtime_write_json_string(&b, string(encoded))
 	strings.write_string(&b, "\"}")
 	frame := strings.to_string(b)
+	_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+}
+
+// bridge_pty_stream_format_lifecycle_event formats shell_pty_stream_ready or shell_pty_stream_closed JSON.
+bridge_pty_stream_format_lifecycle_event :: proc(
+	event_type: string,
+	session_id: string,
+	shell_id: string,
+	has_exit_code := false,
+	exit_code: i32 = 0,
+	allocator := context.allocator,
+) -> string {
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, "{\"type\":\"")
+	bridge_runtime_write_json_string(&b, event_type)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	bridge_runtime_write_json_string(&b, shell_id)
+	strings.write_string(&b, "\"")
+	if has_exit_code {
+		fmt.sbprintf(&b, ",\"exit_code\":%d", exit_code)
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+// bridge_pty_stream_emit_lifecycle_event formats and emits shell_pty_stream_ready or shell_pty_stream_closed JSON to Hub (REQ-STREAM-EVENT-2).
+bridge_pty_stream_emit_lifecycle_event :: proc(
+	worker: ^Bridge_PTY_Stream_Worker,
+	event_type: string,
+	session_id: string,
+	shell_id: string,
+	has_exit_code := false,
+	exit_code: i32 = 0,
+) {
+	heap := runtime.heap_allocator()
+	frame := bridge_pty_stream_format_lifecycle_event(event_type, session_id, shell_id, has_exit_code, exit_code, heap)
 	_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
 }
 

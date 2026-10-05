@@ -444,3 +444,46 @@ pty_host_decode_screen_changed :: proc(t: ^testing.T) {
 	testing.expect_value(t, r.instance, "inst_x")
 	testing.expect_value(t, r.hash, u64(0xDEADBEEFCAFE1234))
 }
+
+// REQ-STREAM-EVENT-2: PTY stream lifecycle event decoding (tags 0xAE/0xAF)
+
+@(test)
+pty_host_decode_stream_ready :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_STREAM_READY)
+	pty_host_put_str(&p, "inst_ready")
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode StreamReady")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Stream_Ready)
+	testing.expect_value(t, r.instance, "inst_ready")
+}
+
+@(test)
+pty_host_decode_stream_closed :: proc(t: ^testing.T) {
+	// With exit code
+	p1 := make([dynamic]byte); defer delete(p1)
+	append(&p1, PTY_HOST_T_STREAM_CLOSED)
+	pty_host_put_str(&p1, "inst_closed_code")
+	append(&p1, 1) // has_code = 1
+	pty_host_put_i32(&p1, 0)
+	r1, ok1 := pty_host_decode_reply(p1[:])
+	defer pty_host_reply_delete(r1)
+	testing.expect(t, ok1, "decode StreamClosed with code")
+	testing.expect_value(t, r1.kind, Pty_Host_Reply_Kind.Stream_Closed)
+	testing.expect_value(t, r1.instance, "inst_closed_code")
+	testing.expect_value(t, r1.has_code, true)
+	testing.expect_value(t, r1.code, i32(0))
+
+	// Without exit code
+	p2 := make([dynamic]byte); defer delete(p2)
+	append(&p2, PTY_HOST_T_STREAM_CLOSED)
+	pty_host_put_str(&p2, "inst_closed_nocode")
+	append(&p2, 0) // has_code = 0
+	r2, ok2 := pty_host_decode_reply(p2[:])
+	defer pty_host_reply_delete(r2)
+	testing.expect(t, ok2, "decode StreamClosed without code")
+	testing.expect_value(t, r2.kind, Pty_Host_Reply_Kind.Stream_Closed)
+	testing.expect_value(t, r2.instance, "inst_closed_nocode")
+	testing.expect_value(t, r2.has_code, false)
+}

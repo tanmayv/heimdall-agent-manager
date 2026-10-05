@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:strings"
 import "core:testing"
 
@@ -133,4 +134,55 @@ test_req31_single_row_gains_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, got, "only row")
 	testing.expect_value(t, strings.count(got, "\r"), 0)
 	testing.expect_value(t, strings.count(got, "\n"), 0)
+}
+
+// ---------------------------------------------------------------------------
+// REQ-STREAM-EVENT-2: stream_ready and stream_closed WebSocket lifecycle events.
+
+@(test)
+test_stream_ready_lifecycle_event_formatting :: proc(t: ^testing.T) {
+	json_str := bridge_pty_stream_format_lifecycle_event(
+		"shell_pty_stream_ready",
+		"sh_sess_ready_1",
+		"shell_inst_ready_1",
+	)
+	defer delete(json_str)
+
+	testing.expect(t, strings.contains(json_str, `"type":"shell_pty_stream_ready"`), "frame type is shell_pty_stream_ready")
+	testing.expect(t, strings.contains(json_str, `"session_id":"sh_sess_ready_1"`), "frame has correct session_id")
+	testing.expect(t, strings.contains(json_str, `"shell_id":"shell_inst_ready_1"`), "frame has correct shell_id")
+	testing.expect(t, !strings.contains(json_str, `"exit_code"`), "ready event has no exit_code")
+}
+
+@(test)
+test_stream_closed_lifecycle_event_formatting :: proc(t: ^testing.T) {
+	// 1. With exit code
+	json_str1 := bridge_pty_stream_format_lifecycle_event(
+		"shell_pty_stream_closed",
+		"sh_sess_closed_1",
+		"shell_inst_closed_1",
+		true,
+		42,
+	)
+	defer delete(json_str1)
+
+	testing.expect(t, strings.contains(json_str1, `"type":"shell_pty_stream_closed"`), "frame type is shell_pty_stream_closed")
+	testing.expect(t, strings.contains(json_str1, `"session_id":"sh_sess_closed_1"`), "frame has correct session_id")
+	testing.expect(t, strings.contains(json_str1, `"shell_id":"shell_inst_closed_1"`), "frame has correct shell_id")
+	testing.expect(t, strings.contains(json_str1, `"exit_code":42`), "frame has exit_code:42")
+
+	// 2. Without exit code (e.g. session teardown / close)
+	json_str2 := bridge_pty_stream_format_lifecycle_event(
+		"shell_pty_stream_closed",
+		"sh_sess_closed_2",
+		"shell_inst_closed_2",
+		false,
+		0,
+	)
+	defer delete(json_str2)
+
+	testing.expect(t, strings.contains(json_str2, `"type":"shell_pty_stream_closed"`), "frame type is shell_pty_stream_closed")
+	testing.expect(t, strings.contains(json_str2, `"session_id":"sh_sess_closed_2"`), "frame has correct session_id")
+	testing.expect(t, strings.contains(json_str2, `"shell_id":"shell_inst_closed_2"`), "frame has correct shell_id")
+	testing.expect(t, !strings.contains(json_str2, `"exit_code"`), "frame does not contain exit_code when has_exit_code is false")
 }

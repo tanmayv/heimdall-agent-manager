@@ -42,6 +42,8 @@
 //! | 0xA8 | Error       | an operation failed (instance + message)             |
 //! | 0xAC | ShuttingDown| ack Shutdown; daemon is terminating                  |
 //! | 0xAD | HostHeartbeat| periodic host liveness digest (roster + alive)      |
+//! | 0xAE | StreamReady | stream attached and ready to accept input/output     |
+//! | 0xAF | StreamClosed| stream closed (child exited or teardown)             |
 
 use std::io::{self, Read, Write};
 
@@ -345,6 +347,10 @@ pub enum CtlReply {
     /// Ack for [`CtlMsg::Shutdown`]: the daemon accepted the request and is
     /// terminating (all agents stopped). The socket closes right after.
     ShuttingDown,
+    /// REQ-STREAM-EVENT-2: stream attached and ready to accept input/output.
+    StreamReady { instance: String },
+    /// REQ-STREAM-EVENT-2: stream closed (child exited or teardown).
+    StreamClosed { instance: String, code: Option<i32> },
 }
 
 /// One agent's liveness entry inside a [`CtlReply::HostHeartbeat`].
@@ -385,6 +391,8 @@ const T_STARTUP_BLOCKED: u8 = 0xAA;
 const T_SCREEN_CHANGED: u8 = 0xAB;
 const T_SHUTTING_DOWN: u8 = 0xAC;
 const T_HOST_HEARTBEAT: u8 = 0xAD;
+pub const T_STREAM_READY: u8 = 0xAE;
+pub const T_STREAM_CLOSED: u8 = 0xAF;
 
 // ---- primitive codecs ---------------------------------------------------
 
@@ -708,6 +716,8 @@ impl CtlReply {
             CtlReply::StartupReady { instance } => Some(instance),
             CtlReply::StartupBlocked { instance, .. } => Some(instance),
             CtlReply::ScreenChanged { instance, .. } => Some(instance),
+            CtlReply::StreamReady { instance } => Some(instance),
+            CtlReply::StreamClosed { instance, .. } => Some(instance),
             _ => None,
         }
     }
@@ -805,6 +815,21 @@ impl CtlReply {
                 }
             }
             CtlReply::ShuttingDown => p.push(T_SHUTTING_DOWN),
+            CtlReply::StreamReady { instance } => {
+                p.push(T_STREAM_READY);
+                put_str(&mut p, instance);
+            }
+            CtlReply::StreamClosed { instance, code } => {
+                p.push(T_STREAM_CLOSED);
+                put_str(&mut p, instance);
+                match code {
+                    Some(c) => {
+                        p.push(1);
+                        put_i32(&mut p, *c);
+                    }
+                    None => p.push(0),
+                }
+            }
         }
         frame(&p)
     }
@@ -928,6 +953,21 @@ impl CtlReply {
                     agents.push(HostHeartbeatAgent { instance_id, alive });
                 }
                 CtlReply::HostHeartbeat { ts_unix_ms, agents }
+            }
+            T_STREAM_READY => {
+                let instance = get_str(rest, &mut off)?;
+                CtlReply::StreamReady { instance }
+            }
+            T_STREAM_CLOSED => {
+                let instance = get_str(rest, &mut off)?;
+                let has_code = *rest.get(off).ok_or_else(|| bad("stream closed: code flag missing"))?;
+                off += 1;
+                let code = if has_code == 1 {
+                    Some(get_i32(rest, &mut off)?)
+                } else {
+                    None
+                };
+                CtlReply::StreamClosed { instance, code }
             }
             _ => return Err(bad("unknown reply tag")),
         })
@@ -1142,6 +1182,9 @@ mod tests {
         });
         round_reply(CtlReply::HostHeartbeat { ts_unix_ms: 0, agents: vec![] });
         round_reply(CtlReply::ShuttingDown);
+        round_reply(CtlReply::StreamReady { instance: "sh_ready".into() });
+        round_reply(CtlReply::StreamClosed { instance: "sh_closed".into(), code: Some(0) });
+        round_reply(CtlReply::StreamClosed { instance: "sh_closed_nocode".into(), code: None });
     }
 
     #[test]
@@ -1281,5 +1324,13 @@ mod tests {
         };
         assert_eq!(err_reply.shell_id(), Some("sh_err"));
         assert_eq!(err_reply.instance_id(), Some("sh_err"));
+
+        let ready_reply = CtlReply::StreamReady { instance: "sh_ready".into() };
+        assert_eq!(ready_reply.shell_id(), Some("sh_ready"));
+        assert_eq!(ready_reply.instance_id(), Some("sh_ready"));
+
+        let closed_reply = CtlReply::StreamClosed { instance: "sh_closed".into(), code: Some(1) };
+        assert_eq!(closed_reply.shell_id(), Some("sh_closed"));
+        assert_eq!(closed_reply.instance_id(), Some("sh_closed"));
     }
 }

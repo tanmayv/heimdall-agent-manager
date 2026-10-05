@@ -50,6 +50,8 @@ PTY_HOST_T_STARTUP_BLOCKED :: 0xAA
 PTY_HOST_T_SCREEN_CHANGED :: 0xAB
 PTY_HOST_T_SHUTTING_DOWN :: 0xAC
 PTY_HOST_T_HOST_HEARTBEAT :: 0xAD
+PTY_HOST_T_STREAM_READY :: 0xAE
+PTY_HOST_T_STREAM_CLOSED :: 0xAF
 PTY_HOST_T_WATCH_EVENTS :: 0x38
 PTY_HOST_T_SIGNAL :: 0x39 // Send POSIX signal to a shell's process group (T2/REQ-SH-CONTRACT §4)
 
@@ -137,6 +139,9 @@ Pty_Host_Reply_Kind :: enum {
 	Screen_Changed,
 	// Periodic host-level liveness digest (roster + alive flags).
 	Host_Heartbeat,
+	// REQ-STREAM-EVENT-2: stream lifecycle events
+	Stream_Ready,
+	Stream_Closed,
 }
 
 // One agent's liveness entry inside a Host_Heartbeat reply.
@@ -158,6 +163,7 @@ Pty_Host_Reply :: struct {
 	screen:           Pty_Host_Screen,
 	agents:           []Pty_Host_Agent_Info,
 	heartbeat_agents: []Pty_Host_Heartbeat_Agent, // HostHeartbeat roster
+	has_code:         bool, // StreamClosed optional exit code
 }
 
 Pty_Host_Screen :: struct {
@@ -446,6 +452,24 @@ pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 			agents[i] = Pty_Host_Heartbeat_Agent{instance_id = id, alive = alive}
 		}
 		r.ts_unix_ms = ts; r.heartbeat_agents = agents
+	case PTY_HOST_T_STREAM_READY:
+		r.kind = .Stream_Ready
+		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
+		r.instance = inst
+	case PTY_HOST_T_STREAM_CLOSED:
+		r.kind = .Stream_Closed
+		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
+		r.instance = inst
+		if off >= len(rest) { delete(inst); return {}, false }
+		has_code := rest[off]; off += 1
+		if has_code == 1 {
+			c, ok2 := pty_host_get_i32(rest, &off)
+			if !ok2 { delete(inst); return {}, false }
+			r.code = c
+			r.has_code = true
+		} else {
+			r.has_code = false
+		}
 	case:
 		return {}, false
 	}
