@@ -176,6 +176,7 @@ start() {
     --trusted-proxy-cidr 127.0.0.1/32 \
     >"$RUN_DIR/hub.log" 2>&1 &
   echo $! > "$(_pidfile hub)"
+  disown $!
   sleep 2
 
   # Fail loudly if the hub did not actually come up. Without this the stack
@@ -197,6 +198,7 @@ start() {
     --default-user tanmay \
     >"$RUN_DIR/dev-proxy.log" 2>&1 &
   echo $! > "$(_pidfile devproxy)"
+  disown $!
   sleep 1
 
   # Always repair the bridge config against the CURRENT build + this hub before
@@ -220,6 +222,7 @@ start() {
     --local-run-dir "$BRIDGE_RUN_DIR" \
     >"$RUN_DIR/bridge.log" 2>&1 &
   echo $! > "$(_pidfile bridge)"
+  disown $!
   sleep 3
 
   # Detect the stale-token trap: if the bridge never reaches "hub runtime ready",

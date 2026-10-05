@@ -120,6 +120,9 @@ fi
 UPSTREAM_FLAG=""
 if [[ -n "${HEIMDALL_PREVIEW_UPSTREAM:-}" ]]; then
   UPSTREAM_FLAG="--upstream $HEIMDALL_PREVIEW_UPSTREAM"
+elif (exec 3<>"/dev/tcp/127.0.0.1/8080") 2>/dev/null; then
+  exec 3>&- 3<&-
+  UPSTREAM_FLAG="--upstream http://127.0.0.1:8080"
 elif (exec 3<>"/dev/tcp/127.0.0.1/8090") 2>/dev/null; then
   exec 3>&- 3<&-
   UPSTREAM_FLAG="--upstream http://127.0.0.1:8090"
