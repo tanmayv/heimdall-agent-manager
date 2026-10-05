@@ -104,13 +104,25 @@ fi
 ENDPOINT_PORT="$("$HAM_CTL" bridge list --scope configured | json 'print(d["data"]["bridges"][0]["local_endpoint_port"])')"
 
 EXTRA=()
-if [[ -n "${HEIMDALL_PREVIEW_CHAIN:-}" ]]; then
-  EXTRA+=(--chain "$HEIMDALL_PREVIEW_CHAIN")
+CHAIN="${HEIMDALL_PREVIEW_CHAIN:-}"
+if [[ -z "$CHAIN" ]]; then
+  CHAIN="$("$HAM_CTL" context 2>/dev/null | json 'print(d.get("data",{}).get("data",{}).get("chain_id",""))' 2>/dev/null || true)"
+fi
+if [[ -n "$CHAIN" ]]; then
+  EXTRA+=(--chain "$CHAIN")
 fi
 
 PROD_FLAG="--prod"
 if [[ "${*:-}" =~ "--no-prod" ]] || [[ "${HEIMDALL_PREVIEW_PROD:-1}" == "0" ]]; then
   PROD_FLAG=""
+fi
+
+UPSTREAM_FLAG=""
+if [[ -n "${HEIMDALL_PREVIEW_UPSTREAM:-}" ]]; then
+  UPSTREAM_FLAG="--upstream $HEIMDALL_PREVIEW_UPSTREAM"
+elif (exec 3<>"/dev/tcp/127.0.0.1/8090") 2>/dev/null; then
+  exec 3>&- 3<&-
+  UPSTREAM_FLAG="--upstream http://127.0.0.1:8090"
 fi
 
 START_RESPONSE="$("$HAM_CTL" shell start \
@@ -120,7 +132,7 @@ START_RESPONSE="$("$HAM_CTL" shell start \
   --port "$PORT" \
   --label "$LABEL" \
   --cwd "$REPO" \
-  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" --ham-ctl \"$HAM_CTL\" ${PROD_FLAG}")"
+  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" --ham-ctl \"$HAM_CTL\" ${UPSTREAM_FLAG} ${PROD_FLAG}")"
 
 SID="$(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("session_id",""))')"
 [[ -n "$SID" ]] || die "shell start returned no session_id. Response was: $START_RESPONSE"
