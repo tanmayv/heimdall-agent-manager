@@ -99,7 +99,7 @@ export function ProjectCommandPaletteModal({
         role="dialog"
         aria-modal="true"
         aria-label="Editor Command Palette"
-        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-overlay shadow-overlay outline-none sm:max-h-[70vh]"
+        className="flex max-h-[calc(var(--app-viewport-height)-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-overlay shadow-overlay outline-none sm:max-h-[calc(var(--app-viewport-height)*0.7)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search Input Bar */}

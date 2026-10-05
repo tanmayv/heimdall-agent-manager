@@ -125,7 +125,7 @@ const ModalBase: React.FC<ModalProps> = ({
         aria-labelledby={titleId}
         tabIndex={-1}
         className={[
-          'flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-[var(--radius-lg)]',
+          'flex max-h-[calc(var(--app-viewport-height)-2rem)] w-full flex-col overflow-hidden rounded-[var(--radius-lg)]',
           'border border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
           SIZE_MAX_W[size],
           className,
