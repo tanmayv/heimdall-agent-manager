@@ -3196,7 +3196,7 @@ export function ProjectQuickOpenModal({
     <div
       data-debug-id="project-quick-open-modal"
       role="presentation"
-      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[calc(var(--app-viewport-height)*0.12)]"
       onClick={onClose}
     >
       <div
@@ -3429,7 +3429,8 @@ export function AddChainDirectoryModal({
     <div
       data-debug-id="add-chain-directory-modal-backdrop"
       role="presentation"
-      className="fixed inset-0 z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
+      // REQ-MODAL-2: `app-viewport-height`, not `inset-0` — see the OVERLAYS note in `src/ui/styles.css`.
+      className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -3439,7 +3440,7 @@ export function AddChainDirectoryModal({
         aria-modal="true"
         aria-label="Add Directory to Task Chain"
         data-debug-id="add-chain-directory-modal"
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface shadow-overlay outline-none"
+        className="flex max-h-[calc(var(--app-viewport-height)*0.9)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface shadow-overlay outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-subtle px-4 py-3">

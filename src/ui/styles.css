@@ -65,6 +65,34 @@ body,
  * `#root`, so sizing `#root` above does nothing for `app-shell` — it needs the height
  * itself. This is the box that actually pinned the composer into the keyboard's dead
  * zone (REQ-KBD-1 §1), so it is the one edit that cannot be skipped.
+ *
+ * ---------------------------------------------------------------------------------------
+ * OVERLAYS — `fixed inset-0` IS THE BUG. READ THIS BEFORE WRITING ANOTHER MODAL. (REQ-MODAL-2)
+ * ---------------------------------------------------------------------------------------
+ * `inset-0` is `top: 0; bottom: 0`, and for a fixed box both resolve against the LAYOUT
+ * viewport — the one a software keyboard does not shrink. So `fixed inset-0` is the exact
+ * defect REQ-KBD-1 §1 found in `app-shell`, in the exact same shape, and it recurs in every
+ * overlay written as boilerplate. Read it as a smell, not as scaffolding.
+ *
+ * What it does to the child depends on the flex anchoring, and this is the part that bites:
+ *
+ *   items-start   child sits at the top of the layout viewport = top of the visible region.
+ *                 A `max-height` cap against `--app-viewport-height` is SUFFICIENT here.
+ *   items-center  child is centred at layoutHeight / 2. On the REQ-KBD-1 device that is 406,
+ *                 while the visible region ENDS at 409. A panel correctly capped to
+ *                 0.96 x 409 = 393px then spans 209..602 — 193px of it behind the keyboard.
+ *                 The cap is real and the centring defeats it.
+ *   items-end     child's bottom edge is pinned at layoutHeight. Entirely behind the keyboard.
+ *                 A cap fix here is a complete no-op.
+ *
+ * So for a centre- or bottom-anchored overlay, capping the panel is only HALF the fix: the
+ * overlay itself has to be the visible region. Spell it `fixed inset-x-0 top-0
+ * app-viewport-height` — never `fixed inset-0` — which is what `AppShell` has always done
+ * (`AppShell.tsx`, `fixed inset-x-0 top-0 app-viewport-height`) and why it is spelled that way.
+ *
+ * Sizing a box against `--app-viewport-height` is the ONLY mechanism used for any of this.
+ * No keyboard detection, no scroll management, no focus handlers — those were all tried and
+ * deleted in REQ-KBD-3. Do not reintroduce them.
  */
 .app-viewport-height {
   height: var(--app-viewport-height);

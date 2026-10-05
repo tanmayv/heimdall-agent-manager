@@ -65,7 +65,7 @@ export default function AtMentionPopup({ query: _query, entities, activeIndex, o
     <div
       ref={rootRef}
       data-debug-id="conversation-mention-popup"
-      className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-[40vh] overflow-y-auto rounded-2xl border border-subtle bg-surface-raised p-1 shadow-panel"
+      className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-[calc(var(--app-viewport-height)*0.4)] overflow-y-auto rounded-2xl border border-subtle bg-surface-raised p-1 shadow-panel"
       role="listbox"
     >
       {entities.length === 0 ? (

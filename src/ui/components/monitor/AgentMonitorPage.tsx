@@ -100,8 +100,10 @@ function AddPaneDialog({ pinned, onAdd, onClose }: { pinned: string[]; onAdd: (i
   });
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose} data-debug-id="monitor-add-pane-overlay">
-      <div className="flex max-h-[70vh] w-80 flex-col gap-2 rounded-lg border border-subtle bg-surface p-2 shadow-lg" onClick={(e) => e.stopPropagation()}>
+    // REQ-MODAL-2: `app-viewport-height`, not `inset-0` — see the OVERLAYS note in `src/ui/styles.css`. `place-items-center` centres the
+    // panel, which holds the search input — the cap below is only half the fix.
+    <div className="fixed inset-x-0 top-0 app-viewport-height z-50 grid place-items-center bg-black/40 p-4" onClick={onClose} data-debug-id="monitor-add-pane-overlay">
+      <div className="flex max-h-[calc(var(--app-viewport-height)*0.7)] w-80 flex-col gap-2 rounded-lg border border-subtle bg-surface p-2 shadow-lg" onClick={(e) => e.stopPropagation()}>
         <input
           autoFocus
           value={search}
@@ -193,14 +195,16 @@ export function AgentMonitorPage() {
         </div>
       </div>
 
-      {/* Grid body — rows are half the viewport below the 3rem header, so 2 rows fill it */}
+      {/* Grid body — rows are half the VISIBLE viewport below the 3rem header, so 2 rows fill
+          it. REQ-MODAL-2: was `100vh`, which does not shrink for the keyboard, so "2 rows fill
+          it" broke exactly when the viewport got short — two 382px rows inside a 409px region. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {cells.length === 0 ? (
           <div className="grid h-full place-items-center p-8 text-center text-sm text-muted">
             No agents pinned. Use “Add Pane” to pin one, or the pin button on an agent’s terminal.
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-2 p-2 auto-rows-[calc((100vh-3rem)/2)] md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 p-2 auto-rows-[calc((var(--app-viewport-height)-3rem)/2)] md:grid-cols-2 xl:grid-cols-3">
             {cells.map((id) => (
               <MonitorCell key={id} agentInstanceId={id} onUnpin={() => unpin(id)} />
             ))}

@@ -440,7 +440,7 @@ export function SettingsModal({
         aria-label="Settings"
         tabIndex={-1}
         data-debug-id="settings-modal-container"
-        className={`relative flex flex-col w-full h-full md:flex-row md:rounded-2xl md:border md:border-subtle bg-surface md:shadow-overlay overflow-hidden md:max-w-5xl md:h-[85vh] md:max-h-[820px] outline-none ${
+        className={`relative flex flex-col w-full h-full md:flex-row md:rounded-2xl md:border md:border-subtle bg-surface md:shadow-overlay overflow-hidden md:max-w-5xl md:h-[calc(var(--app-viewport-height)*0.85)] md:max-h-[820px] outline-none ${
           className ?? ''
         }`}
       >

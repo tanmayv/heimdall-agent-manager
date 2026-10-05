@@ -255,7 +255,7 @@ export function TaskChainSelectorModal({
     <div
       data-debug-id="task-chain-selector-modal"
       role="presentation"
-      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[calc(var(--app-viewport-height)*0.12)]"
       onClick={onClose}
     >
       <div
@@ -302,7 +302,7 @@ export function TaskChainSelectorModal({
           role="listbox"
           aria-label="Task chains"
           data-debug-id="task-chain-selector-list"
-          className="max-h-[60vh] sm:max-h-[420px] overflow-y-auto p-2"
+          className="max-h-[calc(var(--app-viewport-height)*0.6)] sm:max-h-[420px] overflow-y-auto p-2"
           onScroll={handleScroll}
         >
           {isLoading && allChains.length === 0 ? (

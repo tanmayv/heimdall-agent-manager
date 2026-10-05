@@ -111,8 +111,13 @@ const ModalBase: React.FC<ModalProps> = ({
   if (!open) return null;
 
   return createPortal(
+    // REQ-MODAL-2: `app-viewport-height` instead of `inset-0` — see the OVERLAYS note in
+    // `src/ui/styles.css`. The panel below is capped against the visible region (REQ-MODAL-1),
+    // but `items-center` centres it in whatever box this overlay is, so an `inset-0` overlay
+    // put a correctly-capped panel back under the keyboard. Both edits are needed; either
+    // alone does nothing. This is the generic composite, so every `Modal` consumer inherits it.
     <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
+      className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}

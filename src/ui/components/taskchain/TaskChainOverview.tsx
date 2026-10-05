@@ -1972,13 +1972,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
       {/* New Task Modal */}
       {showNewTaskModal && (
+        // REQ-MODAL-2: `app-viewport-height`, not `inset-0` — see the OVERLAYS note in `src/ui/styles.css`.
         <div
           data-debug-id="taskchain-new-task-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
+          className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleCreateTask}
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-subtle bg-surface p-5 text-xs text-primary shadow-panel"
+            className="w-full max-w-lg max-h-[calc(var(--app-viewport-height)*0.9)] overflow-y-auto rounded-xl border border-subtle bg-surface p-5 text-xs text-primary shadow-panel"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-primary">Create New Task</h3>

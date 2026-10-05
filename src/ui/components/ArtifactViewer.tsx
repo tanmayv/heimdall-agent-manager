@@ -189,7 +189,11 @@ function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string })
       ref={containerRef}
       data-debug-id="artifact-viewer-zoomable-image"
       className="relative flex touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-subtle bg-surface-raised"
-      style={{ minHeight: '40vh' }}
+      // REQ-MODAL-2: a MIN-height is the opposite direction from the caps and still belongs on
+      // the visible region. Against the layout viewport this floor stayed 325px however short
+      // the visible region got, so it forced the capped panel to overflow and scroll with the
+      // keyboard up. Tracking the visible region means the floor shrinks with it instead.
+      style={{ minHeight: 'calc(var(--app-viewport-height) * 0.4)' }}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -204,7 +208,7 @@ function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string })
         src={contentUrl}
         alt={alt}
         draggable={false}
-        className="max-h-[70vh] max-w-full select-none rounded-xl"
+        className="max-h-[calc(var(--app-viewport-height)*0.7)] max-w-full select-none rounded-xl"
         style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})`, transformOrigin: 'center center', transition: dragRef.current ? 'none' : 'transform 0.08s ease-out' }}
       />
       <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2">
@@ -253,7 +257,7 @@ function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientTok
   return (
     <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
       <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg border border-subtle bg-surface/80 px-2 py-1 text-caption text-primary hover:bg-neutral-soft">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
-      <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-subtle bg-surface-raised p-4 text-[12.5px] leading-5 text-primary">
+      <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[calc(var(--app-viewport-height)*0.7)] overflow-auto rounded-2xl border border-subtle bg-surface-raised p-4 text-[12.5px] leading-5 text-primary">
         <code>{display || '(empty)'}</code>
       </pre>
     </div>
@@ -355,8 +359,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface-overlay/80 p-2 sm:p-4 backdrop-blur-sm" onClick={onClose}>
-      <div data-debug-id="artifact-viewer" className="flex max-h-[96vh] sm:max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-subtle bg-surface shadow-panel focus-within:border-accent/40" onClick={(event) => event.stopPropagation()}>
+    // REQ-MODAL-2: `app-viewport-height`, not `inset-0` — see the OVERLAYS note in
+    // `src/ui/styles.css`. `items-center` centres the panel in this box, so the panel's
+    // `max-h` cap below only reaches the user if this box is the visible region.
+    <div className="fixed inset-x-0 top-0 app-viewport-height z-[80] flex items-center justify-center bg-surface-overlay/80 p-2 sm:p-4 backdrop-blur-sm" onClick={onClose}>
+      <div data-debug-id="artifact-viewer" className="flex max-h-[calc(var(--app-viewport-height)*0.96)] sm:max-h-[calc(var(--app-viewport-height)*0.92)] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-subtle bg-surface shadow-panel focus-within:border-accent/40" onClick={(event) => event.stopPropagation()}>
         <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-subtle bg-surface-raised/80 px-4 py-2 sm:px-5 sm:py-2.5 text-[12px] text-faint">
           <span className="text-muted">Artifact</span>
           <span className="text-faint">/</span>
@@ -442,7 +449,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   <div className="text-sm text-secondary"><VaultText value={selectedArtifactMeta.description} /></div>
                 )}
                 {loadingContent ? (
-                  <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-subtle bg-surface-raised px-6 py-10 text-center">
+                  <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[calc(var(--app-viewport-height)*0.4)] place-items-center rounded-2xl border border-subtle bg-surface-raised px-6 py-10 text-center">
                     <div>
                       <Spinner size="lg" label="Downloading artifact…" className="mx-auto mb-3 text-accent" />
                       <div className="text-sm font-medium text-primary">Downloading artifact…</div>

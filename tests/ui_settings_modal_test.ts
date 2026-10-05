@@ -149,9 +149,17 @@ test('SettingsModal implements portal overlay with backdrop blur and focus trapp
 test('SettingsModal implements 2-pane desktop layout with container dimensions', () => {
   const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
 
-  // Desktop container tokens: rounded-2xl border border-subtle bg-surface shadow-overlay overflow-hidden flex w-full max-w-5xl h-[85vh] max-h-[820px]
+  // Desktop container tokens: rounded-2xl border border-subtle bg-surface shadow-overlay overflow-hidden flex w-full max-w-5xl h-[calc(var(--app-viewport-height)*0.85)] max-h-[820px]
   assert.ok(content.includes('max-w-5xl'), 'Must have max-w-5xl');
-  assert.ok(content.includes('h-[85vh]'), 'Must have h-[85vh]');
+  // REQ-MODAL-2 (was the literal `h-[85vh]`): REQ-SET-2's intent — 85% of the viewport, capped
+  // at 820px — is unchanged; only the viewport it measures moved. `85vh` is 85% of the LAYOUT
+  // viewport, which a software keyboard does not shrink, and `md:` starts at 768px so a
+  // landscape phone takes this branch. `--app-viewport-height` tracks `visualViewport.height`.
+  // Assert the var, not `vh`, so a regression back to a non-shrinking unit fails here.
+  assert.ok(
+    content.includes('md:h-[calc(var(--app-viewport-height)*0.85)]'),
+    'Desktop height must be 85% of --app-viewport-height, not 85vh (REQ-MODAL-2)',
+  );
   assert.ok(content.includes('max-h-[820px]'), 'Must have max-h-[820px]');
   assert.ok(content.includes('border-subtle'), 'Must use border-subtle');
   assert.ok(content.includes('bg-surface'), 'Must use bg-surface');

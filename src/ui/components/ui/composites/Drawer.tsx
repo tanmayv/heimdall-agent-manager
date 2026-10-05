@@ -42,10 +42,17 @@ const SIZE_W: Record<DrawerSize, string> = {
 // Per-side panel shape. left/right are full-height edge sheets (width-capped by
 // `size`); `bottom` is a full-width slide-up sheet (height-capped), for the
 // mobile inspector/detail sheets that a side drawer can't model.
+//
+// REQ-MODAL-2: the `bottom` cap is against `--app-viewport-height` (the visible region), and
+// it only works because the overlay below is re-anchored off `inset-0`. `items-end` is the
+// worst case in the OVERLAYS note in `src/ui/styles.css`: it pins the sheet's bottom edge to
+// the layout viewport, so a bottom sheet sat entirely behind the keyboard and shrinking its
+// cap moved it not at all. Both edits are load-bearing; neither works alone.
+// `left`/`right` take `h-full`, which now resolves against the visible region too.
 const SIDE_CLASS: Record<DrawerSide, string> = {
   left: 'h-full w-full mr-auto border-r',
   right: 'h-full w-full ml-auto border-l',
-  bottom: 'mt-auto w-full max-h-[85vh] border-t rounded-t-[var(--radius-lg)]',
+  bottom: 'mt-auto w-full max-h-[calc(var(--app-viewport-height)*0.85)] border-t rounded-t-[var(--radius-lg)]',
 };
 
 export interface DrawerProps
@@ -63,7 +70,7 @@ export interface DrawerProps
   side?: DrawerSide;
   /** Suppress the default header bar (title and close button). */
   hideHeader?: boolean;
-  /** On side='bottom', expand to full viewport height instead of max-h-[85vh]. */
+  /** On side='bottom', expand to full viewport height instead of max-h-[calc(var(--app-viewport-height)*0.85)]. */
   fullHeight?: boolean;
   children?: React.ReactNode;
 }
@@ -102,7 +109,8 @@ const DrawerBase: React.FC<DrawerProps> = ({
 
   return createPortal(
     <div
-      className={['fixed inset-0 z-modal flex bg-surface-overlay/80 backdrop-blur-sm', isBottom ? 'items-end' : '']
+      // REQ-MODAL-2: `app-viewport-height`, not `inset-0`. See the SIDE_CLASS note above.
+      className={['fixed inset-x-0 top-0 app-viewport-height z-modal flex bg-surface-overlay/80 backdrop-blur-sm', isBottom ? 'items-end' : '']
         .filter(Boolean)
         .join(' ')}
       onMouseDown={(e) => {
