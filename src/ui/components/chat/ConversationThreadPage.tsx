@@ -2195,7 +2195,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   const transcript = (
-    <div data-debug-id="conversation-thread-transcript" className="w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
+    /* REQ-VIEWPORT-SWEEP-1: a flex COLUMN — the transcript scrolls, the composer dock does not.
+       See the composer dock below for why the composer is no longer inside the scroller. */
+    <div data-debug-id="conversation-thread-transcript" className="flex w-full min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-x-hidden p-0 sm:px-4 sm:py-3">
       <ChatMessageList
         conversationKey={conversationId}
         messages={transcriptMessages}
@@ -2209,15 +2211,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         getDeliveryStatus={deliveryStatusFor}
         agentIsWorking={isWorking}
         renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-        wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
+        wrapperClassName="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden"
         scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-        footer={(
-          <div className="w-full max-w-4xl mx-auto">
-            <AgentActivityBubbles instanceId={agentInstanceId} />
-            <PinnedShellRuns sessions={pinnedRuns} />
-            {renderComposer()}
-          </div>
-        )}
         emptyState={messagesQuery.isFetching ? (
           <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-muted">Loading messages…</div>
         ) : (
@@ -2234,6 +2229,41 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </div>
         )}
       />
+      {/*
+        REQ-VIEWPORT-SWEEP-1 — THE COMPOSER IS A SIBLING OF THE SCROLLER, NOT A CHILD OF IT.
+        It used to be passed as `footer` to `ChatMessageList`, which renders into
+        `conversation-thread-messages-container` INSIDE the `overflow-y-auto` box
+        (REQ-SIMPLIFY-LAYOUT-1 / REQ-SIMPLIFY-SCROLL-4, whose actual targets were the old
+        fixed-overlay composer and the mobile chrome hide/reveal — both of which stay
+        deleted; this dock is still in-flow and still not a fixed overlay. The exact class
+        string of that old overlay is deliberately not repeated here: a static test greps
+        the source for it, so quoting it in a comment turns the guard red.)
+
+        Why it could not stay there, measured (`scratch-sweep1/composer-reach.html`, the
+        REQ-KBD-1 numbers: layout 812, visible 409):
+
+          composer inside the scroller   keyboard down 631..811 (fold 812) -> visible
+                                         keyboard up   631..811 (fold 409) -> 222px PAST IT
+          composer as a sibling          keyboard up   228..408 (fold 409) -> visible
+
+        The arithmetic: when the keyboard opens, the shell shrinks, so the scroller's
+        `clientHeight` shrinks with it and `maxScrollTop = scrollHeight - clientHeight`
+        GROWS by the keyboard's height — measured 614 -> 1017, exactly +403. `scrollTop`
+        does not move, so a user who was already at the bottom is now 403px short of it and
+        the composer, the last child, is below the fold. Nothing re-scrolls afterwards:
+        the browser's own scroll-into-view fires on FOCUS, which happens before the resize,
+        and REQ-KBD-3 deleted every scroll ladder and focus handler.
+
+        As a sibling the composer is not scrollable content at all: shrinking the shell
+        shrinks only the transcript, and the composer stays above the keyboard by layout
+        alone. No keyboard detection, no scroll management, no focus handler — D4 intact.
+        Do not pass this back in as `footer`.
+      */}
+      <div data-debug-id="conversation-thread-composer-dock" className="mx-auto w-full max-w-4xl shrink-0">
+        <AgentActivityBubbles instanceId={agentInstanceId} />
+        <PinnedShellRuns sessions={pinnedRuns} />
+        {renderComposer()}
+      </div>
     </div>
   );
 

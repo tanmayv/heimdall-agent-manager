@@ -35,15 +35,24 @@ test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with n
   );
 });
 
-test('REQ-SIMPLIFY-LAYOUT-1 & REQ-SIMPLIFY-SCROLL-4: ChatMessageList accepts footer prop and renders inside scroll container', () => {
+test('REQ-VIEWPORT-SWEEP-1 (supersedes REQ-SIMPLIFY-LAYOUT-1 / REQ-SIMPLIFY-SCROLL-4 on this point): ChatMessageList has NO footer slot inside the scroll container', () => {
   const content = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+  // REVERSED DELIBERATELY. This test used to REQUIRE a `footer` slot rendered as the last
+  // child of the scroller, and the composer went through it. Measured at the REQ-KBD-1
+  // numbers (layout 812 / visible 409): when the keyboard opens the scroller's clientHeight
+  // shrinks, `maxScrollTop` grows by the keyboard height (614 -> 1017) and `scrollTop` does
+  // not move, so the composer sat at 631..811 against a fold of 409 — 222px past it, with
+  // nothing left to re-scroll it (REQ-KBD-3 deleted the scroll ladders and focus handlers).
+  // The composer is now a `shrink-0` flex SIBLING of the scroller. REQ-SIMPLIFY's actual
+  // targets — the `fixed bottom-14` composer overlay and the mobile chrome hide/reveal —
+  // remain deleted and are still asserted below; only "inside the scroll container" changed.
   assert.ok(
-    content.includes('footer?: ReactNode'),
-    'ChatMessageList must accept footer prop'
+    !content.includes('footer?: ReactNode'),
+    'ChatMessageList must NOT reintroduce a footer slot: it drops caller content into the bottom of a scroller, which the keyboard pushes past the fold'
   );
   assert.ok(
-    content.includes('{footer}') && content.includes('{agentIsWorking && ('),
-    'footer must be rendered inside messages-container after agentIsWorking'
+    !content.includes('{footer}') && content.includes('{agentIsWorking && ('),
+    'footer must not be rendered inside messages-container'
   );
   assert.ok(
     !content.includes('data-debug-id={`${debugPrefix}-mobile-bottom-spacer`}'),
@@ -58,10 +67,20 @@ test('REQ-SIMPLIFY-LAYOUT-1 & REQ-SIMPLIFY-SCROLL-4: ChatMessageList accepts foo
 test('REQ-SIMPLIFY-COMPOSER-2 & REQ-SIMPLIFY-SCROLL-4: ConversationThreadPage unifies layout into single scroll flow and removes mobile chrome smartness', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
 
-  // Unified footer passed to ChatMessageList
+  // REQ-VIEWPORT-SWEEP-1: the same three nodes, now docked BESIDE the scroller instead of
+  // inside it. Asserting the dock (not merely the absence of `footer`) is what makes a
+  // regression to the in-scroller arrangement fail rather than silently pass.
   assert.ok(
-    content.includes('footer={(') && content.includes('<AgentActivityBubbles instanceId={agentInstanceId} />') && content.includes('<PinnedShellRuns sessions={pinnedRuns} />') && content.includes('{renderComposer()}'),
-    'ConversationThreadPage must pass bubbles, pinned shell runs, and composer as footer to ChatMessageList'
+    !content.includes('footer={('),
+    'ConversationThreadPage must not pass a footer into the scroll container'
+  );
+  assert.ok(
+    content.includes('data-debug-id="conversation-thread-composer-dock"')
+      && content.includes('shrink-0')
+      && content.includes('<AgentActivityBubbles instanceId={agentInstanceId} />')
+      && content.includes('<PinnedShellRuns sessions={pinnedRuns} />')
+      && content.includes('{renderComposer()}'),
+    'Bubbles, pinned shell runs and the composer must render in a shrink-0 dock that is a sibling of the scroller'
   );
 
   // Composer form is in-flow, not fixed

@@ -104,7 +104,6 @@ export default function ChatMessageList({
   formatTimestamp = () => EMPTY_TIMESTAMP,
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
-  footer,
   children,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
   scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
@@ -128,7 +127,17 @@ export default function ChatMessageList({
   formatTimestamp?: (unixMs: number) => ChatTimestamp;
   getDeliveryStatus?: (message: ChatMessage) => ChatDeliveryStatus;
   agentIsWorking?: boolean;
-  footer?: ReactNode;
+  /**
+   * REQ-VIEWPORT-SWEEP-1: REMOVED. This rendered its node as the LAST CHILD OF THE
+   * SCROLL CONTAINER, and the composer was what went through it. When the soft keyboard
+   * opens, the scroller's `clientHeight` shrinks and `maxScrollTop` grows by the keyboard's
+   * height (measured 614 -> 1017) while `scrollTop` stays put, so anything at the end of
+   * the scrolled content lands below the fold and has to be scrolled to by hand. The
+   * composer now sits OUTSIDE this component as a `shrink-0` flex sibling of the scroller
+   * (`ConversationThreadPage` › `conversation-thread-composer-dock`). Do not add this back:
+   * a slot that drops caller content into the bottom of a scroller reintroduces the bug for
+   * the next caller. Content that must stay reachable belongs beside the scroller, not in it.
+   */
   children?: ReactNode;
   wrapperClassName?: string;
   scrollClassName?: string;
@@ -337,7 +346,6 @@ export default function ChatMessageList({
               </div>
             </div>
           )}
-          {footer}
           {children}
         </div>
       </div>

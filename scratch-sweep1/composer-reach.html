@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>REQ-VIEWPORT-SWEEP-1 — composer reachability truth table</title>
+<style>
+  /* Mirrors the real chain, class for class:
+     app-shell        .app-viewport-height  (height + max-height: var(--app-viewport-height))
+     chat column      flex h-full min-h-0 flex-col
+     transcript       w-full min-h-0 flex-1
+     CML wrapper      relative h-full min-h-0 overflow-hidden
+     CML scroller     h-full min-h-0 overflow-y-auto      <- the box that shrinks
+     messages-cont.   mx-auto w-full max-w-4xl
+     footer           <- composer lives HERE today (REQ-SIMPLIFY-LAYOUT-1) */
+  :root { --app-viewport-height: 812px; }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 12px monospace; }
+  .shell { height: var(--app-viewport-height); max-height: var(--app-viewport-height);
+           display: flex; flex-direction: column; overflow: hidden; width: 390px; border: 1px solid #000; }
+  .col { display: flex; height: 100%; min-height: 0; flex-direction: column; flex: 1 1 0%; overflow: hidden; }
+  .header { flex-shrink: 0; height: 44px; background: #ddd; }
+  .transcript { width: 100%; min-height: 0; flex: 1 1 0%; }
+  .wrapper { position: relative; height: 100%; min-height: 0; overflow: hidden; }
+  .scroller { height: 100%; min-height: 0; overflow-y: auto; }
+  .messages { margin: 0 auto; width: 100%; }
+  .msg { height: 120px; border-bottom: 1px solid #eee; }
+  .composer { height: 180px; background: #cfc; }
+
+  /* --- VARIANT B: composer as a flex SIBLING of the scroller, shrink-0 --- */
+  .transcript.sibling { display: flex; flex-direction: column; }
+  .transcript.sibling .wrapper { flex: 1 1 0%; height: auto; }
+  .transcript.sibling > .composer { flex-shrink: 0; }
+</style>
+
+<div id="A" class="shell">
+  <div class="col"><div class="header"></div>
+    <div class="transcript"><div class="wrapper"><div class="scroller"><div class="messages">
+      <div class="msg"></div><div class="msg"></div><div class="msg"></div><div class="msg"></div>
+      <div class="msg"></div><div class="msg"></div><div class="msg"></div><div class="msg"></div>
+      <div class="msg"></div><div class="msg"></div>
+      <div class="composer">COMPOSER (inside scroller — today)</div>
+    </div></div></div></div>
+  </div>
+</div>
+
+<div id="B" class="shell">
+  <div class="col"><div class="header"></div>
+    <div class="transcript sibling">
+      <div class="wrapper"><div class="scroller"><div class="messages">
+        <div class="msg"></div><div class="msg"></div><div class="msg"></div><div class="msg"></div>
+        <div class="msg"></div><div class="msg"></div><div class="msg"></div><div class="msg"></div>
+        <div class="msg"></div><div class="msg"></div>
+      </div></div></div>
+      <div class="composer">COMPOSER (sibling, shrink-0 — proposed)</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// REQ-KBD-1 measured: layout viewport 812, visualViewport.height 409 with the keyboard up.
+const VISIBLE_WITH_KEYBOARD = 409;
+
+function probe(id) {
+  // Reset between variants: the previous probe left the var at the keyboard-up value.
+  document.documentElement.style.setProperty('--app-viewport-height', '812px');
+  const shell = document.getElementById(id);
+  const scroller = shell.querySelector('.scroller');
+  const composer = shell.querySelector('.composer');
+
+  // The user's precondition: already scrolled to the bottom before focusing.
+  scroller.scrollTop = scroller.scrollHeight;
+
+  const read = (label) => {
+    // Re-read every time: shrinking a shell earlier in the document moves this one up,
+    // so a shellTop captured once is stale the moment the var changes.
+    const shellTop = shell.getBoundingClientRect().top;
+    const r = composer.getBoundingClientRect();
+    const fold = shellTop + parseFloat(getComputedStyle(document.documentElement)
+      .getPropertyValue('--app-viewport-height'));
+    return {
+      phase: label,
+      scrollTop: Math.round(scroller.scrollTop),
+      maxScrollTop: Math.round(scroller.scrollHeight - scroller.clientHeight),
+      clientHeight: Math.round(scroller.clientHeight),
+      composerTop: Math.round(r.top - shellTop),
+      composerBottom: Math.round(r.bottom - shellTop),
+      fold: Math.round(fold - shellTop),
+      // The predicate the user is actually complaining about:
+      fullyVisible: r.bottom <= fold + 0.5 && r.top >= shellTop - 0.5,
+      anyVisible: r.top < fold && r.bottom > shellTop,
+    };
+  };
+
+  const before = read('keyboard down (812)');
+  // The keyboard opens: appViewportHeight.ts republishes the var. NOTHING else runs —
+  // REQ-KBD-3 deleted every scroll/focus handler, so scrollTop is untouched.
+  document.documentElement.style.setProperty('--app-viewport-height', VISIBLE_WITH_KEYBOARD + 'px');
+  void shell.offsetHeight;
+  const after = read('keyboard up (409)');
+  return { variant: id, before, after };
+}
+
+const results = [probe('A'), probe('B')];
+fetch('/report', { method: 'POST', headers: { 'content-type': 'application/json' },
+                   body: JSON.stringify(results, null, 2) });
+</script>
