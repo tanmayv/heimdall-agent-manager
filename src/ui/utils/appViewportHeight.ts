@@ -34,7 +34,7 @@ export const APP_VIEWPORT_HEIGHT_VAR = '--app-viewport-height';
  * taken while the viewport was still moving; the SETTLED state then held for SIX SECONDS
  * and fired nothing at all. `window.resize` never fired once. An event-only listener
  * latches the transient and never sees the steady state — that is precisely the defect
- * that made the pre-existing `useKeyboardInset()` report 0 forever.
+ * that made the former `useKeyboardInset()` hook report 0 forever (deleted in REQ-KBD-3).
  *
  * So every event schedules a ladder of re-reads after itself, AND a standing poll runs
  * regardless of whether any event ever arrives. Writes are suppressed when the value is

@@ -2,7 +2,7 @@
  * BulkActionBar — the selection bar for a multi-select list.
  * ------------------------------------------------------------------
  * Purpose: REQ-UI-7's bulk destructive action, reachable on every viewport. Docked to
- * the bottom edge, lifted clear of the software keyboard by `useKeyboardInset()` and
+ * the bottom edge, clear of any persistent bottom chrome via `--ui-bottom-chrome` and
  * clear of any PERSISTENT bottom chrome by `--ui-bottom-chrome`. It carries the
  * count, the verbs and Cancel — nothing else.
  *
@@ -56,7 +56,7 @@ import React from 'react';
 import ReactDOM from 'react-dom';
 import { Button } from '../primitives/Button';
 import { Text } from '../primitives/Text';
-import { useIsMobile, useKeyboardInset, TOUCH_TARGET_CLASS } from '../hooks/useViewport';
+import { useIsMobile, TOUCH_TARGET_CLASS } from '../hooks/useViewport';
 import type { ChangeHandler, RootClassNameProps } from '../types';
 
 export interface BulkActionBarProps extends RootClassNameProps {
@@ -124,7 +124,6 @@ const BulkActionBarBase: React.FC<BulkActionBarProps> = ({
   className,
 }) => {
   const isMobile = useIsMobile();
-  const keyboardInset = useKeyboardInset();
   const barRef = React.useRef<HTMLDivElement | null>(null);
   const [barHeight, setBarHeight] = React.useState(0);
 
@@ -146,17 +145,16 @@ const BulkActionBarBase: React.FC<BulkActionBarProps> = ({
   // supply, so the label says "loaded" rather than implying a total.
   const countLabel = `${selectedCount} selected (of the ${loadedCount} loaded)`;
 
-  // Keyboard open → sit on the keyboard (it covers the tab bar anyway). Otherwise
-  // sit on whatever persistent bottom chrome the shell has declared.
-  // Chrome height and the device's own safe area are alternatives, not addends: the
-  // tab bar already sits inside the safe area, so `max()` picks whichever is taller.
-  // One offset rule for every viewport: sit on the keyboard while it is open (it
-  // covers the tab bar anyway), else on whatever persistent bottom chrome the shell
-  // has declared. On desktop both resolve to 0 and the bar sits on the window edge.
-  const bottomOffset =
-    keyboardInset > 0
-      ? `${keyboardInset}px`
-      : 'max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px))';
+  // Sit on whatever persistent bottom chrome the shell has declared. Chrome height and
+  // the device's own safe area are alternatives, not addends: the tab bar already sits
+  // inside the safe area, so `max()` picks whichever is taller. On desktop both resolve
+  // to 0 and the bar sits on the window edge.
+  //
+  // REQ-KBD-3: there is no longer a keyboard branch. The shell is sized from
+  // `--app-viewport-height` (src/ui/utils/appViewportHeight.ts), so the visible region
+  // already ends above the keyboard and a bar pinned to its bottom clears the keyboard
+  // without measuring it.
+  const bottomOffset = 'max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px))';
 
   const rootClassName = [
     'fixed inset-x-0 z-sticky flex items-center gap-3 border-t border-subtle bg-surface-raised px-4 py-3 shadow-panel',

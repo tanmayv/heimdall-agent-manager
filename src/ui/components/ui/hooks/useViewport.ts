@@ -1,5 +1,5 @@
 /**
- * useViewport / useIsMobile / useKeyboardInset — the breakpoint primitives.
+ * useViewport / useIsMobile — the breakpoint primitives.
  * ------------------------------------------------------------------
  * Purpose: the responsive facts `@ui`'s own components need in order to be
  * responsive — which breakpoint we are at, and how much of the viewport a software
@@ -73,67 +73,6 @@ export function useIsBelowTailwindSm(): boolean {
     return () => window.removeEventListener('resize', update);
   }, []);
   return below;
-}
-
-/**
- * Smallest gap between the layout and visual viewports that counts as a keyboard.
- * Below it the difference is browser chrome collapsing/bouncing, not a keyboard.
- */
-export const KEYBOARD_INSET_MIN = 24;
-
-export type KeyboardInsetReading = {
-  /** `window.innerWidth` — the LAYOUT viewport width, used only for the desktop cutoff. */
-  innerWidth: number;
-  /** `window.innerHeight` — the LAYOUT viewport height, which a soft keyboard does NOT shrink. */
-  innerHeight: number;
-  /** `visualViewport.height` — what the keyboard actually shrinks. */
-  visualHeight: number;
-  /** `visualViewport.offsetTop` — non-zero while the visual viewport is scrolled/pinch-panned. */
-  visualOffsetTop: number;
-};
-
-/**
- * The arithmetic behind `useKeyboardInset`, as a pure function so it can be unit-tested
- * against synthetic readings — no software keyboard exists in a headless browser, so this
- * is the only layer of the behaviour that is directly executable.
- */
-export function keyboardInsetFrom(reading: KeyboardInsetReading): number {
-  if (reading.innerWidth > MOBILE_MAX) return 0;
-  const gap = reading.innerHeight - reading.visualHeight - reading.visualOffsetTop;
-  // Hysteresis: ignore sub-threshold deltas (browser chrome/bouncing).
-  return gap > KEYBOARD_INSET_MIN ? Math.max(0, gap) : 0;
-}
-
-/**
- * Keyboard-aware layout. Mobile soft keyboards shrink `window.visualViewport` without
- * resizing the layout viewport. We expose the gap as an inset so a bottom-pinned bar
- * can lift above the keyboard. Returns 0 on desktop or when no keyboard is visible.
- */
-export function useKeyboardInset(): number {
-  const [inset, setInset] = useState(0);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const vv: VisualViewport | undefined = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      setInset(keyboardInsetFrom({
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        visualHeight: vv.height,
-        visualOffsetTop: vv.offsetTop,
-      }));
-    };
-    update();
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    window.addEventListener('resize', update);
-    return () => {
-      vv.removeEventListener('resize', update);
-      vv.removeEventListener('scroll', update);
-      window.removeEventListener('resize', update);
-    };
-  }, []);
-  return inset;
 }
 
 /**

@@ -67,10 +67,6 @@ require(
     "fixed bottom-14 inset-x-0 z-20" not in THREAD_PAGE,
     "Composer must not use fixed bottom-14 overlay on mobile"
 )
-require(
-    "keyboardAwareBottomPx" not in THREAD_PAGE,
-    "keyboardAwareBottomPx must be removed from composer form"
-)
 
 # 4. No floating reply pill, agent pill, or floating panel toggle pill in ConversationThreadPage.tsx
 require(

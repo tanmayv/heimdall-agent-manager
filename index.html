@@ -2,6 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      `interactive-widget=resizes-content` is RETAINED but is INERT on the surface this app
+      was measured on: on iOS WebKit (iPhone, standalone PWA) `window.innerHeight` stayed
+      constant at 812 while the keyboard took the visual viewport to 409 — i.e. the content
+      was not resized (REQ-KBD-1, H1 refuted on device).
+
+      It is kept rather than removed because removing it would change behaviour on engines
+      that DO implement it, and no such engine was tested in this chain. No claim is made
+      here about what any other engine does — that would be an inference, not a measurement.
+
+      Nothing in the app depends on this tag. The keyboard is cleared by sizing the shell
+      from `--app-viewport-height` in JS (src/ui/utils/appViewportHeight.ts), which is the
+      minimum mechanism that works where this tag does not.
+    -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="heimdall-login-url" content="%VITE_HEIMDALL_LOGIN_URL%" />
     <meta name="heimdall-logout-url" content="%VITE_HEIMDALL_LOGOUT_URL%" />

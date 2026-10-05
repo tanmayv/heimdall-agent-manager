@@ -66,7 +66,6 @@ import { ClubbedRunGroup, PinnedShellRuns, pinnedRunSessions, ShellRunRow, useCo
 import { groupTranscriptMessages, isAgentStartMessage } from './transcriptGrouping';
 import { type TaskLike } from './chainTaskInference';
 import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
-import { useKeyboardInset } from '../ui/hooks/useViewport';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -721,7 +720,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // the rendered output is pixel-identical at every width. Deliberately 640 (Tailwind `sm:`)
   // and not MOBILE_MAX=767 — see `useIsBelowTailwindSm` and artifact art_18d7b91b4ac8743e item 9.
   const isBelowSm = useIsBelowTailwindSm();
-  const keyboardInset = useKeyboardInset();
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
@@ -770,17 +768,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setError('');
     setFocusedTaskId(null);
   }, [routeInstanceId]);
-
-  // REQ-MOBILE-KEYBOARD-SCROLL-30: Synchronized scroll when keyboardInset transitions
-  useEffect(() => {
-    if (keyboardInset > 0 && document.activeElement === textareaRef.current) {
-      const timer = setTimeout(() => {
-        const target = composerContainerRef.current || textareaRef.current;
-        target?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [keyboardInset]);
 
   // REQ-COMPOSER-MODEL-ICON-33: Track composer container width for compact model/provider selector icon button
   useEffect(() => {
@@ -2073,21 +2060,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               ref={textareaRef}
               data-debug-id="conversation-composer-input"
               value={draft}
-              onFocus={() => {
-                const scrollComposer = () => {
-                  const target = composerContainerRef.current || textareaRef.current;
-                  target?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-                };
-                requestAnimationFrame(scrollComposer);
-                // Handle mobile virtual keyboard slide-up transition delays (150ms, 300ms, 450ms)
-                [150, 300, 450].forEach((delay) => {
-                  setTimeout(() => {
-                    if (document.activeElement === textareaRef.current) {
-                      scrollComposer();
-                    }
-                  }, delay);
-                });
-              }}
               onChange={(e) => {
                 updateDraft(e.target.value);
                 const val = e.target.value;
@@ -2240,10 +2212,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
         scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
         footer={(
-          <div
-            className="w-full max-w-4xl mx-auto"
-            style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset + 8}px` } : undefined}
-          >
+          <div className="w-full max-w-4xl mx-auto">
             <AgentActivityBubbles instanceId={agentInstanceId} />
             <PinnedShellRuns sessions={pinnedRuns} />
             {renderComposer()}

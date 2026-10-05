@@ -2,16 +2,6 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Drawer, Icon, Text, type IconName } from '@ui';
 import { TOUCH_TARGET_CLASS } from '@ui/hooks/useViewport';
-// REQ-SHELL-28: mobile-chrome focus rules live in a React-free module so their truth
-// table can be unit-tested; re-exported here so call sites keep one import path.
-export {
-  MOBILE_CHROME_HIDE_ON_FOCUS_SELECTOR,
-  MOBILE_BOTTOM_CHROME_VAR,
-  MOBILE_TAB_BAR_HEIGHT_PX,
-  SAFE_AREA_BOTTOM_CSS,
-  focusSuppressesMobileChrome,
-  keyboardAwareBottomPx,
-} from './mobileChrome';
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
 // >1024px desktop. The desktop "two panes side-by-side" collapses to mobile
@@ -31,7 +21,6 @@ export {
   useViewport,
   useIsMobile,
   useIsBelowTailwindSm,
-  useKeyboardInset,
   TOUCH_TARGET_CLASS,
 } from '@ui/hooks/useViewport';
 export type { Viewport } from '@ui/hooks/useViewport';
@@ -269,11 +258,10 @@ export type MobileInspectorSheetProps = {
   title?: ReactNode;
   subtitle?: ReactNode;
   headerActions?: ReactNode;
-  keyboardInset?: number;
   children: ReactNode;
 };
 
-export function MobileInspectorSheet({ open, onClose, title, subtitle, headerActions, keyboardInset = 0, children }: MobileInspectorSheetProps) {
+export function MobileInspectorSheet({ open, onClose, title, subtitle, headerActions, children }: MobileInspectorSheetProps) {
   // A bottom slide-up sheet built on @ui Drawer (portal, focus trap, Esc, scroll
   // lock, backdrop close — the a11y contract the bespoke sheet lacked). Drawer's
   // header renders the title + close; the "Inspector" eyebrow, subtitle and any
@@ -288,7 +276,6 @@ export function MobileInspectorSheet({ open, onClose, title, subtitle, headerAct
       data-debug-id="workspace-inspector"
       data-mobile-sheet="true"
       className="ui-safe-bottom md:hidden"
-      style={{ paddingBottom: keyboardInset || undefined }}
     >
       {(subtitle || headerActions) ? (
         <div className="flex items-start justify-between gap-3 px-5 pb-1">

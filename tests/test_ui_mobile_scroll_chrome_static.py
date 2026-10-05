@@ -13,7 +13,6 @@ Requirements covered:
   * AgentActivityBubbles returns null when empty (no reserved empty space).
 - REQ-SIMPLIFY-COMPOSER-2:
   * Composer is positioned in flow at the bottom (no fixed bottom-14 on mobile).
-  * No keyboardAwareBottomPx on composer form.
   * Loading indicator, bubbles, shell runs, and composer all scroll together in document flow.
 - REQ-SIMPLIFY-SCROLL-4:
   * Mobile scroll chrome hide/reveal removed (no handleTranscriptScroll, chromeVisible, restoreChrome).
@@ -80,8 +79,6 @@ def test_conversation_thread_page_scroll_flow():
             "Composer form must be in normal document flow at the bottom")
     require("fixed bottom-14 inset-x-0 z-20" not in src,
             "Composer must not be rendered as fixed bottom-14 overlay on mobile")
-    require("keyboardAwareBottomPx" not in src,
-            "Composer must not use keyboardAwareBottomPx")
 
     # Unified footer passed into ChatMessageList
     require("footer={(" in src and "<AgentActivityBubbles instanceId={agentInstanceId} />" in src and "{renderComposer()}" in src,
