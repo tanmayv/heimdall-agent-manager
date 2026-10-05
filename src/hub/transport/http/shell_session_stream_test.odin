@@ -664,6 +664,79 @@ test_bridge_shell_pty_output_armored_data_b64_forwarding :: proc(t: ^testing.T) 
 }
 
 // -----------------------------------------------------------------------------
+// Test 3e: Bridge shell_pty_stream_ready forwards as stream_ready to viewers (REQ-STREAM-EVENT-3)
+// -----------------------------------------------------------------------------
+@(test)
+test_bridge_shell_pty_stream_ready_forwarding :: proc(t: ^testing.T) {
+	pair, ok := make_stream_pair(t)
+	testing.expect(t, ok)
+	defer close_stream_pair(&pair)
+
+	svc := shell_session_svc.new_shell_session_service()
+	defer shell_session_svc.shell_session_service_free(&svc)
+
+	session_id := "sh_bridge_ready_test"
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
+
+	bh := Bridge_Handlers{
+		shell_sessions = &svc,
+	}
+
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
+
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_stream_ready\",\"session_id\":\"sh_bridge_ready_test\"}")
+	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
+	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_stream_ready")
+
+	frame, r := read_server_stream_frame(pair.client, 2 * time.Second)
+	testing.expect(t, r, "client must receive stream_ready frame")
+	if r {
+		testing.expect(t, strings.contains(frame, "\"type\":\"stream_ready\""), "frame must have type stream_ready")
+		testing.expect(t, strings.contains(frame, "\"session_id\":\"sh_bridge_ready_test\""), "frame must cite session_id")
+		delete(frame)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Test 3f: Bridge shell_pty_stream_closed forwards as stream_closed to viewers (REQ-STREAM-EVENT-3)
+// -----------------------------------------------------------------------------
+@(test)
+test_bridge_shell_pty_stream_closed_forwarding :: proc(t: ^testing.T) {
+	pair, ok := make_stream_pair(t)
+	testing.expect(t, ok)
+	defer close_stream_pair(&pair)
+
+	svc := shell_session_svc.new_shell_session_service()
+	defer shell_session_svc.shell_session_service_free(&svc)
+
+	session_id := "sh_bridge_closed_test"
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
+
+	bh := Bridge_Handlers{
+		shell_sessions = &svc,
+	}
+
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
+
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_stream_closed\",\"session_id\":\"sh_bridge_closed_test\",\"exit_code\":0}")
+	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
+	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_stream_closed")
+
+	frame, r := read_server_stream_frame(pair.client, 2 * time.Second)
+	testing.expect(t, r, "client must receive stream_closed frame")
+	if r {
+		testing.expect(t, strings.contains(frame, "\"type\":\"stream_closed\""), "frame must have type stream_closed")
+		testing.expect(t, strings.contains(frame, "\"session_id\":\"sh_bridge_closed_test\""), "frame must cite session_id")
+		testing.expect(t, strings.contains(frame, "\"exit_code\":0"), "frame must contain exit_code")
+		delete(frame)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Test 4: Inbound input and resize frame forwarding to Bridge sink
 // -----------------------------------------------------------------------------
 @(test)

@@ -415,6 +415,40 @@ shell_session_broadcast_status :: proc(svc: ^Shell_Session_Service, session_id, 
 	}
 }
 
+// shell_session_broadcast_stream_ready relays stream_ready to all attached WebSocket viewers (REQ-STREAM-EVENT-3).
+shell_session_broadcast_stream_ready :: proc(svc: ^Shell_Session_Service, session_id: string) {
+	if svc == nil || session_id == "" do return
+	sockets := _copy_viewers(svc, session_id)
+	defer delete(sockets)
+	if len(sockets) == 0 do return
+	frame := _stream_ready_frame_json(session_id)
+	defer delete(frame)
+	for sock in sockets {
+		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		_log_viewer_write("stream_ready", session_id, result, len(frame))
+		if _viewer_write_ends_session(result) {
+			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+		}
+	}
+}
+
+// shell_session_broadcast_stream_closed relays stream_closed to all attached WebSocket viewers (REQ-STREAM-EVENT-3).
+shell_session_broadcast_stream_closed :: proc(svc: ^Shell_Session_Service, session_id: string, exit_code: int, exit_code_set: bool) {
+	if svc == nil || session_id == "" do return
+	sockets := _copy_viewers(svc, session_id)
+	defer delete(sockets)
+	if len(sockets) == 0 do return
+	frame := _stream_closed_frame_json(session_id, exit_code, exit_code_set)
+	defer delete(frame)
+	for sock in sockets {
+		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
+		_log_viewer_write("stream_closed", session_id, result, len(frame))
+		if _viewer_write_ends_session(result) {
+			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+		}
+	}
+}
+
 // --- CRUD service procs (T5) ---
 
 Shell_Session_Create_Input :: struct {
@@ -1815,6 +1849,26 @@ _status_frame_json :: proc(status: string, exit_code: int, exit_code_set: bool) 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"status\",\"status\":\"")
 	contracts.write_json_string(&b, status)
+	strings.write_string(&b, "\"")
+	if exit_code_set {
+		strings.write_string(&b, fmt.tprintf(",\"exit_code\":%d", exit_code))
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+_stream_ready_frame_json :: proc(session_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"stream_ready\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+_stream_closed_frame_json :: proc(session_id: string, exit_code: int, exit_code_set: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"stream_closed\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
 	strings.write_string(&b, "\"")
 	if exit_code_set {
 		strings.write_string(&b, fmt.tprintf(",\"exit_code\":%d", exit_code))

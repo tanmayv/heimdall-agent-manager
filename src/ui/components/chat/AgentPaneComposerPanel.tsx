@@ -47,6 +47,8 @@ export interface AgentPaneComposerPanelProps {
   runCount?: number;
   startedAt?: string;
   onStreamOutput?: () => void;
+  onStreamReady?: (info?: any) => void;
+  onStreamClosed?: (info?: any) => void;
   className?: string;
   hideHeader?: boolean;
   onPin?: (agentInstanceId: string) => void;
@@ -64,6 +66,8 @@ export function AgentPaneComposerPanel({
   runCount,
   startedAt,
   onStreamOutput,
+  onStreamReady,
+  onStreamClosed,
   className = '',
   hideHeader = false,
   onPin,
@@ -117,6 +121,16 @@ export function AgentPaneComposerPanel({
     onStreamOutputRef.current = onStreamOutput;
   }, [onStreamOutput]);
 
+  const onStreamReadyRef = useRef(onStreamReady);
+  useEffect(() => {
+    onStreamReadyRef.current = onStreamReady;
+  }, [onStreamReady]);
+
+  const onStreamClosedRef = useRef(onStreamClosed);
+  useEffect(() => {
+    onStreamClosedRef.current = onStreamClosed;
+  }, [onStreamClosed]);
+
   const hasReceivedOutputRef = useRef<boolean>(false);
   const streamBufferRef = useRef<Uint8Array[]>([]);
 
@@ -137,6 +151,7 @@ export function AgentPaneComposerPanel({
   // --------------------------------------------------------------------------
   const {
     connected: streamConnected,
+    isStreamReady,
     sendInput: sendStreamInput,
     sendResize: sendStreamResize,
     reconnect: reconnectStream,
@@ -151,6 +166,12 @@ export function AgentPaneComposerPanel({
       term.reset();
       term.write('\x1b[H');
       lastWrittenOutputRef.current = '';
+    },
+    onStreamReady: (info) => {
+      onStreamReadyRef.current?.(info);
+    },
+    onStreamClosed: (info) => {
+      onStreamClosedRef.current?.(info);
     },
     onOutput: (bytes) => {
       if (bytes && bytes.length > 0) {

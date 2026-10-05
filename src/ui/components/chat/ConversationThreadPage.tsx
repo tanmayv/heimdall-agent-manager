@@ -636,11 +636,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     prevStartupStatusRef.current = startupStatus;
   }, [agentInstanceId]);
 
-  // REQ-AUTO-STARTUP-PANE-24: Auto-expand capture pane on streaming output during startup and auto-close when agent calls start success (ready)
-  const handleStreamOutput = useCallback(() => {
+  // REQ-STREAM-EVENT-3: Lifecycle event handlers for deterministic preview popup expansion and teardown
+  const handleStreamReady = useCallback((_info?: any) => {
     if (!userManuallyToggledPaneRef.current) {
       setIsPaneExpanded(true);
     }
+  }, []);
+
+  const handleStreamClosed = useCallback((_info?: any) => {
+    if (!userManuallyToggledPaneRef.current) {
+      setIsPaneExpanded(false);
+    }
+  }, []);
+
+  const handleStreamOutput = useCallback(() => {
+    // REQ-STREAM-EVENT-3: stream popup auto-expansion is driven by stream_ready rather than raw stdout bytes
   }, []);
 
   useEffect(() => {
@@ -2043,6 +2053,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             runCount={instance?.run_count ?? instance?.runCount}
             startedAt={instance?.started_at ?? instance?.startedAt}
             onStreamOutput={handleStreamOutput}
+            onStreamReady={handleStreamReady}
+            onStreamClosed={handleStreamClosed}
             className="mb-2.5"
           />
 

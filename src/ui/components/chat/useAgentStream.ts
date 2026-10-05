@@ -21,6 +21,8 @@ type AgentStreamMsg =
   | { type: 'output'; data_b64?: string; enc_b64?: string }
   | { type: 'screen'; screen_b64?: string; data_b64?: string; enc_b64?: string }
   | { type: 'ready'; agent_instance_id?: string; session_id?: string }
+  | { type: 'stream_ready'; session_id?: string; agent_instance_id?: string; [key: string]: any }
+  | { type: 'stream_closed'; session_id?: string; agent_instance_id?: string; exit_code?: number; [key: string]: any }
   | { type: 'status'; status: string }
   | { type: 'error'; message: string };
 
@@ -33,6 +35,8 @@ export type UseAgentStreamOptions = {
   onReset?: () => void;
   onOutput?: (data: Uint8Array) => void;
   onStatus?: (status: string) => void;
+  onStreamReady?: (info?: { sessionId?: string; agentInstanceId?: string; [key: string]: any }) => void;
+  onStreamClosed?: (info?: { sessionId?: string; agentInstanceId?: string; exitCode?: number; [key: string]: any }) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
   isVaultUnlocked?: boolean;
@@ -40,6 +44,7 @@ export type UseAgentStreamOptions = {
 
 export interface UseAgentStreamResult {
   connected: boolean;
+  isStreamReady: boolean;
   sendInput: (data: string) => void;
   sendResize: (rows: number, cols: number) => void;
   reconnect: () => void;
@@ -97,11 +102,19 @@ export function useAgentStream({
   onReset,
   onOutput,
   onStatus,
+  onStreamReady,
+  onStreamClosed,
   onError,
   onClose,
   isVaultUnlocked: propIsVaultUnlocked,
 }: UseAgentStreamOptions): UseAgentStreamResult {
   const [connected, setConnected] = useState(false);
+  const [isStreamReady, setIsStreamReady] = useState(false);
+  const isStreamReadyRef = useRef(false);
+  const pendingKeyEventsRef = useRef<Array<{ data: string; timestamp: number }>>([]);
+  const streamReadyFallbackTimerRef = useRef<number | undefined>(undefined);
+  const dispatchInputRef = useRef<(data: string) => void>(() => {});
+
   const socketRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<number | undefined>(undefined);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
@@ -142,6 +155,8 @@ export function useAgentStream({
   const onResetRef = useRef(onReset);
   const onOutputRef = useRef(onOutput);
   const onStatusRef = useRef(onStatus);
+  const onStreamReadyRef = useRef(onStreamReady);
+  const onStreamClosedRef = useRef(onStreamClosed);
   const onErrorRef = useRef(onError);
   const onCloseRef = useRef(onClose);
 
@@ -151,6 +166,8 @@ export function useAgentStream({
   useEffect(() => { onResetRef.current = onReset; }, [onReset]);
   useEffect(() => { onOutputRef.current = onOutput; }, [onOutput]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
+  useEffect(() => { onStreamReadyRef.current = onStreamReady; }, [onStreamReady]);
+  useEffect(() => { onStreamClosedRef.current = onStreamClosed; }, [onStreamClosed]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
@@ -167,6 +184,11 @@ export function useAgentStream({
   const clearMicroNudgeTimer = () => {
     if (microNudgeTimerRef.current) window.clearTimeout(microNudgeTimerRef.current);
     microNudgeTimerRef.current = undefined;
+  };
+
+  const clearStreamReadyFallbackTimer = () => {
+    if (streamReadyFallbackTimerRef.current) window.clearTimeout(streamReadyFallbackTimerRef.current);
+    streamReadyFallbackTimerRef.current = undefined;
   };
 
   const startHeartbeat = (socket: WebSocket) => {
@@ -187,6 +209,10 @@ export function useAgentStream({
     clearHeartbeat();
     clearReconnectTimer();
     clearMicroNudgeTimer();
+    clearStreamReadyFallbackTimer();
+    isStreamReadyRef.current = false;
+    setIsStreamReady(false);
+    pendingKeyEventsRef.current = [];
     if (socketRef.current) {
       socketRef.current.onclose = null;
       socketRef.current.onerror = null;
@@ -253,6 +279,22 @@ export function useAgentStream({
               }
             }, 25);
           }
+
+          // Fallback timer: if explicit stream_ready is not received within 750ms, mark ready and drain
+          clearStreamReadyFallbackTimer();
+          streamReadyFallbackTimerRef.current = window.setTimeout(() => {
+            if (activeConnectIdRef.current === connectId && socket.readyState === WebSocket.OPEN && !isStreamReadyRef.current) {
+              isStreamReadyRef.current = true;
+              setIsStreamReady(true);
+              if (pendingKeyEventsRef.current.length > 0) {
+                const queued = [...pendingKeyEventsRef.current];
+                pendingKeyEventsRef.current = [];
+                for (const item of queued) {
+                  dispatchInputRef.current(item.data);
+                }
+              }
+            }
+          }, 750);
         };
 
         socket.onmessage = (event) => {
@@ -324,6 +366,24 @@ export function useAgentStream({
                 }
               }).catch(() => { /* ignore queue errors */ });
             }
+          } else if (msg.type === 'stream_ready') {
+            clearStreamReadyFallbackTimer();
+            isStreamReadyRef.current = true;
+            setIsStreamReady(true);
+            onStreamReadyRef.current?.(msg);
+            if (pendingKeyEventsRef.current.length > 0) {
+              const queued = [...pendingKeyEventsRef.current];
+              pendingKeyEventsRef.current = [];
+              for (const item of queued) {
+                dispatchInputRef.current(item.data);
+              }
+            }
+          } else if (msg.type === 'stream_closed') {
+            clearStreamReadyFallbackTimer();
+            isStreamReadyRef.current = false;
+            setIsStreamReady(false);
+            pendingKeyEventsRef.current = [];
+            onStreamClosedRef.current?.(msg);
           } else if (msg.type === 'status') {
             onStatusRef.current?.(msg.status);
           } else if (msg.type === 'error') {
@@ -335,6 +395,10 @@ export function useAgentStream({
           if (activeConnectIdRef.current !== connectId) return;
           clearHeartbeat();
           clearMicroNudgeTimer();
+          clearStreamReadyFallbackTimer();
+          isStreamReadyRef.current = false;
+          setIsStreamReady(false);
+          pendingKeyEventsRef.current = [];
           setConnected(false);
 
           // Auto-reconnect with exponential backoff if not explicitly stopped
@@ -382,7 +446,7 @@ export function useAgentStream({
     };
   }, [agentInstanceId, enabled, connect]);
 
-  const sendInput = useCallback((data: string) => {
+  const dispatchInput = useCallback((data: string) => {
     const s = socketRef.current;
     if (!s || s.readyState !== WebSocket.OPEN) return;
 
@@ -408,10 +472,22 @@ export function useAgentStream({
     }
   }, []);
 
+  useEffect(() => {
+    dispatchInputRef.current = dispatchInput;
+  }, [dispatchInput]);
+
+  const sendInput = useCallback((data: string) => {
+    if (!isStreamReadyRef.current) {
+      pendingKeyEventsRef.current.push({ data, timestamp: Date.now() });
+      return;
+    }
+    dispatchInput(data);
+  }, [dispatchInput]);
+
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
     connect();
   }, [connect]);
 
-  return { connected, sendInput, sendResize, reconnect };
+  return { connected, isStreamReady, sendInput, sendResize, reconnect };
 }

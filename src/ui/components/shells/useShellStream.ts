@@ -15,6 +15,8 @@ type ShellStreamMsg =
   | { type: 'output'; data_b64?: string; enc_b64?: string }
   | { type: 'screen'; screen_b64?: string; data_b64?: string; enc_b64?: string }
   | { type: 'ready'; session_id?: string }
+  | { type: 'stream_ready'; session_id?: string; [key: string]: any }
+  | { type: 'stream_closed'; session_id?: string; exit_code?: number; [key: string]: any }
   | { type: 'status'; status: string }
   | { type: 'error'; message: string };
 
@@ -23,6 +25,8 @@ export type UseShellStreamOptions = {
   enabled?: boolean;
   onOutput?: (data: Uint8Array) => void;
   onStatus?: (status: string) => void;
+  onStreamReady?: (info?: { sessionId?: string; [key: string]: any }) => void;
+  onStreamClosed?: (info?: { sessionId?: string; exitCode?: number; [key: string]: any }) => void;
   onError?: (message: string) => void;
   onClose?: () => void;
   /**
@@ -45,6 +49,7 @@ export type UseShellStreamOptions = {
 
 export interface UseShellStreamResult {
   connected: boolean;
+  isStreamReady: boolean;
   sendInput: (data: string) => void;
   sendResize: (rows: number, cols: number) => void;
   reconnect: () => void;
@@ -187,12 +192,20 @@ export function useShellStream({
   enabled = true,
   onOutput,
   onStatus,
+  onStreamReady,
+  onStreamClosed,
   onError,
   onClose,
   getGeometry,
   isVaultUnlocked: propIsVaultUnlocked,
 }: UseShellStreamOptions): UseShellStreamResult {
   const [connected, setConnected] = useState(false);
+  const [isStreamReady, setIsStreamReady] = useState(false);
+  const isStreamReadyRef = useRef(false);
+  const pendingKeyEventsRef = useRef<Array<{ data: string; timestamp: number }>>([]);
+  const streamReadyFallbackTimerRef = useRef<number | undefined>(undefined);
+  const dispatchInputRef = useRef<(data: string) => void>(() => {});
+
   const socketRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<number | undefined>(undefined);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
@@ -202,12 +215,16 @@ export function useShellStream({
 
   const onOutputRef = useRef(onOutput);
   const onStatusRef = useRef(onStatus);
+  const onStreamReadyRef = useRef(onStreamReady);
+  const onStreamClosedRef = useRef(onStreamClosed);
   const onErrorRef = useRef(onError);
   const onCloseRef = useRef(onClose);
   const getGeometryRef = useRef(getGeometry);
 
   useEffect(() => { onOutputRef.current = onOutput; }, [onOutput]);
   useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
+  useEffect(() => { onStreamReadyRef.current = onStreamReady; }, [onStreamReady]);
+  useEffect(() => { onStreamClosedRef.current = onStreamClosed; }, [onStreamClosed]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => { getGeometryRef.current = getGeometry; }, [getGeometry]);
@@ -247,6 +264,11 @@ export function useShellStream({
   const clearReconnectTimer = () => {
     if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = undefined;
+  };
+
+  const clearStreamReadyFallbackTimer = () => {
+    if (streamReadyFallbackTimerRef.current) window.clearTimeout(streamReadyFallbackTimerRef.current);
+    streamReadyFallbackTimerRef.current = undefined;
   };
 
   // REQ-SHELL-6 §6 — JUSTIFIED EXCEPTION 1 of 2 to the no-polling rule, and the one
@@ -291,8 +313,12 @@ export function useShellStream({
     activeConnectIdRef.current += 1;
     clearHeartbeat();
     clearReconnectTimer();
+    clearStreamReadyFallbackTimer();
     outputQueueRef.current = Promise.resolve();
     inputQueueRef.current = Promise.resolve();
+    isStreamReadyRef.current = false;
+    setIsStreamReady(false);
+    pendingKeyEventsRef.current = [];
     if (socketRef.current) {
       socketRef.current.onclose = null;
       socketRef.current.onerror = null;
@@ -336,6 +362,23 @@ export function useShellStream({
           setConnected(true);
           startHeartbeat(socket);
           sendGeometry(socket);
+
+          // Fallback timer: if explicit stream_ready is not received within 750ms, mark ready and drain
+          clearStreamReadyFallbackTimer();
+          streamReadyFallbackTimerRef.current = window.setTimeout(() => {
+            if (activeConnectIdRef.current === connectId && socket.readyState === WebSocket.OPEN && !isStreamReadyRef.current) {
+              console.log('[useShellStream] fallback timer: marking stream_ready after timeout');
+              isStreamReadyRef.current = true;
+              setIsStreamReady(true);
+              if (pendingKeyEventsRef.current.length > 0) {
+                const queued = [...pendingKeyEventsRef.current];
+                pendingKeyEventsRef.current = [];
+                for (const item of queued) {
+                  dispatchInputRef.current(item.data);
+                }
+              }
+            }
+          }, 750);
         };
 
         socket.onmessage = (event) => {
@@ -438,6 +481,27 @@ export function useShellStream({
                 }
               }
             }).catch(() => { /* ignore queue errors */ });
+          } else if (msg.type === 'stream_ready') {
+            console.log('[useShellStream] received stream_ready frame:', msg);
+            clearStreamReadyFallbackTimer();
+            isStreamReadyRef.current = true;
+            setIsStreamReady(true);
+            onStreamReadyRef.current?.(msg);
+            if (pendingKeyEventsRef.current.length > 0) {
+              const queued = [...pendingKeyEventsRef.current];
+              pendingKeyEventsRef.current = [];
+              console.log(`[useShellStream] Flushing ${queued.length} buffered key events post stream_ready`);
+              for (const item of queued) {
+                dispatchInputRef.current(item.data);
+              }
+            }
+          } else if (msg.type === 'stream_closed') {
+            console.log('[useShellStream] received stream_closed frame:', msg);
+            clearStreamReadyFallbackTimer();
+            isStreamReadyRef.current = false;
+            setIsStreamReady(false);
+            pendingKeyEventsRef.current = [];
+            onStreamClosedRef.current?.(msg);
           } else if (msg.type === 'status') {
             console.log('[useShellStream] received status frame:', msg.status);
             onStatusRef.current?.(msg.status);
@@ -463,6 +527,10 @@ export function useShellStream({
             enabled,
           });
           clearHeartbeat();
+          clearStreamReadyFallbackTimer();
+          isStreamReadyRef.current = false;
+          setIsStreamReady(false);
+          pendingKeyEventsRef.current = [];
           setConnected(false);
 
           // Auto-reconnect with exponential backoff if not explicitly stopped
@@ -517,7 +585,7 @@ export function useShellStream({
     };
   }, [sessionId, enabled, connect]);
 
-  const sendInput = useCallback((data: string) => {
+  const dispatchInput = useCallback((data: string) => {
     const s = socketRef.current;
     if (!s || s.readyState !== WebSocket.OPEN) {
       console.warn('[useShellStream] sendInput called but socket is not open, readyState:', s?.readyState);
@@ -555,6 +623,19 @@ export function useShellStream({
     }
   }, []);
 
+  useEffect(() => {
+    dispatchInputRef.current = dispatchInput;
+  }, [dispatchInput]);
+
+  const sendInput = useCallback((data: string) => {
+    if (!isStreamReadyRef.current) {
+      console.log('[useShellStream] Buffering early input before stream_ready:', { length: data.length });
+      pendingKeyEventsRef.current.push({ data, timestamp: Date.now() });
+      return;
+    }
+    dispatchInput(data);
+  }, [dispatchInput]);
+
   const sendResize = useCallback((rows: number, cols: number) => {
     const s = socketRef.current;
     console.log('[useShellStream] sendResize called:', { rows, cols, readyState: s?.readyState });
@@ -569,5 +650,5 @@ export function useShellStream({
     connect();
   }, [connect]);
 
-  return { connected, sendInput, sendResize, reconnect };
+  return { connected, isStreamReady, sendInput, sendResize, reconnect };
 }

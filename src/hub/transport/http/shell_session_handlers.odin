@@ -139,6 +139,17 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	_ = write_ws_text_frame(client, ready_json)
 	delete(ready_json)
 
+	// REQ-STREAM-EVENT-3: If late_join is true, stream is already running; emit stream_ready directly to this viewer.
+	if late_join {
+		sr_b := strings.builder_make()
+		strings.write_string(&sr_b, "{\"type\":\"stream_ready\",\"session_id\":\"")
+		write_handler_json_string(&sr_b, session_id)
+		strings.write_string(&sr_b, "\"}")
+		sr_json := strings.to_string(sr_b)
+		_ = write_ws_text_frame(client, sr_json)
+		delete(sr_json)
+	}
+
 	reader := bridge_ws_reader_make(client)
 	defer bridge_ws_reader_destroy(&reader)
 

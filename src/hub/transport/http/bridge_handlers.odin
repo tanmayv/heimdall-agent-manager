@@ -1798,6 +1798,32 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64, enc_b64)
 			}
 		}
+	case "shell_pty_stream_ready":
+		if h.shell_sessions != nil {
+			session_id := json_string(text, "session_id")
+			if session_id == "" {
+				delete(session_id)
+				session_id = json_string(text, "shell_id")
+			}
+			defer delete(session_id)
+			if session_id != "" {
+				shell_session_svc.shell_session_broadcast_stream_ready(h.shell_sessions, session_id)
+			}
+		}
+	case "shell_pty_stream_closed":
+		if h.shell_sessions != nil {
+			session_id := json_string(text, "session_id")
+			if session_id == "" {
+				delete(session_id)
+				session_id = json_string(text, "shell_id")
+			}
+			defer delete(session_id)
+			exit_code := json_int(text, "exit_code", 0)
+			exit_code_set := json_key_present(text, "exit_code")
+			if session_id != "" {
+				shell_session_svc.shell_session_broadcast_stream_closed(h.shell_sessions, session_id, exit_code, exit_code_set)
+			}
+		}
 	case "shell_exited":
 		if h.shell_sessions != nil {
 			session_id := json_string(text, "session_id")
