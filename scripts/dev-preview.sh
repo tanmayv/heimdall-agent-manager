@@ -128,20 +128,35 @@ elif (exec 3<>"/dev/tcp/127.0.0.1/8090") 2>/dev/null; then
   UPSTREAM_FLAG="--upstream http://127.0.0.1:8090"
 fi
 
-START_RESPONSE="$("$HAM_CTL" shell start \
-  --bridge "$BRIDGE" \
-  ${EXTRA[@]+"${EXTRA[@]}"} \
-  --kind server \
-  --port "$PORT" \
-  --label "$LABEL" \
-  --cwd "$REPO" \
-  --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $PORT --vite-port $VITE_PORT --root \"$REPO\" --ham-ctl \"$HAM_CTL\" ${UPSTREAM_FLAG} ${PROD_FLAG}")"
+SID=""
+for attempt in 0 1 2 3; do
+  CUR_PORT=$((PORT + attempt * 2))
+  CUR_VITE_PORT=$((VITE_PORT + attempt * 2))
+  START_RESPONSE="$("$HAM_CTL" shell start \
+    --bridge "$BRIDGE" \
+    ${EXTRA[@]+"${EXTRA[@]}"} \
+    --kind server \
+    --port "$CUR_PORT" \
+    --label "$LABEL" \
+    --cwd "$REPO" \
+    --cmd "node \"$SCRIPT_DIR/dev-preview.mjs\" --port $CUR_PORT --vite-port $CUR_VITE_PORT --root \"$REPO\" --ham-ctl \"$HAM_CTL\" ${UPSTREAM_FLAG} ${PROD_FLAG}")"
 
-SID="$(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("session_id",""))')"
+  SID="$(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("session_id",""))' 2>/dev/null || true)"
+  if [[ -n "$SID" ]]; then
+    PORT="$CUR_PORT"
+    VITE_PORT="$CUR_VITE_PORT"
+    break
+  fi
+  if ! echo "$START_RESPONSE" | grep -q "already held"; then
+    die "shell start returned no session_id. Response was: $START_RESPONSE"
+  fi
+  log "port $CUR_PORT already held on bridge; trying port $((CUR_PORT + 2))"
+done
+
 [[ -n "$SID" ]] || die "shell start returned no session_id. Response was: $START_RESPONSE"
 echo "$SID" > "$STATE"
 
-log "started session $SID (PID $(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("pid","?"))'))"
+log "started session $SID on port $PORT (PID $(printf '%s' "$START_RESPONSE" | json 'print(d.get("data",{}).get("data",{}).get("session",{}).get("pid","?"))'))"
 
 # --- 3. wait for server to become ready -------------------------------------
 BASE="http://127.0.0.1:$ENDPOINT_PORT/proxy/$SID"
