@@ -26,8 +26,8 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 // 1. Canonical provider catalog definitions
 // -----------------------------------------------------------------------------
 
-test('SUPPORTED_PROVIDER_PRESETS defines canonical presets for all 6 required providers', () => {
-  const expectedKeys = ['claude', 'jetski', 'antigravity', 'pi', 'codex', 'copilot'];
+test('SUPPORTED_PROVIDER_PRESETS defines canonical presets for all 5 required providers', () => {
+  const expectedKeys = ['claude', 'jetski', 'antigravity', 'codex', 'copilot'];
   const actualKeys = Object.keys(SUPPORTED_PROVIDER_PRESETS);
 
   for (const key of expectedKeys) {
@@ -54,7 +54,7 @@ test('SUPPORTED_PROVIDER_PRESETS defines canonical presets for all 6 required pr
 
 test('PRESET_OPTIONS includes Custom followed by all supported providers', () => {
   const keys = PRESET_OPTIONS.map((opt) => opt.key);
-  assert.deepEqual(keys, ['custom', 'claude', 'jetski', 'antigravity', 'pi', 'codex', 'copilot']);
+  assert.deepEqual(keys, ['custom', 'claude', 'jetski', 'antigravity', 'codex', 'copilot']);
 });
 
 test('Specific provider preset parameters match system architecture', () => {
@@ -75,10 +75,6 @@ test('Specific provider preset parameters match system architecture', () => {
   assert.deepEqual(antigravity.promptFlags, ['--prompt-interactive', '-i']);
   assert.deepEqual(antigravity.yoloFlags, ['--dangerously-skip-permissions']);
 
-  // Pi
-  const pi = SUPPORTED_PROVIDER_PRESETS.pi;
-  assert.equal(pi.promptDelivery, 'positional');
-
   // Copilot
   const copilot = SUPPORTED_PROVIDER_PRESETS.copilot;
   assert.deepEqual(copilot.promptFlags, ['-i']);
@@ -93,7 +89,6 @@ test('getProviderPreset resolves canonical presets by exact name', () => {
   assert.equal(getProviderPreset('claude')?.name, 'claude');
   assert.equal(getProviderPreset('jetski')?.name, 'jetski');
   assert.equal(getProviderPreset('antigravity')?.name, 'antigravity');
-  assert.equal(getProviderPreset('pi')?.name, 'pi');
   assert.equal(getProviderPreset('codex')?.name, 'codex');
   assert.equal(getProviderPreset('copilot')?.name, 'copilot');
 });

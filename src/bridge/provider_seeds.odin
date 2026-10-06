@@ -65,20 +65,6 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		},
 	},
 	{
-		name = "pi",
-		logo = "pi",
-		command = {"pi"},
-		starter_prompt = "First, run: {ctl_bin} agent start-success. Then read AGENTS.md for context.",
-		skill_dir = ".pi/skills",
-		bootstrap_file_name = "AGENTS.md",
-		startup_detection = cfg_lib.Startup_Detection_Config{
-			enabled = true,
-			startup_probe_seconds = 20,
-			capture_interval_ms = 500,
-			startup_unknown_is_blocked = false,
-		},
-	},
-	{
 		name = "antigravity",
 		logo = "antigravity",
 		command = {"agy"},

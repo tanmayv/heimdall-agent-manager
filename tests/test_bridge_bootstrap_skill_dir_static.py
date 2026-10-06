@@ -58,7 +58,7 @@ def main() -> None:
         require(marker in provider_store, f"provider profile must derive/fallback skill dir: {marker}")
 
     provider_seeds = PROVIDER_SEEDS.read_text(encoding="utf-8")
-    for marker in ['skill_dir = ".pi/skills"', 'skill_dir = ".agents/skills"']:
+    for marker in ['skill_dir = ".agents/skills"']:
         require(marker in provider_seeds, f"provider seeds must define per-provider skill dir: {marker}")
 
     for marker in [

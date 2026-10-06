@@ -67,11 +67,9 @@ def main() -> None:
     ]:
         require(marker in provider_store, f"missing provider store marker: {marker}")
 
-    # Provider skill dirs are seeded (no inline switch): pi -> .pi/skills,
+    # Provider skill dirs are seeded (no inline switch):
     # antigravity (agy) -> .agents/skills.
     for marker in [
-        'name = "pi"',
-        'skill_dir = ".pi/skills"',
         'name = "antigravity"',
         'command = {"agy"}',
         'skill_dir = ".agents/skills"',

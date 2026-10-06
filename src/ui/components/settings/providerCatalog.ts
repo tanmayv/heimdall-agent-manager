@@ -94,29 +94,6 @@ export const SUPPORTED_PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     skillDir: '.agents/skills',
     bootstrapFileName: 'AGENTS.md',
   },
-  pi: {
-    name: 'pi',
-    label: 'Pi (Codex / Anthropic)',
-    defaultCommand: ['pi'],
-    modelsFlag: '--model',
-    availableModels: [
-      'openai-codex/gpt-5.4',
-      'openai-codex/gpt-5.5',
-      'anthropic/claude-sonnet-4-6',
-      'anthropic/claude-opus-4-8',
-    ],
-    defaultTiers: {
-      cheap: 'openai-codex/gpt-5.4',
-      normal: 'openai-codex/gpt-5.4',
-      smart: 'openai-codex/gpt-5.5',
-    },
-    promptFlags: [],
-    yoloFlags: [],
-    starterPrompt: 'First, run: {ctl_bin} agent start-success. Then read AGENTS.md for context.',
-    promptDelivery: 'positional',
-    skillDir: '.pi/skills',
-    bootstrapFileName: 'AGENTS.md',
-  },
   codex: {
     name: 'codex',
     label: 'OpenAI Codex CLI',
@@ -173,7 +150,6 @@ export const PRESET_OPTIONS: Array<{ key: string; label: string }> = [
   { key: 'claude', label: 'Claude' },
   { key: 'jetski', label: 'Jetski' },
   { key: 'antigravity', label: 'Antigravity' },
-  { key: 'pi', label: 'Pi' },
   { key: 'codex', label: 'Codex' },
   { key: 'copilot', label: 'Copilot' },
 ];

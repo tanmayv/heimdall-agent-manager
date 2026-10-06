@@ -284,10 +284,8 @@ bridge_provider_store_init :: proc() {
 	}
 	bridge_provider_store_path_value = bridge_provider_store_path()
 	bridge_provider_load_unlocked()
-	need_save := bridge_provider_autodetect_unlocked()
 	bridge_provider_store_loaded = true
 	sync.mutex_unlock(&bridge_provider_mutex)
-	if need_save do bridge_provider_save_overrides()
 }
 
 // Reset / clear provider store overrides and loaded state under lock (for tests).
@@ -311,26 +309,6 @@ bridge_provider_test_reset :: proc() {
 		bridge_provider_default_tier_value = ""
 	}
 	bridge_provider_store_loaded = false
-}
-
-bridge_provider_autodetect_unlocked :: proc() -> bool {
-	seeds := bridge_provider_seed_data()
-	any_added := false
-	for seed in seeds {
-		if len(seed.command) == 0 do continue
-		exec_name := seed.command[0]
-		if _, has := bridge_provider_override_for_name_unlocked(seed.name); has do continue
-		found := bridge_runtime_find_on_path(exec_name)
-		if found == "" do continue
-		override := Bridge_Provider_Override{
-			name        = strings.clone(seed.name),
-			command     = bridge_clone_string_slice([]string{found}),
-			command_set = true,
-		}
-		bridge_provider_upsert_override_unlocked(override)
-		any_added = true
-	}
-	return any_added
 }
 
 bridge_provider_store_path :: proc() -> string {
