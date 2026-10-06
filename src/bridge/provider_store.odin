@@ -459,6 +459,7 @@ bridge_provider_profile_from_seed :: proc(seed: Bridge_Provider_Seed) -> Bridge_
 		prompt_delivery     = seed.prompt_delivery,
 		skill_dir           = seed.skill_dir,
 		bootstrap_file_name = seed.bootstrap_file_name,
+		models              = seed.models,
 		startup_detection   = seed.startup_detection,
 		activity_detection  = cfg_lib.default_activity_detection_config(),
 	}
@@ -896,6 +897,181 @@ bridge_provider_override_destroy :: proc(override: ^Bridge_Provider_Override, al
 	if override.startup_auto_enter_pre_keys_set do bridge_delete_string_slice(override.startup_detection.auto_enter_pre_keys, allocator)
 	if override.startup_reason_mapping_set do bridge_delete_string_slice(override.startup_detection.sanitized_reason_mapping, allocator)
 	override^ = {}
+}
+
+bridge_provider_profile_destroy :: proc(profile: ^Bridge_Provider_Profile, allocator := context.allocator) {
+	if profile == nil do return
+	profile^ = {}
+}
+
+bridge_provider_override_from_seed :: proc(seed: Bridge_Provider_Seed, allocator := context.allocator) -> Bridge_Provider_Override {
+	override: Bridge_Provider_Override
+	override.name = strings.clone(seed.name, allocator)
+	override.enabled = true
+	override.enabled_set = true
+	override.command = bridge_clone_string_slice(seed.command, allocator)
+	override.command_set = true
+	if len(seed.yolo_flags) > 0 {
+		override.yolo_flags = bridge_clone_string_slice(seed.yolo_flags, allocator)
+		override.yolo_flags_set = true
+	}
+	if len(seed.prompt_flags) > 0 {
+		override.prompt_flags = bridge_clone_string_slice(seed.prompt_flags, allocator)
+		override.prompt_flags_set = true
+	}
+	if seed.starter_prompt != "" {
+		override.starter_prompt = strings.clone(seed.starter_prompt, allocator)
+		override.starter_prompt_set = true
+	}
+	if seed.prompt_delivery != "" {
+		override.prompt_delivery = strings.clone(seed.prompt_delivery, allocator)
+		override.prompt_delivery_set = true
+	}
+	if seed.skill_dir != "" {
+		override.skill_dir = strings.clone(seed.skill_dir, allocator)
+		override.skill_dir_set = true
+	}
+	if seed.bootstrap_file_name != "" {
+		override.bootstrap_file_name = strings.clone(seed.bootstrap_file_name, allocator)
+		override.bootstrap_file_name_set = true
+	}
+	if seed.logo != "" {
+		override.logo = strings.clone(seed.logo, allocator)
+		override.logo_set = true
+	}
+	if seed.models.flag != "" {
+		override.models.flag = strings.clone(seed.models.flag, allocator)
+		override.models_flag_set = true
+	}
+	if seed.models.cheap != "" {
+		override.models.cheap = strings.clone(seed.models.cheap, allocator)
+		override.models_cheap_set = true
+	}
+	if seed.models.normal != "" {
+		override.models.normal = strings.clone(seed.models.normal, allocator)
+		override.models_normal_set = true
+	}
+	if seed.models.smart != "" {
+		override.models.smart = strings.clone(seed.models.smart, allocator)
+		override.models_smart_set = true
+	}
+	if seed.startup_detection.enabled {
+		override.startup_detection.enabled = true
+		override.startup_enabled_set = true
+		override.startup_detection.startup_probe_seconds = seed.startup_detection.startup_probe_seconds
+		override.startup_probe_set = true
+		override.startup_detection.capture_interval_ms = seed.startup_detection.capture_interval_ms
+		override.startup_capture_set = true
+		if len(seed.startup_detection.blocked_patterns) > 0 {
+			override.startup_detection.blocked_patterns = bridge_clone_string_slice(seed.startup_detection.blocked_patterns, allocator)
+			override.startup_blocked_patterns_set = true
+		}
+		if len(seed.startup_detection.auto_enter_patterns) > 0 {
+			override.startup_detection.auto_enter_patterns = bridge_clone_string_slice(seed.startup_detection.auto_enter_patterns, allocator)
+			override.startup_auto_enter_patterns_set = true
+		}
+		if len(seed.startup_detection.auto_enter_pre_keys) > 0 {
+			override.startup_detection.auto_enter_pre_keys = bridge_clone_string_slice(seed.startup_detection.auto_enter_pre_keys, allocator)
+			override.startup_auto_enter_pre_keys_set = true
+		}
+		override.startup_detection.startup_unknown_is_blocked = seed.startup_detection.startup_unknown_is_blocked
+		override.startup_unknown_blocked_set = true
+		if len(seed.startup_detection.sanitized_reason_mapping) > 0 {
+			override.startup_detection.sanitized_reason_mapping = bridge_clone_string_slice(seed.startup_detection.sanitized_reason_mapping, allocator)
+			override.startup_reason_mapping_set = true
+		}
+	}
+	return override
+}
+
+bridge_provider_detect_supported_json :: proc(allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	strings.write_byte(&b, '[')
+	first := true
+	for seed in bridge_provider_seed_data() {
+		if !first do strings.write_byte(&b, ',')
+		first = false
+
+		bin_name := ""
+		if len(seed.command) > 0 {
+			bin_name = seed.command[0]
+		}
+		found_path := bridge_runtime_find_on_path(bin_name)
+		defer delete(found_path)
+		detected := found_path != ""
+
+		strings.write_string(&b, "{\"name\":\"")
+		json_write_string(&b, seed.name)
+		strings.write_string(&b, "\",\"detected\":")
+		strings.write_string(&b, "true" if detected else "false")
+		strings.write_string(&b, ",\"path\":\"")
+		if detected {
+			json_write_string(&b, found_path)
+		}
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_byte(&b, ']')
+	return strings.to_string(b)
+}
+
+bridge_provider_enable_selected_json :: proc(names_json: string) -> (bool, string) {
+	bridge_provider_store_init()
+	trimmed := strings.trim_space(names_json)
+	if trimmed == "" do return false, "missing provider names"
+
+	names: [dynamic]string
+	defer delete(names)
+
+	if strings.has_prefix(trimmed, "[") {
+		decoded := jsonx.decode_string_array(trimmed, context.temp_allocator)
+		for item in decoded {
+			append(&names, item)
+		}
+	} else if strings.has_prefix(trimmed, "{") {
+		arr := jsonx.extract_string_array(trimmed, "providers", false, context.temp_allocator)
+		if len(arr) > 0 {
+			for item in arr do append(&names, item)
+		} else {
+			arr2 := jsonx.extract_string_array(trimmed, "names", false, context.temp_allocator)
+			for item in arr2 do append(&names, item)
+		}
+	}
+
+	if len(names) == 0 {
+		return false, "no valid provider names provided"
+	}
+
+	seeds := bridge_provider_seed_data()
+	enabled_any := false
+
+	sync.mutex_lock(&bridge_provider_mutex)
+	for name in names {
+		trimmed_name := strings.trim_space(name)
+		if trimmed_name == "" do continue
+		for seed in seeds {
+			if strings.equal_fold(seed.name, trimmed_name) {
+				override := bridge_provider_override_from_seed(seed, context.allocator)
+				bridge_provider_upsert_override_unlocked(override)
+				if bridge_provider_default_provider_value == "" {
+					bridge_provider_default_provider_value = strings.clone(seed.name)
+					bridge_provider_default_tier_value = strings.clone("normal")
+				}
+				enabled_any = true
+				break
+			}
+		}
+	}
+	sync.mutex_unlock(&bridge_provider_mutex)
+
+	if !enabled_any {
+		return false, "none of the specified providers matched supported seeds"
+	}
+
+	if !bridge_provider_save_overrides() {
+		return false, "failed to save provider overrides"
+	}
+
+	return true, ""
 }
 
 bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_runtime.Agent_Profile {

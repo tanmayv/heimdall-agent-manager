@@ -299,6 +299,38 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
+    getDetectedBridgeProviders: build.query<any, { bridgeId: string }>({
+      queryFn: async ({ bridgeId }) => {
+        if (!bridgeId) return { data: { detected_providers: [] } };
+        try {
+          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/detected-providers`);
+          const list = Array.isArray(data?.detected_providers)
+            ? data.detected_providers
+            : Array.isArray(data)
+              ? data
+              : [];
+          return { data: { detected_providers: list } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
+    enableBridgeProviders: build.mutation<any, { bridgeId: string; providers: string[] }>({
+      queryFn: async ({ bridgeId, providers }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/enable-detected`, 'POST', { providers });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [
+        { type: 'BridgeProviders' as const, id: bridgeId },
+        { type: 'Bridges' as const, id: 'LIST' },
+        { type: 'Bridges' as const, id: bridgeId },
+      ],
+    }),
     putProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string; path: string }>({
       queryFn: withSessionQuery(async ({ projectId, bridgeId, path }, { session }) => daemonApi.putProjectBridgePath({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, projectId, bridgeId, path })),
       invalidatesTags: (_result, _error, { projectId }) => [{ type: 'ProjectBridgePaths' as const, id: projectId }],
@@ -330,6 +362,8 @@ export const {
   useDeleteBridgeProviderMutation,
   useSetBridgeProviderDefaultsMutation,
   useRefreshBridgeCapabilitiesMutation,
+  useGetDetectedBridgeProvidersQuery,
+  useEnableBridgeProvidersMutation,
   usePutProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
   useValidateProjectBridgePathMutation,

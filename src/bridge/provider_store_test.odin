@@ -516,3 +516,158 @@ test_provider_store_zero_tracking_allocator_leaks :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(track.allocation_map), 0)
 	testing.expect_value(t, len(track.bad_free_array), 0)
 }
+
+// REQ-PROVIDER-ADDITIVE-1: Verify seed.models are copied to profiles and capabilities produces non-empty tiers.
+@(test)
+test_provider_seeds_models_and_capabilities :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	bridge_provider_test_reset()
+	defer bridge_provider_test_reset()
+
+	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
+
+	testing.expect(t, len(profiles) >= 4, "expected at least 4 default seed profiles")
+
+	found_claude := false
+	found_codex := false
+	found_antigravity := false
+	found_copilot := false
+
+	for &profile in profiles {
+		switch profile.name {
+		case "claude":
+			found_claude = true
+			testing.expect_value(t, profile.models.flag, "--model")
+			testing.expect_value(t, profile.models.cheap, "claude-3-5-haiku-latest")
+			testing.expect_value(t, profile.models.normal, "claude-3-5-sonnet-latest")
+			testing.expect_value(t, profile.models.smart, "claude-3-7-sonnet-latest")
+		case "codex":
+			found_codex = true
+			testing.expect_value(t, profile.models.flag, "-m")
+			testing.expect_value(t, profile.models.cheap, "gpt-4o-mini")
+			testing.expect_value(t, profile.models.normal, "gpt-4o")
+			testing.expect_value(t, profile.models.smart, "gpt-5-pro")
+		case "antigravity":
+			found_antigravity = true
+			testing.expect_value(t, profile.models.flag, "--model")
+			testing.expect_value(t, profile.models.cheap, "Gemini 3.5 Flash (Medium)")
+			testing.expect_value(t, profile.models.normal, "Gemini 3.5 Flash (Medium)")
+			testing.expect_value(t, profile.models.smart, "Gemini 3.1 Pro (High)")
+		case "copilot":
+			found_copilot = true
+			testing.expect_value(t, profile.models.flag, "--model")
+			testing.expect_value(t, profile.models.cheap, "claude-sonnet-4.6")
+			testing.expect_value(t, profile.models.normal, "claude-sonnet-4.6")
+			testing.expect_value(t, profile.models.smart, "claude-opus-4.6")
+		}
+	}
+
+	testing.expect(t, found_claude, "claude profile must be present")
+	testing.expect(t, found_codex, "codex profile must be present")
+	testing.expect(t, found_antigravity, "antigravity profile must be present")
+	testing.expect(t, found_copilot, "copilot profile must be present")
+
+	// Test profile destroy helper
+	profile_copy := profiles[0]
+	bridge_provider_profile_destroy(&profile_copy)
+
+	// Capabilities must be non-empty and report all tiers
+	caps_json := bridge_provider_capabilities_json()
+	defer delete(caps_json)
+	testing.expect(t, caps_json != "[]", "capabilities should not be empty")
+	testing.expect(t, strings.contains(caps_json, "claude"), "capabilities must include claude")
+	testing.expect(t, strings.contains(caps_json, "cheap"), "capabilities must include cheap tier")
+	testing.expect(t, strings.contains(caps_json, "normal"), "capabilities must include normal tier")
+	testing.expect(t, strings.contains(caps_json, "smart"), "capabilities must include smart tier")
+}
+
+// REQ-PROVIDER-ADDITIVE-1: Test detect_supported_providers
+@(test)
+test_provider_detect_supported_json :: proc(t: ^testing.T) {
+	detected_json := bridge_provider_detect_supported_json()
+	defer delete(detected_json)
+
+	testing.expect(t, strings.has_prefix(detected_json, "["), "detected_json must be an array")
+	testing.expect(t, strings.has_suffix(detected_json, "]"), "detected_json must be an array")
+	testing.expect(t, strings.contains(detected_json, "\"name\":\"claude\""), "must contain claude")
+	testing.expect(t, strings.contains(detected_json, "\"name\":\"codex\""), "must contain codex")
+	testing.expect(t, strings.contains(detected_json, "\"name\":\"antigravity\""), "must contain antigravity")
+	testing.expect(t, strings.contains(detected_json, "\"name\":\"copilot\""), "must contain copilot")
+	testing.expect(t, strings.contains(detected_json, "\"detected\":"), "must contain detected field")
+	testing.expect(t, strings.contains(detected_json, "\"path\":"), "must contain path field")
+
+	parsed, err := json.parse_string(detected_json, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	testing.expect(t, err == .None, "detected_json must be valid JSON")
+	arr, is_arr := parsed.(json.Array)
+	testing.expect(t, is_arr, "parsed value must be array")
+	testing.expect_value(t, len(arr), 4)
+}
+
+// REQ-PROVIDER-ADDITIVE-1: Test enable_providers
+@(test)
+test_provider_enable_selected_json :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+
+	dir := provider_test_dir("enable-selected")
+	defer delete(dir)
+	defer provider_test_cleanup(dir)
+
+	bridge_provider_test_reset()
+	defer bridge_provider_test_reset()
+
+	store_path := strings.concatenate({dir, "/bridge/providers.json"})
+	defer delete(store_path)
+
+	sync.mutex_lock(&bridge_provider_mutex)
+	bridge_provider_store_path_value = strings.clone(store_path)
+	bridge_provider_store_loaded = true
+	sync.mutex_unlock(&bridge_provider_mutex)
+
+	// Test array form: ["claude", "antigravity"]
+	ok, msg := bridge_provider_enable_selected_json(`["claude", "antigravity"]`)
+	testing.expect(t, ok, msg)
+
+	// Verify overrides were added and saved
+	sync.mutex_lock(&bridge_provider_mutex)
+	claude_override, claude_ok := bridge_provider_override_for_name_unlocked("claude")
+	agy_override, agy_ok := bridge_provider_override_for_name_unlocked("antigravity")
+	sync.mutex_unlock(&bridge_provider_mutex)
+
+	testing.expect(t, claude_ok, "claude override must exist")
+	testing.expect_value(t, claude_override.enabled, true)
+	testing.expect_value(t, claude_override.models.normal, "claude-3-5-sonnet-latest")
+
+	testing.expect(t, agy_ok, "antigravity override must exist")
+	testing.expect_value(t, agy_override.enabled, true)
+	testing.expect_value(t, agy_override.models.cheap, "Gemini 3.5 Flash (Medium)")
+
+	// Test object form: {"providers": ["codex"]}
+	ok_obj, msg_obj := bridge_provider_enable_selected_json(`{"providers": ["codex"]}`)
+	testing.expect(t, ok_obj, msg_obj)
+
+	sync.mutex_lock(&bridge_provider_mutex)
+	codex_override, codex_ok := bridge_provider_override_for_name_unlocked("codex")
+	sync.mutex_unlock(&bridge_provider_mutex)
+
+	testing.expect(t, codex_ok, "codex override must exist")
+	testing.expect_value(t, codex_override.enabled, true)
+	testing.expect_value(t, codex_override.models.flag, "-m")
+	testing.expect_value(t, codex_override.models.smart, "gpt-5-pro")
+
+	// Invalid input handling
+	bad_ok, _ := bridge_provider_enable_selected_json(`["nonexistent_tool_xyz"]`)
+	testing.expect(t, !bad_ok, "unknown provider should fail")
+}
+
+// REQ-PROVIDER-ADDITIVE-1: Target for verification command:
+// odin test src/bridge -define:ODIN_TEST_NAMES=main.test_provider
+@(test)
+test_provider :: proc(t: ^testing.T) {
+	test_provider_seeds_models_and_capabilities(t)
+	test_provider_detect_supported_json(t)
+	test_provider_enable_selected_json(t)
+}

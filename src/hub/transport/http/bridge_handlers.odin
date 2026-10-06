@@ -192,6 +192,21 @@ list_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+get_detected_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "detect_supported_providers", "", "")
+	if !ok do return bridge_provider_error_response(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+enable_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "enable_providers", "", req.body)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
+	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 // POST /api/v1/bridges/{bridge_id}/shells/{shell_id}/input
 // Delivers interactive keystrokes and raw PTY input to any target bridge shell.
 bridge_shell_input_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -1291,8 +1306,14 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 		return payload, true, domain.Domain_Error{}
 	}
 	status := json_string(reply, "status")
-	result, _ := json_object_raw_balanced(reply, "result")
-	if result == "" do result = "{}"
+	result, ok_obj := json_object_raw_balanced(reply, "result")
+	if !ok_obj || result == "" {
+		if arr, ok_arr := json_array_raw_balanced(reply, "result"); ok_arr {
+			result = arr
+		} else {
+			result = "{}"
+		}
+	}
 	if status == "failed" {
 		message := json_string(result, "error")
 		if message == "" do message = json_string(result, "message")
@@ -1308,8 +1329,10 @@ bridge_provider_command_json :: proc(command_type, command_id, provider_name, bo
 	strings.write_string(&b, "\",\"protocol_version\":1,\"command_id\":\""); write_handler_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":")
 	switch command_type {
-	case "list_providers", "refresh_capabilities":
+	case "list_providers", "refresh_capabilities", "detect_supported_providers":
 		strings.write_string(&b, "{}")
+	case "enable_providers":
+		if strings.trim_space(body) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, body) }
 	case "upsert_provider":
 		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name)
 		strings.write_string(&b, "\",\"profile\":")

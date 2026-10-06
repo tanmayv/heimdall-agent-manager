@@ -12,6 +12,7 @@ Bridge_Provider_Seed :: struct {
 	prompt_delivery:     string,
 	skill_dir:           string,
 	bootstrap_file_name: string,
+	models:              cfg_lib.Model_Tiers_Config,
 	startup_detection:   cfg_lib.Startup_Detection_Config,
 }
 
@@ -24,6 +25,12 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		starter_prompt = "First, run: {ctl_bin} agent start-success. Then read your bootstrap file (CLAUDE.md) for context, identity, and what you can do.",
 		skill_dir = ".claude/skills",
 		bootstrap_file_name = "CLAUDE.md",
+		models = cfg_lib.Model_Tiers_Config{
+			flag   = "--model",
+			cheap  = "claude-3-5-haiku-latest",
+			normal = "claude-3-5-sonnet-latest",
+			smart  = "claude-3-7-sonnet-latest",
+		},
 		startup_detection = cfg_lib.Startup_Detection_Config{
 			enabled = true,
 			startup_probe_seconds = 20,
@@ -42,6 +49,12 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		starter_prompt = "First, run: {ctl_bin} agent start-success. Then read AGENTS.md for context.",
 		skill_dir = ".codex/skills",
 		bootstrap_file_name = "AGENTS.md",
+		models = cfg_lib.Model_Tiers_Config{
+			flag   = "-m",
+			cheap  = "gpt-4o-mini",
+			normal = "gpt-4o",
+			smart  = "gpt-5-pro",
+		},
 		startup_detection = cfg_lib.Startup_Detection_Config{
 			enabled = true,
 			startup_probe_seconds = 20,
@@ -57,6 +70,12 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		starter_prompt = "First, run: {ctl_bin} agent start-success. Then read AGENTS.md for context.",
 		skill_dir = ".copilot/skills",
 		bootstrap_file_name = "AGENTS.md",
+		models = cfg_lib.Model_Tiers_Config{
+			flag   = "--model",
+			cheap  = "claude-sonnet-4.6",
+			normal = "claude-sonnet-4.6",
+			smart  = "claude-opus-4.6",
+		},
 		startup_detection = cfg_lib.Startup_Detection_Config{
 			enabled = true,
 			startup_probe_seconds = 15,
@@ -71,6 +90,12 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		starter_prompt = "First, run: {ctl_bin} agent start-success. Then read AGENTS.md for context.",
 		skill_dir = ".agents/skills",
 		bootstrap_file_name = "AGENTS.md",
+		models = cfg_lib.Model_Tiers_Config{
+			flag   = "--model",
+			cheap  = "Gemini 3.5 Flash (Medium)",
+			normal = "Gemini 3.5 Flash (Medium)",
+			smart  = "Gemini 3.1 Pro (High)",
+		},
 		startup_detection = cfg_lib.Startup_Detection_Config{
 			enabled = true,
 			startup_probe_seconds = 20,

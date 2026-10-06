@@ -1785,6 +1785,34 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 		_ = bridge_hub_send(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
 		_ = bridge_hub_send(conn, final)
 		return true
+	case "detect_supported_providers":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		detected_json := bridge_provider_detect_supported_json()
+		defer delete(detected_json)
+		result := strings.concatenate({"{\"detected_providers\":", detected_json, "}"})
+		final := bridge_command_result_payload_json(command_id, "succeeded", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = bridge_hub_send(conn, final)
+		return true
+	case "enable_providers":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		payload := bridge_provider_payload_object(text)
+		raw_names := ""
+		if arr, ok := bridge_provider_json_extract_array(text, "payload"); ok {
+			raw_names = arr
+		} else {
+			raw_names = payload
+		}
+		ok, message := bridge_provider_enable_selected_json(raw_names)
+		result := strings.concatenate({"{\"ok\":", "true" if ok else "false", ",\"capabilities\":", bridge_provider_capabilities_json(), "}"})
+		if !ok do result = strings.concatenate({"{\"error\":\"", bridge_runtime_json_escaped(message), "\"}"})
+		final := bridge_command_result_payload_json(command_id, "succeeded" if ok else "failed", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = bridge_hub_send(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
+		_ = bridge_hub_send(conn, final)
+		return true
 	}
 	return false
 }

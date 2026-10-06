@@ -5,6 +5,8 @@ import {
   bridgeSupportApi,
   normalizeBridgeCapabilities,
   useDeleteBridgeProviderMutation,
+  useEnableBridgeProvidersMutation,
+  useGetDetectedBridgeProvidersQuery,
   useListBridgeProvidersQuery,
   useListBridgesQuery,
   useRefreshBridgeCapabilitiesMutation,
@@ -43,6 +45,8 @@ import {
 export * from './providerManagement.ts';
 export * from './providerCatalog.ts';
 
+export const BUILTIN_PROVIDERS = ['claude', 'codex', 'antigravity', 'copilot'];
+
 // Static markers verified by tests/test_bridge_bootstrap_skill_dir_static.py:
 // skillDir: string; skillDir: String(profile.skill_dir || '') skill_dir: form.skillDir.trim()
 
@@ -68,11 +72,15 @@ export function ProvidersPanel() {
   const selectedId = selectedBridge ? bridgeId(selectedBridge) : '';
   const offline = selectedBridge ? String(selectedBridge.status || '').toLowerCase() !== 'online' : true;
   const providersQuery = useListBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
+  const detectedQuery = useGetDetectedBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
   const [upsertProvider] = useUpsertBridgeProviderMutation();
   const [deleteProvider] = useDeleteBridgeProviderMutation();
   const [setDefaults] = useSetBridgeProviderDefaultsMutation();
   const [refreshCaps] = useRefreshBridgeCapabilitiesMutation();
+  const [enableProviders, { isLoading: isEnabling }] = useEnableBridgeProvidersMutation();
   const providers = providersQuery.data?.providers || [];
+  const detectedList: Array<{ name: string; detected: boolean; path: string }> = detectedQuery.data?.detected_providers || [];
+  const detectedCLIs = detectedList.filter((item) => item.detected);
   const capabilities = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
   const [actionError, setActionError] = useState('');
   const [defaultBusy, setDefaultBusy] = useState('');
@@ -178,8 +186,109 @@ export function ProvidersPanel() {
 
       {actionError ? <Alert tone="danger">{actionError}</Alert> : null}
 
-      <div className="flex justify-end">
-        <a data-debug-id="providers-add-btn" href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}`)} aria-disabled={!selectedId || offline} className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg hover:bg-accent/90 sm:w-auto ${!selectedId || offline ? 'pointer-events-none opacity-50' : ''}`}>＋ Add provider</a>
+      {detectedCLIs.length > 0 ? (
+        <div data-debug-id="detected-providers-bar" className="rounded-2xl border border-accent/30 bg-accent/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-primary">Detected System CLIs</div>
+              <div className="text-xs text-muted">Supported CLIs found in your PATH. Enable them with one click.</div>
+            </div>
+            {detectedCLIs.some((cli) => !providers.some((p: any) => p.name === cli.name && p.enabled)) ? (
+              <Button
+                variant="secondary"
+                data-debug-id="enable-all-detected-btn"
+                disabled={offline || isEnabling}
+                onClick={async () => {
+                  const toEnable = detectedCLIs
+                    .filter((cli) => !providers.some((p: any) => p.name === cli.name && p.enabled))
+                    .map((cli) => cli.name);
+                  if (toEnable.length === 0) return;
+                  setActionError('');
+                  try {
+                    await enableProviders({ bridgeId: selectedId, providers: toEnable }).unwrap();
+                    await providersQuery.refetch();
+                    await bridgesQuery.refetch();
+                    await detectedQuery.refetch();
+                  } catch (err: any) {
+                    setActionError(String(err?.message || 'Failed to enable detected providers'));
+                  }
+                }}
+                className="min-h-[36px] text-xs"
+              >
+                Enable all detected
+              </Button>
+            ) : null}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {detectedCLIs.map((cli) => {
+              const isEnabled = providers.some((p: any) => p.name === cli.name && p.enabled);
+              return (
+                <div
+                  key={cli.name}
+                  data-debug-id={`detected-provider-chip-${cli.name}`}
+                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs ${
+                    isEnabled
+                      ? 'border-subtle bg-surface-raised/40 text-muted'
+                      : 'border-accent/40 bg-surface text-primary'
+                  }`}
+                >
+                  <span className="font-medium text-primary capitalize">{cli.name}</span>
+                  {cli.path ? (
+                    <span className="max-w-[200px] truncate text-[10px] text-muted font-mono" title={cli.path}>
+                      {cli.path}
+                    </span>
+                  ) : null}
+                  {isEnabled ? (
+                    <span className="rounded-full bg-success-soft px-1.5 py-0.5 text-[10px] text-success">Enabled</span>
+                  ) : (
+                    <button
+                      type="button"
+                      data-debug-id={`enable-detected-${cli.name}-btn`}
+                      disabled={offline || isEnabling}
+                      onClick={async () => {
+                        setActionError('');
+                        try {
+                          await enableProviders({ bridgeId: selectedId, providers: [cli.name] }).unwrap();
+                          await providersQuery.refetch();
+                          await bridgesQuery.refetch();
+                          await detectedQuery.refetch();
+                        } catch (err: any) {
+                          setActionError(String(err?.message || `Failed to enable ${cli.name}`));
+                        }
+                      }}
+                      className="cursor-pointer rounded-lg bg-accent px-2 py-0.5 font-semibold text-accent-fg hover:bg-accent/90"
+                    >
+                      Enable
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <a
+          data-debug-id="providers-add-custom-btn"
+          href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}&custom=true`)}
+          aria-disabled={!selectedId || offline}
+          className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-xl border border-subtle bg-surface-raised/60 px-4 py-2 text-sm font-medium text-primary hover:bg-surface-raised sm:w-auto ${
+            !selectedId || offline ? 'pointer-events-none opacity-50' : ''
+          }`}
+        >
+          ＋ Add Custom Provider
+        </a>
+        <a
+          data-debug-id="providers-add-btn"
+          href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}`)}
+          aria-disabled={!selectedId || offline}
+          className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg hover:bg-accent/90 sm:w-auto ${
+            !selectedId || offline ? 'pointer-events-none opacity-50' : ''
+          }`}
+        >
+          ＋ Add provider
+        </a>
       </div>
 
       {providersQuery.isLoading ? <div className="rounded-xl bg-surface-raised/40 p-5 text-sm text-muted">Loading providers…</div> : null}
@@ -218,6 +327,7 @@ export function ProvidersPanel() {
 export function ProviderEditorPage({ providerName = '' }: { providerName?: string }) {
   const dispatch = useDispatch();
   const isEdit = Boolean(providerName);
+  const isBuiltin = isEdit && BUILTIN_PROVIDERS.includes(providerName.toLowerCase().trim());
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
@@ -253,10 +363,17 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
     if (duplicateFrom) return { ...emptyForm, name: `${duplicateFrom}-copy` };
     return emptyForm;
   });
+  const [defaultTier, setDefaultTier] = useState<string>('normal');
   const [selectedPresetKey, setSelectedPresetKey] = useState<string>('custom');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const initializedKeyRef = useRef<string>('');
+
+  const matchedPreset = useMemo(
+    () => getProviderPreset(form.command[0] || form.name || providerName),
+    [form.command, form.name, providerName]
+  );
+  const modelSuggestions = useMemo(() => getModelSuggestions(matchedPreset), [matchedPreset]);
 
   function handlePresetChange(key: string) {
     setSelectedPresetKey(key);
@@ -281,6 +398,10 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
         setForm(formFromProfile(currentProfile));
         const matched = getProviderPreset(currentProfile.command?.[0] || currentProfile.name || providerName);
         if (matched) setSelectedPresetKey(matched.name);
+        const curDef = providersQuery.data?.default_provider === providerName
+          ? (providersQuery.data?.default_tier || 'normal')
+          : (currentProfile.default_tier || 'normal');
+        setDefaultTier(curDef);
       }
     } else if (!isEdit && duplicateFrom && duplicateProfile) {
       const dupKey = `duplicate:${duplicateFrom}`;
@@ -297,7 +418,7 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
         setForm(emptyForm);
       }
     }
-  }, [isEdit, providerName, currentProfile, duplicateFrom, duplicateProfile]);
+  }, [isEdit, providerName, currentProfile, duplicateFrom, duplicateProfile, providersQuery.data]);
 
   async function saveProvider() {
     const newName = form.name.trim();
@@ -318,6 +439,10 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
 
       // 1. Issue PUT /api/v1/bridges/{bridgeId}/providers/{newName} with the updated profile.
       await upsertProvider({ bridgeId: selectedId, name: newName, profile }).unwrap();
+
+      if (isBuiltin && defaultTier) {
+        await setDefaults({ bridgeId: selectedId, provider: newName, tier: defaultTier }).unwrap();
+      }
 
       if (plan.isRenamed) {
         // 2. If the original provider was a store-persisted provider (source === 'store'), issue DELETE /api/v1/bridges/{bridgeId}/providers/{oldName}.
@@ -419,7 +544,67 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
           </div>
         </div>
       )}
-      <ProviderFormFields form={form} setForm={setForm} nameLocked={false} />
+      {isBuiltin ? (
+        <div data-debug-id="providers-builtin-editor" className="space-y-5 rounded-2xl border border-subtle bg-surface-raised/40 p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-semibold text-primary capitalize">{providerName} Model Configuration</h3>
+              <p className="text-xs text-muted">Configure model names and default tier for this built-in provider.</p>
+            </div>
+            <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-medium text-accent">Built-in Provider</span>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <TextInput
+              id="providers-editor-models-cheap-input"
+              label="Cheap model"
+              value={form.modelsCheap}
+              onChange={(modelsCheap) => setForm({ ...form, modelsCheap })}
+              placeholder={matchedPreset?.defaultTiers.cheap || "model-cheap"}
+              list={matchedPreset ? "models-list" : undefined}
+            />
+            <TextInput
+              id="providers-editor-models-normal-input"
+              label="Normal model"
+              value={form.modelsNormal}
+              onChange={(modelsNormal) => setForm({ ...form, modelsNormal })}
+              placeholder={matchedPreset?.defaultTiers.normal || "model-normal"}
+              list={matchedPreset ? "models-list" : undefined}
+            />
+            <TextInput
+              id="providers-editor-models-smart-input"
+              label="Smart model"
+              value={form.modelsSmart}
+              onChange={(modelsSmart) => setForm({ ...form, modelsSmart })}
+              placeholder={matchedPreset?.defaultTiers.smart || "model-smart"}
+              list={matchedPreset ? "models-list" : undefined}
+            />
+          </div>
+          {matchedPreset && (
+            <datalist id="models-list" data-debug-id="models-list">
+              {modelSuggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          )}
+          <FormField label="Default tier" hint="Select which model tier to use by default for this provider.">
+            <div data-debug-id="providers-editor-default-tier-selector" className="flex flex-wrap gap-4 pt-1">
+              {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+                <label key={tier} className="flex items-center gap-2 text-sm text-primary cursor-pointer capitalize">
+                  <Radio
+                    name="builtin-default-tier"
+                    value={tier}
+                    checked={defaultTier === tier}
+                    onChange={() => setDefaultTier(tier)}
+                  />
+                  {tier}
+                </label>
+              ))}
+            </div>
+          </FormField>
+        </div>
+      ) : (
+        <ProviderFormFields form={form} setForm={setForm} nameLocked={false} />
+      )}
       <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-subtle bg-surface/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end"><a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm hover:bg-surface-raised">Cancel</a><Button variant="primary" data-debug-id="providers-editor-save-btn" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">{saving ? 'Saving…' : 'Save provider'}</Button></div>
       </div>
     </PageShell>

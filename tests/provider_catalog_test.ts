@@ -278,3 +278,97 @@ test('ProvidersPanel.tsx satisfies REQ-BRG-3 preset picker and autocomplete cont
     'ProviderFormFields must resolve matchedPreset dynamically, returning null for custom providers'
   );
 });
+
+// -----------------------------------------------------------------------------
+// 6. REQ-PROVIDER-ADDITIVE-1: Simplified built-in editor and detected CLIs bar
+// -----------------------------------------------------------------------------
+
+test('ProvidersPanel.tsx satisfies REQ-PROVIDER-ADDITIVE-1 built-in simplified model-only view and custom provider flow', () => {
+  const panelPath = path.join(REPO_ROOT, 'src/ui/components/settings/ProvidersPanel.tsx');
+  assert.ok(fs.existsSync(panelPath), 'ProvidersPanel.tsx must exist');
+
+  const content = fs.readFileSync(panelPath, 'utf-8');
+
+  // Acceptance Criterion: Detected CLIs Quick-Action Bar with one-click enable
+  assert.match(
+    content,
+    /data-debug-id="detected-providers-bar"/,
+    'ProvidersPanel.tsx must render detected-providers-bar'
+  );
+  assert.match(
+    content,
+    /data-debug-id=\{`detected-provider-chip-\$\{cli\.name\}`\}/,
+    'ProvidersPanel.tsx must render detected provider chips'
+  );
+  assert.match(
+    content,
+    /data-debug-id=\{`enable-detected-\$\{cli\.name\}-btn`\}/,
+    'ProvidersPanel.tsx must render enable button for detected providers'
+  );
+  assert.match(
+    content,
+    /data-debug-id="enable-all-detected-btn"/,
+    'ProvidersPanel.tsx must render enable-all-detected-btn'
+  );
+
+  // Acceptance Criterion: "Add Custom Provider" button/mode
+  assert.match(
+    content,
+    /data-debug-id="providers-add-custom-btn"/,
+    'ProvidersPanel.tsx must offer "Add Custom Provider" action button'
+  );
+  assert.match(
+    content,
+    /Add Custom Provider/,
+    'ProvidersPanel.tsx must include text "Add Custom Provider"'
+  );
+
+  // Acceptance Criterion: BUILTIN_PROVIDERS defined for curated CLIs
+  assert.match(
+    content,
+    /BUILTIN_PROVIDERS/,
+    'ProvidersPanel.tsx must define or export BUILTIN_PROVIDERS'
+  );
+
+  // Acceptance Criterion: Simplified built-in editor page
+  assert.match(
+    content,
+    /data-debug-id="providers-builtin-editor"/,
+    'ProviderEditorPage must render simplified providers-builtin-editor for built-in providers'
+  );
+  assert.match(
+    content,
+    /data-debug-id="providers-editor-default-tier-selector"/,
+    'ProviderEditorPage must render default tier selector for built-in providers'
+  );
+
+  // Acceptance Criterion: Built-in editor exposes cheap, normal, and smart model inputs
+  assert.match(
+    content,
+    /id="providers-editor-models-cheap-input"/,
+    'ProviderEditorPage must expose Cheap model input'
+  );
+  assert.match(
+    content,
+    /id="providers-editor-models-normal-input"/,
+    'ProviderEditorPage must expose Normal model input'
+  );
+  assert.match(
+    content,
+    /id="providers-editor-models-smart-input"/,
+    'ProviderEditorPage must expose Smart model input'
+  );
+});
+
+test('bridgeSupport.ts exports useGetDetectedBridgeProvidersQuery and useEnableBridgeProvidersMutation', () => {
+  const bridgeSupportPath = path.join(REPO_ROOT, 'src/ui/api/endpoints/bridgeSupport.ts');
+  assert.ok(fs.existsSync(bridgeSupportPath), 'bridgeSupport.ts must exist');
+
+  const content = fs.readFileSync(bridgeSupportPath, 'utf-8');
+  assert.match(content, /getDetectedBridgeProviders/, 'bridgeSupport.ts must define getDetectedBridgeProviders endpoint');
+  assert.match(content, /enableBridgeProviders/, 'bridgeSupport.ts must define enableBridgeProviders endpoint');
+  assert.match(content, /useGetDetectedBridgeProvidersQuery/, 'bridgeSupport.ts must export useGetDetectedBridgeProvidersQuery');
+  assert.match(content, /useEnableBridgeProvidersMutation/, 'bridgeSupport.ts must export useEnableBridgeProvidersMutation');
+  assert.match(content, /\/bridges\/\$\{encodeURIComponent\(bridgeId\)\}\/detected-providers/, 'must call /bridges/{bridgeId}/detected-providers');
+  assert.match(content, /\/bridges\/\$\{encodeURIComponent\(bridgeId\)\}\/providers\/enable-detected/, 'must call /bridges/{bridgeId}/providers/enable-detected');
+});
