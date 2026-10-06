@@ -255,6 +255,57 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
     }),
+    listAllBridgeProviders: build.query<any, void>({
+      queryFn: async () => {
+        try {
+          const bridgesData = await cookieJsonFetch('/bridges');
+          const rawBridges = bridgesData?.bridges || (Array.isArray(bridgesData) ? bridgesData : []);
+          const bridges = rawBridges.filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
+          const results = await Promise.all(
+            bridges.map(async (bridge: any) => {
+              const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
+              const isOnline = String(bridge.status || '').toLowerCase() === 'online';
+              const bridgeLabel = String(bridge.label || bridge.machine_hostname || bId);
+              if (!isOnline || !bId) {
+                return { bridgeId: bId, bridgeLabel, isOnline, defaultProvider: '', defaultTier: '', providers: [], detectedProviders: [] };
+              }
+              try {
+                const [providersRes, detectedRes] = await Promise.allSettled([
+                  cookieJsonFetch(`/bridges/${encodeURIComponent(bId)}/providers`),
+                  cookieJsonFetch(`/bridges/${encodeURIComponent(bId)}/detected-providers`),
+                ]);
+                const data = providersRes.status === 'fulfilled' ? providersRes.value : null;
+                const dData = detectedRes.status === 'fulfilled' ? detectedRes.value : null;
+                const detectedList = Array.isArray(dData?.detected_providers)
+                  ? dData.detected_providers
+                  : Array.isArray(dData)
+                    ? dData
+                    : [];
+                return {
+                  bridgeId: bId,
+                  bridgeLabel,
+                  isOnline,
+                  defaultProvider: data?.default_provider || data?.defaultProvider || '',
+                  defaultTier: data?.default_tier || data?.defaultTier || '',
+                  providers: Array.isArray(data?.providers) ? data.providers : [],
+                  detectedProviders: detectedList,
+                };
+              } catch {
+                return { bridgeId: bId, bridgeLabel, isOnline, defaultProvider: '', defaultTier: '', providers: [], detectedProviders: [] };
+              }
+            })
+          );
+          return { data: { bridges: results } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (result) => [
+        { type: 'BridgeProviders' as const, id: 'LIST' },
+        { type: 'Bridges' as const, id: 'LIST' },
+        ...(result?.bridges || []).map((b: any) => ({ type: 'BridgeProviders' as const, id: b.bridgeId })),
+      ],
+    }),
     upsertBridgeProvider: build.mutation<any, { bridgeId: string; name: string; profile: any }>({
       queryFn: async ({ bridgeId, name, profile }) => {
         try {
@@ -358,6 +409,7 @@ export const {
   useListBridgeEnrollmentsQuery,
   useRevokeBridgeEnrollmentMutation,
   useListBridgeProvidersQuery,
+  useListAllBridgeProvidersQuery,
   useUpsertBridgeProviderMutation,
   useDeleteBridgeProviderMutation,
   useSetBridgeProviderDefaultsMutation,

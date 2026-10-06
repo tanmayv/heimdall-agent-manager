@@ -8,6 +8,7 @@ import {
   useEnableBridgeProvidersMutation,
   useGetDetectedBridgeProvidersQuery,
   useListBridgeProvidersQuery,
+  useListAllBridgeProvidersQuery,
   useListBridgesQuery,
   useRefreshBridgeCapabilitiesMutation,
   useSetBridgeProviderDefaultsMutation,
@@ -21,12 +22,16 @@ import {
   Button,
   Checkbox,
   FormField,
+  Icon,
   Input,
   Modal,
   ModalBody,
   ModalFooter,
   PageShell,
   Radio,
+  ResourceContainer,
+  ResourceEntryCard,
+  ResourceSearchFilter,
   Select,
   StatusDot,
   StatusPill,
@@ -34,6 +39,7 @@ import {
   Tabs,
   TabsList,
   Textarea,
+  useViewport,
 } from '@ui';
 import {
   type AutoEnterPair,
@@ -71,9 +77,22 @@ export const BUILTIN_PROVIDERS = ['claude', 'codex', 'antigravity', 'copilot'];
 // Static markers verified by tests/test_bridge_bootstrap_skill_dir_static.py:
 // skillDir: string; skillDir: String(profile.skill_dir || '') skill_dir: form.skillDir.trim()
 
+export interface AggregatedProviderItem {
+  id: string; // `${bridgeId}:${profile.name}`
+  name: string;
+  bridgeId: string;
+  bridgeLabel: string;
+  isOnline: boolean;
+  isDefault: boolean;
+  bridgeDefaultTier: string;
+  profile: any;
+}
+
 export function ProvidersPanel() {
   const [route, setRoute] = useState(() => getRoutePathname());
   const dispatch = useDispatch();
+  const viewport = useViewport();
+  const twoPane = viewport === 'desktop';
 
   useEffect(() => {
     const handleRouteChange = () => setRoute(getRoutePathname());
@@ -85,123 +104,290 @@ export function ProvidersPanel() {
     };
   }, []);
 
-  // Poll: a Bridge can come online / report capabilities after this page loaded,
-  // and the Hub emits no user-WS event for bridge liveness.
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
-  const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
-  const [selectedBridgeId, setSelectedBridgeId] = useState('');
-  const selectedBridge = bridges.find((bridge: any) => bridgeId(bridge) === selectedBridgeId) || bridges[0];
-  const selectedId = selectedBridge ? bridgeId(selectedBridge) : '';
-  const offline = selectedBridge ? String(selectedBridge.status || '').toLowerCase() !== 'online' : true;
-  const providersQuery = useListBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
-  const detectedQuery = useGetDetectedBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
-  const [upsertProvider] = useUpsertBridgeProviderMutation();
-  const [deleteProvider] = useDeleteBridgeProviderMutation();
-  const [setDefaults] = useSetBridgeProviderDefaultsMutation();
-  const [refreshCaps] = useRefreshBridgeCapabilitiesMutation();
-  const [enableProviders, { isLoading: isEnabling }] = useEnableBridgeProvidersMutation();
-  const providers = providersQuery.data?.providers || [];
-  const detectedList: Array<{ name: string; detected: boolean; path: string }> = detectedQuery.data?.detected_providers || [];
-  const detectedCLIs = detectedList.filter((item) => item.detected);
-  const capabilities = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
-  const [actionError, setActionError] = useState('');
-  const [defaultBusy, setDefaultBusy] = useState('');
-  const [defaultOverride, setDefaultOverride] = useState<{ provider: string; tier: string } | null>(null);
+  const bridges = (bridgesQuery.data?.bridges || []).filter(
+    (b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at,
+  );
+  const onlineBridges = bridges.filter((b: any) => String(b?.status || '').toLowerCase() === 'online');
+
+  const allProvidersQuery = useListAllBridgeProvidersQuery(undefined, {
+    pollingInterval: 30000,
+    refetchOnMountOrArgChange: true,
+  });
+
+  const [selectedId, setSelectedId] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [bridgeFilter, setBridgeFilter] = useState<string>('');
+  const [actionError, setActionError] = useState<string>('');
+  const [defaultBusy, setDefaultBusy] = useState<string>('');
 
   // Add Custom Provider Modal state
   const [isAddCustomOpen, setIsAddCustomOpen] = useState(false);
+  const [customBridgeId, setCustomBridgeId] = useState('');
   const [customForm, setCustomForm] = useState<ProviderForm>(emptyForm);
   const [customDefaultTier, setCustomDefaultTier] = useState<string>('normal');
   const [customSaving, setCustomSaving] = useState(false);
   const [customError, setCustomError] = useState('');
 
+  const [upsertProvider] = useUpsertBridgeProviderMutation();
+  const [deleteProvider] = useDeleteBridgeProviderMutation();
+  const [setDefaults] = useSetBridgeProviderDefaultsMutation();
+  const [refreshCaps] = useRefreshBridgeCapabilitiesMutation();
+  const [enableProviders, { isLoading: isEnabling }] = useEnableBridgeProvidersMutation();
+
+  const allProviders: AggregatedProviderItem[] = useMemo(() => {
+    const list: AggregatedProviderItem[] = [];
+    const bridgeList = allProvidersQuery.data?.bridges;
+    if (Array.isArray(bridgeList) && bridgeList.length > 0) {
+      for (const b of bridgeList) {
+        for (const profile of b.providers || []) {
+          const pName = String(profile?.name || '');
+          if (!pName) continue;
+          list.push({
+            id: `${b.bridgeId}:${pName}`,
+            name: pName,
+            bridgeId: b.bridgeId,
+            bridgeLabel: b.bridgeLabel,
+            isOnline: b.isOnline,
+            isDefault: b.defaultProvider === pName,
+            bridgeDefaultTier: b.defaultTier || 'normal',
+            profile,
+          });
+        }
+      }
+    }
+    return list;
+  }, [allProvidersQuery.data]);
+
+  const filteredProviders = useMemo(() => {
+    return allProviders.filter((item) => {
+      if (bridgeFilter && item.bridgeId !== bridgeFilter) {
+        return false;
+      }
+      if (statusFilter === 'enabled' && !item.profile.enabled) {
+        return false;
+      }
+      if (statusFilter === 'disabled' && item.profile.enabled) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const matchName = item.name.toLowerCase().includes(q);
+        const matchBridge = item.bridgeLabel.toLowerCase().includes(q);
+        const cheap = String(item.profile.models?.cheap || '').toLowerCase();
+        const normal = String(item.profile.models?.normal || '').toLowerCase();
+        const smart = String(item.profile.models?.smart || '').toLowerCase();
+        const matchModel = cheap.includes(q) || normal.includes(q) || smart.includes(q);
+        if (!matchName && !matchBridge && !matchModel) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [allProviders, bridgeFilter, statusFilter, searchQuery]);
+
+  // If in two-pane mode and no provider is selected, auto-select the first provider
   useEffect(() => {
-    if (!selectedBridgeId && bridges.length > 0) setSelectedBridgeId(bridgeId(bridges[0]));
-  }, [bridges, selectedBridgeId]);
+    if (twoPane && !selectedId && filteredProviders.length > 0) {
+      setSelectedId(filteredProviders[0].id);
+    }
+  }, [twoPane, selectedId, filteredProviders]);
 
-  useEffect(() => { setDefaultOverride(null); }, [selectedId]);
+  const selectedItem = useMemo(() => {
+    if (!selectedId) return null;
+    return allProviders.find((p) => p.id === selectedId) || null;
+  }, [allProviders, selectedId]);
 
-  const currentDefaults = useMemo(() => defaultOverride || providerDefault(providersQuery.data, providers), [defaultOverride, providersQuery.data, providers]);
+  // Active bridge for detected CLIs or custom provider modal
+  const activeBridgeId =
+    bridgeFilter ||
+    selectedItem?.bridgeId ||
+    (onlineBridges[0] ? bridgeId(onlineBridges[0]) : bridges[0] ? bridgeId(bridges[0]) : '');
+  const activeBridge = bridges.find((b: any) => bridgeId(b) === activeBridgeId) || bridges[0];
+  const activeBridgeLabel = activeBridge ? activeBridge.label || activeBridge.machine_hostname || bridgeId(activeBridge) : '';
+  const activeBridgeOffline = activeBridge ? String(activeBridge.status || '').toLowerCase() !== 'online' : true;
 
-  async function toggleEnabled(profile: any) {
-    if (!selectedId || offline) return;
-    const next = { ...formFromProfile(profile), enabled: !profile.enabled };
+  const detectedQuery = useGetDetectedBridgeProvidersQuery(
+    { bridgeId: activeBridgeId },
+    { skip: !activeBridgeId || activeBridgeOffline },
+  );
+  const detectedList: Array<{ name: string; detected: boolean; path: string }> =
+    detectedQuery.data?.detected_providers || [];
+  const detectedCLIs = detectedList.filter((item) => item.detected);
+
+  const detectedGroups = useMemo(() => {
+    const groups: Array<{
+      bridgeId: string;
+      bridgeLabel: string;
+      isOnline: boolean;
+      clis: Array<{ name: string; detected: boolean; path: string }>;
+    }> = [];
+    const bridgeList = allProvidersQuery.data?.bridges;
+    if (Array.isArray(bridgeList)) {
+      for (const b of bridgeList) {
+        if (bridgeFilter && b.bridgeId !== bridgeFilter) continue;
+        const clis = (b.detectedProviders || []).filter((item: any) => item.detected);
+        if (clis.length > 0) {
+          groups.push({
+            bridgeId: b.bridgeId,
+            bridgeLabel: b.bridgeLabel,
+            isOnline: b.isOnline,
+            clis,
+          });
+        }
+      }
+    }
+    // Fallback to detectedQuery if allProvidersQuery hasn't populated detectedProviders yet
+    if (groups.length === 0 && detectedCLIs.length > 0 && activeBridgeId) {
+      groups.push({
+        bridgeId: activeBridgeId,
+        bridgeLabel: activeBridgeLabel,
+        isOnline: !activeBridgeOffline,
+        clis: detectedCLIs,
+      });
+    }
+    return groups;
+  }, [allProvidersQuery.data, bridgeFilter, detectedCLIs, activeBridgeId, activeBridgeLabel, activeBridgeOffline]);
+
+  const hasUnenabledDetected = useMemo(() => {
+    return detectedGroups.some((g) =>
+      g.clis.some((cli) => !allProviders.some((p) => p.bridgeId === g.bridgeId && p.name === cli.name && p.profile.enabled)),
+    );
+  }, [detectedGroups, allProviders]);
+
+  async function enableAllDetected() {
     setActionError('');
     try {
-      await upsertProvider({ bridgeId: selectedId, name: next.name, profile: profileFromForm(next) }).unwrap();
+      await Promise.all(
+        detectedGroups.map(async (g) => {
+          const toEnable = g.clis
+            .filter((cli) => !allProviders.some((p) => p.bridgeId === g.bridgeId && p.name === cli.name && p.profile.enabled))
+            .map((cli) => cli.name);
+          if (toEnable.length > 0) {
+            await enableProviders({ bridgeId: g.bridgeId, providers: toEnable }).unwrap();
+          }
+        }),
+      );
+      await allProvidersQuery.refetch();
+      await detectedQuery.refetch();
+    } catch (err: any) {
+      setActionError(String(err?.message || 'Failed to enable detected providers'));
+    }
+  }
+
+  async function enableSingleDetected(targetBridgeId: string, cliName: string) {
+    if (!targetBridgeId) return;
+    setActionError('');
+    try {
+      await enableProviders({ bridgeId: targetBridgeId, providers: [cliName] }).unwrap();
+      await allProvidersQuery.refetch();
+      await detectedQuery.refetch();
+    } catch (err: any) {
+      setActionError(String(err?.message || `Failed to enable ${cliName}`));
+    }
+  }
+
+  useEffect(() => {
+    if (!customBridgeId && activeBridgeId) {
+      setCustomBridgeId(activeBridgeId);
+    }
+  }, [customBridgeId, activeBridgeId]);
+
+  async function toggleEnabled(item: AggregatedProviderItem) {
+    if (!item.bridgeId || !item.isOnline) return;
+    const next = { ...formFromProfile(item.profile), enabled: !item.profile.enabled };
+    setActionError('');
+    try {
+      await upsertProvider({ bridgeId: item.bridgeId, name: next.name, profile: profileFromForm(next) }).unwrap();
+      await allProvidersQuery.refetch();
     } catch (err: any) {
       setActionError(String(err?.message || 'Toggle failed'));
     }
   }
 
-  async function saveDefaults(provider: string, tier: string) {
-    if (!selectedId || offline || !provider || !tier || defaultBusy) return;
+  async function saveDefaults(targetBridgeId: string, provider: string, tier: string) {
+    if (!targetBridgeId || !provider || !tier || defaultBusy) return;
     setActionError('');
-    setDefaultBusy(`${provider}:${tier}`);
-    setDefaultOverride({ provider, tier });
+    setDefaultBusy(`${targetBridgeId}:${provider}:${tier}`);
     try {
-      await setDefaults({ bridgeId: selectedId, provider, tier }).unwrap();
-      await providersQuery.refetch();
+      await setDefaults({ bridgeId: targetBridgeId, provider, tier }).unwrap();
+      await allProvidersQuery.refetch();
       await bridgesQuery.refetch();
     } catch (err: any) {
-      setDefaultOverride(null);
       setActionError(String(err?.message || 'Default save failed'));
     } finally {
       setDefaultBusy('');
     }
   }
 
-  async function removeProvider(profile: any) {
-    if (!selectedId || offline || profile.source !== 'store') return;
+  async function removeProvider(item: AggregatedProviderItem) {
+    if (!item.bridgeId || !item.isOnline || item.profile.source !== 'store') return;
     setActionError('');
     try {
-      await deleteProvider({ bridgeId: selectedId, name: String(profile.name || '') }).unwrap();
+      await deleteProvider({ bridgeId: item.bridgeId, name: String(item.profile.name || '') }).unwrap();
+      if (selectedId === item.id) {
+        setSelectedId('');
+      }
+      await allProvidersQuery.refetch();
     } catch (err: any) {
       setActionError(String(err?.message || 'Delete failed'));
     }
   }
 
   async function refreshCapabilities() {
-    if (!selectedId || offline) return;
     setActionError('');
     try {
-      await refreshCaps({ bridgeId: selectedId }).unwrap();
-      await providersQuery.refetch();
+      const targetBridges = bridgeFilter
+        ? bridges.filter((b: any) => bridgeId(b) === bridgeFilter && String(b.status || '').toLowerCase() === 'online')
+        : onlineBridges;
+      if (targetBridges.length === 0) return;
+      await Promise.all(
+        targetBridges.map((b: any) => refreshCaps({ bridgeId: bridgeId(b) }).unwrap()),
+      );
+      await allProvidersQuery.refetch();
       await bridgesQuery.refetch();
     } catch (err: any) {
       setActionError(String(err?.message || 'Refresh failed'));
     }
   }
 
-  async function handleSaveInline(updatedProfile: any, defaultTier?: string, setAsDefault?: boolean) {
-    if (!selectedId || offline) return;
+  async function handleSaveInline(
+    targetBridgeId: string,
+    updatedProfile: any,
+    defaultTier?: string,
+    setAsDefault?: boolean,
+  ) {
+    if (!targetBridgeId) return;
     setActionError('');
-    await upsertProvider({ bridgeId: selectedId, name: updatedProfile.name, profile: updatedProfile }).unwrap();
+    await upsertProvider({ bridgeId: targetBridgeId, name: updatedProfile.name, profile: updatedProfile }).unwrap();
     if (setAsDefault && defaultTier) {
-      await setDefaults({ bridgeId: selectedId, provider: updatedProfile.name, tier: defaultTier }).unwrap();
+      await setDefaults({ bridgeId: targetBridgeId, provider: updatedProfile.name, tier: defaultTier }).unwrap();
     }
-    await providersQuery.refetch();
+    await allProvidersQuery.refetch();
     await bridgesQuery.refetch();
   }
 
   async function saveCustomModalProvider() {
     const newName = customForm.name.trim();
-    if (!selectedId || !newName) return;
+    if (!customBridgeId || !newName) return;
     setCustomSaving(true);
     setCustomError('');
     try {
       const profile = profileFromForm(customForm);
-      await upsertProvider({ bridgeId: selectedId, name: newName, profile }).unwrap();
+      await upsertProvider({ bridgeId: customBridgeId, name: newName, profile }).unwrap();
       if (customDefaultTier) {
-        await setDefaults({ bridgeId: selectedId, provider: newName, tier: customDefaultTier }).unwrap();
+        await setDefaults({ bridgeId: customBridgeId, provider: newName, tier: customDefaultTier }).unwrap();
       }
       dispatch(bridgeSupportApi.util.invalidateTags([
-        { type: 'BridgeProviders', id: selectedId },
+        { type: 'BridgeProviders', id: customBridgeId },
+        { type: 'BridgeProviders', id: 'LIST' },
         { type: 'Bridges', id: 'LIST' },
-        { type: 'Bridges', id: selectedId },
+        { type: 'Bridges', id: customBridgeId },
       ]));
-      await providersQuery.refetch();
+      await allProvidersQuery.refetch();
       await bridgesQuery.refetch();
+      setSelectedId(`${customBridgeId}:${newName}`);
       setIsAddCustomOpen(false);
     } catch (err: any) {
       setCustomError(String(err?.message || 'Failed to add custom provider'));
@@ -229,166 +415,292 @@ export function ProvidersPanel() {
 
   void resolveProviderPanelView;
 
-  return (
-    <PageShell
-      title="Providers"
-      description="Configure provider profiles on the selected Bridge. Providers run in your machine's shell environment; Heimdall never stores credentials."
-      actions={
-        <Button variant="secondary" data-debug-id="providers-refresh-caps-btn" onClick={() => void refreshCapabilities()} disabled={!selectedId || offline} className="min-h-[44px] w-full sm:w-auto">Refresh capabilities</Button>
-      }
+  const listColumn = (
+    <div
+      data-debug-id="providers-list-column"
+      className="flex flex-col h-full min-w-0 overflow-hidden"
     >
-      <div className="space-y-6 text-left">
-      <div className="rounded-2xl border border-subtle bg-surface-raised/40 p-4">
-        {bridges.length > 0 && (
-          <div data-debug-id="providers-bridge-tabs" className="mb-4">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Connected Bridges</div>
-            <Tabs value={selectedId} onChange={setSelectedBridgeId} variant="pill">
-              <TabsList label="Bridges">
-                {bridges.map((bridge: any) => {
-                  const bId = bridgeId(bridge);
-                  const isOnline = String(bridge.status || '').toLowerCase() === 'online';
-                  return (
-                    <Tab key={bId} value={bId} data-debug-id={`providers-bridge-tab-${bId}`}>
-                      <span className="inline-flex items-center gap-2">
-                        <StatusDot tone={isOnline ? 'success' : 'neutral'} label={isOnline ? 'Online' : 'Offline'} />
-                        <span>{bridge.label || bridge.machine_hostname || bId}</span>
-                        <span className="text-[10px] text-muted">{isOnline ? 'Online' : 'Offline'}</span>
-                      </span>
-                    </Tab>
-                  );
-                })}
-              </TabsList>
-            </Tabs>
-          </div>
-        )}
-        <FormField label="Bridge">
-          <Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="min-h-[44px]">
-            {bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}
-          </Select>
-        </FormField>
-        {bridges.length === 0 ? <div className="mt-3 rounded-xl border border-dashed border-subtle p-4 text-sm text-muted">No bridges connected yet. Add a Bridge first.</div> : null}
-        {selectedBridge && offline ? <Alert tone="warning" className="mt-3">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</Alert> : null}
-        {capabilities.length > 0 ? <div className="mt-3 text-xs text-muted">Capability matrix: <span className="text-primary">{capabilities.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : cap.defaultTier ? ` (${cap.defaultTier})` : ''}`).join(', ')}</span></div> : null}
-        {providers.length > 0 ? <div className="mt-3 rounded-xl border border-subtle bg-surface-raised/30 p-3 text-xs text-muted">Bridge default: <span className="text-primary">{currentDefaults.provider || '—'} / {currentDefaults.tier || '—'}</span>. Use the radio buttons in provider rows to change it.{defaultBusy ? <span className="ml-2 text-info">Saving…</span> : null}</div> : null}
-      </div>
+      <ResourceSearchFilter
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search providers or models…"
+        searchDebugId="providers-search-input"
+        activeTab={statusFilter}
+        onTabChange={setStatusFilter}
+        tabs={[
+          { value: '', label: 'All', debugId: 'providers-filter-status-all' },
+          { value: 'enabled', label: 'Enabled', debugId: 'providers-filter-status-enabled' },
+          { value: 'disabled', label: 'Disabled', debugId: 'providers-filter-status-disabled' },
+        ]}
+        filters={[
+          {
+            value: bridgeFilter,
+            onChange: setBridgeFilter,
+            options: [
+              { value: '', label: 'All Bridges' },
+              ...bridges.map((b: any) => ({
+                value: bridgeId(b),
+                label: b.label || b.machine_hostname || bridgeId(b),
+              })),
+            ],
+            ariaLabel: 'Filter by bridge',
+            debugId: 'providers-bridge-select',
+          },
+        ]}
+      />
 
-      {actionError ? <Alert tone="danger">{actionError}</Alert> : null}
+      {actionError ? (
+        <div className="p-3">
+          <Alert tone="danger">{actionError}</Alert>
+        </div>
+      ) : null}
 
-      {detectedCLIs.length > 0 ? (
-        <div data-debug-id="detected-providers-bar" className="rounded-2xl border border-accent/30 bg-accent/5 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Ambient Detected System CLIs Banner */}
+      {detectedGroups.length > 0 && (
+        <div
+          data-debug-id="detected-providers-bar"
+          className="border-b border-subtle bg-surface-raised/40 p-3 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <div className="text-sm font-semibold text-primary">Detected System CLIs</div>
-              <div className="text-xs text-muted">Supported CLIs found in your PATH. Enable them with one click.</div>
+              <div className="text-xs font-semibold text-primary">Detected System CLIs</div>
+              <div className="text-[11px] text-muted">Found in PATH across connected bridges. Enable with one click.</div>
             </div>
-            {detectedCLIs.some((cli) => !providers.some((p: any) => p.name === cli.name && p.enabled)) ? (
+            {hasUnenabledDetected ? (
               <Button
                 variant="secondary"
+                size="sm"
                 data-debug-id="enable-all-detected-btn"
-                disabled={offline || isEnabling}
-                onClick={async () => {
-                  const toEnable = detectedCLIs
-                    .filter((cli) => !providers.some((p: any) => p.name === cli.name && p.enabled))
-                    .map((cli) => cli.name);
-                  if (toEnable.length === 0) return;
-                  setActionError('');
-                  try {
-                    await enableProviders({ bridgeId: selectedId, providers: toEnable }).unwrap();
-                    await providersQuery.refetch();
-                    await bridgesQuery.refetch();
-                    await detectedQuery.refetch();
-                  } catch (err: any) {
-                    setActionError(String(err?.message || 'Failed to enable detected providers'));
-                  }
-                }}
-                className="min-h-[36px] text-xs"
+                disabled={isEnabling}
+                onClick={() => void enableAllDetected()}
+                className="text-[11px] h-7 px-2"
               >
                 Enable all detected
               </Button>
             ) : null}
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {detectedCLIs.map((cli) => {
-              const isEnabled = providers.some((p: any) => p.name === cli.name && p.enabled);
-              return (
-                <div
-                  key={cli.name}
-                  data-debug-id={`detected-provider-chip-${cli.name}`}
-                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs ${
-                    isEnabled
-                      ? 'border-subtle bg-surface-raised/40 text-muted'
-                      : 'border-accent/40 bg-surface text-primary'
-                  }`}
-                >
-                  <span className="font-medium text-primary capitalize">{cli.name}</span>
-                  {cli.path ? (
-                    <span className="max-w-[200px] truncate text-[10px] text-muted font-mono" title={cli.path}>
-                      {cli.path}
-                    </span>
-                  ) : null}
-                  {isEnabled ? (
-                    <StatusPill tone="success">Enabled</StatusPill>
-                  ) : (
-                    <button
-                      type="button"
-                      data-debug-id={`enable-detected-${cli.name}-btn`}
-                      disabled={offline || isEnabling}
-                      onClick={async () => {
-                        setActionError('');
-                        try {
-                          await enableProviders({ bridgeId: selectedId, providers: [cli.name] }).unwrap();
-                          await providersQuery.refetch();
-                          await bridgesQuery.refetch();
-                          await detectedQuery.refetch();
-                        } catch (err: any) {
-                          setActionError(String(err?.message || `Failed to enable ${cli.name}`));
-                        }
-                      }}
-                      className="cursor-pointer rounded-lg bg-accent px-2 py-0.5 font-semibold text-accent-fg hover:bg-accent/90"
+          {detectedGroups.map((group) => (
+            <div key={group.bridgeId} className="space-y-1.5">
+              <div className="text-[11px] font-medium text-muted flex items-center gap-1.5">
+                <StatusDot tone={group.isOnline ? 'success' : 'neutral'} label={group.isOnline ? 'Online' : 'Offline'} size="sm" />
+                <span>Detected on <strong>{group.bridgeLabel}</strong>:</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {group.clis.map((cli) => {
+                  const isEnabled = allProviders.some(
+                    (p) => p.bridgeId === group.bridgeId && p.name === cli.name && p.profile.enabled,
+                  );
+                  return (
+                    <div
+                      key={`${group.bridgeId}:${cli.name}`}
+                      data-debug-id={`detected-provider-chip-${cli.name}`}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ${
+                        isEnabled
+                          ? 'border-subtle bg-surface text-muted'
+                          : 'border-accent/40 bg-surface text-primary'
+                      }`}
                     >
-                      Enable
-                    </button>
-                  )}
-                </div>
+                      <span className="font-medium capitalize">{cli.name}</span>
+                      {isEnabled ? (
+                        <StatusPill tone="success">Enabled</StatusPill>
+                      ) : (
+                        <button
+                          type="button"
+                          data-debug-id={`enable-detected-${cli.name}-btn`}
+                          disabled={!group.isOnline || isEnabling}
+                          onClick={() => void enableSingleDetected(group.bridgeId, cli.name)}
+                          className="cursor-pointer rounded bg-accent px-1.5 py-0.5 text-[11px] font-semibold text-accent-fg hover:bg-accent/90"
+                        >
+                          Enable
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* List items */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {allProvidersQuery.isLoading && bridges.length > 0 && allProviders.length === 0 ? (
+          <div className="p-8 text-center text-muted">
+            <p className="text-xs">Loading providers across bridges...</p>
+          </div>
+        ) : bridges.length === 0 ? (
+          <div className="p-8 text-center text-muted">
+            <p className="text-sm font-medium text-primary">No bridges connected</p>
+            <p className="text-xs text-muted mt-1">Connect a bridge to start configuring models and providers.</p>
+          </div>
+        ) : filteredProviders.length === 0 ? (
+          <div className="p-8 text-center text-muted">
+            <p className="text-sm font-medium text-primary">No providers found</p>
+            <p className="text-xs text-muted mt-1">
+              {searchQuery || statusFilter || bridgeFilter
+                ? 'Try clearing your search filters.'
+                : 'No provider profiles reported on connected bridges.'}
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setCustomForm(emptyForm);
+                setCustomDefaultTier('normal');
+                setCustomError('');
+                if (activeBridgeId) setCustomBridgeId(activeBridgeId);
+                setIsAddCustomOpen(true);
+              }}
+              className="mt-4"
+            >
+              Add Custom Provider
+            </Button>
+          </div>
+        ) : (
+          <ul className="flex flex-col">
+            {filteredProviders.map((item) => {
+              const name = item.name;
+              const isActive = selectedId === item.id;
+              const previewModel =
+                item.profile.models?.normal ||
+                item.profile.models?.cheap ||
+                item.profile.models?.smart ||
+                '';
+              return (
+                <ResourceEntryCard
+                  key={item.id}
+                  id={item.id}
+                  dataDebugId={`providers-provider-row-${name}`}
+                  title={
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-primary text-sm">{name}</span>
+                      <Badge data-debug-id={`provider-source-badge-${name}`} tone="neutral">
+                        {item.profile.source || 'config'}
+                      </Badge>
+                    </div>
+                  }
+                  active={isActive}
+                  onSelect={() => setSelectedId(item.id)}
+                  status={
+                    <StatusPill tone={item.profile.enabled ? 'success' : 'neutral'}>
+                      {item.profile.enabled ? 'Enabled' : 'Disabled'}
+                    </StatusPill>
+                  }
+                  badges={
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface px-2 py-0.5 text-[11px] text-primary">
+                      <StatusDot tone={item.isOnline ? 'success' : 'neutral'} label={item.isOnline ? 'Online' : 'Offline'} size="sm" />
+                      <span className="font-medium">{item.bridgeLabel}</span>
+                    </span>
+                  }
+                  snippet={previewModel ? `Model: ${previewModel}` : 'No model configured'}
+                  metadata={
+                    item.isDefault ? (
+                      <span className="text-[10px] text-muted font-medium">Default provider ({item.bridgeDefaultTier || 'normal'})</span>
+                    ) : null
+                  }
+                />
               );
             })}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button
-          variant="secondary"
-          data-debug-id="providers-add-custom-btn"
-          onClick={() => {
-            setCustomForm(emptyForm);
-            setCustomDefaultTier('normal');
-            setCustomError('');
-            setIsAddCustomOpen(true);
-          }}
-          disabled={!selectedId || offline}
-          className="min-h-[44px] w-full sm:w-auto"
-        >
-          Add Custom Provider
-        </Button>
-        <a
-          data-debug-id="providers-add-btn"
-          href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}`)}
-          aria-disabled={!selectedId || offline}
-          className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg hover:bg-accent/90 sm:w-auto ${
-            !selectedId || offline ? 'pointer-events-none opacity-50' : ''
-          }`}
-        >
-          Add provider
-        </a>
+          </ul>
+        )}
       </div>
+
+      {/* Footer count */}
+      <div className="p-2 border-t border-subtle text-[11px] text-muted text-right px-3 shrink-0">
+        {filteredProviders.length} {filteredProviders.length === 1 ? 'provider' : 'providers'}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <ResourceContainer
+        title="Models & Providers"
+        description="Configure provider profiles across connected bridges. Providers run in your machine's shell environment; Heimdall never stores credentials."
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              data-debug-id="providers-refresh-caps-btn"
+              onClick={() => void refreshCapabilities()}
+              disabled={onlineBridges.length === 0}
+              className="min-h-[36px] text-xs"
+            >
+              Refresh capabilities
+            </Button>
+            <Button
+              variant="primary"
+              data-debug-id="providers-add-custom-btn"
+              onClick={() => {
+                setCustomForm(emptyForm);
+                setCustomDefaultTier('normal');
+                setCustomError('');
+                if (activeBridgeId) setCustomBridgeId(activeBridgeId);
+                else if (bridges.length > 0) setCustomBridgeId(bridgeId(bridges[0]));
+                setIsAddCustomOpen(true);
+              }}
+              className="min-h-[36px] text-xs"
+            >
+              Add Custom Provider
+            </Button>
+            <a
+              data-debug-id="providers-add-btn"
+              href={shellHash(`/settings/providers/new${activeBridgeId ? `?bridge=${encodeURIComponent(activeBridgeId)}` : ''}`)}
+              className="sr-only"
+              aria-hidden="true"
+            >
+              Add provider
+            </a>
+          </div>
+        }
+        selectedId={selectedId}
+        detailTitle={selectedItem ? selectedItem.name : 'Provider Details'}
+        listDebugId="providers-list-column"
+        detailDebugId="providers-detail-pane"
+        emptyDetailText="Select a provider to view its models and configuration."
+        list={listColumn}
+        detail={
+          selectedItem ? (
+            <div data-debug-id="providers-detail-pane" className="h-full overflow-y-auto p-4 sm:p-6">
+              <ProviderDetailView
+                item={selectedItem}
+                onBack={() => setSelectedId('')}
+                onToggleEnabled={toggleEnabled}
+                onRemoveProvider={removeProvider}
+                onSaveInline={handleSaveInline}
+                onSaveDefaults={saveDefaults}
+                defaultBusy={defaultBusy}
+              />
+            </div>
+          ) : null
+        }
+      />
 
       {/* Modal for Add Custom Provider */}
       <Modal open={isAddCustomOpen} onOpenChange={setIsAddCustomOpen} title="Add Custom Provider" size="lg">
         <ModalBody className="space-y-4">
           {customError ? <Alert tone="danger">{customError}</Alert> : null}
+          <FormField label="Target Bridge" required>
+            <Select
+              value={customBridgeId}
+              onChange={setCustomBridgeId}
+              width="full"
+              className="min-h-[40px]"
+            >
+              {bridges.map((b: any) => {
+                const bId = bridgeId(b);
+                const isOnline = String(b.status || '').toLowerCase() === 'online';
+                return (
+                  <option key={bId} value={bId}>
+                    {b.label || b.machine_hostname || bId} ({isOnline ? 'online' : 'offline'})
+                  </option>
+                );
+              })}
+            </Select>
+          </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="Provider Name">
+            <FormField label="Provider Name" required>
               <Input
                 data-debug-id="custom-modal-name-input"
                 value={customForm.name}
@@ -398,7 +710,7 @@ export function ProvidersPanel() {
                 className="min-h-[44px]"
               />
             </FormField>
-            <label className="flex items-center gap-2 pt-6 text-sm text-muted">
+            <label className="flex items-center gap-2 pt-6 text-sm text-muted cursor-pointer">
               <Checkbox checked={customForm.enabled} onChange={(enabled) => setCustomForm({ ...customForm, enabled })} /> Enabled
             </label>
           </div>
@@ -486,66 +798,40 @@ export function ProvidersPanel() {
             variant="primary"
             data-debug-id="custom-modal-save-btn"
             onClick={() => void saveCustomModalProvider()}
-            disabled={customSaving || !customForm.name.trim()}
+            disabled={customSaving || !customForm.name.trim() || !customBridgeId}
           >
-            {customSaving ? 'Saving…' : 'Save provider'}
+            {customSaving ? 'Adding…' : 'Add Provider'}
           </Button>
         </ModalFooter>
       </Modal>
-
-      {providersQuery.isLoading ? <div className="rounded-xl bg-surface-raised/40 p-5 text-sm text-muted">Loading providers…</div> : null}
-      {!offline && providers.length === 0 && !providersQuery.isLoading ? <div className="rounded-xl border border-dashed border-subtle p-8 text-center text-sm text-muted">No provider profiles reported by this Bridge.</div> : null}
-
-      <div className="space-y-4">
-        {providers.map((profile: any) => {
-          const name = String(profile.name || '');
-          return (
-            <ProviderCard
-              key={name}
-              profile={profile}
-              selectedId={selectedId}
-              offline={offline}
-              currentDefaults={currentDefaults}
-              defaultBusy={defaultBusy}
-              onSaveDefaults={saveDefaults}
-              onToggleEnabled={toggleEnabled}
-              onRemoveProvider={removeProvider}
-              onSaveInline={handleSaveInline}
-            />
-          );
-        })}
-      </div>
-      </div>
-    </PageShell>
+    </>
   );
 }
 
-function ProviderCard({
-  profile,
-  selectedId,
-  offline,
-  currentDefaults,
-  defaultBusy,
-  onSaveDefaults,
+function ProviderDetailView({
+  item,
+  onBack,
   onToggleEnabled,
   onRemoveProvider,
   onSaveInline,
+  onSaveDefaults,
+  defaultBusy,
 }: {
-  profile: any;
-  selectedId: string;
-  offline: boolean;
-  currentDefaults: { provider: string; tier: string };
+  item: AggregatedProviderItem;
+  onBack: () => void;
+  onToggleEnabled: (item: AggregatedProviderItem) => Promise<void>;
+  onRemoveProvider: (item: AggregatedProviderItem) => Promise<void>;
+  onSaveInline: (targetBridgeId: string, updatedProfile: any, defaultTier?: string, setAsDefault?: boolean) => Promise<void>;
+  onSaveDefaults: (targetBridgeId: string, provider: string, tier: string) => Promise<void>;
   defaultBusy: string;
-  onSaveDefaults: (provider: string, tier: string) => Promise<void>;
-  onToggleEnabled: (profile: any) => Promise<void>;
-  onRemoveProvider: (profile: any) => Promise<void>;
-  onSaveInline: (updatedProfile: any, defaultTier?: string, setAsDefault?: boolean) => Promise<void>;
 }) {
+  const profile = item.profile;
   const name = String(profile.name || '');
+  const selectedId = item.bridgeId;
   const tiers = configuredTiers(profile);
   const matchedPreset = useMemo(
     () => getProviderPreset((profile.command && profile.command[0]) || name),
-    [profile.command, name]
+    [profile.command, name],
   );
 
   const [cheap, setCheap] = useState(String(profile.models?.cheap || ''));
@@ -558,7 +844,7 @@ function ProviderCard({
   const [promptFlagsStr, setPromptFlagsStr] = useState((profile.prompt_flags || []).join(' '));
 
   const [cardDefaultTier, setCardDefaultTier] = useState<string>(() => {
-    if (currentDefaults.provider === name && currentDefaults.tier) return currentDefaults.tier;
+    if (item.isDefault && item.bridgeDefaultTier) return item.bridgeDefaultTier;
     return profile.default_tier || (tiers.length > 0 ? tiers[0] : 'normal');
   });
 
@@ -578,15 +864,15 @@ function ProviderCard({
   }, [profile]);
 
   useEffect(() => {
-    if (currentDefaults.provider === name && currentDefaults.tier) {
-      setCardDefaultTier(currentDefaults.tier);
+    if (item.isDefault && item.bridgeDefaultTier) {
+      setCardDefaultTier(item.bridgeDefaultTier);
     }
-  }, [currentDefaults, name]);
+  }, [item.isDefault, item.bridgeDefaultTier]);
 
-  const isDefault = currentDefaults.provider === name;
+  const isDefault = item.isDefault;
 
   async function handleInlineSave() {
-    if (!selectedId || offline) return;
+    if (!selectedId || !item.isOnline) return;
     setIsSaving(true);
     setSaveStatus('idle');
     setErrorMessage('');
@@ -605,7 +891,7 @@ function ProviderCard({
         prompt_delivery: promptDelivery.trim() || profile.prompt_delivery,
         prompt_flags: promptFlagsStr.trim() ? promptFlagsStr.trim().split(/\s+/) : profile.prompt_flags,
       };
-      await onSaveInline(updatedProfile, cardDefaultTier, isDefault);
+      await onSaveInline(item.bridgeId, updatedProfile, cardDefaultTier, isDefault);
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err: any) {
@@ -617,34 +903,61 @@ function ProviderCard({
   }
 
   return (
-    <div data-debug-id={`providers-provider-row-${name}`} className="rounded-2xl border border-subtle bg-surface-raised/40 p-4 space-y-4">
-      {/* Header: Name, badges, and actions */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-semibold text-primary">{name}</h3>
-          <Badge data-debug-id={`provider-source-badge-${name}`} tone="neutral">
-            {profile.source || 'config'}
-          </Badge>
-          <StatusPill tone={profile.enabled ? 'success' : 'neutral'}>
-            {profile.enabled ? 'Enabled' : 'Disabled'}
-          </StatusPill>
+    <div className="space-y-6">
+      {/* Mobile back button */}
+      <div className="sm:hidden">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          leading={<Icon name="arrow-left" size="sm" />}
+          className="text-xs -ml-2 mb-2"
+        >
+          Back to all providers
+        </Button>
+      </div>
+
+      {/* Header: Name, badges, bridge chip, and action buttons */}
+      <div className="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-subtle">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-xl font-bold text-primary">{name}</h2>
+            <Badge data-debug-id={`provider-source-badge-${name}`} tone="neutral">
+              {profile.source || 'config'}
+            </Badge>
+            <StatusPill tone={profile.enabled ? 'success' : 'neutral'}>
+              {profile.enabled ? 'Enabled' : 'Disabled'}
+            </StatusPill>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2.5 py-1 text-primary">
+              <StatusDot tone={item.isOnline ? 'success' : 'neutral'} label={item.isOnline ? 'Online' : 'Offline'} size="sm" />
+              <span>Active on <strong>{item.bridgeLabel}</strong> ({item.isOnline ? 'online' : 'offline'})</span>
+            </span>
+            {isDefault ? (
+              <span className="rounded-md bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 text-[11px] font-medium">
+                Default provider
+              </span>
+            ) : null}
+          </div>
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
+
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="secondary"
             data-debug-id={`providers-enabled-toggle-${name}`}
-            onClick={() => void onToggleEnabled(profile)}
-            disabled={offline}
-            className="min-h-[38px] text-xs"
+            onClick={() => void onToggleEnabled(item)}
+            disabled={!item.isOnline}
+            className="min-h-[36px] text-xs"
           >
             {profile.enabled ? 'Disable' : 'Enable'}
           </Button>
           <a
             data-debug-id={`providers-edit-btn-${name}`}
             href={shellHash(`/settings/providers/${encodeURIComponent(name)}/edit?bridge=${encodeURIComponent(selectedId)}`)}
-            aria-disabled={offline}
-            className={`inline-flex min-h-[38px] items-center justify-center rounded-lg border border-subtle px-3 py-1.5 text-xs text-muted hover:bg-neutral-soft ${
-              offline ? 'pointer-events-none opacity-50' : ''
+            aria-disabled={!item.isOnline}
+            className={`inline-flex min-h-[36px] items-center justify-center rounded-lg border border-subtle px-3 py-1.5 text-xs text-muted hover:bg-neutral-soft ${
+              !item.isOnline ? 'pointer-events-none opacity-50' : ''
             }`}
           >
             Edit
@@ -652,9 +965,9 @@ function ProviderCard({
           <a
             data-debug-id={`providers-duplicate-btn-${name}`}
             href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}&duplicateFrom=${encodeURIComponent(name)}`)}
-            aria-disabled={offline}
-            className={`inline-flex min-h-[38px] items-center justify-center rounded-lg border border-subtle px-3 py-1.5 text-xs text-muted hover:bg-neutral-soft ${
-              offline ? 'pointer-events-none opacity-50' : ''
+            aria-disabled={!item.isOnline}
+            className={`inline-flex min-h-[36px] items-center justify-center rounded-lg border border-subtle px-3 py-1.5 text-xs text-muted hover:bg-neutral-soft ${
+              !item.isOnline ? 'pointer-events-none opacity-50' : ''
             }`}
           >
             Duplicate
@@ -662,168 +975,173 @@ function ProviderCard({
           <Button
             variant="danger"
             data-debug-id={`providers-delete-btn-${name}`}
-            onClick={() => void onRemoveProvider(profile)}
-            disabled={offline || profile.source !== 'store'}
-            className="min-h-[38px] text-xs"
+            onClick={() => void onRemoveProvider(item)}
+            disabled={!item.isOnline || profile.source !== 'store'}
+            className="min-h-[36px] text-xs"
           >
             Delete
           </Button>
         </div>
       </div>
 
-      {/* Model Tier Inputs: Cheap, Normal, Smart */}
-      <div>
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Model Tiers</div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <FormField label="Cheap / Fast model">
-            <Input
-              data-debug-id={`providers-card-cheap-input-${name}`}
-              value={cheap}
-              onChange={setCheap}
-              placeholder={matchedPreset?.defaultTiers.cheap || 'model-cheap'}
-              width="full"
-              className="min-h-[38px] text-xs"
-            />
-          </FormField>
-          <FormField label="Normal / Balanced model">
-            <Input
-              data-debug-id={`providers-card-normal-input-${name}`}
-              value={normal}
-              onChange={setNormal}
-              placeholder={matchedPreset?.defaultTiers.normal || 'model-normal'}
-              width="full"
-              className="min-h-[38px] text-xs"
-            />
-          </FormField>
-          <FormField label="Smart / Deep Reasoning model">
-            <Input
-              data-debug-id={`providers-card-smart-input-${name}`}
-              value={smart}
-              onChange={setSmart}
-              placeholder={matchedPreset?.defaultTiers.smart || 'model-smart'}
-              width="full"
-              className="min-h-[38px] text-xs"
-            />
-          </FormField>
-        </div>
-      </div>
-
-      {/* Default Tier Selector & Save Changes Row */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-surface-raised/30 px-3 py-2 text-xs text-muted">
-        <div className="flex flex-wrap items-center gap-4">
-          <label data-debug-id={`providers-default-btn-${name}`} className="flex items-center gap-2 cursor-pointer font-medium text-primary">
-            <Radio
-              name="bridge-default-provider"
-              checked={isDefault}
-              disabled={Boolean(defaultBusy) || offline}
-              onChange={() => void onSaveDefaults(name, cardDefaultTier)}
-            />
-            Default provider
-          </label>
-          <div className="flex items-center gap-3">
-            <span className="text-muted">Default tier:</span>
-            {(['cheap', 'normal', 'smart'] as const).map((tier) => (
-              <label key={tier} className="flex items-center gap-1.5 cursor-pointer capitalize text-primary">
-                <Radio
-                  name={`card-default-tier-${name}`}
-                  value={tier}
-                  checked={cardDefaultTier === tier}
-                  disabled={offline}
-                  onChange={() => {
-                    setCardDefaultTier(tier);
-                    if (isDefault) void onSaveDefaults(name, tier);
-                  }}
-                />
-                {tier}
-              </label>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {saveStatus === 'saved' ? <span className="text-xs font-medium text-success">Saved</span> : null}
-          {saveStatus === 'error' ? <span className="text-xs text-danger">{errorMessage}</span> : null}
-          <Button
-            variant="secondary"
-            data-debug-id={`providers-inline-save-btn-${name}`}
-            onClick={() => void handleInlineSave()}
-            disabled={offline || isSaving}
-            className="min-h-[34px] text-xs font-semibold"
-          >
-            {isSaving ? 'Saving…' : 'Save Changes'}
-          </Button>
-        </div>
-      </div>
-
-      {/* Expandable Advanced Settings Accordion */}
-      <Accordion type="single" className="border-0 divide-y-0">
-        <AccordionItem value="advanced" title="Advanced settings" className="rounded-xl border border-subtle bg-surface-raised/20 px-3">
-          <div className="space-y-3 pt-2 text-xs">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <FormField label="Command executable / argv">
-                <Input
-                  data-debug-id={`providers-card-command-input-${name}`}
-                  value={commandStr}
-                  onChange={setCommandStr}
-                  placeholder="command executable and arguments"
-                  width="full"
-                  className="min-h-[36px] font-mono text-xs"
-                />
-              </FormField>
-              <FormField label="Model flag">
-                <Input
-                  data-debug-id={`providers-card-models-flag-input-${name}`}
-                  value={modelsFlag}
-                  onChange={setModelsFlag}
-                  placeholder="--model"
-                  width="full"
-                  className="min-h-[36px] font-mono text-xs"
-                />
-              </FormField>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <FormField label="Skill directory">
-                <Input
-                  data-debug-id={`providers-card-skill-dir-input-${name}`}
-                  value={skillDir}
-                  onChange={setSkillDir}
-                  placeholder=".agents/skills"
-                  width="full"
-                  className="min-h-[36px] text-xs"
-                />
-              </FormField>
-              <FormField label="Prompt delivery">
-                <Input
-                  data-debug-id={`providers-card-prompt-delivery-input-${name}`}
-                  value={promptDelivery}
-                  onChange={setPromptDelivery}
-                  placeholder="flag-injection"
-                  width="full"
-                  className="min-h-[36px] text-xs"
-                />
-              </FormField>
-            </div>
-            <FormField label="Prompt flags">
+      {/* Model Tier Inputs */}
+      <div className="rounded-2xl border border-subtle bg-surface-raised/40 p-4 space-y-4">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Model Tiers</div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <FormField label="Cheap / Fast model">
               <Input
-                data-debug-id={`providers-card-prompt-flags-input-${name}`}
-                value={promptFlagsStr}
-                onChange={setPromptFlagsStr}
-                placeholder="--prompt -p"
+                id="providers-editor-models-cheap-input"
+                data-debug-id={`providers-card-cheap-input-${name}`}
+                value={cheap}
+                onChange={setCheap}
+                placeholder={matchedPreset?.defaultTiers.cheap || 'model-cheap'}
                 width="full"
-                className="min-h-[36px] text-xs font-mono"
+                className="min-h-[38px] text-xs"
               />
             </FormField>
-            {profile.bootstrap_file_name ? (
-              <div className="text-muted">Bootstrap file: <span className="font-mono text-primary">{profile.bootstrap_file_name}</span></div>
-            ) : null}
-            {profile.startup_detection ? (
-              <div className="text-muted">Startup detection: <span className="text-primary">{profile.startup_detection.enabled ? 'Enabled' : 'Disabled'}</span> (probe: {profile.startup_detection.startup_probe_seconds || 20}s, capture: {profile.startup_detection.capture_interval_ms || 500}ms)</div>
-            ) : null}
-            {profile.activity_detection ? (
-              <div className="text-muted">Activity detection: <span className="text-primary">{profile.activity_detection.enabled ? 'Enabled' : 'Disabled'}</span> (check: {profile.activity_detection.check_interval_seconds || 2}s, min gap: {profile.activity_detection.min_gap_ms || 250}ms)</div>
-            ) : null}
+            <FormField label="Normal / Balanced model">
+              <Input
+                id="providers-editor-models-normal-input"
+                data-debug-id={`providers-card-normal-input-${name}`}
+                value={normal}
+                onChange={setNormal}
+                placeholder={matchedPreset?.defaultTiers.normal || 'model-normal'}
+                width="full"
+                className="min-h-[38px] text-xs"
+              />
+            </FormField>
+            <FormField label="Smart / Deep Reasoning model">
+              <Input
+                id="providers-editor-models-smart-input"
+                data-debug-id={`providers-card-smart-input-${name}`}
+                value={smart}
+                onChange={setSmart}
+                placeholder={matchedPreset?.defaultTiers.smart || 'model-smart'}
+                width="full"
+                className="min-h-[38px] text-xs"
+              />
+            </FormField>
           </div>
-        </AccordionItem>
-      </Accordion>
+        </div>
+
+        {/* Default Tier Selector & Save Changes Row */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-surface-raised/30 px-3 py-2 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-4">
+            <label data-debug-id={`providers-default-btn-${name}`} className="flex items-center gap-2 cursor-pointer font-medium text-primary">
+              <Radio
+                name={`bridge-default-provider-${item.bridgeId}`}
+                checked={isDefault}
+                disabled={Boolean(defaultBusy) || !item.isOnline}
+                onChange={() => void onSaveDefaults(item.bridgeId, name, cardDefaultTier)}
+              />
+              Default provider
+            </label>
+            <div data-debug-id="providers-editor-default-tier-selector" className="flex items-center gap-3">
+              <span className="text-muted">Default tier:</span>
+              {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+                <label key={tier} className="flex items-center gap-1.5 cursor-pointer capitalize text-primary">
+                  <Radio
+                    name={`card-default-tier-${name}`}
+                    value={tier}
+                    checked={cardDefaultTier === tier}
+                    disabled={!item.isOnline}
+                    onChange={() => {
+                      setCardDefaultTier(tier);
+                      if (isDefault) void onSaveDefaults(item.bridgeId, name, tier);
+                    }}
+                  />
+                  {tier}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saved' ? <span className="text-xs font-medium text-success">Saved</span> : null}
+            {saveStatus === 'error' ? <span className="text-xs text-danger">{errorMessage}</span> : null}
+            <Button
+              variant="secondary"
+              data-debug-id={`providers-inline-save-btn-${name}`}
+              onClick={() => void handleInlineSave()}
+              disabled={!item.isOnline || isSaving}
+              className="min-h-[34px] text-xs font-semibold"
+            >
+              {isSaving ? 'Saving…' : 'Save Changes'}
+            </Button>
+          </div>
+        </div>
+
+        {/* Expandable Advanced Settings Accordion */}
+        <Accordion type="single" className="border-0 divide-y-0">
+          <AccordionItem value="advanced" title="Advanced settings" className="rounded-xl border border-subtle bg-surface-raised/20 px-3">
+            <div className="space-y-3 pt-2 text-xs">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="Command executable / argv">
+                  <Input
+                    data-debug-id={`providers-card-command-input-${name}`}
+                    value={commandStr}
+                    onChange={setCommandStr}
+                    placeholder="command executable and arguments"
+                    width="full"
+                    className="min-h-[36px] font-mono text-xs"
+                  />
+                </FormField>
+                <FormField label="Model flag">
+                  <Input
+                    data-debug-id={`providers-card-models-flag-input-${name}`}
+                    value={modelsFlag}
+                    onChange={setModelsFlag}
+                    placeholder="--model"
+                    width="full"
+                    className="min-h-[36px] font-mono text-xs"
+                  />
+                </FormField>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="Skill directory">
+                  <Input
+                    data-debug-id={`providers-card-skill-dir-input-${name}`}
+                    value={skillDir}
+                    onChange={setSkillDir}
+                    placeholder=".agents/skills"
+                    width="full"
+                    className="min-h-[36px] text-xs"
+                  />
+                </FormField>
+                <FormField label="Prompt delivery">
+                  <Input
+                    data-debug-id={`providers-card-prompt-delivery-input-${name}`}
+                    value={promptDelivery}
+                    onChange={setPromptDelivery}
+                    placeholder="flag-injection"
+                    width="full"
+                    className="min-h-[36px] text-xs"
+                  />
+                </FormField>
+              </div>
+              <FormField label="Prompt flags">
+                <Input
+                  data-debug-id={`providers-card-prompt-flags-input-${name}`}
+                  value={promptFlagsStr}
+                  onChange={setPromptFlagsStr}
+                  placeholder="--prompt -p"
+                  width="full"
+                  className="min-h-[36px] text-xs font-mono"
+                />
+              </FormField>
+              {profile.bootstrap_file_name ? (
+                <div className="text-muted">Bootstrap file: <span className="font-mono text-primary">{profile.bootstrap_file_name}</span></div>
+              ) : null}
+              {profile.startup_detection ? (
+                <div className="text-muted">Startup detection: <span className="text-primary">{profile.startup_detection.enabled ? 'Enabled' : 'Disabled'}</span> (probe: {profile.startup_detection.startup_probe_seconds || 20}s, capture: {profile.startup_detection.capture_interval_ms || 500}ms)</div>
+              ) : null}
+              {profile.activity_detection ? (
+                <div className="text-muted">Activity detection: <span className="text-primary">{profile.activity_detection.enabled ? 'Enabled' : 'Disabled'}</span> (check: {profile.activity_detection.check_interval_seconds || 2}s, min gap: {profile.activity_detection.min_gap_ms || 250}ms)</div>
+              ) : null}
+            </div>
+          </AccordionItem>
+        </Accordion>
+      </div>
     </div>
   );
 }
