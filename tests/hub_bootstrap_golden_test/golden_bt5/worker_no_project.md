@@ -13,7 +13,8 @@ Task chain: Bootstrap refactor (chain_18d1d2feb77fa2d8)
 
 
 
-
+## Applicable Memories
+Applicable project memories, configuration facts, and operational habits are maintained in `MEMORY.md` in this directory. Review `MEMORY.md` before executing tasks.
 
 ## Project
 This agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.

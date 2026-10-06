@@ -1,6 +1,11 @@
 package main
 
+import "core:crypto/hash"
+import "core:encoding/hex"
+import "core:fmt"
+import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 // BT-3: unit tests for the single-template substitution + role-conditional engine
@@ -139,4 +144,171 @@ bt3_e2e_real_template_worker :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(got, "## You are a WORKER"))
 	testing.expect(t, !strings.contains(got, "## You are the COORDINATOR"))
 	testing.expect(t, strings.contains(got, "Coordinator: inst_coord"))
+}
+
+@(test)
+bt_memory_decouple_manifest_and_file_set :: proc(t: ^testing.T) {
+	tpl_body := "Agent: {agent_name}\n"
+	mem_body := "# Applicable Memories\n\n### Test Title\nType: Fact\n\nSome memory body\n"
+
+	tpl_hash := test_bootstrap_sha256(tpl_body)
+	defer delete(tpl_hash)
+	mem_hash := test_bootstrap_sha256(mem_body)
+	defer delete(mem_hash)
+
+	manifest := strings.concatenate({
+		`{"protocol":2,"version":"v1","agent_id":"agt_1","files":[{"kind":"AGENTS_MD","relative_path":"AGENTS.md","assembly":[]},{"kind":"MEMORY_MD","relative_path":"MEMORY.md","hash":"`,
+		mem_hash,
+		`"}],"template":{"kind":"AGENTS_TEMPLATE","hash":"`,
+		tpl_hash,
+		`"},"variables":[]}`,
+	})
+	defer delete(manifest)
+
+	// 1. bridge_bootstrap_collect_manifest_hashes picks up MEMORY_MD direct hash
+	hashes := bridge_bootstrap_collect_manifest_hashes(manifest)
+	defer {
+		for h in hashes do delete(h)
+		delete(hashes)
+	}
+	found_mem_hash := false
+	for h in hashes {
+		if h == mem_hash do found_mem_hash = true
+	}
+	testing.expect(t, found_mem_hash, "manifest hashes must collect MEMORY_MD hash")
+
+	// 2. bridge_bootstrap_build_file_set builds MEMORY.md into files
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	defer {
+		if had {
+			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+		} else {
+			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+		}
+		delete(prev)
+	}
+	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+
+	cache: Bootstrap_Cache
+	tmp := "/tmp/ham-test-mem-decouple"
+	_ = os.remove_all(tmp)
+	defer _ = os.remove_all(tmp)
+	bootstrap_cache_init(&cache, tmp, 1024 * 1024)
+	bootstrap_cache_put(&cache, tpl_hash, tpl_body)
+	bootstrap_cache_put(&cache, mem_hash, mem_body)
+
+	d := Bridge_Bootstrap_Descriptor{
+		instance_id = "inst_1",
+		agent_name = "Agent 1",
+		role = "worker",
+	}
+
+	files, res := bridge_bootstrap_build_file_set(manifest, d, "unix:/tmp/test.sock", "tok", "jetski", &cache)
+	defer bridge_bootstrap_free_file_set(files)
+
+	testing.expect(t, res.ok, "build file set should succeed")
+	found_memory_file := false
+	for f in files {
+		if f.kind == "MEMORY_MD" {
+			found_memory_file = true
+			testing.expect_value(t, f.relative_path, "MEMORY.md")
+			testing.expect_value(t, f.mode, 0o644)
+			testing.expect_value(t, f.content, mem_body)
+		}
+	}
+	testing.expect(t, found_memory_file, "MEMORY.md file should be present in file set")
+}
+
+@(test)
+bt_memory_decouple_materialize_run_dir :: proc(t: ^testing.T) {
+	tpl_body := "Agent: {agent_name}\n"
+	mem_body := "# Applicable Memories\n\n### Habit Memory\nType: Habit\n\nAlways write tests\n"
+
+	tpl_hash := test_bootstrap_sha256(tpl_body)
+	defer delete(tpl_hash)
+	mem_hash := test_bootstrap_sha256(mem_body)
+	defer delete(mem_hash)
+
+	manifest := strings.concatenate({
+		`{"protocol":2,"version":"v1","agent_id":"agt_1","files":[{"kind":"AGENTS_MD","relative_path":"AGENTS.md","assembly":[]},{"kind":"MEMORY_MD","relative_path":"MEMORY.md","hash":"`,
+		mem_hash,
+		`"}],"template":{"kind":"AGENTS_TEMPLATE","hash":"`,
+		tpl_hash,
+		`"},"variables":[]}`,
+	})
+	defer delete(manifest)
+
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	prev, had := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	defer {
+		if had {
+			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", prev)
+		} else {
+			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+		}
+		delete(prev)
+	}
+	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+
+	cache: Bootstrap_Cache
+	cache_dir := "/tmp/ham-test-mat-cache"
+	run_dir := "/tmp/ham-test-mat-rundir"
+	_ = os.remove_all(cache_dir)
+	_ = os.remove_all(run_dir)
+	defer {
+		_ = os.remove_all(cache_dir)
+		_ = os.remove_all(run_dir)
+	}
+	bootstrap_cache_init(&cache, cache_dir, 1024 * 1024)
+	bootstrap_cache_put(&cache, tpl_hash, tpl_body)
+	bootstrap_cache_put(&cache, mem_hash, mem_body)
+
+	d := Bridge_Bootstrap_Descriptor{
+		instance_id = "inst_test_launch",
+		agent_name = "Launch Agent",
+		role = "worker",
+	}
+
+	res := bridge_bootstrap_materialize_run_dir(manifest, d, run_dir, "unix:/tmp/test.sock", "tok", "jetski", &cache)
+	testing.expect(t, res.ok, "materialize_run_dir should succeed")
+
+	// Verify both AGENTS.md and MEMORY.md exist on disk in run_dir
+	agents_path := strings.concatenate({run_dir, "/AGENTS.md"})
+	defer delete(agents_path)
+	agents_bytes, a_err := os.read_entire_file(agents_path, context.allocator)
+	testing.expect(t, a_err == nil, "AGENTS.md should exist")
+	if a_err == nil {
+		defer delete(agents_bytes)
+		testing.expect(t, strings.contains(string(agents_bytes), "Agent: Launch Agent"), "AGENTS.md content check")
+	}
+
+	mem_path := strings.concatenate({run_dir, "/MEMORY.md"})
+	defer delete(mem_path)
+	mem_bytes, m_err := os.read_entire_file(mem_path, context.allocator)
+	testing.expect(t, m_err == nil, "MEMORY.md should exist")
+	if m_err == nil {
+		defer delete(mem_bytes)
+		testing.expect_value(t, string(mem_bytes), mem_body)
+	}
+
+	// Verify heimdall-bootstrap-manifest.json lists MEMORY.md
+	man_path := strings.concatenate({run_dir, "/heimdall-bootstrap-manifest.json"})
+	defer delete(man_path)
+	man_bytes, man_err := os.read_entire_file(man_path, context.allocator)
+	testing.expect(t, man_err == nil, "manifest json should exist")
+	if man_err == nil {
+		defer delete(man_bytes)
+		testing.expect(t, strings.contains(string(man_bytes), `"relative_path":"MEMORY.md","kind":"MEMORY_MD"`), "manifest json tracks MEMORY.md")
+	}
+}
+
+test_bootstrap_sha256 :: proc(body: string) -> string {
+	buf: [32]byte
+	hash.hash_string_to_buffer(.SHA256, body, buf[:])
+	hex_str := hex.encode(buf[:])
+	defer delete(hex_str)
+	return strings.concatenate({"sha256:", string(hex_str)})
 }

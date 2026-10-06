@@ -1678,22 +1678,31 @@ bootstrap_append_identity_variables :: proc(vars: ^[dynamic]Bootstrap_Variable, 
 	add(vars, "agent_instructions", agent_instructions)
 }
 
-// bootstrap_build_memory_markdown_instance builds the {agent_memories} variable
-// value for instance-keyed launches. Only fact and habit memories are inlined;
-// skill memories are delivered as SKILL.md files. Returns "" when there are no
-// matching memories (the {agent_memories} slot renders as nothing).
+// bootstrap_build_memory_markdown_instance builds the MEMORY.md content for
+// instance-keyed launches. Only fact and habit memories are inlined;
+// skill memories are delivered as SKILL.md files. Option A: if no applicable
+// memories exist, emits a clean empty-fallback notice.
 bootstrap_build_memory_markdown_instance :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
-	if service == nil || service.content == nil do return ""
-	memories, err := iface.content_list_memories(service.content, owner)
-	if err.code != .None do return ""
 	b := strings.builder_make()
+	if service == nil || service.content == nil {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+		return strings.to_string(b)
+	}
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+		return strings.to_string(b)
+	}
 	written := 0
 	for m in memories {
 		if !bootstrap_memory_applies(m, service, owner, inst) do continue
 		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 do strings.write_string(&b, "## Applicable Memories")
+		if written == 0 do strings.write_string(&b, "# Applicable Memories")
 		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n%s", m.title, domain.memory_type_string(m.type), m.body)
 		written += 1
+	}
+	if written == 0 {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
 	}
 	return strings.to_string(b)
 }
@@ -1701,17 +1710,26 @@ bootstrap_build_memory_markdown_instance :: proc(service: ^Agent_Service, owner:
 // bootstrap_build_memory_markdown_agent is the agent-keyed variant used by
 // render_agent_manifest. Same filtering rules as the instance variant.
 bootstrap_build_memory_markdown_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, project_id: domain.Project_ID, bridge_id: string) -> string {
-	if service == nil || service.content == nil do return ""
-	memories, err := iface.content_list_memories(service.content, owner)
-	if err.code != .None do return ""
 	b := strings.builder_make()
+	if service == nil || service.content == nil {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+		return strings.to_string(b)
+	}
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+		return strings.to_string(b)
+	}
 	written := 0
 	for m in memories {
 		if !bootstrap_memory_applies_agent(m, agent, owner, project_id, bridge_id) do continue
 		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 do strings.write_string(&b, "## Applicable Memories")
+		if written == 0 do strings.write_string(&b, "# Applicable Memories")
 		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n%s", m.title, domain.memory_type_string(m.type), m.body)
 		written += 1
+	}
+	if written == 0 {
+		strings.write_string(&b, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
 	}
 	return strings.to_string(b)
 }
@@ -1936,6 +1954,11 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		instance_role = "reviewer"
 	}
 
+	memories_md := bootstrap_build_memory_markdown_instance(service, owner, inst)
+	defer delete(memories_md)
+	mem_hash := bootstrap_fragment_hash(memories_md)
+	hub_fragment_cache_put(mem_hash, memories_md)
+
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"protocol\":2,\"instance\":{\"agent_instance_id\":\"")
 	write_service_json_string(&b, inst.agent_instance_id)
@@ -1957,20 +1980,15 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	// project/tasks_guidance/role_guidance/memories) are gone.
 	strings.write_string(&b, "{\"section\":\"header\",\"inline\":\"")
 	write_service_json_string(&b, header_inline)
-	strings.write_string(&b, "\"}")
-
-	strings.write_string(&b, "]}]")
+	strings.write_string(&b, "\"}]},{\"kind\":\"MEMORY_MD\",\"relative_path\":\"MEMORY.md\",\"hash\":\"")
+	write_service_json_string(&b, mem_hash)
+	strings.write_string(&b, "\"}]")
 
 	// BT-2/BT-2a: single-template blob + all DB-derived variables (project_* + identity).
 	instance_template_hash := bootstrap_template_hash()
 	instance_variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
 	defer delete(instance_variables)
 	bootstrap_append_identity_variables(&instance_variables, template_persona, template_instructions, agent.instructions)
-	memories_md := bootstrap_build_memory_markdown_instance(service, owner, inst)
-	defer delete(memories_md)
-	mem_hash := bootstrap_fragment_hash(memories_md)
-	hub_fragment_cache_put(mem_hash, memories_md)
-	append(&instance_variables, Bootstrap_Variable{name = "agent_memories", value = memories_md, hash = mem_hash})
 	bootstrap_write_template_and_variables_json(&b, instance_template_hash, instance_variables[:])
 
 	strings.write_string(&b, ",\"skills\":[")
@@ -2217,12 +2235,11 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	defer delete(agent_memories_md)
 	agent_mem_hash := bootstrap_fragment_hash(agent_memories_md)
 	hub_fragment_cache_put(agent_mem_hash, agent_memories_md)
-	append(&variables, Bootstrap_Variable{name = "agent_memories", value = agent_memories_md, hash = agent_mem_hash})
 
 	// bootstrap_version = sha256(concat of input hashes) in a stable order. BT-6:
 	// the per-fragment sections are gone; the version now folds each skill
-	// (name=hash), the single template hash, and each variable (name=hash), so the
-	// ETag changes iff the template, a variable value, or the skill set changes.
+	// (name=hash), the single template hash, the memory_md hash, and each variable (name=hash), so the
+	// ETag changes iff the template, a variable value, the memory set, or the skill set changes.
 	vb := strings.builder_make()
 	defer strings.builder_destroy(&vb)
 	for item in skills_list {
@@ -2230,6 +2247,7 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		strings.write_string(&vb, item.hash); strings.write_byte(&vb, '\n')
 	}
 	strings.write_string(&vb, "template="); strings.write_string(&vb, template_hash); strings.write_byte(&vb, '\n')
+	strings.write_string(&vb, "memory_md="); strings.write_string(&vb, agent_mem_hash); strings.write_byte(&vb, '\n')
 	for v in variables {
 		strings.write_string(&vb, v.name); strings.write_byte(&vb, '=')
 		strings.write_string(&vb, v.hash); strings.write_byte(&vb, '\n')
@@ -2243,12 +2261,9 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, "coordinator" if is_coordinator else "worker")
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, provider)
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, project_id)
-	strings.write_string(&b, "\",\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
-
-	// BT-6: no per-fragment assembly sections — the bridge renders AGENTS.md from
-	// the single template blob + variables below. This agent-keyed manifest carries
-	// no header section (the bridge injects the header locally).
-	strings.write_string(&b, "]}]")
+	strings.write_string(&b, "\",\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[]},{\"kind\":\"MEMORY_MD\",\"relative_path\":\"MEMORY.md\",\"hash\":\"")
+	write_service_json_string(&b, agent_mem_hash)
+	strings.write_string(&b, "\"}]")
 
 	bootstrap_write_template_and_variables_json(&b, template_hash, variables[:])
 

@@ -1,5 +1,6 @@
 package agent
 
+import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
 
@@ -126,4 +127,28 @@ test_bootstrap_manifest_cache_key_includes_bridge :: proc(t: ^testing.T) {
 	k3 := bootstrap_manifest_cache_key("agt_1", "worker", "pi", "proj_1", "brg_1")
 	defer delete(k3)
 	testing.expect_value(t, k1, k3) // same inputs -> same key
+}
+
+@(test)
+test_bootstrap_build_memory_markdown_option_a_empty :: proc(t: ^testing.T) {
+	agent := domain.Agent{agent_id = "agt_1", owner_user_id = "user_1"}
+	out := bootstrap_build_memory_markdown_agent(nil, "user_1", agent, domain.Project_ID("proj_1"), "brg_1")
+	defer delete(out)
+	testing.expect_value(t, out, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+
+	inst := domain.Agent_Instance{agent_id = "agt_1", owner_user_id = "user_1"}
+	inst_out := bootstrap_build_memory_markdown_instance(nil, "user_1", inst)
+	defer delete(inst_out)
+	testing.expect_value(t, inst_out, "# Applicable Memories\n\nNo specific memories recorded for this agent.\n")
+}
+
+@(test)
+test_bootstrap_render_agent_manifest_includes_memory_md :: proc(t: ^testing.T) {
+	agent := domain.Agent{agent_id = "agt_1", name = "Worker", owner_user_id = "user_1"}
+	manifest, version := render_agent_manifest(nil, "user_1", agent, false, "jetski", "proj_1", "brg_1")
+	defer delete(manifest)
+	defer delete(version)
+
+	testing.expect(t, strings.contains(manifest, `{"kind":"MEMORY_MD","relative_path":"MEMORY.md","hash":"`))
+	testing.expect(t, version != "")
 }

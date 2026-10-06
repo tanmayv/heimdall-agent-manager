@@ -47,11 +47,26 @@ bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_i
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
 	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
 	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name}), content) != nil do return false
+	mem_content := extract_json_string(resp.body, "memory_md", "")
+	if mem_content == "" {
+		delete(mem_content)
+		mem_content = extract_json_string(resp.body, "MEMORY.md", "")
+	}
+	has_mem := mem_content != ""
+	if has_mem {
+		mem_path := strings.concatenate({strings.trim_right(run_dir, "/"), "/MEMORY.md"})
+		defer delete(mem_path)
+		_ = os.write_entire_file(mem_path, transmute([]u8)mem_content)
+	}
+	delete(mem_content)
 	skill_paths := bridge_bootstrap_write_skills(run_dir, provider, resp.body)
 	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
 	manifest := strings.builder_make()
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
 	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, agents_md_name); strings.write_string(&manifest, "\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
+	if has_mem {
+		strings.write_string(&manifest, ",{\"relative_path\":\"MEMORY.md\",\"kind\":\"MEMORY_MD\"}")
+	}
 	for skill_path in skill_paths {
 		strings.write_string(&manifest, ",{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, skill_path); strings.write_string(&manifest, "\",\"kind\":\"SKILL\"}")
 	}
@@ -452,6 +467,8 @@ bridge_bootstrap_collect_manifest_hashes :: proc(manifest_json: string) -> [dyna
 		file_objs := bridge_provider_json_top_level_objects(files_array)
 		defer bridge_bootstrap_free_object_slice(file_objs)
 		for f_obj in file_objs {
+			h_direct := bridge_provider_json_extract_string(f_obj, "hash", "")
+			if h_direct != "" { append(&out, h_direct) } else { delete(h_direct) }
 			if ass_arr, got := bridge_provider_json_extract_array(f_obj, "assembly"); got {
 				ass_objs := bridge_provider_json_top_level_objects(ass_arr)
 				defer bridge_bootstrap_free_object_slice(ass_objs)
@@ -805,6 +822,32 @@ bridge_bootstrap_build_file_set :: proc(manifest_json: string, d: Bridge_Bootstr
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
 	append(&files, Bridge_Bootstrap_File{file_id = strings.clone(agents_md_name), relative_path = strings.clone(agents_md_name), kind = "AGENTS_MD", content = agents_md, mode = 0o644})
 
+	if files_array, files_ok := bridge_provider_json_extract_array(manifest_json, "files"); files_ok {
+		file_objs := bridge_provider_json_top_level_objects(files_array)
+		defer bridge_bootstrap_free_object_slice(file_objs)
+		for f_obj in file_objs {
+			kind := bridge_provider_json_extract_string(f_obj, "kind", "")
+			if kind == "MEMORY_MD" {
+				rel_path := bridge_provider_json_extract_string(f_obj, "relative_path", "MEMORY.md")
+				if strings.trim_space(rel_path) == "" {
+					delete(rel_path)
+					rel_path = strings.clone("MEMORY.md")
+				}
+				h := bridge_provider_json_extract_string(f_obj, "hash", "")
+				content, found := bootstrap_cache_get(cache, h)
+				delete(h)
+				if !found {
+					delete(kind)
+					delete(rel_path)
+					bridge_bootstrap_free_file_set(files)
+					return nil, Bridge_Bootstrap_Result{ok = false, stage = "assemble", detail = "memory blob missing from cache"}
+				}
+				append(&files, Bridge_Bootstrap_File{file_id = strings.clone(rel_path), relative_path = rel_path, kind = "MEMORY_MD", content = content, mode = 0o644})
+			}
+			delete(kind)
+		}
+	}
+
 	if skills_array, skills_ok := bridge_provider_json_extract_array(manifest_json, "skills"); skills_ok {
 		skill_objs := bridge_provider_json_top_level_objects(skills_array)
 		defer bridge_bootstrap_free_object_slice(skill_objs)
@@ -1026,6 +1069,22 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 		}
 	}
 
+	for f_obj in file_objs {
+		kind := bridge_provider_json_extract_string(f_obj, "kind", "")
+		if kind == "MEMORY_MD" {
+			h := bridge_provider_json_extract_string(f_obj, "hash", "")
+			if h != "" {
+				append(&needed_hashes, h)
+				if cache != nil && !bootstrap_cache_has(cache, h) {
+					append(&missing_hashes, h)
+				}
+			} else {
+				delete(h)
+			}
+		}
+		delete(kind)
+	}
+
 	skill_objs := bridge_provider_json_top_level_objects(skills_array)
 	defer bridge_bootstrap_free_object_slice(skill_objs)
 	for s_obj in skill_objs {
@@ -1140,6 +1199,32 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 		if strings.trim_space(path) == "" { delete(path); if content != "" do delete(content); continue }
 		// content is an owned clone from the cache; hand ownership to the file entry.
 		append(&files, Bridge_Bootstrap_File{file_id = strings.clone(path), relative_path = path, kind = "SKILL", content = content, mode = 0o644})
+	}
+
+	for f_obj in file_objs {
+		kind := bridge_provider_json_extract_string(f_obj, "kind", "")
+		if kind == "MEMORY_MD" {
+			rel_path := bridge_provider_json_extract_string(f_obj, "relative_path", "MEMORY.md")
+			if strings.trim_space(rel_path) == "" {
+				delete(rel_path)
+				rel_path = strings.clone("MEMORY.md")
+			}
+			h := bridge_provider_json_extract_string(f_obj, "hash", "")
+			content := ""
+			if cache != nil {
+				got, found := bootstrap_cache_get(cache, h)
+				if !found {
+					delete(kind)
+					delete(rel_path)
+					delete(h)
+					return false
+				}
+				content = got
+			}
+			delete(h)
+			append(&files, Bridge_Bootstrap_File{file_id = strings.clone(rel_path), relative_path = rel_path, kind = "MEMORY_MD", content = content, mode = 0o644})
+		}
+		delete(kind)
 	}
 
 	ctl_shim, shim_ok := bridge_bootstrap_render_ham_ctl_shim(bridge_endpoint, agent_token, instance_id)
