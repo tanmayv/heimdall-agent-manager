@@ -471,11 +471,13 @@ export function ProvidersPanel() {
                 variant="secondary"
                 size="sm"
                 data-debug-id="enable-all-detected-btn"
+                title="Enable all detected"
+                aria-label="Enable all detected"
                 disabled={isEnabling}
                 onClick={() => void enableAllDetected()}
                 className="text-[11px] h-7 px-2"
               >
-                Enable all detected
+                Enable
               </Button>
             ) : null}
           </div>
@@ -545,6 +547,8 @@ export function ProvidersPanel() {
             <Button
               variant="secondary"
               size="sm"
+              aria-label="Add Custom Provider"
+              title="Add Custom Provider"
               onClick={() => {
                 setCustomForm(emptyForm);
                 setCustomDefaultTier('normal');
@@ -554,7 +558,7 @@ export function ProvidersPanel() {
               }}
               className="mt-4"
             >
-              Add Custom Provider
+              Add
             </Button>
           </div>
         ) : (
@@ -616,22 +620,27 @@ export function ProvidersPanel() {
   return (
     <>
       <ResourceContainer
-        title="Models & Providers"
-        description="Configure provider profiles across connected bridges. Providers run in your machine's shell environment; Heimdall never stores credentials."
+        title=""
+        description=""
+        className="[&_.ui-pageshell-header_h1:empty]:hidden [&_.ui-pageshell-header]:pt-0 [&_.ui-pageshell-header]:px-0"
         actions={
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
               data-debug-id="providers-refresh-caps-btn"
+              title="Refresh capabilities"
+              aria-label="Refresh capabilities"
               onClick={() => void refreshCapabilities()}
               disabled={onlineBridges.length === 0}
               className="min-h-[36px] text-xs"
             >
-              Refresh capabilities
+              Refresh
             </Button>
             <Button
               variant="primary"
               data-debug-id="providers-add-custom-btn"
+              aria-label="Add Custom Provider"
+              title="Add Custom Provider"
               onClick={() => {
                 setCustomForm(emptyForm);
                 setCustomDefaultTier('normal');
@@ -642,15 +651,17 @@ export function ProvidersPanel() {
               }}
               className="min-h-[36px] text-xs"
             >
-              Add Custom Provider
+              Add
             </Button>
             <a
               data-debug-id="providers-add-btn"
               href={shellHash(`/settings/providers/new${activeBridgeId ? `?bridge=${encodeURIComponent(activeBridgeId)}` : ''}`)}
               className="sr-only"
               aria-hidden="true"
+              aria-label="Add provider"
+              title="Add provider"
             >
-              Add provider
+              Add
             </a>
           </div>
         }
@@ -797,10 +808,12 @@ export function ProvidersPanel() {
           <Button
             variant="primary"
             data-debug-id="custom-modal-save-btn"
+            title="Add Custom Provider"
+            aria-label="Add Custom Provider"
             onClick={() => void saveCustomModalProvider()}
             disabled={customSaving || !customForm.name.trim() || !customBridgeId}
           >
-            {customSaving ? 'Adding…' : 'Add Provider'}
+            {customSaving ? 'Adding…' : 'Add'}
           </Button>
         </ModalFooter>
       </Modal>
@@ -912,8 +925,10 @@ function ProviderDetailView({
           onClick={onBack}
           leading={<Icon name="arrow-left" size="sm" />}
           className="text-xs -ml-2 mb-2"
+          aria-label="Back to all providers"
+          title="Back to all providers"
         >
-          Back to all providers
+          Back
         </Button>
       </div>
 
@@ -1062,11 +1077,13 @@ function ProviderDetailView({
             <Button
               variant="secondary"
               data-debug-id={`providers-inline-save-btn-${name}`}
+              title="Save Changes"
+              aria-label="Save Changes"
               onClick={() => void handleInlineSave()}
               disabled={!item.isOnline || isSaving}
               className="min-h-[34px] text-xs font-semibold"
             >
-              {isSaving ? 'Saving…' : 'Save Changes'}
+              {isSaving ? 'Saving…' : 'Save'}
             </Button>
           </div>
         </div>
@@ -1464,7 +1481,12 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
       ) : (
         <ProviderFormFields form={form} setForm={setForm} nameLocked={false} />
       )}
-      <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-subtle bg-surface/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end"><a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm hover:bg-surface-raised">Cancel</a><Button variant="primary" data-debug-id="providers-editor-save-btn" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">{saving ? 'Saving…' : 'Save provider'}</Button></div>
+      <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-subtle bg-surface/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end">
+        <a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-neutral-soft px-4 py-2 text-sm hover:bg-surface-raised">Cancel</a>
+        <Button variant="primary" data-debug-id="providers-editor-save-btn" title="Save provider" aria-label="Save provider" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
       </div>
     </PageShell>
   );
@@ -1692,13 +1714,15 @@ export function ChipListInput({
           <button
             data-debug-id={`${prefix}-insert-recommended-btn`}
             type="button"
+            title="Insert recommended flags"
+            aria-label="Insert recommended flags"
             onClick={() => {
               const toAdd = unaddedSuggestions.filter((s) => !values.includes(s));
               if (toAdd.length > 0) onChange([...values, ...toAdd]);
             }}
             className="inline-flex min-h-[28px] items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-medium text-accent hover:bg-accent/20 cursor-pointer transition-colors"
           >
-            Insert recommended flags
+            Insert
           </button>
         </div>
       )}
