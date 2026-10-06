@@ -113,12 +113,19 @@ router_dispatch :: proc(router: ^Router, req: Request) -> Response {
 	if router == nil {
 		return respond_error(domain.domain_error(.Internal_Error, "router is not configured"), req.request_id)
 	}
-	// Non-/api/v1 paths are closed EXCEPT for the public page allowlist
-	// (PUBLIC_PAGE_PATHS in legal_page_handlers.odin, consulted with exact
-	// string matching — no prefix/wildcard/trailing-slash/case tolerance).
-	// Everything else keeps 404ing here. The two upgrade dispatchers above
-	// deliberately keep their unconditional /api/v1 gate.
-	if !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) && !is_public_page_path(req.path) {
+	// Non-/api/v1 paths are CLOSED, with no exceptions. There was previously an
+	// allowlist escape hatch here (PUBLIC_PAGE_PATHS, admitting /policy and /toc
+	// for Google's OAuth consent-screen verifier); the legal pages now live as
+	// static files on www.brolabs.ai/heimdall/{toc,privacy} and the allowlist,
+	// its handlers, and the pages were removed with them.
+	//
+	// Do not reintroduce a non-/api/v1 route without reading this: anything
+	// admitted here bypasses the /api/v1 prefix gate, and the handlers behind it
+	// were deliberately unauthenticated. Re-adding one widens the hub's
+	// anonymous surface and is a security-significant change, not a routing
+	// convenience. The two upgrade dispatchers above keep their own
+	// unconditional /api/v1 gate regardless.
+	if !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) {
 		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
 	}
 	for route in router.routes {

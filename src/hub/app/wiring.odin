@@ -311,15 +311,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/device/verify", rawptr(&graph.device_auth_handlers), http.device_verify_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/approve", rawptr(&graph.device_auth_handlers), http.device_approve_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/token", rawptr(&graph.device_auth_handlers), http.device_token_handler)
-	// Deliberately UNAUTHENTICATED public pages: Google's OAuth consent screen
-	// requires an anonymously reachable privacy-policy and terms URL, fetched
-	// by its verifier with no credentials at all. The handlers call no
-	// require_auth* proc and read no headers; these are the only non-/api/v1
-	// routes, admitted by the PUBLIC_PAGE_PATHS allowlist in router_dispatch.
-	// HEAD is not registered: write_http_response always sends a body (wrong
-	// for HEAD) and Google fetches with GET.
-	http.router_add(&graph.router, "GET", "/policy", nil, http.policy_page_handler)
-	http.router_add(&graph.router, "GET", "/toc", nil, http.toc_page_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/auth/config", rawptr(&graph.user_handlers), http.auth_config_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
