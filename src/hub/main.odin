@@ -196,6 +196,17 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	if v := os.get_env_alloc("HEIMDALL_BRIDGE_AUTH_MODE", context.allocator); v != "" {
 		config.bridge_auth_mode = v
 	}
+	// public_app_origin resolves default -> env -> flag, same shape as the above.
+	//
+	// This MUST be overridable per deployment: it is the origin baked into the
+	// absolute click href of every Web Push notification
+	// (agent_action_handlers.odin:72 -> build_push_payload_json). Left at its
+	// built-in default, a second instance sends its users' notification clicks to
+	// the FIRST instance's host - which is precisely what the brolabs deployment
+	// was doing, silently, because no flag existed to say otherwise.
+	if v := os.get_env_alloc("HEIMDALL_PUBLIC_APP_ORIGIN", context.allocator); v != "" {
+		config.public_app_origin = v
+	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
@@ -225,6 +236,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.bridge_auth_mode = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--device-auth-verification-uri" && i + 1 < len(os.args) {
 			config.device_auth_verification_uri = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--public-app-origin" && i + 1 < len(os.args) {
+			config.public_app_origin = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.reaper_interval_seconds = int(parsed)
 			i += 1
