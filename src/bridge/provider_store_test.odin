@@ -541,9 +541,9 @@ test_provider_seeds_models_and_capabilities :: proc(t: ^testing.T) {
 		case "claude":
 			found_claude = true
 			testing.expect_value(t, profile.models.flag, "--model")
-			testing.expect_value(t, profile.models.cheap, "claude-3-5-haiku-latest")
-			testing.expect_value(t, profile.models.normal, "claude-3-5-sonnet-latest")
-			testing.expect_value(t, profile.models.smart, "claude-3-7-sonnet-latest")
+			testing.expect_value(t, profile.models.cheap, "claude-sonnet-4-8")
+			testing.expect_value(t, profile.models.normal, "claude-opus-5")
+			testing.expect_value(t, profile.models.smart, "claude-fable-5")
 		case "codex":
 			found_codex = true
 			testing.expect_value(t, profile.models.flag, "-m")
@@ -639,7 +639,7 @@ test_provider_enable_selected_json :: proc(t: ^testing.T) {
 
 	testing.expect(t, claude_ok, "claude override must exist")
 	testing.expect_value(t, claude_override.enabled, true)
-	testing.expect_value(t, claude_override.models.normal, "claude-3-5-sonnet-latest")
+	testing.expect_value(t, claude_override.models.normal, "claude-opus-5")
 
 	testing.expect(t, agy_ok, "antigravity override must exist")
 	testing.expect_value(t, agy_override.enabled, true)

@@ -188,9 +188,9 @@ test('formFromPreset converts preset into full ProviderForm', () => {
   assert.equal(claudeForm.enabled, true);
   assert.deepEqual(claudeForm.command, ['claude']);
   assert.equal(claudeForm.modelsFlag, '--model');
-  assert.equal(claudeForm.modelsCheap, 'claude-3-5-haiku-latest');
-  assert.equal(claudeForm.modelsNormal, 'claude-3-5-sonnet-latest');
-  assert.equal(claudeForm.modelsSmart, 'claude-3-7-sonnet-latest');
+  assert.equal(claudeForm.modelsCheap, 'claude-sonnet-4-8');
+  assert.equal(claudeForm.modelsNormal, 'claude-opus-5');
+  assert.equal(claudeForm.modelsSmart, 'claude-fable-5');
   assert.deepEqual(claudeForm.promptFlags, ['--prompt', '-p']);
   assert.deepEqual(claudeForm.yoloFlags, ['--dangerously-skip-permissions']);
   assert.equal(claudeForm.bootstrapFileName, 'CLAUDE.md');

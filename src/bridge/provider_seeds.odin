@@ -27,9 +27,9 @@ BRIDGE_PROVIDER_SEEDS := [?]Bridge_Provider_Seed{
 		bootstrap_file_name = "CLAUDE.md",
 		models = cfg_lib.Model_Tiers_Config{
 			flag   = "--model",
-			cheap  = "claude-3-5-haiku-latest",
-			normal = "claude-3-5-sonnet-latest",
-			smart  = "claude-3-7-sonnet-latest",
+			cheap  = "claude-sonnet-4-8",
+			normal = "claude-opus-5",
+			smart  = "claude-fable-5",
 		},
 		startup_detection = cfg_lib.Startup_Detection_Config{
 			enabled = true,

@@ -26,6 +26,9 @@ export const SUPPORTED_PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     defaultCommand: ['claude'],
     modelsFlag: '--model',
     availableModels: [
+      'claude-fable-5',
+      'claude-opus-5',
+      'claude-sonnet-4-8',
       'claude-3-7-sonnet-latest',
       'claude-3-5-sonnet-latest',
       'claude-3-5-haiku-latest',
@@ -35,9 +38,9 @@ export const SUPPORTED_PROVIDER_PRESETS: Record<string, ProviderPreset> = {
       'claude-3-opus-20240229',
     ],
     defaultTiers: {
-      cheap: 'claude-3-5-haiku-latest',
-      normal: 'claude-3-5-sonnet-latest',
-      smart: 'claude-3-7-sonnet-latest',
+      cheap: 'claude-sonnet-4-8',
+      normal: 'claude-opus-5',
+      smart: 'claude-fable-5',
     },
     promptFlags: ['--prompt', '-p'],
     yoloFlags: ['--dangerously-skip-permissions'],
