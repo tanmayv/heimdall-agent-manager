@@ -73,8 +73,6 @@ export function AgentPaneComposerPanel({
   onPin,
 }: AgentPaneComposerPanelProps) {
   const { theme } = useTheme();
-  // Mobile maximize / restore state (REQ-PANE-MOBILE-1)
-  const [isMobileMaximized, setIsMobileMaximized] = useState<boolean>(false);
   // Whether this agent is pinned to the /agent-monitor grid (per-browser localStorage).
   const [isPinned, setIsPinned] = useState<boolean>(false);
   useEffect(() => {
@@ -99,6 +97,14 @@ export function AgentPaneComposerPanel({
     cols: 80,
     rows: 120,
   });
+
+  // Track if panel has been expanded at least once or started, to lazily initialize xterm
+  const [hasBeenExpanded, setHasBeenExpanded] = useState<boolean>(isExpanded || isStarting);
+  useEffect(() => {
+    if (isExpanded || isStarting) {
+      setHasBeenExpanded(true);
+    }
+  }, [isExpanded, isStarting]);
 
   // --------------------------------------------------------------------------
   // Experimental Flag & Dual-Mode Configuration (REQ-STREAM-IMPL-4)
@@ -333,9 +339,41 @@ export function AgentPaneComposerPanel({
     userScrolledUpRef.current = !isAtBottom;
   }, []);
 
-  // Initialize @xterm/xterm Terminal instance when expanded
+  // Dispatch terminal fit and dimension synchronization (REQ-WINSIZE-3, REQ-STREAM-UI-POLISH-1)
+  const dispatchResize = useCallback(() => {
+    const container = terminalContainerRef.current;
+    const term = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!container || !term || !fitAddon) return;
+    try {
+      if (container.clientWidth > 0 && container.clientHeight > 0) {
+        // Mobile 80-column auto-fit (REQ-PANE-MOBILE-2)
+        if (container.clientWidth < 500) {
+          const fittedSize = computeFittedFontSize(container.clientWidth);
+          if (term.options.fontSize !== fittedSize) {
+            term.options.fontSize = fittedSize;
+          }
+        } else if (term.options.fontSize !== 12) {
+          term.options.fontSize = 12;
+        }
+        fitAddon.fit();
+        // If on a narrow viewport and measured cols is still under 80, decrement font size and re-fit
+        if (container.clientWidth < 500 && term.cols < 80 && (term.options.fontSize ?? 12) > 6) {
+          term.options.fontSize = Math.max(6, (term.options.fontSize ?? 12) - 1);
+          fitAddon.fit();
+        }
+        // Guarantee minimum usable dimensions (minimum 80 cols, 24 rows)
+        term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+      }
+      if (term.rows > 0 && term.cols > 0) {
+        handleResizeRef.current(term.rows, term.cols);
+      }
+    } catch (e) {}
+  }, []);
+
+  // Initialize @xterm/xterm Terminal instance when opened/expanded
   useEffect(() => {
-    if (!isExpanded || !terminalContainerRef.current) return;
+    if (!hasBeenExpanded || !terminalContainerRef.current) return;
     const container = terminalContainerRef.current;
 
     const initialFontSize = typeof container.clientWidth === 'number' && container.clientWidth > 0
@@ -381,33 +419,6 @@ export function AgentPaneComposerPanel({
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       handleResizeRef.current(rows, cols);
     });
-
-    const dispatchResize = () => {
-      try {
-        if (container.clientWidth > 0 && container.clientHeight > 0) {
-          // Mobile 80-column auto-fit (REQ-PANE-MOBILE-2)
-          if (container.clientWidth < 500) {
-            const fittedSize = computeFittedFontSize(container.clientWidth);
-            if (term.options.fontSize !== fittedSize) {
-              term.options.fontSize = fittedSize;
-            }
-          } else if (term.options.fontSize !== 12) {
-            term.options.fontSize = 12;
-          }
-          fitAddon.fit();
-          // If on a narrow viewport and measured cols is still under 80, decrement font size and re-fit
-          if (container.clientWidth < 500 && term.cols < 80 && (term.options.fontSize ?? 12) > 6) {
-            term.options.fontSize = Math.max(6, (term.options.fontSize ?? 12) - 1);
-            fitAddon.fit();
-          }
-          // Guarantee minimum usable dimensions (minimum 80 cols, 24 rows)
-          term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
-        }
-        if (term.rows > 0 && term.cols > 0) {
-          handleResizeRef.current(term.rows, term.cols);
-        }
-      } catch (e) {}
-    };
 
     // Dispatch initial resize immediately after initial fitAddon.fit() on mount/expansion
     dispatchResize();
@@ -468,7 +479,24 @@ export function AgentPaneComposerPanel({
       fitAddonRef.current = null;
       lastWrittenOutputRef.current = '';
     };
-  }, [isExpanded]);
+  }, [hasBeenExpanded, dispatchResize]);
+
+  // Recalculate terminal dimensions and fitAddon accurately upon expansion / transition completion
+  useEffect(() => {
+    if (isExpanded && terminalRef.current && fitAddonRef.current) {
+      dispatchResize();
+      const t1 = setTimeout(() => {
+        dispatchResize();
+      }, 150);
+      const t2 = setTimeout(() => {
+        dispatchResize();
+      }, 320);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [isExpanded, dispatchResize]);
 
   // When pane is open but terminal is awaiting initial output during startup, show subtle 'Starting agent…' loading indicator
   useEffect(() => {
@@ -539,172 +567,67 @@ export function AgentPaneComposerPanel({
     }
   }, [isExpanded]);
 
-  if (!isExpanded) {
-    return null;
-  }
-
-  const effectiveRuntimeStatus = streamRuntimeStatus || runtimeStatus;
-  const isStopped = effectiveRuntimeStatus === 'stopped' || effectiveRuntimeStatus === 'failed';
-  const isBlocked = effectiveRuntimeStatus === 'blocked' || effectiveRuntimeStatus === 'startup_blocked';
-  const isUpdatingOrRunning = Boolean(isFetching || effectiveRuntimeStatus === 'running' || effectiveRuntimeStatus === 'active');
-  const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false
-    ? 'paused'
-    : isBlocked
-    ? 'blocked'
-    : isStarting
-    ? 'starting'
-    : isStreamingActive
-    ? 'streaming'
-    : isExpanded
-    ? '500ms continuous'
-    : '5m';
-
-  const handleClose = onClose || onToggleExpand;
-
   return (
     <div
       data-debug-id="agent-pane-composer-panel"
-      className={`overflow-hidden rounded-xl border border-subtle bg-surface ${className}`}
+      aria-hidden={!isExpanded}
+      className={`transition-all duration-300 ease-in-out overflow-hidden rounded-xl bg-surface ${
+        isExpanded
+          ? 'max-h-[500px] opacity-100 transform-none pointer-events-auto'
+          : 'max-h-0 opacity-0 -translate-y-1 pointer-events-none !mb-0 !p-0'
+      } ${className}`}
     >
-      {/* Header controls */}
-      {!hideHeader && (
-      <div
-        data-debug-id="agent-pane-composer-header"
-        className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
-      >
-        <div className="flex items-center gap-2">
-          {/* Status indicator dot (warning if blocked, pulsing green if updating/running) */}
-          <span
-            data-debug-id="agent-pane-status-dot"
-            title={isBlocked ? 'Blocked' : isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
-            className={`h-2 w-2 rounded-full ${
-              isBlocked
-                ? 'bg-warning shadow-glow-warning animate-soft-pulse'
-                : isStarting
-                ? 'bg-accent animate-pulse'
-                : isUpdatingOrRunning
-                ? 'bg-success animate-pulse'
-                : isStopped
-                ? 'bg-faint'
-                : 'bg-success/70'
-            }`}
-          />
-          <span data-debug-id="agent-pane-title" className="font-semibold text-primary">
-            Terminal Output
-          </span>
-          {/* Refresh interval tag */}
-          <span
-            data-debug-id="agent-pane-interval-tag"
-            className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
-              isBlocked ? 'bg-warning/20 text-warning font-semibold' : 'bg-neutral-soft text-muted'
-            }`}
-          >
-            {intervalLabel}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1">
-          {/* Pin to Agent Monitor grid */}
-          {agentInstanceId ? (
-            <button
-              type="button"
-              data-debug-id="agent-pane-pin-btn"
-              title={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
-              aria-label={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
-              aria-pressed={isPinned}
-              onClick={handleTogglePin}
-              className={`grid h-6 w-6 place-items-center rounded hover:bg-neutral-soft ${isPinned ? 'text-accent' : 'text-muted hover:text-primary'}`}
-            >
-              <Icon name="grid" size={12} />
-            </button>
-          ) : null}
-
-          {/* Manual refresh button */}
+      <div className="relative w-full">
+        {/* Floating top-right pin overlay button (REQ-STREAM-UI-POLISH-1) */}
+        {agentInstanceId ? (
           <button
             type="button"
-            data-debug-id="agent-pane-refresh-btn"
-            title="Refresh terminal output"
-            aria-label="Refresh terminal output"
-            onClick={() => {
-              if (isStreamingActive || (isStreamingExperimentEnabled && !fallbackToPolling)) {
-                reconnectStream();
-              }
-              refetch();
-            }}
-            disabled={isLoading || isFetching}
-            className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+            data-debug-id="agent-pane-pin-btn"
+            title={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+            aria-label={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+            aria-pressed={isPinned}
+            onClick={handleTogglePin}
+            className={`absolute top-2 right-2 z-10 rounded-md p-1 shadow-sm backdrop-blur transition-colors bg-surface-raised/80 hover:bg-surface-raised ${
+              isPinned ? 'text-accent hover:text-accent' : 'text-muted hover:text-primary'
+            }`}
           >
-            <Icon name="refresh" size={12} className={isFetching ? 'animate-spin' : ''} />
+            <Icon name="grid" size={14} />
           </button>
+        ) : null}
 
-          {/* Maximize / restore toggle for mobile viewports (REQ-PANE-MOBILE-1) */}
-          <button
-            type="button"
-            data-debug-id="agent-pane-maximize-btn"
-            title={isMobileMaximized ? 'Restore compact terminal height' : 'Maximize terminal'}
-            aria-label={isMobileMaximized ? 'Restore compact terminal height' : 'Maximize terminal'}
-            aria-pressed={isMobileMaximized}
-            onClick={() => setIsMobileMaximized((prev) => !prev)}
-            className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary sm:hidden"
-          >
-            <Icon name={isMobileMaximized ? 'minimize' : 'maximize'} size={12} />
-          </button>
-
-          {/* Collapse chevron */}
-          {handleClose ? (
-            <button
-              type="button"
-              data-debug-id="agent-pane-collapse-btn"
-              title="Collapse terminal output"
-              aria-label="Collapse terminal output"
-              onClick={handleClose}
-              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
+        {/* Interactive xterm terminal container (REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2) */}
+        <div
+          ref={terminalContainerRef}
+          data-debug-id="agent-pane-terminal"
+          onClick={() => terminalRef.current?.focus()}
+          tabIndex={isExpanded ? 0 : -1}
+          role="region"
+          aria-label="Interactive Terminal"
+          style={{ backgroundColor: theme.terminal.background }}
+          className="chat-scrollbar relative w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none min-h-[140px] h-[140px] max-h-[200px] sm:min-h-[360px] sm:h-[360px] sm:max-h-[420px]"
+        >
+          {isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 && !output && (
+            <div
+              data-debug-id="agent-pane-starting-indicator"
+              className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 font-sans text-xs text-muted"
             >
-              <Icon name="chevron-down" size={14} />
-            </button>
-          ) : null}
+              <span className="h-2 w-2 rounded-full bg-accent animate-ping" />
+              <span>Starting agent…</span>
+            </div>
+          )}
         </div>
-      </div>
-      )}
 
-      {/* Interactive xterm terminal container (REQ-PANE-MOBILE-1, REQ-PANE-MOBILE-2) */}
-      <div
-        ref={terminalContainerRef}
-        data-debug-id="agent-pane-terminal"
-        onClick={() => terminalRef.current?.focus()}
-        tabIndex={0}
-        role="region"
-        aria-label="Interactive Terminal"
-        style={{ backgroundColor: theme.terminal.background }}
-        className={`chat-scrollbar relative w-full overflow-x-auto p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none sm:min-h-[360px] sm:h-[360px] sm:max-h-[420px] ${
-          isMobileMaximized
-            ? 'min-h-[360px] h-[360px] max-h-[420px]'
-            : 'min-h-[140px] h-[140px] max-h-[200px]'
-        }`}
-      >
-        {isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 && !output && (
-          <div
-            data-debug-id="agent-pane-starting-indicator"
-            className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 font-sans text-xs text-muted"
-          >
-            <span className="h-2 w-2 rounded-full bg-accent animate-ping" />
-            <span>Starting agent…</span>
-          </div>
-        )}
+        {/* Accessible fallback & static verification pre element */}
+        <pre
+          ref={preRef}
+          onScroll={handleScroll}
+          data-debug-id="agent-pane-output"
+          aria-hidden="true"
+          className="sr-only chat-scrollbar overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-primary max-h-[200px] sm:max-h-[420px]"
+        >
+          {output || (isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 ? 'Starting agent…' : isLoading ? 'Loading terminal output…' : '')}
+        </pre>
       </div>
-
-      {/* Accessible fallback & static verification pre element */}
-      <pre
-        ref={preRef}
-        onScroll={handleScroll}
-        data-debug-id="agent-pane-output"
-        aria-hidden="true"
-        className={`sr-only chat-scrollbar overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-primary sm:max-h-[420px] ${
-          isMobileMaximized ? 'max-h-[420px]' : 'max-h-[200px]'
-        }`}
-      >
-        {output || (isStarting && !hasReceivedOutputRef.current && streamBufferRef.current.length === 0 ? 'Starting agent…' : isLoading ? 'Loading terminal output…' : '')}
-      </pre>
     </div>
   );
 }

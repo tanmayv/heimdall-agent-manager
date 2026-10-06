@@ -46,22 +46,24 @@ def main() -> None:
     # Hook usage
     require("useAgentPaneSubscription" in panel_src, "Component must use useAgentPaneSubscription hook")
 
-    # Header controls
-    require('data-debug-id="agent-pane-composer-header"' in panel_src, "Header must have data-debug-id")
-    require('data-debug-id="agent-pane-status-dot"' in panel_src, "Status indicator dot must have data-debug-id")
-    require("animate-pulse" in panel_src and ("bg-success" in panel_src or "bg-emerald-400" in panel_src), "Status dot must pulse green when updating/running")
-    require("Terminal Output" in panel_src, "Header must include 'Terminal Output' title")
-    require('data-debug-id="agent-pane-interval-tag"' in panel_src, "Refresh interval tag must have data-debug-id")
-    require("500ms" in panel_src, "Interval tag must surface 500ms interval")
-    require('data-debug-id="agent-pane-refresh-btn"' in panel_src, "Manual refresh button must have data-debug-id")
+    # Header removal & outer border removal (REQ-STREAM-UI-POLISH-1)
+    require('data-debug-id="agent-pane-composer-header"' not in panel_src, "Header must be removed per REQ-STREAM-UI-POLISH-1")
+    require('border border-subtle' not in panel_src, "Outer container border must be removed per REQ-STREAM-UI-POLISH-1")
+    require('data-debug-id="agent-pane-status-dot"' not in panel_src, "Status indicator dot must be removed from output surface")
+    require("Terminal Output" not in panel_src, "Header title 'Terminal Output' must be removed")
+    require('data-debug-id="agent-pane-interval-tag"' not in panel_src, "Refresh interval tag must be removed")
+    require('data-debug-id="agent-pane-refresh-btn"' not in panel_src, "Manual refresh button must be removed from output surface")
     require('data-debug-id="agent-pane-copy-btn"' not in panel_src, "No copy button allowed per user requirement")
     require(all(ord(c) <= 0x1F000 for c in panel_src), "Zero emojis allowed in panel")
-    require('data-debug-id="agent-pane-collapse-btn"' in panel_src, "Collapse button must have data-debug-id")
-    require("chevron-down" in panel_src, "Collapse button must use chevron-down icon")
-    require('data-debug-id="agent-pane-maximize-btn"' in panel_src,
-            "Header must include maximize/restore toggle button for mobile viewports (REQ-PANE-MOBILE-1)")
-    require("maximize" in panel_src and "minimize" in panel_src,
-            "Maximize button must support maximize and minimize icons")
+    require('data-debug-id="agent-pane-collapse-btn"' not in panel_src, "Collapse button must be removed from output surface")
+    require('data-debug-id="agent-pane-maximize-btn"' not in panel_src, "Maximize button must be removed from output surface")
+
+    # Floating top-right pin overlay button (REQ-STREAM-UI-POLISH-1)
+    require('data-debug-id="agent-pane-pin-btn"' in panel_src, "Floating pin button must have data-debug-id")
+    require("absolute top-2 right-2 z-10" in panel_src, "Floating pin button must be positioned on top-right overlay")
+    require("handleTogglePin" in panel_src and "isPinned" in panel_src, "Floating pin button must wire handleTogglePin and isPinned")
+    require("backdrop-blur" in panel_src and "bg-surface-raised" in panel_src, "Floating pin button must use subtle translucent/backdrop styling")
+    require("Pin to Agent Monitor" in panel_src and "Unpin from monitor" in panel_src, "Floating pin button must include tooltip and aria-label")
 
     # Interactive terminal cursor & keystroke refetch checks (REQ-STREAM-2, REQ-CURSOR-1)
     require("cursorBlink: false" in panel_src, "Terminal cursorBlink must be false")
@@ -106,8 +108,11 @@ def main() -> None:
     require("width:" in panel_src and "lineLimit:" in panel_src,
             "useAgentPaneSubscription must receive dynamic width and lineLimit")
 
-    # Collapsed guard
-    require("if (!isExpanded)" in panel_src or "!isExpanded &&" in panel_src, "Component must hide output when not expanded")
+    # Smooth open/close transitions (REQ-STREAM-UI-POLISH-1)
+    require("if (!isExpanded) return null;" not in panel_src, "Abrupt null return on collapsed state must be removed")
+    require("transition-all" in panel_src and "duration-300" in panel_src and "ease-in-out" in panel_src,
+            "Component must animate open/close transitions with duration-300 ease-in-out")
+    require("max-h-0" in panel_src and "opacity-0" in panel_src, "Component must collapse height and opacity when not expanded")
 
     print("[*] Checking ConversationThreadPage.tsx...")
     require(PAGE_FILE.exists(), "ConversationThreadPage.tsx must exist")

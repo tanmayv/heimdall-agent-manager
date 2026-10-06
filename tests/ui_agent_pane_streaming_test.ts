@@ -131,29 +131,13 @@ test('End-to-end keystroke roundtrip latency meets sub-10ms budget', async () =>
   );
 });
 
-test('AgentPaneComposerPanel.tsx wires onStatus and surfaces blocked state in header controls', () => {
+test('AgentPaneComposerPanel.tsx wires onStatus callback to track stream status (REQ-STREAM-UI-POLISH-1)', () => {
   assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
   const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
 
   // 1. Wires onStatus in useAgentStream
   assert.ok(src.includes('onStatus: (status) =>'), 'must provide onStatus callback to useAgentStream');
   assert.ok(src.includes('setStreamRuntimeStatus(status)'), 'must update stream runtime status on status frame');
-
-  // 2. Evaluates isBlocked
-  assert.ok(
-    src.includes("effectiveRuntimeStatus === 'blocked' || effectiveRuntimeStatus === 'startup_blocked'"),
-    'must evaluate isBlocked for blocked and startup_blocked states'
-  );
-
-  // 3. Status indicator dot & label show blocked state
-  assert.ok(
-    src.includes("title={isBlocked ? 'Blocked' : isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}"),
-    'status dot title must indicate Blocked'
-  );
-  assert.ok(
-    src.includes("isBlocked") && src.includes("? 'blocked'"),
-    'interval label must indicate blocked when agent is blocked'
-  );
 });
 
 test('AgentPaneComposerPanel.tsx disables convertEol in streaming mode, enforces >=80 column floor, and allows horizontal scroll', () => {
@@ -285,15 +269,12 @@ test('REQ-STREAM-RECONNECT-27: AgentPaneComposerPanel accepts runCount and start
   assert.ok(src.includes('terminalRef.current.reset()'), 'must reset terminal on stream reconnect');
 });
 
-test('REQ-STREAM-RECONNECT-27: AgentPaneComposerPanel manual refresh button reconnects stream when streaming is enabled/active', () => {
+test('REQ-STREAM-UI-POLISH-1: AgentPaneComposerPanel removes header refresh button and controls', () => {
   assert.ok(fs.existsSync(AGENT_PANE_COMPOSER), 'AgentPaneComposerPanel.tsx must exist');
   const src = fs.readFileSync(AGENT_PANE_COMPOSER, 'utf8');
 
-  // Manual refresh button triggers reconnectStream
-  assert.ok(src.includes('data-debug-id="agent-pane-refresh-btn"'), 'must include refresh button');
-  const refreshSection = src.slice(src.indexOf('data-debug-id="agent-pane-refresh-btn"'), src.indexOf('data-debug-id="agent-pane-refresh-btn"') + 400);
-  assert.ok(refreshSection.includes('reconnectStream()'), 'refresh button onClick must invoke reconnectStream()');
-  assert.ok(refreshSection.includes('refetch()'), 'refresh button onClick must invoke refetch()');
+  // Manual refresh button removed per REQ-STREAM-UI-POLISH-1
+  assert.ok(!src.includes('data-debug-id="agent-pane-refresh-btn"'), 'must not include refresh button');
 });
 
 test('REQ-STREAM-RECONNECT-27: ConversationThreadPage forwards runCount and startedAt to AgentPaneComposerPanel', () => {
