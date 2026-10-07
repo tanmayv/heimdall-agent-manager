@@ -56,13 +56,17 @@ new_bridge_service_with_runtime :: proc(repo: ^iface.Bridge_Repository, bridge_c
 create_enrollment :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, input: Create_Enrollment_Input) -> (Create_Enrollment_Result, bool, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return Create_Enrollment_Result{}, false, err
-	token := platform.generate_id(service.ids, "hbe_")
+	// The enrolment id is minted FIRST because the token embeds it as its public
+	// lookup key (see bridge_credential.odin for the format).
+	enrollment_id := platform.generate_id(service.ids, "benr_")
+	token, token_hash, token_ok := issue_credential(ENROLLMENT_TOKEN_PREFIX, enrollment_id)
+	if !token_ok do return Create_Enrollment_Result{}, false, domain.domain_error(.Provider_Unavailable, "secure random source unavailable; no enrollment token was issued")
 	now := platform.clock_now(service.clock)
 	enrollment := domain.Bridge_Enrollment{
-		enrollment_id = platform.generate_id(service.ids, "benr_"),
+		enrollment_id = enrollment_id,
 		owner_user_id = owner,
 		label = input.label,
-		token_hash = hash_token(token),
+		token_hash = token_hash,
 		status = .Pending,
 		expires_at = input.expires_at,
 		created_at = now,
@@ -93,19 +97,35 @@ enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (
 	if input.enrollment_token == "" do return Enroll_Bridge_Result{}, false, domain.domain_error(.Unauthenticated, "enrollment token is required")
 	hub_url := strings.trim_space(input.hub_url)
 	if hub_url != "" && !valid_hub_base_url(hub_url) do return Enroll_Bridge_Result{}, false, domain.domain_error(.Validation_Failed, "hub_url must be a valid http(s) base URL")
-	enrollment, ok, err := iface.bridge_get_enrollment_by_token_hash(service.repo, hash_token(input.enrollment_token))
-	if !ok do return Enroll_Bridge_Result{}, false, err
+	// Find the row by the token's public id, then verify the secret in constant
+	// time. A malformed token, an unknown id and a wrong secret all return the
+	// SAME error, so this does not become an oracle for which enrolment ids exist.
+	enrollment_id, presented_secret, split_ok := split_credential(ENROLLMENT_TOKEN_PREFIX, input.enrollment_token)
+	if !split_ok do return Enroll_Bridge_Result{}, false, domain.domain_error(.Unauthenticated, "enrollment token is invalid")
+	enrollment, ok, _ := iface.bridge_get_enrollment(service.repo, enrollment_id)
+	if !ok {
+		// Not an early return: burn the same hash+compare a wrong secret would,
+		// so a missing row and a bad secret are indistinguishable by timing as
+		// well as by error. See verify_credential_miss.
+		_ = verify_credential_miss(presented_secret)
+		return Enroll_Bridge_Result{}, false, domain.domain_error(.Unauthenticated, "enrollment token is invalid")
+	}
+	if !verify_credential(enrollment.token_hash, presented_secret) do return Enroll_Bridge_Result{}, false, domain.domain_error(.Unauthenticated, "enrollment token is invalid")
 	if enrollment.status != .Pending do return Enroll_Bridge_Result{}, false, domain.domain_error(.Conflict, "enrollment token has already been used or revoked")
 	now := platform.clock_now(service.clock)
 	if enrollment.expires_at != "" && now != "" && enrollment.expires_at <= now do return Enroll_Bridge_Result{}, false, domain.domain_error(.Conflict, "enrollment token has expired")
 	hostname := strings.trim_space(input.machine_hostname)
 	if hostname == "" do hostname = "unknown-host"
-	bridge_token := platform.generate_id(service.ids, "hbr_")
+	// Same ordering reason as create_enrollment: the bridge token embeds the
+	// bridge id as its lookup key.
+	bridge_id := platform.generate_id(service.ids, "brg_")
+	bridge_token, bridge_token_hash, bridge_token_ok := issue_credential(BRIDGE_TOKEN_PREFIX, bridge_id)
+	if !bridge_token_ok do return Enroll_Bridge_Result{}, false, domain.domain_error(.Provider_Unavailable, "secure random source unavailable; no bridge token was issued")
 	label := enrollment.label
 	customized := label != ""
 	if label == "" do label = hostname
 	bridge := domain.Bridge{
-		bridge_id = platform.generate_id(service.ids, "brg_"),
+		bridge_id = bridge_id,
 		owner_user_id = enrollment.owner_user_id,
 		label = label,
 		label_is_user_customized = customized,
@@ -115,7 +135,7 @@ enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (
 		capabilities_json = input.capabilities_json,
 		hub_url = hub_url,
 		status = .Offline,
-		bridge_token_hash = hash_token(bridge_token),
+		bridge_token_hash = bridge_token_hash,
 		created_at = now,
 		updated_at = now,
 		last_seen_at = now,
@@ -359,8 +379,22 @@ valid_hub_authority :: proc(value: string) -> bool {
 
 verify_bridge_token :: proc(service: ^Bridge_Service, token: string) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
 	if token == "" do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is required")
-	bridge, ok, err := iface.bridge_get_bridge_by_token_hash(service.repo, hash_token(token))
-	if !ok do return contracts.Auth_Context{}, false, err
+	// As in enroll_bridge: locate the row by the token's public id, then verify
+	// the secret in constant time, with one shared error for every failure mode.
+	// verify_credential rejects an empty or legacy stored hash, so a bridge row
+	// whose bridge_token_hash was never set cannot be authenticated by an empty
+	// secret.
+	bridge_id, presented_secret, split_ok := split_credential(BRIDGE_TOKEN_PREFIX, token)
+	if !split_ok do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is invalid")
+	bridge, ok, _ := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !ok {
+		// Same reason as enroll_bridge: equalise the miss path rather than
+		// returning early, or the response time tells an enumerating attacker
+		// which bridge ids are real.
+		_ = verify_credential_miss(presented_secret)
+		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is invalid")
+	}
+	if !verify_credential(bridge.bridge_token_hash, presented_secret) do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is invalid")
 	if bridge.status == .Revoked do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge is revoked")
 	return contracts.Auth_Context{kind = .Bridge_Token, user_id = string(bridge.owner_user_id), bridge_id = bridge.bridge_id}, true, domain.Domain_Error{}
 }
@@ -372,16 +406,6 @@ refresh_hostname :: proc(service: ^Bridge_Service, bridge: domain.Bridge, hostna
 	if !updated.label_is_user_customized do updated.label = hostname
 	updated.updated_at = platform.clock_now(service.clock)
 	return updated
-}
-
-hash_token :: proc(token: string) -> string {
-	// Deterministic non-cryptographic placeholder for the repository boundary/tests;
-	// replace with platform.hash argon2/sha before production secrets are stored.
-	acc: u64 = 1469598103934665603
-	for b in transmute([]byte)token {
-		acc = (acc ~ u64(b)) * 1099511628211
-	}
-	return fmt.tprintf("h_%016x", acc)
 }
 
 write_service_json_string :: proc(b: ^strings.Builder, value: string) {

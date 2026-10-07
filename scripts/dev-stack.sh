@@ -160,7 +160,10 @@ stop() {
   # Clean up any stale copies bound to the local hub only.
   _stop_by_match "ham-hub .*--listen ${HUB_ADDR}"
   _stop_by_match "ham-dev-proxy .*${PROXY_ADDR}"
-  _stop_by_match "ham-bridge .*hub http://127.0.0.1:8081"
+  # Match on $HUB_ADDR, not a hardcoded 8081: with HAM_DEV_HUB_ADDR overridden
+  # the literal both MISSED the dev bridge this script started and could match
+  # an UNRELATED bridge that happens to talk to :8081 on a shared host.
+  _stop_by_match "ham-bridge .*hub http://${HUB_ADDR}"
   echo "[dev-stack] local stack stopped (mundus bridge left running)."
 }
 

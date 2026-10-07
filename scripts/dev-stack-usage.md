@@ -2,7 +2,7 @@
 
 > **Living document.** When you discover something new, fix something wrong, or add a workflow, edit this file. Remove sections that become stale. Add sections as new parts of the stack are exercised. Date significant entries so it is clear when a section was last verified.
 >
-> Last verified: 2026-09-03 (BT-1..BT-2a bootstrap engine work + live BT-5 stack run).
+> Last verified: 2026-10-07 — two concurrent streams: REQ-IMPL-1 bridge credential work (added §1a isolated ports / throwaway DB and §1b the nix-excludes-untracked-files trap) and REQ-IMPL-2 bridge device-grant enrollment (corrected the §1 toolchain pin, added the `-lsqlite3` link step, and recorded the parallel-runner loopback flake plus the `tprintf` brace trap in §13).
 
 ---
 
@@ -45,14 +45,39 @@ scripts/dev-stack.sh start     # restarts with the fresh token
 ```
 
 **Building without nix on PATH (agent / CI environment):**
+
+**Prefer the dev shell**, which hands you the compiler the flake actually pins, so this
+section cannot rot again:
 ```bash
-ODIN=/nix/store/vchib3sshhfhmizi3cfv6hjwizmd0z03-odin-dev-2026-05/bin/odin
-# ↑ use the 2026-05 build; the 2026-07a build errors on a pre-existing .Haiku OS enum
-# in wrapper_endpoint.odin that is unrelated to the source under development.
+nix develop -c odin build src/hub -collection:odin_test=src -out:/tmp/ham-hub
+```
+
+If `nix` is not on PATH at all, fall back to a direct store path. **This is a
+known-fragile workaround** — a store path can be garbage-collected, which is exactly what
+happened to the previous pin here:
+```bash
+# Verified 2026-10-07. Use the 2026-07a build.
+ODIN=/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin
+$ODIN check src/hub -collection:odin_test=src          # clean
 $ODIN build src/hub    -collection:odin_test=src -out:/tmp/ham-hub
 $ODIN build src/bridge -collection:odin_test=src -out:/tmp/ham-bridge
 $ODIN build src/wrapper -collection:odin_test=src -out:/tmp/ham-wrapper
 ```
+
+**Linking the hub needs libsqlite3 on `LIBRARY_PATH`** when nix is not providing it, or
+`odin build`/`odin test` fails at the link step with `cannot find -lsqlite3` (a LINK error,
+not a compile error — the code is fine):
+```bash
+export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/lib:$LIBRARY_PATH
+```
+
+**Do NOT use the 2026-05 build, and ignore the old `.Haiku` warning.** Verified
+2026-10-07: the previously pinned `odin-dev-2026-05` store path **no longer exists**, and
+on a 2026-05 compiler the tree fails in `src/hub/service/push/webpush_encoding.odin:52`,
+where `base64.decode` is called with the 4-argument signature that only 2026-07a's core
+library has. The `.Haiku` enum error that motivated the old advice does not reproduce on
+2026-07a — `odin check src/hub` is clean. If you see a `.Haiku` error, you are on an
+older compiler than 2026-07a.
 
 **Starting the stack manually (no nix):**
 ```bash
@@ -75,6 +100,66 @@ result-bridge/bin/ham-bridge \
   --local-endpoint-port 49328 \
   --local-run-dir /tmp/heimdall-bridge-dev
 ```
+
+---
+
+## 1a. Isolated ports and a throwaway DB — READ BEFORE `start` (verified 2026-10-07)
+
+**The defaults in section 1 do not work on this host, and one of them is destructive.** Run the stack like this instead:
+
+```bash
+HAM_DEV_HUB_ADDR=127.0.0.1:8191 \
+HAM_DEV_PROXY_ADDR=127.0.0.1:8190 \
+HAM_DEV_HUB_DB=/tmp/ham-isolated/hub.db \
+HAM_DEV_BRIDGE_RUN_DIR=/tmp/ham-isolated/bridge-run \
+scripts/dev-stack.sh start
+```
+Then `PROXY=http://127.0.0.1:8190` and `HUB=http://127.0.0.1:8191` for every call in the sections below.
+
+### Why: `HAM_DEV_HUB_DB` is the important one
+
+`dev-stack.sh:35` defaults `HUB_DB` to **`$ROOT/hub.db` — the repository's own database**, and `start` runs migrations against whatever it is given. Starting the stack with the default therefore **migrates and mutates the live repo `hub.db`**, which is not a dev artifact. Always point `HAM_DEV_HUB_DB` at a throwaway path. Deleting that file is how you get a clean slate; never delete `./hub.db` for that purpose.
+
+### Why: the default ports are already taken on this host
+
+`:8080` (proxy) and `:8081` (hub) are both bound in normal operation, and `:8081` may be the hub your own agent session is talking to. Alongside them run a QA stack (`:8110`/`:8111`/`:8112`, bridge `:49423`) and the production mundus bridge (`:49323`/`:49324`). Check before you pick:
+
+```bash
+ss -ltnp | grep -E '8080|8081|8110|8111|8190|8191|4932|4942'
+```
+`start` fails loudly with `Address_In_Use` rather than silently misbehaving (`dev-stack.sh:180-190`), so a crash here means pick another port — but note the stack's *bridge* ports (`49327`/`49328`) are free by default and need no override.
+
+**Stopping is safe for the other stacks.** `stop` kills by pidfile first, and its fallback pattern matches on `$HUB_ADDR`, so it cannot reach the QA bridge (`--hub http://127.0.0.1:8112`) or the production bridge (`--hub https://hub.mundus.in`). Verify with `ps -eo pid,args | grep ham-bridge` if you are about to run `stop` on a shared host.
+
+## 1b. `nix build` SILENTLY EXCLUDES YOUR NEW FILES (verified 2026-10-07)
+
+**If you have added a new `.odin` file, `scripts/dev-stack.sh build` does not build your change.**
+
+`build()` runs `nix build "$ROOT#ham-hub"`, and a flake takes its source from **git-tracked files only**. A new file is untracked (`git status` shows `??`), so nix copies the tree *without* it. You then get either a confusing compile error about an undeclared name that is plainly defined in your editor, or — worse — a binary that silently predates your work, and any evidence you collect from the stack is meaningless.
+
+**The tell is the path in the error.** A sandbox copy, not your checkout:
+```
+/build/9c83al8vqb03rxsjr7ydra2q6nl5qw40-source/src/hub/service/bridge/bridge_service.odin(394:7)
+  Error: Undeclared name: verify_credential
+```
+If the failing path starts `/build/<hash>-source/`, the compiler is reading nix's copy and the file it cannot see is one you have not `git add`ed.
+
+(Note: this repo **is** a git repo even though some project metadata records `VCS: none`.)
+
+Two ways out:
+
+```bash
+# A. Build from the working tree with odin directly (no flake, no git involvement).
+nix develop . --command bash -c '
+  odin build src/hub       -collection:odin_test=src -out:/tmp/ham-isolated/ham-hub
+  odin build src/dev_proxy -collection:odin_test=src -out:/tmp/ham-isolated/ham-dev-proxy
+  odin build src/bridge    -collection:odin_test=src -out:/tmp/ham-isolated/ham-bridge'
+# then run those binaries with the manual recipe in section 1.
+
+# B. Make the files visible to the flake without committing them.
+git add -N src/path/to/new_file.odin    # intent-to-add; stages no content
+```
+Option A is the safer default: it needs no git state change at all, and it is what the "no nix" recipe in section 1 is for. Prefer it whenever you are verifying your own uncommitted work.
 
 ---
 
@@ -473,7 +558,9 @@ grep -iE "error|FAIL|panic" .run-logs/hub.log | tail -20
 ## 12. Running tests
 
 ```bash
-ODIN=/nix/store/vchib3sshhfhmizi3cfv6hjwizmd0z03-odin-dev-2026-05/bin/odin
+# See §1 for why this is 2026-07a and why `nix develop -c odin ...` is preferable.
+ODIN=/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin
+export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/lib:$LIBRARY_PATH
 
 # Hub unit tests + golden test (fragment rendering, BT-2/BT-2a variables)
 $ODIN build tests/hub_bootstrap_golden_test -collection:odin_test=src -out:/tmp/gt && /tmp/gt
@@ -506,7 +593,12 @@ HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt
 
 | When | Discovery |
 |---|---|
-| 2026-09-03 | **Odin toolchain:** use `odin-dev-2026-05` from `/nix/store`; the `2026-07a` build errors on `.Haiku` OS enum in `wrapper_endpoint.odin`. |
+| 2026-10-07 | **`scripts/dev-stack.sh build` cannot see a new `.odin` file until it is `git add`ed** — nix flakes copy git-tracked files only, so you get `Undeclared name:` for your own procs while `odin check` passes. Full explanation, both workarounds and the `/build/<hash>-source/` tell are in **§1b**; kept there rather than duplicated here. |
+| 2026-10-07 | **Odin toolchain — SUPERSEDES the 2026-09-03 row below. Use `odin-dev-2026-07a`.** The `2026-05` store path this doc pinned has been garbage-collected, and on a 2026-05 compiler the tree fails in `src/hub/service/push/webpush_encoding.odin:52` (`base64.decode` 4-arg signature, 2026-07a core only). `odin check src/hub` is clean on 2026-07a, so the old `.Haiku` warning no longer applies — if you hit it, you are on an older compiler. Prefer `nix develop -c odin ...` over any store path. |
+| 2026-10-07 | **Linking the hub:** without nix providing it, `odin build`/`odin test` on `src/hub` fails with `cannot find -lsqlite3`. That is a LINK error, not your code — `export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/lib:$LIBRARY_PATH`. |
+| 2026-10-07 | **`odin test src/hub/transport/http` (244 tests, ~1m45s) is flaky under the parallel runner:** `demo_disconnect_reason_read_deadline` and its siblings `fail_now(t, "could not dial loopback")` when two tests race for a loopback port. They pass in isolation (`-define:ODIN_TEST_NAMES=http.<name>`). Confirm a loopback-dial failure in isolation before blaming a change. |
+| 2026-10-07 | **`fmt.tprintf` cannot carry a literal `{`:** this project's Odin `fmt` uses `{}` verbs, so `fmt.tprintf("{\"k\":\"%s\"}", v)` yields `%!(MISSING CLOSE BRACE)...`. Build JSON test bodies with `strings.concatenate` instead. The same applies to `assert_eq` labels using `{}`. |
+| 2026-09-03 | ~~**Odin toolchain:** use `odin-dev-2026-05` from `/nix/store`; the `2026-07a` build errors on `.Haiku` OS enum in `wrapper_endpoint.odin`.~~ **Stale — see the 2026-10-07 row above.** |
 | 2026-09-03 | **Project creation:** field is `default_path`, not `path`. |
 | 2026-09-03 | **Chain coordinator:** `role` is NOT a field in `POST /api/v1/agent-instances`. Set coordinator post-launch via `POST /api/v1/task-chains/<id>/members` with `{"agent_instance_id":"...", "role":"coordinator"}`. |
 | 2026-09-03 | **Chain member add:** requires `agent_instance_id` (not `agent_id`). |
