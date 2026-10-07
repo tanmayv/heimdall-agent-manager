@@ -188,6 +188,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// so approve() can pre-mint a no-revoke, no-cap device token on the bound
 	// owner and the grant holds the plaintext for the first poll.
 	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
+	// Wire the REQ-IMPL-2 bridge-credential issuer. Separate seam from the user
+	// minter above: a grant that carried a bridge public key mints a per-machine
+	// `brg_` identity, never a user token with the machine as a label.
+	device_auth_service.with_bridge_token_minter(&graph.device_auth, device_bridge_minter, rawptr(graph))
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
 	graph.user_vault_handlers = http.User_Vault_Handlers{auth = &graph.auth, user_vault = &graph.user_vaults}
 	graph.shell_session_service = shell_session_svc.new_shell_session_service(
@@ -624,4 +628,25 @@ device_minter :: proc(graph_ptr: rawptr, user_id, client, device_label: string) 
 	graph := (^App_Graph)(graph_ptr)
 	token, plaintext, ok, _ := auth_service.issue_device_authorization_token(&graph.auth, domain.User_ID(user_id), device_label)
 	return plaintext, token.token_id, ok
+}
+
+// device_bridge_minter is the REQ-IMPL-2 bridge-credential issuer wired into
+// approve. Unlike device_minter above — which issues a USER token whose only
+// identity is owner_user_id, with the machine as a free-text label — this mints
+// a `brg_` row and a credential that resolves to exactly that one bridge, so
+// verify_bridge_token / resolve_bridge_instance_auth give per-machine scoping.
+// Returns (plaintext_token, bridge_id, ok).
+device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_Mint_Request) -> (string, string, bool) {
+	graph := (^App_Graph)(graph_ptr)
+	result, ok, _ := bridge_service.enroll_bridge_from_device_grant(&graph.bridges, bridge_service.Device_Enroll_Input{
+		owner_user_id = req.owner_user_id, // bound from Auth_Context by approve()
+		bridge_public_key = req.bridge_public_key,
+		bridge_key_fingerprint = req.bridge_key_fingerprint,
+		os_user = req.os_user,
+		machine_hostname = req.device_label,
+		machine_os = req.os,
+		bridge_version = req.app_version,
+	})
+	if !ok do return "", "", false
+	return result.bridge_token, result.bridge.bridge_id, true
 }

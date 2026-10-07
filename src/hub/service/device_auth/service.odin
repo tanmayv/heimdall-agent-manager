@@ -34,7 +34,34 @@ Device_Auth_Service :: struct {
 	// poll path mints lazily.
 	minter:          Token_Minter,
 	minter_ctx:      rawptr,
+	// REQ-IMPL-2: bridge_minter issues the per-machine, bridge-scoped credential
+	// for a BRIDGE grant. It is a separate seam from `minter` on purpose — the
+	// two produce different identities (a `brg_` vs a user token), and a single
+	// minter that decided between them from its arguments would be one `if` away
+	// from handing a machine a user-scoped token. May be nil; a bridge grant then
+	// fails approval loudly rather than falling back to the user minter.
+	bridge_minter:     Bridge_Token_Minter,
+	bridge_minter_ctx: rawptr,
 }
+
+// Bridge_Mint_Request is everything the bridge minter needs to create the
+// machine's identity. owner_user_id is bound from Auth_Context by approve() and
+// is never read from the request body (ELDA-6 / REQ-IMPL-2 scope item 4).
+Bridge_Mint_Request :: struct {
+	owner_user_id:          string,
+	bridge_public_key:      string, // the key the credential is bound to
+	bridge_key_fingerprint: string, // hub-computed; stored for later display/audit
+	os_user:                string,
+	device_label:           string, // host-asserted machine descriptor
+	os:                     string,
+	app_version:            string,
+}
+
+// Bridge_Token_Minter mints a bridge-scoped credential and returns
+// (plaintext_token, bridge_id, true). The bridge_id MUST be the `brg_` the
+// token resolves to server-side, so the grant can hand both to the bridge on
+// its first successful poll and the bridge never has to assert its own id.
+Bridge_Token_Minter :: proc(ctx: rawptr, req: Bridge_Mint_Request) -> (string, string, bool)
 
 // Token_Minter issues a long-lived token for the bound owner the moment a
 // grant is approved. Task 3 provides the real implementation (user/bridge
@@ -62,6 +89,14 @@ with_token_minter :: proc(service: ^Device_Auth_Service, minter: Token_Minter, m
 	service.minter_ctx = minter_ctx
 }
 
+// with_bridge_token_minter attaches the REQ-IMPL-2 bridge-credential issuer, used
+// for grants that carry a bridge_public_key. App wiring passes the App_Graph;
+// tests pass their fake's state.
+with_bridge_token_minter :: proc(service: ^Device_Auth_Service, minter: Bridge_Token_Minter, minter_ctx: rawptr = nil) {
+	service.bridge_minter = minter
+	service.bridge_minter_ctx = minter_ctx
+}
+
 // authorize creates a device grant for the given input + request provenance.
 // `remote_addr` is the TCP peer; `xff_header` is the raw X-Forwarded-For value.
 // Returns (result, true, {}) on success or (_, false, err) on failure.
@@ -70,6 +105,11 @@ authorize :: proc(service: ^Device_Auth_Service, input: Authorize_Input, remote_
 	if input.client == "" {
 		return Authorize_Result{}, false, domain.domain_error(.Validation_Failed, "client is required")
 	}
+	// REQ-IMPL-2: validate the bridge-enrollment extensions and derive the
+	// fingerprint BEFORE the rate-limit bucket is spent, so a malformed request
+	// does not consume the caller's budget.
+	bridge_fingerprint, grant_kind, bok, berr := validate_bridge_authorize_input(input)
+	if !bok do return Authorize_Result{}, false, berr
 	// Resolve the effective client IP (trusted-XFF only behind a trusted proxy).
 	request_ip := resolve_client_ip(remote_addr, xff_header, service.trusted_cidrs)
 	// Rate limit BEFORE grant creation to avoid store-filling DoS (ELDA-1).
@@ -81,7 +121,7 @@ authorize :: proc(service: ^Device_Auth_Service, input: Authorize_Input, remote_
 		return Authorize_Result{}, false, domain.domain_error(.Rate_Limited, "too many device authorize requests from this IP")
 	}
 	// Mint the grant (independent CSPRNG draws => unlinkable codes).
-	result, ok := create_grant(service.store, input, request_ip, service.clock)
+	result, ok := create_grant(service.store, input, request_ip, service.clock, bridge_fingerprint, grant_kind)
 	if !ok {
 		return Authorize_Result{}, false, domain.domain_error(.Provider_Unavailable, "could not generate secure codes; try again")
 	}
@@ -98,6 +138,16 @@ Device_Info :: struct {
 	client:       string,
 	request_ip:   string,
 	requested_at: i64,
+	// REQ-IMPL-2. Exposed so the approval page can run design §5.4.4's
+	// cross-check: the browser encrypts to the key it read from the link
+	// FRAGMENT and compares it against this, the Hub's copy. A mismatch means
+	// the Hub is reporting a different key than the machine emitted — an attack
+	// signal the UI must surface, not resolve. Still not a secret: the public
+	// key and its fingerprint are both public by construction.
+	bridge_public_key:      string, // host-asserted (submitted at authorize)
+	bridge_key_fingerprint: string, // hub-computed from the key above
+	os_user:                string, // host-asserted
+	is_bridge_enrollment:   bool,
 }
 
 // GENERIC_UNKNOWN_CODE_ERROR is the single error returned for an unknown,
@@ -149,6 +199,10 @@ verify_with_ip :: proc(service: ^Device_Auth_Service, user_code, request_ip: str
 		client = grant.client,
 		request_ip = grant.request_ip,
 		requested_at = grant.requested_at,
+		bridge_public_key = grant.bridge_public_key,
+		bridge_key_fingerprint = grant.bridge_key_fingerprint,
+		os_user = grant.os_user,
+		is_bridge_enrollment = is_bridge_grant(grant),
 	}, true, domain.Domain_Error{}
 }
 
@@ -184,14 +238,45 @@ approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_
 	grant.approver_ua = approver_ua
 	grant.decided_at = now
 	if input.approve {
-		// Pre-mint the token so the first /device/token poll can return it (task 3).
-		// If the wired minter cannot issue, do not mark the grant approved; otherwise
-		// the device would poll forever without a token.
-		if service.minter != nil {
-			token, token_id, tok_ok := service.minter(service.minter_ctx, owner_user_id, grant.client, grant.device_label)
-			if !tok_ok do return false, domain.domain_error(.Internal_Error, "could not issue device authorization token")
+		// Dispatch on the PERSISTED grant kind, decided at authorize. A `switch`
+		// rather than an `if` so adding a third kind later is a compile error here
+		// instead of a silent fall-through to the user-token minter.
+		switch grant.grant_kind {
+		case .Bridge_Enrollment:
+			// REQ-IMPL-2: a bridge grant mints a PER-MACHINE, bridge-scoped
+			// credential. It deliberately does NOT fall back to the user-token
+			// minter when bridge_minter is nil: a user token with the machine as a
+			// free-text label is exactly the identity confusion this task exists to
+			// remove (design §11.3), so an unwired bridge minter is a hard failure.
+			if service.bridge_minter == nil {
+				return false, domain.domain_error(.Internal_Error, "bridge credential issuer is not configured")
+			}
+			token, bridge_id, tok_ok := service.bridge_minter(service.bridge_minter_ctx, Bridge_Mint_Request{
+				owner_user_id = owner_user_id, // from Auth_Context, never the body
+				bridge_public_key = grant.bridge_public_key,
+				bridge_key_fingerprint = grant.bridge_key_fingerprint,
+				os_user = grant.os_user,
+				device_label = grant.device_label,
+				os = grant.os,
+				app_version = grant.app_version,
+			})
+			if !tok_ok do return false, domain.domain_error(.Internal_Error, "could not issue bridge credential")
+			// A minter that returns no bridge_id would leave the credential
+			// unattributable, which defeats the point; refuse it.
+			if bridge_id == "" do return false, domain.domain_error(.Internal_Error, "bridge credential was issued without a bridge id")
 			grant.minted_token = token
-			grant.minted_token_id = token_id
+			grant.minted_token_id = bridge_id
+			grant.minted_bridge_id = bridge_id
+		case .User_Token:
+			// Pre-mint the token so the first /device/token poll can return it (task 3).
+			// If the wired minter cannot issue, do not mark the grant approved; otherwise
+			// the device would poll forever without a token.
+			if service.minter != nil {
+				token, token_id, tok_ok := service.minter(service.minter_ctx, owner_user_id, grant.client, grant.device_label)
+				if !tok_ok do return false, domain.domain_error(.Internal_Error, "could not issue device authorization token")
+				grant.minted_token = token
+				grant.minted_token_id = token_id
+			}
 		}
 		grant.status = .Approved
 	} else {
@@ -208,6 +293,11 @@ Poll_Status :: enum {
 	Denied,
 	Expired,
 	Slow_Down,
+	// REQ-IMPL-2: the presented code_verifier did not match the grant's PKCE
+	// challenge (RFC 7636 §4.6 / RFC 6749 invalid_grant). Distinct from Denied
+	// (the human refused) and from Expired (the window closed) because it means
+	// the redeemer is not the process that started the flow.
+	Invalid_Grant,
 }
 
 // Poll_Result is the /device/token response body shape (ELDA-3).
@@ -216,6 +306,10 @@ Poll_Result :: struct {
 	access_token: string, // plaintext token; only set on first approved poll
 	token_id:     string, // token id; only set on first approved poll
 	expires_in:   int,    // seconds until the grant's token/flow expires; 0 if n/a
+	// REQ-IMPL-2: the `brg_` the credential is scoped to, for a bridge grant
+	// only. Server-resolved at mint time — the bridge learns its own id here
+	// rather than asserting one (design §7.3).
+	bridge_id:    string,
 }
 
 // poll implements the device token-poll lifecycle (ELDA-3):
@@ -227,7 +321,11 @@ Poll_Result :: struct {
 //   - expired/used grant   -> Expired
 //   - pending grant        -> Pending
 // `request_ip` is used for the per-IP poll rate limit (distinct from authorize).
-poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string) -> (Poll_Result, domain.Domain_Error) {
+// `code_verifier` is the PKCE proof (REQ-IMPL-2). It is REQUIRED when, and only
+// when, the grant carries a code_challenge — so the pre-existing Electron poll,
+// which sends none, is unaffected, while a bridge grant cannot be redeemed by
+// anything but the process that started it.
+poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string, code_verifier: string = "") -> (Poll_Result, domain.Domain_Error) {
 	now := service.clock.now()
 	// Per-IP poll rate limit (separate bucket from authorize). Checked first so
 	// a flood of polls cannot pin the mutex. Returns Slow_Down + Rate_Limited.
@@ -267,6 +365,17 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string) -> 
 	grant.last_poll_at = now
 	#partial switch grant.status {
 	case .Approved:
+		// PKCE (RFC 7636 §4.6), checked BEFORE the single-use consumption below:
+		// a wrong verifier must not burn the grant, or anyone holding the
+		// device_code could deny the real bridge its credential by polling once
+		// with garbage. The grant stays Approved and the legitimate bridge's next
+		// poll still succeeds.
+		if grant.code_challenge != "" && !pkce_verifier_matches(grant.code_challenge, code_verifier) {
+			// Persist last_poll_at anyway so a verifier-guessing loop is still
+			// subject to the per-grant interval gate, not just the per-IP bucket.
+			set_grant(service.store, device_code, grant)
+			return Poll_Result{status = .Invalid_Grant}, domain.domain_error(.Unauthenticated, "invalid_grant: code_verifier does not match the PKCE challenge")
+		}
 		// Single-use: hand out the token, then mark Used so the next poll is Expired.
 		token := grant.minted_token
 		tid := grant.minted_token_id
@@ -281,7 +390,7 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string) -> 
 			set_grant(service.store, device_code, grant)
 			return Poll_Result{status = .Pending}, domain.Domain_Error{}
 		}
-		return Poll_Result{status = .Approved, access_token = token, token_id = tid, expires_in = service.store.config.expires_in}, domain.Domain_Error{}
+		return Poll_Result{status = .Approved, access_token = token, token_id = tid, bridge_id = grant.minted_bridge_id, expires_in = service.store.config.expires_in}, domain.Domain_Error{}
 	case: // .Pending (covers Pending only; exhaustiveness)
 		set_grant(service.store, device_code, grant)
 	}

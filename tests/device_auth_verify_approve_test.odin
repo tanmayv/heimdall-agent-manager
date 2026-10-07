@@ -55,6 +55,21 @@ fake_minter :: proc(ctx: rawptr, user_id, client, device_label: string) -> (stri
 	return MINT_RETURN, MINT_TOKEN_ID, true
 }
 
+// --- Fake BRIDGE minter (REQ-IMPL-2). Records what approve passed it so the
+// test can prove the owner came from the Auth_Context argument and that the
+// user minter was never consulted for a bridge grant. ---
+BRIDGE_MINT_CALLS: [dynamic]device_auth.Bridge_Mint_Request
+BRIDGE_MINT_TOKEN: string = "hbr_brg_fake.secretsecret"
+BRIDGE_MINT_ID: string = "brg_fake_001"
+BRIDGE_MINT_OK: bool = true
+
+fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) -> (string, string, bool) {
+	_ = ctx
+	append(&BRIDGE_MINT_CALLS, req)
+	if !BRIDGE_MINT_OK do return "", "", false
+	return BRIDGE_MINT_TOKEN, BRIDGE_MINT_ID, true
+}
+
 new_service :: proc() -> (^device_auth.Grant_Store, device_auth.Device_Auth_Service) {
 	store := new(device_auth.Grant_Store)
 	store^ = device_auth.new_grant_store(device_auth.Grant_Store_Config{
@@ -63,6 +78,7 @@ new_service :: proc() -> (^device_auth.Grant_Store, device_auth.Device_Auth_Serv
 	})
 	svc := device_auth.new_device_auth_service(store, fake_clock(), []string{"127.0.0.1/32"})
 	device_auth.with_token_minter(&svc, fake_minter)
+	device_auth.with_bridge_token_minter(&svc, fake_bridge_minter)
 	return store, svc
 }
 
@@ -155,6 +171,113 @@ main :: proc() {
 	assert_eq(et_err.code, domain.Error_Code.Not_Found, "expired -> Not_Found (same generic as unknown)")
 	assert_eq(et_err.message, "invalid or expired code", "expired message identical to unknown (no enumeration)")
 	fmt.println("AC3 OK: expired code indistinguishable from unknown (no enumeration)")
+
+
+	// =====================================================================
+	// REQ-IMPL-2: approval of a BRIDGE grant mints a bridge-scoped credential.
+	// Additive — every case above is pre-existing ELDA coverage.
+	// =====================================================================
+	BPK :: "04030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc"
+	BPK_FP :: "fb41 9516 cc0c f6ae"
+	PKCE_CHALLENGE :: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA"
+
+	bres, bok2, _ := device_auth.authorize(&svc, {
+		client = "ham-bridge", device_label = "dawnstar", os = "linux", app_version = "0.9.1",
+		bridge_public_key = BPK, os_user = "tanmay",
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(bok2, "bridge authorize succeeds")
+
+	// --- verify exposes the pair REQ-IMPL-5 needs for the fragment cross-check ---
+	binfo, bvok, _ := device_auth.verify(&svc, bres.user_code)
+	assert_true(bvok, "verify bridge grant succeeds")
+	assert_true(binfo.is_bridge_enrollment, "verify marks the grant as a bridge enrollment")
+	assert_eq(binfo.bridge_public_key, BPK, "verify exposes the Hub's copy of the bridge key")
+	assert_eq(binfo.bridge_key_fingerprint, BPK_FP, "verify exposes the hub-computed fingerprint")
+	assert_eq(binfo.os_user, "tanmay", "verify exposes the host-asserted os_user")
+
+	// --- approval dispatches to the BRIDGE minter, and only to it ---
+	user_mints_before := len(MINT_CALLS)
+	bridge_mints_before := len(BRIDGE_MINT_CALLS)
+	abok, aberr := device_auth.approve(&svc, {user_code = bres.user_code, approve = true},
+		"approving-human-007", "203.0.113.9", "Mozilla/5.0 approval-page")
+	assert_true(abok, "approve bridge grant succeeds")
+	assert_eq(aberr.code, domain.Error_Code.None, "approve bridge grant no error")
+	// THE CENTRAL ASSERTION OF THIS TASK: a bridge grant is NEVER served by the
+	// user-token minter. A user token with the machine as a free-text label is
+	// the identity confusion REQ-IMPL-2 exists to remove (design §11.3), so this
+	// is the case that must fail loudly if the dispatch ever regresses.
+	assert_eq(len(MINT_CALLS), user_mints_before, "bridge grant does NOT call the user-token minter")
+	assert_eq(len(BRIDGE_MINT_CALLS), bridge_mints_before + 1, "bridge grant calls the bridge minter exactly once")
+	bcall := BRIDGE_MINT_CALLS[len(BRIDGE_MINT_CALLS) - 1]
+	// Owner from Auth_Context ONLY (scope item 4). approve() takes it as an
+	// argument and never reads the body; this proves it reaches the minter intact.
+	assert_eq(bcall.owner_user_id, "approving-human-007", "bridge minter got the owner from Auth_Context")
+	assert_eq(bcall.bridge_public_key, BPK, "bridge minter got the approved key")
+	assert_eq(bcall.bridge_key_fingerprint, BPK_FP, "bridge minter got the hub-computed fingerprint")
+	assert_eq(bcall.os_user, "tanmay", "bridge minter got os_user")
+	assert_eq(bcall.device_label, "dawnstar", "bridge minter got the machine descriptor")
+
+	bgrant_after, bgaok := device_auth.get_grant(store, bres.device_code)
+	assert_true(bgaok, "bridge grant readable after approve")
+	assert_eq(bgrant_after.owner_user_id, "approving-human-007", "grant records the approving user")
+	assert_eq(bgrant_after.status, device_auth.Grant_Status.Approved, "bridge grant Approved")
+	assert_eq(bgrant_after.minted_token, BRIDGE_MINT_TOKEN, "bridge credential held for the first poll")
+	assert_eq(bgrant_after.minted_bridge_id, BRIDGE_MINT_ID, "grant records the minted brg_")
+	assert_eq(bgrant_after.minted_token_id, BRIDGE_MINT_ID, "token_id is the brg_ for a bridge grant")
+	fmt.println("REQ-IMPL-2 OK: bridge grant mints via the bridge minter only, owner from context")
+
+	// --- and the converse: an ELDA grant is NEVER served by the bridge minter ---
+	eres2, eok3, _ := device_auth.authorize(&svc, {client = "electron", device_label = "MBP"}, "127.0.0.1:1", "")
+	assert_true(eok3, "electron authorize succeeds")
+	u_before := len(MINT_CALLS)
+	b_before := len(BRIDGE_MINT_CALLS)
+	device_auth.approve(&svc, {user_code = eres2.user_code, approve = true}, "owner-e", "1.2.3.4", "UA")
+	assert_eq(len(MINT_CALLS), u_before + 1, "electron grant calls the user-token minter")
+	assert_eq(len(BRIDGE_MINT_CALLS), b_before, "electron grant does NOT call the bridge minter")
+	egrant2, _ := device_auth.get_grant(store, eres2.device_code)
+	assert_eq(egrant2.minted_bridge_id, "", "electron grant has no brg_")
+	fmt.println("REQ-IMPL-2 OK: electron grant mints via the user minter only (converse holds)")
+
+	// --- a bridge grant with an unwired bridge minter FAILS; it must not fall
+	// back to the user minter. An unwired seam is a deployment bug, and
+	// degrading a machine enrollment into a user token would be a silent
+	// privilege confusion rather than a visible outage. ---
+	nstore := new(device_auth.Grant_Store)
+	nstore^ = device_auth.new_grant_store(device_auth.Grant_Store_Config{
+		verification_uri = "https://ui.example.com/api/v1/device",
+		expires_in = 600, interval = 5, rate_limit = 100, rate_window = 60,
+	})
+	defer device_auth.grant_store_free(nstore)
+	nsvc := device_auth.new_device_auth_service(nstore, fake_clock(), []string{"127.0.0.1/32"})
+	device_auth.with_token_minter(&nsvc, fake_minter) // user minter wired, bridge minter NOT
+	nres, nok, _ := device_auth.authorize(&nsvc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(nok, "bridge authorize succeeds without a wired bridge minter")
+	nu_before := len(MINT_CALLS)
+	naok, naerr := device_auth.approve(&nsvc, {user_code = nres.user_code, approve = true}, "owner-n", "1.2.3.4", "UA")
+	assert_true(!naok, "approve FAILS when the bridge minter is unwired")
+	assert_eq(naerr.code, domain.Error_Code.Internal_Error, "unwired bridge minter -> Internal_Error")
+	assert_eq(len(MINT_CALLS), nu_before, "unwired bridge minter does NOT fall back to the user minter")
+	ngrant, _ := device_auth.get_grant(nstore, nres.device_code)
+	assert_eq(ngrant.status, device_auth.Grant_Status.Pending, "failed mint leaves the grant Pending, not Approved")
+	fmt.println("REQ-IMPL-2 OK: unwired bridge minter fails closed, no fallback to the user minter")
+
+	// --- a bridge minter that returns no bridge_id is refused: an
+	// unattributable credential defeats the point of per-machine scoping. ---
+	BRIDGE_MINT_ID = ""
+	ires, iok, _ := device_auth.authorize(&svc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(iok, "authorize for the no-id case succeeds")
+	iaok, iaerr := device_auth.approve(&svc, {user_code = ires.user_code, approve = true}, "owner-i", "1.2.3.4", "UA")
+	assert_true(!iaok, "approve FAILS when the minter returns no bridge_id")
+	assert_eq(iaerr.code, domain.Error_Code.Internal_Error, "missing bridge_id -> Internal_Error")
+	BRIDGE_MINT_ID = "brg_fake_001"
+	fmt.println("REQ-IMPL-2 OK: a credential without a brg_ is refused")
 
 	// --- AC6: approver_ip uses trusted-XFF resolution (peer is trusted) ---
 	res_f, _, _ := device_auth.authorize(&svc, {client = "electron"}, "127.0.0.1:1", "")
