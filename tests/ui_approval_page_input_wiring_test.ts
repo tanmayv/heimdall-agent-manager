@@ -146,89 +146,412 @@ test('REQ-FIX-1 [doc-invariant]: Input.tsx calls onChange(event.target.value) �
   );
 });
 
-// ---------------------------------------------------------------------------
-// CLASS-LEVEL GUARD (B(3)): No .target-accessing onChange on any ChangeHandler<T>
-// primitive anywhere in src/ui
-//   Fails against b8d16379^ ✓  Passes after fix ✓
-//   Guards the class, not just this instance. The identical mistake on any other
-//   Input/Textarea/Select/Checkbox/Radio/Toggle would be caught by this test.
-//
-//   METHOD: Scan every onChange handler across src/ui that touches .target or .target.value.
-//   Resolve each handler's enclosing JSX element. Filter to elements whose onChange prop
-//   type is ChangeHandler<T> — i.e. primitives from the shared UI component library
-//   (Input, Textarea) which always call onChange(string), never with a DOM event.
-//   Assert the set is empty.
-//
-//   Primitives covered: Input, Textarea (ChangeHandler<string> per ui/types.ts).
-//   Deliberately excluded: raw <input>, <textarea>, <select>, <checkbox>
-//   (native elements whose onChange IS called with a DOM event).
-//   Also excluded: Combobox, Select, Toggle — their onChange types are not raw strings.
-// ---------------------------------------------------------------------------
 
-test('REQ-FIX-1 [class-guard B(3)]: no onChange on Input or Textarea primitive in src/ui accesses .target', () => {
-  const UI_SRC = path.join(REPO_ROOT, 'src/ui');
+// ===========================================================================
+// CLASS-LEVEL GUARD (B(3) from the coordinator ruling) — tests 7–10
+// ===========================================================================
+//
+// WHAT THIS GUARDS, AND WHAT IT DOES NOT CLAIM
+// ────────────────────────────────────────────
+// The defect class: a handler passed to a VALUE-PASSING component reads off a
+// DOM event (`.target.value` / `.target.checked`) that it was never given. The
+// read yields `undefined`, the value is silently replaced, and — if the element
+// is controlled — the field is permanently dead. It type-checks when the handler
+// is annotated `: any`, and no existing gate catches it.
+//
+// Severity differs across the thirteen components and the comment should not
+// pretend otherwise. On `Input`/`Textarea`/`Select` it is a dead text field,
+// which is how REQ-FIX-1 blocked vault-key delivery. On `Accordion`
+// (`(value: string[])`), `DataList.onSelectionChange` (`ChangeHandler<string[]>`)
+// and `ScopeEditor` (`(next: Targeting)`) the same mistake is a broken expander,
+// a broken selection, a broken scope editor. The DEFECT CLASS is identical and
+// silent in all thirteen, which is why all thirteen are in scope — not because
+// every one of them is vault-delivery-grade.
+//
+// THE SELECTION RULE IS THE CONTRACT, NOT THE SPELLING
+// ────────────────────────────────────────────────────
+// Any component whose onChange receives a VALUE rather than an event belongs
+// here, however its type is written:
+//   - `ChangeHandler<string>`         Input, Textarea, Select
+//   - `ChangeHandler<boolean>`        Checkbox, Radio, Toggle
+//   - `(value: string) => void`       Combobox, Tabs, ResourceSearchFilter
+//   - `(value: string[]) => void`     Accordion
+//   - `ChangeHandler<boolean>`        BulkActionBar, DataList
+//   - `(next: Targeting) => void`     ScopeEditor
+// Classifying by the TYPE's spelling is what created the original hole: this
+// test once excluded `Select` on the stated grounds that its "onChange type is
+// not a raw string", while `Select.tsx:236` reads `onChange: ChangeHandler<string>`
+// — the identical contract to `Input`. The identical bug on a `<Select>` passed
+// the whole suite. Classifying by the PROP's spelling is the same trap one level
+// out, which is why `onSelectionChange` (DataList.tsx:96 — same contract, third
+// disguise) is matched too.
+//
+// DESIGN CREDIT
+// ─────────────
+// The matcher below is the reviewer's design (inst_18dc4ce22458a459), handed over
+// at cmt_18dc73984d1bb91c and adopted per the coordinator's ruling: balanced-brace
+// prop extraction, nearest-enclosing-tag resolution by match index, the thirteen
+// names, and the native-element positive control. Two changes were made on top and
+// both are noted at their site: the `prev` check in `enclosingTag` (a defect found
+// before adoption) and the enumeration assertion in test 10.
+//
+// WHY EACH PIECE EXISTS — every one of these failure modes actually occurred
+// ─────────────────────────────────────────────────────────────────────────
+//  1. BALANCED-BRACE EXTRACTION. The previous guard matched the prop body with
+//     `[^}]*`, which stops at the first `}`. `TemplatesPanel.tsx:149` is
+//     `onChange={(v) => set({ persona: v })}` — extraction terminated inside the
+//     object literal, so the handler was never seen whole.
+//  2. NEAREST-TAG-BY-INDEX, not a context window. The previous guard tested
+//     whether `<Input` appeared anywhere in the preceding 300 characters. The two
+//     real sites sat 174 and 188 characters from their tag, leaving ~110 characters
+//     of headroom: padding the element with benign props made the guard pass on a
+//     genuinely broken field. Coverage must not depend on how many props a
+//     component happens to have — a guard a developer can disable by adding a
+//     `className` is not a guard.
+//  3. OWN-POSITION CLASSIFICATION. The previous guard called `src.indexOf(match)`,
+//     which resolves EVERY duplicate handler text to the FIRST occurrence's
+//     context — two identical handlers in one file were classified by the wrong
+//     site. Here each match is classified by its own `m.index`.
+//  4. `.checked` AS WELL AS `.value`. Omitting `.checked` is what would have let
+//     the three boolean components (`Checkbox`, `Radio`, `Toggle`) through.
+//
+// Commented-out code is deliberately NOT exempted from the violation sweep. When
+// a guard must err, it should err LOUDLY: a false positive announces itself and
+// gets fixed, whereas every sweep defect that has cost this chain a review round
+// was a silent false negative.
+//
+// RUN: node --test tests/ui_approval_page_input_wiring_test.ts
 
-  // Collect all .tsx files under src/ui
-  function collectTsx(dir: string, files: string[] = []): string[] {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        collectTsx(full, files);
-      } else if (entry.isFile() && entry.name.endsWith('.tsx')) {
-        files.push(full);
-      }
-    }
-    return files;
+// --- The thirteen value-passing components, keyed by declaring file. ----------
+// Keyed by FILE rather than by name on purpose: deriving a component name from a
+// declaration means deciding which interface belongs to which export, and
+// `ScopeField.tsx` has ten exports with the declaration sitting in an inline type
+// literal on the `ScopeEditor` signature. That parsing is exactly where a further
+// silent hole would live. A new value-passing component almost always arrives in a
+// new file, and that is the case test 10 must catch.
+//
+// Honest limit: adding a SECOND value-passing component to an ALREADY-registered
+// file would not trip test 10. That is accepted deliberately — the alternative is a
+// name parser whose failure mode is a comfortable pass.
+const VALUE_PASSING_REGISTRY: Record<string, string[]> = {
+  // primitives — 7
+  'src/ui/components/ui/primitives/Input.tsx': ['Input'],
+  'src/ui/components/ui/primitives/Textarea.tsx': ['Textarea'],
+  'src/ui/components/ui/primitives/Select.tsx': ['Select'],
+  'src/ui/components/ui/primitives/Checkbox.tsx': ['Checkbox'],
+  'src/ui/components/ui/primitives/Radio.tsx': ['Radio'],
+  'src/ui/components/ui/primitives/Toggle.tsx': ['Toggle'],
+  'src/ui/components/ui/primitives/Combobox.tsx': ['Combobox'],
+  // composites — 5
+  'src/ui/components/ui/composites/BulkActionBar.tsx': ['BulkActionBar'],
+  'src/ui/components/ui/composites/Tabs.tsx': ['Tabs'],
+  'src/ui/components/ui/composites/DataList.tsx': ['DataList'],
+  'src/ui/components/ui/composites/ResourceSearchFilter.tsx': ['ResourceSearchFilter'],
+  'src/ui/components/ui/composites/Accordion.tsx': ['Accordion'],
+  // patterns — 1
+  'src/ui/components/ui/patterns/ScopeField.tsx': ['ScopeEditor'],
+};
+
+const VALUE_PASSING_TAGS = new Set(Object.values(VALUE_PASSING_REGISTRY).flat());
+
+// Both prop names: the contract is what matters, not the prop's spelling.
+const CHANGE_PROP = /\b(onChange|onSelectionChange)\s*=\s*\{/g;
+
+// A handler is suspect if it reads off the event object at all. Anchored on the
+// FIELD read, so ordinary domain vocabulary (`.targetMode`, `.targetInstanceId`,
+// `{ ...targeting }` — all common in this codebase) cannot reach it.
+const TOUCHES_TARGET = /\.\s*target\s*(\?\s*)?\.\s*(value|checked)\b/;
+
+function collectTsx(dir: string, files: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) collectTsx(full, files);
+    else if (entry.isFile() && entry.name.endsWith('.tsx')) files.push(full);
   }
+  return files;
+}
 
-  const tsxFiles = collectTsx(UI_SRC);
-  const violations: string[] = [];
+/**
+ * Extract the balanced-brace body of a prop written `name={...}`, starting at the
+ * index of the opening `{`. Tracks string and template literals so a brace inside
+ * a string cannot unbalance the count. Returns null when unbalanced, which the
+ * caller records as `unparseable` rather than silently skipping.
+ */
+function extractBracedExpr(src: string, openIdx: number): { body: string; end: number } | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = openIdx; i < src.length; i++) {
+    const c = src[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return { body: src.slice(openIdx, i + 1), end: i };
+    }
+  }
+  return null;
+}
 
-  // Pattern: onChange handler on a JSX element that:
-  // (a) touches `.target` or `?.target`
-  // (b) is on a capitalized element (component, not raw DOM element)
-  //
-  // We extract onChange={...} props and look for:
-  //   onChange={(e: any) => f(e?.target?.value)}   — optional-chain form
-  //   onChange={(e: any) => f(e.target.value)}      — direct form
-  //   onChange={(e) => f(e.target.value)}            — untyped form
-  //
-  // Wrapped in \b(Input|Textarea)\b check (the two ChangeHandler<string> primitives)
-  // to keep the sweep precise and avoid false positives on native element handlers.
+/**
+ * Resolve the JSX tag ENCLOSING the prop at `propIdx` by walking backwards to the
+ * nearest tag-open. A prop always sits inside its own tag, so the first tag-open
+ * met going backwards is the enclosing element.
+ */
+function enclosingTag(src: string, propIdx: number): string | null {
+  for (let i = propIdx; i >= 0; i--) {
+    if (src[i] !== '<') continue;
+    if (src[i + 1] === '/' || src[i + 1] === '!') continue; // closing tag, or comment
+    // A JSX tag-open's `<` is never preceded by an identifier character or `.`,
+    // but a GENERIC TYPE ARGUMENT's always is. Without this check,
+    // `list={x as Record<string, never>}` written before the onChange in the same
+    // tag resolves the enclosing element to `<string>` — which, being lowercase,
+    // files a genuinely broken handler in the NATIVE bucket. The violation
+    // disappears and the positive control is inflated by the very handler it
+    // should have caught: a silent false negative that also makes the floor look
+    // healthier. Verified by injection before this guard was added.
+    // Also skips comparisons such as `disabled={count<max}`.
+    if (i > 0 && /[A-Za-z0-9_$.]/.test(src[i - 1])) continue;
+    const m = /^<([A-Za-z_$][\w.$]*)/.exec(src.slice(i, i + 64));
+    if (!m) continue;
+    return m[1];
+  }
+  return null;
+}
 
-  const BROKEN_TARGET_PATTERN = /onChange=\{[^}]*\?\s*\.\s*target\s*\?\s*\.\s*value/g;
-  const DIRECT_TARGET_PATTERN = /onChange=\{[^}]*[^?]\.\s*target\s*\.\s*value/g;
+interface SweepRecord { rel: string; line: number; tag: string; body: string }
+interface SweepResult {
+  violations: SweepRecord[];
+  native: SweepRecord[];
+  otherComponent: SweepRecord[];
+  unparseable: string[];
+  allHandlers: SweepRecord[];
+}
 
-  for (const file of tsxFiles) {
+function sweepUiSource(): SweepResult {
+  const out: SweepResult = {
+    violations: [], native: [], otherComponent: [], unparseable: [], allHandlers: [],
+  };
+  for (const file of collectTsx(path.join(REPO_ROOT, 'src/ui'))) {
     const src = fs.readFileSync(file, 'utf8');
-    const relPath = path.relative(REPO_ROOT, file);
-
-    // Find all onChange handlers that touch .target in some form
-    const suspectMatches: string[] = [];
-    for (const m of src.matchAll(BROKEN_TARGET_PATTERN)) suspectMatches.push(m[0]);
-    for (const m of src.matchAll(DIRECT_TARGET_PATTERN)) suspectMatches.push(m[0]);
-
-    for (const match of suspectMatches) {
-      // Find the surrounding JSX context to identify the element name.
-      // Look backwards from the match position for the nearest opening tag.
-      const idx = src.indexOf(match);
-      const before = src.slice(Math.max(0, idx - 300), idx);
-
-      // Check if the nearest enclosing JSX element is Input or Textarea
-      // (these are the ChangeHandler<string> primitives we are protecting).
-      // We look for the last `<Input` or `<Textarea` in the context window.
-      const isPrimitive = /<(Input|Textarea)[\s\n>]/.test(before);
-      if (isPrimitive) {
-        violations.push(`${relPath}: ${match.slice(0, 80).trim()}`);
-      }
+    const rel = path.relative(REPO_ROOT, file);
+    for (const m of src.matchAll(CHANGE_PROP)) {
+      const idx = m.index as number;
+      const openIdx = idx + m[0].length - 1;
+      const expr = extractBracedExpr(src, openIdx);
+      const line = src.slice(0, idx).split('\n').length;
+      if (!expr) { out.unparseable.push(`${rel}:${line}`); continue; }
+      const tag = enclosingTag(src, idx) ?? '(unresolved)';
+      const rec: SweepRecord = {
+        rel, line, tag, body: expr.body.slice(0, 80).replace(/\s+/g, ' '),
+      };
+      out.allHandlers.push(rec);
+      if (!TOUCHES_TARGET.test(expr.body)) continue;
+      if (VALUE_PASSING_TAGS.has(tag)) out.violations.push(rec);
+      else if (/^[a-z]/.test(tag)) out.native.push(rec);
+      else out.otherComponent.push(rec);
     }
   }
+  return out;
+}
+
+const sweep = sweepUiSource();
+const fmt = (r: SweepRecord) => `${r.rel}:${r.line} <${r.tag}> ${r.body}`;
+
+// ---------------------------------------------------------------------------
+// CLASS GUARD 7: no value-passing component anywhere in src/ui reads off an event
+//   Non-vacuous: fails on b8d16379^, and fails when the anti-pattern is injected
+//   at a real call site of Input / Textarea / Select / Checkbox / Radio.
+// ---------------------------------------------------------------------------
+
+test('REQ-FIX-1 [class-guard B(3)]: no onChange on any of the 13 value-passing components in src/ui reads .target.value/.checked', () => {
+  assert.deepStrictEqual(
+    sweep.violations.map(fmt),
+    [],
+    'A value-passing component received a handler that reads off a DOM event it is ' +
+    'never given. These components call onChange(value); the read yields undefined ' +
+    'and the value is silently replaced.\nViolations:\n' +
+    sweep.violations.map(fmt).join('\n'),
+  );
+
+  // An unparseable prop body is NOT a pass. Balanced extraction returning null
+  // means the sweep could not see a handler whole, so it could not judge it —
+  // which is indistinguishable from "no violation" unless asserted separately.
+  assert.deepStrictEqual(
+    sweep.unparseable, [],
+    'Some onChange prop bodies could not be extracted, so they were never checked:\n' +
+    sweep.unparseable.join('\n'),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// PRIMARY CONTROL 8: tag resolution, proven on three known sites in one file
+//
+//   This is the strongest control in the file and it is the reviewer's find.
+//   BridgeEnrollmentApprovalPage.tsx:803 is a native lowercase
+//   `<input type="checkbox">` reading `.target.checked` CORRECTLY, four lines
+//   below a real `<Input>` at :792. Asserting all three classifications together
+//   fails under three independent defects, every one of which this chain hit:
+//
+//     - a 300-char backward window      → sees `<Input` and flags :803
+//     - a `.checked`-blind pattern      → never sees :803 at all
+//     - `src.indexOf(match)`            → classifies duplicates by the first site
+//
+//   A floor cannot do this: a matcher that still matches text but has stopped
+//   resolving tags satisfies a floor and fails here.
+// ---------------------------------------------------------------------------
+
+test('REQ-FIX-1 [control, primary]: tag resolution classifies :607 and :797 as <Input> and :803 as a native <input> that is not a violation', () => {
+  const rel = 'src/ui/components/enrollment/BridgeEnrollmentApprovalPage.tsx';
+  const onPage = sweep.allHandlers.filter((r) => r.rel === rel);
+
+  const at = (line: number) => onPage.find((r) => Math.abs(r.line - line) <= 2);
+
+  const codeInput = onPage.find((r) => /setCodeInput/.test(r.body));
+  const password = onPage.find((r) => /setMasterPassword/.test(r.body));
+  const remember = onPage.find((r) => /setRememberSession/.test(r.body));
+
+  assert.ok(codeInput, 'the device-code handler must be found by the sweep');
+  assert.ok(password, 'the master-password handler must be found by the sweep');
+  assert.ok(remember, 'the remember-session handler must be found by the sweep');
+
+  assert.strictEqual(codeInput!.tag, 'Input',
+    `device-code handler must resolve to the <Input> primitive, got <${codeInput!.tag}> at :${codeInput!.line}`);
+  assert.strictEqual(password!.tag, 'Input',
+    `master-password handler must resolve to the <Input> primitive, got <${password!.tag}> at :${password!.line}`);
+
+  // The discriminating leg: a native checkbox reading .target.checked correctly,
+  // immediately below a real <Input>. It must resolve to lowercase `input` and
+  // must NOT be reported as a violation.
+  assert.strictEqual(remember!.tag, 'input',
+    `remember-session handler must resolve to the NATIVE <input>, got <${remember!.tag}> at :${remember!.line}`);
+  assert.ok(TOUCHES_TARGET.test(remember!.body),
+    'the remember-session handler does read .target.checked — if this fails, the pattern has gone .checked-blind');
+  assert.ok(
+    !sweep.violations.some((v) => v.rel === rel && v.line === remember!.line),
+    'the native <input> at :803 reads .target.checked correctly and must not be a violation',
+  );
+
+  void at; // kept for readability of the line references above
+});
+
+// ---------------------------------------------------------------------------
+// SECONDARY CONTROL 9: the sweep still finds the legitimate native handlers
+//
+//   Catches TOTAL matcher collapse, which control 8 alone would not: a matcher
+//   that finds nothing anywhere reports zero violations and looks healthy.
+//
+//   THE FLOOR IS 30, DELIBERATELY FAR BELOW THE MEASURED POPULATION OF 62.
+//   - The failure mode guarded against is collapse toward zero, so any floor well
+//     above zero catches it; precision buys nothing.
+//   - A floor hugging the real population is a tripwire that fires on legitimate
+//     refactors, and a test that fails because someone deleted a dialog is a test
+//     whose number the next developer edits out — after which it guards nothing.
+//     (Same principle as test 3's backreference: a correct rename must stay green.)
+//   - 62 was the measured population when this was written. A drift toward 30
+//     should be INVESTIGATED as a possible matcher regression, not accepted.
+//
+//   DO NOT re-derive this floor from the matcher's own output. A control
+//   calibrated by the thing it controls is not a control — a rewritten matcher
+//   would re-baseline its own oracle and the regression would be invisible.
+// ---------------------------------------------------------------------------
+
+const NATIVE_HANDLER_FLOOR = 30;
+const NATIVE_HANDLER_POPULATION_AT_WRITING = 62;
+
+test('REQ-FIX-1 [control, secondary]: the sweep still finds the legitimate native-element .target handlers', () => {
+  assert.ok(
+    sweep.native.length >= NATIVE_HANDLER_FLOOR,
+    `Positive control failed: only ${sweep.native.length} native-element .target handlers found ` +
+    `(floor ${NATIVE_HANDLER_FLOOR}, population was ${NATIVE_HANDLER_POPULATION_AT_WRITING} when written). ` +
+    'A zero or near-zero count means the matcher has stopped matching, not that the ' +
+    'codebase became clean — the empty violation list above would then be vacuous.',
+  );
+
+  // Capitalized components outside the registry that read off an event are not
+  // failures (they may legitimately take a DOM-event handler), but a sudden
+  // population here is worth seeing rather than silently bucketing.
+  assert.ok(
+    sweep.otherComponent.length <= 5,
+    'Unexpectedly many non-registered capitalized components read .target — check whether ' +
+    'one of them is value-passing and belongs in VALUE_PASSING_REGISTRY:\n' +
+    sweep.otherComponent.map(fmt).join('\n'),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// ENUMERATION 10: the registry cannot silently fall behind the codebase
+//
+//   A hardcoded list of thirteen has the same weakness as the list of two it
+//   replaced: component #14, added later, is not in it and is not guarded. This
+//   test enumerates value-passing onChange declarations across
+//   src/ui/components/ui/ and fails if any declaring file is unregistered, so
+//   adding such a component without registering it breaks the build with a
+//   message naming the file.
+//
+//   Comment lines are skipped. Combobox.tsx:26-27 document the contract in JSDoc
+//   prose rather than declaring it, and an enumeration that counts prose will
+//   eventually send someone hunting a declaration that does not exist — the same
+//   family of defect as a matcher that reads `.target` out of `.targeting`.
+//
+//   SCOPE LIMIT, stated rather than left to be discovered: this enumerates
+//   src/ui/components/ui/ only. Locally-defined wrappers elsewhere share the
+//   contract — ProvidersPanel.tsx:670 defines `TextInput` with
+//   `onChange: (value: string) => void`, and :569 `ChipListInput` likewise — and
+//   are NOT enumerated here. They are covered only if their tag name is in the
+//   registry. Widening to every locally-defined wrapper in src/ui is a larger
+//   change than REQ-FIX-1 and was not undertaken.
+// ---------------------------------------------------------------------------
+
+test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/ui/components/ui/ is registered', () => {
+  const VALUE_PASSING_DECL =
+    /\bon(?:Change|SelectionChange)\??\s*:\s*(?:ChangeHandler\s*<|\(\s*(?:value|values|next|checked|selected)\b)/g;
+
+  const declaringFiles = new Map<string, number[]>();
+  for (const file of collectTsx(path.join(REPO_ROOT, 'src/ui/components/ui'))) {
+    const src = fs.readFileSync(file, 'utf8');
+    const rel = path.relative(REPO_ROOT, file);
+    const lines = src.split('\n');
+    for (const m of src.matchAll(VALUE_PASSING_DECL)) {
+      const lineNo = src.slice(0, m.index as number).split('\n').length;
+      const text = (lines[lineNo - 1] ?? '').trim();
+      // Skip prose: JSDoc continuation, line comments, block-comment openers.
+      if (text.startsWith('*') || text.startsWith('//') || text.startsWith('/*')) continue;
+      if (!declaringFiles.has(rel)) declaringFiles.set(rel, []);
+      declaringFiles.get(rel)!.push(lineNo);
+    }
+  }
+
+  const unregistered = [...declaringFiles.keys()]
+    .filter((f) => !(f in VALUE_PASSING_REGISTRY))
+    .map((f) => `${f} (declared at :${declaringFiles.get(f)!.join(', :')})`);
 
   assert.deepStrictEqual(
-    violations,
-    [],
-    'No onChange on an Input or Textarea primitive may access .target — ' +
-    'these components pass a string value to onChange, not a DOM event.\n' +
-    'Violations found:\n' + violations.join('\n'),
+    unregistered, [],
+    'These files declare a value-passing onChange but their component is not in ' +
+    'VALUE_PASSING_REGISTRY, so the class guard does not cover them. Add the ' +
+    "component's JSX tag name to the registry:\n" + unregistered.join('\n'),
+  );
+
+  // The other direction: a registry entry whose declaration has gone means the
+  // registry is stale, and a stale registry is how a guard quietly stops matching
+  // the code it names.
+  const stale = Object.keys(VALUE_PASSING_REGISTRY).filter((f) => !declaringFiles.has(f));
+  assert.deepStrictEqual(
+    stale, [],
+    'These registered files no longer declare a value-passing onChange — the registry ' +
+    'is stale and must be updated:\n' + stale.join('\n'),
+  );
+
+  assert.strictEqual(
+    VALUE_PASSING_TAGS.size, 13,
+    'The guard covers thirteen components: 7 primitives (Input, Textarea, Select, ' +
+    'Checkbox, Radio, Toggle, Combobox), 5 composites (BulkActionBar, Tabs, DataList, ' +
+    'ResourceSearchFilter, Accordion) and 1 pattern (ScopeEditor). DataList contributes ' +
+    'two props (onChange + onSelectionChange) but is one component.',
   );
 });
