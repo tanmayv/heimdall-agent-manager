@@ -6,6 +6,13 @@ import * as xtermModule from '@xterm/xterm';
 import * as fitAddonModule from '@xterm/addon-fit';
 import * as serializeAddonModule from '@xterm/addon-serialize';
 import { terminalSessionRegistry } from './terminalSessionRegistry';
+import {
+  dispatchShellInput,
+  dispatchShellResize,
+  pollingSubscriptionSessionId,
+  resolveStreamRenderMode,
+  resolveStreamingMode,
+} from './streamingMode';
 
 const xtermObj = xtermModule as Record<string, any>;
 const Terminal = (xtermObj.Terminal || xtermObj['default']?.Terminal || xtermObj['default']) as typeof TerminalType;
@@ -64,7 +71,6 @@ export function ShellTerminalPane({
   const isExplicitlyClosedRef = useRef(false);
   const isSizedRef = useRef(false);
   const [isSized, setIsSized] = useState(false);
-  const pendingStreamOutputRef = useRef<Uint8Array[]>([]);
 
   const isTerminal = session.kind === 'shell';
   const isRunning = session.status === 'running' || session.status === 'starting';
@@ -80,6 +86,14 @@ export function ShellTerminalPane({
 
   const [fallbackToPolling, setFallbackToPolling] = useState(false);
 
+  // REQ-FIX-2 — how bytes are decoded, and whether the socket should be up. Resolved before the
+  // hook because it is what opens the socket; the transport half needs `streamConnected` and so
+  // is resolved just below it.
+  const { isStreamingActive, isStreamEnabled } = resolveStreamRenderMode({
+    isStreamingExperimentEnabled,
+    fallbackToPolling,
+  });
+
   // --------------------------------------------------------------------------
   // STREAMING PATH: Low-latency WebSocket streaming without term.reset()
   // --------------------------------------------------------------------------
@@ -90,7 +104,7 @@ export function ShellTerminalPane({
     reconnect: reconnectStream,
   } = useShellStream({
     sessionId: paneSessionId,
-    enabled: isStreamingExperimentEnabled && !fallbackToPolling,
+    enabled: isStreamEnabled,
     // REQ-SHELL-18 & REQ-SHELL-DOCK-NO-VSCROLL-23 — read back by the hook from inside the socket's `onopen`,
     // and again on every reconnect. The mount-time fit below computes the right geometry and pushes it,
     // but the socket is not open yet at that point, so that frame is dropped; this is what makes the PTY
@@ -107,6 +121,10 @@ export function ShellTerminalPane({
           term.resize(Math.max(term.cols, 40), term.rows);
           isSizedRef.current = true;
           setIsSized(true);
+          // This path flips isSizedRef too, so it owes the same flush the other three sizing
+          // paths perform. While the flush lived inside the mount effect it was unreachable from
+          // here and the withheld output sat stranded until some later resize happened to fire.
+          flushPendingOutput();
         } catch { /* ignore */ }
       }
       if (!isSizedRef.current && (!container || container.clientWidth === 0 || container.clientHeight === 0)) {
@@ -115,21 +133,21 @@ export function ShellTerminalPane({
       return { rows: Math.max(term.rows, 1), cols: Math.max(term.cols, 40) };
     },
     onOutput: (bytes) => {
-      console.log('[ShellTerminalPane] onOutput received:', bytes.length, 'bytes, term attached:', Boolean(terminalRef.current));
       const term = terminalRef.current;
-      if (!term) return;
-      if (!isSizedRef.current) {
-        console.log('[ShellTerminalPane] withholding stream chunk until container is sized:', bytes.length, 'bytes');
-        pendingStreamOutputRef.current.push(bytes);
+      const sessionId = sessionIdRef.current;
+      if (!term || !isSizedRef.current) {
+        // REQ-FIX-1 — withheld output goes into the registry's CAPPED delta buffer
+        // (MAX_DELTA_BYTES, FIFO prune), never a plain array on this component. A pane in a
+        // backgrounded dock tab reports clientWidth === 0 forever, so isSizedRef can stay false
+        // for the whole life of the tab; an unbounded local queue grew without limit for exactly
+        // as long, and was thrown away on unmount. The registry is also the only queue here —
+        // the mount effect drains the same buffer, so replay order cannot interleave.
+        if (sessionId) {
+          terminalSessionRegistry.bufferSessionDelta(sessionId, bytes);
+        }
         return;
       }
-      // term.write(bytes)
-      term.write(bytes, () => {
-        const buffer = term.buffer.active;
-        if (!userScrolledUpRef.current && buffer.baseY > 0) {
-          term.scrollToBottom();
-        }
-      });
+      writeStreamBytes(term, bytes);
     },
     onError: () => {
       console.error('[ShellTerminalPane] stream onError -> triggering setFallbackToPolling(true)');
@@ -147,17 +165,52 @@ export function ShellTerminalPane({
     },
   });
 
-  const isStreamingActive = isStreamingExperimentEnabled && !fallbackToPolling;
+  // REQ-FIX-2 — which transport actually carries input, resize and repaints right now.
+  const streamingMode = resolveStreamingMode(
+    { isStreamingActive, isStreamEnabled },
+    streamConnected
+  );
+  const { isPolledRepaintOwner } = streamingMode;
 
-  useEffect(() => {
-    console.log('[ShellTerminalPane] Streaming state update:', {
-      paneSessionId,
-      isStreamingExperimentEnabled,
-      streamConnected,
-      fallbackToPolling,
-      isStreamingActive,
+  /**
+   * The single write path for raw stream bytes.
+   *
+   * convertEol is forced off at the WRITE SITE rather than trusted from the React flag: the
+   * polled repaint below needs it ON, and the effect that syncs it lags a render behind the
+   * socket, so a frame arriving in the same tick as `connected` could otherwise be LF-translated.
+   * PTY bytes must never be translated, whatever the render happens to be doing.
+   */
+  const writeStreamBytes = useCallback((term: TerminalType, bytes: Uint8Array) => {
+    if (term.options.convertEol) {
+      term.options.convertEol = false;
+    }
+    term.write(bytes, () => {
+      const buffer = term.buffer.active;
+      if (!userScrolledUpRef.current && buffer.baseY > 0) {
+        term.scrollToBottom();
+      }
     });
-  }, [paneSessionId, isStreamingExperimentEnabled, streamConnected, fallbackToPolling, isStreamingActive]);
+  }, []);
+
+  /**
+   * Writes the registry's buffered deltas into the live terminal once the container has a size.
+   *
+   * Hoisted out of the mount effect deliberately: `getGeometry` also flips `isSizedRef`, and a
+   * flush scoped inside the effect is unreachable from there (REQ-FIX-7 carve-out).
+   *
+   * A truncated buffer yields nothing — `drainSessionDeltas` refuses to replay bytes that may
+   * start mid-code-point or mid-CSI, so the screen stays clean and the next server `screen` frame
+   * brings it current.
+   */
+  const flushPendingOutput = useCallback(() => {
+    const term = terminalRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!term || !sessionId) return;
+    const chunks = terminalSessionRegistry.drainSessionDeltas(sessionId);
+    for (const chunk of chunks) {
+      writeStreamBytes(term, chunk);
+    }
+  }, [writeStreamBytes]);
 
   // --------------------------------------------------------------------------
   // LEGACY POLLING PATH: 500ms polled capture with SHA-256 diff & term.reset()
@@ -170,7 +223,9 @@ export function ShellTerminalPane({
     isBridgeUnreachable: subIsBridgeUnreachable,
     refetch,
   } = useShellPaneSubscription({
-    sessionId: (!isStreamingExperimentEnabled || fallbackToPolling) ? paneSessionId : null,
+    // Live for the whole reconnect window, so a stream drop degrades to a real polled repaint
+    // instead of a pane that silently stops updating (REQ-FIX-2).
+    sessionId: pollingSubscriptionSessionId(paneSessionId, streamingMode),
     status: session.status,
   });
 
@@ -201,33 +256,33 @@ export function ShellTerminalPane({
     refetch();
   }, [reconnectStream, refetch]);
 
-  // Unified input handler cleanly routing between streaming and legacy polling
+  // Unified input handler cleanly routing between streaming and legacy polling.
+  //
+  // The CHOICE of transport is `dispatchShellInput`'s, not this handler's (REQ-FIX-8): a branch
+  // written here is unreachable by every test in the repo, since the pane cannot be rendered
+  // without a DOM harness, and that unreachability is how F2 shipped. This handler now only
+  // supplies the two sinks.
   const handleInput = useCallback(
     (data: string) => {
-      console.log('[ShellTerminalPane] handleInput:', {
-        dataLength: data.length,
-        isStreamingActive,
-        fallbackToPolling,
-        targetId: sessionIdRef.current,
-      });
-      if (isStreamingActive) {
+      dispatchShellInput(streamingMode, data, {
         // STREAMING: Send keystrokes directly over WebSocket without debounce
-        sendStreamInput(data);
-      } else {
+        sendOverStream: sendStreamInput,
         // LEGACY POLLING: HTTP POST with 50ms debounced capture refetch
-        const targetId = sessionIdRef.current;
-        if (targetId) {
-          sendShellInput({ sessionId: targetId, data }).catch(() => {});
-        }
-        if (keystrokeDebounceTimerRef.current) {
-          clearTimeout(keystrokeDebounceTimerRef.current);
-        }
-        keystrokeDebounceTimerRef.current = setTimeout(() => {
-          refetchRef.current?.();
-        }, 50);
-      }
+        sendOverHttp: (payload) => {
+          const targetId = sessionIdRef.current;
+          if (targetId) {
+            sendShellInput({ sessionId: targetId, data: payload }).catch(() => {});
+          }
+          if (keystrokeDebounceTimerRef.current) {
+            clearTimeout(keystrokeDebounceTimerRef.current);
+          }
+          keystrokeDebounceTimerRef.current = setTimeout(() => {
+            refetchRef.current?.();
+          }, 50);
+        },
+      });
     },
-    [isStreamingActive, sendStreamInput, sendShellInput]
+    [streamingMode, sendStreamInput, sendShellInput]
   );
 
   // Unified resize handler routing between streaming and legacy polling
@@ -243,25 +298,24 @@ export function ShellTerminalPane({
   // stays 200. No value of the floor can make a WIDE pane render narrow, which means the floor
   // cannot have been masking the geometry bug and changing it would not have fixed anything. That
   // bug was the dropped resize frame (see getGeometry below), and it is fixed there.
+  //
+  // The floors are applied HERE and the transport choice is `dispatchShellResize`'s (REQ-FIX-8),
+  // for the same reason as `handleInput` above.
   const handleResize = useCallback(
     (rows: number, cols: number) => {
       const effectiveCols = Math.max(cols, 40);
       const effectiveRows = Math.max(rows, 1);
-      console.log('[ShellTerminalPane] handleResize:', {
-        rows: effectiveRows,
-        cols: effectiveCols,
-        isStreamingActive,
+      dispatchShellResize(streamingMode, effectiveRows, effectiveCols, {
+        sendOverStream: sendStreamResize,
+        sendOverHttp: (sinkRows, sinkCols) => {
+          const targetId = sessionIdRef.current;
+          if (targetId) {
+            sendShellResize({ sessionId: targetId, rows: sinkRows, cols: sinkCols }).catch(() => {});
+          }
+        },
       });
-      if (isStreamingActive) {
-        sendStreamResize(effectiveRows, effectiveCols);
-      } else {
-        const targetId = sessionIdRef.current;
-        if (targetId) {
-          sendShellResize({ sessionId: targetId, rows: effectiveRows, cols: effectiveCols }).catch(() => {});
-        }
-      }
     },
-    [isStreamingActive, sendStreamResize, sendShellResize]
+    [streamingMode, sendStreamResize, sendShellResize]
   );
 
   const handleInputRef = useRef(handleInput);
@@ -354,23 +408,6 @@ export function ShellTerminalPane({
       userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
     });
 
-    const flushPendingOutput = (targetTerm: TerminalType) => {
-      if (pendingStreamOutputRef.current.length > 0) {
-        const queued = pendingStreamOutputRef.current;
-        pendingStreamOutputRef.current = [];
-        console.log(`[ShellTerminalPane] flushing ${queued.length} withheld stream chunks`);
-        for (const chunk of queued) {
-          // term.write(bytes)
-          targetTerm.write(chunk, () => {
-            const buffer = targetTerm.buffer.active;
-            if (!userScrolledUpRef.current && buffer.baseY > 0) {
-              targetTerm.scrollToBottom();
-            }
-          });
-        }
-      }
-    };
-
     const dispatchResize = () => {
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
@@ -381,7 +418,7 @@ export function ShellTerminalPane({
           if (!isSizedRef.current) {
             isSizedRef.current = true;
             setIsSized(true);
-            flushPendingOutput(term);
+            flushPendingOutput();
           }
         }
       } catch { /* ignore */ }
@@ -402,7 +439,7 @@ export function ShellTerminalPane({
             isSizedRef.current = true;
             setIsSized(true);
             handleResizeRef.current(term.rows, term.cols);
-            flushPendingOutput(term);
+            flushPendingOutput();
           }
         }
       } catch { /* ignore */ }
@@ -418,15 +455,21 @@ export function ShellTerminalPane({
             isSizedRef.current = true;
             setIsSized(true);
             handleResizeRef.current(term.rows, term.cols);
-            flushPendingOutput(term);
+            flushPendingOutput();
           }
         }
       } catch { /* ignore */ }
     };
     window.addEventListener('resize', handleWindowResize);
 
-    // Initial paint on mount for polled output if available
-    if (!isStreamingActive && output) {
+    // Initial paint on mount for polled output if available. Gated on OWNERSHIP, not on the
+    // transport: a stream that has not finished connecting still owns the screen, and resetting
+    // here would wipe the snapshot and deltas restored just above — which consumeRestorationData
+    // has already drained from the registry and cannot hand back.
+    if (isPolledRepaintOwner && output) {
+      // A polled capture is a full-screen string that relies on LF translation. This was the one
+      // write site not asserting it, and a capture written with convertEol false staircases.
+      term.options.convertEol = true;
       term.reset();
       term.write(output);
       if (session.kind === 'shell') {
@@ -447,6 +490,12 @@ export function ShellTerminalPane({
 
       const currentSessionId = sessionIdRef.current;
       if (currentSessionId) {
+        // REQ-FIX-1 — nothing clears the buffered deltas here on purpose. A pane that was never
+        // sized has no screen worth serializing, so it saves no snapshot; its withheld output
+        // lives in the registry and is replayed by `consumeRestorationData` on the next mount.
+        // Discarding it here is what made a backgrounded-then-closed-then-reopened tab lose
+        // output silently. A pane that WAS sized has already flushed, so the buffer is empty and
+        // the snapshot below is the whole story — no double replay either way.
         if (!isExplicitlyClosedRef.current && terminalSessionRegistry.isSessionActive(currentSessionId) && serializeAddonRef.current && isSizedRef.current) {
           try {
             const serialized = serializeAddonRef.current.serialize();
@@ -473,7 +522,6 @@ export function ShellTerminalPane({
       lastWrittenOutputRef.current = '';
       isSizedRef.current = false;
       setIsSized(false);
-      pendingStreamOutputRef.current = [];
     };
   }, []);
 
@@ -482,13 +530,23 @@ export function ShellTerminalPane({
   // When streaming is active, incoming bytes bypass term.reset() and are written directly.
   // --------------------------------------------------------------------------
   useEffect(() => {
-    if (isStreamingActive) return;
+    // Gated on OWNERSHIP of the screen, which a transient drop does NOT transfer.
+    //
+    // This effect calls term.reset(). The capture it repaints from is bounded at 120 lines while
+    // the terminal holds 5000 of scrollback, so running it on a reconnect blip destroys thousands
+    // of lines of real history to recover a fraction of one screen — and would reset over a
+    // restoration whose deltas are already drained and unrecoverable. A drop moves input and
+    // resize to HTTP (see handleInput/handleResize); it does not move the screen.
+    if (!isPolledRepaintOwner) return;
 
     const term = terminalRef.current;
     if (!term || output === undefined) return;
     if (output === lastWrittenOutputRef.current) return;
 
     lastWrittenOutputRef.current = output;
+    // A polled capture is a full-screen string that relies on LF translation, unlike raw stream
+    // bytes — so this writer asserts what it needs rather than inheriting the flag.
+    term.options.convertEol = true;
     term.reset();
     term.write(output || '', () => {
       if (session.kind === 'shell') {
@@ -499,7 +557,7 @@ export function ShellTerminalPane({
         term.scrollToBottom();
       }
     });
-  }, [output, isStreamingActive]);
+  }, [output, isPolledRepaintOwner, session.kind]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -514,6 +572,10 @@ export function ShellTerminalPane({
     }
   }, [isStreamingActive]);
 
+  // A drop no longer repaints the pane (that would reset scrollback), so the user needs to be
+  // told the stream is down rather than watching a frozen terminal. A thin banner, deliberately
+  // not the covering overlay below: the existing content stays readable.
+  const showReconnectingBanner = isStreamEnabled && !streamConnected && isRunning && !isBridgeUnreachable;
   const showUnreachableOverlay = isBridgeUnreachable && !output && !streamConnected;
   const showUnreachableBanner = isBridgeUnreachable && (Boolean(output) || streamConnected);
   const showConnecting = !output && !streamConnected && (session.status === 'starting' || isLoading);
@@ -541,6 +603,16 @@ export function ShellTerminalPane({
             <Icon name="refresh" size={12} />
             <span>Retry</span>
           </button>
+        </div>
+      )}
+
+      {showReconnectingBanner && (
+        <div
+          data-debug-id="shell-terminal-reconnecting-banner"
+          className="z-10 flex shrink-0 items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
+        >
+          <Icon name="refresh" size={12} className="shrink-0 animate-spin text-accent" />
+          <span>Reconnecting to terminal… keystrokes are still being delivered.</span>
         </div>
       )}
 

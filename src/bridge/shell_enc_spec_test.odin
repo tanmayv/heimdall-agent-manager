@@ -601,7 +601,7 @@ test_pty_stream_screen_payload_encryption :: proc(t: ^testing.T) {
 	}
 
 	screen_rows := []string{"row 1", "row 2", "row 3"}
-	payload_str := bridge_pty_stream_screen_payload(screen_rows)
+	payload_str := bridge_pty_stream_screen_payload(screen_rows, -1, -1)
 	defer delete(payload_str)
 
 	bridge_pty_stream_emit_frame(&worker, "sh_stream_screen_test", transmute([]byte)payload_str)

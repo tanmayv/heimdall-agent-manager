@@ -247,6 +247,206 @@ describe('Suite 3: 1MB Delta Buffer Threshold & Pruning Boundaries', () => {
   });
 });
 
+describe('Suite 3b: REQ-FIX-7 — truncation never resumes replay mid-stream', () => {
+  const enc = new TextEncoder();
+
+  /** A real serialized snapshot to restore on top of, so these are full restoration paths. */
+  async function makeSnapshot(text: string): Promise<string> {
+    const term = new Terminal({ cols: 80, rows: 24 });
+    const addon = new SerializeAddon();
+    term.loadAddon(addon);
+    await writeToTerminal(term, text);
+    const snapshot = addon.serialize();
+    term.dispose();
+    return snapshot;
+  }
+
+  /** Every line of the rendered screen, trailing blanks dropped. */
+  function renderedLines(term: any): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < term.buffer.active.length; i++) {
+      out.push(term.buffer.active.getLine(i)?.translateToString(true) ?? '');
+    }
+    while (out.length > 0 && out[out.length - 1] === '') out.pop();
+    return out;
+  }
+
+  async function renderAll(snapshot: string, chunks: Uint8Array[]): Promise<string[]> {
+    const term = new Terminal({ cols: 80, rows: 24 });
+    await writeToTerminal(term, snapshot);
+    for (const chunk of chunks) {
+      await writeToTerminal(term, chunk);
+    }
+    const lines = renderedLines(term);
+    term.dispose();
+    return lines;
+  }
+
+  test('Test 3b.1: FIFO prune across a multi-byte character destroys the glyph, so the replay is refused', async () => {
+    const registry = new TerminalSessionRegistry();
+    const sid = 'cut-utf8-sess';
+    const snapshot = await makeSnapshot('CLEAN BASE LINE\r\n');
+    registry.saveSnapshot(sid, snapshot, 0, 80, 24);
+
+    // '→' is E2 86 92. Chunk 1 ends on its LEAD byte; chunk 2 opens with the two continuation
+    // bytes, so a prune of chunk 1 leaves the replay starting mid-code-point.
+    const chunk1 = new Uint8Array(MAX_DELTA_BYTES - 1).fill(0x41); // 'A' filler
+    chunk1[chunk1.length - 1] = 0xe2;
+    const chunk2 = new Uint8Array([0x86, 0x92, ...enc.encode('ARROW ABOVE\r\n')]);
+
+    registry.appendDelta(sid, chunk1);
+    registry.appendDelta(sid, chunk2);
+
+    const state = registry.get(sid)!;
+    assert.ok(state.totalDeltaBytes <= MAX_DELTA_BYTES, 'cap must still bound memory');
+    assert.equal(state.truncated, true, 'dropping chunk 1 must mark the state truncated');
+
+    // What the pre-fix code replayed: the retained remainder, verbatim.
+    const retained = state.deltaBuffer.map((c) => new Uint8Array(c));
+    const naive = await renderAll(snapshot, retained);
+    assert.ok(
+      !naive.join('\n').includes('→'),
+      'control: the cut must have destroyed the multi-byte character — otherwise this test ' +
+        'is not exercising a mid-code-point cut at all'
+    );
+    assert.deepEqual(
+      naive,
+      ['CLEAN BASE LINE', 'ARROW ABOVE'],
+      'control: the pre-fix replay renders the remainder with the glyph silently missing'
+    );
+
+    // What the fix replays: nothing. The snapshot is the only thing with a known stream state.
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, true, 'restoration must report the truncation');
+    assert.equal(restoration.deltaChunks.length, 0, 'a truncated buffer must not be replayed');
+
+    const restored = await renderAll(restoration.snapshot, restoration.deltaChunks);
+    assert.deepEqual(
+      restored,
+      ['CLEAN BASE LINE'],
+      'the restored screen must be the clean snapshot, with no partial-character residue'
+    );
+  });
+
+  test('Test 3b.2: FIFO prune across a split CSI would print control bytes as text, so the replay is refused', async () => {
+    const registry = new TerminalSessionRegistry();
+    const sid = 'cut-csi-sess';
+    const snapshot = await makeSnapshot('CLEAN BASE LINE\r\n');
+    registry.saveSnapshot(sid, snapshot, 0, 80, 24);
+
+    // Chunk 1 ends mid-CSI, on '\x1b[3'; chunk 2 carries its tail, '1m' plus text.
+    const csiHead = enc.encode('\x1b[3');
+    const chunk1 = new Uint8Array(MAX_DELTA_BYTES - csiHead.length).fill(0x41);
+    chunk1.set(csiHead, chunk1.length - csiHead.length);
+    const chunk2 = enc.encode('1mRED ALERT\r\n');
+
+    registry.appendDelta(sid, chunk1);
+    registry.appendDelta(sid, chunk2);
+
+    const state = registry.get(sid)!;
+    assert.ok(state.totalDeltaBytes <= MAX_DELTA_BYTES, 'cap must still bound memory');
+    assert.equal(state.truncated, true, 'dropping chunk 1 must mark the state truncated');
+
+    const retained = state.deltaBuffer.map((c) => new Uint8Array(c));
+    const naive = await renderAll(snapshot, retained);
+    assert.ok(
+      naive.join('\n').includes('1mRED ALERT'),
+      'control: the orphaned CSI tail must render as literal text — this is the garbled screen ' +
+        'the cap used to produce once a backgrounded tab got busy enough to prune'
+    );
+
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, true, 'restoration must report the truncation');
+    assert.equal(restoration.deltaChunks.length, 0, 'a truncated buffer must not be replayed');
+
+    const restored = await renderAll(restoration.snapshot, restoration.deltaChunks);
+    assert.ok(
+      !restored.join('\n').includes('1mRED'),
+      'the restored screen must not contain the orphaned escape payload as text'
+    );
+    assert.deepEqual(restored, ['CLEAN BASE LINE'], 'the clean snapshot is what gets restored');
+  });
+
+  test('Test 3b.3: the tail-slice vector (single chunk over the cap) is truncated the same way', async () => {
+    const registry = new TerminalSessionRegistry();
+    const sid = 'slice-sess';
+    const snapshot = await makeSnapshot('CLEAN BASE LINE\r\n');
+    registry.saveSnapshot(sid, snapshot, 0, 80, 24);
+
+    // One oversized chunk: bufferSessionDelta keeps its tail, cutting at an arbitrary offset.
+    const oversized = new Uint8Array(MAX_DELTA_BYTES + 16).fill(0x41);
+    oversized.set(enc.encode('\x1b[31m'), MAX_DELTA_BYTES + 11);
+    registry.appendDelta(sid, oversized);
+
+    const state = registry.get(sid)!;
+    assert.equal(state.totalDeltaBytes, MAX_DELTA_BYTES, 'the slice still enforces the cap');
+    assert.equal(state.truncated, true, 'slicing a chunk drops bytes and must mark truncated');
+
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, true);
+    assert.equal(restoration.deltaChunks.length, 0);
+    assert.deepEqual(await renderAll(restoration.snapshot, restoration.deltaChunks), ['CLEAN BASE LINE']);
+  });
+
+  test('Test 3b.4: an UNtruncated buffer still replays in full, and a drain re-anchors the stream', async () => {
+    const registry = new TerminalSessionRegistry();
+    const sid = 'intact-sess';
+    const snapshot = await makeSnapshot('CLEAN BASE LINE\r\n');
+    registry.saveSnapshot(sid, snapshot, 0, 80, 24);
+
+    // Exactly at the cap: nothing is dropped, so the replay must be complete — the fix must not
+    // degrade into "never replay anything".
+    const tail = enc.encode('\r\nINTACT \u2192 TAIL\r\n');
+    const half = MAX_DELTA_BYTES / 2;
+    registry.appendDelta(sid, new Uint8Array(half).fill(0x41));
+    registry.appendDelta(sid, new Uint8Array(half - tail.byteLength).fill(0x41));
+    registry.appendDelta(sid, tail);
+
+    assert.equal(
+      registry.get(sid)!.totalDeltaBytes,
+      MAX_DELTA_BYTES,
+      'this test is only meaningful if it lands exactly ON the cap without crossing it'
+    );
+
+    const state = registry.get(sid)!;
+    assert.equal(state.truncated, false, 'nothing was dropped, so nothing is truncated');
+
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, false);
+    assert.equal(restoration.deltaChunks.length, 3, 'all three chunks must be replayed');
+    const restored = await renderAll(restoration.snapshot, restoration.deltaChunks);
+    assert.ok(
+      restored.some((l) => l.includes('INTACT → TAIL')),
+      'an intact multi-byte character must survive the round trip verbatim'
+    );
+
+    // The drain re-anchors: bytes buffered afterwards are contiguous again and replay normally.
+    assert.equal(registry.get(sid)!.truncated, false);
+    registry.appendDelta(sid, enc.encode('POST DRAIN\r\n'));
+    const second = registry.consumeRestorationData(sid)!;
+    assert.equal(second.truncated, false);
+    assert.equal(new TextDecoder().decode(second.deltaChunks[0]), 'POST DRAIN\r\n');
+  });
+
+  test('Test 3b.5: a truncation survives an intervening snapshot save', () => {
+    const registry = new TerminalSessionRegistry();
+    const sid = 'persist-trunc-sess';
+
+    registry.appendDelta(sid, new Uint8Array(MAX_DELTA_BYTES).fill(0x41));
+    registry.appendDelta(sid, new Uint8Array(32).fill(0x42));
+    assert.equal(registry.get(sid)!.truncated, true);
+
+    // An unmount snapshot must not launder away an overflow that already happened.
+    registry.saveSnapshot(sid, 'snap-after-overflow', 0, 80, 24);
+    assert.equal(registry.get(sid)!.truncated, true, 'saveSnapshot must preserve the flag');
+
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, true);
+    assert.equal(restoration.deltaChunks.length, 0);
+    assert.equal(restoration.snapshot, 'snap-after-overflow');
+  });
+});
+
 describe('Suite 4: @xterm/addon-serialize Round-Trip Fidelity & Terminal Reconstruction', () => {
   test('Test 4.1: Plain text scrollback round-trip', async () => {
     const term1 = new Terminal({ cols: 80, rows: 24 });

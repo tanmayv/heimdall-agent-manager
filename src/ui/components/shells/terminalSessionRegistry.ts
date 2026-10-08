@@ -40,6 +40,17 @@ export interface SavedTerminalState {
   deltaBuffer: Uint8Array[];
   deltaChunks: Uint8Array[];
   totalDeltaBytes: number;
+  /**
+   * Set once the cap has discarded bytes, and cleared only by a drain (REQ-FIX-7).
+   *
+   * Both eviction vectors cut the byte stream at an arbitrary offset: the tail slice in
+   * `bufferSessionDelta` and the FIFO `shift()` below it. Neither respects a UTF-8 code point or
+   * an escape sequence, so whatever survives can begin mid-character or mid-CSI. Replaying from
+   * there corrupts the restored screen, and it would fire precisely when a backgrounded tab is
+   * busy enough to reach the cap. The bytes are still retained — the cap is what bounds memory —
+   * but this flag makes the REPLAY refuse them; see `drainSessionDeltas`.
+   */
+  truncated: boolean;
   updatedAt: number;
   cols: number;
   rows: number;
@@ -51,7 +62,14 @@ export interface SavedTerminalState {
  */
 export interface TerminalRestorationData {
   snapshot: string;
+  /** Empty when `truncated` is set — a truncated buffer is never replayed (REQ-FIX-7). */
   deltaChunks: Uint8Array[];
+  /**
+   * The delta buffer overflowed its cap, so the consumer must NOT expect continuity with the
+   * snapshot. Restore the snapshot alone and let the live stream carry the screen forward; the
+   * server sends a full `screen` frame on every (re)connect, so the pane self-heals.
+   */
+  truncated: boolean;
   savedViewportY: number;
   scrollOffset: number;
   cols: number;
@@ -142,6 +160,8 @@ export class TerminalSessionRegistry {
     const existing = this.sessions.get(sessionId);
     const deltaList = existing ? existing.deltaBuffer : [];
     const totalBytes = existing ? existing.totalDeltaBytes : 0;
+    // A snapshot save must not launder away an overflow that already happened.
+    const wasTruncated = existing ? existing.truncated : false;
 
     const state: SavedTerminalState = {
       sessionId,
@@ -151,6 +171,7 @@ export class TerminalSessionRegistry {
       deltaBuffer: deltaList,
       deltaChunks: deltaList,
       totalDeltaBytes: totalBytes,
+      truncated: wasTruncated,
       updatedAt: Date.now(),
       cols: terminalCols,
       rows: terminalRows,
@@ -193,8 +214,11 @@ export class TerminalSessionRegistry {
 
     // Defensive copy / handle single chunk > MAX_DELTA_BYTES
     let safeChunk: Uint8Array;
+    let droppedBytes = false;
     if (bytes.byteLength > MAX_DELTA_BYTES) {
+      // Cuts at an arbitrary offset — see SavedTerminalState.truncated.
       safeChunk = bytes.slice(bytes.byteLength - MAX_DELTA_BYTES);
+      droppedBytes = true;
     } else {
       safeChunk = new Uint8Array(bytes);
     }
@@ -210,6 +234,7 @@ export class TerminalSessionRegistry {
         deltaBuffer: buffer,
         deltaChunks: buffer,
         totalDeltaBytes: safeChunk.byteLength,
+        truncated: droppedBytes,
         updatedAt: Date.now(),
         cols: 80,
         rows: 24,
@@ -222,12 +247,18 @@ export class TerminalSessionRegistry {
     state.deltaBuffer.push(safeChunk);
     state.totalDeltaBytes += safeChunk.byteLength;
     state.updatedAt = Date.now();
+    if (droppedBytes) {
+      state.truncated = true;
+    }
 
-    // Prune oldest chunks until total buffered bytes <= MAX_DELTA_BYTES
+    // Prune oldest chunks until total buffered bytes <= MAX_DELTA_BYTES.
+    // Chunk boundaries are wherever the socket happened to split the stream, so dropping whole
+    // chunks is no safer than slicing one — either way the remainder can start mid-sequence.
     while (state.totalDeltaBytes > MAX_DELTA_BYTES && state.deltaBuffer.length > 0) {
       const removed = state.deltaBuffer.shift();
       if (removed) {
         state.totalDeltaBytes -= removed.byteLength;
+        state.truncated = true;
       }
     }
   }
@@ -250,9 +281,18 @@ export class TerminalSessionRegistry {
   drainSessionDeltas(sessionId: string): Uint8Array[] {
     const state = this.sessions.get(sessionId);
     if (!state) return [];
-    const deltas = [...state.deltaBuffer];
+
+    // REQ-FIX-7: a truncated buffer is dropped rather than replayed. Resuming from a cut offset
+    // can begin mid-code-point or mid-CSI and garble the restored screen, which is strictly worse
+    // than a stale one — the caller falls back to the snapshot and the live stream repaints.
+    const deltas = state.truncated ? [] : [...state.deltaBuffer];
+
+    // Mutated in place: deltaBuffer and deltaChunks alias one another (see SavedTerminalState).
+    // Assigning a fresh array here would desync them with no type error and no failing test.
     state.deltaBuffer.length = 0;
     state.totalDeltaBytes = 0;
+    // The drain re-anchors the stream: bytes buffered from here on are contiguous again.
+    state.truncated = false;
     return deltas;
   }
 
@@ -264,10 +304,12 @@ export class TerminalSessionRegistry {
     const state = this.sessions.get(sessionId);
     if (!state) return null;
 
+    const wasTruncated = state.truncated;
     const deltas = this.drainSessionDeltas(sessionId);
     return {
       snapshot: state.snapshot,
       deltaChunks: deltas,
+      truncated: wasTruncated,
       savedViewportY: state.savedViewportY,
       scrollOffset: state.scrollOffset,
       cols: state.cols,

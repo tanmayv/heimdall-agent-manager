@@ -11,13 +11,13 @@ import "core:testing"
 test_adv_bridge_trim_variations :: proc(t: ^testing.T) {
 	// 1. All empty lines
 	all_empty := []string{"", "", "", ""}
-	got1 := bridge_pty_stream_screen_payload(all_empty)
+	got1 := bridge_pty_stream_screen_payload(all_empty, -1, -1)
 	defer delete(got1)
 	testing.expect_value(t, got1, "")
 
 	// 2. Whitespace lines only
 	whitespace_only := []string{"   ", "\t\t", " \t \t", ""}
-	got2 := bridge_pty_stream_screen_payload(whitespace_only)
+	got2 := bridge_pty_stream_screen_payload(whitespace_only, -1, -1)
 	defer delete(got2)
 	testing.expect_value(t, got2, "")
 
@@ -27,20 +27,20 @@ test_adv_bridge_trim_variations :: proc(t: ^testing.T) {
 	for _ in 0 ..< 100 {
 		append(&lines, "")
 	}
-	got3 := bridge_pty_stream_screen_payload(lines[:])
+	got3 := bridge_pty_stream_screen_payload(lines[:], -1, -1)
 	defer delete(got3)
 	testing.expect_value(t, got3, "admin@box:~#   ")
 	testing.expect(t, strings.has_suffix(got3, "   "), "trailing spaces preserved")
 
 	// 4. Interior blank lines preserved with CRLF
 	lines4 := []string{"First", "", "Second", "   ", "Third", "", ""}
-	got4 := bridge_pty_stream_screen_payload(lines4)
+	got4 := bridge_pty_stream_screen_payload(lines4, -1, -1)
 	defer delete(got4)
 	testing.expect_value(t, got4, "First\r\n\r\nSecond\r\n   \r\nThird")
 
 	// 5. Existing CR preserved without doubling
 	lines5 := []string{"already\r", "carriage\r"}
-	got5 := bridge_pty_stream_screen_payload(lines5)
+	got5 := bridge_pty_stream_screen_payload(lines5, -1, -1)
 	defer delete(got5)
 	testing.expect(t, !strings.contains(got5, "\r\r"), "no doubled CR")
 }

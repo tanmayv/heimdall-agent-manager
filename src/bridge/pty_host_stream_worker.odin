@@ -357,19 +357,48 @@ _bridge_pty_stream_trim_trailing_blank_rows :: proc(s: string, allocator := cont
 }
 
 // bridge_pty_stream_screen_payload builds the byte payload of the bridge's catch-up screen
-// frame: the captured rows joined, with trailing blank rows trimmed and CRLF row separators.
-// Caller owns the result.
+// frame: the captured rows joined, with trailing blank rows trimmed, CRLF row separators, and
+// an explicit ANSI cursor positioning sequence (\x1b[<row+1>;<col+1>H) when valid cursor
+// coordinates (>= 0) are supplied. Caller owns the result.
 //
 // This exists as a named seam rather than two statements inlined in the .Screen case so that
 // the conversion is covered in the SAME composition the emit site uses. A test that called
 // _bridge_pty_stream_lf_to_crlf directly would stay green if someone dropped the call from the
 // emit site — it would guard the helper without detecting the regression this task fixes.
-bridge_pty_stream_screen_payload :: proc(lines: []string) -> string {
+//
+// REQ-FIX-3: the CUP is the SECOND half of "initial cursor positioning". There are two catch-up
+// producers that paint an existing screen, and this is the one that attach uses; the hub's polled
+// repaint (_shell_screen_repaint_text in shell_stream_screen_snapshot.odin) already emitted a CUP
+// while this one left the cursor wherever the last written byte landed. Trimming trailing blank
+// rows moves end-of-text further from the true cursor, so the two had to agree.
+//
+// The contract is deliberately IDENTICAL to the hub's: coordinates are 0-based, so the sequence
+// takes row+1/col+1, and a coordinate below zero means "no cursor data" and suppresses the CUP
+// entirely rather than guessing a position. The sentinel exists for callers that have no cursor to
+// report, which must not fabricate one; the pty-host stream reply always carries real coordinates
+// (see the .Screen case below).
+//
+// REQ-FIX-9: the cursor parameters are MANDATORY, and that is the whole point. They used to default
+// to -1, which made the sentinel reachable by ACCIDENT: dropping the two arguments at the emit site
+// below silently reverts REQ-FIX-3 — it compiles, all 17 Odin tests stay green because every one of
+// them calls this helper directly, and the bridge quietly goes back to emitting no cursor escape.
+// That is the same trap the paragraph above describes for the joiner, one level up. With the
+// defaults gone the regression is a compile error instead, so absent-cursor callers must now say
+// -1, -1 out loud and a dropped argument cannot be mistaken for one.
+bridge_pty_stream_screen_payload :: proc(lines: []string, cursor_row: int, cursor_col: int) -> string {
 	joined, _, _ := bridge_pty_host_screen_to_output(lines, 0)
 	defer delete(joined)
 	trimmed := _bridge_pty_stream_trim_trailing_blank_rows(joined)
 	defer delete(trimmed)
-	return _bridge_pty_stream_lf_to_crlf(trimmed)
+	body := _bridge_pty_stream_lf_to_crlf(trimmed)
+
+	if cursor_row >= 0 && cursor_col >= 0 {
+		defer delete(body)
+		// tprintf lands in the temp allocator; concatenate copies it out, so the CUP is never freed here.
+		cup := fmt.tprintf("\x1b[%d;%dH", cursor_row + 1, cursor_col + 1)
+		return strings.concatenate({body, cup})
+	}
+	return body
 }
 
 // bridge_pty_stream_reader_worker runs on a dedicated background thread per active stream.
@@ -404,7 +433,15 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 			// polled panes (xterm's convertEol is on there) but not here — this frame reaches the
 			// terminal as raw bytes, where a bare LF keeps the column and staircases the paint.
 			// Converted at the emit site, never in the shared joiner: see the note above.
-			content := bridge_pty_stream_screen_payload(reply.screen.lines)
+			// REQ-FIX-3: cursor_row/cursor_col are u16 off the wire and 0-based, and
+			// pty_host_get_screen fails the whole decode unless all four screen coordinates
+			// parsed (a failed decode `continue`s above), so the data here is always real —
+			// this call never reaches the payload builder's absent-cursor sentinel.
+			content := bridge_pty_stream_screen_payload(
+				reply.screen.lines,
+				int(reply.screen.cursor_row),
+				int(reply.screen.cursor_col),
+			)
 			if len(content) > 0 {
 				bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content)
 			}

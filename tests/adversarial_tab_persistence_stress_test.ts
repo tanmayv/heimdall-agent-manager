@@ -497,14 +497,22 @@ describe('Adversarial Suite 5: High-Stress Boundary Attacks & Pathological Paylo
       `totalDeltaBytes (${state.totalDeltaBytes}) must not exceed MAX_DELTA_BYTES (${MAX_DELTA_BYTES})`
     );
 
-    // Oldest chunks must have been pruned, newest retained
-    const restoration = registry.consumeRestorationData(sid)!;
-    const lastChunk = restoration.deltaChunks[restoration.deltaChunks.length - 1];
-    assert.equal(lastChunk[0], 15, 'Newest chunk #15 must be present at the tail of deltaChunks');
+    // Retention: oldest chunks pruned, newest kept. Asserted against the buffer itself, which is
+    // what bounds memory.
+    assert.equal(state.deltaBuffer[state.deltaBuffer.length - 1][0], 15, 'Newest chunk #15 must be retained');
+    assert.ok(state.deltaBuffer[0][0] > 1, `Chunk #1 must have been pruned, got chunk #${state.deltaBuffer[0][0]}`);
 
-    // First chunk should NOT be chunk #1 (since chunk #1 was pruned)
-    const firstChunk = restoration.deltaChunks[0];
-    assert.ok(firstChunk[0] > 1, `Chunk #1 must have been pruned, got chunk #${firstChunk[0]}`);
+    // Replay: refused. REQ-FIX-7 — this test previously consumed the restoration and asserted the
+    // pruned remainder came back for replay. That is the defect, not the contract: chunk #2 begins
+    // wherever the socket happened to split the stream, so replaying from it can start
+    // mid-code-point or mid-CSI and garble the restored screen. A truncated buffer is dropped and
+    // the snapshot is restored alone; see Suite 3b in ui_terminal_persistence_registry_test.ts for
+    // the rendered-screen proof.
+    assert.equal(state.truncated, true, 'a prune must mark the state truncated');
+    const restoration = registry.consumeRestorationData(sid)!;
+    assert.equal(restoration.truncated, true, 'the restoration must report the truncation');
+    assert.equal(restoration.deltaChunks.length, 0, 'a truncated buffer must not be replayed');
+    assert.equal(restoration.snapshot, 'base', 'the snapshot remains the restoration anchor');
   });
 
   test('Test 5.3: Rapid tab toggling race condition (200 consecutive rapid toggles)', async () => {
