@@ -602,7 +602,8 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
     'is stale and must be updated:\n' + stale.join('\n'),
   );
 
-  // THE LAST SILENT PATH IN THIS FILE, closed the same way as the (unresolved) bucket.
+  // Closes one silent path, the same way as the (unresolved) bucket. NOT the last one —
+  // see PARAMETER SHAPE below, which this assertion structurally cannot reach.
   //
   // The denylist inverted the failure DIRECTION, which was the point: a MISSING entry
   // (`onChange: (changeEvent: ChangeEvent) => void`) now registers the component as
@@ -625,6 +626,51 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
     'event but carries a value (e.g. a domain type named `event`), it must be ' +
     'enumerated and registered:\n' + skippedAsEventTaking.join('\n'),
   );
+
+  // PARAMETER SHAPE — a remaining silent path, stated rather than claimed closed.
+  //
+  // What IS asserted empty: the three buckets a declaration can land in once
+  // VALUE_PASSING_DECL has matched it — `unparseable` and `(unresolved)` in the sweep,
+  // and `skippedAsEventTaking` above. What is NOT asserted is a declaration the regex
+  // never matches at all: it enters no bucket, so asserting all three says nothing
+  // about it.
+  //
+  // THE GENERAL RULE, so nobody re-declares completeness after closing a fifth case:
+  //   "ALL BUCKETS ARE EMPTY" IS A COMPLETE CLAIM ONLY IF EVERYTHING REACHES A BUCKET.
+  // A pre-bucketing drop is invisible to every downstream assertion. Note also that the
+  // four earlier instances of this file's recurring defect were all the SAME dimension —
+  // naming: the type's spelling, the prop's spelling, the parameter's name, then the
+  // denylist's membership. We declared the top of that ladder each time. This one is
+  // ORTHOGONAL to it, which is why closing another naming case would not have found it.
+  //
+  // The parameter NAME is now a denylist (fixed), but the parameter SHAPE is still an
+  // allowlist: `VALUE_PASSING_DECL` only matches a plain identifier followed by one of
+  // `:,)`. Executed truth table against this file's own predicate:
+  //
+  //   ENUMERATES   onChange: ChangeHandler<string>
+  //   ENUMERATES   onChange: (rows: ReasonMapping[]) => void
+  //   ENUMERATES   onChange: (value: string, meta: M) => void
+  //   SKIPPED      onChange: (ev: Event) => void                 (asserted above)
+  //   NO BUCKET    onChange: (value?: string) => void            optional — idiomatic TS
+  //   NO BUCKET    onChange: ({ value }: Payload) => void        destructured
+  //   NO BUCKET    onChange: ([first]: string[]) => void         array-destructured
+  //   NO BUCKET    onChange: (...values: string[]) => void       rest
+  //   NO BUCKET    onChange: <T>(value: T) => void               generic arrow
+  //
+  // All five NO BUCKET rows are value-passing, so a NEW, UNREGISTERED component declared
+  // any of those ways is unguarded with this suite fully green. This is the same
+  // closed-and-quiet signature as the parameter-name allowlist, one dimension over.
+  //
+  // MEASURED EMPTY, not assumed: a broad-net sweep of src/ui/components/ui/ for any
+  // onChange/onSelectionChange declaration whatever its shape finds 15 declarations
+  // across the 13 registered files (DataList and Combobox contribute two each), and the
+  // committed predicate matches all 15 — shape-dropped: 0. For an ALREADY-REGISTERED
+  // component a shape change fails loudly via the stale-registry assertion below, so the
+  // silent case is specifically a new, unregistered component.
+  //
+  // DELIBERATELY NOT FIXED HERE. Closing it needs parsing rather than a regex, which is a
+  // technique and not a line. Filed on iss_18dc7469a02adbfc with this reachability
+  // evidence. Found by the reviewer in their own handed-over design.
 
   assert.strictEqual(
     VALUE_PASSING_TAGS.size, 13,
