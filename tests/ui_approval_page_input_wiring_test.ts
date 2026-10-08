@@ -558,6 +558,9 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
   const EVENT_PARAM_NAMES = /^(e|ev|evt|event|_e|_ev|_event|domEvent|nativeEvent)$/i;
 
   const declaringFiles = new Map<string, number[]>();
+  // Every declaration the denylist skips, recorded rather than dropped — see the
+  // assertion at the end of this test for why.
+  const skippedAsEventTaking: string[] = [];
   for (const file of collectTsx(path.join(REPO_ROOT, 'src/ui/components/ui'))) {
     const src = fs.readFileSync(file, 'utf8');
     const rel = path.relative(REPO_ROOT, file);
@@ -569,7 +572,10 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
       if (text.startsWith('*') || text.startsWith('//') || text.startsWith('/*')) continue;
       // m[1] = 'ChangeHandler' (value-passing by definition); m[2] = first parameter name.
       const paramName = m[2];
-      if (paramName && EVENT_PARAM_NAMES.test(paramName)) continue;
+      if (paramName && EVENT_PARAM_NAMES.test(paramName)) {
+        skippedAsEventTaking.push(`${rel}:${lineNo} (parameter named '${paramName}')`);
+        continue;
+      }
       if (!declaringFiles.has(rel)) declaringFiles.set(rel, []);
       declaringFiles.get(rel)!.push(lineNo);
     }
@@ -594,6 +600,30 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
     stale, [],
     'These registered files no longer declare a value-passing onChange — the registry ' +
     'is stale and must be updated:\n' + stale.join('\n'),
+  );
+
+  // THE LAST SILENT PATH IN THIS FILE, closed the same way as the (unresolved) bucket.
+  //
+  // The denylist inverted the failure DIRECTION, which was the point: a MISSING entry
+  // (`onChange: (changeEvent: ChangeEvent) => void`) now registers the component as
+  // value-passing — a false positive, loud and fixable — whereas levels 1-3 all made a
+  // component vanish silently. But one silent path survives the inversion: a component
+  // that is genuinely value-passing while naming its parameter like a DOM event, e.g.
+  // `onChange: (event: CalendarEvent) => void` where `event` is a DOMAIN type. That is
+  // skipped with no trace.
+  //
+  // So assert the skip set is empty. Nothing in components/ui/ is event-taking today, and
+  // adding an event-taking onChange to a component in this directory should be a
+  // DELIBERATE act — this makes it one, instead of a silent omission. It is a decision
+  // tripwire, not a refactor tripwire: ordinary refactors do not add event-taking
+  // handlers to the shared component library.
+  assert.deepStrictEqual(
+    skippedAsEventTaking, [],
+    'A declaration in src/ui/components/ui/ was skipped as event-taking, so it is not ' +
+    'enumerated and its component is not required to be registered. If it genuinely ' +
+    'takes a DOM event, add it here deliberately; if the parameter merely LOOKS like an ' +
+    'event but carries a value (e.g. a domain type named `event`), it must be ' +
+    'enumerated and registered:\n' + skippedAsEventTaking.join('\n'),
   );
 
   assert.strictEqual(
