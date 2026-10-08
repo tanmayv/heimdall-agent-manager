@@ -417,26 +417,28 @@ longer accepted.
   It preserves the credential, skips enrollment, ensures the service is registered
   with `https://hub.mundus.in`, and starts the service.
 
-- **Restoring a credential file from a backup of the same node:**
-  Put the credential file back where the bridge reads it, and keep its mode:
+- **Do not restore a bridge credential from a backup. Re-enroll instead.**
+
+  The refresh token rotates on every use and the Hub treats a second presentation of
+  an already-rotated token as theft: it revokes the **entire token family** — every
+  generation, both token kinds — so the node needs a fresh enrollment anyway, and the
+  bridge wipes both local token files on the way down. A backup goes stale the moment
+  the bridge next refreshes, which is about 30 seconds after it starts and every 45-51
+  minutes thereafter. There is deliberately no way to ask the Hub whether a given token
+  is still current — every failure returns the same `invalid_grant`, so presenting the
+  token *is* the test, and the test is what destroys the family.
+
+  So if a node has lost its credential, or you are rebuilding it from a backup that
+  excludes one, just enroll again — it costs one browser approval:
   ```bash
-  mkdir -p ~/.config/heimdall
-  cp /path/to/backup/bridge-token ~/.config/heimdall/bridge-token
-  chmod 0600 ~/.config/heimdall/bridge-token
+  ham-bridge enroll --ui https://heimdall.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
   ```
-  Ensure `~/.config/heimdall/config.toml` specifies the Hub URL:
-  ```toml
-  [wrapper]
-  daemon_url = "https://hub.mundus.in"
-  ```
-  Then start or restart the bridge service:
-  ```bash
-  systemctl --user restart heimdall-bridge          # Linux
-  # or macOS:
-  launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
-  ```
-  If the credential was revoked or has aged out, the bridge says so and refuses to
-  start; re-enroll with `ham-bridge enroll --ui https://heimdall.mundus.in`.
+  Back up `~/.config/heimdall/config.toml` by all means; leave the token files out of
+  the backup set.
+
+- **If the bridge logs that its credential was revoked**, re-enroll as above. The log
+  says `RE-ENROLLMENT REQUIRED` once, before a run of `cannot connect WS …` retries
+  that look like a network fault — the first line is the real one.
 
 #### 4. Verification & Diagnostics
 
