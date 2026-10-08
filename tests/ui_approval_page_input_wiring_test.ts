@@ -12,8 +12,17 @@
 // Tests 1–4 are regression tests: they fail against b8d16379^ (the broken commit) and
 // pass after the fix. Verified by checking out b8d16379^ and running the suite.
 //
-// Render-and-type behavioral tests are in ui_approval_page_render_test.ts (Option A).
-// Those tests are non-vacuous: they fail when either handler uses the broken pattern.
+// The task's MANDATORY criterion — "the regression test must drive the FIELD, not the
+// handler" — is met IN SUBSTANCE BY TESTS 1-4, which fail on the broken page. It is NOT
+// met by the render tests, and an earlier version of this comment claimed otherwise.
+//
+// ui_approval_page_render_test.ts does render the real `Input` primitive through
+// react-dom + jsdom and dispatch a real input event, but it mounts a test-local
+// `TestPasswordForm` (:155, :173) rather than BridgeEnrollmentApprovalPage. Re-injecting
+// BOTH original defects into the real page leaves that suite at pass=2 fail=0, UNCHANGED.
+// So those tests prove `Input`'s CONTRACT; they do not cover the page's WIRING, which is
+// where the defect lived. They are honest coverage of a different thing, and the
+// limitation is stated in that file too.
 //
 // DOCUMENTATION INVARIANTS (2 tests, NOT regression coverage)
 // ─────────────────────────────────────────────────────────────
@@ -21,12 +30,12 @@
 // of adjacent code (button gating, Input contract) that did not change. They document
 // intended invariants, not the regression. They are labeled accordingly.
 //
-// CLASS-LEVEL GUARD (1 test, B(3) from the coordinator ruling)
+// CLASS-LEVEL GUARD (tests 7-10, B(3) from the coordinator ruling)
 // ─────────────────────────────────────────────────────────────
-// Test 7 is non-vacuous against b8d16379^ — the broken .target accesses in
-// BridgeEnrollmentApprovalPage.tsx cause it to fail on that commit. It guards the
-// anti-pattern across ALL of src/ui (not just this one file), so the identical mistake
-// on any other ChangeHandler<T> primitive is caught immediately.
+// Test 7 sweeps all of src/ui for the anti-pattern on any of the thirteen value-passing
+// components; tests 8-10 are the controls that stop test 7 from passing vacuously. Their
+// design, scope and limits are documented at the section below rather than here, so the
+// two descriptions cannot drift apart.
 //
 // RUN: node --test tests/ui_approval_page_input_wiring_test.ts
 
@@ -386,6 +395,19 @@ test('REQ-FIX-1 [class-guard B(3)]: no onChange on any of the 13 value-passing c
     'Some onChange prop bodies could not be extracted, so they were never checked:\n' +
     sweep.unparseable.join('\n'),
   );
+
+  // Nor is an UNRESOLVED enclosing tag a pass. `enclosingTag` returns null when it finds
+  // no tag-open — `return<Tag …>` is one shape that would do it, since the `<` is then
+  // preceded by the `n` of `return`. Such a handler lands in neither the violation bucket
+  // nor the native control: it is silently absorbed, which is the exact pattern the rest
+  // of this file exists to eliminate. Unreachable in the tree today; asserted anyway,
+  // because a guard that must err should err loudly.
+  const unresolved = sweep.allHandlers.filter((r) => r.tag === '(unresolved)');
+  assert.deepStrictEqual(
+    unresolved.map(fmt), [],
+    'Some onChange handlers have an unresolved enclosing tag, so they were classified ' +
+    'into neither the violations nor the positive control:\n' + unresolved.map(fmt).join('\n'),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -508,8 +530,32 @@ test('REQ-FIX-1 [control, secondary]: the sweep still finds the legitimate nativ
 // ---------------------------------------------------------------------------
 
 test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/ui/components/ui/ is registered', () => {
+  // A declaration is either `onChange: ChangeHandler<T>` (no parameter to inspect) or
+  // `onChange: (param: T) => void`, in which case the FIRST PARAMETER NAME is captured.
   const VALUE_PASSING_DECL =
-    /\bon(?:Change|SelectionChange)\??\s*:\s*(?:ChangeHandler\s*<|\(\s*(?:value|values|next|checked|selected)\b)/g;
+    /\bon(?:Change|SelectionChange)\??\s*:\s*(?:(ChangeHandler)\s*<|\(\s*([A-Za-z_$][\w$]*)\s*[:,)])/g;
+
+  // DENYLIST, NOT AN ALLOWLIST — and this inversion is the whole point.
+  //
+  // This test previously allow-listed the parameter names it would accept as
+  // value-passing (`value|values|next|checked|selected`). That is the SAME MISTAKE this
+  // file's own header warns about, a third level out:
+  //
+  //   level 1  classify by the TYPE's spelling      → created the original `Select` hole
+  //   level 2  classify by the PROP's spelling      → fixed by matching onSelectionChange
+  //   level 3  classify by the PARAMETER's spelling → this
+  //
+  // And unlike the first two it failed CLOSED AND QUIET: `(value: number[])` enumerated
+  // correctly while `(rows: number[])` silently did not enumerate at all, leaving such a
+  // component unregistered and unguarded with the suite green. It was not hypothetical —
+  // it is why an earlier sweep of local wrappers found four of six: `PairedListInput`
+  // spells its parameter `pairs` and `ReasonMappingInput` spells it `rows`, so both
+  // vanished. The undercount and this defect are one root cause.
+  //
+  // Inverted: ANY parameter name counts as value-passing EXCEPT names that genuinely
+  // denote a DOM event. An unfamiliar name now registers LOUDLY (it enumerates, and an
+  // unregistered file fails this test) instead of disappearing.
+  const EVENT_PARAM_NAMES = /^(e|ev|evt|event|_e|_ev|_event|domEvent|nativeEvent)$/i;
 
   const declaringFiles = new Map<string, number[]>();
   for (const file of collectTsx(path.join(REPO_ROOT, 'src/ui/components/ui'))) {
@@ -521,6 +567,9 @@ test('REQ-FIX-1 [enumeration]: every value-passing onChange declaration in src/u
       const text = (lines[lineNo - 1] ?? '').trim();
       // Skip prose: JSDoc continuation, line comments, block-comment openers.
       if (text.startsWith('*') || text.startsWith('//') || text.startsWith('/*')) continue;
+      // m[1] = 'ChangeHandler' (value-passing by definition); m[2] = first parameter name.
+      const paramName = m[2];
+      if (paramName && EVENT_PARAM_NAMES.test(paramName)) continue;
       if (!declaringFiles.has(rel)) declaringFiles.set(rel, []);
       declaringFiles.get(rel)!.push(lineNo);
     }
