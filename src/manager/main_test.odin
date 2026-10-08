@@ -14,16 +14,22 @@ import "core:time"
 
 @(test)
 test_manager_option_helpers :: proc(t: ^testing.T) {
-	args := []string{"heimdall", "enroll", "hbe_abc", "--hub", "http://127.0.0.1:9"}
-	testing.expect(t, manager_has_flag(args, "enroll"), "has_flag finds a bare subcommand token")
+	// MANAGER_ENROLL_VALUE_FLAGS went with the deleted enroll command, so this uses
+	// a local flag list. The helper under test is general-purpose (`update` and
+	// `logs` both pass their own lists), so the coverage is unchanged — only the
+	// constant it used to borrow is gone.
+	value_flags := []string{"--hub", "--config", "--token-file"}
+	args := []string{"heimdall", "update", "v1.2.3", "--hub", "http://127.0.0.1:9"}
+	testing.expect(t, manager_has_flag(args, "update"), "has_flag finds a bare subcommand token")
 	testing.expect(t, manager_has_flag(args, "--hub"), "has_flag finds a flag")
 	testing.expect(t, !manager_has_flag(args, "--follow"), "has_flag does not invent flags")
 	testing.expect(t, manager_option_value(args, "--hub", "") == "http://127.0.0.1:9", "option_value returns the next token")
 	testing.expect(t, manager_option_value(args, "--config", "/fallback") == "/fallback", "option_value falls back when absent")
-	testing.expect(t, manager_first_positional(args, MANAGER_ENROLL_VALUE_FLAGS) == "hbe_abc", "positional token after subcommand")
+	testing.expect(t, manager_first_positional(args, value_flags) == "v1.2.3", "positional token after subcommand")
 
-	token_flag_form := []string{"heimdall", "enroll", "--enrollment-token", "hbe_x", "--hub", "http://127.0.0.1:9"}
-	testing.expect(t, manager_first_positional(token_flag_form, MANAGER_ENROLL_VALUE_FLAGS) == "", "flag value must not be taken as positional")
+	// A flag's VALUE must never be mistaken for the positional argument.
+	flag_value_form := []string{"heimdall", "update", "--hub", "http://127.0.0.1:9", "--config", "/tmp/c.toml"}
+	testing.expect(t, manager_first_positional(flag_value_form, value_flags) == "", "flag value must not be taken as positional")
 }
 
 @(test)

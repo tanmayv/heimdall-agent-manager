@@ -26,6 +26,69 @@ extract_json_string :: proc(body, key: string) -> string {
 	return tail[:end_idx]
 }
 
+// device_enroll_bridge provisions a bridge through the REAL device flow (REQ-ENROLL-9),
+// replacing the deleted bridge-enrollments + bridges/enroll pair. These tests are not
+// about enrollment; they need a bridge and a credential.
+//
+// IT REPORTS NO CAPABILITIES AND LEAVES THE BRIDGE OFFLINE, deliberately, because
+// that is what the deleted setup did here: the old enroll body in this file was
+// `{"machine":{"hostname":"..."}}` with no `capabilities` array. Other migrated
+// suites DO replicate a connect-time capability report, because their old bodies
+// declared providers. Adding one here would also flip the bridge Online and change
+// what these tests exercise.
+//
+// Three requirements that each reject a request outright, hence more than two lines:
+//  1. bridge_public_key must be a 130-char lowercase-hex uncompressed P-256 point.
+//  2. NO bridge_key_fingerprint is sent — the Hub derives it and refuses a
+//     body-supplied one that disagrees, since a requester-chosen fingerprint would
+//     defeat the human comparing it on the approval screen.
+//  3. PKCE is mandatory for a bridge grant and S256-only (`plain` and a missing
+//     method are both refused); the pair below is precomputed so this needs no
+//     crypto, and the verifier is replayed at /device/token.
+//
+// `device_label` becomes the bridge's hostname and therefore its label.
+//
+// Bodies are heap-concatenated, never fmt.tprintf: tprintf returns per-thread TEMP
+// allocator memory and router_dispatch calls tprintf freely downstream, so a temp
+// body can be overwritten in place before the handler parses it.
+DEV_TEST_PUBLIC_KEY :: "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+DEV_TEST_CODE_VERIFIER :: "heimdall-req-impl-6-test-code-verifier-aaaa"
+DEV_TEST_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
+
+device_enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label, tag: string) -> (bridge_id: string, bridge_token: string) {
+	authorized := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize",
+		body = strings.concatenate({
+			"{\"client\":\"ham-bridge\",\"device_label\":\"", label,
+			"\",\"os\":\"linux\",\"os_user\":\"tester\",\"bridge_public_key\":\"", DEV_TEST_PUBLIC_KEY,
+			"\",\"code_challenge\":\"", DEV_TEST_CODE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+		}),
+		request_id = strings.concatenate({"req_dev_auth_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(authorized.status == 200, authorized.body)
+	user_code := extract_json_string(authorized.body, "user_code")
+	device_code := extract_json_string(authorized.body, "device_code")
+
+	// The human approves; ownership comes from this Auth_Context, never the body.
+	approved := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/approve",
+		body = strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}),
+		request_id = strings.concatenate({"req_dev_appr_", tag}), remote_addr = "127.0.0.1", headers = headers,
+	})
+	check(approved.status == 200, approved.body)
+
+	// The bridge collects its credential. The grant is single-use and spent here.
+	issued := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/token",
+		body = strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", DEV_TEST_CODE_VERIFIER, "\"}"}),
+		request_id = strings.concatenate({"req_dev_tok_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(issued.status == 200, issued.body)
+	bridge_id = extract_json_string(issued.body, "bridge_id")
+	bridge_token = extract_json_string(issued.body, "access_token")
+	return bridge_id, bridge_token
+}
+
 main :: proc() {
 	db_path := "/tmp/sp_api_test.db"
 	_ = os.remove(db_path)
@@ -51,52 +114,13 @@ main :: proc() {
 		{name = "X-authentik-name", value = "Alice"},
 	}
 
-	// 1. Enroll bridge 1
-	enr1 := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = "{\"label\":\"Bridge 1\"}",
-		request_id = "req_enr1",
-		remote_addr = "127.0.0.1",
-		headers = alice[:],
-	})
-	check(enr1.status == 201, "create enrollment 1")
-	tok1 := extract_json_string(enr1.body, "enrollment_token")
-
-	enroll1_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok1})}}
-	b1_resp := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = "{\"machine\":{\"hostname\":\"host1\"}}",
-		request_id = "req_b1",
-		remote_addr = "127.0.0.1",
-		headers = enroll1_headers[:],
-	})
-	check(b1_resp.status == 201, "enroll bridge 1")
-	bridge1_id := extract_json_string(b1_resp.body, "bridge_id")
-	bridge1_token := extract_json_string(b1_resp.body, "bridge_token")
+	// 1-2. Two bridges, both owned by the same user, provisioned through the device
+	// flow (see device_enroll_bridge).
+	bridge1_id, bridge1_token := device_enroll_bridge(&graph, alice[:], "Bridge 1", "sp1")
 	bridge1_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge1_token})}}
 
 	// 2. Enroll bridge 2
-	enr2 := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = "{\"label\":\"Bridge 2\"}",
-		request_id = "req_enr2",
-		remote_addr = "127.0.0.1",
-		headers = alice[:],
-	})
-	tok2 := extract_json_string(enr2.body, "enrollment_token")
-	enroll2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok2})}}
-	b2_resp := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = "{\"machine\":{\"hostname\":\"host2\"}}",
-		request_id = "req_b2",
-		remote_addr = "127.0.0.1",
-		headers = enroll2_headers[:],
-	})
-	bridge2_token := extract_json_string(b2_resp.body, "bridge_token")
+	bridge2_id, bridge2_token := device_enroll_bridge(&graph, alice[:], "Bridge 2", "sp2")
 	bridge2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge2_token})}}
 
 	owner_user := domain.User_ID("alice")

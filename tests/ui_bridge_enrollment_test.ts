@@ -9,7 +9,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  isPendingEnrollment,
   bridgeReady,
   statusLabel,
 } from '../src/ui/components/settings/bridgeEnrollment.ts';
@@ -19,74 +18,19 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 // ---------------------------------------------------------------------------
-// 1. isPendingEnrollment: Status & Consumed Flag Variants
+// 1. isPendingEnrollment — DELETED WITH THE FEATURE IT DESCRIBED (REQ-ENROLL-9)
 // ---------------------------------------------------------------------------
-
-test('isPendingEnrollment returns false for null or undefined enrollment', () => {
-  assert.equal(isPendingEnrollment(null), false);
-  assert.equal(isPendingEnrollment(undefined), false);
-});
-
-test('isPendingEnrollment returns false for consumed status variants', () => {
-  assert.equal(isPendingEnrollment({ status: 'consumed' }), false);
-  assert.equal(isPendingEnrollment({ status: 'CONSUMED' }), false);
-  assert.equal(isPendingEnrollment({ state: 'consumed' }), false);
-});
-
-test('isPendingEnrollment returns false for revoked and expired status variants', () => {
-  assert.equal(isPendingEnrollment({ status: 'revoked' }), false);
-  assert.equal(isPendingEnrollment({ status: 'REVOKED' }), false);
-  assert.equal(isPendingEnrollment({ status: 'expired' }), false);
-  assert.equal(isPendingEnrollment({ status: 'EXPIRED' }), false);
-  assert.equal(isPendingEnrollment({ state: 'revoked' }), false);
-});
-
-test('isPendingEnrollment returns false when consumed_at is present, even with pending/created/active status', () => {
-  assert.equal(isPendingEnrollment({ status: 'pending', consumed_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ status: 'created', consumed_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ status: 'active', consumed_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ consumed_at: '2026-09-27T12:00:00Z' }), false);
-});
-
-test('isPendingEnrollment returns false when revoked_at is present, even with pending/created/active status', () => {
-  assert.equal(isPendingEnrollment({ status: 'pending', revoked_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ status: 'created', revoked_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ status: 'active', revoked_at: '2026-09-27T12:00:00Z' }), false);
-  assert.equal(isPendingEnrollment({ revoked_at: '2026-09-27T12:00:00Z' }), false);
-});
-
-test('isPendingEnrollment returns false when consumed_by_bridge_id matches an enrolled bridge', () => {
-  const enrolledBridges = new Set(['brg_123', 'brg_456']);
-
-  assert.equal(
-    isPendingEnrollment({ status: 'pending', consumed_by_bridge_id: 'brg_123' }, enrolledBridges),
-    false,
-  );
-  assert.equal(
-    isPendingEnrollment({ status: 'active', consumed_by_bridge_id: 'brg_456' }, enrolledBridges),
-    false,
-  );
-  assert.equal(
-    isPendingEnrollment({ consumed_by_bridge_id: 'brg_123' }, enrolledBridges),
-    false,
-  );
-});
-
-test('isPendingEnrollment returns false for any enrollment that has consumed_by_bridge_id without set provided', () => {
-  assert.equal(isPendingEnrollment({ status: 'pending', consumed_by_bridge_id: 'brg_999' }), false);
-  assert.equal(isPendingEnrollment({ consumed_by_bridge_id: 'brg_999' }), false);
-});
-
-test('isPendingEnrollment returns true for active unconsumed pending enrollments', () => {
-  assert.equal(isPendingEnrollment({ status: 'pending' }), true);
-  assert.equal(isPendingEnrollment({ status: 'PENDING' }), true);
-  assert.equal(isPendingEnrollment({ status: 'created' }), true);
-  assert.equal(isPendingEnrollment({ status: 'CREATED' }), true);
-  assert.equal(isPendingEnrollment({ status: 'active' }), true);
-  assert.equal(isPendingEnrollment({ status: 'ACTIVE' }), true);
-  assert.equal(isPendingEnrollment({ state: 'pending' }), true);
-  assert.equal(isPendingEnrollment({}), true);
-});
+//
+// Eight tests here exercised `isPendingEnrollment`, which decided whether a
+// "pending enrollment" row should still be shown in the Bridges panel: it screened
+// out consumed/revoked/expired rows and ones whose consumed_by_bridge_id already
+// matched an enrolled bridge.
+//
+// There are no enrollment rows any more. The one-time-token endpoints that created,
+// listed and revoked them are deleted, so the panel has no such list, the helper has
+// no production consumer, and the helper itself is gone. These tests are deleted
+// rather than inverted because there is no inverse to assert — the subject does not
+// exist. Section 2 and the source invariants in section 3 are unaffected and stay.
 
 // ---------------------------------------------------------------------------
 // 2. bridgeReady and statusLabel predicates
@@ -127,9 +71,14 @@ test('BridgesPanel.tsx implements REQ-BRG-1 requirements', () => {
 
   const content = fs.readFileSync(panelFile, 'utf8');
 
-  // Acceptance Criterion 1 & 2: isPendingEnrollment checks terminal and consumed states first
-  assert.match(content, /isPendingEnrollment/, 'isPendingEnrollment must be defined');
-  assert.match(content, /enrolledBridgeIds/, 'enrolledBridgeIds must be computed for bridges');
+  // REQ-BRG-1's criteria 1 & 2 asserted that the panel defined `isPendingEnrollment`
+  // and computed `enrolledBridgeIds` to filter the pending-enrollment list. That list
+  // is gone with the enrollment rows it displayed (REQ-ENROLL-9), so both assertions
+  // are deleted. Asserting their ABSENCE instead is the useful replacement: it stops
+  // the deleted enrollment-minting UI being reintroduced by a revert.
+  assert.doesNotMatch(content, /bridge-enrollments/, 'the panel must not call the deleted bridge-enrollment endpoints');
+  assert.doesNotMatch(content, /enrollment_token/, 'the panel must not handle a one-time enrollment token');
+  assert.match(content, /ham-bridge enroll --ui/, 'the panel must tell the operator the device-flow command');
 
   // Acceptance Criterion 3: Enrolled, online bridge with 0 capabilities shows ready and no providers configured tag
   assert.match(content, /settings-bridge-ready-\$\{id\}/, 'Bridge ready badge must retain debug id');

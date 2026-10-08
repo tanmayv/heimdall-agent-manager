@@ -63,7 +63,7 @@ The landing page follows a single-page narrative optimized for instant technical
 3. **Hero Walkthrough Media Frame** (Dedicated responsive window placeholder for `hero-demo.gif` recording)
 4. **Grounded Architectural Capabilities** (6 concrete engineering guarantees: Native Odin, ~20MB RAM, outbound-only tunnels, AES-GCM vault, review gates, BYOA harness)
 5. **The 5 Core Feature Pillars** (Deep-dive breakdown with problems, solutions, architecture diagrams, and workflows)
-6. **Quick Start & CLI Cheatsheet** (`curl`, `heimdall vault`, `heimdall enroll`, service management)
+6. **Quick Start & CLI Cheatsheet** (`curl`, `heimdall vault`, `ham-bridge enroll --ui` browser approval, service management)
 7. **Developer FAQ** (Remote access without SSH/VPN, BYOA multi-device fleet, invite model, self-hosting)
 8. **Clean Terminal Footer** (System status, Discord, GitHub, Docs, MIT License)
 
@@ -203,8 +203,11 @@ curl -fsSL https://get.heimdall.dev/install.sh | bash
 # 2. Configure local Zero-Knowledge Vault Key (mode 0600)
 heimdall vault set-key <64-character-hex-key>
 
-# 3. Enroll your local node with a Hub
-heimdall enroll <hbe_one_time_token> --hub https://hub.yourdomain.com
+# 3. Enroll your local node — approve it in a browser, no token to copy
+ham-bridge enroll --ui https://heimdall.yourdomain.com
+#    Prints an approval link; open it on any device and approve. A short code is
+#    printed as a fallback when the link cannot be opened. Add --headless if this
+#    machine has no browser. --ui is the UI ORIGIN (scheme + host, no path).
 
 # 4. Inspect daemon status and multi-device connections
 heimdall status

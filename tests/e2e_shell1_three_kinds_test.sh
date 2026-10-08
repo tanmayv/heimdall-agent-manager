@@ -116,15 +116,46 @@ api() { curl -s -X "$1" "http://127.0.0.1:$PROXY_PORT$2" -H 'Content-Type: appli
 # api_code returns the HTTP status alone, for the rejection checks.
 api_code() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://127.0.0.1:$PROXY_PORT$2" -H 'Content-Type: application/json' ${3:+-d "$3"}; }
 
-ENROLL_RESP="$(api POST /api/v1/bridge-enrollments '{"name":"shell1-kinds"}')"
-TOK="$(printf '%s' "$ENROLL_RESP" | python3 -c '
+# ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+#
+# This replaced "mint a one-time enrollment token, then exchange it at
+# POST /api/v1/bridges/enroll". Both endpoints are deleted and 404 now, and
+# `bridge enroll --hub --enrollment-token` is gone with them.
+#
+# The three HTTP steps are driven directly rather than via `bridge enroll --ui`,
+# which waits for an approval and would need backgrounding plus output scraping.
+# Here the script IS the approver: this suite talks through the dev-proxy, which
+# authenticates every request as the local user, so this is a real authenticated
+# approval and not a test-only bypass.
+#
+# Hard refusals to respect: bridge_public_key must be a 130-char lowercase-hex
+# uncompressed P-256 point; do NOT send bridge_key_fingerprint (the Hub derives it
+# and rejects a disagreeing one); PKCE is mandatory and S256-only.
+AUTHZ_RESP="$(api POST /api/v1/device/authorize '{"client":"ham-bridge","device_label":"shell1-kinds","os":"linux","os_user":"tester","bridge_public_key":"040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40","code_challenge":"J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI","code_challenge_method":"S256"}')"
+USER_CODE="$(printf '%s' "$AUTHZ_RESP" | python3 -c '
 import json,sys
-try:
-    print(json.load(sys.stdin)["data"]["enrollment_token"])
-except Exception:
-    print("")')"
-[ -n "$TOK" ] || { echo "[shell1] FAIL: enrollment returned no token. Response: $ENROLL_RESP"; tail -30 "$WORK/logs/hub.log"; exit 1; }
-"$BIN/bridge" enroll --hub "http://127.0.0.1:$PROXY_PORT" --enrollment-token "$TOK" --bridge-token-file "$WORK/b.token" >/dev/null
+try: print(json.load(sys.stdin)["data"]["user_code"])
+except Exception: print("")')"
+DEVICE_CODE="$(printf '%s' "$AUTHZ_RESP" | python3 -c '
+import json,sys
+try: print(json.load(sys.stdin)["data"]["device_code"])
+except Exception: print("")')"
+[ -n "$USER_CODE" ] || { echo "[shell1] FAIL: device authorize returned no user_code. Response: $AUTHZ_RESP"; tail -30 "$WORK/logs/hub.log"; exit 1; }
+api POST /api/v1/device/approve "{\"user_code\":\"$USER_CODE\",\"approve\":true}" >/dev/null
+TOKEN_RESP="$(api POST /api/v1/device/token "{\"device_code\":\"$DEVICE_CODE\",\"code_verifier\":\"heimdall-req-impl-6-test-code-verifier-aaaa\"}")"
+printf '%s' "$TOKEN_RESP" | python3 -c '
+import json,sys
+try: print(json.load(sys.stdin)["data"]["access_token"])
+except Exception: print("")' > "$WORK/b.token"
+# The refresh half goes beside it under the ".refresh" suffix the bridge itself
+# uses, so a bridge started with --bridge-token-file can renew rather than dying
+# after the access token's hour is up.
+printf '%s' "$TOKEN_RESP" | python3 -c '
+import json,sys
+try: print(json.load(sys.stdin)["data"].get("refresh_token",""))
+except Exception: print("")' > "$WORK/b.token".refresh
+chmod 600 "$WORK/b.token" "$WORK/b.token".refresh
+[ -s "$WORK/b.token" ] || { echo "[shell1] FAIL: device flow issued no access token. Response: $TOKEN_RESP"; tail -30 "$WORK/logs/hub.log"; exit 1; }
 
 "$BIN/bridge" --hub "http://127.0.0.1:$HUB_PORT" --bridge-token-file "$WORK/b.token" \
   --port "$B_PORT" --local-endpoint-port "$B_LOCAL" --local-run-dir "$WORK/run-b" \

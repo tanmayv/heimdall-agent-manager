@@ -23,15 +23,6 @@ Trusted_Proxy_Config :: struct {
 	logout_url: string,
 }
 
-// Bridge_Auth_Mode governs how bridge-token authorization decisions behave.
-// Monitor (default): allow the operation but emit a `bridge_auth_monitor` audit
-// line wherever enforcement WOULD deny — so we can enumerate real impact before
-// turning on blocking. Enforce: block (the strict behavior). Zero value = Monitor.
-Bridge_Auth_Mode :: enum {
-	Monitor,
-	Enforce,
-}
-
 Auth_Service :: struct {
 	config: Trusted_Proxy_Config,
 	users: ^user_service.User_Service,
@@ -40,23 +31,46 @@ Auth_Service :: struct {
 	agents: ^agent_service.Agent_Service,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
-	bridge_auth_mode: Bridge_Auth_Mode,
 }
 
-// bridge_auth_monitor_hook, when non-nil, receives each audit event instead of
-// the default stdout logger. Tests set it to capture and assert the emitted fields.
-bridge_auth_monitor_hook: proc(point, method, path, bridge_id, user_id, target, request_id: string)
+// BRIDGE-TOKEN AUTHORIZATION IS ALWAYS ENFORCED (REQ-ENROLL-15).
+//
+// There used to be a bridge-auth-mode enum here whose permissive value — the ZERO
+// VALUE, and the shipped config default — turned four separate authorization checks
+// into log-only no-ops. REQ-IMPL-6 deleted the enum and every branch. There is no
+// mode, no config key, no flag and no env var: a bridge-token decision that should
+// deny, denies.
+//
+// The old identifier is deliberately not spelled out anywhere in `src/`, so that
+// grepping for it returns nothing and cannot resurrect a stale mental model; the
+// mechanism is described instead. Git history has the name.
+//
+// WHAT SURVIVED, AND WHY. The audit logging did. Observability never required
+// fail-open: the log line and the rejection are independent, so every former
+// monitor checkpoint now LOGS THE DENIAL AND THEN DENIES. Deleting the log
+// alongside the mode would have traded a security hole for a blind spot.
+//
+// The emitted event was renamed `bridge_auth_monitor` -> `bridge_auth_denied`,
+// because the old name claimed the opposite of what the line now means: it used
+// to record "enforcement WOULD have denied this, and we allowed it anyway", and
+// it now records an actual rejection. Nothing outside this package and its tests
+// matched on the old string. Runbook greps live in `scripts/dev-stack-usage.md`.
 
-// log_bridge_auth_monitor emits a single greppable audit line for a bridge-token
-// authorization decision that enforcement would have denied. `grep bridge_auth_monitor`
-// over the hub log enumerates exactly which operations flipping to enforce would block.
-log_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
-	if bridge_auth_monitor_hook != nil {
-		bridge_auth_monitor_hook(point, method, path, bridge_id, user_id, target, request_id)
+// bridge_auth_denied_hook, when non-nil, receives each audit event instead of
+// the default stdout logger. Tests set it to capture and assert the emitted fields.
+bridge_auth_denied_hook: proc(point, method, path, bridge_id, user_id, target, request_id: string)
+
+// log_bridge_auth_denied emits a single greppable audit line for a bridge-token
+// authorization decision that was REJECTED. `grep bridge_auth_denied` over the hub
+// log enumerates exactly which bridge operations are being refused, which is what
+// an operator needs when a bridge misbehaves or a credential is being probed.
+log_bridge_auth_denied :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	if bridge_auth_denied_hook != nil {
+		bridge_auth_denied_hook(point, method, path, bridge_id, user_id, target, request_id)
 		return
 	}
 	fmt.printfln(
-		"ham-hub bridge_auth_monitor point=%s method=%s path=%s bridge_id=%s user_id=%s target=%s request_id=%s",
+		"ham-hub bridge_auth_denied point=%s method=%s path=%s bridge_id=%s user_id=%s target=%s request_id=%s",
 		point, method, path, bridge_id, user_id, target, request_id,
 	)
 }
@@ -85,6 +99,33 @@ new_auth_service :: proc(config: Trusted_Proxy_Config, users: ^user_service.User
 
 new_auth_service_with_tokens :: proc(config: Trusted_Proxy_Config, users: ^user_service.User_Service, user_tokens: ^iface.User_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Auth_Service {
 	return Auth_Service{config = config, users = users, user_tokens = user_tokens, clock = clock, ids = ids}
+}
+
+// The credential shapes a BRIDGE may present as a bearer token. The distinction
+// between them is a security decision, not a naming detail (REQ-IMPL-3).
+//
+//   "hba_"  the expiring access token from the browser-approval flow. The ONLY
+//           shape that authenticates.
+//   "hbr_"  LEGACY, non-expiring. No longer minted and no longer accepted
+//           (REQ-ENROLL-9). It is still RECOGNISED as a bridge credential so a
+//           bridge carrying a pre-device-flow token is told to re-enroll rather
+//           than getting a generic rejection; verify_bridge_token owns that
+//           message. Recognising is not accepting.
+//
+// `hbf_` is deliberately ABSENT. A refresh token is not a bearer credential for
+// anything: it is accepted at the refresh endpoint alone, and if it ever resolved
+// here the 1-hour bound on the access token would be decorative.
+BRIDGE_ACCESS_BEARER_PREFIX :: "hba_"
+BRIDGE_LEGACY_BEARER_PREFIX :: "hbr_"
+
+// is_bridge_bearer reports whether a token is a bridge credential at all.
+//
+// `is_legacy_bridge_bearer` used to sit beside it, singling out the non-expiring
+// shape because it was the only one the deleted permissive bridge-auth mode would
+// accept bare on a shared endpoint. That allowance is gone and nothing else ever
+// needed the distinction, so the proc went with it.
+is_bridge_bearer :: proc(token: string) -> bool {
+	return strings.has_prefix(token, BRIDGE_LEGACY_BEARER_PREFIX) || strings.has_prefix(token, BRIDGE_ACCESS_BEARER_PREFIX)
 }
 
 resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
@@ -140,12 +181,34 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 	authz := header_value(req.headers, "Authorization")
 	if authz != "" && strings.has_prefix(authz, "Bearer ") {
 		token := strings.trim_space(authz[len("Bearer "):])
-		if strings.has_prefix(token, "hbr_") {
+		if is_bridge_bearer(token) {
 			// A bridge token that carries an instance assertion resolves via the
-			// normal Instance_Token path (unchanged in both modes). A BARE bridge
-			// token (no instance assertion) on a shared endpoint is rejected under
-			// enforce; under monitor it is accepted as a Bridge_Token and logged, so
-			// we can enumerate which shared-endpoint calls enforcement would block.
+			// normal Instance_Token path. A BARE bridge token (no instance
+			// assertion) on a shared endpoint is REJECTED, with no exception.
+			//
+			// REQ-IMPL-6 DELETED THE ONE EXCEPTION THERE USED TO BE. Under the old
+			// permissive bridge-auth mode — which was the zero value AND the shipped
+			// default — a bare LEGACY (`hbr_`) bridge token was accepted here as a
+			// `Bridge_Token` on every `require_auth_any` endpoint, and merely logged.
+			// It was scoped to `hbr_` because it existed to migrate that credential;
+			// REQ-IMPL-3 pointedly refused to widen it to `hba_`, and REQ-IMPL-6
+			// removes both the legacy credential and the allowance, so there is no
+			// longer anything for it to migrate.
+			//
+			// The instance id is still derived HERE, even though
+			// resolve_bridge_instance_auth re-derives it, and the reason is the
+			// STATUS CODE rather than the decision.
+			//
+			// Both paths reject a bare bridge token; they disagree on why. Falling
+			// through to resolve_bridge_instance_auth yields its "agent_instance_id
+			// is required" — a Validation_Failed, so HTTP 400. But this is not a
+			// malformed request, it is a credential being used somewhere it is not
+			// allowed, which is 403. Simplifying this branch away silently turned
+			// several existing 403 assertions into 400s; the distinction is load
+			// bearing, so it is made explicitly.
+			//
+			// The denial is logged by require_auth_any (middleware.odin), which has
+			// the method/path/request_id that Auth_Request does not carry.
 			instance_id := ""
 			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
 			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
@@ -154,17 +217,22 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 			if instance_id == "" {
 				instance_id = extract_body_instance_id(req.body)
 			}
-			if instance_id != "" {
-				return resolve_bridge_instance_auth(service, req)
-			}
-			if service != nil && service.bridge_auth_mode == .Monitor && service.bridges != nil && !token_in_query_or_body(req.query, req.body) {
-				// Accept the bare bridge token; require_auth_any emits the
-				// bare_token_shared_endpoint audit line where it has the full request
-				// context (method/path/request_id), which Auth_Request lacks here.
-				ctx, ok, _ := bridge_service.verify_bridge_token(service.bridges, token)
-				if ok {
-					return ctx, true, domain.Domain_Error{}
+			if instance_id == "" {
+				// A LEGACY credential gets the re-enrollment instruction even here.
+				//
+				// Found by end-to-end testing, not by reading: an old bridge hitting a
+				// SHARED endpoint was being told "a bare bridge token cannot call this
+				// endpoint", because this branch short-circuits before
+				// verify_bridge_token (which owns the re-enroll message) is ever
+				// reached. Technically true and completely unhelpful — the operator's
+				// actual problem is that the credential is dead, not that they chose
+				// the wrong endpoint. REQ-ENROLL-9's requirement is that an old-style
+				// credential names the fix, so it has to name it on every path an old
+				// bridge can take, not only on the bridge endpoints.
+				if strings.has_prefix(token, BRIDGE_LEGACY_BEARER_PREFIX) {
+					return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, bridge_service.BRIDGE_LEGACY_CREDENTIAL_MESSAGE)
 				}
+				return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "a bare bridge token cannot call this endpoint; relay the call for one of your agent instances")
 			}
 			return resolve_bridge_instance_auth(service, req)
 		}
@@ -176,7 +244,10 @@ resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) 
 	authz := header_value(req.headers, "Authorization")
 	if authz != "" && strings.has_prefix(authz, "Bearer ") {
 		token := strings.trim_space(authz[len("Bearer "):])
-		if strings.has_prefix(token, "hbr_") {
+		// Both bridge credential shapes, legacy and expiring: these endpoints are
+		// bridge endpoints, so there is no transition-period question here — an
+		// `hba_` must work exactly where an `hbr_` does.
+		if is_bridge_bearer(token) {
 			instance_id := ""
 			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
 			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
@@ -222,8 +293,14 @@ resolve_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Au
 	authz := header_value(req.headers, "Authorization")
 	if authz != "" && strings.has_prefix(authz, "Bearer ") {
 		token := strings.trim_space(authz[len("Bearer "):])
-		if strings.has_prefix(token, "hbr_") do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge token cannot call user APIs")
-		if strings.has_prefix(token, "hbe_") do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "enrollment token cannot call user APIs")
+		// Every bridge credential, INCLUDING the refresh token, is rejected on the
+		// user-API path with the same error. The refresh token is named explicitly
+		// rather than falling through to "unsupported bearer token" below so that a
+		// bridge presenting the wrong half of its pair gets an answer that tells it
+		// which rule it broke.
+		// The one-time enrollment token used to need its own arm here. It is gone
+		// with the flow that minted it (REQ-ENROLL-9), so there is no third shape.
+		if is_bridge_bearer(token) || strings.has_prefix(token, "hbf_") do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge token cannot call user APIs")
 		if strings.has_prefix(token, "hut_") do return verify_user_api_token(service, token)
 		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "unsupported bearer token")
 	}

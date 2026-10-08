@@ -20,6 +20,7 @@ import app "odin_test:hub/app"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
+import bridge_service "odin_test:hub/service/bridge"
 import device_auth "odin_test:hub/service/device_auth"
 import api_http "odin_test:hub/transport/http"
 
@@ -78,6 +79,302 @@ main :: proc() {
 	test_trusted_xff_and_verify_bruteforce()
 	test_public_rate_limit_and_token_single_use()
 	test_http_owner_spoof_and_audit_queryability()
+	test_bridge_enrollment_end_to_end()
+}
+
+// REQ-IMPL-2 end-to-end, through the real HTTP handlers and a real repository:
+// bridge authorize -> human approves in the browser -> bridge redeems with its
+// PKCE verifier -> the credential resolves to exactly one `brg_`.
+//
+// Five properties are asserted here that cannot be seen at the service layer:
+//   1. The owner is the APPROVING USER from the trusted-proxy identity headers,
+//      even when the body shouts a different one.
+//   2. The minted credential is BRIDGE-SCOPED: verify_bridge_token resolves it
+//      to a `brg_` Auth_Context, not to a bare user.
+//   3. CROSS-BRIDGE IS REJECTED (chain register T9): bridge A's credential
+//      cannot act for an instance owned by bridge B.
+//   4. The credential does NOT derive from a timestamp: two back-to-back
+//      enrolments produce unrelated secrets, and the token splits as
+//      `hba_<token_id>.<secret>`. REQ-IMPL-3 moved the device-grant credential
+//      from the non-expiring `hbr_<brg_>` shape to the expiring PAIR, so the id
+//      half is now the token row's own `btk_` and not the bridge id — the bridge
+//      is resolved from the row, which is what lets one bridge hold a lineage of
+//      credentials at all.
+//   5. The approved public key is on record against the bridge row.
+test_bridge_enrollment_end_to_end :: proc() {
+	BPK_A :: "04030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc"
+	BPK_A_FP :: "fb41 9516 cc0c f6ae"
+	PKCE_VERIFIER :: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	PKCE_CHALLENGE :: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA"
+	WRONG_VERIFIER :: "testverifier-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	db_path := "/tmp/heimdall-device-auth-bridge-enroll.db"
+	_ = os.remove(db_path)
+	config := app.default_config()
+	config.database_path = db_path
+	config.migrations_dir = "src/hub/repository/sqlite/migrations"
+	graph: app.App_Graph
+	graph_ok, graph_msg := app.build_graph(&graph, config)
+	assert_true(graph_ok, graph_msg)
+	defer {
+		app.shutdown_graph(&graph)
+		_ = os.remove(db_path)
+	}
+
+	trusted_headers := [?]contracts.HTTP_Header{
+		{name = "X-authentik-username", value = "approving-human"},
+		{name = "X-authentik-name", value = "Approving Human"},
+		{name = "X-authentik-email", value = "approver@example.com"},
+		{name = "X-Forwarded-For", value = "203.0.113.88, 10.0.0.1"},
+		{name = "User-Agent", value = "ApprovalPage/1.0"},
+	}
+
+	// --- authorize over HTTP, as an unauthenticated bridge would ---
+	auth_body := strings.concatenate({
+		"{\"client\":\"ham-bridge\",\"device_label\":\"dawnstar\",\"os\":\"linux\",\"app_version\":\"0.9.1\"",
+		",\"bridge_public_key\":\"", BPK_A, "\"",
+		",\"os_user\":\"tanmay\"",
+		",\"code_challenge\":\"", PKCE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+	})
+	auth_resp := api_http.device_authorize_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize", body = auth_body,
+		request_id = "req_bridge_authorize", remote_addr = "198.51.100.30:5555",
+	})
+	assert_eq(auth_resp.status, 200, "bridge authorize over HTTP succeeds unauthenticated")
+	assert_true(strings.contains(auth_resp.body, BPK_A_FP), "authorize response echoes the hub-computed fingerprint")
+	// Recover the codes from the store rather than parsing the response body.
+	res_a, found_a := grant_for_label(&graph.device_auth_store, "dawnstar")
+	assert_true(found_a, "bridge grant stored by authorize handler")
+	assert_eq(res_a.grant_kind, device_auth.Grant_Kind.Bridge_Enrollment, "HTTP authorize derives Bridge_Enrollment")
+	assert_eq(res_a.bridge_key_fingerprint, BPK_A_FP, "fingerprint on the grant is hub-computed")
+
+	// --- the approval page sees BOTH provenance groups (REQ-ENROLL-14) ---
+	verify_body := strings.concatenate({"{\"user_code\":\"", res_a.user_code, "\"}"})
+	verify_resp := api_http.device_verify_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/verify", body = verify_body,
+		request_id = "req_bridge_verify", remote_addr = "127.0.0.1:4444", headers = trusted_headers[:],
+	})
+	assert_eq(verify_resp.status, 200, "verify succeeds through the trusted proxy")
+	assert_true(strings.contains(verify_resp.body, "\"hub_observed\""), "verify payload groups hub-observed fields")
+	assert_true(strings.contains(verify_resp.body, "\"host_asserted\""), "verify payload groups host-asserted fields")
+	assert_true(strings.contains(verify_resp.body, "\"is_bridge_enrollment\":true"), "verify marks a bridge enrollment")
+	assert_true(strings.contains(verify_resp.body, BPK_A), "verify exposes the Hub's copy of the key for the fragment cross-check")
+	assert_true(strings.contains(verify_resp.body, BPK_A_FP), "verify exposes the hub-computed fingerprint")
+	assert_true(strings.contains(verify_resp.body, "\"os_user\":\"tanmay\""), "verify exposes host-asserted os_user")
+
+	// --- approve: the body tries to name a different owner; it must be ignored ---
+	approve_body := strings.concatenate({
+		"{\"user_code\":\"", res_a.user_code,
+		"\",\"approve\":true,\"owner_user_id\":\"spoof-owner\",\"user\":\"spoof-user\"}",
+	})
+	approve_resp := api_http.device_approve_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/approve", body = approve_body,
+		request_id = "req_bridge_approve", remote_addr = "127.0.0.1:4444", headers = trusted_headers[:],
+	})
+	assert_eq(approve_resp.status, 200, "bridge approve succeeds through the trusted proxy")
+	grant_a, ga_ok := device_auth.get_grant(&graph.device_auth_store, res_a.device_code)
+	assert_true(ga_ok, "approved bridge grant queryable")
+	assert_eq(grant_a.owner_user_id, "approving-human", "owner is the approving user from Auth_Context, NOT the body")
+	assert_true(grant_a.minted_bridge_id != "", "approval minted a brg_")
+	assert_true(strings.has_prefix(grant_a.minted_bridge_id, "brg_"), "minted identity is a brg_, not a user token id")
+	bridge_id_a := strings.clone(grant_a.minted_bridge_id)
+	defer delete(bridge_id_a)
+
+	// --- redeem: the wrong verifier is a 401, the right one yields the token ---
+	// The two polls go to SEPARATE grants on purpose. This graph runs on the real
+	// clock, and a rejected verifier still stamps last_poll_at (so a verifier-
+	// guessing loop stays subject to the per-grant interval gate) — so a second
+	// poll on the same grant within `interval` would be slow_down, not a verifier
+	// result. The interval gate itself is covered in the token-poll test with a
+	// fake clock; here each grant is polled once.
+	bad_grant, bad_found := seed_bridge_grant(&graph, "wrong-verifier-host", BPK_A, PKCE_CHALLENGE, trusted_headers[:])
+	assert_true(bad_found, "seeded a second bridge grant for the wrong-verifier case")
+	bad_poll := strings.concatenate({"{\"device_code\":\"", bad_grant.device_code, "\",\"code_verifier\":\"", WRONG_VERIFIER, "\"}"})
+	bad_resp := api_http.device_token_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/token", body = bad_poll,
+		request_id = "req_bridge_poll_bad", remote_addr = "198.51.100.31:5555",
+	})
+	assert_eq(bad_resp.status, 401, "redemption with the wrong PKCE verifier -> 401")
+	// The rejected grant is NOT burned: the legitimate bridge can still redeem.
+	bad_after, bad_after_ok := device_auth.get_grant(&graph.device_auth_store, bad_grant.device_code)
+	assert_true(bad_after_ok, "the grant survives a wrong verifier")
+	assert_eq(bad_after.status, device_auth.Grant_Status.Approved, "a wrong verifier does not burn the grant")
+	good_poll := strings.concatenate({"{\"device_code\":\"", res_a.device_code, "\",\"code_verifier\":\"", PKCE_VERIFIER, "\"}"})
+	good_resp := api_http.device_token_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/token", body = good_poll,
+		request_id = "req_bridge_poll_good", remote_addr = "198.51.100.30:5555",
+	})
+	assert_eq(good_resp.status, 200, "redemption with the correct PKCE verifier -> 200")
+	assert_true(strings.contains(good_resp.body, bridge_id_a), "redemption returns the brg_ the credential is scoped to")
+	token_a := json_field(good_resp.body, "access_token")
+	assert_true(token_a != "", "redemption returns a plaintext credential")
+
+	// --- the credential is BRIDGE-SCOPED, and the Hub stored only a hash ---
+	ctx_a, va_ok, va_err := bridge_service.verify_bridge_token(&graph.bridges, token_a)
+	assert_true(va_ok, va_err.message)
+	assert_eq(ctx_a.bridge_id, bridge_id_a, "credential resolves to exactly its own brg_")
+	assert_eq(ctx_a.user_id, "approving-human", "credential carries the approving owner")
+	assert_eq(ctx_a.kind, contracts.Auth_Kind.Bridge_Token, "credential is a Bridge_Token context, not a user token")
+	row_a, row_a_ok, _ := iface.bridge_get_bridge(graph.bridges.repo, bridge_id_a)
+	assert_true(row_a_ok, "bridge row readable")
+	assert_eq(string(row_a.owner_user_id), "approving-human", "bridge row owned by the approving user")
+	// REQ-IMPL-3: a device-enrolled bridge's credentials live in `bridge_tokens`,
+	// so this column is EMPTY for it rather than holding a hash. That is the
+	// stronger property and worth asserting positively: an empty stored hash
+	// verifies nothing (verify_credential), so this bridge has no non-expiring
+	// credential at all, not merely a hashed one.
+	assert_eq(row_a.bridge_token_hash, "", "no non-expiring hbr_ hash is written for a device-enrolled bridge")
+	assert_true(!strings.contains(row_a.bridge_token_hash, token_a), "the plaintext credential is not stored")
+	// Property 5: the approved key is on record against the bridge.
+	assert_true(strings.contains(row_a.capabilities_json, BPK_A), "the approved public key is on record against the bridge row")
+	assert_true(strings.contains(row_a.capabilities_json, BPK_A_FP), "the hub-computed fingerprint is on record")
+	assert_true(strings.contains(row_a.capabilities_json, "device_authorization"), "the bridge row records how it was enrolled")
+
+	// --- Property 4: the secret is CSPRNG-derived, not timestamp-derived ---
+	// Two back-to-back enrolments. `generate_id` is prefix + unix-nanoseconds, so
+	// if a secret were ever built from it again, two enrolments moments apart
+	// would share a long common prefix and differ only in the low digits.
+	e1, e1_ok, _ := bridge_service.enroll_bridge_from_device_grant(&graph.bridges, bridge_service.Device_Enroll_Input{
+		owner_user_id = "approving-human", bridge_public_key = BPK_A,
+		bridge_key_fingerprint = BPK_A_FP, os_user = "tanmay", machine_hostname = "host-e1",
+	})
+	e2, e2_ok, _ := bridge_service.enroll_bridge_from_device_grant(&graph.bridges, bridge_service.Device_Enroll_Input{
+		owner_user_id = "approving-human", bridge_public_key = BPK_A,
+		bridge_key_fingerprint = BPK_A_FP, os_user = "tanmay", machine_hostname = "host-e2",
+	})
+	assert_true(e1_ok && e2_ok, "two back-to-back device-grant enrolments succeed")
+	assert_true(e1.bridge_token != e2.bridge_token, "two enrolments produce different credentials")
+	assert_true(e1.bridge.bridge_id != e2.bridge.bridge_id, "two enrolments produce different brg_ ids")
+	// Shape: hba_<token_id>.<secret>. A regression to a timestamp-derived token
+	// fails on shape as well as on entropy.
+	id1, secret1, split1 := bridge_service.split_credential(bridge_service.ACCESS_TOKEN_PREFIX, e1.bridge_token)
+	id2, secret2, split2 := bridge_service.split_credential(bridge_service.ACCESS_TOKEN_PREFIX, e2.bridge_token)
+	assert_true(split1 && split2, "both credentials split as hba_<token_id>.<secret>")
+	assert_true(strings.has_prefix(id1, "btk_") && strings.has_prefix(id2, "btk_"), "the id half is the token row's id")
+	assert_true(id1 != id2, "two enrolments produce different token rows")
+	// REQ-IMPL-3: the refresh half is a SEPARATE credential with its own row and
+	// its own secret. A pair that shared a secret would make the 1-hour bound on
+	// the access token meaningless.
+	r1, rsecret1, rsplit1 := bridge_service.split_credential(bridge_service.REFRESH_TOKEN_PREFIX, e1.refresh_token)
+	assert_true(rsplit1, "the refresh half splits as hbf_<token_id>.<secret>")
+	assert_true(r1 != id1, "access and refresh are distinct rows")
+	assert_true(rsecret1 != secret1, "access and refresh do not share a secret")
+	assert_true(secret1 != secret2, "the two secrets differ")
+	assert_eq(len(secret1), 64, "secret is 64 hex chars (256 bits of CSPRNG)")
+	// Unrelated, not merely unequal: no shared prefix beyond what chance gives.
+	shared := 0
+	for shared < len(secret1) && shared < len(secret2) && secret1[shared] == secret2[shared] do shared += 1
+	assert_true(shared < 8, "consecutive secrets share no long common prefix (not timestamp-derived)")
+	assert_true(!strings.contains(secret1, e1.bridge.bridge_id[len("brg_"):]), "the secret does not embed the id's timestamp")
+	fmt.println("REQ-IMPL-2/3 OK: credential pair is CSPRNG-derived and splits as hba_/hbf_<btk_>.<secret>")
+
+	// --- Property 3: CROSS-BRIDGE IS REJECTED (T9) ---
+	// Enrol a second bridge, put an agent instance on it, then have bridge A's
+	// credential try to act for it.
+	agent_row := domain.Agent{
+		agent_id = "agt_crossbridge", owner_user_id = "approving-human", name = "Cross Bridge",
+		slug = "cross-bridge", default_provider = "claude", default_tier = "normal", state = .Active,
+		created_at = "2026-10-07T00:00:00Z", updated_at = "2026-10-07T00:00:00Z",
+	}
+	_, _, _ = iface.agent_save(graph.agents.agents, agent_row)
+	// The instance rows are written straight to the repository rather than going
+	// through create_instance, which additionally requires the bridge to be
+	// Online AND present in the live runtime registry — a WS connection this
+	// test has no reason to stand up. resolve_bridge_instance_auth reads only
+	// inst.bridge_id and inst.owner_user_id, which is exactly what T9 is about.
+	inst_a := save_instance(&graph, "inst_on_bridge_a", e1.bridge.bridge_id)
+	inst_b := save_instance(&graph, "inst_on_bridge_b", e2.bridge.bridge_id)
+	assert_eq(inst_b.bridge_id, e2.bridge.bridge_id, "instance belongs to bridge B")
+	assert_eq(inst_a.bridge_id, e1.bridge.bridge_id, "instance belongs to bridge A")
+	own_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", e1.bridge_token})}}
+	own_body := strings.concatenate({"{\"agent_instance_id\":\"", inst_a.agent_instance_id, "\"}"})
+	own_ctx, own_ok, own_err := auth_service.resolve_bridge_instance_auth(&graph.auth, auth_service.Auth_Request{
+		headers = own_headers[:], body = own_body,
+	})
+	assert_true(own_ok, own_err.message)
+	assert_eq(own_ctx.bridge_id, e1.bridge.bridge_id, "bridge A may act for its OWN instance")
+
+	// The attack: bridge A's credential asserting bridge B's instance.
+	cross_body := strings.concatenate({"{\"agent_instance_id\":\"", inst_b.agent_instance_id, "\"}"})
+	_, cross_ok, cross_err := auth_service.resolve_bridge_instance_auth(&graph.auth, auth_service.Auth_Request{
+		headers = own_headers[:], body = cross_body,
+	})
+	assert_true(!cross_ok, "T9: bridge A CANNOT act for an instance owned by bridge B")
+	assert_eq(cross_err.code, domain.Error_Code.Forbidden, "cross-bridge attempt -> Forbidden")
+	// And B's own credential is not confused by A's existence.
+	b_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", e2.bridge_token})}}
+	b_ctx, b_ok, b_err := auth_service.resolve_bridge_instance_auth(&graph.auth, auth_service.Auth_Request{
+		headers = b_headers[:], body = cross_body,
+	})
+	assert_true(b_ok, b_err.message)
+	assert_eq(b_ctx.bridge_id, e2.bridge.bridge_id, "bridge B may act for its own instance")
+	// A credential is not interchangeable: A's token never resolves to B.
+	ctx_e1, _, _ := bridge_service.verify_bridge_token(&graph.bridges, e1.bridge_token)
+	ctx_e2, _, _ := bridge_service.verify_bridge_token(&graph.bridges, e2.bridge_token)
+	assert_true(ctx_e1.bridge_id != ctx_e2.bridge_id, "the two credentials resolve to different bridges")
+	fmt.println("REQ-IMPL-2 OK: bridge-scoped credential, cross-bridge rejected (T9), key on record")
+}
+
+// seed_bridge_grant drives authorize + approve over HTTP for one more bridge
+// grant and returns it, so a test needing a second independent grant does not
+// have to repeat the whole body construction.
+seed_bridge_grant :: proc(graph: ^app.App_Graph, label, public_key, challenge: string, headers: []contracts.HTTP_Header) -> (device_auth.Grant, bool) {
+	body := strings.concatenate({
+		"{\"client\":\"ham-bridge\",\"device_label\":\"", label, "\",\"os\":\"linux\"",
+		",\"bridge_public_key\":\"", public_key, "\"",
+		",\"code_challenge\":\"", challenge, "\",\"code_challenge_method\":\"S256\"}",
+	})
+	resp := api_http.device_authorize_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize", body = body,
+		request_id = "req_seed_authorize", remote_addr = "198.51.100.31:5555",
+	})
+	if resp.status != 200 do return device_auth.Grant{}, false
+	grant, found := grant_for_label(&graph.device_auth_store, label)
+	if !found do return device_auth.Grant{}, false
+	approve_body := strings.concatenate({"{\"user_code\":\"", grant.user_code, "\",\"approve\":true}"})
+	aresp := api_http.device_approve_handler(rawptr(&graph.device_auth_handlers), api_http.Request{
+		method = "POST", path = "/api/v1/device/approve", body = approve_body,
+		request_id = "req_seed_approve", remote_addr = "127.0.0.1:4444", headers = headers,
+	})
+	if aresp.status != 200 do return device_auth.Grant{}, false
+	return grant_for_label(&graph.device_auth_store, label)
+}
+
+// save_instance writes an agent-instance row owned by the approving user and
+// pinned to `bridge_id`, which is all resolve_bridge_instance_auth needs.
+save_instance :: proc(graph: ^app.App_Graph, instance_id, bridge_id: string) -> domain.Agent_Instance {
+	inst := domain.Agent_Instance{
+		agent_instance_id = instance_id, owner_user_id = "approving-human",
+		agent_id = "agt_crossbridge", bridge_id = bridge_id,
+		display_name = "Cross Bridge #1", provider = "claude", tier = "normal",
+		runtime_status = "running", startup_status = "ready", activity_status = "idle",
+		created_at = "2026-10-07T00:00:00Z", updated_at = "2026-10-07T00:00:00Z",
+	}
+	saved, _, _ := iface.agent_save_instance(graph.agents.agents, inst)
+	return saved
+}
+
+// grant_for_label finds a stored grant by its device_label, so a test can drive
+// the HTTP authorize handler (whose response it does not need to parse) and
+// still reach the codes.
+grant_for_label :: proc(store: ^device_auth.Grant_Store, label: string) -> (device_auth.Grant, bool) {
+	for _, grant in store.grants {
+		if grant.device_label == label do return grant, true
+	}
+	return device_auth.Grant{}, false
+}
+
+// json_field pulls a string field out of a response body. Deliberately crude —
+// it only has to read back values this test wrote.
+json_field :: proc(body, key: string) -> string {
+	needle := strings.concatenate({"\"", key, "\":\""})
+	defer delete(needle)
+	idx := strings.index(body, needle)
+	if idx < 0 do return ""
+	rest := body[idx + len(needle):]
+	end := strings.index(rest, "\"")
+	if end < 0 do return ""
+    return rest[:end]
 }
 
 test_unlinkability_smoke :: proc() {

@@ -15,34 +15,55 @@ Bridge_Service :: struct {
 	ids: ^platform.ID_Generator,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
 	catalog: ^Bridge_Update_Catalog,
+	// connection_closer terminates a bridge's LIVE control WebSocket (audit F6).
+	// A seam rather than a direct registry dependency for two reasons: this package
+	// must not reach into the transport layer that owns the socket, and a test needs
+	// to observe that revocation actually asked for the close — "the DB row says
+	// revoked" is exactly the evidence F6 proves insufficient.
+	//
+	// May be nil (every service constructed without runtime wiring, i.e. most
+	// tests). Revocation then still revokes; see revoke_bridge for why that is
+	// reported rather than ignored.
+	connection_closer: Bridge_Connection_Closer,
 }
 
-Create_Enrollment_Result :: struct {
-	enrollment: domain.Bridge_Enrollment,
-	token: string,
+// Bridge_Connection_Closer closes a bridge's in-flight control connection.
+//
+// `ctx` is the transport's runtime registry. Returns whether a live connection was
+// found and torn down — false means the bridge was not connected, which is a normal
+// outcome and not an error.
+Bridge_Connection_Closer :: struct {
+	ctx: rawptr,
+	close_bridge_connection: proc(ctx: rawptr, bridge_id: string) -> bool,
 }
 
+// with_connection_closer attaches the F6 socket teardown. Called by app wiring once
+// the runtime registry exists; tests inject a fake that records the bridge_id.
+with_connection_closer :: proc(service: ^Bridge_Service, closer: Bridge_Connection_Closer) {
+	service.connection_closer = closer
+}
+
+// close_bridge_connection invokes the seam, or reports false when none is wired.
+close_bridge_connection :: proc(service: ^Bridge_Service, bridge_id: string) -> bool {
+	if service == nil || service.connection_closer.close_bridge_connection == nil do return false
+	if bridge_id == "" do return false
+	return service.connection_closer.close_bridge_connection(service.connection_closer.ctx, bridge_id)
+}
+
+// Enroll_Bridge_Result is what a completed enrollment hands back. There is now
+// exactly ONE producer, enroll_bridge_from_device_grant (bridge_device_enroll.odin):
+// REQ-IMPL-6 deleted `enroll_bridge`, the pre-shared-token path that was the other.
+//
+// `bridge_token` keeps its name — the wire field is `access_token` — but it is now
+// always the EXPIRING half of a pair, so `refresh_token` and both lifetimes are
+// always populated. They used to be zero on the deleted path, which is why every
+// consumer had to treat them as optional; none of them does any more.
 Enroll_Bridge_Result :: struct {
 	bridge: domain.Bridge,
 	bridge_token: string,
-}
-
-Create_Enrollment_Input :: struct {
-	label: string,
-	expires_at: string,
-}
-
-List_Enrollments_Result :: struct {
-	enrollments: []domain.Bridge_Enrollment,
-}
-
-Enroll_Bridge_Input :: struct {
-	enrollment_token: string, // must come from Authorization: Bearer or equivalent auth context in transport
-	machine_hostname: string,
-	machine_os: string,
-	machine_arch: string,
-	capabilities_json: string,
-	hub_url: string,
+	refresh_token: string,
+	expires_in: int,
+	refresh_expires_in: int,
 }
 
 new_bridge_service :: proc(repo: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Bridge_Service {
@@ -51,84 +72,6 @@ new_bridge_service :: proc(repo: ^iface.Bridge_Repository, clock: ^platform.Cloc
 
 new_bridge_service_with_runtime :: proc(repo: ^iface.Bridge_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Bridge_Service {
 	return Bridge_Service{repo = repo, bridge_command_sink = bridge_command_sink, clock = clock, ids = ids}
-}
-
-create_enrollment :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, input: Create_Enrollment_Input) -> (Create_Enrollment_Result, bool, domain.Domain_Error) {
-	owner, ok, err := ownership.owner_from_auth(auth)
-	if !ok do return Create_Enrollment_Result{}, false, err
-	token := platform.generate_id(service.ids, "hbe_")
-	now := platform.clock_now(service.clock)
-	enrollment := domain.Bridge_Enrollment{
-		enrollment_id = platform.generate_id(service.ids, "benr_"),
-		owner_user_id = owner,
-		label = input.label,
-		token_hash = hash_token(token),
-		status = .Pending,
-		expires_at = input.expires_at,
-		created_at = now,
-		updated_at = now,
-	}
-	saved, save_ok, save_err := iface.bridge_save_enrollment(service.repo, enrollment)
-	if !save_ok do return Create_Enrollment_Result{}, false, save_err
-	return Create_Enrollment_Result{enrollment = saved, token = token}, true, domain.Domain_Error{}
-}
-
-list_enrollments :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context) -> ([]domain.Bridge_Enrollment, domain.Domain_Error) {
-	owner, ok, err := ownership.owner_from_auth(auth)
-	if !ok do return nil, err
-	return iface.bridge_list_enrollments_by_owner(service.repo, owner)
-}
-
-revoke_enrollment :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, enrollment_id: string) -> (domain.Bridge_Enrollment, bool, domain.Domain_Error) {
-	enrollment, ok, err := iface.bridge_get_enrollment(service.repo, enrollment_id)
-	if !ok do return domain.Bridge_Enrollment{}, false, err
-	if owner_ok, owner_err := ownership.require_owner(auth, enrollment.owner_user_id); !owner_ok do return domain.Bridge_Enrollment{}, false, owner_err
-	if enrollment.status != .Pending do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Conflict, "enrollment is not pending")
-	enrollment.status = .Revoked
-	enrollment.updated_at = platform.clock_now(service.clock)
-	return iface.bridge_save_enrollment(service.repo, enrollment)
-}
-
-enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (Enroll_Bridge_Result, bool, domain.Domain_Error) {
-	if input.enrollment_token == "" do return Enroll_Bridge_Result{}, false, domain.domain_error(.Unauthenticated, "enrollment token is required")
-	hub_url := strings.trim_space(input.hub_url)
-	if hub_url != "" && !valid_hub_base_url(hub_url) do return Enroll_Bridge_Result{}, false, domain.domain_error(.Validation_Failed, "hub_url must be a valid http(s) base URL")
-	enrollment, ok, err := iface.bridge_get_enrollment_by_token_hash(service.repo, hash_token(input.enrollment_token))
-	if !ok do return Enroll_Bridge_Result{}, false, err
-	if enrollment.status != .Pending do return Enroll_Bridge_Result{}, false, domain.domain_error(.Conflict, "enrollment token has already been used or revoked")
-	now := platform.clock_now(service.clock)
-	if enrollment.expires_at != "" && now != "" && enrollment.expires_at <= now do return Enroll_Bridge_Result{}, false, domain.domain_error(.Conflict, "enrollment token has expired")
-	hostname := strings.trim_space(input.machine_hostname)
-	if hostname == "" do hostname = "unknown-host"
-	bridge_token := platform.generate_id(service.ids, "hbr_")
-	label := enrollment.label
-	customized := label != ""
-	if label == "" do label = hostname
-	bridge := domain.Bridge{
-		bridge_id = platform.generate_id(service.ids, "brg_"),
-		owner_user_id = enrollment.owner_user_id,
-		label = label,
-		label_is_user_customized = customized,
-		machine_hostname = hostname,
-		machine_os = input.machine_os,
-		machine_arch = input.machine_arch,
-		capabilities_json = input.capabilities_json,
-		hub_url = hub_url,
-		status = .Offline,
-		bridge_token_hash = hash_token(bridge_token),
-		created_at = now,
-		updated_at = now,
-		last_seen_at = now,
-	}
-	saved_bridge, bridge_ok, bridge_err := iface.bridge_save_bridge(service.repo, bridge)
-	if !bridge_ok do return Enroll_Bridge_Result{}, false, bridge_err
-	enrollment.status = .Consumed
-	enrollment.consumed_at = now
-	enrollment.consumed_by_bridge_id = saved_bridge.bridge_id
-	enrollment.updated_at = now
-	_, consume_ok, consume_err := iface.bridge_save_enrollment(service.repo, enrollment)
-	if !consume_ok do return Enroll_Bridge_Result{}, false, consume_err
-	return Enroll_Bridge_Result{bridge = saved_bridge, bridge_token = bridge_token}, true, domain.Domain_Error{}
 }
 
 list_bridges :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context) -> ([]domain.Bridge, domain.Domain_Error) {
@@ -170,11 +113,11 @@ bridge_owner_user_id :: proc(service: ^Bridge_Service, bridge_id: string) -> str
 // sessions are not "maybe still running somewhere", and aging out a revoked bridge
 // would be a second mechanism acting on a decision already taken.
 // THE RETURNED STRING IS A CLONE AND THE CALLER OWNS IT. The repository's row reader
-// hands back thirteen owned strings; this proc destroys the bridge before returning, so
+// hands back an owned string for every text column; this proc destroys the bridge before returning, so
 // the one value that escapes cannot alias freed memory. That matters more than usual
 // here because the caller runs on the reaper's process-scoped thread with no
 // per-request arena — returning a borrowed field, as bridge_owner_user_id does, would
-// leak the other twelve on every sweep.
+// leak all the rest on every sweep.
 bridge_absence_marker :: proc(service: ^Bridge_Service, bridge_id: string) -> (last_seen_at: string, eligible: bool) {
 	if service == nil || service.repo == nil || bridge_id == "" do return "", false
 	bridge, ok, _ := iface.bridge_get_bridge(service.repo, bridge_id)
@@ -326,7 +269,7 @@ update_vault_status :: proc(service: ^Bridge_Service, bridge_id, vault_status: s
 	// allocator, not the heap. Every other service proc here assigns it straight into
 	// the row — which is safe only because none of them destroy the row afterwards.
 	// Pairing that idiom with a bridge_destroy frees a temp pointer, and the test
-	// suite reports it as `bad free @ bridge.odin:76`.
+	// suite reports it as a `bad free` against domain.bridge_destroy.
 	if len(existing.updated_at) > 0 do delete(existing.updated_at)
 	existing.updated_at = strings.clone(platform.clock_now(service.clock))
 	saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, existing)
@@ -334,14 +277,52 @@ update_vault_status :: proc(service: ^Bridge_Service, bridge_id, vault_status: s
 	return saved, true, domain.Domain_Error{}
 }
 
+// revoke_bridge ends one machine's access. Audit F6: this used to flip a DB row and
+// nothing else, which left a CONNECTED bridge fully operational until it next chose
+// to reconnect — and REQ-IMPL-3 makes that worse before it makes it better, because
+// a bridge that refreshes proactively may never re-present a credential at all. A
+// revocation that only blocks reconnects does not revoke.
+//
+// SO IT DOES THREE THINGS, IN THIS ORDER, AND THE ORDER IS THE POINT:
+//
+//  1. REVOKE THE CREDENTIALS (every `bridge_tokens` row of this bridge, both kinds,
+//     every family). First, so that a bridge which reconnects in the microseconds
+//     between steps cannot re-authenticate.
+//  2. FLIP THE DURABLE ROW. Second, so the state an operator reads is consistent
+//     with credentials that are already dead rather than ahead of them.
+//  3. CLOSE THE LIVE SOCKET. Last, because it is the only step whose failure is
+//     survivable: a bridge whose socket somehow outlives this can no longer
+//     authenticate anything, so the worst case is a connection that is already inert.
+//
+// PER-MACHINE BY CONSTRUCTION (§11.7): every write here is keyed by `bridge_id` —
+// the token rows, the bridge row, the socket lookup — so revoking bridge A cannot
+// touch a row or a connection belonging to bridge B, including another bridge of the
+// same owner. There is deliberately no "revoke all my bridges" path; the operator
+// thinks in machines.
+//
+// A MISSING CLOSER SEAM IS REPORTED, NOT IGNORED. If no closer is wired, revocation
+// still revokes but a live socket survives until its next frame fails
+// authentication. `connection_closed` says which happened, so a caller (and a test)
+// can tell the difference between "closed it" and "there was nothing to close".
 revoke_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err
 	now := platform.clock_now(service.clock)
+	// Credentials first. A repository without the REQ-IMPL-3 procs wired returns an
+	// Internal_Error here, which must FAIL the revocation rather than proceed to a
+	// row flip that an operator would read as "revoked" while the credential still
+	// authenticates. The one exception is a bridge with no token rows at all (a
+	// legacy `hbr_` bridge): that reports 0 changed rows and ok=true.
+	if _, revoke_ok, revoke_err := iface.bridge_revoke_tokens_for_bridge(service.repo, bridge_id, now); !revoke_ok {
+		return domain.Bridge{}, false, revoke_err
+	}
 	bridge.status = .Revoked
 	bridge.updated_at = now
 	bridge.revoked_at = now
-	return iface.bridge_save_bridge(service.repo, bridge)
+	saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, bridge)
+	if !save_ok do return domain.Bridge{}, false, save_err
+	_ = close_bridge_connection(service, bridge_id)
+	return saved, true, domain.Domain_Error{}
 }
 
 valid_hub_base_url :: proc(value: string) -> bool {
@@ -357,13 +338,49 @@ valid_hub_authority :: proc(value: string) -> bool {
 	return true
 }
 
+// verify_bridge_token authenticates a bridge credential. There is now exactly ONE
+// shape that authenticates:
+//
+//   hba_  the expiring access token (REQ-IMPL-3). Row in `bridge_tokens`, 1h TTL,
+//         rotated through a refresh token. Every enrolled bridge has one.
+//
+// REQ-IMPL-6 DELETED THE SECOND SHAPE. `hbr_` was the non-expiring token minted by
+// `enroll_bridge` from a pre-shared enrollment secret, stored on the `bridges` row. Its
+// flow, its minting and its lookup are all gone, so no `hbr_` can authenticate.
+//
+// IT IS RECOGNISED RATHER THAN SIMPLY UNRECOGNISED, and that is deliberate. An
+// `hbr_` presented today is not an attack in the common case — it is a bridge that
+// was enrolled before this change and still has its old credential on disk, which
+// is EVERY bridge enrolled the old way. A bare "bridge token is invalid" would send
+// that operator looking for a network or clock fault. So this one prefix gets a
+// message that names the remedy; see BRIDGE_LEGACY_CREDENTIAL_MESSAGE.
+//
+// WHY NAMING IT LEAKS NOTHING. The reply is identical for every `hbr_`, whether or
+// not the bridge id exists and whether or not the secret would once have matched:
+// there is no lookup, so there is no oracle, and the message is derivable from the
+// changelog anyway. Contrast the `hba_` path, which still equalises its miss timing.
+//
+// A token with NEITHER prefix (an `hbf_` refresh token, say) is rejected without a
+// lookup. A refresh token must never authenticate a connection: it is the long-lived
+// half of the pair and is accepted at exactly one endpoint.
 verify_bridge_token :: proc(service: ^Bridge_Service, token: string) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
 	if token == "" do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is required")
-	bridge, ok, err := iface.bridge_get_bridge_by_token_hash(service.repo, hash_token(token))
-	if !ok do return contracts.Auth_Context{}, false, err
-	if bridge.status == .Revoked do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge is revoked")
-	return contracts.Auth_Context{kind = .Bridge_Token, user_id = string(bridge.owner_user_id), bridge_id = bridge.bridge_id}, true, domain.Domain_Error{}
+	if strings.has_prefix(token, ACCESS_TOKEN_PREFIX) do return verify_access_token(service, token)
+	if strings.has_prefix(token, BRIDGE_TOKEN_PREFIX) {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, BRIDGE_LEGACY_CREDENTIAL_MESSAGE)
+	}
+	return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is invalid")
 }
+
+// BRIDGE_LEGACY_CREDENTIAL_MESSAGE is the operator story for REQ-ENROLL-9, in the
+// one place an operator is guaranteed to meet it: the rejection itself.
+//
+// Every bridge enrolled through the deleted flow stops working at this change and
+// must re-enroll. That is a known, accepted consequence, so the error names the
+// command that fixes it rather than describing the problem. The bridge logs this
+// message verbatim when the Hub refuses it, and `heimdall status`/`heimdall doctor`
+// surface the same instruction.
+BRIDGE_LEGACY_CREDENTIAL_MESSAGE :: "this bridge's credential was issued by the removed enrollment flow and is no longer accepted; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>"
 
 refresh_hostname :: proc(service: ^Bridge_Service, bridge: domain.Bridge, hostname: string) -> domain.Bridge {
 	updated := bridge
@@ -372,16 +389,6 @@ refresh_hostname :: proc(service: ^Bridge_Service, bridge: domain.Bridge, hostna
 	if !updated.label_is_user_customized do updated.label = hostname
 	updated.updated_at = platform.clock_now(service.clock)
 	return updated
-}
-
-hash_token :: proc(token: string) -> string {
-	// Deterministic non-cryptographic placeholder for the repository boundary/tests;
-	// replace with platform.hash argon2/sha before production secrets are stored.
-	acc: u64 = 1469598103934665603
-	for b in transmute([]byte)token {
-		acc = (acc ~ u64(b)) * 1099511628211
-	}
-	return fmt.tprintf("h_%016x", acc)
 }
 
 write_service_json_string :: proc(b: ^strings.Builder, value: string) {

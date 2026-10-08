@@ -88,51 +88,15 @@ test_title_mutation_live_events_and_flat_listing :: proc(t: ^testing.T) {
 	testing.expect(t, ws_idx >= 0, "user_ws_add must succeed")
 	defer events.user_ws_remove(&graph.event_bus, ws_idx)
 
-	// 1. Enroll bridge
-	enroll_res := api_http.router_dispatch(&graph.router, api_http.Request{
-		method      = "POST",
-		path        = "/api/v1/bridge-enrollments",
-		body        = `{"label":"Alice Bridge"}`,
-		request_id  = "req_tm_1",
-		remote_addr = "127.0.0.1",
-		headers     = alice[:],
-	})
-	testing.expect_value(t, enroll_res.status, 201)
-
-	token := ""
-	token_idx := strings.index(enroll_res.body, "\"enrollment_token\":\"")
-	if token_idx >= 0 {
-		rest := enroll_res.body[token_idx + len("\"enrollment_token\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do token = strings.clone(rest[:end])
-	}
-	defer delete(token)
-
-	auth_header_val := strings.concatenate({"Bearer ", token})
-	defer delete(auth_header_val)
-	enroll_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = auth_header_val}}
-	enrolled := api_http.router_dispatch(&graph.router, api_http.Request{
-		method      = "POST",
-		path        = "/api/v1/bridges/enroll",
-		body        = `{"machine":{"hostname":"host"},"capabilities":[{"provider":"claude","tiers":["normal","smart"],"default_tier":"normal"}]}`,
-		request_id  = "req_tm_2",
-		remote_addr = "127.0.0.1",
-		headers     = enroll_headers[:],
-	})
-	testing.expect_value(t, enrolled.status, 201)
-
-	bridge_id := ""
-	if b_idx := strings.index(enrolled.body, "\"bridge_id\":\""); b_idx >= 0 {
-		rest := enrolled.body[b_idx + len("\"bridge_id\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do bridge_id = strings.clone(rest[:end])
-	}
-	defer delete(bridge_id)
-
-	bridge_token := ""
-	if bt_idx := strings.index(enrolled.body, "\"bridge_token\":\""); bt_idx >= 0 {
-		rest := enrolled.body[bt_idx + len("\"bridge_token\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do bridge_token = strings.clone(rest[:end])
-	}
-	defer delete(bridge_token)
+	// 1. Provision a bridge through the DEVICE FLOW. See device_enroll_support_test.odin
+	// for why the old bridge-enrollments + bridges/enroll pair is gone, and for the
+	// three requirements (P-256 key shape, hub-derived fingerprint, mandatory S256
+	// PKCE) that make this more than two lines.
+	//
+	// No `defer delete` on these: the helper returns slices into the response
+	// bodies, which the router owns, where the deleted code cloned them.
+	bridge_id, bridge_token, enroll_ok := device_enroll_test_bridge(&graph, alice[:], "Alice Bridge")
+	testing.expect(t, enroll_ok, "device-flow bridge provisioning failed")
 
 	b, b_ok, _ := iface.bridge_get_bridge(graph.bridges.repo, bridge_id)
 	if b_ok {

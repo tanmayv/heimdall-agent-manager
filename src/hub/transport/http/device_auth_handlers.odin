@@ -14,12 +14,19 @@ import "core:strings"
 import contracts "odin_test:contracts"
 import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
+import push_service "odin_test:hub/service/push"
 import domain "odin_test:hub/domain"
 import jsonx "odin_test:lib/jsonx"
 
 Device_Auth_Handlers :: struct {
 	service: ^device_auth.Device_Auth_Service,
 	auth:    ^auth_service.Auth_Service,
+	// REQ-IMPL-5 (Part A item 6): the post-approval notification. Optional —
+	// nil, or a Push_Service with no VAPID keypair, simply means no push is
+	// sent. It must never be able to fail the approval it is reporting, so
+	// every use of it is guarded and non-blocking.
+	push:              ^push_service.Push_Service,
+	public_app_origin: string,
 }
 
 // device_authorize_handler is the public POST /api/v1/device/authorize endpoint.
@@ -30,6 +37,15 @@ device_authorize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		device_label = json_string(req.body, "device_label"),
 		os = json_string(req.body, "os"),
 		app_version = json_string(req.body, "app_version"),
+		// REQ-IMPL-2 bridge-enrollment extensions. bridge_key_fingerprint is read
+		// only so the service can CROSS-CHECK it against its own derivation and
+		// surface a mismatch; the stored fingerprint is always the Hub's own
+		// (device_auth/bridge_grant.odin).
+		bridge_public_key = json_string(req.body, "bridge_public_key"),
+		bridge_key_fingerprint = json_string(req.body, "bridge_key_fingerprint"),
+		os_user = json_string(req.body, "os_user"),
+		code_challenge = json_string(req.body, "code_challenge"),
+		code_challenge_method = json_string(req.body, "code_challenge_method"),
 	}
 	xff := header_value(req.headers, "X-Forwarded-For")
 	result, ok, err := device_auth.authorize(handlers.service, input, req.remote_addr, xff)
@@ -43,6 +59,13 @@ device_authorize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	write_handler_json_string(&data, result.verification_uri)
 	strings.write_string(&data, fmt.tprintf("\",\"interval\":%d", result.interval))
 	strings.write_string(&data, fmt.tprintf(",\"expires_in\":%d", result.expires_in))
+	// Advisory echo of the Hub's fingerprint (design §2.2 step 5); omitted
+	// entirely for a non-bridge grant so the ELDA response shape is unchanged.
+	if result.bridge_key_fingerprint != "" {
+		strings.write_string(&data, ",\"bridge_key_fingerprint\":\"")
+		write_handler_json_string(&data, result.bridge_key_fingerprint)
+		strings.write_string(&data, "\"")
+	}
 	strings.write_string(&data, "}")
 	return respond_success(strings.to_string(data), req.request_id, "", 200)
 }
@@ -80,7 +103,52 @@ device_verify_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	write_handler_json_string(&data, info.client)
 	strings.write_string(&data, "\",\"request_ip\":\"")
 	write_handler_json_string(&data, info.request_ip)
-	strings.write_string(&data, fmt.tprintf("\",\"requested_at\":%d}", info.requested_at))
+	strings.write_string(&data, fmt.tprintf("\",\"requested_at\":%d", info.requested_at))
+	// REQ-IMPL-2 / design §5.4.4: hand the browser the Hub's copy of the bridge
+	// key and the hub-computed fingerprint so the approval page can compare them
+	// against the key it read from the link fragment. Both are public values.
+	//
+	// PROVENANCE IS PART OF THE WIRE FORMAT, not a convention the UI has to look
+	// up (REQ-ENROLL-14). Every field here is nested under either
+	// `hub_observed` — derived by the Hub, safe to present as fact — or
+	// `host_asserted` — supplied by the machine being enrolled, attacker-
+	// controlled, and to be rendered as a claim. REQ-IMPL-5's approval screen
+	// must visually separate the two, and it can only do that if the payload
+	// does. `bridge_public_key` sits in BOTH, deliberately and under different
+	// names: the machine asserted it, and the Hub now vouches for having stored
+	// that exact value — which is what makes the fragment cross-check meaningful.
+	strings.write_string(&data, ",\"is_bridge_enrollment\":")
+	strings.write_string(&data, "true" if info.is_bridge_enrollment else "false")
+	strings.write_string(&data, ",\"hub_observed\":{\"bridge_key_fingerprint\":\"")
+	write_handler_json_string(&data, info.bridge_key_fingerprint)
+	strings.write_string(&data, "\",\"bridge_public_key_on_record\":\"")
+	write_handler_json_string(&data, info.bridge_public_key)
+	strings.write_string(&data, "\",\"fingerprint_algorithm\":\"sha256-64/hex-quads\",\"request_ip\":\"")
+	write_handler_json_string(&data, info.request_ip)
+	// server_time belongs in hub_observed because the Hub MEASURED it, with the
+	// same clock reading that decided this grant had not expired. The approval
+	// screen previously showed the browser's own `Date.now()` under the
+	// "verified by Heimdall" heading, which made a false provenance claim and
+	// left the request-staleness check dependent on operator clock skew. Same
+	// units as requested_at, so the screen can subtract them.
+	strings.write_string(&data, fmt.tprintf("\",\"server_time\":%d", info.server_time))
+	strings.write_string(&data, "},\"host_asserted\":{\"bridge_public_key\":\"")
+	write_handler_json_string(&data, info.bridge_public_key)
+	strings.write_string(&data, "\",\"os_user\":\"")
+	write_handler_json_string(&data, info.os_user)
+	strings.write_string(&data, "\",\"device_label\":\"")
+	write_handler_json_string(&data, info.device_label)
+	strings.write_string(&data, "\",\"os\":\"")
+	write_handler_json_string(&data, info.os)
+	strings.write_string(&data, "\",\"app_version\":\"")
+	write_handler_json_string(&data, info.app_version)
+	strings.write_string(&data, "\"},\"bridge_public_key\":\"")
+	write_handler_json_string(&data, info.bridge_public_key)
+	strings.write_string(&data, "\",\"bridge_key_fingerprint\":\"")
+	write_handler_json_string(&data, info.bridge_key_fingerprint)
+	strings.write_string(&data, "\",\"os_user\":\"")
+	write_handler_json_string(&data, info.os_user)
+	strings.write_string(&data, "\"}")
 	return respond_success(strings.to_string(data), req.request_id, "", 200)
 }
 
@@ -102,9 +170,50 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		req.remote_addr, header_value(req.headers, "X-Forwarded-For"),
 		handlers.service.trusted_cidrs)
 	approver_ua := header_value(req.headers, "User-Agent")
+	// REQ-IMPL-5 (Part A item 6): read the grant BEFORE deciding, because
+	// approve() makes it terminal and the notification needs to know whether
+	// this was a bridge enrollment and what fingerprint the Hub derived. This
+	// is the Hub's own verify path, so it reveals nothing the approver cannot
+	// already see, and a failure here must not block the decision.
+	pre_info, pre_ok, _ := device_auth.verify(handlers.service, input.user_code)
 	aok, err := device_auth.approve(
 		handlers.service, input, auth_ctx.user_id, approver_ip, approver_ua)
 	if !aok do return respond_error(err, req.request_id)
+	// Enrolling a machine is the most consequential approval an owner can give,
+	// and it happens in one tab that may then be closed. Tell their other
+	// devices, so an approval obtained by phishing is discoverable rather than
+	// silent. Approval only: a REJECTION leaves nothing to discover.
+	//
+	// The payload deliberately carries NO host-asserted text — see
+	// build_enrollment_approval_notification for why a hostname must not reach
+	// an OS-rendered notification.
+	if input.approve && pre_ok && pre_info.is_bridge_enrollment && handlers.push != nil {
+		content := push_service.build_enrollment_approval_notification(pre_info.bridge_key_fingerprint)
+		defer push_service.free_notification_content(content)
+		payload := push_service.build_push_payload_json(content, handlers.public_app_origin)
+		defer delete(payload)
+		push_service.send_to_user_async(handlers.push, domain.User_ID(auth_ctx.user_id), payload)
+	}
+	// REQ-IMPL-5: hand the approving browser the `brg_` this grant was minted
+	// against, so it can deliver the vault key to that specific bridge over the
+	// bridge_unseal relay. Until this moment there is no bridge to address — the
+	// minter creates the id during approve(), and the poll path hands it to the
+	// BRIDGE, not to the browser.
+	//
+	// It is nested under `hub_observed` because the Hub minted it and the machine
+	// did not assert it (REQ-ENROLL-14's provenance split is part of the wire
+	// format, not a UI convention). Absent for a non-bridge grant and for a
+	// rejection, so the ELDA response shape is unchanged and `{}` still means
+	// "decision recorded, nothing to address".
+	if input.approve {
+		if bridge_id, has_bridge := device_auth.approved_bridge_id(handlers.service, input.user_code); has_bridge {
+			data := strings.builder_make()
+			strings.write_string(&data, "{\"hub_observed\":{\"bridge_id\":\"")
+			write_handler_json_string(&data, bridge_id)
+			strings.write_string(&data, "\"}}")
+			return respond_success(strings.to_string(data), req.request_id, "", 200)
+		}
+	}
 	return respond_success("{}", req.request_id, "", 200)
 }
 
@@ -115,10 +224,13 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	handlers := (^Device_Auth_Handlers)(ctx)
 	device_code := json_string(req.body, "device_code")
+	// REQ-IMPL-2: the PKCE proof (RFC 7636 §4.5). Absent for the ELDA poll,
+	// required for any grant that carries a challenge.
+	code_verifier := json_string(req.body, "code_verifier")
 	request_ip := device_auth.resolve_client_ip(
 		req.remote_addr, header_value(req.headers, "X-Forwarded-For"),
 		handlers.service.trusted_cidrs)
-	result, err := device_auth.poll(handlers.service, device_code, request_ip)
+	result, err := device_auth.poll(handlers.service, device_code, request_ip, code_verifier)
 	if err.code == .Rate_Limited {
 		// slow_down: 429. The body carries status=slow_down so the device backs off.
 		retry_after := handlers.service.store.config.interval
@@ -132,6 +244,10 @@ device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			headers = headers,
 		}
 	}
+	// A PKCE failure is an authentication failure, not a poll state: return the
+	// domain error (401) rather than a 200 with a status field, so a bridge with
+	// the wrong verifier cannot mistake it for "keep polling".
+	if result.status == .Invalid_Grant do return respond_error(err, req.request_id)
 	data := strings.builder_make()
 	#partial switch result.status {
 	case .Approved:
@@ -139,7 +255,24 @@ device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		write_handler_json_string(&data, result.access_token)
 		strings.write_string(&data, "\",\"token_id\":\"")
 		write_handler_json_string(&data, result.token_id)
-		strings.write_string(&data, fmt.tprintf("\",\"expires_in\":%d}", result.expires_in))
+		// bridge_id is present only for a bridge grant; the ELDA response shape
+		// is unchanged.
+		if result.bridge_id != "" {
+			strings.write_string(&data, "\",\"bridge_id\":\"")
+			write_handler_json_string(&data, result.bridge_id)
+		}
+		// REQ-IMPL-3: the refresh half, present only for a bridge grant whose
+		// credential expires. Omitted entirely otherwise, so the ELDA response
+		// shape is unchanged and a client that sees no refresh_token knows not to
+		// schedule a refresh rather than having to interpret an empty string.
+		if result.refresh_token != "" {
+			strings.write_string(&data, "\",\"refresh_token\":\"")
+			write_handler_json_string(&data, result.refresh_token)
+			strings.write_string(&data, fmt.tprintf("\",\"refresh_expires_in\":%d", result.refresh_expires_in))
+			strings.write_string(&data, fmt.tprintf(",\"expires_in\":%d}", result.expires_in))
+		} else {
+			strings.write_string(&data, fmt.tprintf("\",\"expires_in\":%d}", result.expires_in))
+		}
 	case .Denied:
 		strings.write_string(&data, "{\"status\":\"denied\"}")
 	case .Expired:

@@ -246,14 +246,19 @@ sudo systemctl reload nginx
 **Configuring bridges to use a plain HTTP hub**
 
 When the hub is served over plain HTTP, pass the `http://` URL to `ham-bridge enroll`
-and to the bridge service:
+and to the bridge service. `--ui` takes the origin a human opens in a **browser** (the
+one whose `/api` is proxied to the hub), not the hub API URL — on a single-origin VPN
+deployment like this they are the same:
 
 ```bash
 ham-bridge enroll \
-  --hub http://<vpn-ip> \
-  --enrollment-token hbe_... \
+  --ui http://<vpn-ip> \
   --bridge-token-file ~/.config/heimdall/bridge-token
 ```
+
+It prints a link and a short code; open the link on any device, check the code and key
+fingerprint match what this machine shows, and approve. Add `--headless` if this
+machine has no browser of its own.
 
 The `--hub` flag in the systemd/launchd service should match (e.g.
 `http://100.x.x.x` for a Tailscale IP).
@@ -344,7 +349,7 @@ The installer:
 6. Prints the enrollment next steps (also shown below).
 
 The registered service takes the hub URL from `config.toml` (`[wrapper]
-daemon_url`, written by `heimdall enroll` in step 2 below) — no URL is baked
+daemon_url`, written by the enrollment step below) — no URL is baked
 into the unit. Passing `--hub <url>` to the installer is the one explicit
 exception: it writes that URL into the unit as a deliberate operator
 override.
@@ -426,30 +431,58 @@ with your system package manager (`sudo apt install socat`,
 not bundled: the `HAM_TLS_BACKEND=s_client` fallback resolves it from your
 system `PATH`.
 
-**Then enroll, configure vault encryption, and start the bridge with the `heimdall` CLI:**
+**Then enroll — and leave it running, because it becomes the bridge:**
 
 ```bash
-# 1. On the hub machine: create a one-time enrollment token
-ham-ctl bridge enroll-token --new
-
-# 2. On this device: enroll (writes ~/.config/heimdall/bridge-token, mode 0600,
-#    and updates config.toml with the hub URL)
-heimdall enroll hbe_... --hub https://hub.example.com
-
-# 3. Configure vault encryption with the primary user command. Replace the
-#    placeholder with your 64-character hexadecimal vault key.
+# 1. Configure vault encryption, so there is a key to unlock when you approve.
+#    Replace the placeholder with your 64-character hexadecimal vault key.
 heimdall vault set-key <64-hex>
 heimdall vault status
 
-# 4. Start the registered service
+# 2. On this device: enroll, and LEAVE THIS RUNNING. Nothing is created on the hub
+#    first, and there is no token to copy between machines — this machine prints a
+#    link and a short code, you approve it in a browser, and the credential is
+#    delivered here directly. Writes ~/.config/heimdall/bridge-token (mode 0600)
+#    and updates config.toml with the hub URL. Add --headless if this machine has
+#    no browser of its own.
+#
+#    This command does NOT exit when enrollment succeeds — the same process
+#    continues straight into the bridge runtime. Watch for the line
+#    'bridge hub runtime ready'.
+ham-bridge enroll --ui https://heimdall.example.com
+
+# 3. From a second shell: enrollment, service state, hub connection, versions
+heimdall status
+```
+
+Why step 2 has to stay running, rather than finishing and handing off to the
+service: the approval link carries this machine's encryption key in its URL
+*fragment*, and only the process that printed that link holds the matching private
+half. The key is never written to disk — that is what keeps an archived approval
+link undecryptable — so the vault key can only be delivered to that same live
+process. A sequence that enrolled in one process and then started the bridge in
+another addressed the sealed vault key to a key no live process held, and the
+delivery failed every time with no way to recover it.
+
+**Handing the bridge over to the registered service (optional, and not free):**
+
+The process from step 2 is already your bridge, so you only need the service if you
+want the bridge to come back after a reboot without you. The handover costs one
+manual unlock, and there is no way around it:
+
+```bash
+# Stop the step-2 process FIRST — it and the service both bind port 49323, and
+# whichever starts second will fail.
 sudo loginctl enable-linger "$USER"                  # Linux server/headless host
 systemctl --user enable --now heimdall-bridge        # Linux
 launchctl bootstrap gui/$(id -u) \
   ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist   # macOS
-
-# 5. Verify: enrollment, service state, hub connection, binary versions
-heimdall status
 ```
+
+The service starts a fresh process, and for the reason above it cannot inherit the
+vault key. So after the handover, unlock the vault again from
+**Settings → Bridges**. Expect to do this after every service restart that is not
+preceded by an unlock from the UI.
 
 On a non-desktop Linux host, lingering is required so the user service keeps
 running after the last login session ends; without it, the bridge stops when you
@@ -537,42 +570,51 @@ cp target/release/ham-pty-host ~/bin/ham-pty-host
 
 ### 2.5 First-time enrollment
 
-The hub uses a one-time enrollment token to issue a durable bridge token (`hbr_…`).
+Enrollment is **browser-approved**. This machine asks the hub for a short code, prints
+it together with a link and a key fingerprint, and a human approves it in a browser; the
+hub then delivers an expiring access credential (`hba_…`) to this machine directly.
+
+**There is no enrollment token.** Nothing is created on the hub beforehand, and nothing
+secret is copied between machines — so there is no secret to paste, mistype, or leave in
+shell history. If you are looking for `ham-ctl bridge enroll-token --new`, the `hbe_`
+one-time token, or `heimdall enroll <token>`, all three are **deleted**.
+
 **Enrollment must be completed before the bridge can connect** — the bridge will refuse
-to start (or will immediately exit) if it has no valid token file. Once enrollment is
-done, you simply start (or restart) the bridge normally using the same token file; no
-re-enrollment is ever needed unless the token is lost or explicitly revoked.
+to start (or will immediately exit) if it has no valid credential file. Once enrollment
+is done, start (or restart) the bridge normally using the same file; the bridge refreshes
+its own credential and no re-enrollment is needed unless the file is lost or the bridge
+is explicitly revoked.
 
 > **Order matters:** run `ham-bridge enroll` first, then start `ham-bridge`. You cannot
 > enroll through a running bridge instance — enrollment is a one-shot CLI command that
-> writes the token file and then exits.
+> writes the credential file and then exits.
 
-**Step 1 — Generate an enrollment token on the hub**
-
-```bash
-# On the hub machine (or via ham-ctl pointing at hub):
-ham-ctl bridge enroll-token --new
-# → prints a one-time token like: hbe_...  (copy it — it is shown only once)
-```
-
-**Step 2 — Enroll the bridge on the device**
+**Enroll the bridge on the device**
 
 ```bash
-# On the device that will run the bridge (the heimdall CLI ships with the
-# quick install in section 2.1 and the release bundle):
-heimdall enroll hbe_... --hub https://hub.example.com
-# → Contacts the hub, exchanges the enrollment token for a durable hbr_ token,
-#   writes it to ~/.config/heimdall/bridge-token (mode 0600), and records the
-#   hub URL and bridge id in ~/.config/heimdall/config.toml.
-#   The command exits when enrollment is complete.
-
-# Underlying engine (compatibility): the equivalent ham-bridge invocation.
 mkdir -p ~/.config/heimdall
 ham-bridge enroll \
-  --hub https://hub.example.com \
-  --enrollment-token hbe_... \
+  --ui https://heimdall.example.com \
   --bridge-token-file ~/.config/heimdall/bridge-token
+# → Prints a link, a short code and a key fingerprint. Open the link on any device,
+#   check the code and fingerprint match what this machine shows, and approve.
+#   Writes the hba_ credential to ~/.config/heimdall/bridge-token (mode 0600) and
+#   records the hub URL and bridge id in ~/.config/heimdall/config.toml.
+#   The command exits when enrollment is complete.
+#
+#   Add --headless if this machine has no browser of its own.
 ```
+
+`--ui` takes the **UI origin** — the origin you open in a browser, whose `/api` is
+proxied to the hub — and **not** the hub API URL. The two differ in a typical deployment
+(`heimdall.example.com` vs `hub.example.com`), and passing the hub URL produces a 404 on
+the authorize call. `HAM_BRIDGE_UI_URL` sets it from the environment.
+
+**Credential shapes, because the distinction is a security decision and not a naming
+detail:** `hba_` is the expiring access credential and the only shape that
+authenticates. `hbf_` is a refresh credential, accepted at the refresh endpoint alone.
+`hbr_` is the **legacy** non-expiring token — no longer minted and no longer accepted; a
+bridge still carrying one is told to re-enroll rather than given a generic rejection.
 
 **Step 3 — Configure vault encryption**
 
@@ -751,7 +793,7 @@ The flake ships a Home Manager module for declarative bridge setup:
           bridge = {
             enable = true;
             hubUrl = "https://hub.example.com";
-            # Path to the enrolled hbr_ token written by `ham-bridge enroll`
+            # Path to the enrolled hba_ credential written by `ham-bridge enroll --ui`
             tokenFile = "/home/you/.config/heimdall/bridge-token";
             port = 49323;
           };
@@ -781,8 +823,8 @@ named `heimdall-bridge` is created and started automatically.
 Recommended — the quick install (section 2.1) handles the first three items:
 - [ ] Run the one-line installer:
       `curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash`
-- [ ] Generate an enrollment token on the hub: `ham-ctl bridge enroll-token --new`
-- [ ] Enroll: `heimdall enroll hbe_... --hub https://hub.example.com`
+- [ ] Enroll: `ham-bridge enroll --ui https://heimdall.example.com` — approve the
+      printed link and short code in a browser. Nothing to create on the hub first.
 - [ ] Start the bridge service (systemd user service or launchd agent)
 - [ ] Verify with `heimdall status`; confirm the bridge appears in the hub UI
       or via `ham-ctl bridge list`
@@ -790,7 +832,7 @@ Recommended — the quick install (section 2.1) handles the first three items:
 Manual path (sections 2.2–2.10, for source/air-gapped setups):
 - [ ] Build or install `ham-bridge`, `ham-pty-host`, `ham-ctl`
 - [ ] Install runtime dependencies: `socat`, `openssl`
-- [ ] Enroll: `ham-bridge enroll --hub … --enrollment-token … --bridge-token-file ~/.config/heimdall/bridge-token`
+- [ ] Enroll: `ham-bridge enroll --ui <browser-origin> --bridge-token-file ~/.config/heimdall/bridge-token`
 - [ ] Set `HEIMDALL_HAM_PTY_HOST_BIN`, `HEIMDALL_BRIDGE_PTY_HOST=true`, `HEIMDALL_HAM_CTL_BIN`
 
 ### Subsequent runs

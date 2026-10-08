@@ -163,6 +163,45 @@ bridge_runtime_registry_set_command_socket :: proc(registry: ^Bridge_Runtime_Reg
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id { registry.command_sockets[i] = socket; return } }
 }
 
+// bridge_runtime_registry_shutdown_command_socket tears down a bridge's LIVE control
+// connection (audit F6, design §7.5). Returns whether there was one to tear down.
+//
+// `net.shutdown`, NOT `net.close`, AND THAT CHOICE IS LOAD-BEARING. The socket is
+// OWNED by the connection's own reader thread, which spends its life parked in a
+// 120-second blocking read (bridge_ws_runtime_loop). Calling `close` from a
+// different thread frees a file descriptor that another thread is actively reading:
+// the read may return EBADF, or — the real hazard — the descriptor number may be
+// reused by the next `accept()` while the old reader still holds it, at which point
+// one connection reads another's bytes. `shutdown` instead marks the connection's
+// ends down WITHOUT releasing the descriptor, so the parked read returns
+// IMMEDIATELY, the owning thread runs its normal teardown path
+// (bridge_ws_disconnect -> mark_offline) and closes its own descriptor exactly once.
+// Revocation therefore takes effect in milliseconds rather than at the next read
+// deadline, with no shared-descriptor race.
+//
+// The command mutex is held because every other writer to this socket holds it; a
+// shutdown racing a partially-written frame would otherwise interleave with it.
+// The registry entry is deliberately NOT removed here: the owning thread's
+// generation-guarded mark_offline is what retires it, and removing it from under
+// that thread would make a reconnect look like a replacement of a live connection.
+bridge_runtime_registry_shutdown_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> bool {
+	if registry == nil || bridge_id == "" do return false
+	bridge_runtime_registry_command_lock(registry)
+	defer bridge_runtime_registry_command_unlock(registry)
+	for i in 0..<registry.live_bridge_count {
+		if registry.live_bridge_ids[i] != bridge_id do continue
+		socket := registry.command_sockets[i]
+		if socket == net.TCP_Socket(0) do return false
+		// Both directions: `Send` alone would leave the bridge's own writes buffered
+		// and the parked read still parked, which is the exact failure this exists to
+		// avoid. An error is ignored on purpose — an already-dead socket is the
+		// outcome we wanted.
+		_ = net.shutdown(net.Any_Socket(socket), net.Shutdown_Manner.Both)
+		return true
+	}
+	return false
+}
+
 bridge_runtime_registry_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> (net.TCP_Socket, bool) {
 	if registry == nil || bridge_id == "" do return {}, false
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id && registry.command_sockets[i] != net.TCP_Socket(0) do return registry.command_sockets[i], true }

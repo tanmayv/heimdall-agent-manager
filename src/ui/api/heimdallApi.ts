@@ -32,7 +32,6 @@ export const HEIMDALL_TAG_TYPES = [
   'ChainFleets',
   'ChainMembers',
   'Bridges',
-  'BridgeEnrollments',
   'BridgeProviders',
   'ProjectBridgePaths',
   // Project Directory Browser: project-scoped FS listings, keyed by (project, bridge, path).

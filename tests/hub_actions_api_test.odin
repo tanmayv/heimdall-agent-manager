@@ -21,15 +21,18 @@ check :: proc(ok: bool, msg: string) {
 	os.exit(1)
 }
 
-// Capture the checkpoint-1 (bare_token_shared_endpoint) audit event so the test
-// can assert it identifies the endpoint (method/path), not just that it fired.
-cp1_captured_path: string
-cp1_captured_method: string
-capture_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
-	if point == "bare_token_shared_endpoint" {
-		cp1_captured_path = path
-		cp1_captured_method = method
-	}
+// Capture bridge_auth_denied audit events so the tests can assert each denial is
+// still LOGGED as well as refused. REQ-ENROLL-15 kept the audit logging and deleted
+// only the permissive branch, so "rejected but silent" is a regression too.
+//
+// Keyed by checkpoint name because all four checkpoints share one hook.
+denied_paths: map[string]string
+denied_methods: map[string]string
+denied_targets: map[string]string
+capture_bridge_auth_denied :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	denied_paths[point] = path
+	denied_methods[point] = method
+	denied_targets[point] = target
 }
 
 extract_json_string :: proc(body, key: string) -> string {
@@ -41,6 +44,53 @@ extract_json_string :: proc(body, key: string) -> string {
 	end_idx := strings.index(tail, "\"")
 	if end_idx < 0 do return ""
 	return tail[:end_idx]
+}
+
+// device_enroll_bridge provisions a bridge through the REAL device flow (REQ-ENROLL-9),
+// replacing the deleted bridge-enrollments + bridges/enroll pair.
+//
+// Three requirements that each reject a request outright, hence more than two lines:
+//  1. bridge_public_key must be a 130-char lowercase-hex uncompressed P-256 point.
+//  2. NO bridge_key_fingerprint is sent — the Hub derives it and refuses a
+//     body-supplied one that disagrees (a requester-chosen fingerprint would defeat
+//     the human comparing it on the approval screen).
+//  3. PKCE is mandatory for a bridge grant and S256-only; the pair below is
+//     precomputed so this needs no crypto, and the verifier is replayed at /token.
+//
+// `device_label` becomes the bridge's hostname and therefore its label.
+ACTIONS_TEST_PUBLIC_KEY :: "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+ACTIONS_TEST_CODE_VERIFIER :: "heimdall-req-impl-6-test-code-verifier-aaaa"
+ACTIONS_TEST_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
+
+device_enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label, tag: string) -> (bridge_id: string, bridge_token: string) {
+	authorized := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize",
+		body = strings.concatenate({
+			"{\"client\":\"ham-bridge\",\"device_label\":\"", label,
+			"\",\"os\":\"linux\",\"os_user\":\"tester\",\"bridge_public_key\":\"", ACTIONS_TEST_PUBLIC_KEY,
+			"\",\"code_challenge\":\"", ACTIONS_TEST_CODE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+		}),
+		request_id = strings.concatenate({"req_dev_authorize_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(authorized.status == 200, fmt.tprintf("device authorize failed: %s", authorized.body))
+	user_code := extract_json_string(authorized.body, "user_code")
+	device_code := extract_json_string(authorized.body, "device_code")
+
+	// The human approves; ownership comes from this Auth_Context, never the body.
+	approved := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/approve",
+		body = strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}),
+		request_id = strings.concatenate({"req_dev_approve_", tag}), remote_addr = "127.0.0.1", headers = headers,
+	})
+	check(approved.status == 200, fmt.tprintf("device approve failed: %s", approved.body))
+
+	issued := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/token",
+		body = strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", ACTIONS_TEST_CODE_VERIFIER, "\"}"}),
+		request_id = strings.concatenate({"req_dev_token_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(issued.status == 200, fmt.tprintf("device token failed: %s", issued.body))
+	return extract_json_string(issued.body, "bridge_id"), extract_json_string(issued.body, "access_token")
 }
 
 main :: proc() {
@@ -63,38 +113,19 @@ main :: proc() {
 	check(ok, message)
 	defer app.shutdown_graph(&graph)
 
-	// Default bridge-auth mode (unset in Hub_Config) must resolve to monitor.
-	check(graph.auth.bridge_auth_mode == .Monitor, "default bridge_auth_mode must be monitor")
+	// There is no bridge-auth mode any more (REQ-ENROLL-15). This check used to
+	// assert the default resolved to MONITOR — i.e. that a fresh Hub_Config shipped
+	// with four authorization checks disabled. Deleted rather than inverted: there
+	// is no longer a field to read, and the enforcement it used to gate is now
+	// asserted directly by sections 10a-10j below.
 
 	alice := [?]contracts.HTTP_Header{
 		{name = "X-authentik-username", value = "alice"},
 		{name = "X-authentik-name", value = "Alice"},
 	}
 
-	// 1. Enroll bridge 1
-	enr1 := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = "{\"label\":\"Bridge 1\"}",
-		request_id = "req_enr1",
-		remote_addr = "127.0.0.1",
-		headers = alice[:],
-	})
-	check(enr1.status == 201, fmt.tprintf("enroll 1 failed: %s", enr1.body))
-	tok1 := extract_json_string(enr1.body, "enrollment_token")
-
-	enroll1_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok1})}}
-	b1_resp := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = "{\"machine\":{\"hostname\":\"host1\"}}",
-		request_id = "req_b1",
-		remote_addr = "127.0.0.1",
-		headers = enroll1_headers[:],
-	})
-	check(b1_resp.status == 201, fmt.tprintf("bridge 1 exchange token failed: %s", b1_resp.body))
-	bridge1_token := extract_json_string(b1_resp.body, "bridge_token")
-	bridge1_id := extract_json_string(b1_resp.body, "bridge_id")
+	// 1. Provision bridge 1 (alice) through the device flow.
+	bridge1_id, bridge1_token := device_enroll_bridge(&graph, alice[:], "Bridge 1", "b1")
 	bridge1_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge1_token})}}
 
 	owner_user := domain.User_ID("alice")
@@ -626,8 +657,13 @@ main :: proc() {
 	check(fresh_after_ok, "fresh action still present after execute")
 	check(string(fresh_after_rec.last_spawned_instance_id) == "inst_ac_1", "last_spawned_instance_id persisted on the action row")
 
-	// 10. Security & Bridge Auth Isolation Tests — 10a–10g asserted under ENFORCE mode.
-	graph.auth.bridge_auth_mode = .Enforce
+	// 10. Security & Bridge Auth Isolation Tests.
+	//
+	// These used to require `graph.auth.bridge_auth_mode = .Enforce` to be set by
+	// hand, because the shipped default disabled them. Enforcement is now
+	// unconditional, so the assignment is gone and the cases below run against the
+	// SAME configuration a real deployment uses — which is the point of deleting
+	// the mode.
 	// 10a. Negative Test: Bare hbr_ token REJECTED on user endpoint (GET /api/v1/task-chains)
 	bare_bridge_tc_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "GET",
@@ -705,27 +741,15 @@ main :: proc() {
 		{name = "X-authentik-username", value = "bob"},
 		{name = "X-authentik-name", value = "Bob"},
 	}
-	enr2 := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = "{\"label\":\"Bridge 2 Bob\"}",
-		request_id = "req_enr2",
-		remote_addr = "127.0.0.1",
-		headers = bob[:],
-	})
-	check(enr2.status == 201, fmt.tprintf("enroll 2 failed: %s", enr2.body))
-	tok2 := extract_json_string(enr2.body, "enrollment_token")
-	enroll2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok2})}}
-	b2_resp := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = "{\"machine\":{\"hostname\":\"host2\"}}",
-		request_id = "req_b2",
-		remote_addr = "127.0.0.1",
-		headers = enroll2_headers[:],
-	})
-	check(b2_resp.status == 201, fmt.tprintf("bridge 2 exchange token failed: %s", b2_resp.body))
-	bridge2_token := extract_json_string(b2_resp.body, "bridge_token")
+	// Bridge 2 is owned by BOB, which is what makes the cross-owner and
+	// cross-bridge cases below real rather than self-referential.
+	bridge2_id, bridge2_token := device_enroll_bridge(&graph, bob[:], "Bridge 2 Bob", "b2")
+	// bridge2_id is the TARGET for the cross-bridge cases below. It comes from the
+	// enrollment rather than being hardcoded, so the assertions name a bridge that
+	// genuinely exists and is owned by someone else — a nonexistent id could be
+	// refused by a lookup instead of by the authorization check under test.
+	check(bridge2_id != "", "bridge 2 enrollment must return a bridge_id")
+	check(bridge2_id != bridge1_id, "the cross-bridge cases need two DIFFERENT bridges")
 	bridge2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge2_token})}}
 
 	cross_exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
@@ -738,49 +762,114 @@ main :: proc() {
 	})
 	check(cross_exec_resp.status == 403, fmt.tprintf("cross-owner bridge execute must be 403: %d %s", cross_exec_resp.status, cross_exec_resp.body))
 
-	// 10h–10j. MONITOR mode: the same boundary cases now ALLOW (audit-not-enforce).
-	graph.auth.bridge_auth_mode = .Monitor
-	auth_service.bridge_auth_monitor_hook = capture_bridge_auth_monitor
-	defer auth_service.bridge_auth_monitor_hook = nil
+	// ===== 10h-10k. THE INVERTED SECTION (REQ-ENROLL-15) =====
+	//
+	// These three cases are the INVERSION of the old monitor-mode block, and the
+	// inversion is the valuable part of this change. Each one previously asserted
+	// that the boundary was NOT enforced:
+	//
+	//   10h  asserted a bare bridge token GOT 200 on /api/v1/task-chains
+	//   10i  asserted a cross-bridge list was NOT 403
+	//   10j  asserted a cross-owner execute BYPASSED the owner gate
+	//
+	// All three now assert refusal. 10i is the case the task calls out as
+	// previously uncovered in a default deployment: the gate existed but the
+	// shipped default skipped it, so bridge A could read bridge B. Nothing
+	// asserted the enforced direction, because the mode had to be flipped by hand
+	// to reach it and this block flipped it the other way.
+	//
+	// 10k is new: it proves the DENIAL IS STILL AUDITED. Keeping the log line was
+	// an explicit requirement — observability never depended on fail-open — so a
+	// silent rejection is as much a regression here as an allowed one.
+	auth_service.bridge_auth_denied_hook = capture_bridge_auth_denied
+	defer auth_service.bridge_auth_denied_hook = nil
+	defer delete(denied_paths)
+	defer delete(denied_methods)
+	defer delete(denied_targets)
 
-	// 10h. Bare hbr_ token on /api/v1/task-chains is ALLOWED under monitor, and the
-	// checkpoint-1 audit line must identify the endpoint (method + path).
-	cp1_captured_path = ""
-	cp1_captured_method = ""
-	mon_tc := api_http.router_dispatch(&graph.router, api_http.Request{
+	// 10h. Bare bridge token on a SHARED endpoint is REFUSED (was: 200 under monitor).
+	bare_tc := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "GET",
 		path = "/api/v1/task-chains",
-		request_id = "req_mon_bare_tc",
+		request_id = "req_bare_tc_enforced",
 		remote_addr = "127.0.0.1",
 		headers = bridge1_headers[:],
 	})
-	check(mon_tc.status == 200, fmt.tprintf("monitor: bare bridge token should be allowed on task-chains; got %d %s", mon_tc.status, mon_tc.body))
-	check(cp1_captured_path == "/api/v1/task-chains", fmt.tprintf("monitor cp1 audit must carry the endpoint path; got '%s'", cp1_captured_path))
-	check(cp1_captured_method == "GET", fmt.tprintf("monitor cp1 audit must carry the method; got '%s'", cp1_captured_method))
+	check(bare_tc.status != 200, fmt.tprintf("bare bridge token must NOT be allowed on task-chains; got %d %s", bare_tc.status, bare_tc.body))
+	// The checkpoint-1 audit line must still identify the endpoint it refused.
+	check(denied_paths["bare_token_shared_endpoint"] == "/api/v1/task-chains", fmt.tprintf("cp1 denial audit must carry the endpoint path; got '%s'", denied_paths["bare_token_shared_endpoint"]))
+	check(denied_methods["bare_token_shared_endpoint"] == "GET", fmt.tprintf("cp1 denial audit must carry the method; got '%s'", denied_methods["bare_token_shared_endpoint"]))
 
-	// 10i. Cross-bridge list is ALLOWED under monitor (not 403).
-	mon_list_other := api_http.router_dispatch(&graph.router, api_http.Request{
+	// 10i. CROSS-BRIDGE LIST IS REFUSED (was: explicitly asserted NOT 403).
+	//
+	// bridge1 asks for bridge2's instances by id. A 403 is required: anything else
+	// — including a 200 carrying an empty list because the filter was silently
+	// rewritten — would leave the boundary unproven, so the status is asserted
+	// exactly rather than as "not 200".
+	cross_list := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "GET",
 		path = "/api/v1/agent-instances",
-		query = "bridge_id=brg_other",
-		request_id = "req_mon_list_other",
+		query = fmt.tprintf("bridge_id=%s", bridge2_id),
+		request_id = "req_cross_list_enforced",
 		remote_addr = "127.0.0.1",
 		headers = bridge1_headers[:],
 	})
-	check(mon_list_other.status != 403, fmt.tprintf("monitor: cross-bridge list must NOT be 403; got %d %s", mon_list_other.status, mon_list_other.body))
+	check(cross_list.status == 403, fmt.tprintf("cross-bridge list must be 403; got %d %s", cross_list.status, cross_list.body))
+	check(denied_targets["cross_bridge_list"] == bridge2_id, fmt.tprintf("cross_bridge_list audit must name the TARGET bridge; got '%s'", denied_targets["cross_bridge_list"]))
 
-	// 10j. Cross-owner bridge execute bypasses the owner gate under monitor
-	// (no "does not belong to bridge owner" rejection; an unrelated same-bridge
-	// check may still apply downstream, which is fine).
-	mon_cross_exec := api_http.router_dispatch(&graph.router, api_http.Request{
+	// 10j. CROSS-BRIDGE CREATE IS REFUSED. The more serious half of the same hole:
+	// creating an agent instance on a bridge you do not own is code execution on
+	// someone else's machine. Previously skipped under the same default, and never
+	// covered in either direction.
+	// NOTE it uses agt1, a REAL agent, not a made-up id. A nonexistent agent 404s on
+	// "agent not found" BEFORE the cross-bridge check is reached, which would make
+	// this pass without ever exercising the authorization boundary — the same trap
+	// the bridge2_id comment above warns about, from the other direction.
+	cross_create_body := strings.concatenate({"{\"agent_id\":\"", agt1.agent_id, "\",\"bridge_id\":\"", bridge2_id, "\"}"})
+	defer delete(cross_create_body)
+	cross_create := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-instances",
+		// Heap-concatenated, NOT fmt.tprintf: tprintf returns per-thread TEMP
+		// allocator memory, and router_dispatch calls tprintf freely downstream, so
+		// a temp body can be overwritten in place before the handler parses it. That
+		// is what made this request's bridge_id read back empty, which silently
+		// turned the cross-bridge check off and produced a 404 instead of the 403.
+		body = cross_create_body,
+		request_id = "req_cross_create_enforced",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(cross_create.status == 403, fmt.tprintf("cross-bridge create must be 403; got %d %s", cross_create.status, cross_create.body))
+	check(denied_targets["cross_bridge_create"] == bridge2_id, fmt.tprintf("cross_bridge_create audit must name the TARGET bridge; got '%s'", denied_targets["cross_bridge_create"]))
+	// Prove the refusal was a REFUSAL and not a silent rewrite onto bridge1: no
+	// instance may have landed on bridge2. Listing as the OWNER of bridge2 is the
+	// check that matters — if the create had succeeded as requested, bob would see
+	// an instance on his machine that alice's bridge put there.
+	bridge2_instances := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = fmt.tprintf("bridge_id=%s", bridge2_id),
+		request_id = "req_bridge2_instances",
+		remote_addr = "127.0.0.1",
+		headers = bob[:],
+	})
+	check(!strings.contains(bridge2_instances.body, agt1.agent_id), fmt.tprintf("a refused cross-bridge create must not have created anything on the target bridge; got %s", bridge2_instances.body))
+
+	// 10k. CROSS-OWNER EXECUTE IS REFUSED AND AUDITED (was: asserted to bypass the
+	// owner gate). The 403 itself is already asserted above under 10g; what this
+	// adds is that the denial reaches the audit log with the owner mismatch in it.
+	cross_exec_audited := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
 		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
-		request_id = "req_mon_cross_exec",
+		request_id = "req_cross_exec_audited",
 		remote_addr = "127.0.0.1",
 		headers = bridge2_headers[:],
 	})
-	check(!strings.contains(mon_cross_exec.body, "does not belong to bridge owner"), fmt.tprintf("monitor: cross-owner execute must bypass the owner gate; got %d %s", mon_cross_exec.status, mon_cross_exec.body))
+	check(cross_exec_audited.status == 403, fmt.tprintf("cross-owner execute must be 403; got %d %s", cross_exec_audited.status, cross_exec_audited.body))
+	check(strings.contains(cross_exec_audited.body, "does not belong to bridge owner"), fmt.tprintf("cross-owner execute must name the owner mismatch; got %s", cross_exec_audited.body))
+	check("cross_owner_execute" in denied_paths, "cross_owner_execute denial must be audited")
 
 	fmt.println("ALL ACTIONS API TESTS PASSED")
 }

@@ -85,6 +85,69 @@ accept_card_via_api :: proc(router: ^api_http.Router, card_id: string, headers: 
 	})
 }
 
+// device_enroll_bridge provisions a bridge through the REAL device flow (REQ-ENROLL-9),
+// replacing the deleted bridge-enrollments + bridges/enroll pair. These tests are not
+// about enrollment; they need a bridge and a credential.
+//
+// IT REPORTS NO CAPABILITIES AND LEAVES THE BRIDGE OFFLINE, deliberately, because
+// that is what the deleted setup did here: the old enroll body in this file was
+// `{"machine":{"hostname":"..."}}` with no `capabilities` array. Other migrated
+// suites DO replicate a connect-time capability report, because their old bodies
+// declared providers. Adding one here would also flip the bridge Online and change
+// what these tests exercise.
+//
+// Three requirements that each reject a request outright, hence more than two lines:
+//  1. bridge_public_key must be a 130-char lowercase-hex uncompressed P-256 point.
+//  2. NO bridge_key_fingerprint is sent — the Hub derives it and refuses a
+//     body-supplied one that disagrees, since a requester-chosen fingerprint would
+//     defeat the human comparing it on the approval screen.
+//  3. PKCE is mandatory for a bridge grant and S256-only (`plain` and a missing
+//     method are both refused); the pair below is precomputed so this needs no
+//     crypto, and the verifier is replayed at /device/token.
+//
+// `device_label` becomes the bridge's hostname and therefore its label.
+//
+// Bodies are heap-concatenated, never fmt.tprintf: tprintf returns per-thread TEMP
+// allocator memory and router_dispatch calls tprintf freely downstream, so a temp
+// body can be overwritten in place before the handler parses it.
+DEV_TEST_PUBLIC_KEY :: "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+DEV_TEST_CODE_VERIFIER :: "heimdall-req-impl-6-test-code-verifier-aaaa"
+DEV_TEST_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
+
+device_enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label, tag: string) -> (bridge_id: string, bridge_token: string) {
+	authorized := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize",
+		body = strings.concatenate({
+			"{\"client\":\"ham-bridge\",\"device_label\":\"", label,
+			"\",\"os\":\"linux\",\"os_user\":\"tester\",\"bridge_public_key\":\"", DEV_TEST_PUBLIC_KEY,
+			"\",\"code_challenge\":\"", DEV_TEST_CODE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+		}),
+		request_id = strings.concatenate({"req_dev_auth_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(authorized.status == 200, authorized.body)
+	user_code := extract_json_string(authorized.body, "user_code")
+	device_code := extract_json_string(authorized.body, "device_code")
+
+	// The human approves; ownership comes from this Auth_Context, never the body.
+	approved := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/approve",
+		body = strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}),
+		request_id = strings.concatenate({"req_dev_appr_", tag}), remote_addr = "127.0.0.1", headers = headers,
+	})
+	check(approved.status == 200, approved.body)
+
+	// The bridge collects its credential. The grant is single-use and spent here.
+	issued := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/token",
+		body = strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", DEV_TEST_CODE_VERIFIER, "\"}"}),
+		request_id = strings.concatenate({"req_dev_tok_", tag}), remote_addr = "127.0.0.1",
+	})
+	check(issued.status == 200, issued.body)
+	bridge_id = extract_json_string(issued.body, "bridge_id")
+	bridge_token = extract_json_string(issued.body, "access_token")
+	return bridge_id, bridge_token
+}
+
 main :: proc() {
 	db_path := "/tmp/cards_api_test.db"
 	_ = os.remove(db_path)
@@ -268,29 +331,8 @@ main :: proc() {
 	check(resp_get_deleted.status == 404, "get deleted card must return 404")
 
 	// 14. Agent Action RPCs
-	// Enroll bridge
-	enr := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = "{\"label\":\"Test Bridge\"}",
-		request_id = "req_enr",
-		remote_addr = "127.0.0.1",
-		headers = alice[:],
-	})
-	check(enr.status == 201, "enroll bridge failed")
-	enr_token := extract_json_string(enr.body, "enrollment_token")
-
-	b_resp := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = "{\"machine\":{\"hostname\":\"host1\"}}",
-		request_id = "req_benr",
-		remote_addr = "127.0.0.1",
-		headers = []contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", enr_token})}},
-	})
-	check(b_resp.status == 201, "bridge exchange token failed")
-	brg_token := extract_json_string(b_resp.body, "bridge_token")
-	brg_id := extract_json_string(b_resp.body, "bridge_id")
+	// Provision a bridge through the device flow (see device_enroll_bridge).
+	brg_id, brg_token := device_enroll_bridge(&graph, alice[:], "Test Bridge", "cards")
 
 	// Seed agent and instance
 	agt := domain.Agent{

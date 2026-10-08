@@ -22,7 +22,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-RUN_DIR="$ROOT/.run-logs"
+# RUN_DIR holds the pidfiles, logs and the generated bridge config. It is
+# env-overridable for the same reason the ports are: `stop` kills whatever the
+# pidfiles here name, so two stacks sharing this directory means one agent's `stop`
+# can kill another agent's hub, bridge and proxy. Several agents run this script on
+# the same checkout concurrently, so an isolated stack needs an isolated RUN_DIR as
+# well as isolated ports. The default is unchanged.
+RUN_DIR="${HAM_DEV_RUN_DIR:-$ROOT/.run-logs}"
 mkdir -p "$RUN_DIR/bridge"
 
 # Ports are env-overridable so a second stack can run beside an existing one, and
@@ -60,7 +66,24 @@ BRIDGE_TOKEN_FILE="$RUN_DIR/bridge/bridge-token"
 # ham-ctl lacks `agent start-success`, so every launched agent times out to
 # startup_failed even though it is actually running.
 _fix_bridge_config() {
-  [ -f "$BRIDGE_CONFIG" ] || { echo "[dev-stack] WARN: $BRIDGE_CONFIG missing; skipping config fix"; return; }
+  # Seed the config on first use instead of warning and carrying on.
+  #
+  # This function always required $BRIDGE_CONFIG to exist already, which worked only
+  # because the default RUN_DIR had one left behind by an earlier run. Now that
+  # RUN_DIR is overridable, a fresh stack starts with no config at all and the bridge
+  # was being launched with --config pointing at a missing file. Seeding from the
+  # repo's config.toml makes an isolated stack work from nothing, which is the whole
+  # point of being able to isolate it.
+  if [ ! -f "$BRIDGE_CONFIG" ]; then
+    if [ -f "$ROOT/config.toml" ]; then
+      mkdir -p "$(dirname "$BRIDGE_CONFIG")"
+      cp "$ROOT/config.toml" "$BRIDGE_CONFIG"
+      echo "[dev-stack] seeded $BRIDGE_CONFIG from config.toml"
+    else
+      echo "[dev-stack] WARN: $BRIDGE_CONFIG missing and no config.toml to seed from; skipping config fix"
+      return
+    fi
+  fi
   local ctl_bin
   ctl_bin="$ROOT/result-ctl/bin/ham-ctl"
   BRIDGE_CONFIG="$BRIDGE_CONFIG" CTL_BIN="$ctl_bin" \
@@ -81,7 +104,15 @@ def set_key(text, key, value):
 t = set_key(t, "ham_ctl_bin", ctl)
 # Point the bridge/ctl at this local hub.
 t = re.sub(r'(\[ctl\]\s*\n\s*\ndaemon_url = ")[^"]*(")', lambda m: f'{m.group(1)}{hub}{m.group(2)}', t, count=1)
-t = set_key(t, "bridge_token", open(os.environ.get("HAM_BRIDGE_TOKEN_FILE","/dev/null")).read().strip()) if os.environ.get("HAM_BRIDGE_TOKEN_FILE") and os.path.exists(os.environ.get("HAM_BRIDGE_TOKEN_FILE","")) else t
+# The bridge token is deliberately NOT written into config.toml any more.
+#
+# It used to be folded in from the token file. That was harmless when the credential
+# never expired; it is actively wrong now that the access token has a 1h TTL and is
+# rotated by the running bridge. A copy in config.toml goes stale within the hour and
+# is never refreshed, so it becomes a second, lying source of truth. The bridge is
+# started with --bridge-token-file and reads the live file, which the refresh worker
+# keeps current. Audit F2 (a plaintext token sitting in config.toml) is also mooted
+# by removing this line rather than merely by deleting the old enrollment flow.
 
 # Strip any [[peer]] blocks (local single-hub dev needs no federation peers; a
 # stale cloudtop peer just spams failed ws dials).
@@ -104,21 +135,89 @@ PY
 # Ensure the bridge config has a bridge_token that this hub.db actually knows.
 # If the current token fails the hub-runtime handshake, re-enroll to mint a fresh
 # matching token and write it into the config. Idempotent.
+# enroll drives the BROWSER-APPROVED DEVICE FLOW, which is the only enrollment there
+# is (REQ-ENROLL-9). The one-time `hbe_` token and `POST /api/v1/bridges/enroll` are
+# deleted, so the old two-step "mint a token, then exchange it" is gone.
+#
+# HOW THIS STAYS NON-INTERACTIVE WITHOUT WEAKENING ANYTHING. The device flow requires
+# a human approval, and that is the point of it — but on this stack the dev-proxy
+# already authenticates every request as the local user by injecting
+# X-authentik-username. So the script can POST the approval itself: it is a real,
+# authenticated approval by the local developer, made through the same endpoint and
+# the same Auth_Context a browser would use. No test-only bypass exists in the Hub,
+# and none is needed here.
+#
+# WHAT IS WRITTEN. The credential is now an EXPIRING PAIR: the access token goes to
+# $BRIDGE_TOKEN_FILE and the refresh token to "$BRIDGE_TOKEN_FILE.refresh". The
+# running bridge renews the access token on its own. The token is deliberately NOT
+# folded into config.toml any more — see _fix_bridge_config.
 enroll() {
   [ -e result-bridge ] || { echo "[dev-stack] run 'build' first"; exit 1; }
   _running "$(_pidfile hub)" || { echo "[dev-stack] start the hub first (dev-stack start)"; exit 1; }
+  _running "$(_pidfile devproxy)" || { echo "[dev-stack] start the dev-proxy first (dev-stack start) — the approval goes through it"; exit 1; }
   mkdir -p "$RUN_DIR/bridge"
-  echo "[dev-stack] creating a bridge enrollment via dev-proxy (user tanmay)"
-  local resp token
-  resp="$(curl -s -m5 -X POST "http://$PROXY_ADDR/api/v1/bridge-enrollments" -H 'Content-Type: application/json' -d '{"label":"dev-local"}')"
-  token="$(printf '%s' "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["enrollment_token"])' 2>/dev/null || true)"
-  [ -n "$token" ] || { echo "[dev-stack] enrollment failed: $resp"; exit 1; }
-  echo "[dev-stack] exchanging enrollment token for a durable bridge token"
-  ./result-bridge/bin/ham-bridge enroll --config "$BRIDGE_CONFIG" --hub "http://$HUB_ADDR" --enrollment-token "$token" --bridge-token-file "$BRIDGE_TOKEN_FILE" 2>&1 | sed 's/^/  /'
-  [ -s "$BRIDGE_TOKEN_FILE" ] || { echo "[dev-stack] enroll did not write a token file"; exit 1; }
-  # Fold the fresh token into the config.
-  HAM_BRIDGE_TOKEN_FILE="$BRIDGE_TOKEN_FILE" _fix_bridge_config
-  echo "[dev-stack] enrolled; token written to $BRIDGE_TOKEN_FILE and config updated."
+
+  local log="$RUN_DIR/bridge/enroll.log"
+  rm -f "$log" "$BRIDGE_TOKEN_FILE" "$BRIDGE_TOKEN_FILE.refresh"
+
+  # --headless skips the loopback callback listener, so approval is observed by
+  # polling. --ui points at the PROXY, not the hub: the device flow composes its
+  # approval URL from the UI origin whose /api is proxied to the hub.
+  echo "[dev-stack] starting device-flow enrollment (headless) against http://$PROXY_ADDR"
+  ./result-bridge/bin/ham-bridge enroll \
+    --ui "http://$PROXY_ADDR" --headless \
+    --config "$BRIDGE_CONFIG" \
+    --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$log" 2>&1 &
+  local enroll_pid=$!
+
+  # Wait for the user code the bridge printed. Taking the last field of the
+  # "enter the code" line keeps this independent of the code's alphabet and width.
+  local code=""
+  local i
+  for i in $(seq 1 30); do
+    # `|| true` is load-bearing: this script runs under `set -e`, and grep exits 1
+    # when the line is not there yet — which is the NORMAL case on early iterations.
+    # Without it the assignment fails and the whole script exits silently, with the
+    # enrollment half-started and no diagnostic. That is exactly what happened the
+    # first time this ran.
+    code="$(grep -a 'enter the code' "$log" 2>/dev/null | tail -1 | awk '{print $NF}' || true)"
+    [ -n "$code" ] && break
+    kill -0 "$enroll_pid" 2>/dev/null || break
+    sleep 1
+  done
+  if [ -z "$code" ]; then
+    kill "$enroll_pid" 2>/dev/null || true
+    echo "[dev-stack] enrollment did not produce a user code; enroll log follows:"
+    sed 's/^/  /' "$log"
+    exit 1
+  fi
+  echo "[dev-stack] approving code $code as the local user via dev-proxy"
+
+  local approve
+  approve="$(curl -s -m10 -X POST "http://$PROXY_ADDR/api/v1/device/approve" \
+    -H 'Content-Type: application/json' \
+    -d "{\"user_code\":\"$code\",\"approve\":true}")"
+  case "$approve" in
+    *'"error"'*)
+      kill "$enroll_pid" 2>/dev/null || true
+      echo "[dev-stack] approval failed: $approve"
+      exit 1
+      ;;
+  esac
+
+  # The bridge is polling; it exits once it has stored its credential.
+  if ! wait "$enroll_pid"; then
+    echo "[dev-stack] enrollment failed; enroll log follows:"
+    sed 's/^/  /' "$log"
+    exit 1
+  fi
+  [ -s "$BRIDGE_TOKEN_FILE" ] || { echo "[dev-stack] enroll did not write an access token to $BRIDGE_TOKEN_FILE"; sed 's/^/  /' "$log"; exit 1; }
+  [ -s "$BRIDGE_TOKEN_FILE.refresh" ] || { echo "[dev-stack] enroll did not write a refresh token to $BRIDGE_TOKEN_FILE.refresh"; sed 's/^/  /' "$log"; exit 1; }
+
+  _fix_bridge_config
+  echo "[dev-stack] enrolled."
+  echo "  access token : $BRIDGE_TOKEN_FILE  (expires; the bridge renews it)"
+  echo "  refresh token: $BRIDGE_TOKEN_FILE.refresh"
 }
 
 _pidfile() { echo "$RUN_DIR/$1.pid"; }
@@ -160,7 +259,10 @@ stop() {
   # Clean up any stale copies bound to the local hub only.
   _stop_by_match "ham-hub .*--listen ${HUB_ADDR}"
   _stop_by_match "ham-dev-proxy .*${PROXY_ADDR}"
-  _stop_by_match "ham-bridge .*hub http://127.0.0.1:8081"
+  # Match on $HUB_ADDR, not a hardcoded 8081: with HAM_DEV_HUB_ADDR overridden
+  # the literal both MISSED the dev bridge this script started and could match
+  # an UNRELATED bridge that happens to talk to :8081 on a shared host.
+  _stop_by_match "ham-bridge .*hub http://${HUB_ADDR}"
   echo "[dev-stack] local stack stopped (mundus bridge left running)."
 }
 
@@ -202,10 +304,9 @@ start() {
   sleep 1
 
   # Always repair the bridge config against the CURRENT build + this hub before
-  # launching. Fold in a previously-enrolled token file if present.
-  [ -s "$BRIDGE_TOKEN_FILE" ] && export HAM_BRIDGE_TOKEN_FILE="$BRIDGE_TOKEN_FILE"
+  # launching. The credential is NOT folded in — it lives only in the token file,
+  # because it expires and is rotated (see _fix_bridge_config).
   _fix_bridge_config
-  unset HAM_BRIDGE_TOKEN_FILE
 
   echo "[dev-stack] starting bridge on port $BRIDGE_PORT -> hub"
   local bridge_token_args=()

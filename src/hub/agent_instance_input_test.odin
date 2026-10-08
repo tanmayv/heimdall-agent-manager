@@ -35,51 +35,12 @@ test_agent_instance_input_route_registered_and_dispatches :: proc(t: ^testing.T)
 	alice := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "alice"}}
 	bob := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "bob"}}
 
-	// Enroll bridge
-	created := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridge-enrollments",
-		body = `{"label":"Alice Bridge"}`,
-		request_id = "req_1",
-		remote_addr = "127.0.0.1",
-		headers = alice[:],
-	})
-	testing.expect(t, created.status == 201, "bridge enrollment failed")
-
-	token := ""
-	token_idx := strings.index(created.body, "\"enrollment_token\":\"")
-	if token_idx >= 0 {
-		rest := created.body[token_idx + len("\"enrollment_token\":\""):]
-		end := strings.index_byte(rest, '"')
-		if end >= 0 do token = rest[:end]
-	}
-
-	enroll_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
-	enrolled := api_http.router_dispatch(&graph.router, api_http.Request{
-		method = "POST",
-		path = "/api/v1/bridges/enroll",
-		body = `{"machine":{"hostname":"host"},"capabilities":[{"provider":"claude","tiers":["normal","smart"],"default_tier":"normal"}]}`,
-		request_id = "req_2",
-		remote_addr = "127.0.0.1",
-		headers = enroll_headers[:],
-	})
-	testing.expect(t, enrolled.status == 201, "bridge enroll failed")
-
-	bridge_id := ""
-	b_idx := strings.index(enrolled.body, "\"bridge_id\":\"")
-	if b_idx >= 0 {
-		rest := enrolled.body[b_idx + len("\"bridge_id\":\""):]
-		end := strings.index_byte(rest, '"')
-		if end >= 0 do bridge_id = rest[:end]
-	}
-
-	bridge_token := ""
-	bt_idx := strings.index(enrolled.body, "\"bridge_token\":\"")
-	if bt_idx >= 0 {
-		rest := enrolled.body[bt_idx + len("\"bridge_token\":\""):]
-		end := strings.index_byte(rest, '"')
-		if end >= 0 do bridge_token = rest[:end]
-	}
+	// Bridge provisioned through the DEVICE FLOW. See device_enroll_support_test.odin
+	// for why the old bridge-enrollments + bridges/enroll pair is gone, and for the
+	// three requirements (P-256 key shape, hub-derived fingerprint, mandatory S256
+	// PKCE) that make this more than two lines.
+	bridge_id, bridge_token, enroll_ok := device_enroll_test_bridge(&graph, alice[:], "Alice Bridge")
+	testing.expect(t, enroll_ok, "device-flow bridge provisioning failed")
 
 	b, b_ok, _ := iface.bridge_get_bridge(graph.bridges.repo, bridge_id)
 	if b_ok {

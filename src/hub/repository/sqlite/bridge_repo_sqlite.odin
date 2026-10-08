@@ -13,70 +13,24 @@ new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.B
 	impl.conn = conn
 	return iface.Bridge_Repository{
 		ctx = rawptr(impl),
-		save_enrollment = bridge_save_enrollment_sqlite,
-		get_enrollment_by_token_hash = bridge_get_enrollment_by_token_hash_sqlite,
-		get_enrollment = bridge_get_enrollment_sqlite,
-		list_enrollments_by_owner = bridge_list_enrollments_by_owner_sqlite,
 		save_bridge = bridge_save_bridge_sqlite,
 		get_bridge = bridge_get_bridge_sqlite,
-		get_bridge_by_token_hash = bridge_get_bridge_by_token_hash_sqlite,
 		list_by_owner = bridge_list_by_owner_sqlite,
+		// REQ-IMPL-3: bridge_tokens lives in bridge_token_repo_sqlite.odin, same
+		// package and same Bridge_Repo_SQLite ctx — one connection, one repository
+		// seam, so a service holding a ^Bridge_Repository reaches both tables.
+		save_token = bridge_save_token_sqlite,
+		get_token = bridge_get_token_sqlite,
+		list_tokens_by_family = bridge_list_tokens_by_family_sqlite,
+		revoke_token_family = bridge_revoke_token_family_sqlite,
+		revoke_tokens_for_bridge = bridge_revoke_tokens_for_bridge_sqlite,
+		mark_token_rotated = bridge_mark_token_rotated_sqlite,
 	}
 }
 
-bridge_save_enrollment_sqlite :: proc(ctx: rawptr, enrollment: domain.Bridge_Enrollment) -> (domain.Bridge_Enrollment, bool, domain.Domain_Error) {
-	impl := (^Bridge_Repo_SQLite)(ctx)
-	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO bridge_enrollments (enrollment_id, owner_user_id, label, token_hash, status, expires_at, consumed_at, consumed_by_bridge_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(enrollment_id) DO UPDATE SET label=excluded.label, status=excluded.status, expires_at=excluded.expires_at, consumed_at=excluded.consumed_at, consumed_by_bridge_id=excluded.consumed_by_bridge_id, updated_at=excluded.updated_at;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Internal_Error, "failed to prepare enrollment save")
-	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, enrollment.enrollment_id)
-	bind_text(stmt, 2, string(enrollment.owner_user_id))
-	bind_text(stmt, 3, enrollment.label)
-	bind_text(stmt, 4, enrollment.token_hash)
-	bind_text(stmt, 5, domain.enrollment_status_string(enrollment.status))
-	bind_text(stmt, 6, enrollment.expires_at)
-	bind_text(stmt, 7, enrollment.consumed_at)
-	bind_text(stmt, 8, enrollment.consumed_by_bridge_id)
-	bind_text(stmt, 9, enrollment.created_at)
-	bind_text(stmt, 10, enrollment.updated_at)
-	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Conflict, "enrollment could not be saved")
-	return enrollment, true, domain.Domain_Error{}
-}
 
-bridge_get_enrollment_by_token_hash_sqlite :: proc(ctx: rawptr, token_hash: string) -> (domain.Bridge_Enrollment, bool, domain.Domain_Error) {
-	impl := (^Bridge_Repo_SQLite)(ctx)
-	stmt: sqlite3_stmt = nil
-	query := "SELECT enrollment_id, owner_user_id, label, token_hash, status, expires_at, consumed_at, consumed_by_bridge_id, created_at, updated_at FROM bridge_enrollments WHERE token_hash = ?;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Internal_Error, "failed to prepare enrollment lookup")
-	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, token_hash)
-	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Not_Found, "enrollment not found")
-	return enrollment_from_stmt(stmt), true, domain.Domain_Error{}
-}
 
-bridge_get_enrollment_sqlite :: proc(ctx: rawptr, enrollment_id: string) -> (domain.Bridge_Enrollment, bool, domain.Domain_Error) {
-	impl := (^Bridge_Repo_SQLite)(ctx)
-	stmt: sqlite3_stmt = nil
-	query := "SELECT enrollment_id, owner_user_id, label, token_hash, status, expires_at, consumed_at, consumed_by_bridge_id, created_at, updated_at FROM bridge_enrollments WHERE enrollment_id = ?;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Internal_Error, "failed to prepare enrollment lookup")
-	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, enrollment_id)
-	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Bridge_Enrollment{}, false, domain.domain_error(.Not_Found, "enrollment not found")
-	return enrollment_from_stmt(stmt), true, domain.Domain_Error{}
-}
 
-bridge_list_enrollments_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Bridge_Enrollment, domain.Domain_Error) {
-	impl := (^Bridge_Repo_SQLite)(ctx)
-	stmt: sqlite3_stmt = nil
-	query := "SELECT enrollment_id, owner_user_id, label, token_hash, status, expires_at, consumed_at, consumed_by_bridge_id, created_at, updated_at FROM bridge_enrollments WHERE owner_user_id = ? ORDER BY created_at DESC;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare enrollment list")
-	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(owner_user_id))
-	out := make([dynamic]domain.Bridge_Enrollment)
-	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, enrollment_from_stmt(stmt))
-	return out[:], domain.Domain_Error{}
-}
 
 bridge_save_bridge_sqlite :: proc(ctx: rawptr, bridge: domain.Bridge) -> (domain.Bridge, bool, domain.Domain_Error) {
 	impl := (^Bridge_Repo_SQLite)(ctx)
@@ -93,9 +47,6 @@ bridge_get_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (domain.Brid
 	return bridge_get_by_column(ctx, "bridge_id", bridge_id)
 }
 
-bridge_get_bridge_by_token_hash_sqlite :: proc(ctx: rawptr, token_hash: string) -> (domain.Bridge, bool, domain.Domain_Error) {
-	return bridge_get_by_column(ctx, "bridge_token_hash", token_hash)
-}
 
 bridge_get_by_column :: proc(ctx: rawptr, column, value: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	impl := (^Bridge_Repo_SQLite)(ctx)
@@ -147,9 +98,6 @@ bind_bridge :: proc(stmt: sqlite3_stmt, bridge: domain.Bridge) {
 	bind_text(stmt, 22, bridge.vault_status)
 }
 
-enrollment_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Bridge_Enrollment {
-	return domain.Bridge_Enrollment{enrollment_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), label = column_text(stmt, 2), token_hash = column_text(stmt, 3), status = enrollment_status_from_string(column_text_unowned(stmt, 4)), expires_at = column_text(stmt, 5), consumed_at = column_text(stmt, 6), consumed_by_bridge_id = column_text(stmt, 7), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)}
-}
 
 bridge_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Bridge {
 	te := column_text(stmt, 20)
@@ -186,9 +134,3 @@ bridge_status_from_string :: proc(status: string) -> domain.Bridge_Status {
 	return .Offline
 }
 
-enrollment_status_from_string :: proc(status: string) -> domain.Enrollment_Status {
-	if status == "consumed" do return .Consumed
-	if status == "revoked" do return .Revoked
-	if status == "expired" do return .Expired
-	return .Pending
-}

@@ -163,6 +163,192 @@ main :: proc() {
 	assert_true(!still, "expired grant is gone after sweep")
 	fmt.println("TTL/sweep: expired grant evicted OK")
 
+
+	// =====================================================================
+	// REQ-IMPL-2: bridge-enrollment extensions to the grant.
+	//
+	// Everything above this line is the pre-existing ELDA coverage and must keep
+	// passing unchanged — these cases are additive.
+	// =====================================================================
+
+	// A well-formed uncompressed P-256 point: "04" + 128 hex chars, the shape
+	// bridge_get_public_key_hex() produces (src/bridge/unseal_protocol.odin).
+	BPK :: "04030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc"
+	// The fingerprint of BPK, computed independently (python hashlib) rather than
+	// by the code under test: SHA-256 over the DECODED 65 bytes, first 8 bytes,
+	// as four space-separated hex quads. A change to WHAT gets hashed — the hex
+	// text instead of the bytes, say — breaks this and nothing else would.
+	BPK_FP :: "fb41 9516 cc0c f6ae"
+	// A PKCE pair, likewise computed independently: BASE64URL(SHA256(verifier))
+	// with padding stripped (RFC 7636 §4.2).
+	PKCE_VERIFIER :: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	PKCE_CHALLENGE :: "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA"
+
+	// --- Fingerprint derivation ---
+	fp, fpok := device_auth.bridge_key_fingerprint_for(BPK)
+	assert_true(fpok, "fingerprint derives from a well-formed key")
+	assert_eq(fp, BPK_FP, "fingerprint is SHA-256(decoded key)[:8] as hex quads")
+	assert_eq(len(fp), 19, "fingerprint is 16 hex chars + 3 spaces")
+	// Fail-closed on a malformed key: no fingerprint rather than an empty one,
+	// because an empty fingerprint would render on the approval page as
+	// "nothing to compare" and the human would approve anyway.
+	_, bad_fpok := device_auth.bridge_key_fingerprint_for("04abc")
+	assert_true(!bad_fpok, "malformed key yields no fingerprint (fail closed)")
+
+	// --- Public-key shape validation ---
+	assert_true(device_auth.valid_bridge_public_key(BPK), "well-formed P-256 point accepted")
+	assert_true(!device_auth.valid_bridge_public_key(""), "empty key rejected")
+	assert_true(!device_auth.valid_bridge_public_key(BPK[:129]), "129-char key rejected (length)")
+	assert_true(!device_auth.valid_bridge_public_key(strings.concatenate({BPK, "a"})), "131-char key rejected (length)")
+	assert_true(!device_auth.valid_bridge_public_key(strings.concatenate({"03", BPK[2:]})), "non-04 prefix rejected (not uncompressed)")
+	assert_true(!device_auth.valid_bridge_public_key(strings.concatenate({BPK[:129], "Z"})), "non-hex character rejected")
+	assert_true(!device_auth.valid_bridge_public_key(strings.concatenate({BPK[:129], "A"})), "uppercase hex rejected (canonical form is lowercase)")
+
+	// --- PKCE helpers ---
+	assert_true(device_auth.valid_pkce_challenge(PKCE_CHALLENGE), "43-char base64url challenge accepted")
+	assert_true(!device_auth.valid_pkce_challenge(PKCE_CHALLENGE[:42]), "short challenge rejected")
+	assert_true(!device_auth.valid_pkce_challenge(strings.concatenate({PKCE_CHALLENGE[:42], "+"})), "non-base64url char rejected")
+	assert_true(!device_auth.valid_pkce_challenge(strings.concatenate({PKCE_CHALLENGE[:42], "="})), "padding rejected")
+	assert_true(device_auth.pkce_verifier_matches(PKCE_CHALLENGE, PKCE_VERIFIER), "correct verifier matches challenge")
+	assert_true(!device_auth.pkce_verifier_matches(PKCE_CHALLENGE, strings.concatenate({PKCE_VERIFIER[:42], "b"})), "one-character-off verifier rejected")
+	assert_true(!device_auth.pkce_verifier_matches(PKCE_CHALLENGE, ""), "empty verifier rejected")
+	assert_true(!device_auth.pkce_verifier_matches("", PKCE_VERIFIER), "empty challenge never matches")
+	// RFC 7636 §4.1 length bounds.
+	assert_true(!device_auth.valid_pkce_verifier("short"), "42-or-fewer-char verifier rejected")
+	assert_true(device_auth.valid_pkce_verifier(PKCE_VERIFIER), "43-char verifier accepted")
+	fmt.println("REQ-IMPL-2 OK: fingerprint derivation, key shape, PKCE helpers")
+
+	// --- Grant_Kind is derived at authorize and PERSISTED ---
+	// A fresh store so the earlier rate-limit exhaustion does not interfere.
+	bstore := device_auth.new_grant_store(device_auth.Grant_Store_Config{
+		verification_uri = "https://ui.example.com/api/v1/device",
+		expires_in = 600, interval = 5, rate_limit = 100, rate_window = 60,
+	})
+	defer device_auth.grant_store_free(&bstore)
+	bsvc := device_auth.new_device_auth_service(&bstore, fake_clock(), TRUSTED)
+
+	bres, bok, berr := device_auth.authorize(&bsvc, {
+		client = "ham-bridge", device_label = "dawnstar", os = "linux", app_version = "0.9.1",
+		bridge_public_key = BPK, os_user = "tanmay",
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:5555", "203.0.113.42")
+	assert_true(bok, "bridge authorize succeeds")
+	assert_eq(berr.code, domain.Error_Code.None, "bridge authorize no error")
+	assert_eq(bres.bridge_key_fingerprint, BPK_FP, "authorize echoes the HUB-COMPUTED fingerprint")
+	bgrant, bgok := device_auth.get_grant(&bstore, bres.device_code)
+	assert_true(bgok, "bridge grant stored")
+	assert_eq(bgrant.grant_kind, device_auth.Grant_Kind.Bridge_Enrollment, "grant_kind persisted as Bridge_Enrollment")
+	assert_true(device_auth.is_bridge_grant(bgrant), "is_bridge_grant true for a bridge grant")
+	assert_eq(bgrant.bridge_public_key, BPK, "bridge_public_key persisted")
+	assert_eq(bgrant.bridge_key_fingerprint, BPK_FP, "hub-computed fingerprint persisted on the grant")
+	assert_eq(bgrant.os_user, "tanmay", "os_user persisted")
+	assert_eq(bgrant.code_challenge, PKCE_CHALLENGE, "code_challenge persisted")
+	assert_eq(bgrant.code_challenge_method, "S256", "code_challenge_method persisted")
+
+	// An ELDA grant stays User_Token — the zero value — and carries none of the
+	// bridge fields. This is the pairing the coordinator asked for: a grant
+	// authorized WITHOUT a key can never be a bridge enrollment.
+	eres, eok2, _ := device_auth.authorize(&bsvc, {client = "electron", device_label = "MBP"}, "127.0.0.1:1", "203.0.113.43")
+	assert_true(eok2, "electron authorize succeeds")
+	egrant, egok := device_auth.get_grant(&bstore, eres.device_code)
+	assert_true(egok, "electron grant stored")
+	assert_eq(egrant.grant_kind, device_auth.Grant_Kind.User_Token, "grant_kind defaults to User_Token")
+	assert_true(!device_auth.is_bridge_grant(egrant), "is_bridge_grant false for an electron grant")
+	assert_eq(egrant.bridge_public_key, "", "electron grant carries no bridge key")
+	assert_eq(eres.bridge_key_fingerprint, "", "electron authorize echoes no fingerprint")
+	fmt.println("REQ-IMPL-2 OK: grant_kind derived once and persisted, both directions")
+
+	// --- Authorize-time validation, each rule in its own case ---
+	// PKCE method must be S256; `plain` and an absent method are both refused
+	// rather than defaulted (RFC 7636 §4.2 permits `plain`; this flow does not).
+	_, p1ok, p1err := device_auth.authorize(&bsvc, {client = "c", code_challenge = PKCE_CHALLENGE, code_challenge_method = "plain"}, "127.0.0.1:1", "203.0.113.50")
+	assert_true(!p1ok, "code_challenge_method=plain rejected")
+	assert_eq(p1err.code, domain.Error_Code.Validation_Failed, "plain method -> Validation_Failed")
+	_, p2ok, _ := device_auth.authorize(&bsvc, {client = "c", code_challenge = PKCE_CHALLENGE}, "127.0.0.1:1", "203.0.113.51")
+	assert_true(!p2ok, "challenge with no method rejected (no `plain` default)")
+	_, p3ok, _ := device_auth.authorize(&bsvc, {client = "c", code_challenge_method = "S256"}, "127.0.0.1:1", "203.0.113.52")
+	assert_true(!p3ok, "method with no challenge rejected")
+	_, p4ok, _ := device_auth.authorize(&bsvc, {client = "c", code_challenge = "tooshort", code_challenge_method = "S256"}, "127.0.0.1:1", "203.0.113.53")
+	assert_true(!p4ok, "malformed challenge rejected")
+
+	// A bridge enrollment with no PKCE is refused: without it the device_code is
+	// a bare bearer secret and redemption proves nothing.
+	_, n1ok, n1err := device_auth.authorize(&bsvc, {client = "ham-bridge", bridge_public_key = BPK}, "127.0.0.1:1", "203.0.113.54")
+	assert_true(!n1ok, "bridge grant without a code_challenge rejected")
+	assert_eq(n1err.code, domain.Error_Code.Validation_Failed, "missing PKCE -> Validation_Failed")
+
+	// A malformed key is rejected outright rather than stored unfingerprintable.
+	_, k1ok, _ := device_auth.authorize(&bsvc, {client = "ham-bridge", bridge_public_key = "04dead", code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256"}, "127.0.0.1:1", "203.0.113.55")
+	assert_true(!k1ok, "malformed bridge_public_key rejected")
+
+	// THE MISMATCH RULE (scope item 5): the Hub computes the fingerprint, and a
+	// body-supplied one that disagrees is surfaced — never silently preferred in
+	// either direction.
+	_, m1ok, m1err := device_auth.authorize(&bsvc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		bridge_key_fingerprint = "0000 0000 0000 0000",
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "203.0.113.56")
+	assert_true(!m1ok, "body fingerprint that disagrees with the key is REJECTED")
+	assert_eq(m1err.code, domain.Error_Code.Validation_Failed, "fingerprint mismatch -> Validation_Failed")
+	// An AGREEING body fingerprint is accepted, and the stored value is still the
+	// Hub's own derivation.
+	m2res, m2ok, _ := device_auth.authorize(&bsvc, {
+		client = "ham-bridge", bridge_public_key = BPK, bridge_key_fingerprint = BPK_FP,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "203.0.113.57")
+	assert_true(m2ok, "body fingerprint that agrees is accepted")
+	m2grant, _ := device_auth.get_grant(&bstore, m2res.device_code)
+	assert_eq(m2grant.bridge_key_fingerprint, BPK_FP, "stored fingerprint is the hub-computed one")
+	// A fingerprint with NO key has nothing to be checked against, so it is
+	// refused rather than stored unverified.
+	_, m3ok, _ := device_auth.authorize(&bsvc, {client = "c", bridge_key_fingerprint = BPK_FP}, "127.0.0.1:1", "203.0.113.58")
+	assert_true(!m3ok, "fingerprint without a key rejected")
+
+	// os_user is host-asserted, so it is bounded at the door: control characters
+	// (which would break a log line or the approval page) and over-long values.
+	_, u1ok, _ := device_auth.authorize(&bsvc, {client = "c", os_user = "ta\nnmay"}, "127.0.0.1:1", "203.0.113.59")
+	assert_true(!u1ok, "os_user with a control character rejected")
+	long_user := strings.repeat("u", 65)
+	defer delete(long_user)
+	_, u2ok, _ := device_auth.authorize(&bsvc, {client = "c", os_user = long_user}, "127.0.0.1:1", "203.0.113.60")
+	assert_true(!u2ok, "over-long os_user rejected")
+	fmt.println("REQ-IMPL-2 OK: authorize validation (PKCE, key shape, fingerprint mismatch, os_user)")
+
+	// --- store -> read -> free with EVERY new field populated ---
+	// The store owns its strings on the heap; a field added to Grant and missed
+	// in grant_clone_strings/grant_free_strings is a use-after-arena that a test
+	// which never frees the store would not catch. This one frees it.
+	lstore := device_auth.new_grant_store(device_auth.Grant_Store_Config{
+		verification_uri = "https://ui.example.com/api/v1/device",
+		expires_in = 600, interval = 5, rate_limit = 100, rate_window = 60,
+	})
+	lsvc := device_auth.new_device_auth_service(&lstore, fake_clock(), TRUSTED)
+	lres, lok, _ := device_auth.authorize(&lsvc, {
+		client = "ham-bridge", device_label = "dawnstar", os = "linux", app_version = "0.9.1",
+		bridge_public_key = BPK, os_user = "tanmay",
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "203.0.113.70")
+	assert_true(lok, "lifecycle grant created with all new fields")
+	// Approve + set_grant so the grant is re-cloned at least once, then read it
+	// back: a missed clone shows up here as a corrupted or empty field.
+	lsvc_grant, _ := device_auth.get_grant(&lstore, lres.device_code)
+	lsvc_grant.minted_bridge_id = "brg_lifecycle"
+	device_auth.set_grant(&lstore, lres.device_code, lsvc_grant)
+	reread, rok := device_auth.get_grant(&lstore, lres.device_code)
+	assert_true(rok, "grant re-readable after set_grant")
+	assert_eq(reread.bridge_public_key, BPK, "bridge_public_key survives re-clone")
+	assert_eq(reread.bridge_key_fingerprint, BPK_FP, "fingerprint survives re-clone")
+	assert_eq(reread.os_user, "tanmay", "os_user survives re-clone")
+	assert_eq(reread.code_challenge, PKCE_CHALLENGE, "code_challenge survives re-clone")
+	assert_eq(reread.code_challenge_method, "S256", "code_challenge_method survives re-clone")
+	assert_eq(reread.minted_bridge_id, "brg_lifecycle", "minted_bridge_id survives re-clone")
+	assert_eq(reread.grant_kind, device_auth.Grant_Kind.Bridge_Enrollment, "grant_kind survives re-clone")
+	// Free the store explicitly (not deferred) so a double/bad free on any new
+	// field is attributed to this test rather than to process teardown.
+	device_auth.grant_store_free(&lstore)
+	fmt.println("REQ-IMPL-2 OK: store -> re-clone -> read -> free with all new fields populated")
+
 	if FAILURES == 0 {
 		fmt.println("ALL PASS")
 	} else {

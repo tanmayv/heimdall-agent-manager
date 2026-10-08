@@ -89,14 +89,43 @@ main :: proc() {
 	fmt.println("PASS: hub phase7 project http")
 }
 
+// enroll_bridge_offline provisions a bridge through the device flow (REQ-ENROLL-9),
+// replacing the deleted bridge-enrollments + bridges/enroll pair.
+//
+// IT DELIBERATELY DOES NOT REPORT CAPABILITIES, unlike the equivalent helpers in the
+// other migrated suites. The name is the contract: this file pairs it with
+// connect_bridge, which calls bridge_runtime_connect and declares providers there.
+// That split now mirrors production exactly — the device flow has NO capabilities
+// field, so a bridge really is enrolled-but-featureless until it connects and
+// reports. Adding a capability report here would also flip the bridge Online and
+// destroy the offline/online distinction these tests are built on.
+//
+// Requirements that each reject a request outright: the 130-char lowercase-hex
+// uncompressed P-256 `bridge_public_key`; NO `bridge_key_fingerprint` (the Hub
+// derives it and refuses a disagreeing one); and mandatory S256 PKCE, precomputed
+// below so this needs no crypto.
+P7_PUBLIC_KEY :: "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+P7_CODE_VERIFIER :: "heimdall-req-impl-6-test-code-verifier-aaaa"
+P7_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
+
 enroll_bridge_offline :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label: string) -> (string, string) {
-	created := request(graph, "POST", "/api/v1/bridge-enrollments", strings.concatenate({"{\"label\":\"", label, "\"}"}), headers)
-	check(created.status == 201, created.body)
-	token := extract_json_string(created.body, "enrollment_token")
-	enroll_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
-	enrolled := request(graph, "POST", "/api/v1/bridges/enroll", "{\"machine\":{\"hostname\":\"host\"},\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}", enroll_headers[:])
-	check(enrolled.status == 201, enrolled.body)
-	return extract_json_string(enrolled.body, "bridge_id"), extract_json_string(enrolled.body, "bridge_token")
+	// `device_label` becomes the bridge's hostname and therefore its label.
+	authorized := request(graph, "POST", "/api/v1/device/authorize", strings.concatenate({
+		"{\"client\":\"ham-bridge\",\"device_label\":\"", label,
+		"\",\"os\":\"linux\",\"os_user\":\"tester\",\"bridge_public_key\":\"", P7_PUBLIC_KEY,
+		"\",\"code_challenge\":\"", P7_CODE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+	}), nil)
+	check(authorized.status == 200, authorized.body)
+	user_code := extract_json_string(authorized.body, "user_code")
+	device_code := extract_json_string(authorized.body, "device_code")
+
+	// The human approves; ownership comes from this Auth_Context, never the body.
+	approved := request(graph, "POST", "/api/v1/device/approve", strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}), headers)
+	check(approved.status == 200, approved.body)
+
+	issued := request(graph, "POST", "/api/v1/device/token", strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", P7_CODE_VERIFIER, "\"}"}), nil)
+	check(issued.status == 200, issued.body)
+	return extract_json_string(issued.body, "bridge_id"), extract_json_string(issued.body, "access_token")
 }
 
 connect_bridge :: proc(graph: ^app.App_Graph, bridge_token: string) {

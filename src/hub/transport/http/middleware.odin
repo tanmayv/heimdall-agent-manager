@@ -1,5 +1,6 @@
 package http
 
+import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
@@ -29,15 +30,45 @@ require_auth_any :: proc(auth: ^auth_service.Auth_Service, req: Request) -> (con
 		body = req.body,
 		headers = req.headers,
 	})
-	if !ok do return contracts.Auth_Context{}, false, respond_error(err, req.request_id)
-	if ctx.kind == .Bridge_Token {
-		// Checkpoint 1 (monitor): a BARE bridge token was accepted on a shared
-		// endpoint. This kind only arises from the monitor bare-token path in
-		// resolve_auth_any, so it is an unambiguous signal; log it here where the
-		// full request (method/path/request_id) is available.
-		auth_service.log_bridge_auth_monitor("bare_token_shared_endpoint", req.method, req.path, ctx.bridge_id, ctx.user_id, "", req.request_id)
+	if !ok {
+		// Checkpoint 1: a BARE bridge token was REJECTED on a shared endpoint.
+		//
+		// This checkpoint used to fire on ACCEPTANCE — `ctx.kind == .Bridge_Token`
+		// could only arise from the monitor bare-token allowance in
+		// resolve_auth_any, so its presence was the signal. REQ-IMPL-6 deleted that
+		// allowance, so the acceptance can no longer happen and the old test would
+		// have become permanently dead. The audit signal is kept and MOVED TO THE
+		// REJECTION, which is the event an operator now needs: it says a bridge
+		// presented a bare credential where an instance assertion is required.
+		//
+		// Logged here rather than in resolve_auth_any because only the transport
+		// layer has method/path/request_id; Auth_Request does not carry them.
+		//
+		// The condition re-reads the header rather than keying off the error: the
+		// rejection comes back as a generic domain error, and matching on its
+		// message would break the moment that string is reworded.
+		if bare_bridge_bearer_without_instance(auth, req) {
+			auth_service.log_bridge_auth_denied("bare_token_shared_endpoint", req.method, req.path, "", "", "", req.request_id)
+		}
+		return contracts.Auth_Context{}, false, respond_error(err, req.request_id)
 	}
 	return ctx, true, Response{}
+}
+
+// bare_bridge_bearer_without_instance reports whether this request presented a
+// bridge credential as a bare bearer token with NO instance assertion — the
+// shape require_auth_any refuses on a shared endpoint.
+//
+// It deliberately does NOT verify the credential: the point is to audit the
+// attempt, and a rejected request has no authenticated identity to log. That is
+// also why the emitted line carries no bridge_id or user_id — claiming one from
+// an unverified token would put attacker-controlled text in the audit log.
+bare_bridge_bearer_without_instance :: proc(auth: ^auth_service.Auth_Service, req: Request) -> bool {
+	token, token_ok := bearer_token(req)
+	if !token_ok || !auth_service.is_bridge_bearer(token) do return false
+	relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
+	if strings.has_prefix(relay_token, "hit_") && len(relay_token) > len("hit_") do return false
+	return auth_service.extract_body_instance_id(req.body) == ""
 }
 
 require_auth_or_bridge_token :: proc(auth: ^auth_service.Auth_Service, req: Request) -> (contracts.Auth_Context, bool, Response) {

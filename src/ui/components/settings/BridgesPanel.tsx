@@ -3,12 +3,9 @@ import {
   type Bridge,
   normalizeBridgeCapabilities,
   useListBridgesQuery,
-  useListBridgeEnrollmentsQuery,
   useRenameBridgeMutation,
   useRevokeBridgeMutation,
   useUpdateBridgeMutation,
-  useCreateBridgeEnrollmentMutation,
-  useRevokeBridgeEnrollmentMutation,
   useUpdateBridgeTelemetryMutation,
 } from '../../api/endpoints/bridgeSupport';
 import {
@@ -18,7 +15,6 @@ import {
 import { Button, FormField, Icon, Input, PageShell, StatusDot, Text, Modal, ModalBody, ModalFooter, Spinner, Toggle } from '@ui';
 import type { Tone } from '@ui';
 import {
-  isPendingEnrollment as checkIsPendingEnrollment,
   bridgeReady as checkBridgeReady,
 } from './bridgeEnrollment';
 import {
@@ -31,28 +27,24 @@ import BridgeSettingsPanel from './BridgeSettingsPanel';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
-// Add bridge = enrollment ceremony (one-time token shown once). Detail allows
+// Add bridge = instructions for the browser-approved device flow (REQ-ENROLL-9);
+// the Hub mints nothing here, so there is no one-time token to show. Detail allows
 // rename (PATCH), revoke (= "remove", POST /revoke). No hard delete in v1.
 // Rotate-token is a documented backend gap (not yet served).
 export default function BridgesPanel() {
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [hasPendingEnrollments, setHasPendingEnrollments] = useState(false);
-  const pollActive = enrollOpen || hasPendingEnrollments;
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
-  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
+  // Polling used to be driven by "is there a pending enrollment row", which no
+  // longer exists. The panel still polls while the add-bridge instructions are open,
+  // because that is exactly when a new bridge is expected to appear in the list.
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: enrollOpen ? 120000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
   const [updateBridgeTelemetry] = useUpdateBridgeTelemetryMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
   const [updateBridge] = useUpdateBridgeMutation();
-  const [createEnrollment] = useCreateBridgeEnrollmentMutation();
-  const [revokeEnrollment] = useRevokeBridgeEnrollmentMutation();
   const { data: globalTelemetryData } = useFetchTelemetryDefaultEnabledQuery();
   const [saveGlobalTelemetry] = useSaveTelemetryDefaultEnabledMutation();
 
   const [enrollLabel, setEnrollLabel] = useState('');
-  const [enrollBusy, setEnrollBusy] = useState(false);
-  const [enrollResult, setEnrollResult] = useState<any>(null);
-  const [enrollError, setEnrollError] = useState('');
   const [renamingId, setRenamingId] = useState('');
   const [renameValue, setRenameValue] = useState('');
   const [revokeConfirmId, setRevokeConfirmId] = useState('');
@@ -67,20 +59,6 @@ export default function BridgesPanel() {
   const [updateError, setUpdateError] = useState('');
 
   const bridges: Bridge[] = (bridgesQuery.data?.bridges || []).filter((b: Bridge) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked');
-  const enrolledBridgeIds = useMemo(() => new Set<string>(
-    bridges.map((b: Bridge) => String(b?.bridge_id || b?.bridgeId || b?.id || '')).filter(Boolean)
-  ), [bridges]);
-  const enrollments = enrollmentsQuery.data?.enrollments || [];
-  const pendingEnrollments = enrollments.filter((enr: any) => isPendingEnrollment(enr));
-
-  useEffect(() => {
-    setHasPendingEnrollments(pendingEnrollments.length > 0);
-  }, [pendingEnrollments.length]);
-
-  // REQ-BRG-1: Check terminal and consumed states first (status === 'consumed' || status === 'revoked' || status === 'expired', consumed_at, revoked_at, and consumed_by_bridge_id matching an enrolled bridge in bridges). If consumed or revoked, return false.
-  function isPendingEnrollment(enrollment: any): boolean {
-    return checkIsPendingEnrollment(enrollment, enrolledBridgeIds);
-  }
 
   function statusTone(bridge: Bridge): Tone {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
@@ -121,29 +99,22 @@ export default function BridgesPanel() {
     return String((import.meta as any).env?.[key] || '');
   }
 
-  function buildSetupCommand(result: any): string {
-    const responseCommand = String(result?.setup_command || '');
-    const url = String(result?.hub_url || result?.daemon_url || configuredHubUrl()).replace(/\/$/, '');
-    if (responseCommand && !responseCommand.includes('$HAM_HUB_URL') && responseCommand.includes(String(result?.enrollment_token || ''))) return responseCommand;
-    if (responseCommand && !responseCommand.includes('$HAM_HUB_URL')) return `${responseCommand} \\\n  --enrollment-token ${result?.enrollment_token || ''}`;
-    const token = result?.enrollment_token || '';
-    return `ham-bridge enroll --hub ${url || '<hub-url>'} \\\n  --enrollment-token ${token}`;
-  }
-
-  async function handleCreateEnrollment() {
-    setEnrollBusy(true);
-    setEnrollError('');
-    try {
-      const result = await createEnrollment({ label: enrollLabel.trim() || undefined, expiresInSeconds: 900 }).unwrap();
-      setEnrollResult(result?.enrollment || result);
-      setHasPendingEnrollments(true);
-      void enrollmentsQuery.refetch();
-      void bridgesQuery.refetch();
-    } catch (err: any) {
-      setEnrollError(String(err?.message || err || 'Unable to create enrollment'));
-    } finally {
-      setEnrollBusy(false);
-    }
+  // buildSetupCommand is now a pure string: there is NOTHING TO MINT (REQ-ENROLL-9).
+  //
+  // It used to interpolate a one-time enrollment token that this panel had just
+  // created server-side, which is why the old UI had a "shown once, store it now"
+  // warning and a "Copy token" button. The device flow has no such secret — the
+  // bridge generates its own request and a human approves it in the browser — so the
+  // panel has no secret to display, no token to leak through the clipboard, and no
+  // server call to make before showing instructions.
+  //
+  // THE ORIGIN, NOT THE HUB URL. `--ui` takes the origin whose /api is proxied to
+  // the Hub, which is this page's own origin. Passing the hub URL here is the most
+  // likely mistake and produces a 404 on the authorize call, so this deliberately
+  // uses window.location.origin rather than configuredHubUrl().
+  function buildSetupCommand(): string {
+    const origin = (typeof window !== 'undefined' ? window.location.origin : '').replace(/\/$/, '');
+    return `ham-bridge enroll --ui ${origin || '<this-url>'}`;
   }
 
   async function handleSaveRename(bridgeId: string) {
@@ -163,14 +134,6 @@ export default function BridgesPanel() {
       setRevokeConfirmId('');
     } catch (err: any) {
       setActionError(String(err?.message || 'Revoke failed'));
-    }
-  }
-
-  async function handleRevokeEnrollment(enrollmentId: string) {
-    try {
-      await revokeEnrollment({ enrollmentId }).unwrap();
-    } catch (err: any) {
-      setActionError(String(err?.message || 'Revoke enrollment failed'));
     }
   }
 
@@ -225,64 +188,38 @@ export default function BridgesPanel() {
       title="Bridges"
       description="Your machines. “Remove” revokes the token (record kept); no hard delete in v1."
       actions={
-        <Button variant="primary" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }} leading={<Icon name="plus" size={16} />}>Add bridge</Button>
+        <Button variant="primary" data-debug-id="settings-bridges-add-btn" onClick={() => setEnrollOpen((o) => !o)} leading={<Icon name="plus" size={16} />}>Add bridge</Button>
       }
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
-      {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
+      {bridgesQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
       {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{actionError}</div> : null}
 
-      {/* Enrollment ceremony */}
+      {/* ADD BRIDGE — instructions only. There is no enrollment ceremony in this
+          panel any more (REQ-ENROLL-9): the Hub mints nothing up front, so there is
+          no one-time token to display, to copy, or to leak. The operator runs one
+          command on the machine and approves the request that appears. */}
       {enrollOpen ? (
         <div data-debug-id="settings-bridges-enroll-panel" className="mt-3 rounded-2xl border border-info/30 bg-info-soft p-4">
-          {!enrollResult ? (
-            <>
-              <div className="text-sm font-medium text-info">Create bridge enrollment</div>
-              <FormField label="Label (optional; defaults to reported hostname)" className="mt-2">
-                <Input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={setEnrollLabel} placeholder="MacBook" width="full" />
-              </FormField>
-              {enrollError ? <div className="mt-2 text-xs text-danger">{enrollError}</div> : null}
-              <div className="mt-3 flex justify-end gap-2">
-                <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-cancel" onClick={() => setEnrollOpen(false)}>Cancel</Button>
-                <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-create" onClick={() => void handleCreateEnrollment()} disabled={enrollBusy}>{enrollBusy ? 'Creating…' : 'Create enrollment'}</Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-info">Enrollment created — run on your machine:</div>
-              <div className="mt-1 text-xs text-warning">⚠ Shown once. Store the token now — it is a secret. This page will poll while you connect the bridge.</div>
-              <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-subtle bg-surface-raised/50 p-3 text-[12px] leading-5 text-success">{buildSetupCommand(enrollResult)}</pre>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(enrollResult?.enrollment_token || '')}>{copiedToken ? 'Copied' : 'Copy token'}</Button>
-                <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollResult(null); setEnrollLabel(''); }}>Done</Button>
-              </div>
-            </>
-          )}
-        </div>
-      ) : null}
-
-      {/* Pending enrollments */}
-      {pendingEnrollments.length > 0 ? (
-        <div data-debug-id="settings-bridges-pending" className="mt-4">
-          <Text as="div" role="overline" tone="muted" className="mb-2">Pending enrollments</Text>
-          <div className="space-y-2">
-            {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-            {pendingEnrollments.map((enr: any) => {
-              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-              const id = String(enr?.enrollment_id || enr?.id || '');
-              return (
-                <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm">
-                  <div className="min-w-0">
-                    <div className="truncate text-primary">{enr?.label || 'Unlabeled enrollment'}</div>
-                    <div className="mt-0.5 text-caption text-muted">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
-                  </div>
-                  <Button variant="secondary" size="sm" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0">Revoke</Button>
-                </div>
-              );
-            })}
+          <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-info">Add a bridge — run this on the machine you want to add:</div>
+          <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-subtle bg-surface-raised/50 p-3 text-[12px] leading-5 text-success">{buildSetupCommand()}</pre>
+          <div className="mt-2 text-xs text-muted">
+            It prints a link and a short code. Open the link, check the code and fingerprint match what the machine printed, and approve.
+            Nothing secret is copied between machines — the credential is delivered to the bridge itself.
+          </div>
+          <div className="mt-2 text-xs text-muted">
+            Add <code>--headless</code> if that machine has no browser of its own.
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(buildSetupCommand())}>{copiedToken ? 'Copied' : 'Copy command'}</Button>
+            <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollLabel(''); }}>Done</Button>
           </div>
         </div>
       ) : null}
+
+      {/* The "Pending enrollments" list is gone with the enrollment rows it showed.
+          A pending bridge enrollment is now a short-lived DEVICE GRANT, surfaced on
+          the approval screen rather than as a durable row to revoke here. */}
 
       {/* Bridge Encryption & Vault Settings */}
       <BridgeSettingsPanel bridges={bridges} />

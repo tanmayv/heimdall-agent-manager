@@ -10,6 +10,7 @@ import app "odin_test:hub/app"
 import agent_service "odin_test:hub/service/agent"
 import project_service "odin_test:hub/service/project"
 import api_http "odin_test:hub/transport/http"
+import bridge_service "odin_test:hub/service/bridge"
 
 check :: proc(ok: bool, message: string) {
 	if ok do return
@@ -24,13 +25,62 @@ dummy_send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime
 }
 
 enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, label: string) -> string {
-	created := request(graph, "POST", "/api/v1/bridge-enrollments", strings.concatenate({"{\"label\":\"", label, "\"}"}), headers)
-	check(created.status == 201, "bridge enrollment create failed")
-	token := extract_json_string(created.body, "enrollment_token")
-	enroll_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
-	enrolled := request(graph, "POST", "/api/v1/bridges/enroll", "{\"machine\":{\"hostname\":\"host\"},\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}", enroll_headers[:])
-	check(enrolled.status == 201, enrolled.body)
-	return extract_json_string(enrolled.body, "bridge_id")
+	// ===== PROVISIONED THROUGH THE REAL DEVICE FLOW (REQ-ENROLL-9) =====
+	//
+	// This used to POST /api/v1/bridge-enrollments for a one-time token and then
+	// exchange it at POST /api/v1/bridges/enroll. Both are deleted. These tests are
+	// not about enrollment — they need a bridge and a credential — so the helper was
+	// migrated rather than the tests dropped.
+	//
+	// It drives the PRODUCTION endpoints rather than calling the service directly,
+	// which keeps this helper HTTP-only and means every suite below now covers the
+	// real enrollment path as a side effect.
+	//
+	// PKCE is MANDATORY for a bridge grant and S256-only — `plain` and a missing
+	// method are both refused, so the pair below is a precomputed
+	// BASE64URL(SHA256(verifier)). Hardcoded rather than derived so this helper
+	// needs no crypto; the verifier is replayed at the token call.
+	//
+	// No bridge_key_fingerprint is sent: the Hub DERIVES it from the key, and a
+	// body-supplied one that disagrees is rejected (bridge_grant.odin) — a
+	// requester-chosen fingerprint would defeat the point of the human comparing it.
+	//
+	// `device_label` is what becomes the bridge's hostname and therefore its label
+	// (wiring.odin maps device_label -> machine_hostname), so label assertions in
+	// these suites keep working unchanged.
+	authorized := request(graph, "POST", "/api/v1/device/authorize", strings.concatenate({"{\"client\":\"ham-bridge\",\"device_label\":\"", label, "\",\"os\":\"linux\",\"bridge_public_key\":\"040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40\",\"os_user\":\"tester\",\"code_challenge\":\"J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI\",\"code_challenge_method\":\"S256\"}"}), nil)
+	check(authorized.status == 200, authorized.body)
+	device_code := extract_json_string(authorized.body, "device_code")
+	user_code := extract_json_string(authorized.body, "user_code")
+
+	// The human approves, authenticated by the same trusted-proxy headers the
+	// caller passed. Ownership comes from that Auth_Context, never from the body.
+	approved := request(graph, "POST", "/api/v1/device/approve", strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}), headers)
+	check(approved.status == 200, approved.body)
+
+	// The bridge collects its credential. Single-use: the grant is spent here.
+	issued := request(graph, "POST", "/api/v1/device/token", strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"heimdall-req-impl-6-test-code-verifier-aaaa\"}"}), nil)
+	check(issued.status == 200, issued.body)
+
+	// ===== CAPABILITIES ARE REPORTED, NOT ENROLLED =====
+	//
+	// The deleted enroll endpoint took a `capabilities` array in its body, so the
+	// old helper declared the bridge's providers AT ENROLLMENT. The device flow has
+	// no such field by design: what the Hub records at enrollment is only what the
+	// approving human confirmed (the key, its fingerprint, the OS user). A real
+	// bridge reports its providers when it CONNECTS, over the runtime WS, which the
+	// Hub handles with update_runtime_capabilities.
+	//
+	// No bridge connects in these tests, so this calls the same service proc the WS
+	// handler does. Without it the bridge has no declared providers and anything
+	// that matches an agent to a provider/tier fails — which is a real difference
+	// between the two flows, not a test artifact.
+	//
+	// NOTE it also marks the bridge Online (as a connect would), where the deleted
+	// enroll path left it Offline.
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+
+	return extract_json_string(issued.body, "bridge_id")
 }
 
 request :: proc(graph: ^app.App_Graph, method, path, body: string, headers: []contracts.HTTP_Header) -> api_http.Response {
@@ -153,7 +203,17 @@ main :: proc() {
 	check(found_active, "inst_repo_direct must be in active runtime instance list")
 
 	// 2. REQ-2: Verify Service default minting with monotonic counter and fallbacks
-	agent_res1 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Reviewer\",\"slug\":\"reviewer\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
+	//
+	// NOTE the slug is `reviewer-custom`, not `reviewer`. Enrolling a bridge through
+	// the device flow SEEDS DEFAULT AGENTS from the built-in templates — `reviewer`,
+	// `worker` and `coordinator` — which the deleted enroll endpoint did not do. So
+	// `reviewer` is already taken by the time this runs and creating it returns 409.
+	//
+	// The slug is what moved; the NAME is still "Reviewer", because that is what the
+	// display-name assertions below derive from ("Reviewer #1"). Reusing the seeded
+	// agent instead would have changed those to "reviewer #1" and quietly altered
+	// what this test checks.
+	agent_res1 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Reviewer\",\"slug\":\"reviewer-custom\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
 	check(agent_res1.status == 201, "create Reviewer agent must succeed")
 	reviewer_id := extract_json_string(agent_res1.body, "agent_id")
 

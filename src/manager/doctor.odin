@@ -359,15 +359,15 @@ manager_unit_hub_check :: proc(unit_label, unit_hub: string, unit_hub_found: boo
 	}
 	if config_hub == "" {
 		if unit_hub_found {
-			return .Warn, fmt.tprintf("not enrolled: %s has an empty [wrapper] daemon_url; the hub %s passed by %s would drive the bridge — enroll this node: heimdall enroll <hbe_...> --hub <url>", config_path, unit_hub, unit_label)
+			return .Warn, fmt.tprintf("not enrolled: %s has an empty [wrapper] daemon_url; the hub %s passed by %s would drive the bridge — enroll this node: ham-bridge enroll --ui <your-heimdall-url>", config_path, unit_hub, unit_label)
 		}
-		return .Warn, fmt.tprintf("not enrolled: %s has an empty [wrapper] daemon_url; %s passes no --hub/--daemon-url — enroll this node: heimdall enroll <hbe_...> --hub <url>", config_path, unit_label)
+		return .Warn, fmt.tprintf("not enrolled: %s has an empty [wrapper] daemon_url; %s passes no --hub/--daemon-url — enroll this node: ham-bridge enroll --ui <your-heimdall-url>", config_path, unit_label)
 	}
 	if manager_urls_equal(config_hub, cfg_lib.default_config().wrapper.daemon_url) {
 		if unit_hub_found {
-			return .Warn, fmt.tprintf("not enrolled: %s still carries the default hub %s; %s passes %s and would drive the bridge — enroll this node: heimdall enroll <hbe_...> --hub <url>", config_path, config_hub, unit_label, unit_hub)
+			return .Warn, fmt.tprintf("not enrolled: %s still carries the default hub %s; %s passes %s and would drive the bridge — enroll this node: ham-bridge enroll --ui <your-heimdall-url>", config_path, config_hub, unit_label, unit_hub)
 		}
-		return .Warn, fmt.tprintf("not enrolled: %s still carries the default hub %s; %s passes no --hub/--daemon-url — enroll this node: heimdall enroll <hbe_...> --hub <url>", config_path, config_hub, unit_label)
+		return .Warn, fmt.tprintf("not enrolled: %s still carries the default hub %s; %s passes no --hub/--daemon-url — enroll this node: ham-bridge enroll --ui <your-heimdall-url>", config_path, config_hub, unit_label)
 	}
 	if unit_hub_found {
 		if manager_urls_equal(unit_hub, config_hub) {
@@ -405,7 +405,7 @@ manager_doctor_command :: proc(args: []string) -> int {
 	if hub_url != "" && bridge_id != "" {
 		append(&checks, Manager_Check{name = "enrollment", status = .Ok, detail = fmt.tprintf("enrolled as %s (hub %s)", bridge_id, hub_url)})
 	} else {
-		append(&checks, Manager_Check{name = "enrollment", status = .Warn, detail = "not enrolled — run: heimdall enroll hbe_... --hub <url>"})
+		append(&checks, Manager_Check{name = "enrollment", status = .Warn, detail = "not enrolled — run: ham-bridge enroll --ui <your-heimdall-url>"})
 	}
 
 	// Bridge token file and its permissions.
@@ -464,7 +464,7 @@ manager_doctor_command :: proc(args: []string) -> int {
 		append(&checks, Manager_Check{name = fmt.tprintf("bridge :%d", MANAGER_LOOPBACK_PORT), status = .Ok, detail = probe_detail})
 	case .Heimdall_Unauthorized:
 		if token != "" {
-			append(&checks, Manager_Check{name = fmt.tprintf("bridge :%d", MANAGER_LOOPBACK_PORT), status = .Fail, detail = "bridge rejected the stored token (401) — re-run: heimdall enroll <hbe_...> --hub <url>"})
+			append(&checks, Manager_Check{name = fmt.tprintf("bridge :%d", MANAGER_LOOPBACK_PORT), status = .Fail, detail = "bridge rejected the stored token (401) — re-run: ham-bridge enroll --ui <your-heimdall-url>"})
 		} else {
 			append(&checks, Manager_Check{name = fmt.tprintf("bridge :%d", MANAGER_LOOPBACK_PORT), status = .Ok, detail = probe_detail})
 		}

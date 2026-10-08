@@ -151,16 +151,19 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if auth_ctx.kind == .Bridge_Token {
 		req_bridge := query_value(req.query, "bridge_id")
 		cross := req_bridge != "" && req_bridge != auth_ctx.bridge_id
-		if cross && h.auth.bridge_auth_mode != .Monitor {
+		if cross {
+			// CROSS-BRIDGE ACCESS IS REFUSED (REQ-ENROLL-15). Log the denial, then
+			// deny: until REQ-IMPL-6 this check was skipped whenever the deleted
+			// bridge-auth mode was permissive — its zero value and shipped default —
+			// so bridge A really could enumerate bridge B's instances in a default
+			// deployment, and the audit line was the only trace. The line is kept
+			// BECAUSE the behaviour changed: it now records a rejection.
+			auth_service.log_bridge_auth_denied("cross_bridge_list", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, req_bridge, req.request_id)
 			return respond_error(domain.domain_error(.Forbidden, "bridge cannot list instances of another bridge"), req.request_id)
 		}
-		if cross {
-			// monitor: allow the cross-bridge listing to proceed as requested, and log it.
-			auth_service.log_bridge_auth_monitor("cross_bridge_list", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, req_bridge, req.request_id)
-			filter.bridge_id = req_bridge
-		} else {
-			filter.bridge_id = auth_ctx.bridge_id
-		}
+		// A bare bridge token sees ONLY its own instances. Assigning rather than
+		// trusting the query is what makes an omitted bridge_id safe too.
+		filter.bridge_id = auth_ctx.bridge_id
 	}
 	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, filter, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
@@ -182,15 +185,15 @@ create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	input := instance_input_from_body(req.body)
 	if auth_ctx.kind == .Bridge_Token {
 		cross := input.bridge_id != "" && input.bridge_id != auth_ctx.bridge_id
-		if cross && h.auth.bridge_auth_mode != .Monitor {
+		if cross {
+			// Same refusal as the list path, and the more serious of the two: under
+			// the old permissive default a bridge could CREATE an agent instance on
+			// another bridge, which is remote code execution on a machine it does
+			// not own. Log the denial, then deny.
+			auth_service.log_bridge_auth_denied("cross_bridge_create", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, input.bridge_id, req.request_id)
 			return respond_error(domain.domain_error(.Forbidden, "bridge cannot create instances on another bridge"), req.request_id)
 		}
-		if cross {
-			// monitor: allow creating on the requested bridge, and log it.
-			auth_service.log_bridge_auth_monitor("cross_bridge_create", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, input.bridge_id, req.request_id)
-		} else {
-			input.bridge_id = auth_ctx.bridge_id
-		}
+		input.bridge_id = auth_ctx.bridge_id
 	}
 	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, input)
 	if !created do return respond_error(err, req.request_id)

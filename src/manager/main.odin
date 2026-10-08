@@ -54,12 +54,12 @@ main :: proc() {
 		fmt.println(manager_version_line())
 		return
 	case "enroll":
-		if manager_has_flag(args, "--help") || manager_has_flag(args, "-h") {
-			manager_print_enroll_usage()
-			return
-		}
-		if !manager_enroll_command(args) do os.exit(1)
-		return
+		// `heimdall enroll` drove the deleted one-time-token flow (REQ-ENROLL-9).
+		// It is kept as an explicit redirect rather than removed outright: an
+		// operator who types it — or a runbook, or an old install script — must be
+		// told WHERE enrollment moved, not given "unknown command".
+		manager_print_enroll_usage()
+		os.exit(1)
 	case "status":
 		manager_status_command(args)
 		return
@@ -100,7 +100,7 @@ manager_print_usage :: proc() {
 	fmt.println("the heimdall-bridge user service.")
 	fmt.println("")
 	fmt.println("Commands:")
-	fmt.println("  enroll    Enroll this node with a Hub using a one-time enrollment token")
+	fmt.println("  enroll    Removed — use 'ham-bridge enroll --ui <url>' (browser-approved)")
 	fmt.println("  status    Report enrollment, bridge service, Hub connection and binary versions")
 	fmt.println("  start     Start the heimdall-bridge user service")
 	fmt.println("  stop      Stop the heimdall-bridge user service")
@@ -117,14 +117,23 @@ manager_print_usage :: proc() {
 	fmt.println("Run 'heimdall enroll --help', 'heimdall logs --help', 'heimdall update --help' or 'heimdall vault --help' for command options.")
 }
 
+// manager_print_enroll_usage tells an operator where enrollment went.
+//
+// It prints to stderr and the caller exits non-zero, because this is a FAILURE:
+// the command the user typed did not enroll anything. A script that checked the
+// exit status keeps working; one that ignored it sees the reason on stderr.
 manager_print_enroll_usage :: proc() {
-	fmt.println("usage: heimdall enroll <hbe_...> --hub <url> [--enrollment-token <token>] [--token-file <path>] [--config <path>]")
-	fmt.println("")
-	fmt.println("Enrolls this node with a Hub. The one-time enrollment token (created on the")
-	fmt.println("Hub with 'ham-ctl bridge enroll-token --new') is passed positionally or via")
-	fmt.println("--enrollment-token. On success the returned bridge token is written to")
-	fmt.println("~/.config/heimdall/bridge-token (mode 0600) and config.toml is updated with")
-	fmt.println("[wrapper] daemon_url and [daemon] daemon_id.")
+	fmt.eprintln("heimdall enroll has been replaced by browser-approved enrollment.")
+	fmt.eprintln("")
+	fmt.eprintln("There is no enrollment token any more. Run this on THIS machine:")
+	fmt.eprintln("")
+	fmt.eprintln("    ham-bridge enroll --ui <https://your-heimdall-url>")
+	fmt.eprintln("")
+	fmt.eprintln("It prints a URL and a short code; open the URL, check the code matches,")
+	fmt.eprintln("and approve. The bridge receives its credential directly — no secret is")
+	fmt.eprintln("copied between machines and none is written into config.toml.")
+	fmt.eprintln("")
+	fmt.eprintln("Add --headless if this machine has no browser of its own.")
 }
 
 manager_print_logs_usage :: proc() {

@@ -59,7 +59,7 @@ let
       ptyHostRuntime = lib.mkOption { type = lib.types.bool; default = true; description = "Run agents directly via ham-pty-host (replacing wrapper/tmux)."; };
       hubUrl = lib.mkOption { type = lib.types.str; default = "http://127.0.0.1:8081"; example = "https://hub.mundus.in"; description = "Hub base URL used by ham-bridge (--hub)."; };
       fsReadPageBytes = lib.mkOption { type = lib.types.int; default = 131072; description = "Per-request byte chunk size for paginated fs_read_file reads. 128 KiB matches the socat TLS backend (the default); the legacy s_client fallback clamps the effective page down to 8000 internally (its ~16 KB multi-read teardown ceiling)."; };
-      tokenFile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Path to a file containing this bridge's enrolled hbr_ token."; };
+      tokenFile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Path to a file containing this bridge's enrolled hba_ credential, written by `ham-bridge enroll --ui`. The legacy non-expiring hbr_ token is no longer minted or accepted (REQ-ENROLL-9)."; };
       bindHost = lib.mkOption { type = lib.types.str; default = "127.0.0.1"; description = "Loopback host for this bridge HTTP server."; };
       port = lib.mkOption { type = lib.types.port; default = 49323; description = "Loopback TCP port for this bridge HTTP server. Must be unique per local bridge."; };
       localEndpointPort = lib.mkOption { type = lib.types.nullOr lib.types.port; default = null; description = "Wrapper-local endpoint TCP port. Null defaults to port + 1, so wrappers launched by this bridge heartbeat to the matching bridge."; };
@@ -249,10 +249,16 @@ in
         default     = null;
         defaultText = lib.literalExpression "null";
         description = ''
-          Path to a file containing the enrolled bridge token (hbr_...). The
-          token file is read by ham-bridge via --bridge-token-file and is not
+          Path to a file containing the enrolled bridge credential (hba_...). The
+          file is read by ham-bridge via --bridge-token-file and is not
           generated into the Nix store. Create it with mode 0600, or enroll with
-          `ham-bridge enroll --hub <hub> --enrollment-token <token> --bridge-token-file <path>`.
+          `ham-bridge enroll --ui <browser-origin> --bridge-token-file <path>`.
+
+          Enrollment is browser-approved: that command prints a link and a short
+          code for a human to approve, and the credential is delivered to this
+          machine directly. There is no enrollment token to create on the hub --
+          `--enrollment-token` and the legacy non-expiring hbr_ token are deleted
+          (REQ-ENROLL-9). Add --headless if this machine has no browser.
         '';
       };
       bindHost = lib.mkOption {

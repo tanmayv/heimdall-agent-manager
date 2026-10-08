@@ -41,6 +41,17 @@ grant_clone_strings :: proc(g: Grant, heap: runtime.Allocator) -> Grant {
 	c.minted_token_id = strings.clone(g.minted_token_id, heap)
 	c.approver_ip = strings.clone(g.approver_ip, heap)
 	c.approver_ua = strings.clone(g.approver_ua, heap)
+	// REQ-IMPL-2 bridge-enrollment fields. These arrive on the per-request arena
+	// like every other request-derived field, so they are cloned here too; a
+	// field added to Grant and missed in this proc is a use-after-arena that only
+	// shows up once the request that created the grant has returned.
+	c.bridge_public_key = strings.clone(g.bridge_public_key, heap)
+	c.bridge_key_fingerprint = strings.clone(g.bridge_key_fingerprint, heap)
+	c.os_user = strings.clone(g.os_user, heap)
+	c.code_challenge = strings.clone(g.code_challenge, heap)
+	c.code_challenge_method = strings.clone(g.code_challenge_method, heap)
+	c.minted_bridge_id = strings.clone(g.minted_bridge_id, heap)
+	c.minted_refresh_token = strings.clone(g.minted_refresh_token, heap)
 	return c
 }
 
@@ -58,6 +69,33 @@ grant_free_strings :: proc(g: Grant, heap: runtime.Allocator) {
 	delete(g.minted_token_id, heap)
 	delete(g.approver_ip, heap)
 	delete(g.approver_ua, heap)
+	delete(g.bridge_public_key, heap)
+	delete(g.bridge_key_fingerprint, heap)
+	delete(g.os_user, heap)
+	delete(g.code_challenge, heap)
+	delete(g.code_challenge_method, heap)
+	delete(g.minted_bridge_id, heap)
+	delete(g.minted_refresh_token, heap)
+}
+
+// Grant_Kind is WHAT a grant will mint when it is approved, decided ONCE at
+// /device/authorize and then persisted (REQ-IMPL-2).
+//
+// It exists instead of re-testing `bridge_public_key != ""` at each decision
+// point. The two kinds mint different identities — a user API token versus a
+// per-machine bridge credential — so an emptiness test that went wrong in one
+// branch would silently mint the WRONG KIND of credential, which is a privilege
+// confusion rather than a cosmetic bug. The same bug class is already on this
+// chain's register as F4 ("empty token => loopback authorizes all",
+// the loopback callback guard in src/bridge/main.odin). An enum makes the illegal state unrepresentable
+// and every dispatch exhaustive.
+//
+// `User_Token` is the zero value deliberately: a grant that somehow skipped
+// derivation gets the LESS privileged, pre-existing path rather than silently
+// becoming a machine enrollment.
+Grant_Kind :: enum {
+	User_Token,        // ELDA / Electron: mints a user API token (pre-existing)
+	Bridge_Enrollment, // REQ-IMPL-2: mints a bridge-scoped credential (brg_)
 }
 
 // Grant_Status models the device-authorization grant lifecycle.
@@ -92,6 +130,31 @@ Grant :: struct {
 	approver_ua:    string,
 	decided_at:     i64,
 	last_poll_at:   i64, // unix seconds of the last /device/token poll (slow_down gating)
+	// --- REQ-IMPL-2: bridge-enrollment fields -------------------------------
+	// grant_kind is derived once at authorize and is the ONLY thing later
+	// branches dispatch on (see Grant_Kind).
+	grant_kind:             Grant_Kind,
+	// Populated only for a bridge grant (see is_bridge_grant, bridge_grant.odin).
+	// bridge_public_key is HOST-ASSERTED (the bridge submits it at authorize) and
+	// is what the minted credential is bound to; bridge_key_fingerprint is
+	// HUB-COMPUTED from that key and is never taken from the request body. The
+	// separation matters because the approval page displays the two differently
+	// (design §5.4.4, REQ-ENROLL-14).
+	bridge_public_key:      string,
+	bridge_key_fingerprint: string,
+	os_user:                string, // host-asserted OS user the bridge runs as
+	code_challenge:         string, // PKCE S256 challenge (RFC 7636 §4.2)
+	code_challenge_method:  string, // always "S256" when a challenge is present
+	minted_bridge_id:       string, // brg_ minted on approval of a bridge grant
+	// --- REQ-IMPL-3: the refresh half of the credential pair -----------------
+	// Held from approval until the single-use poll hands it over, exactly like
+	// minted_token, and cleared at the same moment. The two lifetimes are carried
+	// alongside because they come from the CREDENTIAL (1h / 30d), not from the
+	// grant's own 900-second window, and a bridge that scheduled its refresh off
+	// the grant's expires_in would renew 96 times a day.
+	minted_refresh_token:       string,
+	minted_expires_in:          int,
+	minted_refresh_expires_in:  int,
 }
 
 // Authorize_Input is the public /device/authorize request body (ELDA-1).
@@ -100,6 +163,14 @@ Authorize_Input :: struct {
 	device_label: string,
 	os:         string,
 	app_version: string,
+	// REQ-IMPL-2. A request carrying bridge_public_key is a bridge enrollment and
+	// must also carry PKCE; see authorize() for the validation and
+	// bridge_grant.odin for why the fingerprint is NOT read from the body here.
+	bridge_public_key:      string,
+	bridge_key_fingerprint: string, // client's own copy; cross-checked, never trusted
+	os_user:                string,
+	code_challenge:         string,
+	code_challenge_method:  string,
 }
 
 // Authorize_Result is what /device/authorize hands back to the device (ELDA-1).
@@ -109,6 +180,11 @@ Authorize_Result :: struct {
 	verification_uri: string,
 	interval:       int,
 	expires_in:     int,
+	// bridge_key_fingerprint is the Hub's computed fingerprint, echoed back so
+	// the bridge can print it (design §2.2 step 5). It is ADVISORY on the wire —
+	// the bridge computes its own copy from its own key and the human compares
+	// the two displays; the Hub's echo is never the bridge's source of truth.
+	bridge_key_fingerprint: string,
 }
 
 // Monotonic_Clock provides unix-second timestamps so expiry/rate-limit math is
@@ -210,7 +286,11 @@ allow_authorize :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 // rate-limit check (allow_authorize) and validated input. Generates fresh,
 // unlinkable device_code + user_code (AC2). Returns ("", false) only if the OS
 // CSPRNG is unavailable (caller fails closed with 503).
-create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: string, clock: Monotonic_Clock) -> (Authorize_Result, bool) {
+// create_grant mints the grant. `bridge_key_fingerprint` is the HUB-COMPUTED
+// fingerprint (authorize() derives it from input.bridge_public_key before
+// calling); it is passed in rather than recomputed here so there is exactly one
+// place in the codebase that decides what a fingerprint is.
+create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: string, clock: Monotonic_Clock, bridge_key_fingerprint: string = "", grant_kind: Grant_Kind = .User_Token) -> (Authorize_Result, bool) {
 	device_code, ok := generate_device_code()
 	if !ok do return Authorize_Result{}, false
 	user_code, uok := generate_user_code()
@@ -230,6 +310,12 @@ create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: st
 		requested_at = now,
 		expires_at = now + i64(expires_in),
 		status = .Pending,
+		grant_kind = grant_kind,
+		bridge_public_key = input.bridge_public_key,
+		bridge_key_fingerprint = bridge_key_fingerprint,
+		os_user = input.os_user,
+		code_challenge = input.code_challenge,
+		code_challenge_method = input.code_challenge_method,
 	}
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
@@ -247,6 +333,7 @@ create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: st
 		verification_uri = store.config.verification_uri,
 		interval = store.config.interval,
 		expires_in = expires_in,
+		bridge_key_fingerprint = bridge_key_fingerprint,
 	}, true
 }
 
@@ -275,8 +362,63 @@ set_grant :: proc(store: ^Grant_Store, device_code: string, grant: Grant) {
 	// grant_store_free; the residual is bounded by the grant's short TTL. Overwrite
 	// reuses the existing map keys (Odin keeps the key on assignment to an existing
 	// entry), so no key churn.
-	store.grants[device_code] = grant_clone_strings(grant, heap)
-	store.by_user_code[grant.user_code] = device_code
+	//
+	// REVISITED DELIBERATELY FOR REQ-IMPL-3 (refresh-token rotation), and the
+	// immortal-string design is KEPT. Writing the reasoning down because the question
+	// was raised on the premise that rotation would make this a hot path:
+	//
+	//   IT DOES NOT. The rotation lineage lives in SQLITE (the `bridge_tokens`
+	//   table), not in this in-memory store, and `refresh_bridge_token` never calls
+	//   set_grant. The grant store is touched only during the 900-second enrollment
+	//   window, exactly as before.
+	//
+	//   THE NEW BOUND, STATED EXACTLY. Per grant, set_grant runs at most once per
+	//   accepted poll plus once at the approval decision; polls are gated by the
+	//   per-grant interval and the per-IP `poll:` bucket, and the grant is reaped at
+	//   its TTL. So the residual per grant is
+	//       (polls admitted inside 900s) x sizeof(cloned grant strings) + 1 approval,
+	//   which REQ-IMPL-3 increases by exactly ONE additional cloned string per
+	//   approved enrollment (`minted_refresh_token`, cleared on the handover poll).
+	//   Everything is reclaimed at grant_store_free.
+	//
+	//   WHY NOT RECLAIM ANYWAY. The ownership story that makes reclamation unsafe is
+	//   unchanged: get_grant returns a value copy whose strings ALIAS the stored
+	//   heap strings, and approve is a live example of a caller holding such a
+	//   snapshot across a set_grant. Freeing the overwritten strings would turn
+	//   every borrowed snapshot into a use-after-free, so reclamation needs an
+	//   ownership change (returned grants owning their strings, or refcounting) —
+	//   a bigger change than it looks, on the enrollment path, for a residual that
+	//   is bounded by a 900-second TTL. That is a poor trade; if the grant TTL ever
+	//   becomes long, or set_grant is ever called off the poll path, revisit it
+	//   with that change rather than by adding a free here.
+	// BUG FIX (REQ-IMPL-2, found end-to-end on the live stack): index the
+	// user_code to the HEAP-OWNED clone's device_code, never to the caller's
+	// `device_code` parameter.
+	//
+	// The old line was `store.by_user_code[grant.user_code] = device_code`, and
+	// `device_code` reaches set_grant straight from the handler — in the poll path
+	// it is `json_string(req.body, "device_code")`, which lives on the PER-REQUEST
+	// ARENA. Storing it in a process-lifetime index left that index pointing at
+	// memory the next request reuses, so `grant_by_user_code` then looked up
+	// garbage and `/device/verify` answered "invalid or expired code" for a grant
+	// that was alive and well.
+	//
+	// The user-visible failure was deterministic, not a rare race: ONE
+	// `/device/token` poll on a pending grant permanently broke
+	// `/device/verify` for that user_code, while the device_code kept working.
+	// That is the normal shape of this flow — RFC 8628 has the device polling
+	// while the human is still reading the approval page — so it bit the
+	// pre-existing Electron flow too, not just bridge enrollment.
+	//
+	// The ownership rule at the top of this file already said the index only
+	// ALIASES strings the `grants` map owns; this line was the one place that
+	// broke it. Keying by `stored.device_code` likewise avoids leaving an arena
+	// string as a map key if set_grant is ever called for an absent code (Odin
+	// keeps the existing key when assigning to an existing entry, so for the
+	// normal overwrite path this changes nothing).
+	stored := grant_clone_strings(grant, heap)
+	store.grants[stored.device_code] = stored
+	store.by_user_code[stored.user_code] = stored.device_code
 }
 
 // grant_by_user_code looks up a grant by its short user_code (for the browser
