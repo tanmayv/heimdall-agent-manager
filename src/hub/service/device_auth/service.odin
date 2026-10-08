@@ -55,6 +55,9 @@ Bridge_Mint_Request :: struct {
 	device_label:           string, // host-asserted machine descriptor
 	os:                     string,
 	app_version:            string,
+	// target_bridge_id carries the approver's "attach to an existing bridge"
+	// choice through to the minter. Empty means mint a new bridge.
+	target_bridge_id:       string,
 }
 
 // Bridge_Mint_Result is what the bridge minter hands back.
@@ -243,9 +246,18 @@ verify_with_ip :: proc(service: ^Device_Auth_Service, user_code, request_ip: str
 // Approve_Input is the approve request body. owner_user_id is INTENTIONALLY
 // absent: the owner is bound from Auth_Context only (ELDA-6); any client-
 // supplied owner field in the raw body is ignored by the handler.
+//
+// target_bridge_id is the "attach to an existing bridge" choice the approving
+// human makes on the approval page, for a .Bridge_Enrollment grant only. Empty
+// (the default) means "mint a new bridge", today's only behavior. It is NOT an
+// ownership assertion by itself — the bridge minter re-checks that the bound
+// owner_user_id actually owns this bridge before touching it, the same way
+// every other bridge-id-by-string input in this codebase is re-checked rather
+// than trusted.
 Approve_Input :: struct {
-	user_code: string,
-	approve:   bool,
+	user_code:        string,
+	approve:          bool,
+	target_bridge_id: string,
 }
 
 // approve records the user's terminal decision on a grant.
