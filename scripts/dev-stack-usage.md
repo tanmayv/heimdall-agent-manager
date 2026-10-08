@@ -2,7 +2,7 @@
 
 > **Living document.** When you discover something new, fix something wrong, or add a workflow, edit this file. Remove sections that become stale. Add sections as new parts of the stack are exercised. Date significant entries so it is clear when a section was last verified.
 >
-> Last verified: 2026-10-07 — two concurrent streams: REQ-IMPL-1 bridge credential work (added §1a isolated ports / throwaway DB and §1b the nix-excludes-untracked-files trap) and REQ-IMPL-2 bridge device-grant enrollment (corrected the §1 toolchain pin, added the `-lsqlite3` link step, and recorded the parallel-runner loopback flake plus the `tprintf` brace trap in §13).
+> Last verified: 2026-10-07 — four concurrent streams: REQ-IMPL-1 bridge credential work (added §1a isolated ports / throwaway DB and §1b the nix-excludes-untracked-files trap), REQ-IMPL-2 bridge device-grant enrollment (corrected the §1 toolchain pin, added the `-lsqlite3` link step, recorded the parallel-runner flake and the `tprintf` brace trap in §13), and REQ-IMPL-3 expiring credentials + refresh (added §10a, corrected the §1/§12/§13 "2026-07a is a version" error — it is a derivation NAME, the binary reports `dev-2026-09` — refined the §13 flake row with the first-error triage rule and a cause count of two, and recorded the no-counts/no-line-numbers-in-comments sweep from REQ-IMPL-1a), and REQ-IMPL-5 approval screen + fragment-key vault delivery (added §10b the device-grant APPROVAL smoke recipe, and §13 rows for the `odin test src/bridge` abort, the `tests/*.odin` run-vs-test trap, and the duplicate-`serve` / self-matching-`pkill` traps).
 
 ---
 
@@ -56,7 +56,11 @@ If `nix` is not on PATH at all, fall back to a direct store path. **This is a
 known-fragile workaround** — a store path can be garbage-collected, which is exactly what
 happened to the previous pin here:
 ```bash
-# Verified 2026-10-07. Use the 2026-07a build.
+# Verified 2026-10-07. This is THE toolchain the flake pins.
+# NAME vs VERSION, and do not be alarmed by the mismatch: the nix DERIVATION is named
+# `odin-dev-2026-07a`, while the binary inside it reports `odin version dev-2026-09`.
+# One toolchain, two labels. `odin version` disagreeing with the store path is EXPECTED
+# and is not evidence you are on the wrong compiler -- the store path is the pin.
 ODIN=/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin
 $ODIN check src/hub -collection:odin_test=src          # clean
 $ODIN build src/hub    -collection:odin_test=src -out:/tmp/ham-hub
@@ -74,10 +78,23 @@ export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/li
 **Do NOT use the 2026-05 build, and ignore the old `.Haiku` warning.** Verified
 2026-10-07: the previously pinned `odin-dev-2026-05` store path **no longer exists**, and
 on a 2026-05 compiler the tree fails in `src/hub/service/push/webpush_encoding.odin:52`,
-where `base64.decode` is called with the 4-argument signature that only 2026-07a's core
-library has. The `.Haiku` enum error that motivated the old advice does not reproduce on
-2026-07a — `odin check src/hub` is clean. If you see a `.Haiku` error, you are on an
-older compiler than 2026-07a.
+where `base64.decode` is called with the 4-argument signature only this toolchain's core
+library has — that claim is still true of the pinned binary. The `.Haiku` enum error that
+motivated the old advice does not reproduce on it; `odin check src/hub` is clean. If you
+see a `.Haiku` error, you are on an older compiler.
+
+**`odin version` says `dev-2026-09`, and that is the right compiler.** Verified
+2026-10-07:
+
+```console
+$ nix develop . --command bash -c 'which odin; odin version'
+/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin
+odin version dev-2026-09
+```
+
+`2026-07a` is a **derivation name**, not a version string. Everything this doc and this
+chain's evidence says about "2026-07a" refers to exactly this binary. Pin and compare on
+the **store path**; a `odin version` mismatch is not a finding.
 
 **Starting the stack manually (no nix):**
 ```bash
@@ -160,6 +177,93 @@ nix develop . --command bash -c '
 git add -N src/path/to/new_file.odin    # intent-to-add; stages no content
 ```
 Option A is the safer default: it needs no git state change at all, and it is what the "no nix" recipe in section 1 is for. Prefer it whenever you are verifying your own uncommitted work.
+
+> **WHILE A GIT FREEZE IS IN FORCE, OPTION B IS NOT AVAILABLE AND OPTION A IS THE ONLY ROUTE.**
+> `git add -N` is a git write. During the freeze on this chain that made `nix build` —
+> and therefore `dev-stack.sh build` and `start` — unable to build the tree at all,
+> because several of the chain's files were untracked. It failed with three errors
+> that all look like broken code and are purely nix's missing files:
+> `Undeclared name: issue_bridge_token_pair`, `Failed to #load … 057_bridge_tokens.sql`,
+> and `'bridge_refresh_handler' is not declared by 'http'`.
+>
+> So when you are asked to prove "`dev-stack.sh start` brings up a working stack",
+> be precise about what you actually proved: the FLOW can be verified with option A
+> binaries end-to-end, while `dev-stack.sh start` itself cannot run the current tree
+> until the freeze lifts and the new files are tracked. Say which one you did.
+
+---
+
+## 1c. Four traps when you script the stack yourself (verified 2026-10-07, REQ-IMPL-4)
+
+Found while driving a full browser-approval enrollment end to end with the manual recipe. All four cost a
+run each.
+
+**1. There is no `/api/v1/auth/whoami`. Readiness is `GET /api/v1/me`.** And readiness must require an
+actual **HTTP 200**: the dev-proxy is up and answering *before* the hub finishes migrating, and it answers
+**502 `hub unavailable`** in the meantime. A wait loop of the shape `curl -s -o /dev/null $PROXY/... && break`
+succeeds on that 502 and hands the next command a hub that is not there yet. Use:
+
+```bash
+for _ in $(seq 1 90); do
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' $PROXY/api/v1/me)" == "200" ]] && break; sleep 1
+done
+```
+
+**2. `sqlite3` is not installed on this host.** Use python, which is:
+
+```bash
+python3 -c "import sqlite3,sys; con=sqlite3.connect('/tmp/x/hub.db'); \
+  [print(r) for r in con.execute('SELECT bridge_id,label,machine_hostname FROM bridges')]"
+```
+
+**3. A copied source tree needs `tools/` AND `scripts/`, not just `src/`.**
+`src/bridge/bridge_telemetry.odin` does `#load("../../tools/telemetry/telegraf.conf.template")`, so
+`cp -r src /tmp/elsewhere` then `odin test src/bridge` fails with *"Failed to `#load` file"* and nothing to
+do with your change. And `tests`/`src/hub/transport/http`'s
+`test_bridge_update_integration_failure_triggers_supervisor_rollback` resolves
+`scripts/apply-bridge-update.sh` **relative to cwd**, so a copy without `scripts/` fails that one test and it
+looks like a hub regression. Copy all three:
+```bash
+cp -r <repo>/src <repo>/tools <repo>/scripts /tmp/elsewhere/
+```
+
+**4. Do not let a script `rm -f $S/*.log` when its own stdout is redirected into that directory.** The
+redirect target is unlinked while the shell still holds the fd, so the run appears to produce nothing at all
+and the log is unrecoverable. Write the transcript outside the directory the script cleans.
+
+### `odin test src/bridge` is NOT a green suite, and it is NOT DETERMINISTIC
+
+**Corrected 2026-10-07 after a second agent could not reproduce the stable picture first written here.
+Do not treat any single run of this suite as a signal.** Across two agents and ten-plus full runs:
+
+- **A swinging set of 6-9 pre-existing failures on an unmodified tree.** The names seen:
+  `bt_memory_decouple_materialize_run_dir`, three `fs_vault_*`,
+  `test_inbound_local_agent_call_refreshes_liveness` (a **Segmentation_Fault**),
+  `test_pty_stream_emit_frame_plaintext_when_vault_unconfigured`, and two `test_shell_pty_input_decrypts_*`.
+  Individual runs produced 6, 8 and 9 failures from that pool. They are vault/pty/shell tests that depend
+  on ambient vault state.
+- **An intermittent abort**: `free(): invalid pointer`, exit 134, after the per-test reports but *before*
+  the summary line, so the run yields no result at all. **It is intermittent, NOT determined by your
+  working directory** — an earlier version of this section claimed moving to `/tmp` avoided it; the second
+  agent reproduced it from `/tmp` three times in five runs. Believing the cwd claim is actively harmful:
+  you would attribute an abort to your own change.
+
+A segfaulting test, a failure set that swings run to run, and an intermittent `free(): invalid pointer`
+all in the same vault/pty area look like **one memory-lifetime fault**, not eight independent ones. Tracked
+as `iss_18dc54a73787b582`.
+
+**So how do you get a signal at all?** Not from one run, and never from a count:
+
+1. **Run your own tests by name** — `-define:ODIN_TEST_NAMES=main.a,main.b` — which is deterministic and is
+   the only thing that tells you about *your* change.
+2. **For the suite, run it several times** and compare the failure NAMES against the pool above. A name
+   outside that pool is yours; a smaller or larger subset of it is not news.
+3. `-define:ODIN_TEST_THREADS=1` reduces but does not eliminate the abort.
+4. Run from a copied tree (with `tools/` **and** `scripts/`, per trap 3) only to avoid touching the repo —
+   not as an abort workaround, because it is not one.
+
+**Ports used by REQ-IMPL-4's harness:** `8195` (proxy) / `8196` (hub), bridge `49527`/`49528`. Taken
+elsewhere: `8080-8082`, `8088-8091`, `8096`, `8110-8112`, `8190-8193`, `8200`, `49323-49324`, `49423-49424`.
 
 ---
 
@@ -522,20 +626,269 @@ curl -s -X POST $PROXY/api/v1/memories/$MEM_ID/activate \
 
 ---
 
-## 10. Bridge enrollment (adding a new bridge)
+## 10. Bridge enrollment (adding a new bridge) — BROWSER-APPROVED, and it is the ONLY way (REQ-IMPL-6)
+
+> **The one-time-token flow in this section is DELETED.** `POST /api/v1/bridge-enrollments`,
+> `GET`/`DELETE` on it, and `POST /api/v1/bridges/enroll` all return **404** now. So do
+> `ham-bridge enroll --hub ... --enrollment-token ...` and `heimdall enroll <hbe_...>`,
+> which exit non-zero and print the new form. There is no enrollment token any more:
+> nothing secret is carried to the machine, because approval happens in a browser.
+>
+> **If you are following an older runbook and getting 404s on `/api/v1/bridge-enrollments`,
+> this is why.** Nothing is broken.
+
+### The easy way: let `dev-stack.sh` do it
 
 ```bash
-# 1. Create enrollment via dev-proxy (no auth header needed with dev-proxy)
-ENROLL=$(curl -s -X POST $PROXY/api/v1/bridge-enrollments \
-  -H 'Content-Type: application/json' -d '{"label":"my-bridge"}')
-TOKEN=$(echo $ENROLL | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['enrollment_token'])")
-
-# 2. Exchange for a durable bridge token
-result-bridge/bin/ham-bridge enroll \
-  --hub http://127.0.0.1:8081 \
-  --enrollment-token $TOKEN \
-  --bridge-token-file /tmp/my-bridge-token
+scripts/dev-stack.sh enroll
 ```
+
+This drives the real device flow end to end and needs **no browser**. It starts
+`ham-bridge enroll --ui http://$PROXY --headless`, reads the user code the bridge prints,
+and POSTs the approval itself through the dev-proxy — which authenticates every request as
+the local user, so that is a genuine authenticated approval through the production
+endpoint, not a test bypass. It writes:
+
+- `.run-logs/bridge/bridge-token` — the **expiring** `hba_` access token (1h)
+- `.run-logs/bridge/bridge-token.refresh` — the `hbf_` refresh token (30d, single-use)
+
+### By hand, if you want to watch each step
+
+```bash
+# 1. The bridge asks for a code. NO auth, NO hub url, NO secret.
+#    --ui points at the UI ORIGIN whose /api is proxied to the hub, not at the hub.
+result-bridge/bin/ham-bridge enroll \
+  --ui http://127.0.0.1:8080 --headless \
+  --bridge-token-file /tmp/my-bridge-token &
+
+# 2. It prints a URL and a short code. Approve as yourself:
+#    (through the PROXY -- the hub alone will reject you as unauthenticated)
+curl -s -X POST $PROXY/api/v1/device/approve \
+  -H 'Content-Type: application/json' \
+  -d '{"user_code":"<the code it printed>","approve":true}'
+
+# 3. The bridge is polling; it stores the pair and exits on its own.
+```
+
+### Three things that will reject you outright if you script the HTTP directly
+
+Learned the hard way while migrating the test suites; each one is a hard refusal, not a
+warning:
+
+1. **`bridge_public_key` must be a 130-char lowercase-hex uncompressed P-256 point**
+   (`04` + 128 hex chars). A short placeholder is refused at the HTTP layer. Note the
+   SERVICE layer only checks non-empty, so a direct-service fixture can use a stub and an
+   HTTP one cannot — that asymmetry is real and will confuse you once.
+2. **Do NOT send `bridge_key_fingerprint`.** The Hub derives it from the key and refuses a
+   body-supplied one that disagrees. A requester-chosen fingerprint would defeat the entire
+   point of the human comparing it on the approval screen.
+3. **PKCE is MANDATORY for a bridge grant, and S256 only.** `plain` is refused, and so is
+   a missing `code_challenge_method`. Precompute `BASE64URL(SHA256(verifier))` unpadded
+   (43 chars) and replay the verifier at `/device/token`. A reusable pair:
+   verifier `heimdall-req-impl-6-test-code-verifier-aaaa`,
+   challenge `J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI`.
+
+### And two behaviours that are correct but look wrong
+
+- **A spent grant replays as HTTP 200** carrying `{"status":"expired"}`, not a 4xx. The
+  device-flow protocol reports grant state in the body. Assert on the absence of
+  `access_token`, not on the status code.
+- **Capabilities are REPORTED, not enrolled.** The deleted endpoint accepted a
+  `capabilities` array at enrollment; the device flow has no such field, because the Hub
+  records only what the approving human confirmed. A bridge declares its providers when it
+  CONNECTS. So a freshly enrolled, never-connected bridge has **no providers**, and
+  anything matching an agent to a provider/tier fails until it connects. That is intended.
+
+### A bridge that was enrolled the old way
+
+Every bridge holding a pre-device-flow `hbr_` credential **stops working** at this change
+and must re-enroll. It is told so explicitly rather than getting a bare 401 — the Hub
+replies:
+
+> `this bridge's credential was issued by the removed enrollment flow and is no longer
+> accepted; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>`
+
+`heimdall status` and `heimdall doctor` print the same instruction.
+
+---
+
+## 10a. Device-grant enrollment with EXPIRING credentials, and proving revocation (verified 2026-10-07, REQ-IMPL-3)
+
+§10 above is the **current and only** enrollment flow: browser approval, driven by
+`ham-bridge enroll --ui` (and by `scripts/dev-stack.sh enroll`, which wraps it). The
+legacy pre-shared `hbe_` flow this section used to contrast itself against is **deleted**
+as of REQ-IMPL-6 — its endpoints return 404, so there is nothing left to compare against.
+
+This section sits one level BELOW §10. Use §10 to enrol; use this section when you need to
+drive the individual HTTP legs yourself — to inspect the **expiring credential pair** the
+flow issues, or to prove rotation, reuse detection and revocation, none of which
+`ham-bridge enroll` exposes.
+
+**What you get.** `POST /api/v1/device/token` returns a PAIR, not a token:
+
+```json
+{"status":"approved","access_token":"hba_btk_...","bridge_id":"brg_...",
+ "refresh_token":"hbf_btk_...","refresh_expires_in":2592000,"expires_in":3600}
+```
+
+- `hba_` — 1 hour, used for the WS connect and every Hub API call.
+- `hbf_` — 30 days sliding, accepted at **`POST /api/v1/device/bridge-refresh`** and nowhere
+  else. Single-use: every refresh returns a new pair and kills the presented token.
+- `expires_in`/`refresh_expires_in` are **durations**, never timestamps, so a bridge with a
+  wrong clock still renews correctly — schedule off a monotonic timer.
+
+**Four behaviours that will look like bugs if you do not expect them:**
+
+1. **`bridges.bridge_token_hash` is EMPTY for a device-enrolled bridge.** Its credentials
+   live in the `bridge_tokens` table. An empty stored hash verifies nothing, so this is the
+   intended state, not a half-written row.
+2. **A replayed refresh token kills the whole family.** Presenting an already-rotated
+   `hbf_` is treated as theft: every generation and both kinds are revoked, and the bridge
+   must re-enrol. There is a **30-second grace** for the immediately-previous token only
+   (crash recovery), so to test the theft path you must wait >30s after rotating.
+3. **`POST /api/v1/bridges/<id>/revoke` now kills the live WebSocket**, not just the DB row
+   (audit F6). Expect an immediate EOF on a held socket — measured at 0.000s locally.
+4. **Four different refresh failures all return one `401 invalid_grant`** — expired,
+   unknown, already-used and revoked. That is deliberate (no enumeration oracle); the hub
+   log distinguishes them.
+
+**Reproducing it end to end.** The script used for REQ-IMPL-3's acceptance evidence walks
+authorize → verify → approve → poll → API call → live WS → revoke → "socket died, refresh
+refused", plus rotation, reuse detection and two-bridge isolation. It needs no dependencies
+beyond python3 (it hand-rolls the WebSocket handshake, ~40 lines) and runs against an
+isolated stack per §1a:
+
+```bash
+# Build from the WORKING TREE (§1b: nix cannot see untracked files)
+nix develop --command bash -c '
+  odin build src/hub       -collection:odin_test=src -out:/tmp/ham-req3-stack/ham-hub
+  odin build src/dev_proxy -collection:odin_test=src -out:/tmp/ham-req3-stack/ham-dev-proxy'
+/tmp/ham-req3-stack/ham-hub --listen 127.0.0.1:8291 --db /tmp/ham-req3-stack/hub.db \
+  --migrations-dir src/hub/repository/sqlite/migrations --trusted-proxy-cidr 127.0.0.1/32 &
+/tmp/ham-req3-stack/ham-dev-proxy --listen 127.0.0.1:8290 --hub-url http://127.0.0.1:8291 \
+  --default-user tanmay &
+python3 /tmp/ham-req3-stack/e2e.py     # see the REQ-IMPL-3 task comments for the script
+```
+
+**Two traps found while writing that script:**
+
+- **`ham-ctl shell serve --cmd 'cd X && ...'` fails with `exec: cd: not found`.** The verb
+  execs the command rather than running it through a shell, so a leading `cd` is not a
+  builtin it can reach. Use `--cwd` instead; the error does not mention `cd` being a
+  builtin and reads like a missing binary.
+- **The `/device/authorize` and `/device/token` legs must go to the HUB (`:8291`), not the
+  proxy**, because the dev-proxy injects a user identity and those two legs are the
+  unauthenticated device-side ones. `verify`/`approve`/`revoke` go to the **proxy**, since
+  they need the human's session. Mixing them up produces confusing 401s on the leg that is
+  supposed to be public.
+
+---
+
+## 10c. Verifying a WIRE-FORMAT change — parse the JSON, do not eyeball it (verified 2026-10-07, REQ-IMPL-5)
+
+If you add a field to a hand-built JSON response, **the smoke test must `json.tool`/`json.load` the
+payload, not `grep` it.** These handlers assemble JSON with `strings.write_string`, so a field is
+added by splicing quote characters into a string someone else closed — and the failure mode is an
+unparsable body that still contains your field name, so a grep for the field PASSES on broken JSON.
+
+That is not hypothetical: adding `server_time` to `hub_observed` in `device_auth_handlers.odin`
+produced exactly this. `fmt.tprintf("\",\"server_time\":%d", ...)` closes the preceding
+`request_ip` string itself, so the following chunk had to drop its own leading `\"` — otherwise the
+object carried a stray quote before `}`. **`odin check` and `odin test` both passed with the broken
+payload**, because nothing in the Odin suites parses the handler's output as JSON; only piping a
+live response through a parser catches it.
+
+```bash
+# The shape of a wire-format check that actually fails when the JSON is wrong.
+curl -s -X POST $PROXY/api/v1/device/verify -H 'Content-Type: application/json' \
+  -d "{\"user_code\":\"$CODE\"}" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)["data"]           # <- a malformed payload dies HERE
+ho = d["hub_observed"]
+print("hub_observed keys:", sorted(ho.keys()))
+assert isinstance(ho["server_time"], int)
+assert "server_time" not in d.get("host_asserted", {})   # provenance, not just presence
+'
+```
+
+**Assert the PROVENANCE GROUP, not just the field.** `hub_observed` versus `host_asserted` is a
+security contract in this tree (REQ-ENROLL-14), so a test that only checks `server_time` is present
+would pass with the field in the wrong group — which is the defect worth catching.
+
+### Running a working-tree hub when the prebuilt one is stale
+`scripts/dev-stack.sh start` runs `./result-hub/bin/ham-hub`, a **nix symlink from the last
+`build`** — it does not rebuild, so a `start` after editing hub sources silently tests the OLD
+binary. With untracked files in the tree, `build` cannot see them either (§1b). What worked:
+
+```bash
+nix develop . --command bash -c 'odin build src/hub -collection:odin_test=src -out:/tmp/ham-iso5/ham-hub'
+/tmp/ham-iso5/ham-hub --listen 127.0.0.1:8191 --db /tmp/ham-iso5/hub.db &   # blocks; background it
+nohup ./result-devproxy/bin/ham-dev-proxy --listen 127.0.0.1:8190 --hub-url http://127.0.0.1:8191 &
+```
+The dev-proxy needs no rebuild if you only touched hub code. **`ham-ctl shell serve` exited
+immediately with an empty log** for the hub here and the port never bound; the same command under
+`shell run` (backgrounded inside the command) worked. If `serve` reports `running` but
+`ss -ltnp | grep <port>` shows nothing, the process is gone — check the port, not the status field.
+
+---
+
+## 10b. Device-grant APPROVAL smoke recipe — provenance split + `bridge_id` (verified 2026-10-07, REQ-IMPL-5)
+
+§10a covers the bridge's side of the device grant. This is the **approving browser's** side: the
+two responses the approval screen is built on. Useful whenever you touch
+`device_auth_handlers.odin` or the approval UI, because both shapes are contracts the UI parses.
+
+Run the stack per **§1a** (isolated ports, throwaway DB) and **§1b option A** (build from the
+working tree — the enrollment files are untracked, so `nix build` cannot see them).
+
+```bash
+PROXY=http://127.0.0.1:8190
+BPK=04030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc
+# A bridge grant REQUIRES PKCE S256 -- without a code_challenge authorize is refused.
+VERIFIER=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+# -> ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA  (43 chars; the same pair is hardcoded in
+#    tests/device_auth_verify_approve_test.odin, so you can cross-check against it)
+
+# 1. authorize. Echoes the HUB-COMPUTED fingerprint ("fb41 9516 cc0c f6ae" for the key above).
+curl -s -X POST $PROXY/api/v1/device/authorize -H 'Content-Type: application/json' -d "{
+  \"client\":\"ham-bridge\",\"device_label\":\"dawnstar\",\"os\":\"NixOS 25.05\",
+  \"app_version\":\"0.9.1\",\"bridge_public_key\":\"$BPK\",\"os_user\":\"tanmay\",
+  \"code_challenge\":\"$CHALLENGE\",\"code_challenge_method\":\"S256\"}"
+
+# 2. verify -- the REQ-ENROLL-14 provenance split the approval screen renders.
+curl -s -X POST $PROXY/api/v1/device/verify -H 'Content-Type: application/json' \
+  -d '{"user_code":"<USER_CODE>"}' | python3 -m json.tool
+
+# 3. approve -- returns the MINTED bridge id for the approver's browser.
+curl -s -X POST $PROXY/api/v1/device/approve -H 'Content-Type: application/json' \
+  -d '{"user_code":"<USER_CODE>","approve":true}'
+# -> {"hub_observed":{"bridge_id":"brg_..."}}
+
+# 4. the bridge's own poll still gets the credential pair, unchanged.
+curl -s -X POST $PROXY/api/v1/device/token -H 'Content-Type: application/json' \
+  -d '{"device_code":"<DEVICE_CODE>","code_verifier":"'$VERIFIER'"}'
+```
+
+### The two shapes, and why each half matters
+
+**`verify`** nests every field under `hub_observed` (`bridge_key_fingerprint`,
+`bridge_public_key_on_record`, `fingerprint_algorithm`, `request_ip`) or `host_asserted`
+(`bridge_public_key`, `os_user`, `device_label`, `os`, `app_version`), **and keeps flat
+top-level copies of the legacy fields** so the Electron page keeps working. `bridge_public_key`
+appears in BOTH halves deliberately: the machine asserted it, and the Hub vouches for having
+stored that exact value — which is what makes the fragment cross-check meaningful.
+
+**`approve`** returns `{"hub_observed":{"bridge_id":"..."}}` for an approved BRIDGE grant and
+**`{}` for everything else** — a rejection, and any non-bridge (Electron) grant. The browser needs
+it because the vault key has to be delivered to one specific bridge, and until approval there is no
+bridge to address. Verified against the live stack: the `bridge_id` here is the same value step 4
+hands the bridge.
+
+**Shape regressions worth re-checking after any edit here**, all verified 2026-10-07:
+an Electron `authorize` response still carries no `bridge_key_fingerprint`; an Electron `approve`
+still returns `{}`; a rejected bridge grant returns `{}`; and `GET /api/v1/device` still serves the
+standalone Electron confirm page (200).
 
 ---
 
@@ -558,7 +911,8 @@ grep -iE "error|FAIL|panic" .run-logs/hub.log | tail -20
 ## 12. Running tests
 
 ```bash
-# See §1 for why this is 2026-07a and why `nix develop -c odin ...` is preferable.
+# See §1 for the pin, and note the binary reports `dev-2026-09` while the derivation is
+# named `odin-dev-2026-07a` -- one toolchain. `nix develop -c odin ...` is preferable.
 ODIN=/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin
 export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/lib:$LIBRARY_PATH
 
@@ -593,10 +947,27 @@ HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt
 
 | When | Discovery |
 |---|---|
+| 2026-10-07 | **`nix build` CANNOT build this chain's work at all while the git freeze is in force, so `dev-stack.sh build` and `start` are unusable for verifying it.** Flakes copy git-tracked files only (§1b), and this chain added several files that are still untracked — `bridge_token_service.odin`, `migrations/057_bridge_tokens.sql`, `bridge_refresh_handler`. The freeze forbids `git add`, including `git add -N`, so **workaround B in §1b is unavailable** and workaround A is the only route. The failure is loud but misleading: `Undeclared name: issue_bridge_token_pair`, `Failed to #load … 057_bridge_tokens.sql`, `'bridge_refresh_handler' is not declared by 'http'` — three errors that all look like broken code and are purely nix's missing files. **Build with `odin build src/hub|src/dev_proxy|src/bridge -collection:odin_test=src -out:/tmp/…` and run those binaries manually (§1).** Verified REQ-IMPL-6 end-to-end that way. |
+| 2026-10-07 | **`grep` silently finds NOTHING in a file containing a NUL byte, and sweeps that use "empty output" as the success signal therefore PASS VACUOUSLY. Use `grep -a` for every such sweep.** Reproduced on `tests/ui_device_approval_safety_test.ts` (one NUL at line 80): `grep -c import` prints nothing at all, `grep -ac import` prints `3`. **The trap has a second floor:** probing for the problem with `grep -rlI ''` / `grep -rl ''` does not reveal it either — both skip the file, so a "which files are binary?" check comes back clean and you conclude your sweep was fine. Only `-a` is trustworthy. |
+| 2026-10-07 | **`fmt.tprintf` is NOT safe for a request body (or path/query) handed to `router_dispatch` in a test — the handler can read overwritten bytes.** `tprintf` returns per-thread TEMP-allocator memory and dispatch calls `tprintf` freely downstream, so the ring can be reused in place before the handler parses the body. Cost: a `bridge_id` in a cross-bridge test read back as EMPTY, which silently turned the authorization check OFF and produced `404 agent not found` instead of the expected `403`. It looked like a broken authorization check and was a corrupted request. **Build request bodies with `strings.concatenate` (heap) and `defer delete` them.** Same family as the `generate_id`/temp-allocator note elsewhere in this doc. |
+| 2026-10-07 | **7 of the 13 standalone `tests/*.odin` binaries were ALREADY FAILING at pristine HEAD, so a red one is not evidence about your change — measure the baseline before attributing anything.** Red at HEAD with these exact messages: `hub_cards_api` ("task with an agent reviewer must NOT be projected as a card"), `hub_scheduled_prompts_api` ("expected 409 Conflict on double execution, got 200"), `hub_agent_instance_display_name` ("create Reviewer agent must succeed"), `hub_bootstrap_manifest_conditional` ("manifest assembly must include the identity fragment", `iss_18dc60d091a77782`), `hub_phase7_project_http` ("validation must fail when selected Bridge is not live" — **unsatisfiable by construction**: it wants status 503 AND body `bridge_offline`, but that code string only comes from `Error_Code.Bridge_Offline`, which `respond.odin` maps to **409**), `hub_phase5_bridge`, `hub_phase5_bridge_http`. Nothing runs these in a gate, so they drift. **How to baseline without touching git state:** `git archive HEAD \| tar -x -C /tmp/headtree` — `git archive` is read-only and writes only to `/tmp`, so it is safe under the freeze — then build and run the binary there with the same toolchain and diff the messages. |
+| 2026-10-07 | **`git diff HEAD` in this repo shows the WHOLE CHAIN'S uncommitted work, not your own.** Everyone shares one dirty tree while the freeze holds, so "my" diff legitimately lists `package.json`, `device_auth_*`, `AppShell.tsx`, `clock.odin` and more. For attribution, `git diff --stat HEAD -- <path>` coming back **empty is sound NEGATIVE evidence** (nobody in the chain touched it, so behaviour there matches HEAD); a non-empty result proves nothing about **who**. Use it to clear a file, never to claim one. |
+| 2026-10-07 | **`dev-stack.sh` needs an isolated `RUN_DIR`, not just isolated ports, or one agent's `stop` kills another's stack.** `stop` kills whatever the pidfiles under `RUN_DIR` name, and `RUN_DIR` was hardcoded to `$ROOT/.run-logs`. Now overridable: **`HAM_DEV_RUN_DIR`**, alongside `HAM_DEV_HUB_ADDR` / `HAM_DEV_PROXY_ADDR` / `HAM_DEV_BRIDGE_PORT` / `HAM_DEV_BRIDGE_LOCAL_ENDPOINT_PORT` / `HAM_DEV_HUB_DB` / `HAM_DEV_BRIDGE_RUN_DIR`. Isolating it exposed a second latent bug, also fixed: `_fix_bridge_config` required `$BRIDGE_CONFIG` to already exist and merely WARNED when it did not, so a fresh stack launched the bridge with `--config` pointing at a missing file; it now seeds from the repo's `config.toml`. |
+| 2026-10-07 | **Omitting `-collection:odin_test=src` makes an `odin test` line fail while a `\| tail` pipeline still exits 0, so it reads as a pass.** Raised by this chain's reviewer against a handoff whose commands had it missing. Always include it, and never take the exit status of a pipeline ending in `tail`/`head` as the test's own result — `grep -c '\[ERROR\]'` plus the `Finished …` line is the signal. |
+| 2026-10-07 | **`odin test src/hub/transport/http` can HANG indefinitely with no summary and `grep -c ERROR` = 0 — and a hang is indistinguishable from "still running".** Observed once: output stopped mid-suite after `test_bridge_connect_*_telemetry_*` / `shell first frame after attach`, then 20 minutes of nothing. **The identical tree re-ran clean (`Finished 248 tests … All tests were successful.`, RC=0), so it is a suite flake in the bridge-connect/shell-attach area, not a code defect — but note the evidence is "a re-run of the same tree passed", NOT an inverted-change proof, because it did not recur.** Triage: check whether the log's mtime is still advancing (`ls -la --time-style=+%H:%M:%S`) before concluding anything; a stalled mtime with no summary means hung, so kill and re-run once before investigating your own change. |
+| 2026-10-07 | **`pkill -f <pattern>` matches the AGENT SHELL'S OWN eval string and kills your session (exit 144).** Recorded earlier in this chain and walked into again while killing a hung `odin test`. Kill by PID (`ps aux \| grep '[o]din test' \| awk '{print $2}'`) or use `ham-ctl shell kill <session_id>`. |
+| 2026-10-07 | **A hand-built JSON field can pass `odin check`, `odin test` AND a grep, and still emit unparsable JSON.** Adding `server_time` to `hub_observed` left a stray `"` before `}`; nothing in the Odin suites parses handler output, so only piping a live response through `json.load` caught it. **Verify a wire-format change by PARSING a live response, and assert the provenance group (`hub_observed` vs `host_asserted`), not just the field's presence.** See §10c. |
+| 2026-10-07 | **`dev-stack.sh start` runs the LAST-BUILT nix binary, not your edits.** It execs `./result-hub/bin/ham-hub` and never rebuilds, so a `start` straight after editing hub sources collects evidence from a binary that predates the change. Build to a temp path with `odin build` and run that (§10c). Also: `ham-ctl shell serve` reported `running` for the hub while the port was never bound and its log stayed empty — trust `ss -ltnp`, not the status field. |
 | 2026-10-07 | **`scripts/dev-stack.sh build` cannot see a new `.odin` file until it is `git add`ed** — nix flakes copy git-tracked files only, so you get `Undeclared name:` for your own procs while `odin check` passes. Full explanation, both workarounds and the `/build/<hash>-source/` tell are in **§1b**; kept there rather than duplicated here. |
-| 2026-10-07 | **Odin toolchain — SUPERSEDES the 2026-09-03 row below. Use `odin-dev-2026-07a`.** The `2026-05` store path this doc pinned has been garbage-collected, and on a 2026-05 compiler the tree fails in `src/hub/service/push/webpush_encoding.odin:52` (`base64.decode` 4-arg signature, 2026-07a core only). `odin check src/hub` is clean on 2026-07a, so the old `.Haiku` warning no longer applies — if you hit it, you are on an older compiler. Prefer `nix develop -c odin ...` over any store path. |
+| 2026-10-07 | **Odin toolchain — SUPERSEDES the 2026-09-03 row below. Use `odin-dev-2026-07a`.** The `2026-05` store path this doc pinned has been garbage-collected, and on a 2026-05 compiler the tree fails in `src/hub/service/push/webpush_encoding.odin:52` (`base64.decode` 4-arg signature, this toolchain's core only). `odin check src/hub` is clean on it, so the old `.Haiku` warning no longer applies — if you hit it, you are on an older compiler. Prefer `nix develop -c odin ...` over any store path. |
+| 2026-10-07 | **`2026-07a` is a DERIVATION NAME, not a compiler version — `odin version` reports `dev-2026-09` and that is correct.** `nix develop . --command odin version` prints `dev-2026-09` from inside `/nix/store/4p3p3...-odin-dev-2026-07a/bin/odin`. One toolchain, two labels. Every "2026-07a" claim in this doc and in this chain's evidence refers to this binary, so a version mismatch is **not** a finding and nobody's measurements are invalidated. Pin and compare on the **store path**. |
 | 2026-10-07 | **Linking the hub:** without nix providing it, `odin build`/`odin test` on `src/hub` fails with `cannot find -lsqlite3`. That is a LINK error, not your code — `export LIBRARY_PATH=/nix/store/7a0nx1a0rdc5s07vxrsdhplqnzncl5z9-sqlite-3.53.3/lib:$LIBRARY_PATH`. |
-| 2026-10-07 | **`odin test src/hub/transport/http` (244 tests, ~2min) is FLAKY under the 4-thread parallel runner — a DIFFERENT test fails each run, and all three observed failures pass in isolation.** Seen so far: `demo_disconnect_reason_read_deadline` ("could not dial loopback" / "could not accept on loopback"), `test_patch_bridge_telemetry_offline_does_not_dispatch` ("expected persisted.telemetry_enabled to be enabled"), and `test_rest_taskchain_and_task_subscription_handlers` ("delete must report removed:true"). Across 8 observed parallel runs by three separate agents: 244/244 ×3, plus single failures in the above. Tracked as `iss_18dc4e2a4cb35724`. **Before blaming a change, re-run the single test with `-define:ODIN_TEST_NAMES=http.<name>`** — all three passed that way. **`-define:ODIN_TEST_THREADS=1` is the reliable gate: verified `Finished 244 tests in 5m31.611226049s. All tests were successful.`** (and that run was made at host load average ~8.72 with another full suite running, so it survived heavy EXTERNAL contention — what it isolates is the suite's own intra-suite parallelism, not all contention). Note the runtimes separate two distinct causes: `demo_disconnect_reason_read_deadline` runs in 0.16s alone and fails with bind errors ("could not dial/accept on loopback") — a fixed-port race; the other two take 12s and 14s alone and fail on a wrong RESULT — shared test-DB/timing contention. A fix for one is not a fix for the other. Treat "N/244 with a different N each time" as the signature of this flake, not of a regression. |
+| 2026-10-07 | **`odin test src/hub/transport/http` (244 tests, ~2min) is FLAKY under the 4-thread parallel runner — a DIFFERENT test fails each run, and all three observed failures pass in isolation.** Seen so far: `demo_disconnect_reason_read_deadline` ("could not dial loopback" / "could not accept on loopback"), `test_patch_bridge_telemetry_offline_does_not_dispatch` ("expected persisted.telemetry_enabled to be enabled"), and `test_rest_taskchain_and_task_subscription_handlers` ("delete must report removed:true"). Across 8 observed parallel runs by three separate agents: 244/244 ×3, plus single failures in the above. Tracked as `iss_18dc4e2a4cb35724`. **Before blaming a change, re-run the single test with `-define:ODIN_TEST_NAMES=http.<name>`** — all three passed that way. **`-define:ODIN_TEST_THREADS=1` is the reliable gate: verified `Finished 244 tests in 5m31.611226049s. All tests were successful.`** (and that run was made at host load average ~8.72 with another full suite running, so it survived heavy EXTERNAL contention — what it isolates is the suite's own intra-suite parallelism, not all contention). Note the runtimes separate two distinct causes: `demo_disconnect_reason_read_deadline` runs in 0.16s alone and fails with bind errors ("could not dial/accept on loopback") — a fixed-port race; the other two take 12s and 14s alone and fail on a wrong RESULT — shared test-DB/timing contention. A fix for one is not a fix for the other. Treat "N/244 with a different N each time" as the signature of this flake, not of a regression. **TRIAGE RULE, and read it before you believe any reported test name: the name the runner reports is the LAST assertion to fail, not the cause. Scroll back to the FIRST error in the output.** Verified 2026-10-07: a reported `test_patch_bridge_telemetry_dispatches_runtime_command` had its real first error 14 lines earlier at `bridge_telemetry_test.odin:107` — the fixture's `sqlite.run_migrations` returning `Internal_Error`. **So the cause count is TWO, not three or four:** (a) the loopback bind race, and (b) **per-test SQLite fixture setup failing under concurrent load**, which is the single cause behind the telemetry failures AND the `SQLITE EXEC ERROR: disk I/O error` in `setup_update_test_fixture` (disk exhaustion ruled out: 337G free, 10% inodes). Start at per-test DB isolation and migration serialisation, not at the individual named tests. |
+| 2026-10-07 | **`odin test src/bridge` currently ABORTS before printing a summary, and it is NOT your change.** It ends `free(): invalid pointer`, exits **134** (SIGABRT), and prints **no** `Finished N tests` line, while reporting errors in `fs_management_test` (vault file read/grep/write), `shell_enc_spec_test` (pty plaintext frame) and `bootstrap_template_engine_test` (`AGENTS.md should exist`). Because there is no summary, **a passing run and a failing run look identical at the tail**, and because it aborts, tests after the abort never run. Confirmed pre-existing by running the suite with one change inverted and diffing the error sets — byte-identical, same abort at the same output line, same RC. **So do not read this as a regression, and do not read a tail-of-output as evidence either way.** To verify your own tests in this package, name them: `-define:ODIN_TEST_NAMES=main.<test>,main.<test2>` — that path prints a real `Finished N tests ... All tests were successful.` |
+| 2026-10-07 | **`tests/*.odin` are standalone `odin run` PROGRAMS, not `@(test)` suites — and both wrong invocations exit 0.** `odin test tests` fails with `Syntax Error: Different package name` (each file is its own package), and `odin test tests/<file>.odin -file` prints **`No tests to run.`** and exits 0, which reads exactly like a pass of a suite that has no tests. The correct form is at the top of each file: `odin run tests/<file>.odin -file -collection:odin_test=src`. They assert with their own `fail`/`assert_eq` helpers and print **`ALL PASS`** on success, so **`ALL PASS` is the string to grep for** — not `Finished`/`successful`. The device-grant suites (`device_auth_verify_approve_test`, `device_auth_token_poll_test`, `device_auth_security_matrix_test`, `device_auth_grant_store_test`) all live here, so a change to `src/hub/service/device_auth` is NOT covered by any `odin test` invocation. |
+| 2026-10-07 | **Two traps while bringing the isolated stack up by hand.** (a) **`ham-ctl shell serve` starts the process even if your parsing of its JSON reply fails** — if you re-run it thinking the first one did not start, you get two hubs on one DB and the second dies with `SQLITE EXEC ERROR: database is locked` / `migration failed: 001_foundation.sql`. That error means *you started two*, not that the DB is corrupt: kill the extras and the same DB migrates fine. Check with `pgrep -af <binary-path>` before re-issuing a `serve`. (b) **`pkill -f <pattern>` matches your own shell command line**, because the agent shell wraps commands in an `eval '<your command>'` that contains the pattern — so `pkill -f ham-hub` kills the shell running it and you get exit **144** with the cleanup half-done. Kill by PID (`for p in $(pgrep -f ...); do kill $p; done`) or use `ham-ctl shell kill <session>`. |
+| 2026-10-07 | **An `odin test`/`odin check` line WITHOUT `-collection:odin_test=src` fails instantly — and piped through `tail` it still exits 0, so it reads as a pass.** Every package in this tree imports through the `odin_test:` collection, so omitting the flag is not a style choice, it is a hard failure (`Error: Unknown library collection`). The trap is the reporting, not the error: `odin test ... | tail -3` exits with **tail's** status, so a copy-pasted command missing the flag prints a few lines of error and returns success. Caught by the REQ-IMPL-3 reviewer in a handoff's own command list. **If you quote a test command anywhere — a comment, a handoff, this doc — include the flag**, and if you pipe it, check the real status with `${PIPESTATUS[0]}` or drop the pipe. |
+| 2026-10-07 | **A COUNT OR A LINE NUMBER IN A COMMENT IS A FUTURE LIE — and "N per X" is a CLASS to sweep for, not a sentence to fix.** Four copies of one false per-call-site claim in `bridge_credential.odin` survived **three** separate fix passes, each pass believing it had got them all. Five numbers rotted during this chain alone: `verify_credential_miss` call sites (2→6), its `-o:speed` dummy refs (2→4), two hardcoded `:line` refs that both moved, `service/bridge` tests (16→26), `transport/http` tests (244→248). Write the **invariant** instead — *"every call site"*, *"one copy of its body, however many callers exist"*, *"an owned string for every text column"* — which stays true when the count changes. Sweep a file you touch with:<br><br>`grep -nE "at each caller\|per caller\|per call site\|once per surviving\|one ref per\|both call sites" <file>` — expect only NEGATIONS<br>`grep -nE "^//.*\.(odin\|nix\|sql):[0-9]" <file>` — expect NONE<br><br>**The grep is a floor, not a ceiling.** The fourth surviving copy used grammar none of those patterns matched and was found only by reading the prose, so a clean sweep is **not** proof. The chain description carries this as a chain-wide rule. (The two greps miss counted nouns too — `"thirteen owned strings"`, `"the three fields below"` — so also scan for number-words next to a plural.) |
 | 2026-10-07 | **`fmt.tprintf` cannot carry a literal `{`:** this project's Odin `fmt` uses `{}` verbs, so `fmt.tprintf("{\"k\":\"%s\"}", v)` yields `%!(MISSING CLOSE BRACE)...`. Build JSON test bodies with `strings.concatenate` instead. The same applies to `assert_eq` labels using `{}`. |
 | 2026-09-03 | ~~**Odin toolchain:** use `odin-dev-2026-05` from `/nix/store`; the `2026-07a` build errors on `.Haiku` OS enum in `wrapper_endpoint.odin`.~~ **Stale — see the 2026-10-07 row above.** |
 | 2026-09-03 | **Project creation:** field is `default_path`, not `path`. |

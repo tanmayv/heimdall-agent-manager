@@ -6,12 +6,6 @@ Bridge_Status :: enum {
 	Revoked,
 }
 
-Enrollment_Status :: enum {
-	Pending,
-	Consumed,
-	Revoked,
-	Expired,
-}
 
 Bridge :: struct {
 	bridge_id: string,
@@ -57,9 +51,9 @@ Bridge_Provider_Capability :: struct {
 //
 // It exists because the REQ-SHELL-14 sweep reads bridges on the reaper's
 // process-scoped thread, which has no per-request arena: anything allocated there
-// stays allocated. The repository's row reader hands back thirteen owned strings, so a
-// caller that wanted one field and dropped the value leaked the other twelve, every
-// sweep, forever. Mirrors domain.agent_instance_destroy, which exists for the same
+// stays allocated. The repository's row reader hands back an owned string for every text
+// column, so a caller that wanted one field and dropped the value leaked all the rest,
+// every sweep, forever. Mirrors domain.agent_instance_destroy, which exists for the same
 // reason on the same thread.
 bridge_destroy :: proc(b: ^Bridge) {
 	if b == nil do return
@@ -86,18 +80,6 @@ bridge_destroy :: proc(b: ^Bridge) {
 	b^ = Bridge{}
 }
 
-Bridge_Enrollment :: struct {
-	enrollment_id: string,
-	owner_user_id: User_ID,
-	label: string,
-	token_hash: string,
-	status: Enrollment_Status,
-	expires_at: string,
-	consumed_at: string,
-	consumed_by_bridge_id: string,
-	created_at: string,
-	updated_at: string,
-}
 
 bridge_status_string :: proc(status: Bridge_Status) -> string {
 	switch status {
@@ -108,12 +90,3 @@ bridge_status_string :: proc(status: Bridge_Status) -> string {
 	return "offline"
 }
 
-enrollment_status_string :: proc(status: Enrollment_Status) -> string {
-	switch status {
-	case .Pending: return "pending"
-	case .Consumed: return "consumed"
-	case .Revoked: return "revoked"
-	case .Expired: return "expired"
-	}
-	return "pending"
-}

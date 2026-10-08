@@ -198,28 +198,56 @@ def test_hub_artifact_api_overhaul() -> None:
                 "X-authentik-name": "Test Owner",
             }
 
-            # 1. Enroll bridge and create agent instance for agent actions
-            enroll_cmd = [
-                str(bridge_bin),
-                "enroll",
-                "--hub", hub_url,
-                "--name", "test-bridge",
-                "--bridge-token-file", str(bridge_token_file),
-            ]
-            status_enr, enroll_data, _ = http_request(
-                f"{hub_url}/api/v1/bridge-enrollments",
+            # 1. Enroll a bridge through the BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9),
+            #    then create an agent instance for the agent actions below.
+            #
+            # Replaces the deleted pair -- POST /api/v1/bridge-enrollments for a
+            # one-time token, then `ham-bridge enroll --enrollment-token` to exchange
+            # it. Both the endpoint and that flag are gone.
+            #
+            # The three HTTP steps are driven here rather than shelling out to
+            # `ham-bridge enroll --ui`, which blocks waiting for an approval. The
+            # credential is written to the same token file the bridge is started with.
+            #
+            # Hard refusals: bridge_public_key must be a 130-char lowercase-hex
+            # uncompressed P-256 point; bridge_key_fingerprint must NOT be sent (the
+            # Hub derives it and refuses a disagreeing one); PKCE is mandatory, S256.
+            status_az, az_data, _ = http_request(
+                f"{hub_url}/api/v1/device/authorize",
                 method="POST",
-                data={"label": "test-bridge"},
+                data={"client": "ham-bridge", "device_label": "test-bridge", "os": "linux",
+                      "os_user": "tester", "bridge_public_key": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+                      "code_challenge": "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI", "code_challenge_method": "S256"},
+            )
+            assert status_az == 200, f"device authorize failed: {status_az} {az_data}"
+            user_code = az_data["data"]["user_code"]
+            device_code = az_data["data"]["device_code"]
+
+            status_ap, ap_data, _ = http_request(
+                f"{hub_url}/api/v1/device/approve",
+                method="POST",
+                data={"user_code": user_code, "approve": True},
                 headers=auth_headers,
             )
-            if status_enr in (200, 201) and isinstance(enroll_data, dict):
-                enrollment_token = enroll_data.get("data", {}).get("enrollment_token") or enroll_data.get("enrollment_token")
-                if enrollment_token:
-                    enroll_cmd.extend(["--enrollment-token", enrollment_token])
-            enroll_res = run_cmd(enroll_cmd, env=env)
-            assert enroll_res.returncode == 0, f"ham-bridge enroll failed: {enroll_res.stderr} {enroll_res.stdout}"
-            bridge_token = bridge_token_file.read_text().strip()
-            assert bridge_token, "Bridge token file is empty"
+            assert status_ap == 200, f"device approve failed: {status_ap} {ap_data}"
+
+            status_tk, tk_data, _ = http_request(
+                f"{hub_url}/api/v1/device/token",
+                method="POST",
+                data={"device_code": device_code, "code_verifier": "heimdall-req-impl-6-test-code-verifier-aaaa"},
+            )
+            assert status_tk == 200, f"device token failed: {status_tk} {tk_data}"
+            bridge_token = tk_data["data"]["access_token"]
+            assert bridge_token, "device flow issued no access token"
+            bridge_token_file.write_text(bridge_token)
+            bridge_token_file.chmod(0o600)
+            # The refresh half goes beside it under the suffix the bridge itself uses,
+            # so a bridge started with --bridge-token-file can renew.
+            refresh_token = tk_data["data"].get("refresh_token", "")
+            if refresh_token:
+                refresh_file = bridge_token_file.with_name(bridge_token_file.name + ".refresh")
+                refresh_file.write_text(refresh_token)
+                refresh_file.chmod(0o600)
 
             # Create an agent and an instance
             status, agent_data, _ = http_request(

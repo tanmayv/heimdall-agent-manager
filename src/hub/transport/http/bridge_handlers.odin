@@ -40,74 +40,6 @@ Bridge_Handlers :: struct {
 	lsp_sessions: ^Lsp_Session_Registry,
 }
 
-create_bridge_enrollment_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
-	if !ok do return auth_resp
-	label := json_string(req.body, "label")
-	if json_key_present(req.body, "expires_at") do return respond_error(domain.domain_error(.Validation_Failed, "expires_at is not accepted; use expires_in_seconds"), req.request_id)
-	expires_in_seconds := json_int(req.body, "expires_in_seconds", 900)
-	if expires_in_seconds <= 0 || expires_in_seconds > 86400 do return respond_error(domain.domain_error(.Validation_Failed, "expires_in_seconds must be between 1 and 86400"), req.request_id)
-	expires_at := platform.expires_at_after_seconds(expires_in_seconds)
-	result, result_ok, err := bridge_service.create_enrollment(h.bridges, auth_ctx, bridge_service.Create_Enrollment_Input{label = label, expires_at = expires_at})
-	if !result_ok do return respond_error(err, req.request_id)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"enrollment_id\":\"")
-	write_handler_json_string(&b, result.enrollment.enrollment_id)
-	strings.write_string(&b, "\",\"expires_at\":\"")
-	write_handler_json_string(&b, result.enrollment.expires_at)
-	strings.write_string(&b, "\",\"setup_command\":\"ham-bridge enroll --hub $HAM_HUB_URL\",\"enrollment_token\":\"")
-	write_handler_json_string(&b, result.token)
-	strings.write_string(&b, "\"}")
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
-}
-
-list_bridge_enrollments_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
-	if !ok do return auth_resp
-	enrollments, err := bridge_service.list_enrollments(h.bridges, auth_ctx)
-	if err.code != .None do return respond_error(err, req.request_id)
-	b := strings.builder_make()
-	strings.write_byte(&b, '[')
-	for enrollment, i in enrollments {
-		if i > 0 do strings.write_byte(&b, ',')
-		write_enrollment_json(&b, enrollment)
-	}
-	strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
-}
-
-revoke_bridge_enrollment_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
-	if !ok do return auth_resp
-	enrollment_id := suffix_after(req.path, "/api/v1/bridge-enrollments/")
-	enrollment, revoke_ok, err := bridge_service.revoke_enrollment(h.bridges, auth_ctx, enrollment_id)
-	if !revoke_ok do return respond_error(err, req.request_id)
-	b := strings.builder_make()
-	write_enrollment_json(&b, enrollment)
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
-}
-
-enroll_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
-	token, token_ok := bearer_token(req)
-	if !token_ok || !strings.has_prefix(token, "hbe_") do return respond_error(domain.domain_error(.Unauthenticated, "enrollment bearer token is required"), req.request_id)
-	hostname := json_string(req.body, "hostname")
-	if hostname == "" do return respond_error(domain.domain_error(.Validation_Failed, "machine.hostname is required"), req.request_id)
-	result, ok, err := bridge_service.enroll_bridge(h.bridges, bridge_service.Enroll_Bridge_Input{enrollment_token = token, machine_hostname = hostname, machine_os = json_string(req.body, "os"), machine_arch = json_string(req.body, "arch"), capabilities_json = req.body, hub_url = json_string(req.body, "hub_url")})
-	if !ok do return respond_error(err, req.request_id)
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"bridge_id\":\"")
-	write_handler_json_string(&b, result.bridge.bridge_id)
-	strings.write_string(&b, "\",\"bridge_token\":\"")
-	write_handler_json_string(&b, result.bridge_token)
-	strings.write_string(&b, "\",\"hub_url\":\""); write_handler_json_string(&b, result.bridge.hub_url); strings.write_string(&b, "\"}")
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
-}
-
 list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
@@ -2179,16 +2111,6 @@ bearer_token :: proc(req: Request) -> (string, bool) {
 suffix_after :: proc(value, prefix: string) -> string {
 	if strings.has_prefix(value, prefix) do return value[len(prefix):]
 	return ""
-}
-
-write_enrollment_json :: proc(b: ^strings.Builder, e: domain.Bridge_Enrollment) {
-	strings.write_string(b, "{\"enrollment_id\":\""); write_handler_json_string(b, e.enrollment_id)
-	strings.write_string(b, "\",\"label\":\""); write_handler_json_string(b, e.label)
-	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, domain.enrollment_status_string(e.status))
-	strings.write_string(b, "\",\"expires_at\":\""); write_handler_json_string(b, e.expires_at)
-	strings.write_string(b, "\",\"consumed_at\":\""); write_handler_json_string(b, e.consumed_at)
-	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, e.created_at)
-	strings.write_string(b, "\"}")
 }
 
 write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent_service.Agent_Service, catalog: ^bridge_service.Bridge_Update_Catalog = nil) {

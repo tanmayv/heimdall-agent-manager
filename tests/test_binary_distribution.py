@@ -428,7 +428,17 @@ def dry_run_common_asserts(res, target, install_dir_hint):
     assert install_dir_hint in install_line, f'install dir {install_dir_hint} missing'
     assert 'PATH' in out, 'dry run must mention PATH handling'
     assert '--force-service' in out, 'dry run must mention --force-service'
-    assert 'heimdall enroll' in out, 'onboarding must show the heimdall enroll command'
+    # INVERTED (REQ-ENROLL-9): was `'heimdall enroll' in out`. That command is
+    # DELETED along with the `hbe_` one-time token; onboarding now shows the
+    # browser-approved device flow. Both halves matter: the presence half pins the
+    # new command, and the absence half is what catches a revert or a half-applied
+    # merge putting the old one back -- a presence-only assert passes happily with
+    # both flows in the file.
+    assert 'ham-bridge enroll --ui' in out, (
+        'onboarding must show the device-flow enroll command')
+    assert 'heimdall enroll' not in out, (
+        'deleted `heimdall enroll` command reappeared in onboarding')
+    assert 'hbe_' not in out, 'deleted hbe_ token vocabulary reappeared in onboarding'
     if target.startswith('linux'):
         # REQ-INST-28: ExecStart and the interpolated Environment= values are
         # QUOTED now, because systemd splits those lines on unquoted whitespace
@@ -479,7 +489,19 @@ def test_install_sh_dry_run_hub(ctx):
     assert 'release: custom-hub-release' in res.stdout
     assert f'would download: {hub}/heimdall-local-{target}.tar.gz' in res.stdout
     assert f'would download: {hub}/SHA256SUMS' in res.stdout
-    assert f'heimdall enroll hbe_... --hub {hub}' in res.stdout
+    # INVERTED (REQ-ENROLL-9). Note the HOST CHANGE and that it is not a typo:
+    # `--ui` takes the UI ORIGIN, and ui_origin_for_hub (install.sh:1186) relabels a
+    # leading `hub.` to `heimdall.`, mirroring BridgesPanel's inverse mapping,
+    # because `--ui` wants the origin a human opens in a browser rather than the hub
+    # API host. hub here is http://hub.example.test, so the origin is
+    # http://heimdall.example.test.
+    ui_origin = hub.replace('://hub.', '://heimdall.')
+    assert f'ham-bridge enroll --ui {ui_origin}' in res.stdout, (
+        f'onboarding must show `ham-bridge enroll --ui {ui_origin}`')
+    assert 'hbe_' not in res.stdout, 'deleted hbe_ token vocabulary reappeared'
+    assert f'ham-bridge enroll --ui {hub}' not in res.stdout, (
+        'onboarding passed the hub API url to --ui instead of the UI origin; '
+        'that 404s the authorize call on every `hub.`-prefixed deployment')
     # The hub URL must be baked into the rendered service file as well as the
     # download URLs and onboarding text (tarball + sums + unit + onboarding).
     assert res.stdout.count(hub) >= 4, 'hub URL must appear in downloads, unit and onboarding'
@@ -2860,7 +2882,11 @@ def test_heimdall_status_schema(ctx):
                     'Bridge loopback (:49323)', 'Binaries'):
         assert section in out, f'status report missing section {section!r}'
     assert f'config:       {config} (missing)' in out, 'missing config must be reported'
-    assert 'hub url:      (not set — run: heimdall enroll hbe_... --hub <url>)' in out
+    # INVERTED (REQ-ENROLL-9): the hint names the device flow now. Ground truth is
+    # src/manager/status.odin:60 -- a status report whose remedy line names a deleted
+    # command is worse than no hint, because the operator trusts it and loses time.
+    assert 'hub url:      (not set — run: ham-bridge enroll --ui <your-heimdall-url>)' in out
+    assert 'hbe_' not in out, 'deleted hbe_ token vocabulary reappeared in status output'
     assert '(this binary)' in out and 'heimdall' in out
 
 
@@ -3228,8 +3254,27 @@ def test_self_hosting_documents_installer(ctx):
     assert one_liner in part2, 'Part 2 must show the curl|bash one-liner installer'
     assert 'Quick install' in part2 and 'recommended' in part2.lower(), (
         'Part 2 must present the installer as the recommended path')
-    for command in ('heimdall enroll', 'heimdall status', 'heimdall update'):
+    # INVERTED (REQ-ENROLL-9): was ('heimdall enroll', 'heimdall status',
+    # 'heimdall update'). `heimdall enroll` is DELETED, so a test demanding the doc
+    # document it was pinning a dead command and would have fought whoever fixed the
+    # doc.
+    for command in ('ham-bridge enroll --ui', 'heimdall status', 'heimdall update'):
         assert command in part2, f'Part 2 must document {command}'
+
+    # The absence half, SHAPED DELIBERATELY. Note what is NOT asserted: a bare
+    # `'heimdall enroll' not in part2`. Part 2 names the deleted commands on purpose,
+    # in one sentence telling an operator who came looking for them that all three are
+    # gone --- that discoverability IS the operator story REQ-ENROLL-9 owes, so a test
+    # forbidding the string outright would delete the most useful line in the section.
+    #
+    # What must be absent is the INSTRUCTIONAL form: a command an operator could paste.
+    for dead in ('heimdall enroll hbe_... --hub', '--enrollment-token',
+                 'ham-ctl bridge enroll-token --new\n'):
+        assert dead not in part2, (
+            f'Part 2 still instructs the operator to run the deleted {dead!r}')
+    # And the ceremony that cannot happen any more: a token "shown only once".
+    assert 'shown only once' not in part2, (
+        'Part 2 still promises a one-time token ceremony that no longer exists')
     assert part2.count('heimdall vault set-key <64-hex>') >= 2, (
         'Part 2 must document vault setup in quick-install and bridge setup flows')
     for target in ('linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64'):
@@ -4597,17 +4642,21 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     runtime.mkdir(parents=True, exist_ok=True)
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    # Mock heimdall binary
+    # Mock heimdall binary.
+    #
+    # INVERTED (REQ-ENROLL-9): the `enroll <token>` branch is GONE, not reshaped.
+    # `heimdall enroll hbe_...` is deleted, and enrollment is no longer this binary's
+    # job at all --- the installer drives `ham-bridge enroll --ui` instead (mocked
+    # separately below). What is left here is the vault ceremony, which is unrelated
+    # to enrollment and unchanged.
+    #
+    # Leaving a dead `enroll` branch in the mock would be actively misleading: the
+    # installer would never call it, so it could rot indefinitely while looking like
+    # supported behaviour.
     mock_heimdall = bin_dir / 'heimdall'
     mock_heimdall.write_text(
         '#!/usr/bin/env bash\n'
-        'if [ "$1" = "enroll" ]; then\n'
-        '  token="$2"\n'
-        '  mkdir -p "$HOME/.config/heimdall"\n'
-        '  echo "token_$token" > "$HOME/.config/heimdall/bridge-token"\n'
-        '  echo "mock: enrolled with $token"\n'
-        '  exit 0\n'
-        'elif [ "$1" = "vault" ]; then\n'
+        'if [ "$1" = "vault" ]; then\n'
         '  if [ "${2:-}" = "--help" ]; then\n'
         '    echo "Commands:"\n'
         '    echo "  master-password  Configure vault master password"\n'
@@ -4637,15 +4686,56 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     )
     mock_systemctl.chmod(0o755)
 
+    # Mock ham-bridge --- the device flow (REQ-ENROLL-9).
+    #
+    # install.sh invokes "$install_dir/ham-bridge" by ABSOLUTE PATH, not via PATH
+    # lookup (install.sh:1354), so this must live in bin_dir to be found.
+    #
+    # It records its argv, because argv is the only proof the installer actually
+    # drove the device flow: stdout can be made to say anything, but the flags
+    # passed to the binary are the behaviour under test. It also prints the ceremony
+    # a real `ham-bridge enroll --ui` prints, so the test can prove the link and the
+    # short code reach the operator's terminal rather than being swallowed.
+    mock_bridge_argv = work / 'ham_bridge_argv.log'
+    mock_ham_bridge = bin_dir / 'ham-bridge'
+    mock_ham_bridge.write_text(
+        '#!/usr/bin/env bash\n'
+        f'echo "$*" >> "{mock_bridge_argv}"\n'
+        'if [ "$1" = "enroll" ]; then\n'
+        '  token_file=""\n'
+        '  while [ "$#" -gt 0 ]; do\n'
+        '    if [ "$1" = "--bridge-token-file" ]; then token_file="$2"; fi\n'
+        '    shift\n'
+        '  done\n'
+        '  echo "Open this link on any device to approve:  http://heimdall.example.test/enroll/device"\n'
+        '  echo "User code: WDJB-MJHT"\n'
+        '  echo "Key fingerprint: SHA256:mockmockmockmockmockmockmockmockmockmockmoc"\n'
+        '  if [ -n "$token_file" ]; then\n'
+        '    mkdir -p "$(dirname "$token_file")"\n'
+        '    echo "mock-device-flow-credential" > "$token_file"\n'
+        '  fi\n'
+        '  exit 0\n'
+        'fi\n'
+        'exit 0\n'
+    )
+    mock_ham_bridge.chmod(0o755)
+
     env = sandbox_install_env(home, runtime)
     cur_path = env['PATH']
     env['PATH'] = f"{bin_dir}{os.pathsep}{cur_path}"
     env['HEIMDALL_INTERACTIVE'] = '1'
 
-    # Scenario A: Full interactive flow (Hub URL prompt, enrollment token, bridge startup, vault password)
+    # Scenario A: full interactive flow (Hub URL prompt, browser-approved
+    # enrollment, bridge startup, vault password).
+    #
+    # INVERTED (REQ-ENROLL-9): the `hbe_abc123xyz` line is GONE. There is nothing
+    # secret to type any more --- that is the whole point of the requirement, and the
+    # shrinking of this heredoc from five lines to four is the clearest statement of
+    # it in this suite. Feeding a token line to a prompt that no longer exists would
+    # desynchronise every answer after it, so this is a correctness fix as well as a
+    # semantic one.
     simulated_inputs = (
         "  http://my-test-hub.example.com///  \n"
-        "hbe_abc123xyz\n"
         "y\n"
         "test-secret-password\n"
         "test-secret-password\n"
@@ -4675,15 +4765,50 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     out = proc.stdout + proc.stderr
     assert 'Enter Hub URL:' in out, 'Missing Hub URL prompt'
     assert 'END_TEST_HUB_URL: http://my-test-hub.example.com' in out, 'Hub URL trailing slashes or spaces not cleaned'
-    assert 'Enter one-time enrollment token (hbe_...):' in out, 'Missing enrollment token prompt'
+    # INVERTED (REQ-ENROLL-9): was `'Enter one-time enrollment token (hbe_...):' in out`.
+    # The operator is told what will happen before it happens --- a link, a short code,
+    # a fingerprint to compare --- because an unexplained code on screen is
+    # indistinguishable from a phishing prompt.
+    assert 'Enrolling node (browser approval required)' in out, (
+        'Missing device-flow enrollment banner')
+    assert 'Nothing secret is copied between machines' in out, (
+        'onboarding did not state that no secret is copied')
+    # The ceremony ham-bridge itself prints must reach the operator's terminal rather
+    # than being swallowed by the installer: an approval code nobody can see cannot be
+    # approved.
+    assert 'User code: WDJB-MJHT' in out, "ham-bridge's user code was not surfaced"
+    # The absence half --- this is the half that catches a revert.
+    assert 'Enter one-time enrollment token' not in out, 'deleted token prompt reappeared'
+    assert 'hbe_' not in out, 'deleted hbe_ token vocabulary reappeared'
     assert 'Node successfully enrolled.' in out, 'Missing enrollment success message'
+    # ARGV, not stdout: proof the device flow was actually invoked, with the UI ORIGIN
+    # (ui_origin_for_hub relabels a leading `hub.` to `heimdall.`; this hub has no
+    # `hub.` label so it passes through unchanged) and a credential destination.
+    argv = mock_bridge_argv.read_text() if mock_bridge_argv.exists() else ''
+    assert 'enroll --ui http://my-test-hub.example.com' in argv, (
+        f'ham-bridge was not invoked as `enroll --ui <origin>`:\n{argv}')
+    assert '--bridge-token-file' in argv, (
+        f'ham-bridge enroll was not told where to write the credential:\n{argv}')
+    assert '--enrollment-token' not in argv, (
+        f'installer passed the deleted --enrollment-token flag:\n{argv}')
     assert ('Bridge service started via systemctl --user.' in out or 'Bridge service restarted via systemctl --user.' in out), 'Missing bridge service start message'
     assert 'Enrollment verified: bridge token is present' in out, 'Missing bridge token verification'
     assert 'Bridge service is running (active).' in out, 'Missing bridge active verification'
     assert 'Vault encryption successfully configured.' in out, 'Missing vault success message'
 
+    # The credential is delivered by `ham-bridge enroll` directly now, not pasted in
+    # by the operator. This asserts the installer pointed the device flow at the right
+    # destination and that something landed there --- deliberately NOT a credential
+    # FORMAT assertion, because the format is REQ-IMPL-3's business and this test's
+    # subject is the installer's ceremony. What it does pin is that the `hbe_` token
+    # is not what lands there.
     token_file = home / '.config' / 'heimdall' / 'bridge-token'
-    assert token_file.exists() and 'hbe_abc123xyz' in token_file.read_text(), 'Bridge token file was not written'
+    assert token_file.exists(), 'Bridge credential file was not written by the device flow'
+    credential = token_file.read_text()
+    assert 'mock-device-flow-credential' in credential, (
+        f'credential was not delivered by `ham-bridge enroll`: {credential!r}')
+    assert 'hbe_' not in credential, (
+        f'deleted hbe_ one-time token was written as the credential: {credential!r}')
     vault_file = home / '.config' / 'heimdall' / 'vault_status'
     assert vault_file.exists() and 'test-secret-password' in vault_file.read_text(), 'Vault password was not delivered'
 
@@ -4735,7 +4860,9 @@ def test_install_sh_enrollment_noninteractive_invariants(ctx):
     assert 'Enter one-time enrollment token' not in res_dry.stdout, '--dry-run must not prompt for enrollment token'
     assert 'Do you wish to enable client vault encryption?' not in res_dry.stdout, '--dry-run must not prompt for vault'
 
-    # 2. Run standalone enrollment test suite covering all 12 scenario checks
+    # 2. Run the standalone enrollment suite (17 tests; Test 14 was deleted --- see
+    #    its tombstone in that file for why a pty test that reached the real session
+    #    bus is never coming back in that shape).
     test_script = ROOT / 'tests' / 'test_installer_enrollment.sh'
     assert test_script.exists(), 'test_installer_enrollment.sh missing'
     res_script = run(['bash', str(test_script)], env=env, timeout=120)

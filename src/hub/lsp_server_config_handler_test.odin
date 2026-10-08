@@ -39,39 +39,12 @@ test_lsp_server_config_slash_dir_prefix_rejected :: proc(t: ^testing.T) {
 	alice := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "alice"}}
 
 	// --- Enroll a bridge for alice ---
-	enroll_created := api_http.router_dispatch(&graph.router, api_http.Request{
-		method     = "POST",
-		path       = "/api/v1/bridge-enrollments",
-		body       = `{"label":"Alice Bridge"}`,
-		request_id = "req_lsph_1",
-		remote_addr = "127.0.0.1",
-		headers    = alice[:],
-	})
-	testing.expect(t, enroll_created.status == 201, "bridge enrollment must succeed")
-
-	enrollment_token := ""
-	if idx := strings.index(enroll_created.body, "\"enrollment_token\":\""); idx >= 0 {
-		rest := enroll_created.body[idx + len("\"enrollment_token\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do enrollment_token = rest[:end]
-	}
-
-	enroll_bearer := fmt.tprintf("Bearer %s", enrollment_token)
-	enroll_auth := [?]contracts.HTTP_Header{{name = "Authorization", value = enroll_bearer}}
-	enrolled := api_http.router_dispatch(&graph.router, api_http.Request{
-		method     = "POST",
-		path       = "/api/v1/bridges/enroll",
-		body       = `{"machine":{"hostname":"lsp-host"},"capabilities":[]}`,
-		request_id = "req_lsph_2",
-		remote_addr = "127.0.0.1",
-		headers    = enroll_auth[:],
-	})
-	testing.expect(t, enrolled.status == 201, "bridge enroll must succeed")
-
-	bridge_id := ""
-	if idx := strings.index(enrolled.body, "\"bridge_id\":\""); idx >= 0 {
-		rest := enrolled.body[idx + len("\"bridge_id\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do bridge_id = rest[:end]
-	}
+	// Bridge provisioned through the DEVICE FLOW. See device_enroll_support_test.odin
+	// for why the old bridge-enrollments + bridges/enroll pair is gone, and for the
+	// three requirements (P-256 key shape, hub-derived fingerprint, mandatory S256
+	// PKCE) that make this more than two lines.
+	bridge_id, _, enroll_ok := device_enroll_test_bridge(&graph, alice[:], "Alice Bridge")
+	testing.expect(t, enroll_ok, "device-flow bridge provisioning failed")
 	testing.expect(t, bridge_id != "", "bridge_id must be non-empty after enrollment")
 
 	lsp_path := fmt.tprintf("/api/v1/bridges/%s/lsp-servers", bridge_id)
@@ -155,39 +128,12 @@ test_lsp_server_config_dir_pattern_and_multilang_rest_roundtrip :: proc(t: ^test
 
 	alice := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "alice"}}
 
-	enroll_created := api_http.router_dispatch(&graph.router, api_http.Request{
-		method      = "POST",
-		path        = "/api/v1/bridge-enrollments",
-		body        = `{"label":"Alice Bridge Pattern"}`,
-		request_id  = "req_lspp_1",
-		remote_addr = "127.0.0.1",
-		headers     = alice[:],
-	})
-	testing.expect(t, enroll_created.status == 201, "bridge enrollment must succeed")
-
-	enrollment_token := ""
-	if idx := strings.index(enroll_created.body, "\"enrollment_token\":\""); idx >= 0 {
-		rest := enroll_created.body[idx + len("\"enrollment_token\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do enrollment_token = rest[:end]
-	}
-
-	enroll_bearer := fmt.tprintf("Bearer %s", enrollment_token)
-	enroll_auth := [?]contracts.HTTP_Header{{name = "Authorization", value = enroll_bearer}}
-	enrolled := api_http.router_dispatch(&graph.router, api_http.Request{
-		method      = "POST",
-		path        = "/api/v1/bridges/enroll",
-		body        = `{"machine":{"hostname":"lsp-pattern-host"},"capabilities":[]}`,
-		request_id  = "req_lspp_2",
-		remote_addr = "127.0.0.1",
-		headers     = enroll_auth[:],
-	})
-	testing.expect(t, enrolled.status == 201, "bridge enroll must succeed")
-
-	bridge_id := ""
-	if idx := strings.index(enrolled.body, "\"bridge_id\":\""); idx >= 0 {
-		rest := enrolled.body[idx + len("\"bridge_id\":\""):]
-		if end := strings.index_byte(rest, '"'); end >= 0 do bridge_id = rest[:end]
-	}
+	// Bridge provisioned through the DEVICE FLOW. See device_enroll_support_test.odin
+	// for why the old bridge-enrollments + bridges/enroll pair is gone, and for the
+	// three requirements (P-256 key shape, hub-derived fingerprint, mandatory S256
+	// PKCE) that make this more than two lines.
+	bridge_id, _, enroll_ok := device_enroll_test_bridge(&graph, alice[:], "Alice Bridge")
+	testing.expect(t, enroll_ok, "device-flow bridge provisioning failed")
 	testing.expect(t, bridge_id != "", "bridge_id must be non-empty")
 
 	lsp_path := fmt.tprintf("/api/v1/bridges/%s/lsp-servers", bridge_id)

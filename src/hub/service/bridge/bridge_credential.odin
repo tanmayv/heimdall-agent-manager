@@ -14,8 +14,12 @@
 //
 // TOKEN FORMAT: `<prefix><record_id>.<secret_hex>`
 //
-//   hbe_benr_19fa3c....<64 hex chars>     enrolment token
-//   hbr_brg_19fa3d....<64 hex chars>      bridge token
+//   hba_brg_19fa3d....<64 hex chars>      bridge access token (expiring)
+//   hbf_brg_19fa3d....<64 hex chars>      bridge refresh token (single-use)
+//
+// `hbr_` had this same shape and was the non-expiring bridge token; it is no
+// longer issued or accepted. There was also a one-time `benr_` enrolment token,
+// deleted with the flow that used it.
 //
 // The record id is PUBLIC and is the lookup key; only the secret after the "."
 // is confidential. This shape is the reason a random salt is possible at all:
@@ -54,7 +58,7 @@
 // Every value is consumed within the request that produced it — written to
 // SQLite (which copies via bind_text) or serialised into a response — and no
 // call site frees it. This is deliberate, not an oversight: returning heap
-// memory here would leak at all four call sites.
+// memory here would leak at every `issue_credential` call site.
 package bridge
 
 import "core:crypto"
@@ -62,10 +66,18 @@ import "core:crypto/sha2"
 import "core:strings"
 import platform "odin_test:hub/platform"
 
-// ENROLLMENT_TOKEN_PREFIX / BRIDGE_TOKEN_PREFIX are load-bearing beyond
-// cosmetics: enroll_bridge_handler rejects any bearer token that does not start
-// with "hbe_" before the service is ever called.
-ENROLLMENT_TOKEN_PREFIX :: "hbe_"
+// BRIDGE_TOKEN_PREFIX is the LEGACY non-expiring bridge credential. Nothing mints
+// one any more — REQ-IMPL-6 deleted that flow — and nothing authenticates one.
+//
+// THE CONSTANT SURVIVES ON PURPOSE, for recognition rather than acceptance:
+// verify_bridge_token matches this prefix so a bridge still carrying a pre-device-
+// flow credential is told to re-enroll instead of being handed a bare "invalid"
+// (see BRIDGE_LEGACY_CREDENTIAL_MESSAGE). Delete it only once old credentials can
+// no longer plausibly be in the field.
+//
+// ENROLLMENT_TOKEN_PREFIX is GONE with the one-time enrollment token it
+// named. There is no enrollment secret to prefix any more: enrollment is approved
+// in a browser and the credential is delivered to the bridge directly.
 BRIDGE_TOKEN_PREFIX :: "hbr_"
 
 // CREDENTIAL_SECRET_BYTES = 32 => 256 bits, hex-encoded to 64 chars.
@@ -126,6 +138,50 @@ hash_credential_secret :: proc(secret: string, entropy_source := platform.RANDOM
 
 // hash_credential_secret_with_salt is the deterministic core, split out so the
 // verify path and the tests can reproduce a digest from a known salt.
+//
+// DO NOT MAKE THIS ALLOCATION-FREE WITHOUT READING verify_credential_miss FIRST.
+// The two context.temp_allocator allocations below (hex_encode and
+// strings.concatenate) are what make this function — and therefore every caller,
+// including verify_credential and verify_credential_miss — impossible for the
+// compiler to eliminate. Allocating through the context's opaque allocator
+// pointer is an observable side effect, so LLVM cannot delete these calls even
+// when a caller discards the result.
+//
+// Rewriting this to use a stack buffer and a fixed-size array looks like a pure,
+// obviously-correct optimisation. It would make the whole chain pure — and
+// every PRODUCTION call site of verify_credential_miss discards its result with
+// `_ =` (the unit tests assert the returned bool instead, which is why a green
+// suite is no protection here).
+// A pure call whose result is unused is exactly what dead-code elimination
+// removes once it is inlined — and if that happens the miss path stops burning
+// the dummy hash, the timing difference between "no such row" and "wrong secret"
+// returns, and the bridge-existence oracle reopens. Silently: no test fails,
+// because the tests assert the returned bool and not that the work was done.
+//
+// If you need to make this allocation-free, give verify_credential_miss a real
+// data dependency (or @(optimization_mode="none")) in the same change, and verify
+// the result in the built binary rather than by reasoning. Find the call sites
+// and the surviving work without assuming how many there are:
+//
+//   grep -rn '_ = verify_credential_mis[s]' src/       # every discarding caller
+//   nix develop --command \
+//     odin build src/hub -collection:odin_test=src -out=/tmp/hub   # as flake.nix does
+//   A=$(strings -t x /tmp/hub | grep -m1 'sha256:v1:0\{32\}:0\{64\}' | awk '{print $1}')
+//   objdump -d /tmp/hub | grep "# *$A"                 # refs to the dummy hash
+//
+// Run it inside `nix develop`: outside it the build fails at LINK time with
+// `cannot find -lsqlite3`, which looks like your mistake and is not.
+//
+// HOW TO READ THE RESULT. Expect at least one reference somewhere. Do NOT expect
+// one per call site, and do not treat any ratio of refs to greps as the invariant:
+// LLVM tail-merges the identical dummy-hash block across sibling error paths
+// within a proc, so FEWER REFERENCES THAN CALL SITES IS NORMAL and is not a
+// regression — the single merged block still executes on every path that reaches
+// it. The ratio also moves on its own as callers are added and as the inliner's
+// decisions change, which is why it is not the thing to check.
+// ZERO references is the only failure signal: that means the work is gone.
+// At the default level the proc is not inlined at all and the one reference sits
+// inside verify_credential_miss itself.
 hash_credential_secret_with_salt :: proc(salt_hex, secret: string) -> string {
 	digest: [sha2.DIGEST_SIZE_256]byte
 	ctx: sha2.Context_256
@@ -184,6 +240,10 @@ verify_credential :: proc(stored_hash, secret: string) -> bool {
 	sep := strings.index(body, ":")
 	if sep <= 0 do return false
 	salt_hex := body[:sep]
+	// `expected` is bound only to reject a stored value with an empty digest half;
+	// it is deliberately NOT what gets compared. The comparison below covers the
+	// WHOLE stored string (prefix + salt + digest), which is strictly stronger —
+	// this is not an unused-variable bug.
 	expected := body[sep + 1:]
 	if salt_hex == "" || expected == "" do return false
 	recomputed := hash_credential_secret_with_salt(salt_hex, secret)
@@ -203,8 +263,58 @@ verify_credential :: proc(stored_hash, secret: string) -> bool {
 // whole token was the lookup key. Callers must run this on the not-found path
 // instead of returning early, and must return the identical error either way.
 //
-// It always returns false; the result exists only so the call cannot be
-// optimised away.
+// It always returns false, and every PRODUCTION call site discards the result
+// with `_ =`; the unit tests are the exception and consume the bool inside
+// `testing.expect`, which is consistent with the note below that those tests
+// assert the return value rather than that the hashing work was done.
+// Do not rely on a count here: the set of callers keeps growing (run
+// `grep -rn '_ = verify_credential_mis[s]' src/` for the current set — the
+// bracket keeps these comments out of their own results).
+//
+// WHAT ACTUALLY KEEPS THIS CALL ALIVE — and it is NOT the return value. A
+// dropped result does not stop dead-code elimination; a pure call whose value
+// is unused is exactly what LLVM may delete once it inlines. This call survives
+// because the chain is NOT pure: verify_credential -> hash_credential_secret_with_salt
+// ALLOCATES (strings.concatenate and hex_encode, both into context.temp_allocator,
+// reached through an opaque function pointer in Odin's implicit context). That is
+// an observable side effect, so the call is not DCE-eligible however its result
+// is treated. Measured on odin dev-2026-09 (the nix store path is named
+// odin-dev-2026-07a and the binary inside reports dev-2026-09 — one toolchain,
+// two labels), at every optimisation level the compiler offers:
+//   - NO -o: FLAG. This is what flake.nix's `odin build` invocation uses, and
+//     therefore what every shipped binary is built at. Here the proc is NOT
+//     inlined, so there is exactly one copy of its body and the dummy hash is
+//     referenced from exactly one place — inside verify_credential_miss —
+//     however many callers exist. What appears at the call sites is the CALL to
+//     this proc, not the dummy hash. At this level, do not look for the dummy
+//     hash at the callers; look for the call.
+//   - -o:minimal: same as the default.
+//   - -o:size / -o:speed / -o:aggressive: the proc IS inlined (its symbol is
+//     gone), and its body — dummy pointer, length 107, direct call to
+//     verify_credential — reappears at the call sites. Not necessarily once
+//     each: LLVM tail-merges the identical block across sibling error paths in
+//     the same proc, so there are legitimately fewer references than call sites.
+// Never eliminated at any level.
+//
+// THEREFORE THIS PROTECTION IS CONDITIONAL — read this before "optimising" the
+// hash. If hash_credential_secret_with_salt is ever made allocation-free (a stack
+// buffer and a fixed-size array are the obvious change, and it looks like a pure
+// refactor), this chain becomes pure, the dropped result becomes eliminable, and
+// the existence oracle below silently reopens WITH EVERY TEST STILL PASSING,
+// because the tests assert the return value and not that the work was performed.
+// No automated test protects this invariant. If you make that change, re-verify
+// the miss path in the built binary rather than by reasoning — see the recipe in
+// the hash_credential_secret_with_salt header, which locates the surviving
+// references without assuming which procs or how many call sites exist — or give
+// this proc a real data dependency instead.
+//
+// DOES NOT DEFEND AGAINST: the database half of the same oracle. This equalises
+// the salted hash and the constant-time compare — microseconds — but a miss still
+// skips the successful SQLite row fetch and column decode that a hit performs, and
+// that is plausibly the larger timing signal. The oracle is NARROWED, NOT CLOSED.
+// Closing it needs the lookup cost equalised too (e.g. a dummy query), which is a
+// larger change with its own risks and is not attempted here. Do not read this
+// proc as making enrolment-id enumeration infeasible.
 verify_credential_miss :: proc(secret: string) -> bool {
 	return verify_credential(CREDENTIAL_DUMMY_HASH, secret)
 }

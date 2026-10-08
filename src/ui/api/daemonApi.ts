@@ -347,31 +347,11 @@ export async function revokeBridge({ daemonUrl, clientToken, bridgeId }: { daemo
   });
 }
 
-// Enrollment ceremony: create a one-time enrollment token.
-export async function createBridgeEnrollment({ daemonUrl, clientToken, label, expiresInSeconds }: { daemonUrl: string; clientToken: string; label?: string; expiresInSeconds?: number }) {
-  const body: any = {};
-  if (label) body.label = label;
-  if (expiresInSeconds) body.expires_in_seconds = expiresInSeconds;
-  return requestJson(joinUrl(daemonUrl, '/api/v1/bridge-enrollments'), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${clientToken}` },
-    body,
-  });
-}
-
-export async function listBridgeEnrollments({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
-  return requestJson(joinUrl(daemonUrl, '/api/v1/bridge-enrollments'), {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${clientToken}` },
-  });
-}
-
-export async function revokeBridgeEnrollment({ daemonUrl, clientToken, enrollmentId }: { daemonUrl: string; clientToken: string; enrollmentId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/api/v1/bridge-enrollments/${encodeURIComponent(enrollmentId)}`), {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${clientToken}` },
-  });
-}
+// The three bridge-enrollment helpers are DELETED (REQ-ENROLL-9): they wrapped
+// POST/GET /api/v1/bridge-enrollments and DELETE /api/v1/bridge-enrollments/<id>,
+// which minted, listed and revoked the one-time enrollment token. All three now 404.
+// Enrollment is browser-approved and driven by the bridge, so there is nothing for a
+// client to mint and no enrollment rows to list.
 
 // Project bridge-paths (per-bridge override + advisory validation).
 export async function putProjectBridgePath({ daemonUrl, clientToken, projectId, bridgeId, path }: { daemonUrl: string; clientToken: string; projectId: string; bridgeId: string; path: string }) {

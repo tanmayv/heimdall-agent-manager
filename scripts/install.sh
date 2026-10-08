@@ -57,8 +57,8 @@ In an interactive terminal, prompts for Hub onboarding, enrollment, and vault se
                        <url>/SHA256SUMS (self-hosted hub mirror) and start the
                        service with --hub <url> as an explicit override.
                        Without --hub the service reads the hub URL from
-                       config.toml ([wrapper] daemon_url, written by
-                       'heimdall enroll'); nothing is baked into the unit.
+                       config.toml ([wrapper] daemon_url, written by the
+                       enrollment step); nothing is baked into the unit.
   --dry-run            print every planned action without writing anything
   --force-service      overwrite an existing, differing service file WITHOUT
                        keeping a .bak-<timestamp> backup (default: back up the
@@ -764,8 +764,13 @@ SOCAT
 # --- service templates (mirrors SELF_HOSTING.md sections 2.8 and 2.9) -------
 # REQ-INST-1: the unit carries --hub ONLY when the operator passed it
 # explicitly. Otherwise the bridge reads [wrapper] daemon_url from config.toml
-# (written by 'heimdall enroll') — the single source of truth — instead of a
-# baked-in URL beating the enrolled config on every start.
+# — the single source of truth — instead of a baked-in URL beating the enrolled
+# config on every start.
+#
+# REQ-ENROLL-9: that key is written by ensure_config_toml_hub_url below, after a
+# successful `ham-bridge enroll --ui`. It is NOT written by 'heimdall enroll',
+# which this task deleted --- attributing it to a command that no longer exists
+# sent the next reader looking for a writer that is not there.
 
 service_hub_flags_systemd() {
   if [ -n "$hub_url" ]; then printf ' \\\n    --hub "%s"' "$hub_url"; fi
@@ -983,12 +988,15 @@ Installed heimdall $effective_version for $target.
 
 Next steps:
 
-1. On the HUB, create a one-time enrollment token:
-     ham-ctl bridge enroll-token --new
+1. On THIS machine, enroll this node:
+     ham-bridge enroll --ui $(ui_origin_for_hub "$hub_display")
 
-2. On THIS machine, enroll this node:
-     heimdall enroll hbe_... --hub $hub_display
-   Underlying engine (compatibility): ham-bridge enroll --hub $hub_display --enrollment-token hbe_... --bridge-token-file ~/.config/heimdall/bridge-token
+   It prints a link and a short code. Open the link on any device, check the code
+   and key fingerprint match what this machine shows, and approve.
+
+   There is NO enrollment token to create on the Hub and nothing secret to copy
+   between machines — the credential is delivered to this machine directly.
+   Add --headless if this machine has no browser of its own.
 EOF
   if [ -n "$hub_url" ]; then
     cat <<EOF
@@ -1004,7 +1012,7 @@ EOF
   fi
   cat <<EOF
 
-3. Start the bridge service:
+2. Start the bridge service:
 EOF
   if [ "$os" = "linux" ]; then
     cat <<'EOF'
@@ -1163,6 +1171,27 @@ write_service_file() {
   fi
 }
 
+# ui_origin_for_hub derives the UI origin from the hub API url for `enroll --ui`.
+#
+# `--ui` wants the origin whose /api is proxied to the Hub, which is the thing a
+# human opens in a browser — NOT the hub API host.
+#
+# The mapping MIRRORS THE UI'S OWN, so the two cannot disagree: BridgesPanel derives
+# the hub url from the page origin by rewriting a leading `heimdall.` label to
+# `hub.`, so the inverse is `hub.` -> `heimdall.`. Note it is a RELABEL, not a strip:
+# dropping the label would yield the bare apex domain, which serves neither.
+#
+# Anything without a leading `hub.` is returned unchanged, which is correct for a
+# single-origin deployment (and for `http://127.0.0.1:8080`, where the dev-proxy
+# serves both).
+#
+# Override with HEIMDALL_UI_URL when the deployment does not follow that convention.
+# Guessing wrong is not silent — it produces a 404 on the authorize call, and the
+# bridge's own error names `--ui` as the thing to check.
+ui_origin_for_hub() {
+  printf '%s' "$1" | sed -E 's#^(https?://)hub\.#\1heimdall.#'
+}
+
 ensure_config_toml_hub_url() {
   local target_config="$1"
   local target_hub="$2"
@@ -1296,42 +1325,46 @@ run_interactive_onboarding() {
   fi
 
   # --- REQ-INST-ENROLL-3: Enrollment Ceremony & Bridge Startup ---
+  #
+  # ===== BROWSER-APPROVED ENROLLMENT (REQ-ENROLL-9) =====
+  #
+  # This prompted for a one-time `hbe_` token that the operator had to create on the
+  # Hub (`ham-ctl bridge enroll-token --new`) and carry to this machine, then spent it
+  # via `heimdall enroll <token>` or `ham-bridge enroll --enrollment-token`. All three
+  # are deleted: the endpoint 404s and both commands exit non-zero.
+  #
+  # THE SECRET IS GONE, NOT MOVED. The bridge now asks the Hub for a short code,
+  # prints a link, and a human approves it in a browser; the credential is delivered
+  # to this machine directly. So the installer no longer prompts for anything secret,
+  # and there is nothing for an operator to paste, mistype, or leave in shell history.
+  #
+  # `--ui` takes the UI ORIGIN, not the hub API url. The two differ in a typical
+  # deployment (heimdall.example.com vs hub.example.com), and passing the hub url
+  # produces a 404 on the authorize call, so it is derived rather than guessed.
   if ! "$already_enrolled"; then
+    enroll_ui_url="${HEIMDALL_UI_URL:-$(ui_origin_for_hub "$hub_url")}"
+
     cat <<EOF
 
 To enroll this node with Hub ($hub_url):
-1. On the HUB, create a one-time enrollment token:
-     ham-ctl bridge enroll-token --new
+
+  This machine will print a link and a short code. Open the link on any device,
+  check the code and key fingerprint match what is shown here, and approve.
+  Nothing secret is copied between machines.
 
 EOF
-    printf 'Enter one-time enrollment token (hbe_...): '
-    prompt_read enroll_token
-    enroll_token="$(printf '%s' "$enroll_token" | tr -d '[:space:]')"
-    if [ -z "$enroll_token" ]; then
-      warn "No enrollment token provided; skipping automatic enrollment."
-      print_onboarding
-      return 0
-    fi
-
-    say "Enrolling node with Hub ($hub_url)..."
-    enroll_bin="$install_dir/heimdall"
-    if [ ! -x "$enroll_bin" ]; then
-      enroll_bin="$(command -v heimdall 2>/dev/null || true)"
-    fi
-
+    say "Enrolling node (browser approval required)..."
     enroll_ok=false
-    if [ -n "$enroll_bin" ] && [ -x "$enroll_bin" ]; then
-      enroll_cmd=("$enroll_bin" enroll "$enroll_token" --hub "$hub_url")
+    if [ -x "$install_dir/ham-bridge" ]; then
+      enroll_cmd=("$install_dir/ham-bridge" enroll --ui "$enroll_ui_url" --bridge-token-file "$token_file")
       if [ -n "$service_user" ]; then
         enroll_cmd+=(--config "$service_home/.config/heimdall/config.toml")
       fi
       if "${enroll_cmd[@]}"; then
         enroll_ok=true
       fi
-    elif [ -x "$install_dir/ham-bridge" ]; then
-      if "$install_dir/ham-bridge" enroll --hub "$hub_url" --enrollment-token "$enroll_token" --bridge-token-file "$token_file"; then
-        enroll_ok=true
-      fi
+    else
+      warn "ham-bridge was not installed to $install_dir; cannot enroll automatically."
     fi
 
     if "$enroll_ok"; then
@@ -1341,8 +1374,9 @@ EOF
         take_ownership "$service_home/.config/heimdall"
       fi
     else
-      warn "Enrollment failed. You can retry manually with:"
-      warn "  $install_dir/heimdall enroll <token> --hub $hub_url"
+      warn "Enrollment did not complete. You can retry manually with:"
+      warn "  $install_dir/ham-bridge enroll --ui $enroll_ui_url"
+      warn "  (add --headless if this machine has no browser of its own)"
       print_onboarding
       return 0
     fi

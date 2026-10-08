@@ -70,7 +70,7 @@ integration_update_fixture :: struct {
 	sink_rec: Integration_Sink_Recorder,
 	owner_user_id: string,
 	bridge_id: string,
-	enrollment_token: string,
+
 	bridge_token: string,
 }
 
@@ -136,12 +136,15 @@ setup_integration_update_fixture :: proc(t: ^testing.T, tag: string) -> ^integra
 	testing.expect(t, owner_ok, "trusted proxy owner resolved")
 	f.owner_user_id = strings.clone(owner_ctx.user_id)
 
-	owner_auth := contracts.Auth_Context{kind = .User_Token, user_id = f.owner_user_id}
-	enr, enr_ok, _ := bridge_service.create_enrollment(&f.br_svc, owner_auth, bridge_service.Create_Enrollment_Input{label = "Integ Mock Bridge"})
-	testing.expect(t, enr_ok, "enrollment ok")
-	f.enrollment_token = strings.clone(enr.token)
-
-	enrolled, e_ok, _ := bridge_service.enroll_bridge(&f.br_svc, bridge_service.Enroll_Bridge_Input{enrollment_token = enr.token, machine_hostname = "integ-worker-01"})
+	// Provisioned through the DEVICE-GRANT path, the only enrollment there is
+	// (REQ-ENROLL-9). The fixture's `enrollment_token` field went with the flow:
+	// there is no enrollment token to hold, and nothing here read it.
+	enrolled, e_ok, _ := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
+		owner_user_id = f.owner_user_id,
+		bridge_public_key = "04aabb",
+		bridge_key_fingerprint = "aaaa bbbb cccc dddd",
+		machine_hostname = "integ-worker-01",
+	})
 	testing.expect(t, e_ok, "bridge enrolled")
 	f.bridge_id = strings.clone(enrolled.bridge.bridge_id)
 	f.bridge_token = strings.clone(enrolled.bridge_token)
@@ -156,7 +159,7 @@ teardown_integration_update_fixture :: proc(f: ^integration_update_fixture) {
 	os.remove(f.db_path)
 	delete(f.owner_user_id)
 	delete(f.bridge_id)
-	delete(f.enrollment_token)
+
 	delete(f.bridge_token)
 	if f.sink_rec.last_cmd.bridge_id != "" {
 		delete(f.sink_rec.last_cmd.bridge_id)

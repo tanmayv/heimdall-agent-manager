@@ -41,9 +41,25 @@ sleep 2
 
 U=(-H "X-authentik-username:alice")
 curl -sf -m5 "${U[@]}" "http://$H/api/v1/me" >/dev/null
-ENR=$(curl -sf -m5 "${U[@]}" -X POST "http://$H/api/v1/bridge-enrollments" -H 'Content-Type: application/json' -d '{"label":"e2e"}')
-ETOK=$(printf '%s' "$ENR" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["enrollment_token"])')
-./result-bridge/bin/ham-bridge enroll --hub "http://$H" --enrollment-token "$ETOK" --bridge-token-file "$TOKF" >/dev/null 2>&1
+# ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+# The one-time-token endpoints are deleted (404). The three steps are driven here
+# directly; the "$U" header array is what authenticates the approval, so it is a
+# real authenticated approval by that user.
+# bridge_public_key must be a 130-char lowercase-hex uncompressed P-256 point, no
+# bridge_key_fingerprint may be sent (the Hub derives it), and PKCE is S256-only.
+AUTHZ=$(curl -sf -m5 -X POST "http://$H/api/v1/device/authorize" -H 'Content-Type: application/json' \
+  -d '{"client":"ham-bridge","device_label":"e2e","os":"linux","os_user":"tester","bridge_public_key":"040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40","code_challenge":"J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI","code_challenge_method":"S256"}')
+UCODE=$(printf '%s' "$AUTHZ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["user_code"])')
+DCODE=$(printf '%s' "$AUTHZ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["device_code"])')
+curl -sf -m5 "${U[@]}" -X POST "http://$H/api/v1/device/approve" -H 'Content-Type: application/json' \
+  -d "{\"user_code\":\"$UCODE\",\"approve\":true}" >/dev/null
+TRESP=$(curl -sf -m5 -X POST "http://$H/api/v1/device/token" -H 'Content-Type: application/json' \
+  -d "{\"device_code\":\"$DCODE\",\"code_verifier\":\"heimdall-req-impl-6-test-code-verifier-aaaa\"}")
+printf '%s' "$TRESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["access_token"])' > "$TOKF"
+# Refresh half beside it, under the suffix the bridge itself uses, so the bridge can
+# renew instead of dying when the access token's hour is up.
+printf '%s' "$TRESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"].get("refresh_token",""))' > "$TOKF.refresh"
+chmod 600 "$TOKF" "$TOKF.refresh"
 BT=$(cat "$TOKF")
 AG=$(curl -sf -m5 "${U[@]}" -X POST "http://$H/api/v1/agents" -H 'Content-Type: application/json' \
   -d '{"name":"E2E Agent","slug":"e2e","default_provider":"claude","default_tier":"normal","instructions":"You are the e2e test agent."}')

@@ -145,10 +145,22 @@ wire_body :: proc(parts: []string) -> string {
 	return strings.concatenate(parts)
 }
 
-wire_enroll_bridge :: proc(t: ^testing.T, f: ^wire_fixture, auth: contracts.Auth_Context, hostname: string, token_out: ^string) -> string {
-	enr, enr_ok, enr_err := bridge_service.create_enrollment(&f.br_svc, auth, bridge_service.Create_Enrollment_Input{})
-	testing.expectf(t, enr_ok, "enrollment for %s created (%s)", hostname, enr_err.message)
-	enrolled, e_ok, e_err := bridge_service.enroll_bridge(&f.br_svc, bridge_service.Enroll_Bridge_Input{enrollment_token = enr.token, machine_hostname = hostname})
+// wire_enroll_bridge provisions a bridge for an owner through the DEVICE-GRANT path,
+// the only enrollment there is (REQ-ENROLL-9).
+//
+// It takes the owner as a plain user id rather than an Auth_Context: the deleted
+// create_enrollment derived the owner from an Auth_Context, while
+// enroll_bridge_from_device_grant takes the approving user directly — the browser
+// approval is what establishes ownership, so there is no request context to read.
+// The `wire-host-foreign` case still works, which is what matters here: it is how
+// this file builds a bridge owned by SOMEONE ELSE to test cross-owner task scoping.
+wire_enroll_bridge :: proc(t: ^testing.T, f: ^wire_fixture, owner_user_id: string, hostname: string, token_out: ^string) -> string {
+	enrolled, e_ok, e_err := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
+		owner_user_id = owner_user_id,
+		bridge_public_key = "04aabb",
+		bridge_key_fingerprint = "aaaa bbbb cccc dddd",
+		machine_hostname = hostname,
+	})
 	testing.expectf(t, e_ok, "bridge %s enrolled (%s)", hostname, e_err.message)
 	if token_out != nil do token_out^ = enrolled.bridge_token
 	return enrolled.bridge.bridge_id
@@ -229,9 +241,9 @@ wire_setup :: proc(t: ^testing.T, tag: string) -> ^wire_fixture {
 	})
 
 	owner_auth := contracts.Auth_Context{kind = .User_Token, user_id = string(f.owner)}
-	f.bridge_pin = wire_enroll_bridge(t, f, owner_auth, "wire-host-pin", &f.bridge_token)
-	f.bridge_alt = wire_enroll_bridge(t, f, owner_auth, "wire-host-alt", nil)
-	f.bridge_foreign = wire_enroll_bridge(t, f, contracts.Auth_Context{kind = .User_Token, user_id = "wire_foreign_owner"}, "wire-host-foreign", nil)
+	f.bridge_pin = wire_enroll_bridge(t, f, owner_auth.user_id, "wire-host-pin", &f.bridge_token)
+	f.bridge_alt = wire_enroll_bridge(t, f, owner_auth.user_id, "wire-host-alt", nil)
+	f.bridge_foreign = wire_enroll_bridge(t, f, "wire_foreign_owner", "wire-host-foreign", nil)
 	// Enrollment mints its ids/token on the temp allocator; the fixture must own
 	// stable copies since they feed later comparisons and request bodies.
 	f.bridge_token = strings.clone(f.bridge_token)

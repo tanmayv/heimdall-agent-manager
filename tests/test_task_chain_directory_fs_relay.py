@@ -247,19 +247,47 @@ def test_live_directory_fs_relay() -> None:
         status, data = api_request("GET", f"/api/v1/task-chains/{chain_id}/directories/{dir_id}/fs")
         require(status == 400 or status == 503, f"expected bridge offline error (400/503), got {status} {data}")
 
-        # 7. Enroll a bridge
-        status, data = api_request("POST", "/api/v1/bridge-enrollments", {"label": "Test Mock Bridge"})
-        require(status == 201, f"enrollment failed: {status} {data}")
-        enrollment_token = data["data"]["enrollment_token"]
+        # 7. Enroll a bridge through the BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9).
+        #
+        # The old pair -- POST /api/v1/bridge-enrollments for a one-time token, then
+        # POST /api/v1/bridges/enroll to exchange it -- is deleted and both 404 now.
+        #
+        # Three hard refusals to respect: bridge_public_key must be a 130-char
+        # lowercase-hex uncompressed P-256 point; bridge_key_fingerprint must NOT be
+        # sent (the Hub derives it and rejects a disagreeing one); and PKCE is
+        # mandatory and S256-only, so the precomputed pair below is required.
+        #
+        # token=None on authorize and token: it is an ANONYMOUS request by the bridge.
+        # The user token authenticates only the approval, which is what binds the
+        # bridge's owner.
+        status, data = api_request("POST", "/api/v1/device/authorize", {
+            "client": "ham-bridge",
+            "device_label": "mock-bridge-host",
+            "os": "linux",
+            "os_user": "tester",
+            "bridge_public_key": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+            "code_challenge": "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI",
+            "code_challenge_method": "S256",
+        }, token=None)
+        require(status == 200, f"device authorize failed: {status} {data}")
+        user_code = data["data"]["user_code"]
+        device_code = data["data"]["device_code"]
 
-        status, data = api_request(
-            "POST", "/api/v1/bridges/enroll",
-            {"machine": {"hostname": "mock-bridge-host"}, "capabilities": [{"provider": "claude", "tiers": ["normal"], "default_tier": "normal"}]},
-            token=enrollment_token
-        )
-        require(status == 201, f"bridge enroll failed: {status} {data}")
+        status, data = api_request("POST", "/api/v1/device/approve", {"user_code": user_code, "approve": True})
+        require(status == 200, f"device approve failed: {status} {data}")
+
+        status, data = api_request("POST", "/api/v1/device/token", {
+            "device_code": device_code,
+            "code_verifier": "heimdall-req-impl-6-test-code-verifier-aaaa",
+        }, token=None)
+        require(status == 200, f"device token failed: {status} {data}")
         bridge_id = data["data"]["bridge_id"]
-        bridge_token = data["data"]["bridge_token"]
+        # The credential is the EXPIRING access token now, not a non-expiring one.
+        bridge_token = data["data"]["access_token"]
+
+        # Capabilities are REPORTED at connect, not declared at enrollment: the device
+        # flow has no capabilities field, because the Hub records only what the
+        # approving human confirmed. The mock bridge below is what reports them.
 
         # 8. Update directory with enrolled bridge_id
         status, data = api_request("PATCH", f"/api/v1/task-chains/{chain_id}/directories/{dir_id}", {

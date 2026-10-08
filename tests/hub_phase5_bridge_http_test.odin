@@ -7,6 +7,12 @@ import contracts "odin_test:contracts"
 import app "odin_test:hub/app"
 import api_http "odin_test:hub/transport/http"
 
+// A valid-shaped uncompressed P-256 point, and a precomputed PKCE pair where
+// P5_CODE_CHALLENGE == BASE64URL(SHA256(P5_CODE_VERIFIER)), unpadded.
+P5_PUBLIC_KEY :: "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+P5_CODE_VERIFIER :: "heimdall-req-impl-6-test-code-verifier-aaaa"
+P5_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
+
 main :: proc() {
 	db_path := "/tmp/heimdall-hub-phase5-http-test.db"
 	_ = os.remove(db_path)
@@ -33,43 +39,78 @@ main :: proc() {
 	}
 	bob := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "bob"}}
 
-	create := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridge-enrollments", body = "{\"label\":\"Alice Mac\",\"expires_in_seconds\":900}", request_id = "req_create", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(create.status == 201, "create enrollment endpoint must return 201")
-	created_expires_at := extract_json_string(create.body, "expires_at")
-	check(created_expires_at != "" && created_expires_at != "9999-12-31T23:59:59Z", "create enrollment must compute expires_at from expires_in_seconds")
-	unlabeled := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridge-enrollments", body = "{\"expires_in_seconds\":900}", request_id = "req_unlabeled", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(unlabeled.status == 201, "unlabeled enrollment must return 201")
-	unlabeled_token := extract_json_string(unlabeled.body, "enrollment_token")
-	expires_at_bypass := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridge-enrollments", body = "{\"expires_at\":\"9999-12-31T23:59:59Z\"}", request_id = "req_exp_bypass", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(expires_at_bypass.status == 400, "public create enrollment must reject expires_at bypass")
-	token := extract_json_string(create.body, "enrollment_token")
-	check(strings.has_prefix(token, "hbe_"), "create enrollment must return one-time hbe token")
-	list_enrollments := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/bridge-enrollments", request_id = "req_list_enr", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(list_enrollments.status == 200 && strings.contains(list_enrollments.body, "Alice Mac"), "list enrollment endpoint must show own enrollment")
-	check(!strings.contains(list_enrollments.body, "enrollment_token") && !strings.contains(list_enrollments.body, token) && !strings.contains(list_enrollments.body, unlabeled_token), "list enrollment endpoint must not leak raw token")
-	revocable := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridge-enrollments", body = "{\"label\":\"Revocable\"}", request_id = "req_revocable", remote_addr = "127.0.0.1", headers = alice[:]})
-	revocable_id := extract_json_string(revocable.body, "enrollment_id")
-	revoke_enrollment := api_http.router_dispatch(&graph.router, api_http.Request{method = "DELETE", path = enrollment_url(revocable_id), request_id = "req_revoke_enrollment", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(revoke_enrollment.status == 200 && strings.contains(revoke_enrollment.body, "revoked"), "revoke enrollment endpoint must revoke pending enrollment")
+	// ===== PROVISIONED THROUGH THE DEVICE FLOW (REQ-ENROLL-9) =====
+	//
+	// Everything between here and the ownership assertions below used to exercise the
+	// deleted one-time-token endpoints: minting an enrollment with an expiry, listing
+	// enrollments without leaking the raw token, revoking a pending one, exchanging
+	// the token for an `hbr_` credential, and proving the token was single-use and
+	// could not be passed in the query or body. All of those endpoints are gone, so
+	// those assertions went with them.
+	//
+	// THIS FILE WAS ALREADY RED AT PRISTINE HEAD, on "bridge token must not call user
+	// bridge-management list API" — and that is not incidental. That assertion expects
+	// a bare bridge token to be REFUSED on `/api/v1/bridges`, which is exactly the
+	// hole the deleted permissive bridge-auth mode opened by default. The test was
+	// asserting the correct behaviour all along and failing because the shipped
+	// default disabled the check. REQ-ENROLL-15 is what makes it pass.
+	//
+	// Three requirements that each reject a request outright: the 130-char
+	// lowercase-hex uncompressed P-256 key; NO `bridge_key_fingerprint` (the Hub
+	// derives it and refuses a disagreeing one); and mandatory S256 PKCE, precomputed
+	// here so this file needs no crypto.
+	//
+	// `device_label` becomes the hostname and therefore the label, so "Alice Mac"
+	// keeps working as the label the assertions below look for.
+	authorized := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/authorize",
+		body = strings.concatenate({
+			"{\"client\":\"ham-bridge\",\"device_label\":\"Alice Mac\",\"os\":\"macos\",\"os_user\":\"tanmay\",\"bridge_public_key\":\"",
+			P5_PUBLIC_KEY, "\",\"code_challenge\":\"", P5_CODE_CHALLENGE, "\",\"code_challenge_method\":\"S256\"}",
+		}),
+		request_id = "req_dev_auth", remote_addr = "127.0.0.1",
+	})
+	check(authorized.status == 200, authorized.body)
+	user_code := extract_json_string(authorized.body, "user_code")
+	device_code := extract_json_string(authorized.body, "device_code")
 
-	enroll_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
-	enroll := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridges/enroll", body = "{\"machine\":{\"hostname\":\"alice-host\",\"os\":\"macos\",\"arch\":\"arm64\"}}", request_id = "req_enroll", remote_addr = "203.0.113.10", headers = enroll_headers[:]})
-	check(enroll.status == 201, "bridge enroll endpoint must accept Authorization: Bearer enrollment token")
-	bridge_id := extract_json_string(enroll.body, "bridge_id")
-	bridge_token := extract_json_string(enroll.body, "bridge_token")
-	check(strings.has_prefix(bridge_id, "brg_") && strings.has_prefix(bridge_token, "hbr_"), "enroll endpoint must return bridge id and hbr token")
-	unlabeled_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", unlabeled_token})}}
-	unlabeled_enroll := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridges/enroll", body = "{\"machine\":{\"hostname\":\"default-host\",\"os\":\"linux\",\"arch\":\"amd64\"}}", request_id = "req_unlabeled_enroll", remote_addr = "203.0.113.11", headers = unlabeled_headers[:]})
-	check(unlabeled_enroll.status == 201, "unlabeled enrollment must enroll successfully")
-	default_bridge_id := extract_json_string(unlabeled_enroll.body, "bridge_id")
-	default_detail := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = bridge_url(default_bridge_id, ""), request_id = "req_default_detail", remote_addr = "127.0.0.1", headers = alice[:]})
-	check(default_detail.status == 200 && strings.contains(default_detail.body, "\"label\":\"default-host\"") && strings.contains(default_detail.body, "\"label_is_user_customized\":false"), "default label must derive from hostname when enrollment label omitted")
-	reuse := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridges/enroll", body = "{\"machine\":{\"hostname\":\"other\"}}", request_id = "req_reuse", headers = enroll_headers[:]})
-	check(reuse.status == 409, "enrollment token must be one-time at API boundary")
-	query_token := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridges/enroll", query = strings.concatenate({"token=", token}), body = "{\"machine\":{\"hostname\":\"bad\"}}", request_id = "req_query_token"})
-	check(query_token.status == 401, "enroll endpoint must reject tokens in query/body")
-	body_token := api_http.router_dispatch(&graph.router, api_http.Request{method = "POST", path = "/api/v1/bridges/enroll", body = strings.concatenate({"{\"token\":\"", token, "\",\"machine\":{\"hostname\":\"bad-body\"}}"}), request_id = "req_body_token"})
-	check(body_token.status == 401, "enroll endpoint must reject tokens in request body")
+	// The human approves. Ownership comes from this Auth_Context, never the body.
+	approved := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/approve",
+		body = strings.concatenate({"{\"user_code\":\"", user_code, "\",\"approve\":true}"}),
+		request_id = "req_dev_approve", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(approved.status == 200, approved.body)
+
+	issued := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/token",
+		body = strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", P5_CODE_VERIFIER, "\"}"}),
+		request_id = "req_dev_token", remote_addr = "127.0.0.1",
+	})
+	check(issued.status == 200, issued.body)
+	bridge_id := extract_json_string(issued.body, "bridge_id")
+	bridge_token := extract_json_string(issued.body, "access_token")
+	check(strings.has_prefix(bridge_id, "brg_"), "enrollment must return a brg_ id")
+	// The credential is the EXPIRING access token, not the deleted non-expiring shape.
+	check(strings.has_prefix(bridge_token, "hba_"), "enrollment must return an expiring hba_ access token")
+	check(strings.contains(issued.body, "refresh_token"), "a bridge grant must also return a refresh token")
+
+	// THE GRANT IS SINGLE-USE. This replaces the deleted "enrollment token must be
+	// one-time" assertion: the property it protected is the same one, moved to the
+	// mechanism that now carries it.
+	replay := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/device/token",
+		body = strings.concatenate({"{\"device_code\":\"", device_code, "\",\"code_verifier\":\"", P5_CODE_VERIFIER, "\"}"}),
+		request_id = "req_dev_token_replay", remote_addr = "127.0.0.1",
+	})
+	// The device-flow protocol reports grant state in the BODY, not the HTTP status —
+	// a spent grant is a 200 carrying {"status":"expired"}. So the assertion is about
+	// the credential, not the code: no second access token may be issued, and the
+	// status must not come back "approved" again. Asserting `status != 200` here
+	// would have been wrong about the protocol rather than about the security
+	// property, and would have failed against correct behaviour.
+	check(!strings.contains(replay.body, "access_token"), fmt.tprintf("a spent device grant must not mint a second credential; got %s", replay.body))
+	check(!strings.contains(replay.body, "\"status\":\"approved\""), fmt.tprintf("a spent device grant must not report approved twice; got %s", replay.body))
 
 	list_bridges := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/bridges", request_id = "req_list_bridge", remote_addr = "127.0.0.1", headers = alice[:]})
 	check(list_bridges.status == 200 && strings.contains(list_bridges.body, bridge_id) && strings.contains(list_bridges.body, "Alice Mac"), "owner must list own bridge")
@@ -104,9 +145,6 @@ bridge_url :: proc(bridge_id, suffix: string) -> string {
 	return strings.concatenate({"/api/v1/bridges/", bridge_id, suffix})
 }
 
-enrollment_url :: proc(enrollment_id: string) -> string {
-	return strings.concatenate({"/api/v1/bridge-enrollments/", enrollment_id})
-}
 
 extract_json_string :: proc(body, key: string) -> string {
 	needle := strings.concatenate({"\"", key, "\""})

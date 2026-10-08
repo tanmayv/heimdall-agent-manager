@@ -138,11 +138,36 @@ done
 
 api() { curl -s -X "$1" "http://127.0.0.1:$PROXY_PORT$2" -H 'Content-Type: application/json' ${3:+-d "$3"}; }
 
-enroll() { # $1=label $2=token file
-  local tok
-  tok="$(api POST /api/v1/bridge-enrollments "{\"name\":\"$1\"}" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["enrollment_token"])')"
-  "$BIN/bridge" enroll --hub "http://127.0.0.1:$PROXY_PORT" --enrollment-token "$tok" --bridge-token-file "$2" >/dev/null
+enroll() { # $1=label $2=token file -> writes the ACCESS token to $2
+  # ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+  #
+  # This replaced "mint a one-time enrollment token, then exchange it at
+  # POST /api/v1/bridges/enroll". Both endpoints are deleted and 404 now, and
+  # `bridge enroll --hub --enrollment-token` is gone with them.
+  #
+  # It drives the three HTTP steps directly rather than shelling out to
+  # `bridge enroll --ui`, because that command waits for an approval and would
+  # need backgrounding plus output scraping. Here the script IS the approver:
+  # these suites talk through the dev-proxy, which authenticates every request
+  # as the local user, so the approval is a real authenticated one.
+  #
+  # Three things that are hard refusals, not warnings:
+  #   - bridge_public_key must be a 130-char lowercase-hex uncompressed P-256 point
+  #   - do NOT send bridge_key_fingerprint; the Hub derives it and rejects a
+  #     body-supplied one that disagrees
+  #   - PKCE is mandatory and S256-only; the pair below is precomputed
+  local authz user_code device_code tok
+  authz="$(api POST /api/v1/device/authorize "{\"client\":\"ham-bridge\",\"device_label\":\"$1\",\"os\":\"linux\",\"os_user\":\"tester\",\"bridge_public_key\":\"040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40\",\"code_challenge\":\"J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI\",\"code_challenge_method\":\"S256\"}")"
+  user_code="$(printf '%s' "$authz" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["user_code"])')"
+  device_code="$(printf '%s' "$authz" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["device_code"])')"
+  api POST /api/v1/device/approve "{\"user_code\":\"$user_code\",\"approve\":true}" >/dev/null
+  # The access token is the credential; the refresh half goes beside it under
+  # the ".refresh" suffix the bridge itself uses, so a bridge started with
+  # --bridge-token-file "$2" can renew rather than dying after an hour.
+  tok="$(api POST /api/v1/device/token "{\"device_code\":\"$device_code\",\"code_verifier\":\"heimdall-req-impl-6-test-code-verifier-aaaa\"}")"
+  printf '%s' "$tok" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["access_token"])' > "$2"
+  printf '%s' "$tok" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(d.get("refresh_token",""))' > "$2.refresh"
+  chmod 600 "$2" "$2.refresh"
 }
 
 echo "[xm9] enrolling bridge A (originating) and bridge B (target)"

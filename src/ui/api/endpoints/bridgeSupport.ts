@@ -210,39 +210,11 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
-    createBridgeEnrollment: build.mutation<any, { label?: string; expiresInSeconds?: number }>({
-      queryFn: async ({ label, expiresInSeconds }) => {
-        try {
-          const data = await cookieMutation('/bridge-enrollments', 'POST', { label, expires_in_seconds: expiresInSeconds });
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
-    }),
-    listBridgeEnrollments: build.query<any, void | {}>({
-      queryFn: async () => {
-        try {
-          const data = await cookieJsonFetch('/bridge-enrollments');
-          return { data: { enrollments: data?.enrollments || data || [] } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
-    }),
-    revokeBridgeEnrollment: build.mutation<any, { enrollmentId: string }>({
-      queryFn: async ({ enrollmentId }) => {
-        try {
-          const data = await cookieMutation(`/bridge-enrollments/${encodeURIComponent(enrollmentId)}`, 'DELETE');
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
-    }),
+    // The three bridge-enrollment endpoints are DELETED (REQ-ENROLL-9):
+    // POST/GET /bridge-enrollments and DELETE /bridge-enrollments/<id>. They minted,
+    // listed and revoked the one-time enrollment token, and all three now 404.
+    // Enrollment is browser-approved and the bridge drives it, so the UI mints
+    // nothing and has no enrollment rows to list or revoke.
     listBridgeProviders: build.query<any, { bridgeId: string }>({
       queryFn: async ({ bridgeId }) => {
         if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
@@ -322,9 +294,6 @@ export const {
   useUpdateBridgeTelemetryMutation,
   useRevokeBridgeMutation,
   useUpdateBridgeMutation,
-  useCreateBridgeEnrollmentMutation,
-  useListBridgeEnrollmentsQuery,
-  useRevokeBridgeEnrollmentMutation,
   useListBridgeProvidersQuery,
   useUpsertBridgeProviderMutation,
   useDeleteBridgeProviderMutation,

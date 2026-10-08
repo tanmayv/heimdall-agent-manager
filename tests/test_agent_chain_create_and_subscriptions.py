@@ -149,29 +149,44 @@ def main() -> int:
             )
 
         # Enroll bridge
-        st_enr, enr_data = http_req(
-            f"{hub_url}/api/v1/bridge-enrollments",
+        # ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+        #
+        # Replaces the deleted pair: POST /api/v1/bridge-enrollments for a one-time
+        # token, then POST /api/v1/bridges/enroll to exchange it. Both 404 now.
+        #
+        # Hard refusals: bridge_public_key must be a 130-char lowercase-hex
+        # uncompressed P-256 point; bridge_key_fingerprint must NOT be sent (the Hub
+        # derives it and refuses a disagreeing one); PKCE is mandatory and S256-only.
+        # The authorize and token calls are ANONYMOUS -- the bridge makes them. Only
+        # the approval is authenticated, and that is what binds the owner.
+        st_az, az_data = http_req(
+            f"{hub_url}/api/v1/device/authorize",
             method="POST",
-            data={"label": "test-bridge"},
+            data={"client": "ham-bridge", "device_label": "test-bridge", "os": "linux",
+                  "os_user": "tester", "bridge_public_key": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+                  "code_challenge": "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI", "code_challenge_method": "S256"},
+        )
+        assert st_az == 200, f"device authorize failed: {st_az} {az_data}"
+        user_code = az_data["data"]["user_code"]
+        device_code = az_data["data"]["device_code"]
+        st_ap, ap_data = http_req(
+            f"{hub_url}/api/v1/device/approve",
+            method="POST",
+            data={"user_code": user_code, "approve": True},
             headers=auth_headers,
         )
-        assert st_enr in (200, 201), f"Enrollment ticket failed: {st_enr} {enr_data}"
-        etok = enr_data.get("data", {}).get("enrollment_token")
-
-        enroll_res = subprocess.run(
-            [
-                str(BRIDGE_BIN), "enroll",
-                "--hub", hub_url,
-                "--name", "test-bridge",
-                "--user", "testowner",
-                "--enrollment-token", etok,
-                "--bridge-token-file", str(bridge_token_file),
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
+        assert st_ap == 200, f"device approve failed: {st_ap} {ap_data}"
+        st_tk, tk_data = http_req(
+            f"{hub_url}/api/v1/device/token",
+            method="POST",
+            data={"device_code": device_code, "code_verifier": "heimdall-req-impl-6-test-code-verifier-aaaa"},
         )
-        assert enroll_res.returncode == 0, f"Enroll failed: {enroll_res.stderr} {enroll_res.stdout}"
+        assert st_tk == 200, f"device token failed: {st_tk} {tk_data}"
+        # Write the credential where the bridge expects it, instead of shelling out to
+        # `bridge enroll --enrollment-token`, which is deleted.
+        bridge_token_file.write_text(tk_data["data"]["access_token"])
+        bridge_token_file.chmod(0o600)
+
 
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()

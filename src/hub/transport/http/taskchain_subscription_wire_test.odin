@@ -157,9 +157,16 @@ sub_wire_setup :: proc(t: ^testing.T, tag: string) -> ^sub_wire_fixture {
 	})
 
 	owner_auth := contracts.Auth_Context{kind = .User_Token, user_id = string(f.owner)}
-	enr, enr_ok, _ := bridge_service.create_enrollment(&f.br_svc, owner_auth, bridge_service.Create_Enrollment_Input{})
-	testing.expect(t, enr_ok, "enrollment ok")
-	enrolled, e_ok, _ := bridge_service.enroll_bridge(&f.br_svc, bridge_service.Enroll_Bridge_Input{enrollment_token = enr.token, machine_hostname = "sub-host"})
+	// Provisioned through the DEVICE-GRANT path, the only enrollment there is
+	// (REQ-ENROLL-9). This replaced a create_enrollment + enroll_bridge pair; the
+	// bridge and its credential are what this fixture needs, and how the credential
+	// was approved is not what these tests are about.
+	enrolled, e_ok, _ := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
+		owner_user_id = string(f.owner),
+		bridge_public_key = "04aabb",
+		bridge_key_fingerprint = "aaaa bbbb cccc dddd",
+		machine_hostname = "sub-host",
+	})
 	testing.expect(t, e_ok, "bridge enrolled ok")
 	f.bridge_id = strings.clone(enrolled.bridge.bridge_id)
 	f.bridge_token = strings.clone(enrolled.bridge_token)

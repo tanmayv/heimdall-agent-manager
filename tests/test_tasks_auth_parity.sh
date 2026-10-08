@@ -143,11 +143,22 @@ fi
 
 # 3. Provision Bridge & Agent Instances for Agent-Asserted Parity Verification
 echo "--- Testing Bridge-Relayed Instance Transport Parity ---"
-BRIDGE_ENROLL=$(curl -s -X POST "http://127.0.0.1:$PORT/api/v1/bridge-enrollments" -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" -d '{"label":"test-bridge"}' 2>&1)
-ENROLL_TOKEN=$(echo "$BRIDGE_ENROLL" | grep -o '"enrollment_token":"[^"]*"' | cut -d'"' -f4 || true)
+# ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+# Replaces the deleted "mint an enrollment token, then exchange it" pair. The user
+# token authenticates the approval step, which is what binds the bridge's owner.
+# Note the credential is now an EXPIRING access token, so BRIDGE_TOKEN below is an
+# `hba_`, not the old non-expiring `hbr_`.
+AUTHZ_RESP=$(curl -s -X POST "http://127.0.0.1:$PORT/api/v1/device/authorize" -H "Content-Type: application/json" \
+  -d '{"client":"ham-bridge","device_label":"test-bridge","os":"linux","os_user":"tester","bridge_public_key":"040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40","code_challenge":"J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI","code_challenge_method":"S256"}' 2>&1)
+USER_CODE=$(echo "$AUTHZ_RESP" | grep -o '"user_code":"[^"]*"' | cut -d'"' -f4 || true)
+DEVICE_CODE=$(echo "$AUTHZ_RESP" | grep -o '"device_code":"[^"]*"' | cut -d'"' -f4 || true)
 
-BRIDGE_RESP=$(curl -s -X POST "http://127.0.0.1:$PORT/api/v1/bridges/enroll" -H "Authorization: Bearer $ENROLL_TOKEN" -H "Content-Type: application/json" -d '{"hostname":"localhost","os":"linux","arch":"x86_64"}' 2>&1)
-BRIDGE_TOKEN=$(echo "$BRIDGE_RESP" | grep -o '"bridge_token":"[^"]*"' | cut -d'"' -f4 || true)
+curl -s -X POST "http://127.0.0.1:$PORT/api/v1/device/approve" -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"user_code\":\"$USER_CODE\",\"approve\":true}" >/dev/null 2>&1
+
+BRIDGE_RESP=$(curl -s -X POST "http://127.0.0.1:$PORT/api/v1/device/token" -H "Content-Type: application/json" \
+  -d "{\"device_code\":\"$DEVICE_CODE\",\"code_verifier\":\"heimdall-req-impl-6-test-code-verifier-aaaa\"}" 2>&1)
+BRIDGE_TOKEN=$(echo "$BRIDGE_RESP" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4 || true)
 BRIDGE_ID=$(echo "$BRIDGE_RESP" | grep -o '"bridge_id":"[^"]*"' | cut -d'"' -f4 || true)
 
 AGENT_RESP=$(curl -s -X POST "http://127.0.0.1:$PORT/api/v1/agents" -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" -d '{"name":"Test Agent","slug":"test-agent"}' 2>&1)

@@ -203,20 +203,37 @@ def main() -> None:
         auth = {"Authorization": f"Bearer {token}"}
 
         # --- bridge enrollment ---
-        st, enr = req("POST", base + "/bridge-enrollments",
-                      {"label": "h7", "expires_in_seconds": 3600}, auth)
-        if st != 201:
-            die(f"enrollment create failed: {st} {enr}")
-        etok = enr["data"]["enrollment_token"]
-        st, br = req("POST", base + "/bridges/enroll",
-                     {"hostname": "h7-bridge", "hub_url": f"http://127.0.0.1:{port}",
-                      "capabilities": [{"provider": "claude", "tiers": ["normal"],
-                                        "default_tier": "normal"}]},
-                     {"Authorization": f"Bearer {etok}"})
-        if st != 201:
-            die(f"bridge enroll failed: {st} {br}")
+        # ===== BROWSER-APPROVED DEVICE FLOW (REQ-ENROLL-9) =====
+        #
+        # Replaces the deleted pair: POST /api/v1/bridge-enrollments for a one-time
+        # token, then POST /api/v1/bridges/enroll to exchange it. Both 404 now.
+        #
+        # Hard refusals: bridge_public_key must be a 130-char lowercase-hex
+        # uncompressed P-256 point; bridge_key_fingerprint must NOT be sent (the Hub
+        # derives it and refuses a disagreeing one); PKCE is mandatory and S256-only.
+        # The authorize and token calls are ANONYMOUS -- the bridge makes them. Only
+        # the approval is authenticated, and that is what binds the owner.
+        st, az = req("POST", base + "/device/authorize",
+                     {"client": "ham-bridge", "device_label": "h7-bridge", "os": "linux",
+                      "os_user": "tester", "bridge_public_key": "040102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+                      "code_challenge": "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI", "code_challenge_method": "S256"}, None)
+        if st != 200:
+            die(f"device authorize failed: {st} {az}")
+        user_code = az["data"]["user_code"]
+        device_code = az["data"]["device_code"]
+        st, ap = req("POST", base + "/device/approve",
+                     {"user_code": user_code, "approve": True}, auth)
+        if st != 200:
+            die(f"device approve failed: {st} {ap}")
+        st, br = req("POST", base + "/device/token",
+                     {"device_code": device_code, "code_verifier": "heimdall-req-impl-6-test-code-verifier-aaaa"}, None)
+        if st != 200:
+            die(f"device token failed: {st} {br}")
         bridge_id = br["data"]["bridge_id"]
-        bridge_token = br["data"]["bridge_token"]
+        # The credential is the EXPIRING access token now, not a non-expiring one.
+        bridge_token = br["data"]["access_token"]
+        # Capabilities are REPORTED at connect, not declared at enrollment: the device
+        # flow has no capabilities field. The bridge below reports its own.
 
         # --- agent + bridge support ---
         st, ag = req("POST", base + "/agents",

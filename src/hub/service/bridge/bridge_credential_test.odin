@@ -99,7 +99,10 @@ test_credential_split_rejects_malformed_tokens :: proc(t: ^testing.T) {
 	_, _, empty_id := split_credential(BRIDGE_TOKEN_PREFIX, "hbr_.secret")
 	testing.expect(t, !empty_id, "a token with an empty record id is malformed")
 
-	_, _, wrong_prefix := split_credential(BRIDGE_TOKEN_PREFIX, "hbe_benr_x.secret")
+	// A well-formed credential carrying a DIFFERENT prefix must not split under this
+	// one. The prefix used here is deliberately not a real one: the property is that
+	// split_credential keys on the prefix it was given, not that it knows the set.
+	_, _, wrong_prefix := split_credential(BRIDGE_TOKEN_PREFIX, "hbx_benr_x.secret")
 	testing.expect(t, !wrong_prefix, "an enrollment token must not split as a bridge token")
 
 	_, _, bare := split_credential(BRIDGE_TOKEN_PREFIX, "")
