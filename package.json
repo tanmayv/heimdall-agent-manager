@@ -10,7 +10,7 @@
     "dev": "npm run build:electron && node scripts/patch-electron-dev-name.mjs && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "hub:tunnel-proxy": "node scripts/hub-tunnel-proxy.mjs",
     "typecheck": "tsc -b",
-    "test": "node --test tests/ui_stream_lifecycle_events_test.ts tests/ui_shell_streaming_test.ts tests/ui_agent_stream_snapshot_geometry_test.ts tests/ui_lsp_*.ts tests/ui_scoped_search_test.ts tests/ui_command_palette_test.ts tests/ui_fleet_actions_test.ts tests/ui_chain_list_item_rollup_test.ts tests/ui_sidebar_chain_indicators_test.ts tests/ui_chain_status_and_title_test.ts tests/ui_global_title_search_test.ts tests/fleetSelection.test.ts tests/ui_task_chain_selector_test.ts tests/ui_select_portal_test.ts tests/ui_vault_*.ts tests/ui_*_vault_test.ts tests/ui_embedded_vault_decrypt_test.ts tests/ui_bridge_unseal_test.ts tests/ui_providers_duplicate_rename_test.ts tests/ui_bridge_enrollment_test.ts tests/ui_device_approval_safety_test.ts tests/ui_bridges_panel_update_test.ts tests/provider_catalog_test.ts tests/ui_settings_modal_test.ts tests/ui_settings_modal_integration_test.ts tests/ui_providers_routing_test.ts tests/ui_simplify_conversation_layout_test.ts tests/ui_expiry_filtering_test.ts tests/ui_mobile_layout_test.ts tests/ui_composer_mobile_persistence_test.ts tests/ui_agents_chain_name_test.ts tests/ui_markdown_mermaid_test.ts tests/ui_composer_model_icon_test.ts tests/ui_approval_page_input_wiring_test.ts",
+    "test": "node --test tests/ui_stream_lifecycle_events_test.ts tests/ui_shell_streaming_test.ts tests/ui_agent_stream_snapshot_geometry_test.ts tests/ui_lsp_*.ts tests/ui_scoped_search_test.ts tests/ui_command_palette_test.ts tests/ui_fleet_actions_test.ts tests/ui_chain_list_item_rollup_test.ts tests/ui_sidebar_chain_indicators_test.ts tests/ui_chain_status_and_title_test.ts tests/ui_global_title_search_test.ts tests/fleetSelection.test.ts tests/ui_task_chain_selector_test.ts tests/ui_select_portal_test.ts tests/ui_vault_*.ts tests/ui_*_vault_test.ts tests/ui_embedded_vault_decrypt_test.ts tests/ui_bridge_unseal_test.ts tests/ui_providers_duplicate_rename_test.ts tests/ui_bridge_enrollment_test.ts tests/ui_device_approval_safety_test.ts tests/ui_bridges_panel_update_test.ts tests/provider_catalog_test.ts tests/ui_settings_modal_test.ts tests/ui_settings_modal_integration_test.ts tests/ui_providers_routing_test.ts tests/ui_simplify_conversation_layout_test.ts tests/ui_expiry_filtering_test.ts tests/ui_mobile_layout_test.ts tests/ui_composer_mobile_persistence_test.ts tests/ui_agents_chain_name_test.ts tests/ui_markdown_mermaid_test.ts tests/ui_composer_model_icon_test.ts tests/ui_approval_page_input_wiring_test.ts tests/ui_approval_page_render_test.ts",
     "test:unit": "npm test",
     "build:electron": "tsc -p tsconfig.electron.json && cp src/ui/electron/icon.png electron-dist/icon.png",
     "build": "npm run typecheck && vite build && npm run build:electron",
@@ -36,6 +36,7 @@
     "shiki": "^4.3.1"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^25.9.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -43,6 +44,7 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.0.1",
     "electron": "^33.0.2",
+    "jsdom": "^25.0.1",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
