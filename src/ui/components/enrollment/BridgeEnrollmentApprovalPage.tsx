@@ -604,7 +604,7 @@ export default function BridgeEnrollmentApprovalPage() {
             placeholder="ABCD-2345"
             autoComplete="off"
             disabled={!!grant}
-            onChange={(e: any) => setCodeInput(e?.target?.value ?? '')}
+            onChange={(value) => setCodeInput(value)}
           />
           <Button
             variant="primary"
@@ -794,7 +794,7 @@ export default function BridgeEnrollmentApprovalPage() {
                 value={masterPassword}
                 autoComplete="current-password"
                 placeholder="Master password"
-                onChange={(e: any) => setMasterPassword(e?.target?.value ?? '')}
+                onChange={(value) => setMasterPassword(value)}
               />
               <label style={{ display: 'block', fontSize: '0.8rem', margin: '8px 0' }}>
                 <input
