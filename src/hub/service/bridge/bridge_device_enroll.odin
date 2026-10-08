@@ -36,6 +36,7 @@
 package bridge
 
 import "core:strings"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
@@ -55,6 +56,11 @@ Device_Enroll_Input :: struct {
 	machine_hostname:       string,
 	machine_os:             string,
 	bridge_version:         string,
+	// target_bridge_id is the approving human's "attach to an existing bridge"
+	// choice. Empty (the default) mints a new bridge, below. Non-empty routes
+	// to rotate_bridge_for_device_grant instead, which re-checks ownership
+	// before touching anything -- see that proc.
+	target_bridge_id:       string,
 }
 
 // enroll_bridge_from_device_grant mints the per-machine identity + credential
@@ -74,6 +80,9 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	}
 	if input.bridge_public_key == "" {
 		return Enroll_Bridge_Result{}, false, domain.domain_error(.Validation_Failed, "bridge_public_key is required")
+	}
+	if strings.trim_space(input.target_bridge_id) != "" {
+		return rotate_bridge_for_device_grant(service, owner, input)
 	}
 	hostname := strings.trim_space(input.machine_hostname)
 	if hostname == "" do hostname = "unknown-host"
@@ -121,6 +130,67 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	// retry hint, never a weaker credential and never `.Internal_Error`. The bridge
 	// row survives an entropy failure; the human approves again and that approval
 	// mints into a new family.
+	pair, pair_ok, pair_err := issue_bridge_token_pair(service, saved.bridge_id)
+	if !pair_ok do return Enroll_Bridge_Result{}, false, pair_err
+	return Enroll_Bridge_Result{
+		bridge = saved,
+		bridge_token = pair.access_token,
+		refresh_token = pair.refresh_token,
+		expires_in = pair.expires_in,
+		refresh_expires_in = pair.refresh_expires_in,
+	}, true, domain.Domain_Error{}
+}
+
+// rotate_bridge_for_device_grant attaches an approved device grant to an
+// EXISTING bridge instead of minting a new one -- the "replace credential of
+// ..." choice on the approval page, as opposed to "create a new bridge".
+//
+// It revokes the target's current credential family, kicks its live
+// connection, and issues the NEW device a fresh credential under the SAME
+// bridge_id -- so agent/telemetry history keyed on bridge_id carries over
+// untouched. That's safe with no migration: migrations/057_bridge_tokens.sql
+// states bridge_id carries no DB foreign key anywhere in this schema, so
+// nothing needs to be moved, only the row this proc already writes.
+//
+// Ownership is re-checked here with get_bridge, the SAME anti-enumeration
+// shape revoke_bridge uses (.Not_Found, not .Forbidden) -- a target_bridge_id
+// the approving user does not own must look identical to one that does not
+// exist, or this becomes an oracle for enumerating other users' bridge ids.
+// get_bridge wants a contracts.Auth_Context; this flow has no HTTP request to
+// take one from, so a minimal one is built from just the approved owner
+// (the only field get_bridge/require_owner actually reads).
+rotate_bridge_for_device_grant :: proc(service: ^Bridge_Service, owner: string, input: Device_Enroll_Input) -> (Enroll_Bridge_Result, bool, domain.Domain_Error) {
+	target_bridge_id := strings.trim_space(input.target_bridge_id)
+	bridge, get_ok, get_err := get_bridge(service, contracts.Auth_Context{user_id = owner}, target_bridge_id)
+	if !get_ok do return Enroll_Bridge_Result{}, false, get_err
+
+	now := platform.clock_now(service.clock)
+	// Credentials first, same order and same reasoning as revoke_bridge
+	// (bridge_service.odin): a device that reconnects in the gap between this
+	// and the row flip must not be able to re-authenticate with the OLD family.
+	if _, revoke_ok, revoke_err := iface.bridge_revoke_tokens_for_bridge(service.repo, target_bridge_id, now); !revoke_ok {
+		return Enroll_Bridge_Result{}, false, revoke_err
+	}
+
+	hostname := strings.trim_space(input.machine_hostname)
+	if hostname == "" do hostname = bridge.machine_hostname
+	bridge.machine_hostname = hostname
+	bridge.machine_os = input.machine_os
+	bridge.capabilities_json = device_enroll_capabilities_json(input)
+	bridge.version = input.bridge_version
+	// Unlike revoke_bridge this does NOT set .Revoked -- the row stays alive
+	// under the new device's credential, which is the entire point of
+	// "attach" over "revoke and re-enroll as new".
+	bridge.status = .Offline
+	bridge.updated_at = now
+	saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, bridge)
+	if !save_ok do return Enroll_Bridge_Result{}, false, save_err
+
+	// Last, same reasoning as revoke_bridge step 3: the only step whose
+	// failure is survivable, because nothing can authenticate as the old
+	// family by this point regardless of whether the socket actually closes.
+	_ = close_bridge_connection(service, target_bridge_id)
+
 	pair, pair_ok, pair_err := issue_bridge_token_pair(service, saved.bridge_id)
 	if !pair_ok do return Enroll_Bridge_Result{}, false, pair_err
 	return Enroll_Bridge_Result{

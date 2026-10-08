@@ -305,6 +305,7 @@ approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_
 				device_label = grant.device_label,
 				os = grant.os,
 				app_version = grant.app_version,
+				target_bridge_id = input.target_bridge_id,
 			})
 			if !tok_ok do return false, domain.domain_error(.Internal_Error, "could not issue bridge credential")
 			// A minter that returns no bridge_id would leave the credential

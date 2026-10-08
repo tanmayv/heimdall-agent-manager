@@ -163,6 +163,11 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		user_code = json_string(req.body, "user_code"),
 		// approve defaults to false; body must explicitly send true to approve.
 		approve = json_bool(req.body, "approve"),
+		// Optional "attach to an existing bridge" choice from the approval page.
+		// Empty means mint a new bridge (unchanged default). Ownership of
+		// target_bridge_id is re-checked downstream against the Auth_Context
+		// owner, never trusted from this body alone.
+		target_bridge_id = json_string(req.body, "target_bridge_id"),
 	}
 	// ELDA-6: owner comes from Auth_Context, NEVER from the body. We deliberately
 	// do NOT read owner_user_id/user from req.body.

@@ -668,6 +668,7 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		machine_hostname = req.device_label,
 		machine_os = req.os,
 		bridge_version = req.app_version,
+		target_bridge_id = req.target_bridge_id,
 	})
 	if !ok do return device_auth_service.Bridge_Mint_Result{}, false
 	// REQ-IMPL-3: enroll_bridge_from_device_grant now returns an EXPIRING PAIR
