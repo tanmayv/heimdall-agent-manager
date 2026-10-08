@@ -59,15 +59,26 @@ fake_minter :: proc(ctx: rawptr, user_id, client, device_label: string) -> (stri
 // test can prove the owner came from the Auth_Context argument and that the
 // user minter was never consulted for a bridge grant. ---
 BRIDGE_MINT_CALLS: [dynamic]device_auth.Bridge_Mint_Request
-BRIDGE_MINT_TOKEN: string = "hbr_brg_fake.secretsecret"
+BRIDGE_MINT_TOKEN: string = "hba_btk_fake.secretsecret"
 BRIDGE_MINT_ID: string = "brg_fake_001"
 BRIDGE_MINT_OK: bool = true
 
-fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) -> (string, string, bool) {
+// REQ-IMPL-3 changed the minter's return to a Bridge_Mint_Result struct (an
+// expiring PAIR plus its two lifetimes), so the fake returns the access half under
+// the same constant and adds a refresh half the poll assertions can look for.
+BRIDGE_MINT_REFRESH: string = "hbf_btk_fake.refreshrefresh"
+
+fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) -> (device_auth.Bridge_Mint_Result, bool) {
 	_ = ctx
 	append(&BRIDGE_MINT_CALLS, req)
-	if !BRIDGE_MINT_OK do return "", "", false
-	return BRIDGE_MINT_TOKEN, BRIDGE_MINT_ID, true
+	if !BRIDGE_MINT_OK do return device_auth.Bridge_Mint_Result{}, false
+	return device_auth.Bridge_Mint_Result{
+		access_token = BRIDGE_MINT_TOKEN,
+		refresh_token = BRIDGE_MINT_REFRESH,
+		bridge_id = BRIDGE_MINT_ID,
+		expires_in = 3600,
+		refresh_expires_in = 2592000,
+	}, true
 }
 
 new_service :: proc() -> (^device_auth.Grant_Store, device_auth.Device_Auth_Service) {
@@ -195,6 +206,28 @@ main :: proc() {
 	assert_eq(binfo.bridge_public_key, BPK, "verify exposes the Hub's copy of the bridge key")
 	assert_eq(binfo.bridge_key_fingerprint, BPK_FP, "verify exposes the hub-computed fingerprint")
 	assert_eq(binfo.os_user, "tanmay", "verify exposes the host-asserted os_user")
+	// REQ-ENROLL-14, review finding 2026-10-07T21:02:37Z: verify must hand back
+	// the HUB'S OWN clock reading. The approval screen shows it under "Verified
+	// by Heimdall", so if it is ever absent the screen has nothing truthful to
+	// put there -- and the defect this replaced was the screen quietly
+	// substituting the operator's browser clock instead.
+	//
+	// It must be the SAME reading verify used for expiry, not a second sample:
+	// FAKE_NOW is what the service clock returns, so equality pins that.
+	assert_eq(binfo.server_time, FAKE_NOW, "verify exposes the Hub's own clock reading as server_time")
+	// And it must be comparable with requested_at, since the screen subtracts
+	// them to show how stale the request is. Same units, same clock, so a grant
+	// created and verified at the same instant has age zero.
+	assert_eq(binfo.server_time - binfo.requested_at, 0, "server_time and requested_at share units and clock")
+	// A later verify of the same grant reports the LATER time, which is what
+	// makes the staleness reading move. A constant here would look like a pass
+	// while the screen showed a frozen "now".
+	FAKE_NOW += 42
+	binfo_later, bvok_later, _ := device_auth.verify(&svc, bres.user_code)
+	assert_true(bvok_later, "verify still succeeds 42s later")
+	assert_eq(binfo_later.server_time, FAKE_NOW, "server_time advances with the Hub clock")
+	assert_eq(binfo_later.server_time - binfo_later.requested_at, 42, "request age is computed from two hub values")
+	FAKE_NOW -= 42
 
 	// --- approval dispatches to the BRIDGE minter, and only to it ---
 	user_mints_before := len(MINT_CALLS)
@@ -278,6 +311,60 @@ main :: proc() {
 	assert_eq(iaerr.code, domain.Error_Code.Internal_Error, "missing bridge_id -> Internal_Error")
 	BRIDGE_MINT_ID = "brg_fake_001"
 	fmt.println("REQ-IMPL-2 OK: a credential without a brg_ is refused")
+
+	// =====================================================================
+	// REQ-IMPL-5: approved_bridge_id — the `brg_` handed back to the APPROVER'S
+	// BROWSER so it can address the vault-key delivery.
+	//
+	// Until approval there is no bridge to address: the id is created by the
+	// minter during approve() and otherwise only ever reaches the BRIDGE, on its
+	// own /device/token poll. The approval screen has to encrypt the vault key to
+	// a specific bridge, so it needs this and nothing else gives it.
+	//
+	// It must FAIL CLOSED in every other case. An empty id read as "the current
+	// bridge" would deliver the vault key to the wrong machine, so each negative
+	// case below is a real hazard rather than tidiness.
+	// =====================================================================
+	bid, bid_ok := device_auth.approved_bridge_id(&svc, bres.user_code)
+	assert_true(bid_ok, "approved bridge grant exposes its minted bridge id")
+	assert_eq(bid, "brg_fake_001", "the id is the one the minter returned")
+	assert_eq(bid, bgrant_after.minted_bridge_id, "it is the same value the poll path hands the bridge")
+
+	// A PENDING bridge grant has no credential yet, so there is nothing to
+	// address and nothing may be returned.
+	pres, pok3, _ := device_auth.authorize(&svc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(pok3, "authorize a second bridge grant for the pending case")
+	_, pending_ok := device_auth.approved_bridge_id(&svc, pres.user_code)
+	assert_true(!pending_ok, "a PENDING bridge grant exposes no bridge id")
+
+	// A DENIED bridge grant must not expose one either: the operator said no.
+	dres, dok3, _ := device_auth.authorize(&svc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(dok3, "authorize a bridge grant for the denied case")
+	device_auth.approve(&svc, {user_code = dres.user_code, approve = false}, "owner-deny", "1.2.3.4", "UA")
+	_, denied_ok := device_auth.approved_bridge_id(&svc, dres.user_code)
+	assert_true(!denied_ok, "a DENIED bridge grant exposes no bridge id")
+
+	// A USER-TOKEN grant has no bridge at all. Returning the user's token id here
+	// would hand the approval screen something that is not a bridge and invite it
+	// to unseal against it.
+	ures, uok3, _ := device_auth.authorize(&svc, {client = "electron"}, "127.0.0.1:1", "")
+	assert_true(uok3, "authorize a user-token grant")
+	device_auth.approve(&svc, {user_code = ures.user_code, approve = true}, "owner-u", "1.2.3.4", "UA")
+	_, user_ok := device_auth.approved_bridge_id(&svc, ures.user_code)
+	assert_true(!user_ok, "an approved USER-TOKEN grant exposes no bridge id")
+
+	// Unknown and empty codes reveal nothing, consistent with the rest of the flow.
+	_, unknown_ok := device_auth.approved_bridge_id(&svc, "ZZZZ-9999")
+	assert_true(!unknown_ok, "an unknown code exposes no bridge id")
+	_, empty_ok := device_auth.approved_bridge_id(&svc, "")
+	assert_true(!empty_ok, "an empty code exposes no bridge id")
+	fmt.println("REQ-IMPL-5 OK: approved_bridge_id returns the minted brg_ and fails closed otherwise")
 
 	// --- AC6: approver_ip uses trusted-XFF resolution (peer is trusted) ---
 	res_f, _, _ := device_auth.authorize(&svc, {client = "electron"}, "127.0.0.1:1", "")

@@ -27,6 +27,32 @@ real_clock_now :: proc(ctx: rawptr) -> string {
 	return format_rfc3339_utc(time.now())
 }
 
+// expires_at_after_seconds_from is expires_at_after_seconds with the NOW SUPPLIED BY
+// THE CALLER, so an expiry can be derived from clock_now (and therefore from an
+// injected test clock) instead of from the wall clock.
+//
+// WHY THIS EXISTS RATHER THAN REUSING THE PROC BELOW (REQ-IMPL-3). The bridge
+// credential's expiry has to be TESTABLE: "an expired access token is rejected, a
+// valid one is accepted" is only provable deterministically if the test can place the
+// clock on either side of the boundary. expires_at_after_seconds reads time.now()
+// directly, which no seam can move, so a test written against it either sleeps for the
+// real TTL or asserts nothing. Every caller on the credential path passes
+// clock_now(service.clock) here.
+//
+// Returns ("", false) for a `now` that does not parse. A silent fallback to the wall
+// clock would be the dangerous failure: it would hand back a plausible timestamp an
+// hour in the future from a DIFFERENT clock than the one the caller is comparing
+// against, which is how a credential ends up never expiring in exactly the
+// configuration nobody tests. Callers must refuse to issue instead.
+expires_at_after_seconds_from :: proc(now: string, seconds: int) -> (string, bool) {
+	ms, ok := rfc3339_to_unix_ms(now)
+	if !ok do return "", false
+	delta := seconds
+	if delta < 0 do delta = 0
+	t := time.Time{_nsec = (ms * 1_000_000) + (i64(delta) * i64(time.Second))}
+	return format_rfc3339_utc(t), true
+}
+
 expires_at_after_seconds :: proc(seconds: int) -> string {
 	delta_seconds := seconds
 	if delta_seconds < 0 do delta_seconds = 0

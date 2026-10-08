@@ -4,10 +4,32 @@ import "core:net"
 import "core:strings"
 import "core:time"
 import domain "odin_test:hub/domain"
+import bridge_service "odin_test:hub/service/bridge"
 import project_service "odin_test:hub/service/project"
 import ws "odin_test:lib/ws"
 import jsonx "odin_test:lib/jsonx"
 import "odin_test:contracts"
+
+// new_bridge_connection_closer builds the REQ-IMPL-3 / audit-F6 teardown seam: the
+// thing revoke_bridge calls to terminate a revoked bridge's LIVE control
+// WebSocket, rather than only flipping a DB row and leaving a connected bridge
+// fully operational until it chooses to reconnect.
+//
+// IT LIVES HERE, in the one package that already joins the services to the runtime
+// registry, so that the app wiring and the tests share EXACTLY this path. A test
+// that built its own one-line closure would prove the registry works and prove
+// nothing about what production actually wires up — which, for a revocation
+// control, is the difference between a test and a reassurance.
+new_bridge_connection_closer :: proc(registry: ^project_service.Bridge_Runtime_Registry) -> bridge_service.Bridge_Connection_Closer {
+	return bridge_service.Bridge_Connection_Closer{ctx = rawptr(registry), close_bridge_connection = close_bridge_connection}
+}
+
+// close_bridge_connection shuts down a live bridge control socket. See
+// project_service.bridge_runtime_registry_shutdown_command_socket for why this
+// SHUTS DOWN rather than closes, and why that distinction is load-bearing.
+close_bridge_connection :: proc(ctx: rawptr, bridge_id: string) -> bool {
+	return project_service.bridge_runtime_registry_shutdown_command_socket((^project_service.Bridge_Runtime_Registry)(ctx), bridge_id)
+}
 
 new_bridge_command_sink :: proc(registry: ^project_service.Bridge_Runtime_Registry) -> project_service.Bridge_Command_Sink {
 	return project_service.Bridge_Command_Sink{ctx = rawptr(registry), validate_project_path = validate_project_path, send_runtime_command = send_runtime_command, send_runtime_command_wait = send_runtime_command_wait}

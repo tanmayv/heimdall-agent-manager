@@ -51,6 +51,7 @@ grant_clone_strings :: proc(g: Grant, heap: runtime.Allocator) -> Grant {
 	c.code_challenge = strings.clone(g.code_challenge, heap)
 	c.code_challenge_method = strings.clone(g.code_challenge_method, heap)
 	c.minted_bridge_id = strings.clone(g.minted_bridge_id, heap)
+	c.minted_refresh_token = strings.clone(g.minted_refresh_token, heap)
 	return c
 }
 
@@ -74,6 +75,7 @@ grant_free_strings :: proc(g: Grant, heap: runtime.Allocator) {
 	delete(g.code_challenge, heap)
 	delete(g.code_challenge_method, heap)
 	delete(g.minted_bridge_id, heap)
+	delete(g.minted_refresh_token, heap)
 }
 
 // Grant_Kind is WHAT a grant will mint when it is approved, decided ONCE at
@@ -85,7 +87,7 @@ grant_free_strings :: proc(g: Grant, heap: runtime.Allocator) {
 // branch would silently mint the WRONG KIND of credential, which is a privilege
 // confusion rather than a cosmetic bug. The same bug class is already on this
 // chain's register as F4 ("empty token => loopback authorizes all",
-// src/bridge/main.odin:473). An enum makes the illegal state unrepresentable
+// the loopback callback guard in src/bridge/main.odin). An enum makes the illegal state unrepresentable
 // and every dispatch exhaustive.
 //
 // `User_Token` is the zero value deliberately: a grant that somehow skipped
@@ -144,6 +146,15 @@ Grant :: struct {
 	code_challenge:         string, // PKCE S256 challenge (RFC 7636 §4.2)
 	code_challenge_method:  string, // always "S256" when a challenge is present
 	minted_bridge_id:       string, // brg_ minted on approval of a bridge grant
+	// --- REQ-IMPL-3: the refresh half of the credential pair -----------------
+	// Held from approval until the single-use poll hands it over, exactly like
+	// minted_token, and cleared at the same moment. The two lifetimes are carried
+	// alongside because they come from the CREDENTIAL (1h / 30d), not from the
+	// grant's own 900-second window, and a bridge that scheduled its refresh off
+	// the grant's expires_in would renew 96 times a day.
+	minted_refresh_token:       string,
+	minted_expires_in:          int,
+	minted_refresh_expires_in:  int,
 }
 
 // Authorize_Input is the public /device/authorize request body (ELDA-1).
@@ -351,6 +362,35 @@ set_grant :: proc(store: ^Grant_Store, device_code: string, grant: Grant) {
 	// grant_store_free; the residual is bounded by the grant's short TTL. Overwrite
 	// reuses the existing map keys (Odin keeps the key on assignment to an existing
 	// entry), so no key churn.
+	//
+	// REVISITED DELIBERATELY FOR REQ-IMPL-3 (refresh-token rotation), and the
+	// immortal-string design is KEPT. Writing the reasoning down because the question
+	// was raised on the premise that rotation would make this a hot path:
+	//
+	//   IT DOES NOT. The rotation lineage lives in SQLITE (the `bridge_tokens`
+	//   table), not in this in-memory store, and `refresh_bridge_token` never calls
+	//   set_grant. The grant store is touched only during the 900-second enrollment
+	//   window, exactly as before.
+	//
+	//   THE NEW BOUND, STATED EXACTLY. Per grant, set_grant runs at most once per
+	//   accepted poll plus once at the approval decision; polls are gated by the
+	//   per-grant interval and the per-IP `poll:` bucket, and the grant is reaped at
+	//   its TTL. So the residual per grant is
+	//       (polls admitted inside 900s) x sizeof(cloned grant strings) + 1 approval,
+	//   which REQ-IMPL-3 increases by exactly ONE additional cloned string per
+	//   approved enrollment (`minted_refresh_token`, cleared on the handover poll).
+	//   Everything is reclaimed at grant_store_free.
+	//
+	//   WHY NOT RECLAIM ANYWAY. The ownership story that makes reclamation unsafe is
+	//   unchanged: get_grant returns a value copy whose strings ALIAS the stored
+	//   heap strings, and approve is a live example of a caller holding such a
+	//   snapshot across a set_grant. Freeing the overwritten strings would turn
+	//   every borrowed snapshot into a use-after-free, so reclamation needs an
+	//   ownership change (returned grants owning their strings, or refcounting) —
+	//   a bigger change than it looks, on the enrollment path, for a residual that
+	//   is bounded by a 900-second TTL. That is a poor trade; if the grant TTL ever
+	//   becomes long, or set_grant is ever called off the poll path, revisit it
+	//   with that change rather than by adding a free here.
 	// BUG FIX (REQ-IMPL-2, found end-to-end on the live stack): index the
 	// user_code to the HEAP-OWNED clone's device_code, never to the caller's
 	// `device_code` parameter.

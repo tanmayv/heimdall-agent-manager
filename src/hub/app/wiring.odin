@@ -149,6 +149,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.user_vaults = user_vault_service.new_user_vault_service(&graph.repos.user_vaults, &graph.clock)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.bridges = bridge_service.new_bridge_service_with_runtime(&graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
+	// REQ-IMPL-3 / audit F6: revocation must terminate the bridge's LIVE control
+	// WebSocket, not merely flip a DB row. The registry owns the socket; the bridge
+	// service must not reach into the transport layer, so the teardown is injected
+	// as a seam here. Without this line revocation silently degrades to the F6
+	// behaviour — the bridge stays connected and fully operational until it next
+	// reconnects, which with proactive refresh may be never.
+	bridge_service.with_connection_closer(&graph.bridges, bridge_runtime_service.new_bridge_connection_closer(&graph.bridge_runtime_registry))
 	graph.bridges.catalog = &graph.bridge_update_catalog
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
@@ -174,8 +181,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.auth.bridges = &graph.bridges
 	graph.auth.agents = &graph.agents
-	// Bridge-token authorization mode (default monitor): only "enforce" blocks.
-	graph.auth.bridge_auth_mode = .Enforce if config.bridge_auth_mode == "enforce" else .Monitor
+	// Bridge-token authorization is ALWAYS enforced; there is nothing to wire.
+	//
+	// This line used to select the mode with `== "enforce"`, which made
+	// enforcement conditional on an exact string match. Every other
+	// value — unset, "Enforce", "enforced", "true", a typo — selected the
+	// permissive mode silently, with no startup warning. REQ-IMPL-6 removed the
+	// mode rather than hardening the comparison: a security control that can be
+	// switched off by a misspelling in a config file should not be switchable.
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
 		verification_uri = config.device_auth_verification_uri,
 		expires_in = config.device_auth_expires_in,
@@ -252,7 +265,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
 	graph.push_handlers = http.Push_Handlers{auth = &graph.auth, push = &graph.push, vapid_public_key = config.vapid_public_key}
-	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
+	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.action_bridge_versions = make(map[string]int)
 	graph.action_handlers = http.Action_Handlers{
@@ -315,6 +328,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/device/verify", rawptr(&graph.device_auth_handlers), http.device_verify_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/approve", rawptr(&graph.device_auth_handlers), http.device_approve_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/token", rawptr(&graph.device_auth_handlers), http.device_token_handler)
+	// REQ-IMPL-3: credential rotation. Authenticated by the `hbf_` refresh token
+	// itself — no user session, and an `hba_` access token is refused — so it is
+	// registered next to the flow that issued the credential rather than under
+	// /api/v1/bridges, whose routes are user-session scoped. Handled by
+	// bridge_handlers because the credential is bridge-service state, not grant state.
+	http.router_add(&graph.router, "POST", "/api/v1/device/bridge-refresh", rawptr(&graph.bridge_handlers), http.bridge_refresh_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/auth/config", rawptr(&graph.user_handlers), http.auth_config_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
@@ -518,10 +537,11 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/start-success", rawptr(&graph.agent_action_handlers), http.agent_action_start_success_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.create_bridge_enrollment_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/bridge-enrollments/*", rawptr(&graph.bridge_handlers), http.revoke_bridge_enrollment_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridges/enroll", rawptr(&graph.bridge_handlers), http.enroll_bridge_handler)
+	// REQ-ENROLL-9: the four pre-shared-token enrollment routes are GONE —
+	// POST/GET /api/v1/bridge-enrollments, DELETE /api/v1/bridge-enrollments/*
+	// (enrollment-token minting, listing and revocation) and
+	// POST /api/v1/bridges/enroll (the token-for-credential exchange).
+	// Enrollment is browser-approved only; see the /api/v1/device/* routes.
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/bridge-ws", rawptr(&graph.bridge_handlers), http.bridge_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agent-instances/*/bootstrap", rawptr(&graph.bridge_handlers), http.bridge_instance_bootstrap_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agents/*/bootstrap-manifest", rawptr(&graph.bridge_handlers), http.bridge_agent_manifest_handler)
@@ -636,7 +656,7 @@ device_minter :: proc(graph_ptr: rawptr, user_id, client, device_label: string) 
 // a `brg_` row and a credential that resolves to exactly that one bridge, so
 // verify_bridge_token / resolve_bridge_instance_auth give per-machine scoping.
 // Returns (plaintext_token, bridge_id, ok).
-device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_Mint_Request) -> (string, string, bool) {
+device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_Mint_Request) -> (device_auth_service.Bridge_Mint_Result, bool) {
 	graph := (^App_Graph)(graph_ptr)
 	result, ok, _ := bridge_service.enroll_bridge_from_device_grant(&graph.bridges, bridge_service.Device_Enroll_Input{
 		owner_user_id = req.owner_user_id, // bound from Auth_Context by approve()
@@ -647,6 +667,15 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		machine_os = req.os,
 		bridge_version = req.app_version,
 	})
-	if !ok do return "", "", false
-	return result.bridge_token, result.bridge.bridge_id, true
+	if !ok do return device_auth_service.Bridge_Mint_Result{}, false
+	// REQ-IMPL-3: enroll_bridge_from_device_grant now returns an EXPIRING PAIR
+	// (`hba_` + `hbf_`), so the approval hands both halves to the grant and the
+	// bridge receives them together on its single-use poll.
+	return device_auth_service.Bridge_Mint_Result{
+		access_token = result.bridge_token,
+		refresh_token = result.refresh_token,
+		bridge_id = result.bridge.bridge_id,
+		expires_in = result.expires_in,
+		refresh_expires_in = result.refresh_expires_in,
+	}, true
 }

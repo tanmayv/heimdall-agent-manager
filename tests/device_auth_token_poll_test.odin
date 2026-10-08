@@ -64,11 +64,20 @@ new_service :: proc(rate_limit := 100, interval := 5) -> (^device_auth.Grant_Sto
 
 // --- Fake BRIDGE minter (REQ-IMPL-2) ---
 BRIDGE_MINT_COUNT: int = 0
-fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) -> (string, string, bool) {
+fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) -> (device_auth.Bridge_Mint_Result, bool) {
 	_ = ctx
 	_ = req
 	BRIDGE_MINT_COUNT += 1
-	return "hbr_brg_poll_fake.secret", "brg_poll_fake", true
+	// REQ-IMPL-3: an expiring pair. expires_in is the CREDENTIAL's hour, which is
+	// deliberately different from this store's 600s grant window — poll must report
+	// the credential's lifetime, not the flow's.
+	return device_auth.Bridge_Mint_Result{
+		access_token = "hba_btk_poll_fake.secret",
+		refresh_token = "hbf_btk_poll_fake.refresh",
+		bridge_id = "brg_poll_fake",
+		expires_in = 3600,
+		refresh_expires_in = 2592000,
+	}, true
 }
 
 header_value :: proc(headers: []contracts.HTTP_Header, name: string) -> string {
@@ -205,7 +214,13 @@ main :: proc() {
 	good, good_err := device_auth.poll(&psvc, bres.device_code, "203.0.113.40", PKCE_VERIFIER)
 	assert_eq(good_err.code, domain.Error_Code.None, "correct verifier poll no error")
 	assert_eq(good.status, device_auth.Poll_Status.Approved, "correct verifier -> approved")
-	assert_eq(good.access_token, "hbr_brg_poll_fake.secret", "correct verifier returns the bridge credential")
+	assert_eq(good.access_token, "hba_btk_poll_fake.secret", "correct verifier returns the bridge credential")
+	// REQ-IMPL-3: the refresh half rides the SAME single-use poll. A bridge that
+	// received only the access token could never renew and would be unrecoverable
+	// after an hour, so this is part of the poll contract, not an extra.
+	assert_eq(good.refresh_token, "hbf_btk_poll_fake.refresh", "the refresh half is handed over in the same poll")
+	assert_true(good.expires_in == 3600, "expires_in is the CREDENTIAL's lifetime, not the grant window")
+	assert_true(good.refresh_expires_in == 2592000, "refresh lifetime is reported to the bridge")
 	assert_eq(good.bridge_id, "brg_poll_fake", "approved bridge poll returns the brg_ it is scoped to")
 
 	// 4. Single-use still holds for a bridge grant: the second redemption is

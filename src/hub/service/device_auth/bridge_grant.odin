@@ -9,12 +9,19 @@
 //   - a BRIDGE grant carries a bridge_public_key and is approved into a
 //     per-machine, bridge-scoped credential (`brg_`).
 //
-// WHICH ONE A GRANT IS, IS DECIDED ONCE AND THEN PERSISTED as `Grant.grant_kind`.
-// The RULE is the presence of a bridge_public_key — the key is the thing the
-// credential is bound to, so a request contributing one is a machine enrollment
-// by construction and cannot be talked out of it by the request body. But that
-// rule is applied in exactly ONE place, `grant_kind_for_input`, called once at
-// authorize; every later branch reads the stored enum via `is_bridge_grant`.
+// WHICH ONE A GRANT IS, IS DECIDED ONCE AND THEN PERSISTED as `Grant.grant_kind`,
+// and from then on the ENUM is the discriminator — never the key field.
+//
+// The DERIVATION, applied in exactly one place (`grant_kind_for_input`, called once
+// at authorize), asks whether the request contributed a bridge_public_key: the key
+// is the thing the credential is bound to, so a request carrying one is a machine
+// enrollment by construction and cannot be talked out of it by the rest of the body.
+// That derivation is a one-time INPUT CLASSIFICATION. It is not how later code
+// decides what a grant is: every later branch reads the stored enum via
+// `is_bridge_grant`, and `bridge_public_key != ""` appears nowhere as a test of
+// kind. The distinction is the whole point of the paragraph below — a comment that
+// described the key's presence as "the rule" would invite someone to reintroduce the
+// emptiness test that this file exists to keep out.
 //
 // DO NOT "SIMPLIFY" `is_bridge_grant` BACK TO `bridge_public_key != ""`. The two
 // kinds mint different identities, so a single empty-string test that went wrong
@@ -39,7 +46,7 @@
 //     finish it); without it a leaked device_code is bearer-redeemable.
 //
 // The fingerprint hashes the DECODED 65-byte point, not its hex text, so the
-// bridge (hex, src/bridge/unseal_protocol.odin:57-62) and the browser (base64url
+// bridge (hex, bridge_get_public_key_hex in src/bridge/unseal_protocol.odin) and the browser (base64url
 // in the approval-link fragment, design §5.4.2) compute the same value from the
 // same key without agreeing on a transport encoding first.
 
@@ -54,7 +61,7 @@ import domain "odin_test:hub/domain"
 
 // P256_UNCOMPRESSED_HEX_LEN is the hex length of an uncompressed SECP256R1
 // point: 1 prefix byte + two 32-byte coordinates = 65 bytes = 130 hex chars.
-// Matches bridge_get_public_key_hex() (src/bridge/unseal_protocol.odin:57-62).
+// Matches bridge_get_public_key_hex() in src/bridge/unseal_protocol.odin.
 P256_UNCOMPRESSED_HEX_LEN :: 130
 
 // PKCE_S256 is the only accepted code_challenge_method (RFC 7636 §4.2).
