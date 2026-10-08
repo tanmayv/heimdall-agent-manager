@@ -240,7 +240,8 @@ the run dir so the agent always has a consistent path to it).
 
 The per-device daemon that connects a machine to the hub. The bridge:
 
-- Authenticates to the hub using a bridge token (`hbr_…` — see `SELF_HOSTING.md`).
+- Authenticates to the hub using an expiring bridge credential (`hba_…`), obtained by
+  browser-approved enrollment and refreshed automatically — see `SELF_HOSTING.md`.
 - Spawns and supervises agent processes (via `ham-pty-host`).
 - Executes tracked shell commands on behalf of agents and streams output back.
 - Serves the local filesystem to agents for safe project exploration.
@@ -322,58 +323,105 @@ brew install socat      # macOS
 
 If this machine has not been enrolled with the Hub before:
 
-1. **Obtain an enrollment token:**
-   - Open the web dashboard at [https://hub.mundus.in](https://hub.mundus.in) to generate an enrollment token, or generate one on the hub host via CLI:
-     ```bash
-     ham-ctl bridge enroll-token --new
-     ```
-   - Copy the one-time token (format: `hbe_...`).
-
-2. **Run the one-line installer with the Hub URL:**
+1. **Run the one-line installer with the Hub URL:**
    ```bash
    curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.mundus.in
    ```
    *(Alternatively, run `curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash` in an interactive terminal and enter `https://hub.mundus.in` when prompted).*
 
-3. **Complete interactive onboarding:**
-   - When prompted, paste your enrollment token:
-     ```text
-     Enter one-time enrollment token (hbe_...): hbe_...
-     ```
-   - The installer enrolls the node with the hub, writes your permanent credentials to `~/.config/heimdall/bridge-token` (with mode `0600`), and writes the hub URL into `~/.config/heimdall/config.toml`.
-   - It automatically starts the bridge service (`systemctl --user enable --now heimdall-bridge` on Linux, or `launchctl` on macOS) and verifies the active connection.
-   - You will be asked if you wish to configure client vault encryption and enter a master password (`[y/N]`).
+2. **Approve the node in a browser:**
 
-**Non-interactive / script alternative:**
-If installing in CI or automated non-interactive environments:
+   There is **no enrollment token**. Nothing is generated on the Hub beforehand and
+   nothing secret is copied between machines. The installer runs the enrollment for
+   you; it prints an approval link and a short code:
+
+   ```text
+   Open this link:
+
+     https://heimdall.mundus.in/#/enroll/approve?...#key=...
+
+   The link carries this machine's encryption key, so approving it also
+   unlocks the vault here. Nothing else to do afterwards.
+
+   If you cannot use the link, open https://heimdall.mundus.in/#/enroll/approve
+   and enter the code     ABCD-EFGH
+   then check this fingerprint matches the page:
+                          a1b2 c3d4 e5f6 ...
+   ```
+
+   Open the link on any device you are already signed in to and approve. The
+   credential is then delivered to this machine directly over its own
+   authenticated channel — it never travels through the browser or the callback URL.
+
+   Use the **code** path only if you cannot open the link. It is the one path that
+   asks you to compare the fingerprint, because typing the code by hand leaves the
+   machine's key out of the exchange: the link carries that key in its URL
+   *fragment*, which is never sent to a server, and the fingerprint is how you
+   check it by eye instead. Approving via the code therefore leaves the vault
+   locked here — enrollment still succeeds.
+
+3. **The installer finishes the node:**
+   - Writes the bridge credential to `~/.config/heimdall/bridge-token` (mode `0600`),
+     and the hub URL into `~/.config/heimdall/config.toml`. Nothing secret is written
+     to `config.toml`.
+   - Starts the bridge service (`systemctl --user enable --now heimdall-bridge` on
+     Linux, or `launchctl` on macOS) and verifies the connection.
+   - Asks whether you want to configure client vault encryption, and for a master
+     password (`[y/N]`).
+
+**Enrolling by hand (CI, or a re-run after a failed approval):**
 ```bash
-# Install binaries and register service non-interactively
+# Install binaries and register the service non-interactively
 curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.mundus.in
 
-# Enroll manually and start service
-heimdall enroll <hbe_token> --hub https://hub.mundus.in
+# Enroll: approve in a browser, then start the service
+ham-bridge enroll --ui https://heimdall.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
 systemctl --user enable --now heimdall-bridge        # Linux
 # or macOS:
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist
 launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
 ```
 
-#### 3. Connecting with an existing token (reinstalling or migrating)
+`--ui` takes the **UI origin** — scheme and host only, with no path. A URL with a
+path is rejected rather than trimmed. Note that the UI origin is not the Hub API
+host: for the Hub at `https://hub.mundus.in` the UI origin is
+`https://heimdall.mundus.in`, because the UI proxies `/api` through to the Hub.
+Passing the Hub host instead produces a 404 on the authorize call, and the error
+names `--ui` as the thing to check. `HAM_BRIDGE_UI_URL` sets the same value from
+the environment.
 
-If you already have a valid bridge token (e.g. `hbr_...` from a previous installation or backup):
+Add `--headless` on a machine with no browser of its own: it skips the local
+loopback shortcut and waits on polling instead, so you approve the link from
+another device with no paste step. Enrollment succeeds either way — the loopback
+callback only saves a few seconds.
+
+Omit `--bridge-token-file` and the credential lands at
+`~/.local/share/heimdall/bridge-credential` instead; `HAM_BRIDGE_TOKEN_FILE` is
+honoured too. The installer passes the flag explicitly so the credential sits
+beside `config.toml`, which is also where the registered service looks for it.
+
+#### 3. Reconnecting a node that is already enrolled
+
+An enrolled node holds an `hba_` bridge credential that it refreshes on its own.
+The credential is only ever issued by a browser-approved enrollment, so there is
+no token you can be handed to paste in — to attach a *new* machine, enroll it as
+in §2 above. The legacy non-expiring `hbr_` token is no longer minted and is no
+longer accepted.
 
 - **Automatic detection on reinstall:**
-  Running `install.sh` automatically checks for `$HOME/.config/heimdall/bridge-token`. If a valid token is found, it reports:
+  `install.sh` checks for `$HOME/.config/heimdall/bridge-token`. If a credential is
+  found, it reports:
   ```text
   ==> Found existing bridge token at ~/.config/heimdall/bridge-token; node is already enrolled.
   ```
-  It preserves your token, skips enrollment prompting, ensures the service is registered with `https://hub.mundus.in`, and starts the service.
+  It preserves the credential, skips enrollment, ensures the service is registered
+  with `https://hub.mundus.in`, and starts the service.
 
-- **Configuring / migrating an existing token manually:**
-  If migrating from a backup or setting up manually, place the token file:
+- **Restoring a credential file from a backup of the same node:**
+  Put the credential file back where the bridge reads it, and keep its mode:
   ```bash
   mkdir -p ~/.config/heimdall
-  echo "hbr_your_bridge_token" > ~/.config/heimdall/bridge-token
+  cp /path/to/backup/bridge-token ~/.config/heimdall/bridge-token
   chmod 0600 ~/.config/heimdall/bridge-token
   ```
   Ensure `~/.config/heimdall/config.toml` specifies the Hub URL:
@@ -387,6 +435,8 @@ If you already have a valid bridge token (e.g. `hbr_...` from a previous install
   # or macOS:
   launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
   ```
+  If the credential was revoked or has aged out, the bridge says so and refuses to
+  start; re-enroll with `ham-bridge enroll --ui https://heimdall.mundus.in`.
 
 #### 4. Verification & Diagnostics
 

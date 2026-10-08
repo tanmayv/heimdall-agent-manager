@@ -58,15 +58,30 @@ programs.heimdall = {
 
 Home Manager gives the bridge service a deterministic agent-launch environment: the Home Manager profile, `~/.pi/agent/bin`, `~/.local/bin`, required Nix tools, and system fallbacks are on `PATH`, and matching `ham-wrapper`/`ham-ctl` binaries are pinned via environment variables. If a provider binary lives somewhere else, add it with `programs.heimdall.bridge.environment.PATH` or configure the provider `command` as an absolute path.
 
-Enroll once and write the Hub-issued bridge token to that file:
+Enroll once, and point `enroll` at the same file `tokenFile` names so the service
+finds the credential it writes:
 
 ```sh
 ham-bridge enroll \
-  --hub https://heimdall.mundus.in \
-  --enrollment-token hbe_once_... \
+  --ui https://heimdall.mundus.in \
   --bridge-token-file ~/.config/heimdall/bridge-token
-chmod 600 ~/.config/heimdall/bridge-token
 ```
+
+`enroll` prints an approval link. Open it on any device and approve; the credential
+is then delivered to the machine directly. It also prints a short code as a fallback
+for when the link cannot be opened — that path asks you to compare a fingerprint by
+eye, and leaves the vault locked on this machine. There is no enrollment
+token and no Hub URL to pass — `--ui` takes the **UI origin** only (scheme and
+host, no path), and the UI proxies `/api` through to the Hub. Add `--headless` on
+a machine with no browser of its own.
+
+The written credential is an expiring `hba_` token (mode `0600`, set by `enroll`
+itself) that the bridge refreshes on its own. The legacy non-expiring `hbr_` token
+is no longer minted or accepted.
+
+Note that `hubUrl` above and the `--ui` origin are different hosts in a typical
+deployment: `hubUrl` is the Hub API that the running bridge talks to, while `--ui`
+is the origin a human opens in a browser.
 
 ---
 
