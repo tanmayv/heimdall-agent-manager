@@ -26,6 +26,7 @@ import {
   writeLastSeenUserId,
 } from '../../utils/clientPersistence';
 import BottomDock from './BottomDock';
+import BridgeEnrollmentApprovalPage from '../enrollment/BridgeEnrollmentApprovalPage';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
@@ -1206,6 +1207,13 @@ function RouteOutlet({
           <ProjectFormPage projectId={decodeURIComponent(path.slice('/projects/'.length, -'/edit'.length))} />
         ) : path.startsWith('/projects/') ? (
           <ProjectViewPage projectId={decodeURIComponent(path.slice('/projects/'.length))} />
+        ) : path === '/enroll/approve' ? (
+          // REQ-IMPL-5: the bridge-enrollment approval screen. The bridge prints
+          // a link to this route and puts the public key in the FRAGMENT, which
+          // never reaches the Hub. It lives in the SPA because the vault key is
+          // in-memory module state here; the standalone page at
+          // GET /api/v1/device is unchanged and still serves the Electron flow.
+          <BridgeEnrollmentApprovalPage />
         ) : path === '/conversations/new' ? (
           <ConversationLaunchComposer />
         ) : path === '/settings' || path === '/settings/bridges' ? (
