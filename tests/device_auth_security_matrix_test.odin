@@ -95,7 +95,11 @@ main :: proc() {
 //      cannot act for an instance owned by bridge B.
 //   4. The credential does NOT derive from a timestamp: two back-to-back
 //      enrolments produce unrelated secrets, and the token splits as
-//      `hbr_<bridge_id>.<secret>` with the id half equal to the minted brg_.
+//      `hba_<token_id>.<secret>`. REQ-IMPL-3 moved the device-grant credential
+//      from the non-expiring `hbr_<brg_>` shape to the expiring PAIR, so the id
+//      half is now the token row's own `btk_` and not the bridge id — the bridge
+//      is resolved from the row, which is what lets one bridge hold a lineage of
+//      credentials at all.
 //   5. The approved public key is on record against the bridge row.
 test_bridge_enrollment_end_to_end :: proc() {
 	BPK_A :: "04030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc"
@@ -214,6 +218,12 @@ test_bridge_enrollment_end_to_end :: proc() {
 	row_a, row_a_ok, _ := iface.bridge_get_bridge(graph.bridges.repo, bridge_id_a)
 	assert_true(row_a_ok, "bridge row readable")
 	assert_eq(string(row_a.owner_user_id), "approving-human", "bridge row owned by the approving user")
+	// REQ-IMPL-3: a device-enrolled bridge's credentials live in `bridge_tokens`,
+	// so this column is EMPTY for it rather than holding a hash. That is the
+	// stronger property and worth asserting positively: an empty stored hash
+	// verifies nothing (verify_credential), so this bridge has no non-expiring
+	// credential at all, not merely a hashed one.
+	assert_eq(row_a.bridge_token_hash, "", "no non-expiring hbr_ hash is written for a device-enrolled bridge")
 	assert_true(!strings.contains(row_a.bridge_token_hash, token_a), "the plaintext credential is not stored")
 	// Property 5: the approved key is on record against the bridge.
 	assert_true(strings.contains(row_a.capabilities_json, BPK_A), "the approved public key is on record against the bridge row")
@@ -235,13 +245,20 @@ test_bridge_enrollment_end_to_end :: proc() {
 	assert_true(e1_ok && e2_ok, "two back-to-back device-grant enrolments succeed")
 	assert_true(e1.bridge_token != e2.bridge_token, "two enrolments produce different credentials")
 	assert_true(e1.bridge.bridge_id != e2.bridge.bridge_id, "two enrolments produce different brg_ ids")
-	// Shape: hbr_<bridge_id>.<secret>, id half equal to the minted brg_. A
-	// regression to a timestamp-derived token fails on shape as well as entropy.
-	id1, secret1, split1 := bridge_service.split_credential(bridge_service.BRIDGE_TOKEN_PREFIX, e1.bridge_token)
-	id2, secret2, split2 := bridge_service.split_credential(bridge_service.BRIDGE_TOKEN_PREFIX, e2.bridge_token)
-	assert_true(split1 && split2, "both credentials split as hbr_<bridge_id>.<secret>")
-	assert_eq(id1, e1.bridge.bridge_id, "credential's id half is the minted brg_")
-	assert_eq(id2, e2.bridge.bridge_id, "second credential's id half is its own brg_")
+	// Shape: hba_<token_id>.<secret>. A regression to a timestamp-derived token
+	// fails on shape as well as on entropy.
+	id1, secret1, split1 := bridge_service.split_credential(bridge_service.ACCESS_TOKEN_PREFIX, e1.bridge_token)
+	id2, secret2, split2 := bridge_service.split_credential(bridge_service.ACCESS_TOKEN_PREFIX, e2.bridge_token)
+	assert_true(split1 && split2, "both credentials split as hba_<token_id>.<secret>")
+	assert_true(strings.has_prefix(id1, "btk_") && strings.has_prefix(id2, "btk_"), "the id half is the token row's id")
+	assert_true(id1 != id2, "two enrolments produce different token rows")
+	// REQ-IMPL-3: the refresh half is a SEPARATE credential with its own row and
+	// its own secret. A pair that shared a secret would make the 1-hour bound on
+	// the access token meaningless.
+	r1, rsecret1, rsplit1 := bridge_service.split_credential(bridge_service.REFRESH_TOKEN_PREFIX, e1.refresh_token)
+	assert_true(rsplit1, "the refresh half splits as hbf_<token_id>.<secret>")
+	assert_true(r1 != id1, "access and refresh are distinct rows")
+	assert_true(rsecret1 != secret1, "access and refresh do not share a secret")
 	assert_true(secret1 != secret2, "the two secrets differ")
 	assert_eq(len(secret1), 64, "secret is 64 hex chars (256 bits of CSPRNG)")
 	// Unrelated, not merely unequal: no shared prefix beyond what chance gives.
@@ -249,7 +266,7 @@ test_bridge_enrollment_end_to_end :: proc() {
 	for shared < len(secret1) && shared < len(secret2) && secret1[shared] == secret2[shared] do shared += 1
 	assert_true(shared < 8, "consecutive secrets share no long common prefix (not timestamp-derived)")
 	assert_true(!strings.contains(secret1, e1.bridge.bridge_id[len("brg_"):]), "the secret does not embed the id's timestamp")
-	fmt.println("REQ-IMPL-2 OK: credential is CSPRNG-derived and splits as hbr_<brg_>.<secret>")
+	fmt.println("REQ-IMPL-2/3 OK: credential pair is CSPRNG-derived and splits as hba_/hbf_<btk_>.<secret>")
 
 	// --- Property 3: CROSS-BRIDGE IS REJECTED (T9) ---
 	// Enrol a second bridge, put an agent instance on it, then have bridge A's

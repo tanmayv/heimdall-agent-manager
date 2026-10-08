@@ -18,10 +18,11 @@
 // does not own"). That per-machine scoping is what the user approved, so it is
 // what the credential must carry.
 //
-// THERE IS NO ENROLLMENT TOKEN HERE. enroll_bridge() consumes a pre-shared
-// `hbe_` secret a human had to carry to the machine; this path replaces that
-// secret with a human's approval in a browser, so there is nothing to carry and
-// nothing to leak in transit. The one-time `hbe_` flow is deleted by REQ-IMPL-6.
+// THERE IS NO ENROLLMENT TOKEN ANYWHERE ANY MORE. The deleted `enroll_bridge()`
+// consumed a pre-shared secret a human had to carry to the machine; this path
+// replaces that secret with a human's approval in a browser, so there is nothing
+// to carry and nothing to leak in transit. REQ-IMPL-6 deleted the one-time-token
+// flow outright, which makes this the ONLY way a bridge is enrolled.
 //
 // Lives in its own file rather than in bridge_service.odin so REQ-IMPL-1 could
 // replace the credential machinery underneath it without a merge conflict. That
@@ -77,30 +78,24 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	hostname := strings.trim_space(input.machine_hostname)
 	if hostname == "" do hostname = "unknown-host"
 	now := platform.clock_now(service.clock)
-	// ===== SEAM: REQ-IMPL-3 OWNS THE RE-SHAPE OF THE NEXT FOUR LINES =====
-	// The credential minted here is NON-EXPIRING BY DESIGN IN THIS TASK. There is
-	// deliberately no TTL, no rotation, no refresh token and no `bridge_token`
-	// table: that is one design surface and it belongs to REQ-IMPL-3 in full,
-	// rather than being half-built twice. REQ-IMPL-2's job is the identity (one
-	// `brg_` per approved machine); REQ-IMPL-3 replaces the mint-and-store below
-	// with the `hba_`/`hbf_` pair from design §7.2.
+	// ===== REQ-IMPL-3: THE CREDENTIAL IS NOW AN EXPIRING PAIR =====
+	// REQ-IMPL-2 left this seam with a deliberately non-expiring `hbr_` and the note
+	// that REQ-IMPL-3 owns the re-shape. This is that re-shape: a device-enrolled
+	// bridge receives `hba_` (1h) + `hbf_` (30d, single-use, rotated), minted by
+	// issue_bridge_token_pair (bridge_token_service.odin). `bridges.bridge_token_hash`
+	// is left EMPTY on this path on purpose — an empty stored hash verifies nothing
+	// (verify_credential), so nothing non-expiring is created for this bridge.
 	//
-	// Generation and storage are kept in this ONE proc on purpose, so the next
-	// re-shape is one call site. REQ-IMPL-1's `issue_credential` has already
-	// landed underneath this and replaced the old `hash_token` placeholder: the
-	// token is now `hbr_<bridge_id>.<secret>` and only the secret is hashed, with
-	// a per-credential salt.
-	// The credential embeds the record it belongs to (`hbr_<bridge_id>.<secret>`,
-	// REQ-IMPL-1's issue_credential), so the id has to exist before the token.
+	// The `bridges.bridge_token_hash` column is now DEAD for authentication: it was
+	// written only by the deleted one-time-token flow, and REQ-IMPL-6 removed the
+	// lookup that read it. It is left in place because dropping a column is a
+	// migration against existing deployments, not because anything consults it.
+	//
+	// ORDER: the bridge row is saved BEFORE the credential is minted, because a token
+	// row references its bridge_id and a credential for a bridge that does not exist
+	// is unusable. A crash between them leaves an enrolled bridge with no credential;
+	// the human approves again, which is the recoverable direction.
 	bridge_id := platform.generate_id(service.ids, "brg_")
-	bridge_token, token_hash, cred_ok := issue_credential(BRIDGE_TOKEN_PREFIX, bridge_id)
-	// Fail closed when the OS entropy source is unavailable. Issuing a weaker
-	// credential, or an empty one, would be worse than failing the enrollment —
-	// an empty stored hash is the case verify_credential documents as
-	// authorising nothing, and the operator can simply approve again.
-	if !cred_ok {
-		return Enroll_Bridge_Result{}, false, domain.domain_error(.Provider_Unavailable, "could not generate a bridge credential; try again")
-	}
 	bridge := domain.Bridge{
 		bridge_id = bridge_id,
 		owner_user_id = domain.User_ID(owner),
@@ -113,7 +108,8 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 		machine_os = input.machine_os,
 		capabilities_json = device_enroll_capabilities_json(input),
 		status = .Offline,
-		bridge_token_hash = token_hash,
+		// Deliberately empty: this bridge's credentials live in bridge_tokens.
+		bridge_token_hash = "",
 		version = input.bridge_version,
 		created_at = now,
 		updated_at = now,
@@ -121,7 +117,19 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	}
 	saved, ok, err := iface.bridge_save_bridge(service.repo, bridge)
 	if !ok do return Enroll_Bridge_Result{}, false, err
-	return Enroll_Bridge_Result{bridge = saved, bridge_token = bridge_token}, true, domain.Domain_Error{}
+	// Fail closed when the OS entropy source is unavailable (settled 8): 503 with a
+	// retry hint, never a weaker credential and never `.Internal_Error`. The bridge
+	// row survives an entropy failure; the human approves again and that approval
+	// mints into a new family.
+	pair, pair_ok, pair_err := issue_bridge_token_pair(service, saved.bridge_id)
+	if !pair_ok do return Enroll_Bridge_Result{}, false, pair_err
+	return Enroll_Bridge_Result{
+		bridge = saved,
+		bridge_token = pair.access_token,
+		refresh_token = pair.refresh_token,
+		expires_in = pair.expires_in,
+		refresh_expires_in = pair.refresh_expires_in,
+	}, true, domain.Domain_Error{}
 }
 
 // device_enroll_capabilities_json records the approved key on the bridge row,
@@ -131,7 +139,7 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 //
 // `public_key` is the existing key name in capabilities_json — the Hub already
 // falls back to it when the live runtime registry has no entry
-// (src/hub/transport/http/bridge_handlers.odin:397, :2229), so
+// (the public-key handler and write_bridge_json, src/hub/transport/http/bridge_handlers.odin), so
 // GET /api/v1/bridges/<id>/public-key returns the APPROVED key from the moment
 // of enrollment, before the bridge has ever connected. That precedence is the
 // right way round and is deliberate: the registry value comes from the current
