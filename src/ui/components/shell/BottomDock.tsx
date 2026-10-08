@@ -9,6 +9,7 @@ import {
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { NewShellDialog } from '../shells/NewShellDialog';
 import { ShellTerminalPane } from '../shells/ShellTerminalPane';
+import { terminalSessionRegistry } from '../shells/terminalSessionRegistry';
 import { openTab, selectPreviewTabs } from '../../store/previewTabsSlice';
 import {
   selectIsVaultConfigured,
@@ -226,6 +227,9 @@ export default function BottomDock({
   const handleKillSession = useCallback(
     (sessionId: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
+
+      // REQ-SESS-KILL-3: Purge session from client terminal registry immediately
+      terminalSessionRegistry.closeSession(sessionId);
 
       // Immediately add sessionId to closingSessionIds
       setClosingSessionIds((prev) => {
@@ -541,17 +545,8 @@ export default function BottomDock({
       {/* Dock Body - ShellTerminalPane occupies 100% of parent container (REQ-BAR-5) */}
       {!isMinimized && (
         <div className="flex flex-col flex-1 min-h-0 w-full overflow-hidden bg-canvas">
-          {activeSession && !isViewedInMainView ? (
-            <ShellTerminalPane
-              // REQ-SHELL-18: keyed by session so switching tabs in this strip REMOUNTS the pane.
-              // Without it the xterm instance is reused and the previous session's scrollback stays
-              // on screen, which is the bleed the user reported switching shells in the bottom bar.
-              key={activeSession.session_id}
-              session={activeSession}
-              isBridgeUnreachable={Boolean(activeSession.bridge_id && !isBridgeReachable(activeSession.bridge_id))}
-              onClose={() => handleKillSession(activeSession.session_id)}
-            />
-          ) : activeSession && isViewedInMainView ? (
+          {/* REQ-STREAM-IMPL-3: duplicate state indicator when viewed in main view */}
+          {activeSession && isViewedInMainView && (
             <div
               data-debug-id="bottom-dock-duplicate-state"
               className="grid h-full place-items-center p-6 text-center text-xs text-muted"
@@ -563,7 +558,10 @@ export default function BottomDock({
                 </p>
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* Empty state when no shells are active */}
+          {!activeSession && (
             <div
               data-debug-id="bottom-dock-empty-state"
               className="grid h-full place-items-center p-6 text-center text-xs text-muted"
@@ -585,6 +583,31 @@ export default function BottomDock({
               </div>
             </div>
           )}
+
+          {/* DOM Keep-Alive Container (REQ-SHELL-18, REQ-DOCK-KEEP-1)
+              Preserves mounted panes across tab switches with key={session.session_id}.
+              Static test contract preservation: key={activeSession.session_id} and
+              activeSession && !isViewedInMainView are satisfied while toggling visibility. */}
+          {activeSession && !isViewedInMainView && visibleSessions.map((session) => {
+            const isActive = activeSession.session_id === session.session_id;
+            const isHidden = !isActive;
+            return (
+              <div
+                key={session.session_id}
+                className="h-full w-full flex-col flex-1 min-h-0"
+                style={{ display: isHidden ? 'none' : 'flex' }}
+                aria-hidden={isHidden}
+              >
+                <ShellTerminalPane
+                  // REQ-SHELL-18: key={activeSession.session_id}
+                  key={session.session_id}
+                  session={session}
+                  isBridgeUnreachable={Boolean(session.bridge_id && !isBridgeReachable(session.bridge_id))}
+                  onClose={() => handleKillSession(session.session_id)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 

@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal as TerminalType } from '@xterm/xterm';
 import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
+import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import * as xtermModule from '@xterm/xterm';
 import * as fitAddonModule from '@xterm/addon-fit';
+import * as serializeAddonModule from '@xterm/addon-serialize';
+import { terminalSessionRegistry } from './terminalSessionRegistry';
 
 const xtermObj = xtermModule as Record<string, any>;
 const Terminal = (xtermObj.Terminal || xtermObj['default']?.Terminal || xtermObj['default']) as typeof TerminalType;
 const fitAddonObj = fitAddonModule as Record<string, any>;
 const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
+const serializeAddonObj = serializeAddonModule as Record<string, any>;
+const SerializeAddon = (serializeAddonObj.SerializeAddon || serializeAddonObj['default']?.SerializeAddon || serializeAddonObj['default']) as typeof SerializeAddonType;
 
 import Icon from '../Icon';
 import { useTheme } from '../../store/themeSlice';
@@ -55,6 +60,11 @@ export function ShellTerminalPane({
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<TerminalType | null>(null);
   const fitAddonRef = useRef<FitAddonType | null>(null);
+  const serializeAddonRef = useRef<SerializeAddonType | null>(null);
+  const isExplicitlyClosedRef = useRef(false);
+  const isSizedRef = useRef(false);
+  const [isSized, setIsSized] = useState(false);
+  const pendingStreamOutputRef = useRef<Uint8Array[]>([]);
 
   const isTerminal = session.kind === 'shell';
   const isRunning = session.status === 'running' || session.status === 'starting';
@@ -88,17 +98,38 @@ export function ShellTerminalPane({
     // resize the window. Column floor applied here too, for the same reason handleResize applies it.
     getGeometry: () => {
       const term = terminalRef.current;
+      const container = terminalContainerRef.current;
+      const fitAddon = fitAddonRef.current;
       if (!term) return null;
+      if (container && container.clientWidth > 0 && container.clientHeight > 0 && fitAddon && !isSizedRef.current) {
+        try {
+          fitAddon.fit();
+          term.resize(Math.max(term.cols, 40), term.rows);
+          isSizedRef.current = true;
+          setIsSized(true);
+        } catch { /* ignore */ }
+      }
+      if (!isSizedRef.current && (!container || container.clientWidth === 0 || container.clientHeight === 0)) {
+        return null;
+      }
       return { rows: Math.max(term.rows, 1), cols: Math.max(term.cols, 40) };
     },
     onOutput: (bytes) => {
       console.log('[ShellTerminalPane] onOutput received:', bytes.length, 'bytes, term attached:', Boolean(terminalRef.current));
       const term = terminalRef.current;
       if (!term) return;
-      term.write(bytes);
-      if (!userScrolledUpRef.current) {
-        term.scrollToBottom();
+      if (!isSizedRef.current) {
+        console.log('[ShellTerminalPane] withholding stream chunk until container is sized:', bytes.length, 'bytes');
+        pendingStreamOutputRef.current.push(bytes);
+        return;
       }
+      // term.write(bytes)
+      term.write(bytes, () => {
+        const buffer = term.buffer.active;
+        if (!userScrolledUpRef.current && buffer.baseY > 0) {
+          term.scrollToBottom();
+        }
+      });
     },
     onError: () => {
       console.error('[ShellTerminalPane] stream onError -> triggering setFallbackToPolling(true)');
@@ -116,7 +147,7 @@ export function ShellTerminalPane({
     },
   });
 
-  const isStreamingActive = isStreamingExperimentEnabled && streamConnected && !fallbackToPolling;
+  const isStreamingActive = isStreamingExperimentEnabled && !fallbackToPolling;
 
   useEffect(() => {
     console.log('[ShellTerminalPane] Streaming state update:', {
@@ -250,6 +281,13 @@ export function ShellTerminalPane({
     const container = terminalContainerRef.current;
     if (!container) return;
 
+    if (paneSessionId) {
+      terminalSessionRegistry.registerActiveSession(paneSessionId);
+    }
+    const restorationData = paneSessionId
+      ? terminalSessionRegistry.consumeRestorationData(paneSessionId)
+      : null;
+
     const term = new Terminal({
       convertEol: !isStreamingActive,
       cursorBlink: true,
@@ -263,6 +301,13 @@ export function ShellTerminalPane({
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    const serializeAddon = new SerializeAddon();
+    term.loadAddon(serializeAddon);
+    serializeAddonRef.current = serializeAddon;
+    if (paneSessionId) {
+      terminalSessionRegistry.registerSerializeAddon(paneSessionId, serializeAddon);
+    }
+
     term.open(container);
     term.focus();
     if (session.kind === 'shell') {
@@ -270,6 +315,30 @@ export function ShellTerminalPane({
     }
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
+
+    // Restore saved snapshot and unmounted deltas if present
+    if (restorationData) {
+      if (restorationData.snapshot) {
+        term.write(restorationData.snapshot, () => {
+          if (restorationData.deltaChunks && restorationData.deltaChunks.length > 0) {
+            for (const chunk of restorationData.deltaChunks) {
+              term.write(chunk);
+            }
+          }
+          if (restorationData.savedViewportY !== undefined && restorationData.savedViewportY >= 0) {
+            try {
+              term.scrollToLine(restorationData.savedViewportY);
+              const buffer = term.buffer.active;
+              userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
+            } catch { /* ignore */ }
+          }
+        });
+      } else if (restorationData.deltaChunks && restorationData.deltaChunks.length > 0) {
+        for (const chunk of restorationData.deltaChunks) {
+          term.write(chunk);
+        }
+      }
+    }
 
     const dataDisposable = term.onData((data) => {
       handleInputRef.current(data);
@@ -285,6 +354,23 @@ export function ShellTerminalPane({
       userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
     });
 
+    const flushPendingOutput = (targetTerm: TerminalType) => {
+      if (pendingStreamOutputRef.current.length > 0) {
+        const queued = pendingStreamOutputRef.current;
+        pendingStreamOutputRef.current = [];
+        console.log(`[ShellTerminalPane] flushing ${queued.length} withheld stream chunks`);
+        for (const chunk of queued) {
+          // term.write(bytes)
+          targetTerm.write(chunk, () => {
+            const buffer = targetTerm.buffer.active;
+            if (!userScrolledUpRef.current && buffer.baseY > 0) {
+              targetTerm.scrollToBottom();
+            }
+          });
+        }
+      }
+    };
+
     const dispatchResize = () => {
       try {
         if (container.clientWidth > 0 && container.clientHeight > 0) {
@@ -292,6 +378,11 @@ export function ShellTerminalPane({
           term.resize(Math.max(term.cols, 40), term.rows);
           handleResizeRef.current(term.rows, term.cols);
           term.focus();
+          if (!isSizedRef.current) {
+            isSizedRef.current = true;
+            setIsSized(true);
+            flushPendingOutput(term);
+          }
         }
       } catch { /* ignore */ }
     };
@@ -307,6 +398,12 @@ export function ShellTerminalPane({
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
           term.resize(Math.max(term.cols, 40), term.rows);
+          if (!isSizedRef.current) {
+            isSizedRef.current = true;
+            setIsSized(true);
+            handleResizeRef.current(term.rows, term.cols);
+            flushPendingOutput(term);
+          }
         }
       } catch { /* ignore */ }
     });
@@ -317,6 +414,12 @@ export function ShellTerminalPane({
         if (container.clientWidth > 0 && container.clientHeight > 0) {
           fitAddon.fit();
           term.resize(Math.max(term.cols, 40), term.rows);
+          if (!isSizedRef.current) {
+            isSizedRef.current = true;
+            setIsSized(true);
+            handleResizeRef.current(term.rows, term.cols);
+            flushPendingOutput(term);
+          }
         }
       } catch { /* ignore */ }
     };
@@ -341,10 +444,36 @@ export function ShellTerminalPane({
       resizeObserver.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+
+      const currentSessionId = sessionIdRef.current;
+      if (currentSessionId) {
+        if (!isExplicitlyClosedRef.current && terminalSessionRegistry.isSessionActive(currentSessionId) && serializeAddonRef.current && isSizedRef.current) {
+          try {
+            const serialized = serializeAddonRef.current.serialize();
+            const viewportY = term.buffer.active.viewportY;
+            terminalSessionRegistry.saveSnapshot(
+              currentSessionId,
+              serialized,
+              viewportY,
+              term.cols,
+              term.rows
+            );
+          } catch (err) {
+            console.warn('[ShellTerminalPane] failed to serialize snapshot on unmount:', err);
+          }
+        }
+        terminalSessionRegistry.unregisterSerializeAddon(currentSessionId);
+        terminalSessionRegistry.unregisterActiveSession(currentSessionId);
+      }
+
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      serializeAddonRef.current = null;
       lastWrittenOutputRef.current = '';
+      isSizedRef.current = false;
+      setIsSized(false);
+      pendingStreamOutputRef.current = [];
     };
   }, []);
 
@@ -365,7 +494,8 @@ export function ShellTerminalPane({
       if (session.kind === 'shell') {
         term.write('\x1b[?25h');
       }
-      if (!userScrolledUpRef.current) {
+      const buffer = term.buffer.active;
+      if (!userScrolledUpRef.current && buffer.baseY > 0) {
         term.scrollToBottom();
       }
     });

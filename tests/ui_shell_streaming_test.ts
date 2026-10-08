@@ -316,3 +316,41 @@ test('REQ-SHELL-DOCK-NO-VSCROLL-23: the 40-col floor is kept deliberately withou
   assert.ok(!src.includes('Math.max(rows, 24)'), 'must not enforce 24-row floor in handleResize');
   assert.ok(!src.includes('Math.max(term.rows, 24)'), 'must not enforce 24-row floor in term.resize');
 });
+
+test('ShellTerminalPane.tsx decouples isStreamingActive from streamConnected to prevent premature convertEol corruption', () => {
+  assert.ok(fs.existsSync(SHELL_TERMINAL_PANE), 'ShellTerminalPane.tsx must exist');
+  const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
+
+  assert.ok(
+    !src.includes('isStreamingActive = isStreamingExperimentEnabled && streamConnected'),
+    'isStreamingActive must not couple streaming mode to streamConnected'
+  );
+  assert.ok(
+    src.includes('isStreamingActive = isStreamingExperimentEnabled && !fallbackToPolling'),
+    'isStreamingActive must evaluate directly from experiment flag and fallback state'
+  );
+});
+
+test('ShellTerminalPane.tsx implements smart scrollback pinning gated on buffer.baseY > 0 and user scroll state', () => {
+  assert.ok(fs.existsSync(SHELL_TERMINAL_PANE), 'ShellTerminalPane.tsx must exist');
+  const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
+
+  assert.ok(
+    src.includes('!userScrolledUpRef.current && buffer.baseY > 0'),
+    'must gate scrollToBottom on buffer.baseY > 0 and !userScrolledUpRef.current'
+  );
+});
+
+test('ShellTerminalPane.tsx enforces geometry-first initialization gate buffering writes until container is sized', () => {
+  assert.ok(fs.existsSync(SHELL_TERMINAL_PANE), 'ShellTerminalPane.tsx must exist');
+  const src = fs.readFileSync(SHELL_TERMINAL_PANE, 'utf8');
+
+  assert.ok(src.includes('isSizedRef'), 'must maintain isSizedRef tracking container layout');
+  assert.ok(src.includes('pendingStreamOutputRef'), 'must maintain pendingStreamOutputRef write queue');
+  assert.ok(src.includes('flushPendingOutput'), 'must provide flushPendingOutput helper');
+  assert.ok(
+    src.includes('container.clientWidth === 0 || container.clientHeight === 0'),
+    'getGeometry must return null when container is unmeasured'
+  );
+});
+

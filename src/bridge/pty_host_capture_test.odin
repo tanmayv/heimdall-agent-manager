@@ -126,7 +126,7 @@ pty_host_evaluate_pane_changed_when_since_hash_empty :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_get_pane_result_json_unchanged_shape :: proc(t: ^testing.T) {
-	json := bridge_get_agent_pane_result_json("cmd_test_1", true, true, "hash_match_123", "", 0, false, "")
+	json := bridge_get_agent_pane_result_json("cmd_test_1", true, true, "hash_match_123", "", 0, false, 0, 0, "")
 	defer delete(json)
 
 	testing.expect(t, strings.contains(json, "\"type\":\"command_result\""), "type command_result")
@@ -140,7 +140,7 @@ pty_host_get_pane_result_json_unchanged_shape :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_get_pane_result_json_changed_shape :: proc(t: ^testing.T) {
-	json := bridge_get_agent_pane_result_json("cmd_test_2", true, false, "hash_new_456", "lineA\nlineB", 2, true, "")
+	json := bridge_get_agent_pane_result_json("cmd_test_2", true, false, "hash_new_456", "lineA\nlineB", 2, true, 1, 5, "")
 	defer delete(json)
 
 	testing.expect(t, strings.contains(json, "\"type\":\"command_result\""), "type command_result")
@@ -151,11 +151,13 @@ pty_host_get_pane_result_json_changed_shape :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(json, "\"output\":\"lineA\\nlineB\""), "output escaped and present")
 	testing.expect(t, strings.contains(json, "\"line_count\":2"), "line_count present")
 	testing.expect(t, strings.contains(json, "\"truncated\":true"), "truncated true")
+	testing.expect(t, strings.contains(json, "\"cursor_row\":1"), "cursor_row present")
+	testing.expect(t, strings.contains(json, "\"cursor_col\":5"), "cursor_col present")
 }
 
 @(test)
 pty_host_get_pane_result_json_failure_shape :: proc(t: ^testing.T) {
-	json := bridge_get_agent_pane_result_json("cmd_test_3", false, false, "", "", 0, false, "daemon connection failed")
+	json := bridge_get_agent_pane_result_json("cmd_test_3", false, false, "", "", 0, false, 0, 0, "daemon connection failed")
 	defer delete(json)
 
 	testing.expect(t, strings.contains(json, "\"type\":\"command_result\""), "type command_result")
@@ -168,12 +170,14 @@ pty_host_get_pane_result_json_failure_shape :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_get_pane_missing_agent_instance_id :: proc(t: ^testing.T) {
-	ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane("", "", 120, 80)
+	ok, unchanged, h, output, line_count, truncated, cursor_row, cursor_col, err_msg := bridge_pty_host_get_pane("", "", 120, 80)
 	testing.expect_value(t, ok, false)
 	testing.expect_value(t, unchanged, false)
 	testing.expect_value(t, h, "")
 	testing.expect_value(t, output, "")
 	testing.expect_value(t, line_count, 0)
 	testing.expect_value(t, truncated, false)
+	testing.expect_value(t, cursor_row, 0)
+	testing.expect_value(t, cursor_col, 0)
 	testing.expect_value(t, err_msg, "missing agent_instance_id")
 }

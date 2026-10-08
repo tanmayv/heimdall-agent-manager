@@ -41,6 +41,8 @@ export type UseShellStreamOptions = {
    *
    * A pull, not a push: the geometry is read INSIDE `onopen`, so it cannot be stale, and it is
    * read again on every reconnect — after a backoff reconnect the new PTY needs telling too.
+   * If container is unmeasured (e.g. clientWidth === 0), getGeometry returns null to suppress
+   * sending premature unmeasured 80x24 dimensions.
    */
   getGeometry?: () => { rows: number; cols: number } | null;
   /** Explicit vault unlock state override (defaults to Redux vault). */

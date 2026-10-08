@@ -578,18 +578,18 @@ bridge_pty_host_evaluate_pane :: proc(lines: []string, line_limit: int, since_ha
 
 // bridge_pty_host_get_pane proxies host.capture against the pty-host daemon,
 // computes the screen output hash, and evaluates against since_hash (REQ-PANE-2).
-// Returns (ok, unchanged, hash, output, line_count, truncated, err_msg).
+// Returns (ok, unchanged, hash, output, line_count, truncated, cursor_row, cursor_col, err_msg).
 // Caller owns returned hash and output strings when present.
-bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_limit: int, width: int) -> (ok: bool, unchanged: bool, hash: string, output: string, line_count: int, truncated: bool, err_msg: string) {
+bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_limit: int, width: int) -> (ok: bool, unchanged: bool, hash: string, output: string, line_count: int, truncated: bool, cursor_row: int, cursor_col: int, err_msg: string) {
 	_ = width
 	trimmed_id := strings.trim_space(instance_id)
 	if trimmed_id == "" {
-		return false, false, "", "", 0, false, "missing agent_instance_id"
+		return false, false, "", "", 0, false, 0, 0, "missing agent_instance_id"
 	}
 
 	socket, ok_daemon := bridge_pty_host_ensure_daemon()
 	if !ok_daemon {
-		return false, false, "", "", 0, false, "The ham-pty-host daemon is not available."
+		return false, false, "", "", 0, false, 0, 0, "The ham-pty-host daemon is not available."
 	}
 
 	frame := pty_host_encode_capture(trimmed_id)
@@ -597,12 +597,12 @@ bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_l
 	reply, rok := pty_host_request(socket, frame)
 	if !rok || reply.kind != .Screen {
 		if rok do pty_host_reply_delete(reply)
-		return false, false, "", "", 0, false, "No screen snapshot was returned for this agent."
+		return false, false, "", "", 0, false, 0, 0, "No screen snapshot was returned for this agent."
 	}
 	defer pty_host_reply_delete(reply)
 
 	unchanged_val, h, out, count, trunc := bridge_pty_host_evaluate_pane(reply.screen.lines, line_limit, since_hash)
-	return true, unchanged_val, h, out, count, trunc, ""
+	return true, unchanged_val, h, out, count, trunc, int(reply.screen.cursor_row), int(reply.screen.cursor_col), ""
 }
 
 // ---- event->status mapping (consumed by the BR-3 subscriber) ------------

@@ -320,8 +320,45 @@ _bridge_pty_stream_lf_to_crlf :: proc(s: string) -> string {
 	return strings.to_string(b)
 }
 
+// _bridge_pty_stream_trim_trailing_blank_rows strips non-informative trailing blank/whitespace
+// rows from pane text while preserving trailing spaces on non-blank prompt lines.
+// Intermediate blank lines are preserved. Returns an empty string if all lines are blank.
+// Caller owns the result.
+_bridge_pty_stream_trim_trailing_blank_rows :: proc(s: string, allocator := context.allocator) -> string {
+	if len(s) == 0 do return strings.clone("", allocator)
+
+	last_non_blank_end := -1
+	line_start := 0
+	line_has_content := false
+
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == '\n' {
+			if line_has_content {
+				end := i
+				if end > line_start && s[end - 1] == '\r' do end -= 1
+				last_non_blank_end = end
+			}
+			line_start = i + 1
+			line_has_content = false
+		} else if c != ' ' && c != '\t' && c != '\r' {
+			line_has_content = true
+		}
+	}
+
+	if line_has_content {
+		end := len(s)
+		if end > line_start && s[end - 1] == '\r' do end -= 1
+		last_non_blank_end = end
+	}
+
+	if last_non_blank_end <= 0 do return strings.clone("", allocator)
+	return strings.clone(s[:last_non_blank_end], allocator)
+}
+
 // bridge_pty_stream_screen_payload builds the byte payload of the bridge's catch-up screen
-// frame: the captured rows joined, with CRLF row separators. Caller owns the result.
+// frame: the captured rows joined, with trailing blank rows trimmed and CRLF row separators.
+// Caller owns the result.
 //
 // This exists as a named seam rather than two statements inlined in the .Screen case so that
 // the conversion is covered in the SAME composition the emit site uses. A test that called
@@ -330,7 +367,9 @@ _bridge_pty_stream_lf_to_crlf :: proc(s: string) -> string {
 bridge_pty_stream_screen_payload :: proc(lines: []string) -> string {
 	joined, _, _ := bridge_pty_host_screen_to_output(lines, 0)
 	defer delete(joined)
-	return _bridge_pty_stream_lf_to_crlf(joined)
+	trimmed := _bridge_pty_stream_trim_trailing_blank_rows(joined)
+	defer delete(trimmed)
+	return _bridge_pty_stream_lf_to_crlf(trimmed)
 }
 
 // bridge_pty_stream_reader_worker runs on a dedicated background thread per active stream.

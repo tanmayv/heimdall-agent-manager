@@ -186,3 +186,32 @@ test_stream_closed_lifecycle_event_formatting :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(json_str2, `"shell_id":"shell_inst_closed_2"`), "frame has correct shell_id")
 	testing.expect(t, !strings.contains(json_str2, `"exit_code"`), "frame does not contain exit_code when has_exit_code is false")
 }
+
+// ---------------------------------------------------------------------------
+// Milestone M1: Bridge catchup screen payload trims trailing blank rows
+// ---------------------------------------------------------------------------
+
+@(test)
+test_req31_trailing_blank_rows_are_trimmed :: proc(t: ^testing.T) {
+	lines := make([dynamic]string, context.temp_allocator)
+	append(&lines, "sh-5.2$ ")
+	for _ in 0 ..< 23 {
+		append(&lines, "")
+	}
+	got := bridge_pty_stream_screen_payload(lines[:])
+	defer delete(got)
+
+	testing.expect_value(t, got, "sh-5.2$ ")
+	testing.expect_value(t, strings.count(got, "\r\n"), 0)
+	testing.expect_value(t, strings.count(got, "\n"), 0)
+}
+
+@(test)
+test_req31_trailing_whitespace_rows_are_trimmed_preserving_prompt_space :: proc(t: ^testing.T) {
+	got := bridge_pty_stream_screen_payload([]string{"user@host:~$ ", "   ", "\t  \t", ""})
+	defer delete(got)
+
+	testing.expect_value(t, got, "user@host:~$ ")
+	testing.expect(t, strings.has_suffix(got, "user@host:~$ "), "trailing prompt space preserved")
+	testing.expect_value(t, strings.count(got, "\r\n"), 0)
+}

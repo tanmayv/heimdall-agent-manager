@@ -86,22 +86,67 @@ _shell_screen_lf_to_crlf :: proc(s: string) -> string {
 	return strings.to_string(b)
 }
 
+// _shell_screen_trim_trailing_blank_rows strips non-informative trailing blank/whitespace
+// rows from pane text while preserving trailing spaces on non-blank prompt lines.
+// Intermediate blank lines are preserved. Returns an empty string if all lines are blank.
+// Caller owns the result.
+_shell_screen_trim_trailing_blank_rows :: proc(s: string, allocator := context.allocator) -> string {
+	if len(s) == 0 do return strings.clone("", allocator)
+
+	last_non_blank_end := -1
+	line_start := 0
+	line_has_content := false
+
+	for i in 0 ..< len(s) {
+		c := s[i]
+		if c == '\n' {
+			if line_has_content {
+				end := i
+				if end > line_start && s[end - 1] == '\r' do end -= 1
+				last_non_blank_end = end
+			}
+			line_start = i + 1
+			line_has_content = false
+		} else if c != ' ' && c != '\t' && c != '\r' {
+			line_has_content = true
+		}
+	}
+
+	if line_has_content {
+		end := len(s)
+		if end > line_start && s[end - 1] == '\r' do end -= 1
+		last_non_blank_end = end
+	}
+
+	if last_non_blank_end <= 0 do return strings.clone("", allocator)
+	return strings.clone(s[:last_non_blank_end], allocator)
+}
+
 // _shell_screen_repaint_text builds the DECODED repaint: the erase+home prefix followed by
-// the captured pane text with CRLF row separators. Caller owns the result.
+// the captured pane text with trailing blank rows trimmed and CRLF row separators, and an
+// explicit ANSI cursor positioning sequence (\x1b[<row+1>;<col+1>H) when valid cursor
+// coordinates (>= 0) are provided. Caller owns the result.
 //
 // Split out from shell_stream_screen_payload_b64 because the chunked writer needs the
 // repaint as bytes it can cut before encoding — base64 of the whole thing cannot be cut,
 // since each frame must decode on its own.
-_shell_screen_repaint_text :: proc(pane_output: string) -> string {
-	body := _shell_screen_lf_to_crlf(pane_output)
+_shell_screen_repaint_text :: proc(pane_output: string, cursor_row: int = -1, cursor_col: int = -1) -> string {
+	trimmed := _shell_screen_trim_trailing_blank_rows(pane_output)
+	defer delete(trimmed)
+	body := _shell_screen_lf_to_crlf(trimmed)
 	defer delete(body)
+
+	if cursor_row >= 0 && cursor_col >= 0 {
+		cup := fmt.tprintf("\x1b[%d;%dH", cursor_row + 1, cursor_col + 1)
+		return strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, body, cup})
+	}
 	return strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, body})
 }
 
 // shell_stream_screen_payload_b64 builds the base64 body of a single-frame `screen` payload.
 // Caller owns the result.
-shell_stream_screen_payload_b64 :: proc(pane_output: string) -> string {
-	joined := _shell_screen_repaint_text(pane_output)
+shell_stream_screen_payload_b64 :: proc(pane_output: string, cursor_row: int = -1, cursor_col: int = -1) -> string {
+	joined := _shell_screen_repaint_text(pane_output, cursor_row, cursor_col)
 	defer delete(joined)
 	return base64.encode(transmute([]byte)joined)
 }
@@ -130,13 +175,22 @@ _shell_screen_chunk_end :: proc(s: string, start: int) -> int {
 }
 
 // shell_stream_screen_frame_json wraps a base64 payload in the frame both consumers parse.
-// `screen_b64` is sent, not `data_b64`: both hooks accept either, but only one key is
-// produced so the fallback is never load-bearing. Caller owns the result.
-shell_stream_screen_frame_json :: proc(screen_b64: string) -> string {
+// When cursor_row and cursor_col are >= 0, they are included as JSON fields for client inspection.
+// Caller owns the result.
+shell_stream_screen_frame_json :: proc(screen_b64: string, cursor_row: int = -1, cursor_col: int = -1) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"screen\",\"screen_b64\":\"")
 	write_handler_json_string(&b, screen_b64)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\"")
+	if cursor_row >= 0 {
+		strings.write_string(&b, ",\"cursor_row\":")
+		strings.write_int(&b, cursor_row)
+	}
+	if cursor_col >= 0 {
+		strings.write_string(&b, ",\"cursor_col\":")
+		strings.write_int(&b, cursor_col)
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
@@ -183,7 +237,10 @@ _shell_stream_write_screen_frame :: proc(
 	defer delete(output)
 	if output == "" do return false
 
-	repaint := _shell_screen_repaint_text(output)
+	cursor_row := json_int(pane_reply, "cursor_row", -1)
+	cursor_col := json_int(pane_reply, "cursor_col", -1)
+
+	repaint := _shell_screen_repaint_text(output, cursor_row, cursor_col)
 	defer delete(repaint)
 
 	// Held across EVERY chunk, not per chunk: an `output` frame landing between two
@@ -200,7 +257,7 @@ _shell_stream_write_screen_frame :: proc(
 	for offset < len(repaint) {
 		end := _shell_screen_chunk_end(repaint, offset)
 		payload := base64.encode(transmute([]byte)repaint[offset:end])
-		frame := shell_stream_screen_frame_json(payload)
+		frame := shell_stream_screen_frame_json(payload, cursor_row, cursor_col)
 		result := write_ws_text_frame_browser(client, frame)
 		delete(payload)
 		delete(frame)

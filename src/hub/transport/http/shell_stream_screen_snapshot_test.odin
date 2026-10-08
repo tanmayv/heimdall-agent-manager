@@ -370,3 +370,211 @@ test_req61_snapshot_requires_real_geometry :: proc(t: ^testing.T) {
 		"zero rows is not real geometry",
 	)
 }
+
+// ---------------------------------------------------------------------------
+// Milestone M1: Trailing blank row trimming, trailing prompt space preservation,
+// ANSI CUP cursor repositioning, and JSON frame cursor propagation.
+// ---------------------------------------------------------------------------
+
+// TEST M1.1: Trimming 23 trailing blank rows from single-line prompt screen.
+@(test)
+test_m1_trailing_blank_rows_are_trimmed_from_prompt_screen :: proc(t: ^testing.T) {
+	lines := make([dynamic]string, context.temp_allocator)
+	append(&lines, "sh-5.2$ ")
+	for _ in 0 ..< 23 {
+		append(&lines, "")
+	}
+	pane := strings.join(lines[:], "\n")
+	defer delete(pane)
+
+	got := _req30_decoded_payload(t, pane)
+	defer delete(got)
+
+	testing.expect(
+		t,
+		strings.has_prefix(got, SHELL_SCREEN_REPAINT_PREFIX),
+		"snapshot must begin with erase-screen + cursor-home",
+	)
+
+	expected := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, "sh-5.2$ "})
+	defer delete(expected)
+	testing.expect_value(t, got, expected)
+
+	// Invariant: zero CRLFs. All 23 empty lines must be trimmed.
+	testing.expect_value(t, strings.count(got, "\r\n"), 0)
+	testing.expect_value(t, strings.count(got, "\n"), 0)
+	testing.expect(
+		t,
+		!strings.has_suffix(got, "\r\n"),
+		"must have no trailing CRLF separator",
+	)
+}
+
+// TEST M1.2: Trimming trailing whitespace-only rows while preserving trailing prompt space.
+@(test)
+test_m1_trimming_preserves_prompt_trailing_space_and_whitespace_rows :: proc(t: ^testing.T) {
+	pane := "user@host:~$ \n   \n\t\t\n  \t  "
+	got := _req30_decoded_payload(t, pane)
+	defer delete(got)
+
+	expected := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, "user@host:~$ "})
+	defer delete(expected)
+	testing.expect_value(t, got, expected)
+
+	testing.expect(
+		t,
+		strings.has_suffix(got, "user@host:~$ "),
+		"trailing space on the prompt line must NOT be stripped by whitespace row trimming",
+	)
+	testing.expect_value(t, strings.count(got, "\r\n"), 0)
+}
+
+// TEST M1.3: Interior blank lines are preserved while trailing blank rows are stripped.
+@(test)
+test_m1_interior_blank_rows_preserved_while_trailing_trimmed :: proc(t: ^testing.T) {
+	pane := "Welcome to Shell\n\nType 'help' for info\n\n\n\n"
+	got := _req30_decoded_payload(t, pane)
+	defer delete(got)
+
+	expected := strings.concatenate({
+		SHELL_SCREEN_REPAINT_PREFIX,
+		"Welcome to Shell\r\n\r\nType 'help' for info",
+	})
+	defer delete(expected)
+	testing.expect_value(t, got, expected)
+
+	testing.expect_value(t, strings.count(got, "\r\n"), 2)
+	testing.expect(
+		t,
+		!strings.has_suffix(got, "\r\n"),
+		"no trailing CRLF after the last content line",
+	)
+}
+
+// TEST M1.4: Repaint payload with ANSI CUP cursor repositioning sequence.
+@(test)
+test_m1_screen_payload_with_cursor_repositioning_ansi_cup :: proc(t: ^testing.T) {
+	// Scenario A: Single prompt at row 0, col 8 ("sh-5.2$ ") -> ANSI 1-indexed: row 1, col 9 (\x1b[1;9H)
+	payload_a := shell_stream_screen_payload_b64("sh-5.2$ \n\n\n", 0, 8)
+	defer delete(payload_a)
+	decoded_a, err_a := base64.decode(payload_a)
+	testing.expect(t, err_a == nil, "valid base64")
+	defer delete(decoded_a)
+	got_a := string(decoded_a)
+
+	expected_a := strings.concatenate({
+		SHELL_SCREEN_REPAINT_PREFIX,
+		"sh-5.2$ \x1b[1;9H",
+	})
+	defer delete(expected_a)
+	testing.expect_value(t, got_a, expected_a)
+	testing.expect(t, strings.has_suffix(got_a, "\x1b[1;9H"), "payload ends with ANSI CUP sequence")
+
+	// Scenario B: Multiline output with cursor at row 2, col 5 -> \x1b[3;6H
+	payload_b := shell_stream_screen_payload_b64("row0\nrow1\nrow2\n\n\n", 2, 5)
+	defer delete(payload_b)
+	decoded_b, err_b := base64.decode(payload_b)
+	testing.expect(t, err_b == nil, "valid base64")
+	defer delete(decoded_b)
+	got_b := string(decoded_b)
+
+	expected_b := strings.concatenate({
+		SHELL_SCREEN_REPAINT_PREFIX,
+		"row0\r\nrow1\r\nrow2\x1b[3;6H",
+	})
+	defer delete(expected_b)
+	testing.expect_value(t, got_b, expected_b)
+
+	// Scenario C: Omitted / negative cursor coordinates (-1) must NOT append CUP
+	payload_c := shell_stream_screen_payload_b64("prompt$ ", -1, -1)
+	defer delete(payload_c)
+	decoded_c, _ := base64.decode(payload_c)
+	defer delete(decoded_c)
+	got_c := string(decoded_c)
+
+	expected_c := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, "prompt$ "})
+	defer delete(expected_c)
+	testing.expect_value(t, got_c, expected_c)
+	testing.expect(
+		t,
+		!strings.contains(got_c[len(SHELL_SCREEN_REPAINT_PREFIX):], "\x1b["),
+		"negative cursor coordinates must not append CUP sequence",
+	)
+}
+
+// TEST M1.5: Frame JSON contains cursor coordinates when present, omits when negative.
+@(test)
+test_m1_frame_json_contains_cursor_coordinates :: proc(t: ^testing.T) {
+	// Case 1: Coordinates present (row=0, col=8)
+	frame1 := shell_stream_screen_frame_json("QUJD", 0, 8)
+	defer delete(frame1)
+
+	testing.expect(t, strings.contains(frame1, "\"type\":\"screen\""), "type is screen")
+	testing.expect(t, strings.contains(frame1, "\"screen_b64\":\"QUJD\""), "payload is screen_b64")
+	testing.expect(t, strings.contains(frame1, "\"cursor_row\":0"), "cursor_row is 0")
+	testing.expect(t, strings.contains(frame1, "\"cursor_col\":8"), "cursor_col is 8")
+
+	// Case 2: Negative/unspecified coordinates (-1, -1)
+	frame2 := shell_stream_screen_frame_json("QUJD", -1, -1)
+	defer delete(frame2)
+
+	testing.expect(t, strings.contains(frame2, "\"type\":\"screen\""), "type is screen")
+	testing.expect(t, strings.contains(frame2, "\"screen_b64\":\"QUJD\""), "payload is screen_b64")
+	testing.expect(t, !strings.contains(frame2, "cursor_row"), "cursor_row omitted when negative")
+	testing.expect(t, !strings.contains(frame2, "cursor_col"), "cursor_col omitted when negative")
+
+	// Case 3: Default argument invocation
+	frame3 := shell_stream_screen_frame_json("QUJD")
+	defer delete(frame3)
+	testing.expect_value(t, frame3, "{\"type\":\"screen\",\"screen_b64\":\"QUJD\"}")
+}
+
+// TEST M1.6: End-to-end socket write propagates cursor coordinates and CUP from pane_reply.
+@(test)
+test_m1_write_screen_frame_propagates_cursor_from_pane_reply :: proc(t: ^testing.T) {
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	if listen_err != nil do testing.fail_now(t, "could not listen on loopback")
+	defer net.close(listener)
+	endpoint, ep_err := net.bound_endpoint(listener)
+	if ep_err != nil do testing.fail_now(t, "could not read bound endpoint")
+
+	client, dial_err := net.dial_tcp(endpoint)
+	if dial_err != nil do testing.fail_now(t, "could not dial loopback")
+	defer net.close(client)
+
+	hub, _, accept_err := net.accept_tcp(listener)
+	if accept_err != nil do testing.fail_now(t, "could not accept loopback")
+	defer net.close(hub)
+
+	// Reply carries cursor_row and cursor_col alongside output
+	reply := "{\"ok\":true,\"unchanged\":false,\"hash\":\"abc\",\"output\":\"sh-5.2$ \\n\\n\\n\",\"cursor_row\":0,\"cursor_col\":8}"
+	testing.expect(t, _shell_stream_write_screen_frame(nil, "", hub, reply), "write must succeed")
+
+	buf: [1024]byte
+	n, recv_err := net.recv_tcp(client, buf[:])
+	testing.expect(t, recv_err == nil && n > 0, "client must receive frame")
+
+	got := string(buf[:n])
+	testing.expect(t, strings.contains(got, "\"type\":\"screen\""), "type is screen")
+	testing.expect(t, strings.contains(got, "\"cursor_row\":0"), "cursor_row propagated")
+	testing.expect(t, strings.contains(got, "\"cursor_col\":8"), "cursor_col propagated")
+
+	// Verify decoded screen_b64 contains prefix, trimmed prompt, and CUP \x1b[1;9H
+	key := "\"screen_b64\":\""
+	idx := strings.index(got, key)
+	testing.expect(t, idx >= 0, "delivered frame carries screen_b64")
+	if idx < 0 do return
+	rest := got[idx + len(key):]
+	end := strings.index_byte(rest, '"')
+	testing.expect(t, end > 0, "screen_b64 is terminated")
+	if end <= 0 do return
+
+	decoded, dec_err := base64.decode(rest[:end])
+	testing.expect(t, dec_err == nil, "delivered payload is valid base64")
+	defer delete(decoded)
+
+	expected_payload := strings.concatenate({SHELL_SCREEN_REPAINT_PREFIX, "sh-5.2$ \x1b[1;9H"})
+	defer delete(expected_payload)
+	testing.expect_value(t, string(decoded), expected_payload)
+}
+
