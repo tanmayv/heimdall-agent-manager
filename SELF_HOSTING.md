@@ -431,30 +431,58 @@ with your system package manager (`sudo apt install socat`,
 not bundled: the `HAM_TLS_BACKEND=s_client` fallback resolves it from your
 system `PATH`.
 
-**Then enroll, configure vault encryption, and start the bridge:**
+**Then enroll — and leave it running, because it becomes the bridge:**
 
 ```bash
-# 1. On this device: enroll. Nothing is created on the hub first, and there is no
-#    token to copy between machines — this machine prints a link and a short code,
-#    you approve it in a browser, and the credential is delivered here directly.
-#    Writes ~/.config/heimdall/bridge-token (mode 0600) and updates config.toml
-#    with the hub URL. Add --headless if this machine has no browser of its own.
-ham-bridge enroll --ui https://heimdall.example.com
-
-# 3. Configure vault encryption with the primary user command. Replace the
-#    placeholder with your 64-character hexadecimal vault key.
+# 1. Configure vault encryption, so there is a key to unlock when you approve.
+#    Replace the placeholder with your 64-character hexadecimal vault key.
 heimdall vault set-key <64-hex>
 heimdall vault status
 
-# 4. Start the registered service
+# 2. On this device: enroll, and LEAVE THIS RUNNING. Nothing is created on the hub
+#    first, and there is no token to copy between machines — this machine prints a
+#    link and a short code, you approve it in a browser, and the credential is
+#    delivered here directly. Writes ~/.config/heimdall/bridge-token (mode 0600)
+#    and updates config.toml with the hub URL. Add --headless if this machine has
+#    no browser of its own.
+#
+#    This command does NOT exit when enrollment succeeds — the same process
+#    continues straight into the bridge runtime. Watch for the line
+#    'bridge hub runtime ready'.
+ham-bridge enroll --ui https://heimdall.example.com
+
+# 3. From a second shell: enrollment, service state, hub connection, versions
+heimdall status
+```
+
+Why step 2 has to stay running, rather than finishing and handing off to the
+service: the approval link carries this machine's encryption key in its URL
+*fragment*, and only the process that printed that link holds the matching private
+half. The key is never written to disk — that is what keeps an archived approval
+link undecryptable — so the vault key can only be delivered to that same live
+process. A sequence that enrolled in one process and then started the bridge in
+another addressed the sealed vault key to a key no live process held, and the
+delivery failed every time with no way to recover it.
+
+**Handing the bridge over to the registered service (optional, and not free):**
+
+The process from step 2 is already your bridge, so you only need the service if you
+want the bridge to come back after a reboot without you. The handover costs one
+manual unlock, and there is no way around it:
+
+```bash
+# Stop the step-2 process FIRST — it and the service both bind port 49323, and
+# whichever starts second will fail.
 sudo loginctl enable-linger "$USER"                  # Linux server/headless host
 systemctl --user enable --now heimdall-bridge        # Linux
 launchctl bootstrap gui/$(id -u) \
   ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist   # macOS
-
-# 5. Verify: enrollment, service state, hub connection, binary versions
-heimdall status
 ```
+
+The service starts a fresh process, and for the reason above it cannot inherit the
+vault key. So after the handover, unlock the vault again from
+**Settings → Bridges**. Expect to do this after every service restart that is not
+preceded by an unlock from the UI.
 
 On a non-desktop Linux host, lingering is required so the user service keeps
 running after the last login session ends; without it, the bridge stops when you

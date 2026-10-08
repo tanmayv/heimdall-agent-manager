@@ -75,6 +75,15 @@ token and no Hub URL to pass — `--ui` takes the **UI origin** only (scheme and
 host, no path), and the UI proxies `/api` through to the Hub. Add `--headless` on
 a machine with no browser of its own.
 
+`enroll` does **not** exit once the approval lands — the same process continues
+into the bridge runtime. That matters here, because `service.enable = true` above
+also wants to run a bridge on the same port: start the Home Manager service only
+after you stop the `enroll` process, not alongside it. And because the service is
+then a fresh process, it cannot inherit the vault key — the key exists only in the
+memory of the process that printed the link you approved, and is never written to
+disk — so unlock the vault again from **Settings → Bridges** after the handover.
+Keeping the `enroll` process in the foreground instead skips that step entirely.
+
 The written credential is an expiring `hba_` token (mode `0600`, set by `enroll`
 itself) that the bridge refreshes on its own. The legacy non-expiring `hbr_` token
 is no longer minted or accepted.
