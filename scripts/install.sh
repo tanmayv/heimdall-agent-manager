@@ -981,11 +981,11 @@ PLIST
 
 # REQ-FIX-3: the ONE enrollment instruction, in one place.
 #
-# Printed by run_interactive_onboarding (twice: when the pending state is decided,
-# and again as the last thing on screen) and worded to match what the bridge itself
-# prints at src/bridge/enroll_device_flow.odin:1250-1265 — read off that source
-# rather than paraphrased, because the two must not drift. The distinction it
-# carries is load-bearing, not stylistic:
+# Printed once by run_interactive_onboarding, at the end of the run, and worded to
+# match what the bridge itself prints at
+# src/bridge/enroll_device_flow.odin:1250-1265 — read off that source rather than
+# paraphrased, because the two must not drift. The distinction it carries is
+# load-bearing, not stylistic:
 #
 #   LINK path — the key is in the fragment, so approving unlocks the vault here and
 #               there is NOTHING to compare. Asking for a fingerprint check here
@@ -997,11 +997,25 @@ PLIST
 # silently leaves the vault sealed is precisely what shipped (iss_18dc71789af7a745).
 print_manual_enroll_step() {
   local ui_url="$1"
-  # On a --service-user install (`curl | sudo bash`), enrollment must write into
-  # THAT user's config, not root's. The auto-enroll call this replaced passed
-  # --config for exactly that reason, so the printed command carries it too —
-  # dropping it would have moved the credential to the wrong home on the one install
-  # shape that cannot notice.
+  local token_path="$2"
+  # --bridge-token-file is passed UNCONDITIONALLY and deliberately, even though the
+  # bridge would derive the same path from HOME on a plain install.
+  #
+  # Without it the credential's location depends on whose HOME the command runs
+  # under, and on a --service-user install (`curl | sudo bash`) that is a coin flip:
+  # an operator who runs the printed command as root gets --config pointing at the
+  # service user while the credential lands in ROOT's home. The result is a bridge
+  # that cannot find its own credential, with nothing on screen to explain it.
+  #
+  # The run-as note below asks the operator to avoid that, but a correctness property
+  # that rests on someone reading a note is not a correctness property. The flag wins
+  # over both $HAM_BRIDGE_TOKEN_FILE and the HOME default
+  # (enroll_device_flow.odin:1353), so passing it pins the path regardless of who
+  # runs the command. The auto-enroll call this replaced passed it for the same
+  # reason.
+  local enroll_token=" --bridge-token-file $token_path"
+  # On a --service-user install the config must also land in THAT user's home, not
+  # root's — the same reason, and the same flag the deleted call passed.
   local enroll_config=""
   local run_as_note=""
   if [ -n "$service_user" ]; then
@@ -1015,7 +1029,7 @@ print_manual_enroll_step() {
   ------------------------------------------------------------------------
   ENROLL THIS NODE — run this yourself, and LEAVE IT RUNNING:
 
-    $install_dir/ham-bridge enroll --ui $ui_url$enroll_config
+    $install_dir/ham-bridge enroll --ui $ui_url$enroll_token$enroll_config
 
   Add --headless if this machine has no browser of its own.
 $run_as_note
@@ -1611,12 +1625,18 @@ run_interactive_onboarding() {
   esac
 
   echo ""
-  # REQ-FIX-3: when enrollment is pending it is the ONE thing left to do, so it is
-  # repeated as the last thing on screen rather than scrolled off by the vault
-  # prompt above it.
+  # REQ-FIX-3: when enrollment is pending it is the one thing left to do, so the full
+  # instruction goes HERE rather than where the pending state is decided — that point
+  # is above the vault prompt, and the block would scroll off. Only a one-line pointer
+  # is printed up there.
+  #
+  # "Last on screen" holds with one exception: the path_needs_action block below can
+  # follow it. That is five lines opening with "the install SUCCEEDED", so it buries
+  # nothing — but it is not an unconditional guarantee, and anything added after this
+  # point should keep it that way.
   if "$manual_enroll_pending"; then
     say "Install complete — one step left, and it is yours to run."
-    print_manual_enroll_step "$enroll_ui_url"
+    print_manual_enroll_step "$enroll_ui_url" "$token_file"
   else
     say "Onboarding complete."
   fi

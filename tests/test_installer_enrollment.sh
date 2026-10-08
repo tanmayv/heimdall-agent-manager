@@ -614,11 +614,40 @@ echo "$T8_OUTPUT" | grep -q -- "--headless" || {
   echo "FAIL: --headless hint missing; a machine with no browser has no way forward: $T8_OUTPUT" >&2
   exit 1
 }
+# --bridge-token-file must be in the printed command on EVERY install shape, not just
+# the --service-user one. Without it the credential's location depends on whose HOME
+# ran the command; with it the path is pinned, because the flag beats both
+# $HAM_BRIDGE_TOKEN_FILE and the HOME default (enroll_device_flow.odin:1353).
+echo "$T8_OUTPUT" | grep -q -- "--bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token" || {
+  echo "FAIL: the printed enroll command does not pin --bridge-token-file, so where the credential lands depends on whose HOME runs it: $T8_OUTPUT" >&2
+  exit 1
+}
 # THE DELIVERABLE SENTENCE. The task is explicit that this is a deliverable rather
 # than a nicety: the honest awkward instruction beats a smooth flow that silently
 # leaves the vault sealed, which is what shipped.
-echo "$T8_OUTPUT" | grep -q "Settings → Bridges" || {
-  echo "FAIL: the installer did not say that a later service handover needs an unlock from Settings -> Bridges: $T8_OUTPUT" >&2
+# BOTH mentions are asserted VERBATIM and SEPARATELY, for the same reason as the
+# port pair below — and this one was caught by review (inst_18dc4ce22458a459) after I
+# had already found and fixed the mechanism nine lines away, which is the whole point:
+# a bare `grep -q "Settings → Bridges"` stayed green when ONLY the handover sentence
+# was deleted, because the code-path mention satisfied it.
+#
+# Note why my own disarm variant missed it. I disarmed by replacing EVERY occurrence
+# of the string, which fails the test for the wrong reason and proves nothing about
+# witness placement. A disarm that cannot distinguish the sites cannot detect an
+# assertion that cannot either: delete exactly ONE site per variant.
+# Asserted against a WHITESPACE-FLATTENED copy, so each assertion can name its whole
+# sentence even though the printed text hard-wraps mid-sentence (the code-path mention
+# breaks between "from" and "Settings"). A line-bound `grep -q` would force each
+# assertion down to a short fragment, which is how the vacuity below arose in the
+# first place; flattening also means an innocent re-wrap of the paragraph does not
+# produce a false failure.
+T8_FLAT="$(printf '%s' "$T8_OUTPUT" | tr '\n' ' ' | tr -s ' ')"
+echo "$T8_FLAT" | grep -q "then unlock the vault again from Settings → Bridges" || {
+  echo "FAIL: the HANDOVER block does not say the handover needs an unlock from Settings -> Bridges --- that is the named acceptance criterion, and a smooth flow that leaves the vault sealed is exactly what shipped: $T8_OUTPUT" >&2
+  exit 1
+}
+echo "$T8_FLAT" | grep -q "unlock it afterwards from Settings → Bridges" || {
+  echo "FAIL: the CODE path does not say to unlock from Settings -> Bridges afterwards; it is the path that leaves the vault locked: $T8_OUTPUT" >&2
   exit 1
 }
 # BOTH sites must name the port, and they are asserted separately on purpose.
@@ -1284,8 +1313,12 @@ EOF
   ' 2>&1
 )"
 
-echo "$T20_OUTPUT" | grep -q -- "enroll --ui http://heimdall.example.test --config $MOCK_HOME/.config/heimdall/config.toml" || {
-  echo "FAIL: the printed enroll command omits --config on a --service-user install, so the credential would land in the wrong home: $T20_OUTPUT" >&2
+# BOTH flags, in the order printed. This is the shape where getting it wrong is
+# invisible: `curl | sudo bash` leaves the shell as root while the service runs as
+# someone else, so --config without --bridge-token-file splits the config from the
+# credential and the bridge cannot find its own token.
+echo "$T20_OUTPUT" | grep -q -- "enroll --ui http://heimdall.example.test --bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token --config $MOCK_HOME/.config/heimdall/config.toml" || {
+  echo "FAIL: the printed enroll command does not carry both --bridge-token-file and --config on a --service-user install, so the credential and the config can land in different homes: $T20_OUTPUT" >&2
   exit 1
 }
 echo "$T20_OUTPUT" | grep -q "Run it as svcuser" || {
@@ -1310,10 +1343,15 @@ n
 EOF
   ' 2>&1
 )"
-if echo "$T20_PLAIN" | grep -q -- "enroll --ui http://heimdall.example.test --config"; then
+if echo "$T20_PLAIN" | grep -q -- "--config"; then
   echo "FAIL: --config was printed on an install with no service user: $T20_PLAIN" >&2
   exit 1
 fi
+# ...but the token flag is NOT conditional, and the pair of assertions is what says so.
+echo "$T20_PLAIN" | grep -q -- "--bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token" || {
+  echo "FAIL: --bridge-token-file was dropped on an install with no service user; it is unconditional on purpose: $T20_PLAIN" >&2
+  exit 1
+}
 if echo "$T20_PLAIN" | grep -q "Run it as "; then
   echo "FAIL: a run-as note was printed on an install with no service user: $T20_PLAIN" >&2
   exit 1
