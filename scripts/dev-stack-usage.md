@@ -2,7 +2,7 @@
 
 > **Living document.** When you discover something new, fix something wrong, or add a workflow, edit this file. Remove sections that become stale. Add sections as new parts of the stack are exercised. Date significant entries so it is clear when a section was last verified.
 >
-> Last verified: 2026-10-07 — four concurrent streams: REQ-IMPL-1 bridge credential work (added §1a isolated ports / throwaway DB and §1b the nix-excludes-untracked-files trap), REQ-IMPL-2 bridge device-grant enrollment (corrected the §1 toolchain pin, added the `-lsqlite3` link step, recorded the parallel-runner flake and the `tprintf` brace trap in §13), and REQ-IMPL-3 expiring credentials + refresh (added §10a, corrected the §1/§12/§13 "2026-07a is a version" error — it is a derivation NAME, the binary reports `dev-2026-09` — refined the §13 flake row with the first-error triage rule and a cause count of two, and recorded the no-counts/no-line-numbers-in-comments sweep from REQ-IMPL-1a), and REQ-IMPL-5 approval screen + fragment-key vault delivery (added §10b the device-grant APPROVAL smoke recipe, and §13 rows for the `odin test src/bridge` abort, the `tests/*.odin` run-vs-test trap, and the duplicate-`serve` / self-matching-`pkill` traps).
+> Last verified: 2026-10-08 — REQ-IMPL-7 end-to-end verification of the device flow (added §10d: headless enrollment with no browser, the 20-second proactive-refresh observation, the `CLOSE-WAIT` false-negative on revocation, cross-bridge isolation plus where the `bridge_auth_denied` audit lines land, and the legacy-credential message proven over the wire; added §13 rows for the BRE literal-`|` sweep, the stronger "a text sweep cannot prove a behaviour is untested" rule, the compile-time token TTL, the misleading post-revocation WS message, and `ham-ctl shell` failing on the agent's own vault). Previously 2026-10-07 — four concurrent streams: REQ-IMPL-1 bridge credential work (added §1a isolated ports / throwaway DB and §1b the nix-excludes-untracked-files trap), REQ-IMPL-2 bridge device-grant enrollment (corrected the §1 toolchain pin, added the `-lsqlite3` link step, recorded the parallel-runner flake and the `tprintf` brace trap in §13), and REQ-IMPL-3 expiring credentials + refresh (added §10a, corrected the §1/§12/§13 "2026-07a is a version" error — it is a derivation NAME, the binary reports `dev-2026-09` — refined the §13 flake row with the first-error triage rule and a cause count of two, and recorded the no-counts/no-line-numbers-in-comments sweep from REQ-IMPL-1a), and REQ-IMPL-5 approval screen + fragment-key vault delivery (added §10b the device-grant APPROVAL smoke recipe, and §13 rows for the `odin test src/bridge` abort, the `tests/*.odin` run-vs-test trap, and the duplicate-`serve` / self-matching-`pkill` traps).
 
 ---
 
@@ -892,6 +892,181 @@ standalone Electron confirm page (200).
 
 ---
 
+## 10d. End-to-end verification of the device flow — the 13-scenario harness (verified 2026-10-08, REQ-IMPL-7)
+
+§10a drives the individual HTTP legs. This section is the layer above it: how to prove the
+**operator-visible** properties — headless enrollment, proactive refresh, family
+revocation, per-machine revocation, cross-bridge isolation and the legacy-credential
+message — without a browser and without waiting an hour. Three reusable scripts live in the
+REQ-IMPL-7 task comments; the recipes below are the parts worth keeping.
+
+### Enrol a bridge with NO browser at all (`--headless`)
+
+`--headless` is a real flag (`src/bridge/enroll_device_flow.odin:1116`), not just help text.
+It **skips `bridge_enroll_callback_bind` entirely**, so no loopback listener is created and
+the printed URL carries no `cb=` parameter. Approval then goes through the API and the
+bridge picks it up by polling:
+
+```bash
+./result-bridge/bin/ham-bridge enroll --ui http://127.0.0.1:8295 --headless \
+  --bridge-token-file /tmp/ham-r7/s4-token > /tmp/ham-r7/s4-enroll.log 2>&1 &
+UC=$(grep -o 'user_code=[A-Z0-9-]*' /tmp/ham-r7/s4-enroll.log | head -1 | cut -d= -f2)
+curl -s -X POST http://127.0.0.1:8295/api/v1/device/approve \
+  -H 'Content-Type: application/json' -d "{\"user_code\":\"$UC\",\"approve\":true}"
+# credential appears within ~6s, by polling alone
+```
+
+This is the fastest way to get N enrolled bridges for a multi-bridge test. **Approval goes
+to the PROXY** (it needs the human identity the dev-proxy injects); see §10a's trap about
+which legs go where.
+
+### Proactive refresh is observable in ~20 SECONDS, not an hour
+
+`BRIDGE_ACCESS_TOKEN_TTL_SECONDS` is a **compile-time constant** (3600), so you cannot
+shorten it from the CLI or config. You do not need to. On a **fresh start** the bridge does
+not know how much life its stored access token has left, so the first refresh is scheduled
+at `BRIDGE_REFRESH_MIN_DELAY_SECONDS` = **30s**, and only then does it settle onto the 80%
+schedule (`enroll_device_flow.odin:1003-1006`):
+
+```
+# start a bridge on a fresh credential, then:
+ACCESS TOKEN ROTATED after 19s
+bridge credential refreshed; next refresh in 3045s      # 80% of 3600, ±5% jitter → 2700-3060
+```
+
+So: **start the bridge, wait ~40s, and diff both token files.** Both halves must change.
+Checking `next refresh in N` against the 2700–3060 window is what actually tests the 80%
+arithmetic and the jitter — the rotation alone does not.
+
+**What this does NOT prove,** and do not claim it does: a real 3600s access token reaching
+its expiry. The hour boundary is not crossed. Proving that needs a build with a shortened
+TTL constant.
+
+### A socket count does NOT prove a live connection — `CLOSE-WAIT` will fool you
+
+§10a says revocation kills the live WebSocket "immediately (0.000s)". That is true **of the
+Hub's end**. Watched from the bridge side it looks like the socket survived:
+
+```
+t= 1s  A_sockets=1 ... t=20s  A_sockets=1      # never reaches 0
+```
+
+Because the surviving entry is a half-closed corpse:
+
+```
+CLOSE-WAIT 0 0 127.0.0.1:60656 127.0.0.1:8296 users:(("ham-bridge-wra",pid=967765,fd=7))
+```
+
+`CLOSE-WAIT` means **the peer sent FIN and this process has not closed its fd.** The Hub
+did tear it down. Reporting `sockets=1` as "revocation did not close the socket" would be a
+false FAIL on a passing control. **Always read the socket STATE, never just `grep -c`** —
+and corroborate with the bridge's own log, which is unambiguous:
+
+```
+bridge hub runtime: connection closed, reconnecting…
+bridge hub runtime: hub sent bridge_error after hello — token rejected or bridge not recognized
+bridge credential REVOKED by the hub (invalid_grant): both tokens were wiped. RE-ENROLLMENT REQUIRED
+```
+
+Note the reconnect attempts that follow are logged as
+`cannot connect WS … — proxy/tunnel down, hub unreachable, or TLS failed`, which **blames
+the network for what is an auth refusal**. The actionable `REVOKED … RE-ENROLLMENT REQUIRED`
+line is printed once, before that noise. Do not diagnose a revoked bridge from the tail of
+its log.
+
+### Cross-bridge isolation, and where the denial is recorded
+
+A bare bridge token is confined to its own bridge (`agent_handlers.odin:155-194`,
+REQ-ENROLL-15). Both halves need testing, and **the own-bridge control is what makes the
+403s meaningful** — a token that 403s on everything would look identical:
+
+```bash
+BT=$(cat /tmp/ham-r7/s9b-token)      # bridge B's access token
+curl -s -o /dev/null -w '%{http_code}\n' "$HUB/api/v1/agent-instances?bridge_id=$B" -H "Authorization: Bearer $BT"  # 200 control
+curl -s "$HUB/api/v1/agent-instances?bridge_id=$A" -H "Authorization: Bearer $BT"   # 403 list
+curl -s -X POST "$HUB/api/v1/agent-instances" -H "Authorization: Bearer $BT" \
+  -d "{\"bridge_id\":\"$A\",\"agent_id\":\"...\",\"provider\":\"claude\",\"tier\":\"normal\"}"  # 403 create
+```
+
+The Hub records each denial on **its own stdout** (`<run-dir>/hub.log`), which is where to
+look for the audit trail — it is not in the HTTP response:
+
+```
+ham-hub bridge_auth_denied point=cross_bridge_list   ... bridge_id=<B> target=<A>
+ham-hub bridge_auth_denied point=cross_bridge_create ... bridge_id=<B> target=<A>
+```
+
+### The legacy-credential message, proven over the wire
+
+The `hbr_` rejection must name the remedy rather than return a bare 401. To see it you must
+present a credential naming a **real, currently-enrolled** bridge id — a made-up id fails
+earlier, for the wrong reason:
+
+```bash
+SEC=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+curl -s "$HUB/api/v1/agent-instances" -H "Authorization: Bearer hbr_${REAL_BRIDGE_ID}.${SEC}"
+# 401 "…issued by the removed enrollment flow…; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>"
+curl -s "$HUB/api/v1/agent-instances" -H "Authorization: Bearer hbz_nonsense.secret"
+# 401 "unsupported bearer token"   ← the control: a DIFFERENT, non-naming message
+```
+
+Without that second call the first proves only that *some* 401 was returned. The deleted
+routes (`POST`/`GET /api/v1/bridge-enrollments`, `POST /api/v1/bridges/enroll`) all answer
+`404 route not found`; pair that with a `POST /api/v1/device/authorize` that returns **400**
+to show the 404s are about the route and not about your harness.
+
+### Vault-key delivery: THREE different ECDH keys are in play, and two of them are dead ends
+
+Before you debug a failed vault delivery, establish **which key the seal was addressed to**.
+The bridge's ECDH pair is a per-process in-memory global (`src/bridge/unseal_protocol.odin:25-53`)
+that is never persisted, and `ham-bridge enroll` **exits** after enrolling
+(`src/bridge/main.odin:90-91`). So in a normal cold enrollment there are three:
+
+| Key | Held by | Fate |
+|---|---|---|
+| the `bpk` in the approval link | the `ham-bridge enroll` process | dies when `enroll` exits |
+| the Hub's stored `bridge_public_key` | the Hub | **overwritten by the live bridge at connect** |
+| the live bridge's own pair | the long-running `ham-bridge` | the only one that can decrypt anything |
+
+Measure it rather than assuming — they are plainly different:
+
+```bash
+grep -o 'bpk=[0-9a-f]*' <enroll-log>          # 045fff3de07097ab9…
+curl -s $PROXY/api/v1/bridges/$BID | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["bridge_public_key"])'
+                                               # 0439dfb806a6eb43f…  ← different
+```
+
+**Two failure strings and what each one means:**
+
+- `AEAD tag verification failed: tamper detected or authentication failure` — comes from the
+  **bridge** (`unseal_protocol.odin:275`). The envelope arrived and the recipient could not
+  open it: the seal is addressed to a key that process does not hold. This is **not** a wrong
+  master password.
+- `The operation failed for an operation-specific reason` — the **browser** failed before
+  sealing, which is what a wrong master password looks like (AES-GCM over the stored vault blob).
+
+Those two live at different sites, which is what lets you tell "wrong password" from "wrong
+recipient key". Assert on which one you got.
+
+Also note `Waiting for the bridge to connect… Giving up in 37s` — delivery relays to a
+**CONNECTED** bridge, so with no bridge running there is no target at all. The `enroll` process
+is never a valid target: it holds only an HTTP poll loop, never a Hub WebSocket.
+
+**Setting up a vault with a KNOWN password** (needed for any delivery test — the blob is
+client-side PBKDF2-SHA256/100000 + AES-GCM and cannot be minted by hand): clear the row in a
+throwaway DB and let the real UI create it.
+
+```bash
+nix develop --command sqlite3 $HUB_DB "delete from user_vaults;"   # throwaway DB ONLY
+# then drive VaultOnboardingModal; it exposes data-debug-id selectors:
+#   [data-debug-id=vault-onboarding-master-password-input]
+#   [data-debug-id=vault-onboarding-confirm-password-input]
+#   [data-debug-id=vault-onboarding-setup-backup-checkbox]   (submit stays disabled until checked)
+#   [data-debug-id=vault-onboarding-setup-submit-btn]
+```
+
+---
+
 ## 11. Checking logs
 
 ```bash
@@ -978,6 +1153,15 @@ HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt
 | 2026-09-03 | **Template identity:** `template_persona`/`template_instructions` only appear in the bootstrap if the agent has a `template_id` that resolves via `content_get_template`. Daemon deletion (BT-6) does NOT remove the template API path — templates are seeded via `POST /api/v1/templates` + `ham-ctl agent templates create`. |
 | 2026-09-03 | **Bridge run dir layout:** `<bridge-run-dir>/instances/<inst_id>/` contains `CLAUDE.md`/`AGENTS.md`, `.pi/skills/*/SKILL.md`, `.heimdall/bin/ham-ctl`, `heimdall-bootstrap-manifest.json`, `.heimdall-wrapper-placed`. |
 | 2026-09-03 | **`wrapper.bootstrap.list` RPC:** the bridge local endpoint is a unix socket (`<bridge-run-dir>/bridge.sock`), not an HTTP port. The wrapper calls it over the socket; you can't curl it directly from outside the bridge process. |
+
+| 2026-10-08 | **`grep -ran 'A|B|C'` is BRE: the `\|` is a LITERAL character, so the pattern matches one 70-char string that exists nowhere and the sweep returns ZERO.** Walked into by a reviewer whose issue (`iss_18dc6a9916ae246c`) concluded "no test asserts this" from such a sweep; the test existed and had for two commits. Run verbatim it returns `lines=0`. **Use `-E` (or `rg`), and pair every sweep with a positive control that MUST match** — a sweep with no control cannot tell "absent" from "my matcher is broken". |
+| 2026-10-08 | **A text sweep CANNOT establish that a behaviour is untested, even with a correct regex — because tests assert on FRAGMENTS, not on the artifact.** Generalises the row above and is the sharper rule. `iss_18dc6a9916ae246c` swept for the message text `re-enroll this machine`; the real test asserts `strings.contains(err.message, "ham-bridge enroll --ui")` and `"re-enroll"`, so **no amount of regex-fixing would ever have found it** (corrected to `-E` the sweep returns 8 lines, still not the test). To answer "is this tested?", **invert the behaviour and run the suite** — a green run then proves the gap. Never grep for it. |
+| 2026-10-08 | **`CLOSE-WAIT` makes a torn-down socket look alive: `ss \| grep -c` never reaches 0 after revocation.** The Hub FINs immediately, but the bridge process holds its fd, leaving one `CLOSE-WAIT` entry indefinitely. Counting sockets therefore reports "revocation did not close the connection", which is false. **Read the socket STATE, not the count** (`ss -tnp` and look for `ESTAB` vs `CLOSE-WAIT`). See §10d. |
+| 2026-10-08 | **You cannot shorten the bridge access-token TTL to test refresh — it is a compile-time constant (`BRIDGE_ACCESS_TOKEN_TTL_SECONDS :: 3600`).** You do not need to: on a **fresh start** the first refresh fires at `BRIDGE_REFRESH_MIN_DELAY_SECONDS` = 30s by design, because the bridge cannot know its stored token's remaining life. Wait ~40s and diff both token files; assert `next refresh in N` falls in 2700–3060 to test the 80%+jitter arithmetic. **This does not exercise a real expiry** — say so rather than claiming the hour boundary. See §10d. |
+| 2026-10-08 | **A revoked bridge logs `cannot connect WS … proxy/tunnel down, hub unreachable, or TLS failed` on every retry — blaming the network for an auth refusal.** The one actionable line (`bridge credential REVOKED by the hub … RE-ENROLLMENT REQUIRED`) is printed **once, before** that noise, so diagnosing from `tail` of the log points you at the network instead of at re-enrollment. |
+| 2026-10-08 | **`ham-ctl shell run` can fail for the whole bridge with `bridge failed to start shell session: unauthorized: invalid vault encryption`.** Observed 2026-10-08 on `brg_18c6785be1b4e5e6` while the local test stack (isolated ports) was perfectly healthy — so it is the **agent's own runtime bridge vault**, not your harness or the hub under test. Fall back to `nohup <script> > log 2>&1 &` for long runs and say that you did; do not read it as a failure of the thing you are testing. |
+
+| 2026-10-08 | **A failed vault delivery has TWO different error strings at TWO different sites, and confusing them sends you to the wrong subsystem.** `AEAD tag verification failed: tamper detected…` is the **bridge** (`src/bridge/unseal_protocol.odin:275`) — the envelope arrived and the recipient lacks the matching private key; it is NOT a wrong password. `The operation failed for an operation-specific reason` is the **browser** failing before it seals, which IS what a wrong master password looks like. Three distinct ECDH keys exist in a cold enrollment (enroll-process / Hub's stored copy / live bridge) and only the last can decrypt — see §10d before debugging. |
 
 ---
 
