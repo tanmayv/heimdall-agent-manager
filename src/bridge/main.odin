@@ -87,8 +87,30 @@ main :: proc() {
 			fmt.eprintln("    ham-bridge enroll --ui https://your-heimdall-url [--bridge-token-file PATH] [--headless]")
 			os.exit(1)
 		}
+		// REQ-FIX-2: ENROLLMENT FALLS THROUGH INTO THE RUNTIME. THE MISSING `return`
+		// IS THE FIX, NOT AN OVERSIGHT.
+		//
+		// `bridge_enroll_device_command` mints the ephemeral ECDH pair whose public
+		// half rides in the approval link's `bpk` fragment, and the approval screen
+		// seals the vault key to THAT key with no fallback. The pair is per-process
+		// in-memory state (unseal_protocol.odin:25-53) and is deliberately never
+		// persisted, because its ephemerality is what makes an archived approval
+		// link permanently undecryptable (enroll_device_flow.odin header, property
+		// 4). Returning here ended the only process holding the private half, so the
+		// operator started a SECOND bridge, which generated its own pair and
+		// published that in its WS hello — and the sealed vault key then arrived at a
+		// process that could not open it, failing on an AEAD tag check. Delivery
+		// could never succeed on any path (iss_18dc71789af7a745).
+		//
+		// Continuing in-process is what makes the key that produced `bpk` the key
+		// that is still alive to receive the seal. Do NOT reintroduce an exit here,
+		// and do not add a flag that restores one: a second path through enrollment
+		// is a path on which the vault is silently never delivered.
 		if !bridge_enroll_device_command(os.args) do os.exit(1)
-		return
+		// Deliberately NO `return`. Control continues to the ordinary startup below,
+		// which re-derives the config now that the credential exists and then
+		// re-evaluates bridge_refuse_tokenless_start on it — the guard is not
+		// bypassed, it is checked against the post-enrollment state.
 	}
 	if has_flag(os.args, "--bridge-wrapper-supervisor") || (len(os.args) > 1 && os.args[1] == "wrapper-supervisor") {
 		fmt.eprintln("ham-bridge wrapper-supervisor is removed; use ham-wrapper bridge-runtime")
@@ -102,6 +124,13 @@ main :: proc() {
 	// REQ-IMPL-4 / audit F4: an enrolled bridge holding no credential must not run.
 	// Checked before anything is initialised, so the loopback listener never opens
 	// in the state where its authorizer admits everyone.
+	//
+	// REQ-FIX-2 made this the guard for the ENROLL path too, unchanged. `enroll` now
+	// falls through to here, so the config above is re-derived with the credential
+	// enrollment just wrote and this predicate is evaluated against that state. An
+	// enrollment that failed has already exited above, so the one state the guard
+	// exists for — enrolled (`brg_`) and tokenless — still cannot reach the listener
+	// that opens two lines below.
 	if bridge_refuse_tokenless_start(bridge_config) do os.exit(1)
 	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
 	vcs_init()

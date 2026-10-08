@@ -113,6 +113,11 @@ BRIDGE_ENROLL_SECRET_BYTES :: 32
 BRIDGE_ENROLL_MAX_WAIT_SECONDS :: 900
 BRIDGE_ENROLL_DEFAULT_INTERVAL_SECONDS :: 5
 
+// How long bridge_enroll_callback_shutdown waits for the listener thread to exit,
+// in 10ms steps. Two seconds is far more than a woken accept() needs; it is a
+// ceiling on a pathology, not a budget anything normally spends.
+BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS :: 200
+
 // ===== Proactive refresh (design §7.5) =====
 //
 // REFRESH AT 80% OF THE ACCESS TOKEN'S LIFETIME, NOT ON A 401. A 401 means the
@@ -489,6 +494,20 @@ Bridge_Enroll_Callback :: struct {
 	// the poll loop so it can redeem immediately instead of waiting out its
 	// interval. Advisory only: the loop completes without it.
 	fired:    i32,
+	// REQ-FIX-2: shutdown handshake. `stop` is set by
+	// bridge_enroll_callback_shutdown and read by the listener thread; `done` is
+	// set by the listener thread as it exits, so the shutdown can WAIT for the
+	// socket to be gone instead of assuming it.
+	//
+	// WHY THIS EXISTS NOW AND NOT BEFORE. Enrollment used to end the process
+	// (main.odin returned straight after it), so a listener thread still parked in
+	// accept() was reaped by exit() seconds later. Enrollment now CONTINUES INTO
+	// THE RUNTIME in the same process, so anything left bound here would outlive
+	// the ceremony for the whole life of the bridge — a loopback listener whose
+	// only authenticator is a spent one-shot nonce. It must be gone before the
+	// runtime starts.
+	stop:     i32,
+	done:     i32,
 	bound:    bool,
 }
 
@@ -531,10 +550,28 @@ bridge_enroll_callback_bind :: proc(cb: ^Bridge_Enroll_Callback, state: string) 
 // bridge_enroll_callback_serve accepts until it gets ONE hit with a valid state,
 // then stops. Run on its own thread; the poll loop never blocks on it.
 bridge_enroll_callback_serve :: proc(cb: ^Bridge_Enroll_Callback) {
+	// THE LISTENER THREAD IS THE SOLE OWNER OF THE SOCKET and the only caller that
+	// ever closes it. bridge_enroll_callback_shutdown deliberately does not, so
+	// there is no window in which one thread closes an fd another is accepting on.
+	//
+	// DEFER ORDER IS LOAD-BEARING: Odin runs defers LIFO, so the one declared FIRST
+	// runs LAST. `done` is therefore declared first and published last — after the
+	// socket is actually closed. Declared the other way round (which is how this was
+	// first written) `done` was set while the close had not yet run, so a shutdown
+	// could observe "retired" with the port still bound for an instant. Harmless in
+	// isolation, but it made the wait a lie, and the whole point of the wait is that
+	// the listener is gone before the runtime starts.
+	defer sync.atomic_store(&cb.done, 1)
 	defer net.close(cb.listener)
 	for {
+		if sync.atomic_load(&cb.stop) == 1 do return
 		client, source, accept_err := net.accept_tcp(cb.listener)
 		if accept_err != nil do return
+		// A shutdown's wake-up connection arrives here. Hand it nothing and leave.
+		if sync.atomic_load(&cb.stop) == 1 {
+			net.close(client)
+			return
+		}
 		// Defence in depth against a future misbind: a peer that is not loopback is
 		// closed without a response, whatever the URL says (design §3.5 item 6).
 		if !bridge_enroll_peer_is_loopback(source) {
@@ -581,6 +618,45 @@ bridge_enroll_callback_serve :: proc(cb: ^Bridge_Enroll_Callback) {
 // which the loop returns to its normal interval.
 bridge_enroll_callback_take_fired :: proc(cb: ^Bridge_Enroll_Callback) -> bool {
 	return sync.atomic_exchange(&cb.fired, 0) == 1
+}
+
+// bridge_enroll_callback_shutdown retires the loopback callback listener before
+// the bridge runtime starts (REQ-FIX-2). Idempotent, and a no-op when nothing was
+// ever bound (--headless, or a bind that failed).
+//
+// IT WAKES accept() WITH A CONNECTION RATHER THAN CLOSING THE FD, and that is the
+// whole reason this is nine lines instead of one. Closing a listening socket from
+// another thread does NOT reliably wake a thread blocked in accept() on Linux: the
+// thread can stay parked on a descriptor number that the allocator is then free to
+// hand to an unrelated socket, at which point the enrollment callback is accepting
+// connections on somebody else's listener. `ctl_vault_fake_bridge_stop` in
+// src/ctl/vault_bridge_source_test.odin:104-112 documents and uses the same
+// self-connect wake for the same reason — this is that idiom, not a new one.
+//
+// The listener thread owns the close (see bridge_enroll_callback_serve), so the
+// socket is released exactly once no matter how the ceremony ended: the callback
+// fired and the thread had already gone, or it never fired and the wake-up
+// connection retires it here.
+bridge_enroll_callback_shutdown :: proc(cb: ^Bridge_Enroll_Callback) {
+	if !cb.bound do return
+	sync.atomic_store(&cb.stop, 1)
+	if wake, dial_err := net.dial_tcp(net.IP4_Loopback, int(cb.port)); dial_err == nil {
+		net.close(wake)
+	}
+	// Bounded wait, because "the port is gone" is a precondition of starting the
+	// runtime and not something to take on faith. A thread that somehow does not
+	// exit is REPORTED rather than passed over in silence; it cannot be waited on
+	// forever without making a stuck listener thread into a bridge that never
+	// starts.
+	for _ in 0 ..< BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS {
+		if sync.atomic_load(&cb.done) == 1 do break
+		time.sleep(10 * time.Millisecond)
+	}
+	if sync.atomic_load(&cb.done) != 1 {
+		fmt.eprintfln("warning: the enrollment callback listener on 127.0.0.1:%d did not retire within %dms; it holds a spent one-shot nonce and accepts nothing, but it should have exited",
+			cb.port, BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS * 10)
+	}
+	cb.bound = false
 }
 
 bridge_enroll_peer_is_loopback :: proc(source: net.Endpoint) -> bool {
@@ -1223,7 +1299,30 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 				fmt.printfln("  refresh token   %s (0600), access token expires in %ds and is refreshed proactively", bridge_enroll_refresh_file_for(token_file, context.temp_allocator), cred.expires_in)
 			}
 			fmt.println("  nothing secret was written to config.toml (audit F2)")
-			fmt.printfln("  next: start the bridge (ham-bridge --hub %s --bridge-token-file %s ...); it should log 'bridge hub runtime ready'.", ui_origin, token_file)
+			// REQ-FIX-2: the callback listener is retired BEFORE the runtime starts.
+			// Its nonce is spent and the ceremony is over; nothing may stay bound.
+			bridge_enroll_callback_shutdown(&g_bridge_enroll_callback)
+			// THERE IS NO "next" STEP ANY MORE, AND THAT IS THE FIX.
+			//
+			// This line used to read "next: start the bridge (ham-bridge --hub ...)",
+			// which created a second process. The vault key is sealed to the ECDH
+			// public key THIS process put in the approval link's fragment
+			// (bridge_unseal_init, unseal_protocol.odin:25-53) and that key pair is
+			// in-memory and per-process — deliberately, because ephemerality is what
+			// makes archived approval links undecryptable (property 4 in this file's
+			// header, §5.4.6). A freshly started second bridge generates its OWN pair
+			// and advertises it in the WS hello, so the envelope reached a process
+			// that could not open it and delivery failed on an AEAD tag check
+			// (unseal_protocol.odin). That was iss_18dc71789af7a745.
+			//
+			// So the caller does not exit: main.odin falls through into the normal
+			// runtime in THIS process, which is the only way the key that produced
+			// `bpk` is still alive to receive the seal. Note what did NOT change to
+			// achieve that: the key is still never persisted, and the approval screen
+			// still has no fallback to the Hub's copy of the key.
+			fmt.printfln("  starting the bridge now in this process (hub %s) — watch for 'bridge hub runtime ready'.", ui_origin)
+			fmt.println("  keep this running: the vault key is delivered to THIS process when you approve, and")
+			fmt.println("  its decryption key only exists in memory here (nothing on disk can replace it).")
 			return true
 		case .Denied:
 			fmt.eprintln("bridge enroll FAILED: the request was denied in the browser. Nothing was written.")
