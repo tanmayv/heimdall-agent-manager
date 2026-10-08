@@ -23,6 +23,10 @@ Bridge_Config :: struct {
 	daemon_url: string,
 	daemon_id: string,
 	bridge_token: string,
+	// REQ-IMPL-4: path of the 0600 file holding the access token, when one was used.
+	// The proactive-refresh worker rewrites it in place; see
+	// bridge_credential_refresh_start.
+	credential_file: string,
 	data_dir: string,
 	chunk_bytes: int,
 	bootstrap_cache_max_bytes: int,
@@ -67,7 +71,23 @@ main :: proc() {
 	}
 
 	if len(os.args) > 1 && os.args[1] == "enroll" {
-		if !bridge_enroll_command(os.args) do os.exit(1)
+		// ENROLLMENT IS BROWSER-APPROVED ONLY (REQ-ENROLL-9). `--ui <origin>` is the
+		// one path: no enrollment token, no hub url, no secret carried to the machine.
+		//
+		// REQ-IMPL-6 deleted the `--hub`/`--enrollment-token` fallback that used to
+		// sit here. An operator who passes the old flags must not silently get
+		// something else, so a missing `--ui` is an error that names the new form
+		// rather than a fall-through.
+		if strings.trim_space(option_value(os.args, "--ui", os.get_env("HAM_BRIDGE_UI_URL", context.allocator))) == "" {
+			fmt.eprintln("ham-bridge enroll requires --ui <https://your-heimdall-url> (or HAM_BRIDGE_UI_URL)")
+			fmt.eprintln("")
+			fmt.eprintln("  --hub and --enrollment-token were REMOVED: there is no enrollment token any more.")
+			fmt.eprintln("  Enrollment is approved in the browser, so no secret is copied to this machine.")
+			fmt.eprintln("")
+			fmt.eprintln("    ham-bridge enroll --ui https://your-heimdall-url [--bridge-token-file PATH] [--headless]")
+			os.exit(1)
+		}
+		if !bridge_enroll_device_command(os.args) do os.exit(1)
 		return
 	}
 	if has_flag(os.args, "--bridge-wrapper-supervisor") || (len(os.args) > 1 && os.args[1] == "wrapper-supervisor") {
@@ -76,6 +96,13 @@ main :: proc() {
 	}
 
 	bridge_config = bridge_config_from_args(os.args)
+	default_credential_path := bridge_enroll_default_credential_path()
+	bridge_adopt_default_credential_if_needed(&bridge_config, default_credential_path)
+	delete(default_credential_path)
+	// REQ-IMPL-4 / audit F4: an enrolled bridge holding no credential must not run.
+	// Checked before anything is initialised, so the loopback listener never opens
+	// in the state where its authorizer admits everyone.
+	if bridge_refuse_tokenless_start(bridge_config) do os.exit(1)
 	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
 	vcs_init()
 	bridge_provider_store_init()
@@ -112,6 +139,10 @@ main :: proc() {
 		fmt.println("bridge local endpoint", endpoint, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
 	}
 	bridge_hub_runtime_start()
+	// REQ-IMPL-4 / design §7.5: renew the access token at 80% of its lifetime with
+	// jitter, rather than waiting for a 401 — by which time in-flight work has
+	// already failed. No-ops for a non-expiring legacy credential.
+	bridge_credential_refresh_start(bridge_config.credential_file)
 	bridge_task_scheduler_configure()
 	bridge_task_scheduler_start()
 	bridge_action_scheduler_start()
@@ -124,65 +155,12 @@ print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--no-local-proxy] [--agent-command CMD]")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir> -- <agent-command>")
-	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN [--bridge-token-file PATH]")
+	fmt.println("enroll: ham-bridge enroll --ui https://heimdall.example.com [--bridge-token-file PATH] [--headless]")
+	fmt.println("        approve in the browser; no enrollment token and no hub url are needed (the UI origin proxies /api to the hub)")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
 	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN|--bridge-token-file PATH --instance-id INST --run-dir DIR")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR -- <agent-command>")
 	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH)
-}
-
-bridge_enroll_command :: proc(args: []string) -> bool {
-	hub_url := option_value(args, "--hub", option_value(args, "--daemon-url", ""))
-	token := option_value(args, "--enrollment-token", os.get_env("HAM_BRIDGE_ENROLLMENT_TOKEN", context.allocator))
-	if strings.trim_space(hub_url) == "" || strings.trim_space(token) == "" {
-		fmt.eprintln("ham-bridge enroll requires --hub and --enrollment-token (or HAM_BRIDGE_ENROLLMENT_TOKEN)")
-		return false
-	}
-	if !bridge_hub_url_supported(hub_url) {
-		fmt.eprintln("ham-bridge enroll --hub must be an http:// or https:// base URL")
-		return false
-	}
-	body_b := strings.builder_make()
-	strings.write_string(&body_b, "{\"hub_url\":\""); json_write_string(&body_b, hub_url)
-	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"}}")
-	body := strings.to_string(body_b)
-	// Log a token PREVIEW only (never the full secret) so we can tell it was passed.
-	token_preview := token[:min(8, len(token))]
-	fmt.printfln("bridge enroll: POST %s/api/v1/bridges/enroll (enrollment_token=%s..., len=%d)", hub_url, token_preview, len(token))
-	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
-	resp, ok := http.request_with_headers_timeout("POST", hub_url, "/api/v1/bridges/enroll", body, headers[:], http.DEFAULT_TIMEOUT_MS)
-	if !ok {
-		// Transport failure: could not reach the hub at all (proxy/tunnel down,
-		// DNS, connection refused, TLS handshake failed, timeout).
-		fmt.eprintfln("bridge enroll FAILED: could not reach the hub at %s — check the proxy/tunnel is up and --hub is correct (transport error, no HTTP response)", hub_url)
-		return false
-	}
-	if resp.status != 201 {
-		// The hub answered but rejected enrollment (bad/expired token, wrong Host
-		// via a misconfigured proxy, etc.). resp.body carries the hub's reason.
-		fmt.eprintfln("bridge enroll FAILED: hub returned HTTP %d — %s", resp.status, resp.body)
-		if resp.status == 401 || resp.status == 403 do fmt.eprintln("  hint: the enrollment token is invalid, already used, or expired — create a fresh one in the UI (Settings -> Bridges -> Add bridge).")
-		if resp.status == 404 do fmt.eprintln("  hint: the enrollment token was not found (invalid/expired — create a fresh one), OR the proxy isn't rewriting Host to the hub / --hub points at the wrong base URL.")
-		return false
-	}
-	fmt.printfln("bridge enroll: hub accepted (HTTP 201)")
-	bridge_token := extract_json_string(resp.body, "bridge_token", "")
-	bridge_id := extract_json_string(resp.body, "bridge_id", "")
-	persisted_hub_url := extract_json_string(resp.body, "hub_url", hub_url)
-	token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
-	config_path := cfg_lib.config_path_from_args(args)
-	if strings.trim_space(token_file) != "" {
-		if !bridge_write_token_file(token_file, bridge_token) do return false
-		if !bridge_write_enrolled_config(config_path, persisted_hub_url, "", bridge_id) {
-			fmt.eprintln("warning: bridge token was saved, but config.toml could not be updated; pass --hub/--bridge-token-file when starting ham-bridge")
-		}
-		fmt.println("bridge_token_file", token_file)
-	} else {
-		if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
-	}
-	fmt.printfln("bridge enroll SUCCESS: enrolled as bridge_id=%s hub_url=%s", bridge_id, persisted_hub_url)
-	fmt.println("  next: start the bridge (ham-bridge --hub <url> --bridge-token-file <path> ...); it will open the runtime WS and should log 'bridge hub runtime ready'.")
-	return true
 }
 
 bridge_hub_url_supported :: proc(hub_url: string) -> bool {
@@ -295,6 +273,44 @@ bridge_write_token_file :: proc(path, token: string) -> bool {
 	return true
 }
 
+// bridge_adopt_default_credential_if_needed falls back to the path `enroll --ui`
+// writes when nothing else supplied a credential.
+//
+// WHY THIS IS A STARTUP STEP AND NOT PART OF bridge_config_from_args. It reads an
+// ambient file in the user's home directory, and `bridge_config_from_args` is called
+// directly by tests — so having the probe there made the suite's behaviour depend on
+// whether a real credential happened to exist on the developer's machine (it did on
+// mine right after an end-to-end run, and did not on the reviewer's). Resolving
+// config and touching the filesystem are different jobs; only `main` does the second.
+//
+// WHY THE FALLBACK EXISTS AT ALL: the device flow deliberately stops writing the
+// credential into config.toml (audit F2), which would otherwise leave
+// `ham-bridge --hub <url>` with no token and the runtime logging "disabled: missing
+// daemon_url or bridge_token" — trading a security defect for a usability one.
+//
+// It is reached ONLY when nothing else supplied a token, so it cannot override an
+// explicit --bridge-token, --bridge-token-file, HAM_BRIDGE_TOKEN_FILE or a
+// config.toml value: the one case it changes is the one that is broken anyway.
+// `candidate` is passed in rather than resolved here so a test can point it at a
+// file it created. Resolving it internally made the test vacuous: on a machine with
+// no credential at the default location, the proc did nothing whatever the config
+// said, so the assertions passed with BOTH early returns deleted.
+bridge_adopt_default_credential_if_needed :: proc(cfg: ^Bridge_Config, candidate: string) {
+	if strings.trim_space(cfg.bridge_token) != "" do return
+	if strings.trim_space(cfg.credential_file) != "" do return
+	default_credential := strings.trim_space(candidate)
+	if default_credential == "" do return
+	// Probed QUIETLY: an absent default file is the normal case for a bridge started
+	// with an explicit token, and bridge_read_token_file would print a read failure
+	// that reads like an error when nothing is wrong.
+	if !os.exists(default_credential) do return
+	token_from_default, default_ok := bridge_read_token_file(default_credential)
+	if !default_ok do return
+	cfg.bridge_token = token_from_default
+	cfg.credential_file = strings.clone(default_credential)
+	fmt.println("bridge credential loaded from the default location", default_credential)
+}
+
 bridge_read_token_file :: proc(path: string) -> (string, bool) {
 	trimmed_path := strings.trim_space(path)
 	if trimmed_path == "" do return "", false
@@ -303,6 +319,10 @@ bridge_read_token_file :: proc(path: string) -> (string, bool) {
 		fmt.eprintln("failed to read bridge token file", trimmed_path)
 		return "", false
 	}
+	// The returned string is a CLONE, so the file buffer is ours to release. It
+	// previously leaked on every call, which the refresh worker turns from a
+	// one-off into a per-rotation leak for the life of the process.
+	defer delete(data)
 	text := strings.trim_space(string(data))
 	if text == "" do return "", false
 	return strings.clone(text), true
@@ -375,6 +395,11 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	cfg.daemon_url = option_value(args, "--hub", cfg.daemon_url)
 	cfg.daemon_id = option_value(args, "--daemon-id", cfg.daemon_id)
 	bridge_token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
+	// REQ-IMPL-4: remembered so the refresh worker knows which file to rewrite when
+	// it rotates an expiring credential. Empty when the token came from --bridge-token
+	// or config.toml, and the worker then declines to rotate rather than rotating
+	// into memory only and losing the new credential at the next restart.
+	cfg.credential_file = strings.trim_space(bridge_token_file)
 	if token_from_file, token_file_ok := bridge_read_token_file(bridge_token_file); token_file_ok do cfg.bridge_token = token_from_file
 	cfg.bridge_token = option_value(args, "--bridge-token", cfg.bridge_token)
 	if port_s := option_value(args, "--port", ""); port_s != "" {
@@ -470,10 +495,52 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 	}
 }
 
+// bridge_loopback_authorized gates every loopback route on the bridge's own token.
+//
+// ===== AUDIT F4: THIS NOW FAILS CLOSED (REQ-ENROLL-9) =====
+//
+// The first line used to read:
+//
+//     if strings.trim_space(bridge_config.bridge_token) == "" do return true
+//
+// A BLANK CONFIGURED TOKEN AUTHORISED EVERYTHING. That is not a narrow edge case:
+// a bridge is token-less for its entire life before it enrolls, and a bridge whose
+// token file is missing, empty or unreadable is token-less too. In every one of
+// those states the loopback surface — which spawns agents and reads project files —
+// was open to any local process, with no credential at all.
+//
+// WHY IT WAS SAFE TO FLIP ONLY NOW, AND WHY IT WAS NOT SAFE EARLIER. The permissive
+// branch had exactly one legitimate consumer: a locally started bridge that had been
+// given no token, which is how the old static-token path let a developer run a stack
+// without enrolling. Flipping it while that path still existed would have broken
+// every such bridge — including the `dev-stack.sh` harnesses other agents in this
+// chain are running. REQ-IMPL-6 deletes the static-token path and rewrites
+// `dev-stack.sh` to enroll through the device flow, so the only configuration that
+// relied on fail-open no longer exists. REQ-IMPL-4 had already closed the narrower
+// case, refusing to persist an empty credential or to start enrolled-but-tokenless.
+//
+// The consequence is intended: a bridge with no usable credential serves NOTHING on
+// loopback. That is the correct posture — an unenrolled bridge has no owner, so
+// there is no one whose authority it could be acting on.
 bridge_loopback_authorized :: proc(request: string) -> bool {
-	if strings.trim_space(bridge_config.bridge_token) == "" do return true
+	configured := strings.trim_space(bridge_config.bridge_token)
+	if configured == "" do return false
 	auth := extract_header(request, contracts.BRIDGE_LOOPBACK_AUTH_HEADER)
-	return auth == strings.concatenate({contracts.BRIDGE_AUTH_BEARER_PREFIX, bridge_config.bridge_token})
+	// Compared against the TRIMMED token so the blank test above and the equality
+	// test below agree on what the token is. bridge_read_token_file already trims,
+	// so this only affects a token supplied via config.toml `daemon.bridge_token`
+	// or `--bridge-token`, neither of which is trimmed on the way in: such a value
+	// with surrounding whitespace used to pass the blank test and then reject every
+	// correctly-formed request. Narrow, but it is a silent-misauthentication bug,
+	// and the two tests disagreeing is what caused it.
+	// The expected value is built on the heap and freed here. It leaked on every
+	// loopback request before — harmless-looking at a few bytes a call, but this is
+	// the hot path for every agent spawn and file read, so it accumulated for the
+	// life of the process. Surfaced by the tracking allocator once this proc finally
+	// had tests exercising it.
+	expected := strings.concatenate({contracts.BRIDGE_AUTH_BEARER_PREFIX, configured})
+	defer delete(expected)
+	return auth == expected
 }
 
 bridge_health_json :: proc() -> string {
