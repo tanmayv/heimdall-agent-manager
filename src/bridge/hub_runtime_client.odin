@@ -2864,7 +2864,23 @@ bridge_hub_hello_json :: proc() -> string {
 	strings.write_string(&b, "\",\"target\":\"")
 	bridge_runtime_write_json_string(&b, bridge_target_string())
 	strings.write_string(&b, "\",\"bootstrap_fragment_cache\":true,\"hostname\":\"")
-	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
+	// REQ-IMPL-4: the REAL hostname, not bridge_config.daemon_id.
+	//
+	// WHY THIS IS NOT COSMETIC. The hub treats this field as the machine's hostname:
+	// bridge_runtime_connect assigns it to `machine_hostname` and, when the label is
+	// not user-customized, to `label` as well. Sending daemon_id therefore OVERWROTE
+	// the real hostname captured at enrollment with the bridge's own `brg_` id --
+	// and daemon_id is set to exactly that id when the hub's ready frame arrives, so
+	// every bridge renamed itself after its own identifier within seconds of
+	// starting. That is the `machine_hostname = brg_...` row observed during
+	// REQ-IMPL-1's run; it is a real defect, not an artefact of running without
+	// --config, and it silently undid this task's descriptor fix on the very next
+	// connect, leaving REQ-IMPL-5's approval screen with nothing identifying to show.
+	//
+	// An unresolvable hostname sends "", which the hub's `if hostname != ""` guard
+	// leaves alone -- keeping the enrolled value is strictly better than replacing it
+	// with an id.
+	bridge_runtime_write_json_string(&b, bridge_hello_hostname())
 	pub_key := bridge_get_public_key_hex()
 	strings.write_string(&b, "\",\"public_key\":\"")
 	bridge_runtime_write_json_string(&b, pub_key)

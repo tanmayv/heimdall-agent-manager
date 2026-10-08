@@ -36,12 +36,35 @@ def test_bridge_schema_supports_hbr10() -> None:
 def test_bridge_service_behavior_markers() -> None:
     svc = read(ROOT / "src/hub/service/bridge/bridge_service.odin")
     for snippet in [
-        "create_enrollment", "enroll_bridge", "hash_token", "status = .Consumed",
-        "label_is_user_customized", "verify_bridge_token", "kind = .Bridge_Token",
-        "bridge is revoked", "refresh_hostname", "!updated.label_is_user_customized", "valid_hub_base_url", "hub_url = hub_url",
+        "label_is_user_customized", "verify_bridge_token",
+        "refresh_hostname", "!updated.label_is_user_customized", "valid_hub_base_url",
     ]:
         require(snippet in svc, f"bridge service missing {snippet}")
-    require("owner_from_auth(auth)" in svc, "enrollment owner must come from AuthContext")
+    # `kind = .Bridge_Token` MOVED rather than disappearing. It used to be set by the
+    # legacy `hbr_` arm of verify_bridge_token, which is deleted; the only remaining
+    # issuer of a Bridge_Token context is verify_access_token, in the token service.
+    # Checked there so this marker keeps meaning something instead of being dropped.
+    require("kind = .Bridge_Token" in read(ROOT / "src/hub/service/bridge/bridge_token_service.odin"),
+            "a Bridge_Token context must still be issued by the access-token path")
+    # `bridge is revoked` likewise: revocation is enforced on the expiring-credential
+    # path now that the legacy lookup is gone.
+    require("bridge is revoked" in svc or "bridge is revoked" in read(ROOT / "src/hub/service/bridge/bridge_token_service.odin"),
+            "a revoked bridge must still be refused")
+
+    # INVERTED (REQ-ENROLL-9). `create_enrollment`, `enroll_bridge`, `hash_token` and
+    # `status = .Consumed` were asserted present here: they were the one-time-token
+    # machinery and the enrollment row's consumed state. All four are deleted, so
+    # their absence is what this now pins. (`hash_token` had already been replaced by
+    # the salted `issue_credential`/`verify_credential` pair in REQ-IMPL-1, so this
+    # also stops the unsalted helper coming back.)
+    for gone in ["create_enrollment", "enroll_bridge(", "hash_token", "status = .Consumed"]:
+        require(gone not in svc, f"deleted enrollment machinery must NOT return: {gone}")
+    # Enrollment ownership still comes from an Auth_Context -- it just comes from the
+    # APPROVING user's context on the device path instead of the minting user's.
+    require("owner_user_id MUST come from the approving user's Auth_Context"
+            in read(ROOT / "src/hub/service/bridge/bridge_device_enroll.odin"),
+            "device enrollment owner must come from the approving user's AuthContext")
+    require("owner_from_auth(auth)" in svc, "bridge ownership checks must come from AuthContext")
     require('strings.has_prefix(value, "http://")' in svc and 'strings.has_prefix(value, "https://")' in svc, "HBR-27 must accept HTTP and HTTPS hub_url schemes")
 
 
@@ -50,22 +73,48 @@ def test_bridge_http_routes_and_auth_boundary() -> None:
     handlers = read(ROOT / "src/hub/transport/http/bridge_handlers.odin")
     auth = read(ROOT / "src/hub/service/auth/auth_service.odin")
     for route in [
-        '"POST", "/api/v1/bridge-enrollments"',
-        '"GET", "/api/v1/bridge-enrollments"',
-        '"DELETE", "/api/v1/bridge-enrollments/*"',
-        '"POST", "/api/v1/bridges/enroll"',
         '"GET", "/api/v1/bridges"',
         '"GET", "/api/v1/bridges/*"',
         '"PATCH", "/api/v1/bridges/*"',
         '"POST", "/api/v1/bridges/*/revoke"',
     ]:
         require(route in wiring, f"missing bridge HTTP route {route}")
+
+    # INVERTED (REQ-ENROLL-9). These four routes were asserted PRESENT above until
+    # REQ-IMPL-6 deleted them: the three bridge-enrollment routes that minted, listed
+    # and revoked the one-time enrollment token, and the token-for-credential
+    # exchange. Asserting their ABSENCE is the more useful assertion now — it is what
+    # stops the deleted flow being reintroduced by a revert, which a static check can
+    # catch and an integration test cannot (nothing calls them any more, so nothing
+    # would fail if they came back).
+    for gone in [
+        '"POST", "/api/v1/bridge-enrollments"',
+        '"GET", "/api/v1/bridge-enrollments"',
+        '"DELETE", "/api/v1/bridge-enrollments/*"',
+        '"POST", "/api/v1/bridges/enroll"',
+    ]:
+        require(gone not in wiring, f"deleted enrollment route must NOT be wired: {gone}")
+    # The device flow replaced them, so assert the replacement is actually there
+    # rather than only that the old thing is gone.
+    for route in [
+        '"POST", "/api/v1/device/authorize"',
+        '"POST", "/api/v1/device/approve"',
+        '"POST", "/api/v1/device/token"',
+    ]:
+        require(route in wiring, f"missing device-flow route {route}")
+
     for snippet in [
         "Authorization", "Bearer ", "reject_query_or_body_token(req)",
-        "expires_at is not accepted; use expires_in_seconds", "expires_at_after_seconds(expires_in_seconds)", "verify_bridge_token", "bridge_auth.bridge_id != bridge_id", "hub_url",
-        "bridge token cannot call user APIs", "enrollment token cannot call user APIs",
+        "verify_bridge_token", "bridge_auth.bridge_id != bridge_id", "hub_url",
+        "bridge token cannot call user APIs",
     ]:
         require(snippet in handlers or snippet in auth, f"missing bridge auth boundary marker {snippet}")
+    # "enrollment token cannot call user APIs" is gone with the enrollment token, and
+    # the expires_in_seconds markers went with the enrollment-minting handler that
+    # validated them. The replacement guarantee: an old-style credential is refused
+    # with an instruction, not a bare rejection.
+    require("re-enroll this machine with" in read(ROOT / "src/hub/service/bridge/bridge_service.odin"),
+            "a legacy credential must be refused with a message naming the fix")
 
 
 def test_sqlite_schema_smoke() -> None:
