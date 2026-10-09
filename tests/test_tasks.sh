@@ -109,7 +109,7 @@ fi
 
 USER_REG=$(curl -sf -X POST "$DAEMON_URL/user-client/register" \
   -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"operator@local\",\"client_instance_id\":\"test-client-run${RUN_ID}\"}")
+  -d "{\"user_id\":\"test-reviewer\",\"client_instance_id\":\"test-client-run${RUN_ID}\"}")
 USER_TOKEN=$(field "$USER_REG" "client_token")
 if [ -z "$USER_TOKEN" ]; then
   echo "ERROR: failed to register test user ($USER_REG)"

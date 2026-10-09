@@ -1300,6 +1300,7 @@ reset_mock_home
 : > "$MOCK_BRIDGE_ARGV"
 install_mock_ham_bridge success
 
+set +e
 T20_OUTPUT="$(
   PATH="$MOCK_BIN:$PATH"   HOME="$MOCK_HOME"   bash -c '
     source "'"$INSTALLER_LIB"'"
@@ -1315,6 +1316,16 @@ n
 EOF
   ' 2>&1
 )"
+T20_SERVICE_USER_RC=$?
+set -e
+
+# svcuser deliberately does not exist in this hermetic test. The installer must
+# now propagate that enrollment failure instead of printing a successful install;
+# the output before the failed sudo call still proves the printed command contract.
+if [ "$T20_SERVICE_USER_RC" -eq 0 ]; then
+  echo "FAIL: a failed --service-user enrollment was reported as successful: $T20_OUTPUT" >&2
+  exit 1
+fi
 
 # BOTH flags, in the order printed. This is the shape where getting it wrong is
 # invisible: `curl | sudo bash` leaves the shell as root while the service runs as
@@ -1369,6 +1380,44 @@ fi
 assert_no_deleted_enrollment_surface "service-user enroll instruction" "$T20_OUTPUT"
 echo "PASS: Test 20 passed (--service-user gets --config and a run-as note; plain installs get neither)!"
 
+# --- Test 21: installer delegates browser opening and propagates enrollment failure ---
+echo "=== Test 21: Browser ownership and enrollment failure propagation ==="
+reset_mock_home
+install_mock_ham_bridge fail
+
+set +e
+T21_OUTPUT="$(
+  PATH="$MOCK_BIN:$PATH" HOME="$MOCK_HOME" bash -c '
+    source "'"$INSTALLER_LIB"'"
+    service_home="'"$MOCK_HOME"'"; install_dir="'"$MOCK_BIN"'"
+    os="darwin"; service_user=""; path_needs_action=false
+    hub_url="http://hub.example.test"
+    run_interactive_onboarding <<EOF
+n
+EOF
+  ' 2>&1
+)"
+T21_RC=$?
+set -e
+
+if [ "$T21_RC" -eq 0 ]; then
+  echo "FAIL: failed enrollment returned success: $T21_OUTPUT" >&2
+  exit 1
+fi
+echo "$T21_OUTPUT" | grep -q "ham-bridge will open the approval page with the device code prefilled" || {
+  echo "FAIL: installer did not explain that ham-bridge owns browser opening: $T21_OUTPUT" >&2
+  exit 1
+}
+echo "$T21_OUTPUT" | grep -q "ham-bridge enroll exited with status" || {
+  echo "FAIL: enrollment failure was not diagnosed: $T21_OUTPUT" >&2
+  exit 1
+}
+if grep -Eq '^open_url\(\)|watcher_pid|grep -m1.*https' "$INSTALLER"; then
+  echo "FAIL: installer still contains its own approval-link watcher/opener" >&2
+  exit 1
+fi
+echo "PASS: Test 21 passed (ham-bridge owns macOS/Linux browser opening; failures propagate)!"
+
 # The guard is re-asserted AFTER the last test, not just before the first. A suite
 # that verified isolation only at startup would be one `export PATH=...` or one
 # `export XDG_RUNTIME_DIR=...` inside a test away from having run the rest of itself
@@ -1384,5 +1433,5 @@ else
 fi
 
 echo ""
-echo "ALL 19 INSTALLER ONBOARDING AND ENROLLMENT TESTS PASSED SUCCESSFULLY!"
+echo "ALL 20 INSTALLER ONBOARDING AND ENROLLMENT TESTS PASSED SUCCESSFULLY!"
 exit 0

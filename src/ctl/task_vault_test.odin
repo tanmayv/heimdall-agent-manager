@@ -13,6 +13,19 @@ TEST_TASK_VAULT_KEY :: "0123456789abcdef0123456789abcdef0123456789abcdef01234567
 ALT_TASK_VAULT_KEY  :: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 
 @(test)
+test_task_user_approval_flags_serialize :: proc(t: ^testing.T) {
+	created := ctl_agentmode_task_create_params([]string{"--title", "Review me", "--require-user-approval"})
+	defer delete(created)
+	testing.expect(t, strings.contains(created, `"requires_user_approval":true`), "create must serialize the positive flag")
+	updated := ctl_agentmode_task_update_params("task_1", []string{"--no-require-user-approval"})
+	defer delete(updated)
+	testing.expect(t, strings.contains(updated, `"requires_user_approval":false`), "update must serialize the negative flag")
+	testing.expect(t, !ctl_task_reviewer_flags_valid([]string{"--require-user-approval", "--no-require-user-approval"}, true), "conflicting flags must fail")
+	testing.expect(t, !ctl_task_reviewer_flags_valid([]string{"--reviewer", "user"}, true), "legacy user reviewer alias must fail")
+	testing.expect(t, ctl_task_reviewer_flags_valid([]string{"--reviewer", "reviewer@chain"}, true), "agent-instance reviewer IDs containing @ must remain valid")
+}
+
+@(test)
 test_task_create_encryption_with_vault_key :: proc(t: ^testing.T) {
 	orig_title := "Deploy Zero-Knowledge User Vault Secrets Engine"
 	orig_desc := "Configure cloud hardware security module and distribute master keys."

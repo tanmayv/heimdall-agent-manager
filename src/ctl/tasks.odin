@@ -280,6 +280,9 @@ is_destructive_chain_verb :: proc(action: string) -> bool {
 print_tasks_help :: proc(action: string) {
 	_ = action
 	fmt.println("usage: ham-ctl tasks <list|create|update|status|done|depend|cancel|comment|comments|vote|votes|nudge|subscribe|unsubscribe>")
+	fmt.println("  create --chain <id> --title <title> [--reviewer <agent-id,...>] [--require-user-approval]")
+	fmt.println("  update <task-id> [--reviewer <agent-id,...>] [--require-user-approval | --no-require-user-approval]")
+	fmt.println("  --reviewer accepts agent IDs/instances only; user approval is controlled by the explicit flags")
 	fmt.println("  subscribe <task-id> [--chain <id>] [--events <events>]   subscribe to task status events")
 	fmt.println("  unsubscribe <task-id> [--chain <id>] [--events <events>] unsubscribe from task status events")
 }
@@ -641,9 +644,10 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if chain_id == "" || title == "" {
-			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]")
+			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--bridge <bridge-id>]")
 			return
 		}
+		if !ctl_task_reviewer_flags_valid(args, false) do return
 		desc := option_value(args, "--description", "")
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
 		if key_ok {
@@ -675,6 +679,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		}
 		// --reviewer accepts a comma-separated list for multiple reviewers.
 		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, ctl_v2_reviewer_refs(reviewer))
+		if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
 		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
 			parts := strings.split(deps, ",")
 			defer delete(parts)
@@ -766,6 +771,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	}
 
 	if action == "update" {
+		if !ctl_task_reviewer_flags_valid(args, true) do return
 		title := option_value(args, "--title", "")
 		desc := option_value(args, "--description", "")
 		key_hex, key_ok := ctl_read_vault_key(args, context.temp_allocator)
@@ -791,6 +797,8 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		// --reviewer is comma-separated for MULTIPLE reviewers; presence-checked so
 		// `--reviewer ""` clears the list.
 		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+		if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
+		if has_flag(args, "--no-require-user-approval") do append(&fields, `"requires_user_approval":false`)
 		// --bridge is presence-checked so `--bridge ""` clears the pin back to inherit.
 		if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
 		if has_flag(args, "--depends-on") || has_flag(args, "--on") {

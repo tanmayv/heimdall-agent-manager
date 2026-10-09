@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { VaultText } from '../vault/VaultText';
+import { useAuthUser } from '../auth/AuthUserContext';
 import { isVaultArmored, decryptVaultText } from '../../utils/vaultContent';
 import {
   Avatar,
@@ -132,9 +133,8 @@ function isAttentionNeeded(task: any): boolean {
     const reviewerRefs = task.reviewer_refs || task.reviewerRefs || [];
     const reviewers = task.reviewers || [];
     const noReviewer = reviewerRefs.length === 0 && reviewers.length === 0;
-    const isUserReviewer =
-      reviewerRefs.some((r: any) => r.type === 'user' || r.user_id === 'user' || r.userId === 'user') ||
-      reviewers.includes('user');
+    const isUserReviewer = Boolean(task.requiresUserApproval ?? task.requires_user_approval) ||
+      reviewerRefs.some((r: any) => r.type === 'user');
     return noReviewer || isUserReviewer;
   }
   return false;
@@ -334,6 +334,8 @@ export default function ChainOverviewPanel({
   onOpenVcsFiles,
   isMobile = false,
 }: ChainOverviewPanelProps) {
+  const authUser = useAuthUser();
+  const username = String(authUser?.user_id || '').trim();
   const session = useSelector((state: any) => state.chat?.session || {});
   const viewerSession = getArtifactViewerSession(session);
 
@@ -488,8 +490,9 @@ export default function ChainOverviewPanel({
         if (ref === 'user' || ref.toLowerCase() === 'user') return 'User';
         return memberNameMap.get(ref) || ref || fallback;
       }
-      if (ref.type === 'user' || ref.user_id === 'user' || ref.userId === 'user') {
-        return 'User';
+      if (ref.type === 'user') {
+        const reviewerUsername = String(ref.username || ref.user_id || ref.userId || username);
+        return reviewerUsername ? `You (@${reviewerUsername})` : 'You';
       }
       if (ref.displayName || ref.display_name) {
         return ref.displayName || ref.display_name;
@@ -504,7 +507,7 @@ export default function ChainOverviewPanel({
       }
       return fallback;
     },
-    [memberNameMap, agentIdentities]
+    [memberNameMap, agentIdentities, username]
   );
 
   // Toggle terminal accordion

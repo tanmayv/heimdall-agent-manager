@@ -129,6 +129,8 @@ function normalizeTask(task: any) {
     assignee_ref: normalizedAssigneeRef,
     reviewerRefs: normalizedReviewerRefs,
     reviewer_refs: normalizedReviewerRefs,
+    requiresUserApproval: Boolean(task.requires_user_approval ?? task.requiresUserApproval),
+    requires_user_approval: Boolean(task.requires_user_approval ?? task.requiresUserApproval),
     comments: (task.comments || []).map(normalizeTaskComments),
     commentSummary: task.comment_summary ? {
       count: Number(task.comment_summary.count || 0),
@@ -785,8 +787,8 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, { type: 'ChainTasks', id: chainId }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[]; bridgeId?: string }>({
-      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn, bridgeId }, api) => {
+    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; requiresUserApproval?: boolean; dependsOn?: string[]; bridgeId?: string }>({
+      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, requiresUserApproval, dependsOn, bridgeId }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -809,6 +811,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
           if (encDesc !== undefined) body.description = encDesc;
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
+          if (requiresUserApproval !== undefined) body.requires_user_approval = requiresUserApproval;
           if (dependsOn !== undefined) body.depends_on = dependsOn;
           // REQ-TB-5: presence-checked like the hub PATCH — an undefined bridgeId
           // leaves the pin untouched; a defined one (including '') sets or clears it.
@@ -1134,8 +1137,8 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[]; bridgeId?: string }>({
-      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn, bridgeId }, api) => {
+    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; requiresUserApproval?: boolean; dependsOn?: string[]; bridgeId?: string }>({
+      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, requiresUserApproval, dependsOn, bridgeId }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -1158,6 +1161,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const body: any = { title: encTitle, description: encDesc, ...taskCreateBridgeFields(bridgeId) };
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
+          if (requiresUserApproval !== undefined) body.requires_user_approval = requiresUserApproval;
           if (dependsOn !== undefined) body.depends_on = dependsOn;
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks`, 'POST', body);
           return { data };

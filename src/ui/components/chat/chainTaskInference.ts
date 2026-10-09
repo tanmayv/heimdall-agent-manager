@@ -3,8 +3,6 @@
 // SAME cached task list loaded via `GET /api/v1/task-chains/{chain_id}?expand=tasks`.
 // No separate per-conversation "current task" endpoint is required (design doc §4A).
 
-export const USER_REVIEWER_IDS = new Set(['user_proxy', 'operator@local']);
-
 // Statuses that should not count toward chain progress / active task lists.
 export const CHAIN_PROGRESS_EXCLUDED_STATUSES = new Set(['cancelled', 'archived', 'abandoned']);
 
@@ -20,6 +18,8 @@ export type TaskLike = {
   assignee_agent_instance_id?: string;
   reviewerAgentInstanceId?: string;
   reviewer_agent_instance_id?: string;
+  requiresUserApproval?: boolean;
+  requires_user_approval?: boolean;
   coordinatorAgentInstanceId?: string;
   coordinator_agent_instance_id?: string;
   description?: string;
@@ -95,10 +95,7 @@ export function taskCreatedMs(task: TaskLike | null | undefined): number {
 // Is the current user/operator an effective reviewer for this task?
 export function isUserEffectiveReviewer(task: TaskLike | null | undefined): boolean {
   if (!task) return false;
-  if (USER_REVIEWER_IDS.has(taskReviewerOf(task))) return true;
-  return (task.participants || []).some(
-    (p) => USER_REVIEWER_IDS.has(String(p?.agentInstanceId || '')) && (p?.role === 'lgtm_required' || p?.role === 'lgtm_optional'),
-  );
+  return Boolean(task.requiresUserApproval ?? task.requires_user_approval);
 }
 
 // Is this agent instance an effective reviewer for this task?

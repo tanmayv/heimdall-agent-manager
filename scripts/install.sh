@@ -92,36 +92,6 @@ fail() { err "$*"; exit 1; }
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 
-# Best-effort, OS-aware "open this in a browser". Never fatal: a headless box or
-# one with no opener on PATH just keeps relying on the printed link, which is
-# why every call site here is `open_url ... || true` from the caller's side and
-# this itself never touches $? in a way that could propagate under `set -e`.
-open_url() {
-  target_url="$1"
-  if [ "$os" = "darwin" ]; then
-    if command -v open >/dev/null 2>&1; then
-      open "$target_url" >/dev/null 2>&1 &
-      return 0
-    fi
-  else
-    # xdg-open is the de-facto standard on Linux desktops (and what this repo's
-    # own dev machine ships). gio open covers a GNOME/Wayland session without
-    # xdg-utils installed; wslview covers WSL forwarding to the Windows host
-    # browser. Tried in that order and the first one present wins.
-    for opener in xdg-open gio wslview; do
-      if command -v "$opener" >/dev/null 2>&1; then
-        if [ "$opener" = "gio" ]; then
-          gio open "$target_url" >/dev/null 2>&1 &
-        else
-          "$opener" "$target_url" >/dev/null 2>&1 &
-        fi
-        return 0
-      fi
-    done
-  fi
-  return 1
-}
-
 # GETs $1, writing the response body to $2, and prints the HTTP status code.
 # Prints 000 when no HTTP response arrived at all (DNS failure, refused
 # connection, timeout) -- the caller needs that apart from every other outcome,
@@ -1559,61 +1529,27 @@ run_interactive_onboarding() {
 
       echo ""
       say "Running enrollment now; it will restart the registered service and exit."
-      say "Opening the approval link in your browser as soon as it is printed..."
-
-      # The link only exists once ham-bridge has talked to the hub, so it cannot be
-      # precomputed here. Tee the run's own output to a scratch file and have a
-      # background watcher open the first bare-URL line it finds there, while the
-      # same output keeps streaming to this terminal exactly as if it had been
-      # run by hand. The watcher gives up after 2 minutes -- the link normally
-      # appears within seconds of the authorize call, and a dead watcher past
-      # that point is harmless, never fatal to the enrollment itself.
-      enroll_log="$(mktemp)"
-      (
-        # This subshell is forked (and backgrounded) BEFORE the `set +e` below
-        # takes effect, so it inherits `set -euo pipefail` from main(). Without
-        # this, `link="$(grep -m1 ... | tr ...)"` is a plain assignment whose
-        # command substitution exits 1 on every iteration where no URL line
-        # exists yet (the ordinary case until the approval link is actually
-        # printed) -- under `-e` that kills the subshell on its very first
-        # loop iteration, silently disabling this entire feature. Reproduced
-        # standalone before fixing: the loop body never ran a second time.
-        set +e
-        attempts=0
-        while [ "$attempts" -lt 240 ]; do
-          link="$(grep -m1 -E '^[[:space:]]*https?://' "$enroll_log" 2>/dev/null | tr -d '[:space:]')"
-          if [ -n "$link" ]; then
-            if open_url "$link"; then
-              say "Opened $link in your browser (if nothing opened, use the link above)."
-            else
-              # Not a warning: a headless box or one with no xdg-open/gio/wslview/open
-              # on PATH is an ordinary environment, not a broken one. The enroll
-              # command above already prints this same link in its own output; this
-              # is a second, unmissable copy for the operator to click or copy.
-              say "No browser opener found on this machine -- open this link yourself:"
-              say "  $link"
-            fi
-            break
-          fi
-          sleep 0.5
-          attempts=$((attempts + 1))
-        done
-      ) &
-      watcher_pid=$!
+      # ham-bridge owns browser opening on both supported platforms (`open` on
+      # macOS, `xdg-open` on Linux). That matters because it opens the automatic
+      # URL carrying the short code. The installer's former log watcher instead
+      # opened the stable, code-less URL printed for phones, producing a second
+      # tab that looked like a broken enrollment page.
+      say "ham-bridge will open the approval page with the device code prefilled."
 
       set +e
       if [ -n "$service_user" ]; then
-        sudo -u "$service_user" -H "${enroll_cmd[@]}" 2>&1 | tee "$enroll_log"
+        sudo -u "$service_user" -H "${enroll_cmd[@]}"
       else
-        "${enroll_cmd[@]}" 2>&1 | tee "$enroll_log"
+        "${enroll_cmd[@]}"
       fi
       enroll_status=$?
       set -e
-      kill "$watcher_pid" 2>/dev/null || true
-      wait "$watcher_pid" 2>/dev/null || true
-      rm -f "$enroll_log"
       if [ "$enroll_status" -ne 0 ]; then
         warn "ham-bridge enroll exited with status $enroll_status; re-run the command above manually if you still need to enroll."
+        return "$enroll_status"
+      elif [ ! -s "$token_file" ]; then
+        warn "ham-bridge enroll reported success but did not write the bridge credential to $token_file; refusing to report a completed install."
+        return 1
       else
         echo ""
         say "Enrollment complete; the registered bridge service was restarted with its credential."

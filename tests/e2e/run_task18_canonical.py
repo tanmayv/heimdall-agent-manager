@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_TEST = ROOT / "config-test.toml"
 TRANSCRIPT_ROOT = ROOT / "tests" / "e2e" / "transcripts"
 DEFAULT_PORT = 49422
-USER_ID = "operator@local"
+USER_ID = "test-reviewer"
 CLIENT_ID = "task18-canonical-ui"
 
 

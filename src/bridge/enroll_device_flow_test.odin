@@ -68,9 +68,8 @@ enroll_approval_url_is_stable_and_code_free :: proc(t: ^testing.T) {
 
 @(test)
 enroll_automatic_approval_url_uses_a_browser_only_fragment :: proc(t: ^testing.T) {
-	stable := bridge_enroll_approval_url("https://heimdall.example.com")
-	automatic := bridge_enroll_automatic_approval_url(stable, "ABCD-2345")
-	testing.expect(t, automatic == "https://heimdall.example.com/device/add#/device/add?code=ABCD-2345")
+	automatic := bridge_enroll_automatic_approval_url("https://heimdall.example.com", "ABCD-2345")
+	testing.expect(t, automatic == "https://heimdall.example.com/#/device/add?code=ABCD-2345")
 	fragment_at := strings.index_byte(automatic, '#')
 	testing.expect(t, fragment_at > 0, "code must be after the fragment marker")
 	testing.expect(t, !strings.contains(automatic[:fragment_at], "code="), "code must not be sent to the server")

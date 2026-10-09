@@ -687,12 +687,17 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	// means inherit. The service applies the identical owner-bridge validation, so an
 	// agent gains no privilege by setting it.
 	bridge_id, _ := task_bridge_id_from_body(params)
+	has_requires_user_approval := json_key_present(params, "requires_user_approval")
+	requires_user_approval, valid_requires_user_approval := json_bool_literal(params, "requires_user_approval")
+	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
 	task, created, err := taskchain_service.create_task(h.taskchains, auth, taskchain_service.Create_Task_Input{
 		chain_id = domain.Task_Chain_ID(chain_id),
 		title = json_string(params, "title"),
 		description = json_string(params, "description"),
 		assignee_ref_json = json_object_or_empty(params, "assignee_ref"),
 		reviewer_refs_json = json_array_optional(params, "reviewer_refs"),
+		requires_user_approval = requires_user_approval,
+		has_requires_user_approval = has_requires_user_approval,
 		priority = priority,
 		has_priority = has_priority,
 		depends_on = deps,
@@ -738,11 +743,16 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	bridge_id, has_bridge := task_bridge_id_from_body(params)
 	bridge_pin: ^string
 	if has_bridge do bridge_pin = &bridge_id
+	has_requires_user_approval := json_key_present(params, "requires_user_approval")
+	requires_user_approval, valid_requires_user_approval := json_bool_literal(params, "requires_user_approval")
+	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth, task_id, taskchain_service.Update_Task_Input{
 		title = json_string(params, "title"),
 		description = json_string(params, "description"),
 		assignee_ref_json = json_object_or_empty(params, "assignee_ref"),
 		reviewer_refs_json = json_array_optional(params, "reviewer_refs"),
+		requires_user_approval = requires_user_approval,
+		has_requires_user_approval = has_requires_user_approval,
 		priority = priority,
 		has_priority = has_priority,
 		depends_on = deps,

@@ -562,7 +562,7 @@ main :: proc() {
 	// Case 2: user reviewer (user_id == chain owner) => card IS projected.
 	userrev_task_id := create_in_validation_task(
 		&graph.router, val_chain_id,
-		"{\"title\":\"User-reviewed task\",\"reviewer_refs\":[{\"type\":\"user\",\"user_id\":\"alice\"}]}",
+		"{\"title\":\"User-reviewed task\",\"requires_user_approval\":true}",
 		alice[:], "userrev")
 
 	userrev_card_id := fmt.tprintf("crd_task_%s", userrev_task_id)
@@ -1307,7 +1307,7 @@ main :: proc() {
 	cookie_task_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = fmt.tprintf("/api/v1/task-chains/%s/tasks", fleet_chain_id),
-		body = "{\"title\":\"Cookie durable actors\",\"assignee_ref\":{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_reviewer\"},{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},{\"type\":\"user\",\"user_id\":\"alice\"},{\"type\":\"agent_instance\",\"agent_instance_id\":\"inst_curator_1\"}]}",
+		body = "{\"title\":\"Cookie durable actors\",\"assignee_ref\":{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_reviewer\"},{\"type\":\"agent_id\",\"agent_id\":\"agt_cookie_assignee\"},{\"type\":\"agent_instance\",\"agent_instance_id\":\"inst_curator_1\"}],\"requires_user_approval\":true}",
 		request_id = "req_fleet_cookie_create",
 		remote_addr = "127.0.0.1",
 		headers = alice[:],

@@ -249,10 +249,10 @@ bridge_enroll_approval_url :: proc(ui_origin: string, allocator := context.alloc
 // and removes this fragment immediately. The terminal continues to print the
 // stable URL for phone/manual enrollment.
 bridge_enroll_automatic_approval_url :: proc(
-	approval_url, user_code: string,
+	ui_origin, user_code: string,
 	allocator := context.allocator,
 ) -> string {
-	return strings.concatenate({approval_url, "#/device/add?code=", user_code}, allocator)
+	return strings.concatenate({ui_origin, "/#/device/add?code=", user_code}, allocator)
 }
 
 // ===== The machine descriptor =====
@@ -936,7 +936,7 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 	fmt.println("")
 	if !has_flag(args, "--headless") {
 		automatic_url := bridge_enroll_automatic_approval_url(
-			approval_url, user_code, context.temp_allocator)
+			ui_origin, user_code, context.temp_allocator)
 		if bridge_enroll_try_open_approval_url(automatic_url) {
 			fmt.println("Opened the approval page in your browser.")
 		} else {

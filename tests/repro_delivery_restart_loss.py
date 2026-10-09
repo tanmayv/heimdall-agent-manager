@@ -19,7 +19,7 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT_BASE = 49410
-USER_ID = "operator@local"
+USER_ID = "test-reviewer"
 AGENT_ID = "delivery-repro-agent@default"
 
 

@@ -33,7 +33,7 @@ main :: proc() {
 		check(daemon.identity_is_agent(member.agent_instance_id), "provisioned agent must remain classified as an agent after daemon restart")
 	}
 	// A genuine user id (never minted as an agent) must classify as a user.
-	check(!daemon.identity_is_agent("operator@local"), "human placeholder must not be classified as an agent")
+	check(!daemon.identity_is_agent("test-reviewer"), "human identity must not be classified as an agent")
 	check(daemon.task_actor_is_user("some-user@corp"), "an id with no agent record must classify as a user")
 	check(!daemon.task_actor_is_user("coord@coding"), "a provisioned agent id must not classify as a user")
 
@@ -71,13 +71,13 @@ main :: proc() {
 	check(task_id != "", "proxy task id missing")
 	done_res := daemon.task_service_set_status(task_id, "chain-proxy", "review_ready", "ready for user review", "worker@solo")
 	check(done_res.ok, "proxy task review_ready failed")
-	ordinary_chat := daemon.task_service_user_proxy_review_reply("operator@local", "coord@solo", "LGTM, but also check X")
+	ordinary_chat := daemon.task_service_user_proxy_review_reply("test-reviewer", "coord@solo", "LGTM, but also check X")
 	check(!ordinary_chat.ok, "ordinary coordinator chat must not be consumed as user_proxy vote")
 	vote_builder := strings.builder_make()
 	strings.write_string(&vote_builder, `{"action":"user_proxy_review","task_id":"`)
 	strings.write_string(&vote_builder, task_id)
 	strings.write_string(&vote_builder, `","result":"lgtm"}`)
-	vote_res := daemon.task_service_user_proxy_review_reply("operator@local", "coord@solo", strings.to_string(vote_builder))
+	vote_res := daemon.task_service_user_proxy_review_reply("test-reviewer", "coord@solo", strings.to_string(vote_builder))
 	check(vote_res.ok, "operator user_proxy LGTM failed")
 	check(daemon.extract_json_string(vote_res.message, "status", "") == "approved", "operator user_proxy LGTM should approve task")
 }

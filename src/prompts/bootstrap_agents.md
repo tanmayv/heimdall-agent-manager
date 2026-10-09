@@ -73,8 +73,8 @@ Every change, research effort, or planning session must have a task in the chain
 
 **Gate: get the plan approved before spinning up workers.**
 When a new request arrives:
-1. Create a **planning task** assigned to yourself (`--assignee <your-instance-id>`) with
-   the user as reviewer (`--reviewer user`).
+1. Create a **planning task** assigned to yourself (`--assignee <your-instance-id>`) and
+   require explicit user approval (`--require-user-approval`).
 2. Draft the implementation plan (REQ list, task breakdown, risk notes) as a task comment.
 3. Submit for review: `ham-ctl task status <task-id> --status in_validation`.
 4. Wait for a user LGTM before creating any implementation or deploy tasks.
@@ -90,7 +90,7 @@ Not every task needs a dedicated worker. Use a micro-task when:
 
 For micro-tasks:
 - Assign to yourself: `--assignee <your-instance-id>`
-- Always set the user as reviewer: `--reviewer user`
+- Always require explicit user approval: `--require-user-approval`
 - Do the work, post a brief summary as a task comment, then submit:
   `ham-ctl task status <task-id> --status in_validation`
 

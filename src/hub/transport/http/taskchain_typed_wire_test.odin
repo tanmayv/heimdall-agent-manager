@@ -19,7 +19,7 @@ test_task_wire_escaped_characters_and_markdown :: proc(t: ^testing.T) {
 	task := domain.Task{
 		task_id            = domain.Task_ID("task_escape_1"),
 		chain_id           = domain.Task_Chain_ID("chain_escape_1"),
-		owner_user_id      = domain.User_ID("usr_test"),
+		owner_user_id      = domain.User_ID("usr_admin"),
 		title              = special_title,
 		description        = special_desc,
 		publish_state      = .Published,
@@ -51,6 +51,14 @@ test_task_wire_escaped_characters_and_markdown :: proc(t: ^testing.T) {
 		bridge_val, ok3 := obj["bridge_id"].(json.String)
 		testing.expect(t, ok3, "bridge_id must be present as a string")
 		testing.expect_value(t, string(bridge_val), "brg_123")
+
+		requires_approval, ok4 := obj["requires_user_approval"].(json.Boolean)
+		testing.expect(t, ok4 && bool(requires_approval), "wire task must derive requires_user_approval")
+		reviewers := obj["reviewer_refs"].(json.Array)
+		reviewer := reviewers[0].(json.Object)
+		username, username_ok := reviewer["username"].(json.String)
+		testing.expect(t, username_ok, "user reviewer wire entry must include username")
+		testing.expect_value(t, string(username), "usr_admin")
 	case:
 		testing.fail_now(t, "expected json.Object payload")
 	}

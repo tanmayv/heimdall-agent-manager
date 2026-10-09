@@ -116,7 +116,7 @@ Validation commands/evidence to collect:
 - Targeted UI/static test, e.g. `python3 tests/test_ui_live_chat_ws_fallback.py` plus any new chain-event targeting test
 - If available in project workflow: full relevant test suite command documented by implementer after inspecting repo scripts
 - Manual smoke command after build/restart:
-  - send coordinator reply with `ham-ctl chat send-to-user --token <coordinator-token> --user-id operator@local --chain-id <chain-id> --body <text>`;
+  - send coordinator reply with `ham-ctl chat send-to-user --token <coordinator-token> --user-id <authenticated-user-id> --chain-id <chain-id> --body <text>`;
   - verify SQLite row has `chain_id=<chain-id>`;
   - verify chain coordinator chat surface displays the reply;
   - verify direct unscoped `ham-ctl chat send-to-user` still creates empty-chain direct chat.

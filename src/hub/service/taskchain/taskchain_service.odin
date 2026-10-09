@@ -101,6 +101,8 @@ Create_Task_Input :: struct {
 	owner_user_id: string,
 	assignee_ref_json: string,
 	reviewer_refs_json: string,
+	requires_user_approval: bool,
+	has_requires_user_approval: bool,
 	// priority sets the task priority (P0/P1/P2) at create time. has_priority
 	// distinguishes an explicit choice from "field absent" so a create that omits
 	// priority keeps the documented P2 default. Mirrors Update_Task_Input below;
@@ -119,6 +121,8 @@ Update_Task_Input :: struct {
 	description: string,
 	assignee_ref_json: string,
 	reviewer_refs_json: string,
+	requires_user_approval: bool,
+	has_requires_user_approval: bool,
 	// priority sets the task priority (P0/P1/P2). has_priority distinguishes an
 	// explicit change from "field absent" so a PATCH that omits priority leaves it
 	// untouched. A priority change re-orders the auto-promotion selection.
@@ -795,12 +799,23 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	if assignee_ref == "" && chain.coordinator_agent_instance_id != "" do assignee_ref = agent_instance_ref_json(chain.coordinator_agent_instance_id)
 	if assignee_ref == "" do assignee_ref = user_ref_json(string(chain.owner_user_id))
 	reviewer_refs := input.reviewer_refs_json
+	if reviewer_refs != "" && actor_refs_contain_user(reviewer_refs) {
+		return domain.Task{}, false, domain.domain_error(.Validation_Failed, "user reviewer refs are not accepted; use requires_user_approval")
+	}
 	if reviewer_refs == "" do reviewer_refs = chain.default_reviewer_refs_json
 	if reviewer_refs == "" do reviewer_refs = "[]"
 	// Resolve any durable agent_id refs into concrete agent_instance refs (reuse or,
 	// in Phase 2, launch) before validation so callers can assign/review by agent_id.
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, assignee_ref); norm_ok { assignee_ref = norm } else { return domain.Task{}, false, norm_err }
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, reviewer_refs); norm_ok { reviewer_refs = norm } else { return domain.Task{}, false, norm_err }
+	if input.has_requires_user_approval {
+		if adjusted, adjusted_ok := set_owner_user_approval(reviewer_refs, string(chain.owner_user_id), input.requires_user_approval); adjusted_ok {
+			reviewer_refs = adjusted
+			defer delete(adjusted)
+		} else {
+			return domain.Task{}, false, domain.domain_error(.Validation_Failed, "invalid reviewer ref JSON")
+		}
+	}
 	if refs_ok, refs_err := validate_actor_refs(service, chain, assignee_ref, reviewer_refs); !refs_ok do return domain.Task{}, false, refs_err
 	if bm_ok, bm_err := validate_task_assignee_bridge_match(service, input.bridge_id, assignee_ref); !bm_ok do return domain.Task{}, false, bm_err
 	now := platform.clock_now(service.clock)
@@ -872,11 +887,33 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	prev_assignee := primary_assignee_instance(task.assignee_ref_json)
 	defer delete(prev_assignee)
 	prev_priority := task.priority // MEM-6 #2: detect a P0 escalation.
+	prior_requires_user_approval := task_requires_user_approval(task)
 
 	if input.title != "" do task.title = input.title
 	if input.description != "" do task.description = input.description
 	if input.assignee_ref_json != "" do task.assignee_ref_json = input.assignee_ref_json
-	if input.reviewer_refs_json != "" do task.reviewer_refs_json = input.reviewer_refs_json
+	if input.reviewer_refs_json != "" {
+		if actor_refs_contain_user(input.reviewer_refs_json) {
+			return domain.Task{}, false, domain.domain_error(.Validation_Failed, "user reviewer refs are not accepted; use requires_user_approval")
+		}
+		task.reviewer_refs_json = input.reviewer_refs_json
+		if !input.has_requires_user_approval && prior_requires_user_approval {
+			if adjusted, adjusted_ok := set_owner_user_approval(task.reviewer_refs_json, string(chain.owner_user_id), true); adjusted_ok {
+				task.reviewer_refs_json = adjusted
+				defer delete(adjusted)
+			} else {
+				return domain.Task{}, false, domain.domain_error(.Validation_Failed, "invalid reviewer ref JSON")
+			}
+		}
+	}
+	if input.has_requires_user_approval {
+		if adjusted, adjusted_ok := set_owner_user_approval(task.reviewer_refs_json, string(chain.owner_user_id), input.requires_user_approval); adjusted_ok {
+			task.reviewer_refs_json = adjusted
+			defer delete(adjusted)
+		} else {
+			return domain.Task{}, false, domain.domain_error(.Validation_Failed, "invalid reviewer ref JSON")
+		}
+	}
 	if input.has_priority do task.priority = input.priority
 	// bridge_id is presence-checked via the pointer: nil leaves the pin untouched,
 	// a non-nil pointer (including "") repins — "" clears back to inherit.
@@ -1618,6 +1655,45 @@ parse_actor_refs :: proc(blob: string, allocator := context.temp_allocator) -> (
 	}
 }
 
+actor_refs_contain_user :: proc(blob: string) -> bool {
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return false
+	for ref in refs do if ref.type == "user" || ref.user_id != "" do return true
+	return false
+}
+
+task_requires_user_approval :: proc(task: domain.Task) -> bool {
+	refs, _, ok := parse_actor_refs(task.reviewer_refs_json, context.temp_allocator)
+	if !ok do return false
+	owner := string(task.owner_user_id)
+	for ref in refs do if ref.type == "user" && ref.user_id == owner do return true
+	return false
+}
+
+set_owner_user_approval :: proc(blob, owner_user_id: string, required: bool, allocator := context.allocator) -> (string, bool) {
+	refs, _, ok := parse_actor_refs(blob, context.temp_allocator)
+	if !ok do return "", false
+	out := make([dynamic]domain.Actor_Ref, allocator)
+	defer delete(out)
+	owner_seen := false
+	for ref in refs {
+		if ref.type == "user" || ref.user_id != "" {
+			if ref.type == "user" && ref.user_id == owner_user_id {
+				if required && !owner_seen {
+					append(&out, ref)
+					owner_seen = true
+				}
+			} else {
+				append(&out, ref)
+			}
+			continue
+		}
+		append(&out, ref)
+	}
+	if required && !owner_seen do append(&out, domain.Actor_Ref{type = "user", user_id = owner_user_id})
+	return marshal_actor_refs(out[:], true, allocator)
+}
+
 actor_ref_from_json_object :: proc(obj: json.Object) -> domain.Actor_Ref {
 	ref: domain.Actor_Ref
 	if t, ok := obj["type"].(json.String); ok {
@@ -1973,7 +2049,6 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		is_actor := strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)
 		if !is_coord && !is_actor do return domain.Task_Comment{}, nil, false, domain.domain_error(.Forbidden, "instance token is not assigned to or coordinator of this task")
 	}
-
 	invalid_ids := make([dynamic]string)
 	defer delete(invalid_ids)
 	if len(input.notify) > 0 {
@@ -2346,6 +2421,9 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		if !is_reviewer {
 			return domain.Task_Vote{}, false, domain.domain_error(.Forbidden, "voter is not a designated reviewer for this task")
 		}
+	}
+	if auth.kind == .User_Token && !task_requires_user_approval(task) {
+		return domain.Task_Vote{}, false, domain.domain_error(.Forbidden, "user is not a designated reviewer for this task")
 	}
 
 	now := platform.clock_now(service.clock)
@@ -2938,5 +3016,3 @@ delete_fleet :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 
 delete_chain_fleet :: delete_fleet
 remove_chain_fleet :: delete_fleet
-
-

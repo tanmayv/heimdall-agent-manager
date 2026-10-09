@@ -50,7 +50,7 @@ The guide is high-privilege, so do not give it a raw persistent user token.
 - Be explicit about the boundary: the daemon enforces policy only for the RPCs it actually exposes.
 
 ### Avoid
-- Putting `operator@local` user tokens directly in the guide bootstrap.
+- Putting hard-coded user tokens directly in the guide bootstrap.
 - Letting the guide call arbitrary user RPC as the user with no approval trail.
 - Claiming localhost Electron debug mutation endpoints are protected by the daemon when they are directly reachable as local debug tools.
 

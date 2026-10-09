@@ -64,6 +64,7 @@ import { taskBridgeDisplay, taskBridgeOptions } from '../../utils/taskBridgePin'
 import { useIsMobile } from '../shell/responsive';
 import ChainActiveServersPanel from '../shells/ChainActiveServersPanel';
 import { writeRightSidebarOpen } from '../../utils/clientPersistence';
+import { useAuthUser } from '../auth/AuthUserContext';
 
 interface TaskChainOverviewProps {
   chainId: string;
@@ -183,6 +184,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   isMobile,
   embedded,
 }) => {
+  const authUser = useAuthUser();
+  const username = String(authUser?.user_id || '').trim();
   // Read the viewport the same way `ResourceContainer`/`ResourceDetailHeader` do, so the
   // embedded panes and their container can never disagree about the desktop boundary. The
   // `isMobile` prop is mobile-only (<=767px) while the container two-panes only on desktop
@@ -269,11 +272,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [newTaskAssigneeInstanceId, setNewTaskAssigneeInstanceId] = useState('');
   const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
   const [newTaskStagedReviewerRefs, setNewTaskStagedReviewerRefs] = useState<any[]>([]);
-  const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'agent' | 'user'>('agent');
+  const [newTaskRequiresUserApproval, setNewTaskRequiresUserApproval] = useState(false);
+  const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'agent'>('agent');
   const [newTaskAddReviewerMemberInstanceId, setNewTaskAddReviewerMemberInstanceId] = useState('');
   const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('');
   const [newTaskAddReviewerInstanceId, setNewTaskAddReviewerInstanceId] = useState('');
-  const [newTaskAddReviewerUserId, setNewTaskAddReviewerUserId] = useState('');
   const [newTaskDependsOnIds, setNewTaskDependsOnIds] = useState<string[]>([]);
   // REQ-TB-5: '' = Inherit (coordinator bridge) — the default create pins nothing.
   const [newTaskBridgeId, setNewTaskBridgeId] = useState('');
@@ -307,11 +310,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // Edit Reviewers Modal State
   const [editingReviewersTask, setEditingReviewersTask] = useState<any | null>(null);
   const [stagedReviewerRefs, setStagedReviewerRefs] = useState<any[]>([]);
-  const [addReviewerMode, setAddReviewerMode] = useState<'member' | 'existing' | 'user'>('member');
+  const [editRequiresUserApproval, setEditRequiresUserApproval] = useState(false);
+  const [addReviewerMode, setAddReviewerMode] = useState<'member' | 'existing'>('member');
   const [addReviewerMemberInstanceId, setAddReviewerMemberInstanceId] = useState('');
   const [addReviewerAgentId, setAddReviewerAgentId] = useState('');
   const [addReviewerInstanceId, setAddReviewerInstanceId] = useState('');
-  const [addReviewerUserId, setAddReviewerUserId] = useState('');
   const [savingReviewers, setSavingReviewers] = useState(false);
   const [reviewersError, setReviewersError] = useState('');
 
@@ -556,10 +559,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         agent_id: newTaskAddReviewerAgentId,
         display_name: formatFleetRoleName(newTaskAddReviewerAgentId, agentIdentities),
       };
-    } else if (newTaskAddReviewerMode === 'user') {
-      const uid = newTaskAddReviewerUserId.trim();
-      if (!uid) return;
-      ref = { type: 'user', user_id: uid };
     }
     if (!ref) return;
     const exists = newTaskStagedReviewerRefs.some((r) =>
@@ -572,7 +571,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     if (!exists) {
       setNewTaskStagedReviewerRefs((prev) => [...prev, ref]);
     }
-    setNewTaskAddReviewerUserId('');
   };
 
   const handleRemoveNewTaskStagedReviewer = (index: number) => {
@@ -588,11 +586,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     setNewTaskAssigneeInstanceId('');
     setNewTaskAssigneeUserId('');
     setNewTaskStagedReviewerRefs([]);
+    setNewTaskRequiresUserApproval(false);
     setNewTaskAddReviewerMode('agent');
     setNewTaskAddReviewerMemberInstanceId('');
     setNewTaskAddReviewerAgentId('');
     setNewTaskAddReviewerInstanceId('');
-    setNewTaskAddReviewerUserId('');
     setNewTaskDependsOnIds([]);
     setNewTaskBridgeId('');
     setNewTaskError('');
@@ -632,6 +630,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         description: newTaskDesc.trim(),
         // '' is dropped by the createTask serialization (absent = inherit).
         bridgeId: newTaskBridgeId,
+        requiresUserApproval: newTaskRequiresUserApproval,
       };
       if (assigneeRef !== undefined) {
         payload.assigneeRef = assigneeRef;
@@ -834,14 +833,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const openEditReviewersModal = (task: any) => {
     setEditingReviewersTask(task);
-    setStagedReviewerRefs(task.reviewerRefs ? [...task.reviewerRefs] : []);
+    setStagedReviewerRefs((task.reviewerRefs || []).filter((ref: any) => ref.type !== 'user' && !ref.user_id));
+    setEditRequiresUserApproval(Boolean(task.requiresUserApproval ?? task.requires_user_approval));
     setReviewersError('');
     setAddReviewerMode('member');
     // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     setAddReviewerMemberInstanceId(members[0]?.agentInstanceId || members[0]?.agent_instance_id || '');
     setAddReviewerAgentId('');
     setAddReviewerInstanceId('');
-    setAddReviewerUserId('');
   };
 
   const handleAddStagedReviewer = () => {
@@ -860,12 +859,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         return;
       }
       refToAdd = { type: 'agent_instance', agent_instance_id: addReviewerInstanceId };
-    } else if (addReviewerMode === 'user') {
-      if (!addReviewerUserId.trim()) {
-        setReviewersError('Enter a user ID to add as reviewer.');
-        return;
-      }
-      refToAdd = { type: 'user', user_id: addReviewerUserId.trim() };
     }
     if (refToAdd) {
       const exists = stagedReviewerRefs.some((r) =>
@@ -894,6 +887,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         chainId,
         taskId: editingReviewersTask.taskId,
         reviewerRefs: stagedReviewerRefs,
+        requiresUserApproval: editRequiresUserApproval,
       }).unwrap();
       setEditingReviewersTask(null);
       await refetch();
@@ -1159,7 +1153,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         ) : r.agent_id || r.agentId ? (
                           <span className="font-semibold text-primary">{formatFleetRoleName(r.agent_id || r.agentId, agentIdentities)}</span>
                         ) : (
-                          <span className="text-primary">{r.user_id}</span>
+                          <span data-debug-id={`taskchain-task-user-reviewer-${taskId}`} className="text-primary">
+                            You (@{r.username || r.user_id})
+                          </span>
                         )}
                       </React.Fragment>
                     ))}
@@ -2109,6 +2105,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {/* Reviewers Section */}
               <div className="rounded border border-subtle bg-surface-raised/40 p-3 space-y-2.5">
                 <label className="block font-semibold text-primary">Reviewers ({newTaskStagedReviewerRefs.length})</label>
+                <Checkbox
+                  data-debug-id="taskchain-new-task-require-user-approval-checkbox"
+                  checked={newTaskRequiresUserApproval}
+                  onChange={setNewTaskRequiresUserApproval}
+                  disabled={!username}
+                  label={username ? `Require approval from You (@${username})` : 'Loading your identity…'}
+                />
                 {newTaskStagedReviewerRefs.length > 0 && (
                   <div data-debug-id="taskchain-new-task-reviewers-list" className="mb-2 flex flex-wrap gap-1.5 rounded border border-subtle bg-surface p-2">
                     {newTaskStagedReviewerRefs.map((r, idx) => (
@@ -2140,29 +2143,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
                 <div className="border-t border-subtle pt-2 space-y-2">
                   <span className="text-caption text-muted">Add a reviewer:</span>
-                  <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-surface p-1">
-                    <button
-                      type="button"
-                      data-debug-id="taskchain-new-task-add-reviewer-mode-agent"
-                      onClick={() => setNewTaskAddReviewerMode('agent')}
-                      className={`rounded px-2 py-1 font-semibold transition-colors cursor-pointer ${
-                        newTaskAddReviewerMode === 'agent' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
-                      }`}
-                    >
-                      Agent Role
-                    </button>
-                    <button
-                      type="button"
-                      data-debug-id="taskchain-new-task-add-reviewer-mode-user"
-                      onClick={() => setNewTaskAddReviewerMode('user')}
-                      className={`rounded px-2 py-1 font-semibold transition-colors cursor-pointer ${
-                        newTaskAddReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
-                      }`}
-                    >
-                      User
-                    </button>
-                  </div>
-
                   {newTaskAddReviewerMode === 'agent' && (
                     <div className="space-y-2">
                       <Select
@@ -2178,19 +2158,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             return { value: id, label: displayName };
                           }),
                         ]}
-                      />
-                    </div>
-                  )}
-
-                  {newTaskAddReviewerMode === 'user' && (
-                    <div>
-                      <input
-                        data-debug-id="taskchain-new-task-add-reviewer-userid-input"
-                        type="text"
-                        value={newTaskAddReviewerUserId}
-                        onChange={(e) => setNewTaskAddReviewerUserId(e.target.value)}
-                        placeholder="e.g. user"
-                        className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
                       />
                     </div>
                   )}
@@ -2268,7 +2235,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 type="submit"
                 data-debug-id="taskchain-new-task-submit-btn"
-                disabled={creatingTask}
+                disabled={creatingTask || !username}
                 className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {creatingTask ? 'Creating…' : 'Create Task'}
@@ -2587,6 +2554,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               Task: <span className="text-primary"><VaultText value={editingReviewersTask.title} as="span" /></span>
             </p>
 
+            <div className="mt-3 rounded border border-subtle bg-surface-raised/40 p-3 text-xs">
+              <Checkbox
+                data-debug-id="taskchain-edit-reviewers-require-user-approval-checkbox"
+                checked={editRequiresUserApproval}
+                onChange={setEditRequiresUserApproval}
+                disabled={!username}
+                label={username ? `Require approval from You (@${username})` : 'Loading your identity…'}
+              />
+              {editRequiresUserApproval && username && (
+                <span data-debug-id="taskchain-edit-user-reviewer-chip" className="mt-2 inline-flex rounded bg-neutral-soft px-2 py-1">
+                  You (@{username})
+                </span>
+              )}
+            </div>
+
             {/* Current Reviewers List */}
             <div className="mt-3">
               <label className="block text-xs font-semibold text-muted">Current Reviewers ({stagedReviewerRefs.length})</label>
@@ -2597,7 +2579,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     data-debug-id={`taskchain-edit-reviewer-chip-${idx}`}
                     className="inline-flex items-center gap-1.5 rounded bg-neutral-soft px-2 py-1 text-xs text-primary"
                   >
-                    {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
+                    {r.agent_instance_id ? (
+                      <InstanceIdLink instanceId={r.agent_instance_id} />
+                    ) : (
+                      <span>{formatFleetRoleName(r.agent_id || r.agentId, agentIdentities)}</span>
+                    )}
                     <button
                       type="button"
                       data-debug-id={`taskchain-edit-reviewer-remove-btn-${idx}`}
@@ -2634,14 +2620,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                 >
                   Other instance
-                </button>
-                <button
-                  type="button"
-                  data-debug-id="taskchain-add-reviewer-mode-user"
-                  onClick={() => setAddReviewerMode('user')}
-                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
-                >
-                  User
                 </button>
               </div>
 
@@ -2700,19 +2678,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   </div>
                 )}
 
-                {addReviewerMode === 'user' && (
-                  <div>
-                    <input
-                      data-debug-id="taskchain-add-reviewer-userid-input"
-                      type="text"
-                      value={addReviewerUserId}
-                      onChange={(e) => setAddReviewerUserId(e.target.value)}
-                      placeholder="e.g. user"
-                      className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
-                    />
-                  </div>
-                )}
-
                 <div className="flex justify-end">
                   <button
                     type="button"
@@ -2739,7 +2704,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 data-debug-id="taskchain-edit-reviewers-submit"
                 type="submit"
-                disabled={savingReviewers}
+                disabled={savingReviewers || !username}
                 className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {savingReviewers ? 'Saving…' : 'Save Reviewers'}

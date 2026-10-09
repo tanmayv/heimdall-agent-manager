@@ -5,6 +5,7 @@ import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { taskBridgeOptions } from '../../utils/taskBridgePin';
 import { formatFleetRoleName } from './FleetManagementDrawer';
+import { useAuthUser } from '../auth/AuthUserContext';
 
 export interface CreateTaskModalProps {
   chainId: string;
@@ -22,6 +23,8 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   existingTasks = [],
 }) => {
   const [createTask, { isLoading: isCreating }] = useCreateTaskMutation();
+  const authUser = useAuthUser();
+  const username = String(authUser?.user_id || '').trim();
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
   // REQ-TB-5: the owner's bridges for the optional per-task bridge pin. Skipped
@@ -43,9 +46,8 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   const [assigneeUserId, setAssigneeUserId] = useState('');
 
   const [stagedReviewers, setStagedReviewers] = useState<any[]>([]);
-  const [reviewerMode, setReviewerMode] = useState<'agent' | 'user'>('agent');
   const [reviewerAgentId, setReviewerAgentId] = useState('');
-  const [reviewerUserId, setReviewerUserId] = useState('');
+  const [requiresUserApproval, setRequiresUserApproval] = useState(false);
 
   const [dependsOnIds, setDependsOnIds] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
@@ -65,24 +67,16 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   }, [agentIdentities]);
 
   const handleAddReviewer = () => {
-    if (reviewerMode === 'agent') {
-      if (!reviewerAgentId) return;
-      if (stagedReviewers.some((r) => r.agent_id === reviewerAgentId)) return;
-      setStagedReviewers((prev) => [
-        ...prev,
-        {
-          type: 'agent_id',
-          agent_id: reviewerAgentId,
-          display_name: formatFleetRoleName(reviewerAgentId, agentIdentities),
-        },
-      ]);
-    } else {
-      const uid = reviewerUserId.trim();
-      if (!uid) return;
-      if (stagedReviewers.some((r) => r.user_id === uid)) return;
-      setStagedReviewers((prev) => [...prev, { type: 'user', user_id: uid }]);
-      setReviewerUserId('');
-    }
+    if (!reviewerAgentId) return;
+    if (stagedReviewers.some((r) => r.agent_id === reviewerAgentId)) return;
+    setStagedReviewers((prev) => [
+      ...prev,
+      {
+        type: 'agent_id',
+        agent_id: reviewerAgentId,
+        display_name: formatFleetRoleName(reviewerAgentId, agentIdentities),
+      },
+    ]);
   };
 
   const handleRemoveReviewer = (index: number) => {
@@ -125,6 +119,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
         description: desc.trim(),
         // '' is dropped by the createTask serialization (absent = inherit).
         bridgeId,
+        requiresUserApproval,
       };
       if (assigneeRef !== undefined) {
         payload.assigneeRef = assigneeRef;
@@ -144,6 +139,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       setAssigneeAgentId('');
       setBridgeId('');
       setStagedReviewers([]);
+      setRequiresUserApproval(false);
       setDependsOnIds([]);
       onSuccess?.();
       onClose();
@@ -291,6 +287,14 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
               </label>
             </div>
 
+            <Checkbox
+              data-debug-id="create-task-require-user-approval-checkbox"
+              checked={requiresUserApproval}
+              onChange={setRequiresUserApproval}
+              disabled={!username}
+              label={username ? `Require approval from You (@${username})` : 'Loading your identity…'}
+            />
+
             {stagedReviewers.length > 0 && (
               <div className="flex flex-wrap gap-1.5 rounded border border-subtle bg-surface p-2">
                 {stagedReviewers.map((r, idx) => {
@@ -319,48 +323,14 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
 
             <div className="border-t border-subtle pt-2 space-y-2">
               <span className="text-caption text-muted">Add Reviewer Role:</span>
-              <div data-debug-id="create-task-reviewer-mode" className="flex gap-1 rounded bg-surface p-1">
-                <button
-                  type="button"
-                  data-debug-id="create-task-reviewer-mode-agent"
-                  onClick={() => setReviewerMode('agent')}
-                  className={`rounded px-2 py-0.5 font-semibold transition-colors cursor-pointer ${
-                    reviewerMode === 'agent' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
-                  }`}
-                >
-                  Agent Role
-                </button>
-                <button
-                  type="button"
-                  data-debug-id="create-task-reviewer-mode-user"
-                  onClick={() => setReviewerMode('user')}
-                  className={`rounded px-2 py-0.5 font-semibold transition-colors cursor-pointer ${
-                    reviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'
-                  }`}
-                >
-                  User
-                </button>
-              </div>
-
               <div className="flex items-center gap-2">
-                {reviewerMode === 'agent' ? (
-                  <Select
-                    data-debug-id="create-task-reviewer-agentid-select"
-                    width="full"
-                    value={reviewerAgentId}
-                    onChange={setReviewerAgentId}
-                    options={agentOptions}
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    data-debug-id="create-task-reviewer-userid-input"
-                    value={reviewerUserId}
-                    onChange={(e) => setReviewerUserId(e.target.value)}
-                    placeholder="e.g. user"
-                    className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
-                  />
-                )}
+                <Select
+                  data-debug-id="create-task-reviewer-agentid-select"
+                  width="full"
+                  value={reviewerAgentId}
+                  onChange={setReviewerAgentId}
+                  options={agentOptions}
+                />
                 <button
                   type="button"
                   data-debug-id="create-task-add-reviewer-btn"
@@ -429,7 +399,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
             <button
               type="submit"
               data-debug-id="create-task-submit-btn"
-              disabled={isCreating}
+              disabled={isCreating || !username}
               className="rounded bg-accent px-4 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
             >
               {isCreating ? <Spinner size="sm" /> : null}

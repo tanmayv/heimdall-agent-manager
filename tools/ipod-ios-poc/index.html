@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>iPhone → iPod feasibility probe</title>
+  <style>
+    :root { color-scheme: light dark; font: 17px system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 42rem; padding: 1rem; }
+    section { border: 1px solid #8886; border-radius: 12px; margin: 1rem 0; padding: 1rem; }
+    button, .button { background: #1677ff; border: 0; border-radius: 9px; color: white; display: inline-block; font: inherit; padding: .7rem 1rem; text-decoration: none; }
+    code, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+    #drop { border: 2px dashed #888; border-radius: 9px; margin-top: 1rem; padding: 1.5rem; text-align: center; }
+    #drop.active { border-color: #1677ff; background: #1677ff18; }
+    .yes { color: #21a366; } .no { color: #d44; }
+  </style>
+</head>
+<body>
+  <h1>iPhone → iPod probe</h1>
+  <p>This page tests browser access only. It does not modify the iPod database.</p>
+
+  <section>
+    <h2>1. Browser capabilities</h2>
+    <div id="capabilities"></div>
+    <button id="usb" type="button">Try WebUSB</button>
+    <pre id="usb-result"></pre>
+  </section>
+
+  <section>
+    <h2>2. Read from attached iPod</h2>
+    <p>In the picker, look under Browse for the attached iPod. Try selecting <code>iPod_Control/iTunes/iTunesDB</code> or any file on it.</p>
+    <input id="file" type="file">
+    <div id="drop">Or drag <code>iTunesDB</code> here from the file manager</div>
+    <pre id="file-result">No file selected.</pre>
+  </section>
+
+  <section>
+    <h2>3. Write through Files</h2>
+    <p>Download this marker, choose Save to Files, and try selecting the attached iPod as the destination.</p>
+    <a class="button" href="/probe.txt" download="ipod-ios-probe.txt">Download marker</a>
+    <p>If it saves, select the marker in step 2. This proves manual file transfer—not automatic library management.</p>
+  </section>
+
+  <section>
+    <h2>Result</h2>
+    <ul>
+      <li>iPod absent from Files: iOS cannot access this iPod as storage.</li>
+      <li>Readable but marker cannot be saved: browser has read-only picker access.</li>
+      <li>Marker can be saved: manual file transfer is possible, but the browser still cannot safely update <code>iTunesDB</code>.</li>
+    </ul>
+  </section>
+
+  <script>
+    const capabilities = [
+      ["Secure context", window.isSecureContext],
+      ["WebUSB", "usb" in navigator],
+      ["Writable directory picker", "showDirectoryPicker" in window],
+      ["File share sheet", "share" in navigator && "canShare" in navigator],
+    ];
+    document.querySelector("#capabilities").innerHTML = capabilities
+      .map(([name, available]) => `<p class="${available ? "yes" : "no"}">${available ? "✓" : "✗"} ${name}</p>`)
+      .join("");
+
+    document.querySelector("#usb").addEventListener("click", async () => {
+      const result = document.querySelector("#usb-result");
+      if (!("usb" in navigator)) {
+        result.textContent = "navigator.usb is unavailable in this browser.";
+        return;
+      }
+      try {
+        const device = await navigator.usb.requestDevice({ filters: [] });
+        result.textContent = `Selected USB device: ${device.productName || "unknown"}`;
+      } catch (error) {
+        result.textContent = `${error.name}: ${error.message}`;
+      }
+    });
+
+    const fileInput = document.querySelector("#file");
+    fileInput.addEventListener("click", () => {
+      document.querySelector("#file-result").textContent = "Opening the system file picker…";
+    });
+    async function readFile(file) {
+      const result = document.querySelector("#file-result");
+      if (!file) {
+        result.textContent = "No file selected.";
+        return;
+      }
+      result.textContent = `Selected ${file.name}; reading…`;
+      try {
+        const bytes = await file.arrayBuffer();
+        if (!crypto.subtle) {
+          result.textContent = `Read succeeded\nName: ${file.name}\nSize: ${bytes.byteLength} bytes`;
+          return;
+        }
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+        result.textContent = `Read succeeded\nName: ${file.name}\nSize: ${bytes.byteLength} bytes\nSHA-256: ${hash}`;
+      } catch (error) {
+        result.textContent = `Read failed: ${error.name}: ${error.message}`;
+      }
+    }
+    fileInput.addEventListener("change", async (event) => {
+      await readFile(event.target.files[0]);
+    });
+
+    const drop = document.querySelector("#drop");
+    for (const eventName of ["dragenter", "dragover"]) {
+      drop.addEventListener(eventName, event => {
+        event.preventDefault();
+        drop.classList.add("active");
+      });
+    }
+    for (const eventName of ["dragleave", "drop"]) {
+      drop.addEventListener(eventName, event => {
+        event.preventDefault();
+        drop.classList.remove("active");
+      });
+    }
+    drop.addEventListener("drop", async event => {
+      await readFile(event.dataTransfer.files[0]);
+    });
+  </script>
+</body>
+</html>

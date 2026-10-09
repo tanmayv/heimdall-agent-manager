@@ -5,7 +5,7 @@ import { agentsApi } from '../api/endpoints/agents';
 import { chatEndpoints } from '../api/endpoints/chats';
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
-const DEFAULT_USER_ID = 'operator@local';
+const DEFAULT_USER_ID = '';
 const DAEMON_PROFILES_KEY = 'odin.daemonProfiles';
 export const GUIDE_AGENT_ID = 'guide@heimdall';
 const CHAT_OPTIMISTIC_GRACE_MS = 30_000;
@@ -791,4 +791,3 @@ export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', 
   }
 });
 export default chatSlice.reducer;
-

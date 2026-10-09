@@ -8,6 +8,7 @@ import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
 import { Badge, Breadcrumbs as UiBreadcrumbs, CommandPalette, PageShell, StatusDot } from '@ui';
 import { useViewport } from './responsive';
+import { AuthUserProvider, type AuthUserIdentity } from '../auth/AuthUserContext';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { withApiBase } from '../../api/apiBase';
@@ -96,12 +97,7 @@ type ShellRoute = {
   group: 'primary' | 'secondary';
 };
 
-type AuthUser = {
-  user_id?: string;
-  name?: string;
-  display_name?: string;
-  email?: string;
-};
+type AuthUser = AuthUserIdentity;
 
 type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'forbidden' | 'error';
 
@@ -972,7 +968,11 @@ function AuthGate() {
   if (auth.status === 'unauthenticated') return <UnauthenticatedLanding loginUrl={auth.loginUrl} />;
   if (auth.status === 'forbidden') return <AccessDenied />;
   if (auth.status === 'error') return <AuthStatusScreen debugId="auth-error" title="Unable to verify session" body={auth.error || 'The app could not reach /api/v1/me.'} />;
-  return <AuthenticatedShell key={authUserId(auth.user) || 'authenticated'} user={auth.user || {}} logoutUrl={auth.logoutUrl} />;
+  return (
+    <AuthUserProvider value={auth.user}>
+      <AuthenticatedShell key={authUserId(auth.user) || 'authenticated'} user={auth.user || {}} logoutUrl={auth.logoutUrl} />
+    </AuthUserProvider>
+  );
 }
 
 function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: string; body: string }) {

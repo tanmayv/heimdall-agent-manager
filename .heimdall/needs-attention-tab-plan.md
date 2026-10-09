@@ -102,7 +102,7 @@ type AttentionAction = {
 
 ### 4. Chat approvals (smart_answer / questions)
 
-- Source: durable chat messages with `direction === 'agent_to_user'`, addressed to `operator@local`, whose body parses as JSON with `type` in `{smart_answer, questions, approval_request}` and non-empty `suggested_replies` or `options`.
+- Source: durable chat messages with `direction === 'agent_to_user'`, addressed to the authenticated user, whose body parses as JSON with `type` in `{smart_answer, questions, approval_request}` and non-empty `suggested_replies` or `options`.
 - Every such approval must be bound to a chain. To enforce this durably we introduce:
 
 #### Backend: `chat_approvals` projection
@@ -127,7 +127,7 @@ type AttentionAction = {
   - default `expires_at_unix_ms` = now + `chat_approval_default_ttl_ms` (config, default 30 min). Agents can supply `expires_in_ms` in the JSON body or a top-level field.
   - persist an `Chat_Approval` row and set `state = open`.
 - New endpoints:
-  - `GET /chat-approvals/pending` (user_client authenticated) → list open, non-expired approvals for `operator@local`.
+  - `GET /chat-approvals/pending` (user_client authenticated) → list open, non-expired approvals for the authenticated user.
   - `POST /chat-approvals/answer` → body `{approval_id, reply}`. Validates:
     - approval `open` and `expires_at_unix_ms > now`.
     - `reply` matches one of `options_json.suggested_replies` values (or is a free-form reply if `kind === questions` and `free_form=true`).

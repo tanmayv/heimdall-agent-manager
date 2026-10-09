@@ -167,12 +167,26 @@ Simple_Task_Wire :: struct {
 	bridge_id:           string        `json:"bridge_id"`,
 	assignee_ref:        json.Value    `json:"assignee_ref"`,
 	reviewer_refs:       json.Value    `json:"reviewer_refs"`,
+	requires_user_approval: bool       `json:"requires_user_approval"`,
 	unblocks_dependents: bool          `json:"unblocks_dependents"`,
 	updated_at:          string        `json:"updated_at"`,
 	requested_status:    Maybe(string) `json:"requested_status,omitempty"`,
 	allowed_transitions: []string      `json:"allowed_transitions"`,
 	next_states:         []string      `json:"next_states"`,
 	allowed_actions:     []string      `json:"allowed_actions"`,
+}
+
+reviewer_refs_wire_value :: proc(t: domain.Task) -> json.Value {
+	refs, _, ok := taskchain_service.parse_actor_refs(t.reviewer_refs_json, context.temp_allocator)
+	if !ok do return json_value_or_empty_array("[]")
+	for &ref in refs {
+		if ref.type == "user" && ref.user_id == string(t.owner_user_id) {
+			ref.username = ref.user_id
+		}
+	}
+	encoded, err := json.marshal(refs[:], allocator = context.temp_allocator)
+	if err != nil do return json_value_or_empty_array("[]")
+	return json_value_or_empty_array(string(encoded))
 }
 
 Task_Vote_Wire :: struct {
@@ -201,6 +215,7 @@ Task_Detail_Wire :: struct {
 	bridge_id:           string                    `json:"bridge_id"`,
 	assignee_ref:        json.Value                `json:"assignee_ref"`,
 	reviewer_refs:       json.Value                `json:"reviewer_refs"`,
+	requires_user_approval: bool                   `json:"requires_user_approval"`,
 	blocked:             bool                      `json:"blocked"`,
 	unblocks_dependents: bool                      `json:"unblocks_dependents"`,
 	depends_on:          []string                  `json:"depends_on"`,
@@ -426,7 +441,8 @@ make_simple_task_wire :: proc(t: domain.Task, requested_status := "") -> Simple_
 		priority            = domain.task_priority_string(t.priority),
 		bridge_id           = t.bridge_id,
 		assignee_ref        = json_value_or_empty_object(t.assignee_ref_json),
-		reviewer_refs       = json_value_or_empty_array(t.reviewer_refs_json),
+		reviewer_refs       = reviewer_refs_wire_value(t),
+		requires_user_approval = taskchain_service.task_requires_user_approval(t),
 		unblocks_dependents = domain.task_status_unblocks_dependents(t.status),
 		updated_at          = t.updated_at,
 		requested_status    = req_status_maybe,
@@ -475,7 +491,8 @@ make_task_detail_wire :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_C
 		priority            = domain.task_priority_string(t.priority),
 		bridge_id           = t.bridge_id,
 		assignee_ref        = json_value_or_empty_object(t.assignee_ref_json),
-		reviewer_refs       = json_value_or_empty_array(t.reviewer_refs_json),
+		reviewer_refs       = reviewer_refs_wire_value(t),
+		requires_user_approval = taskchain_service.task_requires_user_approval(t),
 		blocked             = is_blocked,
 		unblocks_dependents = domain.task_status_unblocks_dependents(t.status),
 		depends_on          = dep_ids[:],
@@ -1403,7 +1420,10 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	priority, has_priority, prio_ok, prio_err := create_priority_from_body(req.body)
 	if !prio_ok do return respond_error(prio_err, req.request_id)
 	bridge_id, _ := task_bridge_id_from_body(req.body)
-	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, bridge_id = bridge_id})
+	has_requires_user_approval := json_key_present(req.body, "requires_user_approval")
+	requires_user_approval, valid_requires_user_approval := json_bool_literal(req.body, "requires_user_approval")
+	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
+	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), requires_user_approval = requires_user_approval, has_requires_user_approval = has_requires_user_approval, priority = priority, has_priority = has_priority, depends_on = deps, bridge_id = bridge_id})
 	if !created do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
@@ -1429,7 +1449,10 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridge_id, has_bridge := task_bridge_id_from_body(req.body)
 	bridge_pin: ^string
 	if has_bridge do bridge_pin = &bridge_id
-	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps, bridge_id = bridge_pin})
+	has_requires_user_approval := json_key_present(req.body, "requires_user_approval")
+	requires_user_approval, valid_requires_user_approval := json_bool_literal(req.body, "requires_user_approval")
+	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
+	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), requires_user_approval = requires_user_approval, has_requires_user_approval = has_requires_user_approval, priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps, bridge_id = bridge_pin})
 	if !updated do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")

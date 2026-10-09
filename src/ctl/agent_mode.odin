@@ -431,6 +431,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 				return
 			}
 		}
+		if !ctl_task_reviewer_flags_valid(args, false) do return
 		params := ctl_agentmode_task_create_params(args)
 		ctl_agent_call(endpoint, token, "agent.task.create", params)
 	case "comment":
@@ -470,6 +471,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		// REPLACE the whole list (pass one value to set a single reviewer/dep).
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
+		if !ctl_task_reviewer_flags_valid(args, true) do return
 		params := ctl_agentmode_task_update_params(tid, args)
 		ctl_agent_call(endpoint, token, "agent.task.update", params)
 	case "subscribe":
@@ -597,6 +599,30 @@ ctl_v2_reviewer_refs :: proc(csv: string) -> string {
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
+}
+
+ctl_task_reviewer_flags_valid :: proc(args: []string, allow_disable: bool) -> bool {
+	if has_flag(args, "--require-user-approval") && has_flag(args, "--no-require-user-approval") {
+		fmt.println("--require-user-approval and --no-require-user-approval are mutually exclusive")
+		return false
+	}
+	if has_flag(args, "--no-require-user-approval") && !allow_disable {
+		fmt.println("--no-require-user-approval is only valid for task update")
+		return false
+	}
+	if has_flag(args, "--reviewer") {
+		parts := strings.split(option_value(args, "--reviewer", ""), ",")
+		defer delete(parts)
+		for raw in parts {
+			id := strings.trim_space(raw)
+			if id == "" do continue
+			if id == "user" || id == "user_proxy" {
+				fmt.println("--reviewer accepts agent IDs or agent-instance IDs only; use --require-user-approval for user review")
+				return false
+			}
+		}
+	}
+	return true
 }
 
 agent_mode_endpoint :: proc(args: []string) -> string {
@@ -1400,6 +1426,7 @@ ctl_agentmode_task_create_params :: proc(args: []string) -> string {
 	if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
+	if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
 	if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
 	if b := option_value(args, "--bridge", ""); b != "" do append(&fields, json_kv("bridge_id", b))
 	return json_object_from_slice(fields[:])
@@ -1446,6 +1473,8 @@ ctl_agentmode_task_update_params :: proc(tid: string, args: []string) -> string 
 	if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
 	if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", ctl_v2_actor_ref(a)}))
 	if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+	if has_flag(args, "--require-user-approval") do append(&fields, `"requires_user_approval":true`)
+	if has_flag(args, "--no-require-user-approval") do append(&fields, `"requires_user_approval":false`)
 	if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
 	if has_flag(args, "--bridge") do append(&fields, json_kv("bridge_id", option_value(args, "--bridge", "")))
 	return json_object_from_slice(fields[:])
@@ -1914,10 +1943,12 @@ print_help_task :: proc() {
 	fmt.println("  comments <task-id> [--last N]           Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
 	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>]")
+	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>]")
 	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
 	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-or-agent-id>]")
-	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--bridge <bridge-id>]")
+	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval | --no-require-user-approval]")
+	fmt.println("      [--depends-on <id,id>] [--bridge <bridge-id>]")
+	fmt.println("      --reviewer accepts agent IDs/instances only; user approval is controlled by the explicit flags.")
 	fmt.println("      --reviewer/--depends-on REPLACE the whole list (pass \"\" to clear); --bridge \"\" clears")
 	fmt.println("      the pin. Only the fields you pass change.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")

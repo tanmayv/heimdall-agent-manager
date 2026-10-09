@@ -13,6 +13,7 @@ import {
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
+import { useAuthUser } from '../auth/AuthUserContext';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -121,6 +122,8 @@ export default function CurrentTaskStrip({
   onSetPriority,
   collapsed = false,
 }: CurrentTaskStripProps) {
+  const authUser = useAuthUser();
+  const username = String(authUser?.user_id || '').trim();
   const [commenting, setCommenting] = useState(false);
   const [commentBody, setCommentBody] = useState('');
   const [collapsedLocal, setCollapsedLocal] = useState(collapsed);
@@ -222,7 +225,6 @@ export default function CurrentTaskStrip({
 
   function resolveDisplayName(id: string, fallbackRef?: any): string {
     if (!id) return '';
-    if (id === 'user' || id.toLowerCase() === 'user' || id === 'user_proxy' || id === 'operator@local') return 'User';
     if (fallbackRef?.displayName || fallbackRef?.display_name || fallbackRef?.name) {
       return fallbackRef.displayName || fallbackRef.display_name || fallbackRef.name;
     }
@@ -242,7 +244,9 @@ export default function CurrentTaskStrip({
     (assigneeAgentId ? formatFleetRoleName(assigneeAgentId, agentIdentities) : agentInstanceId);
 
   const reviewerRef = (task as any)?.reviewerRefs?.[0] || (task as any)?.reviewer_refs?.[0];
-  const reviewerDisplayName = reviewer ? resolveDisplayName(reviewer, reviewerRef) : '';
+  const reviewerDisplayName = userIsReviewer
+    ? (username ? `You (@${username})` : 'You')
+    : reviewer ? resolveDisplayName(reviewer, reviewerRef) : '';
 
   if (collapsedLocal) {
     return (
@@ -295,7 +299,7 @@ export default function CurrentTaskStrip({
             {/* CT-3: P0/P1/P2 priority indicator (hidden when unknown). */}
             {(() => { const pt = priorityTone(priority); return pt ? <StatusPill tone={pt} data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className="uppercase">{priority}</StatusPill> : null; })()}
             <span>Assignee: <span className="text-primary">{assigneeDisplayName || agentInstanceId}</span></span>
-            {reviewer ? <span>Reviewer: <span className="text-primary">{reviewerDisplayName || reviewer}</span></span> : null}
+            {(reviewer || userIsReviewer) ? <span>Reviewer: <span className="text-primary">{reviewerDisplayName || reviewer}</span></span> : null}
           </div>
           {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-caption text-muted">Acceptance: {summary}</div> : null}
         </div>

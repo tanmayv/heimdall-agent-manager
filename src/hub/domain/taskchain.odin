@@ -147,6 +147,8 @@ Actor_Ref :: struct {
 	agent_id:          string `json:"agent_id,omitempty"`,
 	agent_instance_id: string `json:"agent_instance_id,omitempty"`,
 	user_id:           string `json:"user_id,omitempty"`,
+	username:          string `json:"username,omitempty"`,
+	display_name:      string `json:"display_name,omitempty"`,
 }
 
 Task_Dependency :: struct {
@@ -350,5 +352,4 @@ task_degraded_recovery_actions :: proc() -> []string {
 task_degraded_recovery_transitions :: proc() -> []Task_Status {
 	return TASK_TRANSITIONS_DEGRADED[:]
 }
-
 
