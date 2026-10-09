@@ -112,6 +112,7 @@ Bridge_Machine_Descriptor :: struct {
 // refreshes correctly, and the bridge honours that by scheduling off a monotonic
 // timer and never comparing its wall clock against a Hub value.
 Bridge_Enroll_Credential :: struct {
+	approver_username: string,
 	bridge_id:          string,
 	access_token:       string,
 	refresh_token:      string,
@@ -437,6 +438,7 @@ bridge_enroll_poll_once :: proc(
 
 bridge_enroll_credential_from_json :: proc(body: string, allocator := context.allocator) -> Bridge_Enroll_Credential {
 	return Bridge_Enroll_Credential{
+		approver_username = extract_json_string(body, "approver_username", "", allocator),
 		bridge_id          = extract_json_string(body, "bridge_id", "", allocator),
 		access_token       = extract_json_string(body, "access_token", "", allocator),
 		refresh_token      = extract_json_string(body, "refresh_token", "", allocator),
@@ -965,6 +967,11 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 			if !bridge_enroll_persist(cred, token_file, config_path, api_base) do return false
 			fmt.println("")
 			fmt.printfln("bridge enroll SUCCESS: enrolled as bridge_id=%s", cred.bridge_id)
+			if cred.approver_username != "" {
+				fmt.printfln("  approved by     {}", cred.approver_username)
+			} else {
+				fmt.println("  approved by     username unavailable (older Hub)")
+			}
 			fmt.printfln("  credential      %s (0600)", token_file)
 			if strings.trim_space(cred.refresh_token) != "" {
 				fmt.printfln("  refresh token   %s (0600), access token expires in %ds and is refreshed proactively", bridge_enroll_refresh_file_for(token_file, context.temp_allocator), cred.expires_in)

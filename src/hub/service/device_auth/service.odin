@@ -271,7 +271,7 @@ Approve_Input :: struct {
 //   - on approve, pre-mint the token via the task-3 minter and hold plaintext
 //   - terminal grant -> Conflict (409) "code already used" (AC5)
 //   - unknown/expired -> generic Not_Found (no enumeration)
-approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_id, approver_ip, approver_ua: string) -> (bool, domain.Domain_Error) {
+approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_id, approver_ip, approver_ua: string, approver_username: string = "") -> (bool, domain.Domain_Error) {
 	if input.user_code == "" do return false, GENERIC_UNKNOWN_CODE_ERROR()
 	if strings.trim_space(input.target_bridge_id) != "" && strings.trim_space(input.new_bridge_label) != "" {
 		return false, domain.domain_error(.Validation_Failed, "new_bridge_label is only valid when creating a new bridge")
@@ -291,6 +291,7 @@ approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_
 	}
 	// Bind owner from Auth_Context ONLY (ELDA-6). Ignore any body owner field.
 	grant.owner_user_id = owner_user_id
+	grant.approver_username = approver_username
 	grant.approver_ip = approver_ip
 	grant.approver_ua = approver_ua
 	grant.decided_at = now
@@ -398,6 +399,7 @@ Poll_Status :: enum {
 // Poll_Result is the /device/token response body shape (ELDA-3).
 Poll_Result :: struct {
 	status:       Poll_Status,
+	approver_username: string,
 	access_token: string, // plaintext token; only set on first approved poll
 	token_id:     string, // token id; only set on first approved poll
 	expires_in:   int,    // seconds until the grant's token/flow expires; 0 if n/a
@@ -526,7 +528,7 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string, cod
 		// and conflating them is how a bridge ends up scheduling its refresh off the
 		// 900-second device-code window.
 		expires_in := minted_expires_in if minted_expires_in > 0 else service.store.config.expires_in
-		return Poll_Result{status = .Approved, access_token = token, token_id = tid, bridge_id = grant.minted_bridge_id, expires_in = expires_in, refresh_token = refresh, refresh_expires_in = minted_refresh_expires_in, vault_delivery_expected = grant.vault_delivery_expected}, domain.Domain_Error{}
+		return Poll_Result{status = .Approved, approver_username = grant.approver_username, access_token = token, token_id = tid, bridge_id = grant.minted_bridge_id, expires_in = expires_in, refresh_token = refresh, refresh_expires_in = minted_refresh_expires_in, vault_delivery_expected = grant.vault_delivery_expected}, domain.Domain_Error{}
 	case: // .Pending (covers Pending only; exhaustiveness)
 		set_grant(service.store, device_code, grant)
 	}

@@ -261,7 +261,7 @@ main :: proc() {
 	}, "127.0.0.1:1", "")
 	assert_true(hok, "bridge authorize for handler test succeeds")
 	FAKE_NOW += 5
-	device_auth.approve(&psvc, {user_code = hres.user_code, approve = true}, "owner-h", "203.0.113.30", "UA")
+	device_auth.approve(&psvc, {user_code = hres.user_code, approve = true}, "owner-h", "203.0.113.30", "UA", "alice")
 	phandlers := api_http.Device_Auth_Handlers{service = &psvc}
 	FAKE_NOW += 5
 	bad_resp := api_http.device_token_handler(rawptr(&phandlers), api_http.Request{
@@ -280,6 +280,7 @@ main :: proc() {
 		request_id = "req_pkce_good", remote_addr = "127.0.0.1:4444",
 	})
 	assert_eq(good_resp.status, 200, "handler: correct verifier -> HTTP 200")
+	assert_true(strings.contains(good_resp.body, "\"approver_username\":\"alice\""), "handler: approved poll reports the authenticated approving username")
 	assert_true(strings.contains(good_resp.body, "\"bridge_id\":\"brg_poll_fake\""), "handler: approved bridge poll carries bridge_id")
 	assert_true(strings.contains(good_resp.body, "\"vault_delivery_expected\":true"), "handler: bridge poll carries the vault handoff decision")
 	fmt.println("REQ-IMPL-2 OK: handler maps a PKCE failure to 401 and emits bridge_id on success")

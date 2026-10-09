@@ -32,6 +32,7 @@ grant_clone_strings :: proc(g: Grant, heap: runtime.Allocator) -> Grant {
 	c.user_code = strings.clone(g.user_code, heap)
 	c.verification_uri = strings.clone(g.verification_uri, heap)
 	c.owner_user_id = strings.clone(g.owner_user_id, heap)
+	c.approver_username = strings.clone(g.approver_username, heap)
 	c.device_label = strings.clone(g.device_label, heap)
 	c.os = strings.clone(g.os, heap)
 	c.app_version = strings.clone(g.app_version, heap)
@@ -60,6 +61,7 @@ grant_free_strings :: proc(g: Grant, heap: runtime.Allocator) {
 	delete(g.user_code, heap)
 	delete(g.verification_uri, heap)
 	delete(g.owner_user_id, heap)
+	delete(g.approver_username, heap)
 	delete(g.device_label, heap)
 	delete(g.os, heap)
 	delete(g.app_version, heap)
@@ -116,6 +118,7 @@ Grant :: struct {
 	user_code:      string,
 	verification_uri: string,
 	owner_user_id:  string,
+	approver_username: string,
 	device_label:   string,
 	os:             string,
 	app_version:    string,

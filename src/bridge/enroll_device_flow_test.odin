@@ -494,3 +494,19 @@ hello_hostname_cache_survives_an_allocator_reset :: proc(t: ^testing.T) {
         testing.expect(t, second != "ham-bridge", "nor the old placeholder")
     }
 }
+
+@(test)
+enroll_credential_reads_approver_username :: proc(t: ^testing.T) {
+	credential := bridge_enroll_credential_from_json(`{"bridge_id":"brg_test","approver_username":"alice","access_token":"hba_test.secret"}`)
+	defer delete(credential.approver_username)
+	defer delete(credential.bridge_id)
+	defer delete(credential.access_token)
+	defer delete(credential.refresh_token)
+	testing.expect_value(t, credential.approver_username, "alice")
+	legacy := bridge_enroll_credential_from_json(`{"bridge_id":"brg_old","access_token":"hba_old.secret"}`)
+	defer delete(legacy.approver_username)
+	defer delete(legacy.bridge_id)
+	defer delete(legacy.access_token)
+	defer delete(legacy.refresh_token)
+	testing.expect_value(t, legacy.approver_username, "")
+}

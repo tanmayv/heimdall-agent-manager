@@ -312,3 +312,31 @@ test_bootstrap_sha256 :: proc(body: string) -> string {
 	defer delete(hex_str)
 	return strings.concatenate({"sha256:", string(hex_str)})
 }
+
+@(test)
+bootstrap_run_dir_ctl_routes_to_each_bridge :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	previous, existed := os.lookup_env("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	defer {
+		if existed {
+			_ = os.set_env("HEIMDALL_HAM_CTL_BIN", previous)
+		} else {
+			os.unset_env("HEIMDALL_HAM_CTL_BIN")
+		}
+		delete(previous)
+	}
+	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
+	for endpoint in []string{"tcp:127.0.0.1:50324", "tcp:127.0.0.1:50326", "unix:/tmp/bridge-own/socket"} {
+		shim, ok := bridge_bootstrap_render_ham_ctl_shim(endpoint, "agent-test-token", "instance-test")
+		testing.expect(t, ok)
+		if !ok do continue
+		defer delete(shim)
+		argv := []string{"/bin/sh", "-c", shim, "ham-ctl", "-c", `printf '%s' "$HEIMDALL_BRIDGE_ENDPOINT"`}
+		state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = argv}, context.allocator)
+		defer delete(stdout)
+		defer delete(stderr)
+		testing.expect(t, err == nil && state.success)
+		testing.expect_value(t, stdout, endpoint)
+	}
+}

@@ -185,7 +185,7 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// already see, and a failure here must not block the decision.
 	pre_info, pre_ok, _ := device_auth.verify(handlers.service, input.user_code)
 	aok, err := device_auth.approve(
-		handlers.service, input, auth_ctx.user_id, approver_ip, approver_ua)
+		handlers.service, input, auth_ctx.user_id, approver_ip, approver_ua, auth_ctx.name)
 	if !aok do return respond_error(err, req.request_id)
 	// Enrolling a machine is the most consequential approval an owner can give,
 	// and it happens in one tab that may then be closed. Tell their other
@@ -268,6 +268,8 @@ device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if result.bridge_id != "" {
 			strings.write_string(&data, "\",\"bridge_id\":\"")
 			write_handler_json_string(&data, result.bridge_id)
+			strings.write_string(&data, "\",\"approver_username\":\"")
+			write_handler_json_string(&data, result.approver_username)
 		}
 		// REQ-IMPL-3: the refresh half, present only for a bridge grant whose
 		// credential expires. Omitted entirely otherwise, so the ELDA response
