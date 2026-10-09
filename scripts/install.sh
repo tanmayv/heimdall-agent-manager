@@ -1687,6 +1687,15 @@ run_interactive_onboarding() {
       # that point is harmless, never fatal to the enrollment itself.
       enroll_log="$(mktemp)"
       (
+        # This subshell is forked (and backgrounded) BEFORE the `set +e` below
+        # takes effect, so it inherits `set -euo pipefail` from main(). Without
+        # this, `link="$(grep -m1 ... | tr ...)"` is a plain assignment whose
+        # command substitution exits 1 on every iteration where no URL line
+        # exists yet (the ordinary case until the approval link is actually
+        # printed) -- under `-e` that kills the subshell on its very first
+        # loop iteration, silently disabling this entire feature. Reproduced
+        # standalone before fixing: the loop body never ran a second time.
+        set +e
         attempts=0
         while [ "$attempts" -lt 240 ]; do
           link="$(grep -m1 -E '^[[:space:]]*https?://' "$enroll_log" 2>/dev/null | tr -d '[:space:]')"
@@ -1713,6 +1722,24 @@ run_interactive_onboarding() {
       rm -f "$enroll_log"
       if [ "$enroll_status" -ne 0 ]; then
         warn "ham-bridge enroll exited with status $enroll_status; re-run the command above manually if you still need to enroll."
+      else
+        # This run now runs the enroll command itself (foreground, attached to
+        # THIS shell) instead of only printing it, but the handover it was
+        # already documented to need never changed: that process IS the
+        # bridge and holds port 49323 until it exits (Ctrl-C, the terminal
+        # closing, an SSH session dropping) or the approval times out. Once
+        # it's gone, the registered service above was deliberately never
+        # started -- say so explicitly, or an operator who only watched this
+        # run end cleanly has no signal that nothing is actually running now.
+        echo ""
+        say "ham-bridge enroll has exited, so nothing is running this bridge right now."
+        if [ "$os" = "linux" ] && [ -z "${service_user:-}" ]; then
+          say "Start the registered service: systemctl --user enable --now heimdall-bridge"
+        elif [ "$os" = "linux" ]; then
+          say "Start it as $service_user: systemctl --user enable --now heimdall-bridge"
+        else
+          say "Start the registered service: launchctl bootstrap \"gui/\$(id -u)\" \"$service_file\" && launchctl kickstart -k \"gui/\$(id -u)/works.earendil.heimdall-bridge\""
+        fi
       fi
     fi
   else

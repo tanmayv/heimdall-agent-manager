@@ -17,6 +17,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
@@ -169,6 +170,46 @@ test_rotate_for_device_grant_rejects_unowned_target :: proc(t: ^testing.T) {
 	_, still_ok, still_err := verify_bridge_token(&f.svc, alices_token)
 	testing.expect(t, still_ok, still_err.message)
 	testing.expect_value(t, len(f.closed_bridge_ids), 0)
+}
+
+// A REVOKED bridge is an administrative end, not a parking lot to resurrect
+// from. The approval page's <select> excludes revoked bridges, but that is
+// client-side convenience -- target_bridge_id rides in a plain JSON body, so
+// this asserts the SERVER refuses a revoked target even when nothing client-
+// side stopped the request from naming one. Refused with the same
+// anti-enumeration shape as an unowned target (.Not_Found), and the revoked
+// row must stay exactly as revoke_bridge left it: still .Revoked, no new
+// credential issued, connection-closer not invoked a second time.
+@(test)
+test_rotate_for_device_grant_rejects_revoked_target :: proc(t: ^testing.T) {
+	f := setup_attach_fixture(t, "revoked")
+	defer teardown_attach_fixture(f)
+
+	owned := attach_enrol(t, f, "approving-human", "already-revoked-host")
+	owned_bridge_id := strings.clone(owned.bridge.bridge_id); defer delete(owned_bridge_id)
+
+	owner_auth := contracts.Auth_Context{kind = .User_Token, user_id = "approving-human"}
+	revoked, revoke_ok, revoke_err := revoke_bridge(&f.svc, owner_auth, owned_bridge_id)
+	testing.expect(t, revoke_ok, revoke_err.message)
+	testing.expect_value(t, revoked.status, domain.Bridge_Status.Revoked)
+	clear(&f.closed_bridge_ids) // revoke_bridge itself closes the connection; isolate what happens next
+
+	_, ok, err := enroll_bridge_from_device_grant(&f.svc, Device_Enroll_Input{
+		owner_user_id = "approving-human", // the OWNER, not an impersonator -- status alone must still refuse this
+		bridge_public_key = "04998877",
+		bridge_key_fingerprint = "9999 8888 7777 6666",
+		os_user = "tanmay",
+		machine_hostname = "resurrecting-host",
+		machine_os = "linux",
+		target_bridge_id = owned_bridge_id,
+	})
+	testing.expect(t, !ok, "attaching to the approver's OWN revoked bridge must still be refused")
+	testing.expect(t, err.code == .Not_Found, "refused as not-found, the same anti-enumeration shape as an unowned target")
+	testing.expect_value(t, len(f.closed_bridge_ids), 0)
+
+	still_revoked, get_ok, get_err := get_bridge(&f.svc, owner_auth, owned_bridge_id)
+	testing.expect(t, get_ok, get_err.message)
+	testing.expect_value(t, still_revoked.status, domain.Bridge_Status.Revoked)
 }
 
 // REGRESSION GUARD: omitting target_bridge_id is byte-for-byte today's

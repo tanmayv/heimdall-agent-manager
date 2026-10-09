@@ -163,6 +163,18 @@ rotate_bridge_for_device_grant :: proc(service: ^Bridge_Service, owner: string, 
 	target_bridge_id := strings.trim_space(input.target_bridge_id)
 	bridge, get_ok, get_err := get_bridge(service, contracts.Auth_Context{user_id = owner}, target_bridge_id)
 	if !get_ok do return Enroll_Bridge_Result{}, false, get_err
+	// A revoked bridge is an administrative end (see get_bridge callers'
+	// treatment elsewhere, e.g. bridge_absence_marker's "revocation is an
+	// administrative end" above in bridge_service.odin), not a parking lot to
+	// resurrect from. The approval page's own <select> already excludes
+	// revoked bridges, but that is client-side convenience, not a boundary --
+	// target_bridge_id rides in a plain JSON body, so a revoked id must be
+	// refused HERE too, with the same anti-enumeration shape as the ownership
+	// check just above (a revoked bridge this user does not own, and a
+	// revoked bridge they do, must look identical from outside).
+	if bridge.status == .Revoked {
+		return Enroll_Bridge_Result{}, false, domain.domain_error(.Not_Found, "resource not found")
+	}
 
 	now := platform.clock_now(service.clock)
 	// Credentials first, same order and same reasoning as revoke_bridge
