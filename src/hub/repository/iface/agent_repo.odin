@@ -11,6 +11,7 @@ Agent_List_Support_Proc :: proc(ctx: rawptr, agent_id: string, owner_user_id: do
 Agent_Delete_Support_Proc :: proc(ctx: rawptr, agent_id, bridge_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 Agent_Save_Instance_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error)
 Agent_Get_Instance_Proc :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error)
+Agent_Delete_Instance_Proc :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error)
 Agent_List_Instances_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
 Agent_List_Instances_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
 // Lists instances still in an active runtime state (running/idle/busy/launching/
@@ -32,6 +33,7 @@ Agent_Repository :: struct {
 	delete_support: Agent_Delete_Support_Proc,
 	save_instance: Agent_Save_Instance_Proc,
 	get_instance: Agent_Get_Instance_Proc,
+	delete_instance: Agent_Delete_Instance_Proc,
 	list_instances_by_owner: Agent_List_Instances_By_Owner_Proc,
 	list_instances_by_bridge: Agent_List_Instances_By_Bridge_Proc,
 	list_active_runtime_instances: Agent_List_Active_Runtime_Instances_Proc,
@@ -86,6 +88,11 @@ agent_save_instance :: proc(repo: ^Agent_Repository, instance: domain.Agent_Inst
 agent_get_instance :: proc(repo: ^Agent_Repository, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	if repo == nil || repo.get_instance == nil do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	return repo.get_instance(repo.ctx, instance_id)
+}
+
+agent_delete_instance :: proc(repo: ^Agent_Repository, instance_id: string) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.delete_instance == nil do return false, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.delete_instance(repo.ctx, instance_id)
 }
 
 agent_list_instances_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {

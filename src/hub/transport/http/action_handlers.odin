@@ -200,8 +200,8 @@ write_action_json :: proc(b: ^strings.Builder, a: domain.Action) {
 	write_handler_json_string(b, string(a.target_bridge_id))
 	strings.write_string(b, "\",\"target_provider\":\"")
 	write_handler_json_string(b, a.target_provider)
-	strings.write_string(b, "\",\"target_tier\":\"")
-	write_handler_json_string(b, a.target_tier)
+	strings.write_string(b, "\",\"target_model\":\"")
+	write_handler_json_string(b, a.target_model)
 	strings.write_string(b, "\",\"target_project_id\":\"")
 	write_handler_json_string(b, string(a.target_project_id))
 	strings.write_string(b, "\",\"instance_strategy\":\"")
@@ -242,7 +242,7 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	target_agent_id := strings.trim_space(json_string(req.body, "target_agent_id"))
 	target_bridge_id := strings.trim_space(json_string(req.body, "target_bridge_id"))
 	target_provider := strings.trim_space(json_string(req.body, "target_provider"))
-	target_tier := strings.trim_space(json_string(req.body, "target_tier"))
+	target_model := strings.trim_space(json_string(req.body, "target_model"))
 	target_project_id := strings.trim_space(json_string(req.body, "target_project_id"))
 
 	has_instance_target := target_instance_id != ""
@@ -347,7 +347,7 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		target_agent_id = domain.Agent_ID(target_agent_id),
 		target_bridge_id = domain.Bridge_ID(target_bridge_id),
 		target_provider = target_provider,
-		target_tier = target_tier,
+		target_model = target_model,
 		target_project_id = domain.Project_ID(target_project_id),
 		instance_strategy = instance_strategy,
 	}
@@ -525,7 +525,7 @@ run_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 					agent_id = string(act.target_agent_id),
 					bridge_id = string(act.target_bridge_id),
 					provider = act.target_provider,
-					tier = act.target_tier,
+					model = act.target_model,
 					project_id = act.target_project_id,
 				})
 				if !created do return respond_error(create_err, req.request_id)

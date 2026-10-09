@@ -128,7 +128,7 @@ function searchableText(row: Action, catalog: ActionCatalog): string {
     bridgeLabel(row.target_bridge_id, catalog),
     projectLabel(row.target_project_id, catalog),
     row.target_provider,
-    row.target_tier,
+    row.target_model,
   ]
     .filter(Boolean)
     .join(' ')

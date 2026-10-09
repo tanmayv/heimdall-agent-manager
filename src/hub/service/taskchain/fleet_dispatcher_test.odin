@@ -354,7 +354,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		owner_user_id     = owner,
 		machine_hostname  = "localhost",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-09-23T10:00:00Z",
 		updated_at        = "2026-09-23T10:00:00Z",
 	}
@@ -400,8 +400,6 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "JIT Worker",
 		slug             = "jit-worker",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -472,8 +470,8 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	}
 	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
 
-	// Set fleet capacity = 2 for agt_jit_worker with a per-role provider/tier
-	// (tier "cheap" differs from the agent default "normal" so the assertions
+	// Set fleet capacity = 2 for agt_jit_worker with a per-role provider/model
+	// (model "cheap" differs from the agent default "normal" so the assertions
 	// below prove the fleet selection wins).
 	fleet := domain.Task_Chain_Fleet{
 		task_chain_id    = chain_id,
@@ -482,7 +480,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		min_warm         = 0,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "cheap",
+		model             = "cheap",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -528,20 +526,20 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	testing.expect_value(t, string(spawned_inst.project_id), "prj_jit")
 	testing.expect_value(t, spawned_inst.project_path, "/srv/jit/override")
 
-	// REQ-FLEET-PT-2: the fleet row's provider/tier must reach the JIT-provisioned
+	// REQ-FLEET-PT-2: the fleet row's provider/model must reach the JIT-provisioned
 	// instance (worker call site).
 	testing.expect_value(t, spawned_inst.provider, "jetski")
-	testing.expect_value(t, spawned_inst.tier, "cheap")
+	testing.expect_value(t, spawned_inst.model, "cheap")
 
 	// Check instance is enrolled as chain member
 	is_member := is_instance_member_or_coordinator(&svc, chain, spawned_id)
 	testing.expect(t, is_member, "spawned instance must be enrolled as chain member")
 
-	// Fleet provider/tier cleared back to "" -> inherit. The next JIT instance must
+	// Fleet provider/model cleared back to "" -> inherit. The next JIT instance must
 	// fall back to the standard resolution order (agent default jetski/normal).
 	cleared := fleet
 	cleared.provider = ""
-	cleared.tier = ""
+	cleared.model = ""
 	_, _ = iface.taskchain_upsert_fleet(&tc_repo, cleared)
 
 	task2 := domain.Task{
@@ -573,22 +571,20 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 	testing.expect(t, inherited_ok, "second spawned instance must exist in repository")
 	testing.expect_value(t, inherited_inst.bridge_id, "brg_jit")
 	testing.expect_value(t, inherited_inst.provider, "jetski")
-	testing.expect_value(t, inherited_inst.tier, "normal")
+	testing.expect_value(t, inherited_inst.model, "normal")
 	// REQ-TB-3: with no task pin the same inherited project context resolves its
 	// path on the fallback bridge (coordinator bridge), not the override bridge.
 	testing.expect_value(t, string(inherited_inst.project_id), "prj_jit")
 	testing.expect_value(t, inherited_inst.project_path, "/srv/jit/primary")
 
 	// Reviewer call site: a fleet row for the reviewer agent must reach the
-	// reviewer JIT provision in the REVIEWER DISPATCH PASS (tier "smart" differs
+	// reviewer JIT provision in the REVIEWER DISPATCH PASS (model "smart" differs
 	// from the reviewer agent's default "normal").
 	reviewer_agent := domain.Agent{
 		agent_id         = "agt_jit_reviewer",
 		owner_user_id    = owner,
 		name             = "JIT Reviewer",
 		slug             = "jit-reviewer",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -612,7 +608,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		min_warm         = 0,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "smart",
+		model             = "smart",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -650,7 +646,7 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		testing.expect_value(t, rev_inst.agent_id, "agt_jit_reviewer")
 		testing.expect_value(t, rev_inst.bridge_id, override_bridge.bridge_id)
 		testing.expect_value(t, rev_inst.provider, "jetski")
-		testing.expect_value(t, rev_inst.tier, "smart")
+		testing.expect_value(t, rev_inst.model, "smart")
 		testing.expect_value(t, rev_inst.current_task_id, "task_jit_review")
 		testing.expect_value(t, rev_inst.current_task_role, domain.Current_Task_Role.Review)
 		// REQ-TB-3: reviewer JIT spawn keeps the inherited project context and
@@ -676,8 +672,6 @@ test_dynamic_fleet_jit_provisioning :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Offline JIT Worker",
 		slug             = "offline-jit-worker",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -808,8 +802,6 @@ test_stopped_warm_instance_reuse_and_auto_start :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Worker Agent",
 		slug             = "worker-agent",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -820,8 +812,6 @@ test_stopped_warm_instance_reuse_and_auto_start :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Reviewer Agent",
 		slug             = "reviewer-agent",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -1037,7 +1027,7 @@ test_dynamic_fleet_schedule_bridge_pinning_and_live_count_scope :: proc(t: ^test
 		owner_user_id     = owner,
 		machine_hostname  = "dawnstar-host",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-09-23T10:00:00Z",
 		updated_at        = "2026-09-23T10:00:00Z",
 	}
@@ -1048,7 +1038,7 @@ test_dynamic_fleet_schedule_bridge_pinning_and_live_count_scope :: proc(t: ^test
 		owner_user_id     = owner,
 		machine_hostname  = "riverwood-host",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-09-23T10:00:00Z",
 		updated_at        = "2026-09-23T10:00:00Z",
 	}
@@ -1089,8 +1079,6 @@ test_dynamic_fleet_schedule_bridge_pinning_and_live_count_scope :: proc(t: ^test
 		owner_user_id    = owner,
 		name             = "Pinned Worker",
 		slug             = "pinned-worker",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -1196,7 +1184,7 @@ test_dynamic_fleet_schedule_bridge_pinning_and_live_count_scope :: proc(t: ^test
 		min_warm         = 0,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "normal",
+		model             = "normal",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:00:00Z",
 	}
@@ -1542,7 +1530,7 @@ test_fsm_unified_atomic_start_and_jit_instance_binding :: proc(t: ^testing.T) {
 		owner_user_id     = owner,
 		machine_hostname  = "localhost",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-10-01T10:00:00Z",
 		updated_at        = "2026-10-01T10:00:00Z",
 	}
@@ -1574,8 +1562,6 @@ test_fsm_unified_atomic_start_and_jit_instance_binding :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Atomic Worker",
 		slug             = "atomic-worker",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -1648,7 +1634,7 @@ test_fsm_unified_atomic_start_and_jit_instance_binding :: proc(t: ^testing.T) {
 		min_warm         = 1,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "normal",
+		model             = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -1902,7 +1888,7 @@ test_fsm_watchdog_auto_recovery_crashed_worker_respawn :: proc(t: ^testing.T) {
 		owner_user_id     = owner,
 		machine_hostname  = "localhost",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-10-01T10:00:00Z",
 		updated_at        = "2026-10-01T10:00:00Z",
 	}
@@ -1933,8 +1919,6 @@ test_fsm_watchdog_auto_recovery_crashed_worker_respawn :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Recovery Worker",
 		slug             = "recovery-worker",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -2006,7 +1990,7 @@ test_fsm_watchdog_auto_recovery_crashed_worker_respawn :: proc(t: ^testing.T) {
 		min_warm         = 1,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "normal",
+		model             = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -3205,7 +3189,7 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 		owner_user_id     = owner,
 		machine_hostname  = "localhost",
 		status            = .Online,
-		capabilities_json = `{"capabilities":[{"provider":"jetski","tiers":["cheap","normal","smart"],"default_tier":"normal"}],"provider":"jetski","default_tier":"normal"}`,
+		capabilities_json = `{"capabilities":[{"provider":"jetski","models":["cheap","normal","smart"],"default_model":"normal"}],"provider":"jetski","default_model":"normal"}`,
 		created_at        = "2026-10-01T10:00:00Z",
 		updated_at        = "2026-10-01T10:00:00Z",
 	}
@@ -3237,8 +3221,6 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Worker Agent",
 		slug             = "worker-agent",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -3249,8 +3231,6 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 		owner_user_id    = owner,
 		name             = "Reviewer Agent",
 		slug             = "reviewer-agent",
-		default_provider = "jetski",
-		default_tier     = "normal",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -3324,7 +3304,7 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 	}
 	_, _, _ = iface.agent_save_instance(&ag_repo, coord_inst)
 
-	// Reviewer fleet capacity = 2, provider = "jetski", tier = "smart"
+	// Reviewer fleet capacity = 2, provider = "jetski", model = "smart"
 	rev_fleet := domain.Task_Chain_Fleet{
 		task_chain_id    = chain_id,
 		agent_id         = "agt_fsm_reviewer",
@@ -3332,7 +3312,7 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 		min_warm         = 1,
 		idle_ttl_seconds = 300,
 		provider         = "jetski",
-		tier             = "smart",
+		model             = "smart",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	}
@@ -3494,7 +3474,7 @@ test_fsm_reviewer_auto_binding_and_jit_on_in_validation :: proc(t: ^testing.T) {
 		jit_rev_inst, j_ok, _ := iface.agent_get_instance(&ag_repo, jit_rev_id)
 		testing.expect(t, j_ok, "provisioned JIT reviewer instance must exist in agent repository")
 		testing.expect_value(t, jit_rev_inst.agent_id, "agt_fsm_reviewer")
-		testing.expect_value(t, jit_rev_inst.tier, "smart")
+		testing.expect_value(t, jit_rev_inst.model, "smart")
 		testing.expect_value(t, jit_rev_inst.current_task_id, "task_fsm_rev_2")
 		testing.expect_value(t, jit_rev_inst.current_task_role, domain.Current_Task_Role.Review)
 	}

@@ -102,13 +102,10 @@ export function useActionCatalog(): ActionCatalog {
         // The /agents serializer emits `agent_id` (no `id`); fall back for safety.
         const id = String(agent?.agent_id || agent?.agentId || agent?.id || '');
         const label = String(agent?.name || agent?.slug || id);
-        const provider = String(agent?.default_provider || agent?.defaultProvider || '');
-        const tier = String(agent?.default_tier || agent?.defaultTier || '');
-        const sub = [provider, tier].filter(Boolean).join(' / ');
         return {
           id,
           label,
-          sub,
+          sub: String(agent?.template_id || agent?.templateId || ''),
           keywords: [id, label, String(agent?.slug || '')].filter(Boolean).join(' '),
           href: buildRouteHash(`/agents/${encodeURIComponent(id)}`, ''),
         };

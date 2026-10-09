@@ -414,9 +414,9 @@ function TargetCard({ record, catalog }: { record: Action; catalog: ActionCatalo
                 <Text as="div" role="body-sm">{record.target_provider}</Text>
               </DetailRow>
             ) : null}
-            {record.target_tier ? (
-              <DetailRow label="Tier">
-                <Text as="div" role="body-sm">{record.target_tier}</Text>
+            {record.target_model ? (
+              <DetailRow label="Model">
+                <Text as="div" role="body-sm">{record.target_model}</Text>
               </DetailRow>
             ) : null}
             {record.target_project_id ? (

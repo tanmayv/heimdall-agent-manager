@@ -279,7 +279,7 @@ test_bridge_shell_input_and_resize_routes :: proc(t: ^testing.T) {
 	agent_res := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = "/api/v1/agents",
-		body = `{"name":"Coder Agent","slug":"coder","default_provider":"claude","default_tier":"normal"}`,
+		body = `{"name":"Coder Agent","slug":"coder","default_provider":"claude","default_model":"normal"}`,
 		request_id = "req_agent",
 		remote_addr = "127.0.0.1",
 		headers = alice[:],
@@ -300,7 +300,7 @@ test_bridge_shell_input_and_resize_routes :: proc(t: ^testing.T) {
 	support_res := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "PATCH",
 		path = support_path,
-		body = `{"enabled":true,"provider":"claude","tier":"normal"}`,
+		body = `{"enabled":true,"provider":"claude","model":"normal"}`,
 		request_id = "req_supp",
 		remote_addr = "127.0.0.1",
 		headers = alice[:],

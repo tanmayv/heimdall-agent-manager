@@ -43,17 +43,17 @@ main :: proc() {
 	// Sender agent + instance.
 	sender_agent := "agent_sender"
 	sender_inst := "inst_sender"
-	_, sa_ok, sa_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = sender_agent, owner_user_id = owner, name = "Sender", slug = "sender", default_provider = "claude", default_tier = "normal", state = .Active, created_at = seed, updated_at = seed})
+	_, sa_ok, sa_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = sender_agent, owner_user_id = owner, name = "Sender", slug = "sender", default_provider = "claude", default_model = "normal", state = .Active, created_at = seed, updated_at = seed})
 	check(sa_ok, sa_err.message)
-	_, si_ok, si_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = sender_inst, owner_user_id = owner, agent_id = sender_agent, bridge_id = "bridge_x", provider = "claude", tier = "normal", chain_id = "chain_x", runtime_status = "running", startup_status = "ready", activity_status = "idle", created_at = seed, updated_at = seed, started_at = seed, last_seen_at = seed})
+	_, si_ok, si_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = sender_inst, owner_user_id = owner, agent_id = sender_agent, bridge_id = "bridge_x", provider = "claude", model = "normal", chain_id = "chain_x", runtime_status = "running", startup_status = "ready", activity_status = "idle", created_at = seed, updated_at = seed, started_at = seed, last_seen_at = seed})
 	check(si_ok, si_err.message)
 
 	// Target agent + instance (recipient of the agent_to_agent message).
 	target_agent := "agent_target"
 	target_inst := "inst_target"
-	_, ta_ok, ta_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = target_agent, owner_user_id = owner, name = "Target", slug = "target", default_provider = "claude", default_tier = "normal", state = .Active, created_at = seed, updated_at = seed})
+	_, ta_ok, ta_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = target_agent, owner_user_id = owner, name = "Target", slug = "target", default_provider = "claude", default_model = "normal", state = .Active, created_at = seed, updated_at = seed})
 	check(ta_ok, ta_err.message)
-	_, ti_ok, ti_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = target_inst, owner_user_id = owner, agent_id = target_agent, bridge_id = "bridge_x", provider = "claude", tier = "normal", chain_id = "chain_x", runtime_status = "running", startup_status = "ready", activity_status = "idle", created_at = seed, updated_at = seed, started_at = seed, last_seen_at = seed})
+	_, ti_ok, ti_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = target_inst, owner_user_id = owner, agent_id = target_agent, bridge_id = "bridge_x", provider = "claude", model = "normal", chain_id = "chain_x", runtime_status = "running", startup_status = "ready", activity_status = "idle", created_at = seed, updated_at = seed, started_at = seed, last_seen_at = seed})
 	check(ti_ok, ti_err.message)
 
 	user_auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = string(owner), name = string(owner)}

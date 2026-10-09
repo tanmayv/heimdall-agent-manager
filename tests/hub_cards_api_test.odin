@@ -341,7 +341,7 @@ main :: proc() {
 		name = "Curator Agent",
 		slug = "curator",
 		default_provider = "claude",
-		default_tier = "smart",
+		default_model = "smart",
 		state = .Active,
 		created_at = "2026-01-01T00:00:00Z",
 		updated_at = "2026-01-01T00:00:00Z",
@@ -354,7 +354,7 @@ main :: proc() {
 		agent_id = "agt_curator",
 		bridge_id = brg_id,
 		provider = "claude",
-		tier = "smart",
+		model = "smart",
 		project_id = "proj_test",
 		runtime_status = "live",
 		startup_status = "running",
@@ -624,7 +624,7 @@ main :: proc() {
 	})
 	check(resp_au_agent.status == 201, fmt.tprintf("create au agent: %d %s", resp_au_agent.status, resp_au_agent.body))
 	au_agent_id := extract_json_string(resp_au_agent.body, "agent_id")
-	au_ops := strings.concatenate({"[{\"op\":\"agent.update\",\"label\":\"Edit agent\",\"args\":{\"agent_id\":\"", au_agent_id, "\",\"name\":\"AU Renamed\",\"default_tier\":\"smart\"}}]"})
+	au_ops := strings.concatenate({"[{\"op\":\"agent.update\",\"label\":\"Edit agent\",\"args\":{\"agent_id\":\"", au_agent_id, "\",\"name\":\"AU Renamed\",\"default_model\":\"smart\"}}]"})
 	au_card := create_card_via_api(&graph.router, "Update agent", au_ops, "{}", alice[:], "au")
 	au_accept := accept_card_via_api(&graph.router, au_card, alice[:], "au")
 	check(au_accept.status == 200, fmt.tprintf("accept agent.update card: %d %s", au_accept.status, au_accept.body))
@@ -632,7 +632,7 @@ main :: proc() {
 		method = "GET", path = strings.concatenate({"/api/v1/agents/", au_agent_id}), request_id = "req_au_after", remote_addr = "127.0.0.1", headers = alice[:],
 	})
 	check(au_after.status == 200 && strings.contains(au_after.body, "\"name\":\"AU Renamed\""), fmt.tprintf("agent.update must rename agent: %s", au_after.body))
-	check(strings.contains(au_after.body, "\"default_tier\":\"smart\""), "agent.update must update default_tier")
+	check(strings.contains(au_after.body, "\"default_model\":\"smart\""), "agent.update must update default_model")
 
 	// --- agent.delete: accepting soft-archives the durable agent (state=archived) ---
 	resp_ad_agent := api_http.router_dispatch(&graph.router, api_http.Request{
@@ -1326,10 +1326,10 @@ main :: proc() {
 	cookie_reviewer_fleet, cookie_reviewer_found := fleet_for_agent(cookie_fleets, "agt_cookie_reviewer")
 	check(cookie_assignee_found && cookie_reviewer_found, "cookie durable assignee and reviewer must each have Fleet rows")
 	check(cookie_assignee_fleet.capacity == 1 && cookie_assignee_fleet.min_warm == 0 && cookie_assignee_fleet.idle_ttl_seconds == 600, "ensured cookie assignee must use default Fleet capacity")
-	check(cookie_reviewer_fleet.provider == "" && cookie_reviewer_fleet.tier == "", "ensured cookie reviewer must inherit provider and tier")
+	check(cookie_reviewer_fleet.provider == "" && cookie_reviewer_fleet.model == "", "ensured cookie reviewer must inherit provider and model")
 
 	_, configured_cookie_err := iface.taskchain_upsert_fleet(&graph.repos.taskchains, domain.Task_Chain_Fleet{
-		task_chain_id = domain.Task_Chain_ID(fleet_chain_id), agent_id = "agt_cookie_assignee", capacity = 7, min_warm = 3, idle_ttl_seconds = 901, provider = "codex", tier = "max", created_at = "2026-09-25T00:00:00Z", updated_at = "2026-09-25T00:00:00Z",
+		task_chain_id = domain.Task_Chain_ID(fleet_chain_id), agent_id = "agt_cookie_assignee", capacity = 7, min_warm = 3, idle_ttl_seconds = 901, provider = "codex", model = "max", created_at = "2026-09-25T00:00:00Z", updated_at = "2026-09-25T00:00:00Z",
 	})
 	check(configured_cookie_err.code == domain.Error_Code.None, "preconfigure cookie Fleet row failed")
 	cookie_omit_patch := api_http.router_dispatch(&graph.router, api_http.Request{
@@ -1345,7 +1345,7 @@ main :: proc() {
 	check(preserved_cookie_err.code == domain.Error_Code.None, "list preserved cookie Fleet rows failed")
 	preserved_cookie_fleet, preserved_cookie_found := fleet_for_agent(preserved_cookie_fleets, "agt_cookie_assignee")
 	check(preserved_cookie_found, "preconfigured durable assignee Fleet row must remain")
-	check(preserved_cookie_fleet.capacity == 7 && preserved_cookie_fleet.min_warm == 3 && preserved_cookie_fleet.idle_ttl_seconds == 901 && preserved_cookie_fleet.provider == "codex" && preserved_cookie_fleet.tier == "max", "ensure must preserve every configured Fleet field")
+	check(preserved_cookie_fleet.capacity == 7 && preserved_cookie_fleet.min_warm == 3 && preserved_cookie_fleet.idle_ttl_seconds == 901 && preserved_cookie_fleet.provider == "codex" && preserved_cookie_fleet.model == "max", "ensure must preserve every configured Fleet field")
 
 	cookie_replace_patch := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "PATCH",

@@ -26,9 +26,9 @@ main :: proc() {
 	now := "2026-07-23T00:00:00Z"
 	agent_id := "agent_relay"
 	instance_id := "inst_relay"
-	_, agent_saved, agent_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = agent_id, owner_user_id = owner, name = "Relay Agent", slug = "relay", default_provider = "claude", default_tier = "normal", state = .Active, created_at = now, updated_at = now})
+	_, agent_saved, agent_err := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = agent_id, owner_user_id = owner, name = "Relay Agent", slug = "relay", default_provider = "claude", default_model = "normal", state = .Active, created_at = now, updated_at = now})
 	check(agent_saved, agent_err.message)
-	_, inst_saved, inst_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent_id, bridge_id = "bridge_relay", provider = "claude", tier = "normal", chain_id = "chain_relay", runtime_status = "starting", startup_status = "starting", activity_status = "unknown", created_at = now, updated_at = now, started_at = now, last_seen_at = now})
+	_, inst_saved, inst_err := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent_id, bridge_id = "bridge_relay", provider = "claude", model = "normal", chain_id = "chain_relay", runtime_status = "starting", startup_status = "starting", activity_status = "unknown", created_at = now, updated_at = now, started_at = now, last_seen_at = now})
 	check(inst_saved, inst_err.message)
 	auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = string(owner), name = string(owner)}
 	conv, conv_saved, conv_err := content_service.create_conversation(&graph.content, auth, content_service.Chat_Input{agent_id = agent_id, agent_instance_id = instance_id, title = "Relay Chat"})

@@ -1,6 +1,5 @@
 package agent_runtime
 
-import "core:fmt"
 import "core:strings"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
@@ -8,13 +7,14 @@ import tmux "odin_test:lib/tmux"
 
 Agent_Profile :: struct {
 	command: []string,
+	base_args: []string,
 	yolo_flags: []string,
 	prompt_flags: []string,
 	starter_prompt: string,
 	prompt_delivery: string,
 	prompt_tmux_delay_ms: int,
 	prompt_tmux_enter: bool,
-	models: cfg_lib.Model_Tiers_Config,
+	model_flag: string,
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
 }
@@ -22,17 +22,15 @@ Agent_Profile :: struct {
 Startup_Probe_Result :: struct { status: string, detail: string }
 Activity_Sample :: struct { status: string, source: string }
 
-build_agent_command :: proc(profile: Agent_Profile, tier, daemon_url, agent_token, agent_instance_id: string) -> []string {
+build_agent_command :: proc(profile: Agent_Profile, model, daemon_url, agent_token, agent_instance_id: string) -> []string {
+	if strings.trim_space(model) == "" do return nil
 	argv := make([dynamic]string)
 	append(&argv, ..profile.command)
+	append(&argv, ..profile.base_args)
 	append(&argv, ..profile.yolo_flags)
-	if profile.models.flag != "" {
-		model := cfg_lib.resolve_model_value(profile.models, tier)
-		if model != "" {
-			append(&argv, profile.models.flag)
-			append(&argv, model)
-		}
-	}
+	if strings.trim_space(profile.model_flag) == "" { delete(argv); return nil }
+	append(&argv, profile.model_flag)
+	append(&argv, model)
 	if prompt_delivery(profile) == "flag-injection" {
 		prompt := render_starter_prompt_for_agent(profile, daemon_url, agent_token, agent_instance_id)
 		if strings.trim_space(prompt) != "" {
@@ -138,8 +136,4 @@ first_pattern :: proc(text: string, patterns: []string) -> int {
 startup_reason :: proc(cfg: cfg_lib.Startup_Detection_Config, idx: int, fallback: string) -> string {
 	if idx >= 0 && idx < len(cfg.sanitized_reason_mapping) && strings.trim_space(cfg.sanitized_reason_mapping[idx]) != "" do return cfg.sanitized_reason_mapping[idx]
 	return fallback
-}
-
-log_model_tier_unavailable :: proc(tier, provider: string) {
-	if tier != "" do fmt.println("model_tier_unavailable tier", tier, "provider", provider)
 }

@@ -73,12 +73,12 @@ enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, l
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// that matches an agent to a provider/tier fails — which is a real difference
+	// that matches an agent to a provider/model fails — which is a real difference
 	// between the two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online (as a connect would), where the deleted
 	// enroll path left it Offline.
-	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\",\"smart\"],\"default_model\":\"normal\"}]}")
 
 	return extract_json_string(issued.body, "bridge_id")
 }
@@ -153,7 +153,7 @@ main :: proc() {
 		bridge_id = bridge_id,
 		display_name = "Repo Direct Name",
 		provider = "claude",
-		tier = "normal",
+		model = "normal",
 		runtime_status = "running",
 		created_at = "2026-09-03T10:00:00Z",
 		updated_at = "2026-09-03T10:00:00Z",
@@ -213,11 +213,11 @@ main :: proc() {
 	// display-name assertions below derive from ("Reviewer #1"). Reusing the seeded
 	// agent instead would have changed those to "reviewer #1" and quietly altered
 	// what this test checks.
-	agent_res1 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Reviewer\",\"slug\":\"reviewer-custom\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
+	agent_res1 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Reviewer\",\"slug\":\"reviewer-custom\",\"default_provider\":\"claude\",\"default_model\":\"normal\"}", alice[:])
 	check(agent_res1.status == 201, "create Reviewer agent must succeed")
 	reviewer_id := extract_json_string(agent_res1.body, "agent_id")
 
-	agent_res2 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Coder\",\"slug\":\"coder\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
+	agent_res2 := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Coder\",\"slug\":\"coder\",\"default_provider\":\"claude\",\"default_model\":\"normal\"}", alice[:])
 	check(agent_res2.status == 201, "create Coder agent must succeed")
 	coder_id := extract_json_string(agent_res2.body, "agent_id")
 
@@ -227,7 +227,7 @@ main :: proc() {
 		name = "",
 		slug = "helper-bot",
 		default_provider = "claude",
-		default_tier = "normal",
+		default_model = "normal",
 		state = .Active,
 		created_at = "2026-09-03T10:00:00Z",
 		updated_at = "2026-09-03T10:00:00Z",
@@ -240,7 +240,7 @@ main :: proc() {
 		name = "",
 		slug = "",
 		default_provider = "claude",
-		default_tier = "normal",
+		default_model = "normal",
 		state = .Active,
 		created_at = "2026-09-03T10:00:00Z",
 		updated_at = "2026-09-03T10:00:00Z",

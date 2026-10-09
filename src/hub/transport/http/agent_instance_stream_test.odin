@@ -155,7 +155,7 @@ clone_agent_instance_helper :: proc(s: domain.Agent_Instance) -> domain.Agent_In
 		bridge_id         = strings.clone(s.bridge_id),
 		display_name      = strings.clone(s.display_name),
 		provider          = strings.clone(s.provider),
-		tier              = strings.clone(s.tier),
+		model              = strings.clone(s.model),
 		project_id        = s.project_id,
 		chain_id          = strings.clone(s.chain_id),
 		conversation_id   = strings.clone(s.conversation_id),

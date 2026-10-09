@@ -1,5 +1,5 @@
 // REQ-COMPOSER-MODEL-ICON-33:
-// Unit and regression tests for model/provider selector icon button on mobile & small composer width with distinct tier icons.
+// Unit and regression tests for model/provider selector icon button on mobile & small composer width with distinct model icons.
 //
 // RUN: npx tsx tests/ui_composer_model_icon_test.ts
 //  OR: node --test tests/ui_composer_model_icon_test.ts
@@ -16,39 +16,39 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const THREAD_PAGE_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ConversationThreadPage.tsx');
 
-test('REQ-COMPOSER-MODEL-ICON-33: tierMeta defines distinct icons for cheap, normal, and smart tiers', () => {
+test('REQ-COMPOSER-MODEL-ICON-33: tierMeta defines distinct icons for cheap, normal, and smart models', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
 
   // Verify tierMeta definitions
   assert.match(
     content,
     /cheap:\s*\{\s*icon:\s*['"]rocket['"],\s*blurb:\s*['"]Fast, lower cost['"]\s*\}/,
-    'cheap tier must map to rocket icon'
+    'cheap model must map to rocket icon'
   );
   assert.match(
     content,
     /normal:\s*\{\s*icon:\s*['"]spark['"],\s*blurb:\s*['"]Balanced['"]\s*\}/,
-    'normal tier must map to spark icon'
+    'normal model must map to spark icon'
   );
   assert.match(
     content,
     /smart:\s*\{\s*icon:\s*['"]zap['"],\s*blurb:\s*['"]Best reasoning['"]\s*\}/,
-    'smart tier must map to zap icon'
+    'smart model must map to zap icon'
   );
 });
 
-test('REQ-COMPOSER-MODEL-ICON-33: runtimeControls renders distinct tier icons for cheap, normal, and smart options', () => {
+test('REQ-COMPOSER-MODEL-ICON-33: runtimeControls renders distinct model icons for cheap, normal, and smart options', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
 
-  // runtimeControls iterates tierOptions with meta.icon
+  // runtimeControls iterates modelOptions with meta.icon
   assert.ok(
-    content.includes('data-debug-id={`conversation-tier-option-${t}`}'),
-    'runtimeControls must render conversation-tier-option-${t} buttons'
+    content.includes('data-debug-id={`conversation-model-option-${t}`}'),
+    'runtimeControls must render conversation-model-option-${t} buttons'
   );
   assert.match(
     content,
     /<Icon\s+name=\{meta\.icon\}\s+size=\{16\}\s*\/>/,
-    'runtimeControls tier option buttons must render <Icon name={meta.icon} size={16} />'
+    'runtimeControls model option buttons must render <Icon name={meta.icon} size={16} />'
   );
 });
 
@@ -89,19 +89,19 @@ test('REQ-COMPOSER-MODEL-ICON-33: useCompactModelTrigger activates on mobile or 
   );
 });
 
-test('REQ-COMPOSER-MODEL-ICON-33: compact model trigger renders as an h-9 w-9 icon button with activeTierIcon', () => {
+test('REQ-COMPOSER-MODEL-ICON-33: compact model trigger renders as an h-9 w-9 icon button with activeModelIcon', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
 
-  // Active tier icon resolution
+  // Active model icon resolution
   assert.match(
     content,
-    /const\s+activeTier\s*=\s*tier\s*\|\|\s*instanceTier\s*\|\|\s*['"]normal['"];?/,
-    'activeTier must resolve from tier, instanceTier, or default to normal'
+    /const\s+activeModel\s*=\s*model\s*\|\|\s*instanceModel\s*\|\|\s*['"]normal['"];?/,
+    'activeModel must resolve from model, instanceModel, or default to normal'
   );
   assert.match(
     content,
-    /const\s+activeTierIcon\s*=\s*activeTierMeta\.icon;?/,
-    'activeTierIcon must resolve from activeTierMeta.icon'
+    /const\s+activeModelIcon\s*=\s*activeModelMeta\.icon;?/,
+    'activeModelIcon must resolve from activeModelMeta.icon'
   );
 
   // Compact button rendering
@@ -112,26 +112,26 @@ test('REQ-COMPOSER-MODEL-ICON-33: compact model trigger renders as an h-9 w-9 ic
   );
   assert.match(
     content,
-    /<Icon\s+name=\{activeTierIcon\}\s+size=\{16\}\s*\/>/,
-    'Compact trigger must render <Icon name={activeTierIcon} size={16} />'
+    /<Icon\s+name=\{activeModelIcon\}\s+size=\{16\}\s*\/>/,
+    'Compact trigger must render <Icon name={activeModelIcon} size={16} />'
   );
 });
 
-test('REQ-COMPOSER-MODEL-ICON-33: wide model trigger renders active tier icon with text labels and chevron', () => {
+test('REQ-COMPOSER-MODEL-ICON-33: wide model trigger renders active model icon with text labels and chevron', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
 
   assert.match(
     content,
-    /<Icon\s+name=\{activeTierIcon\}\s+size=\{14\}\s+className="shrink-0\s+text-muted"\s*\/>/,
-    'Wide trigger must render activeTierIcon prefix'
+    /<Icon\s+name=\{activeModelIcon\}\s+size=\{14\}\s+className="shrink-0\s+text-muted"\s*\/>/,
+    'Wide trigger must render activeModelIcon prefix'
   );
   assert.ok(
     content.includes('instanceProvider || \'model\''),
     'Wide trigger must display instanceProvider'
   );
   assert.ok(
-    content.includes('instanceTier || \'—\''),
-    'Wide trigger must display instanceTier'
+    content.includes('instanceModel || \'—\''),
+    'Wide trigger must display instanceModel'
   );
 });
 
@@ -162,8 +162,8 @@ test('REQ-COMPOSER-MODEL-ICON-33: all required debug IDs and accessibility attri
     'Must preserve data-debug-id="conversation-runtime-menu-btn"'
   );
   assert.ok(
-    content.includes('aria-label="Change provider and tier"'),
-    'Must preserve aria-label="Change provider and tier"'
+    content.includes('aria-label="Change provider and model"'),
+    'Must preserve aria-label="Change provider and model"'
   );
   assert.ok(
     content.includes('data-debug-id="conversation-runtime-mobile-sheet"'),

@@ -17,7 +17,7 @@ export type Action = {
   target_agent_id?: string;
   target_bridge_id?: string;
   target_provider?: string;
-  target_tier?: string;
+  target_model?: string;
   target_project_id?: string;
   instance_strategy?: ActionInstanceStrategy;
   /** Set by a `fresh_per_run` action: the instance the previous fire minted. */
@@ -42,7 +42,7 @@ export type CreateActionInput = {
   target_agent_id?: string;
   target_bridge_id?: string;
   target_provider?: string;
-  target_tier?: string;
+  target_model?: string;
   target_project_id?: string;
   instance_strategy?: ActionInstanceStrategy;
   prompt_text: string;

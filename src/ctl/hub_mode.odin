@@ -48,9 +48,9 @@ ctl_hub_agents :: proc(base, token, action: string, args: []string) {
 	if action == "running" || action == "live" { ctl_hub_request(base, token, "GET", "/api/v1/agent-instances?runtime_status=live", ""); return }
 	if action == "create" {
 		name := option_value(args, "--name", "")
-		if name == "" { fmt.println("usage: ham-ctl hub agents create --name <name> [--slug <slug>] [--template <id>] [--provider <profile>] [--tier <tier>]"); return }
+		if name == "" { fmt.println("usage: ham-ctl hub agents create --name <name> [--slug <slug>] [--template <id>]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name)); append(&fields, json_kv("slug", option_value(args, "--slug", name))); append(&fields, json_kv("template_id", option_value(args, "--template", ""))); append(&fields, json_kv("default_provider", option_value(args, "--provider", ""))); append(&fields, json_kv("default_tier", option_value(args, "--tier", ""))); append(&fields, json_kv("instructions", option_value(args, "--instructions", "")))
+		append(&fields, json_kv("name", name)); append(&fields, json_kv("slug", option_value(args, "--slug", name))); append(&fields, json_kv("template_id", option_value(args, "--template", ""))); append(&fields, json_kv("instructions", option_value(args, "--instructions", "")))
 		ctl_hub_request(base, token, "POST", "/api/v1/agents", json_object_from_slice(fields[:]))
 		return
 	}
@@ -59,10 +59,11 @@ ctl_hub_agents :: proc(base, token, action: string, args: []string) {
 
 ctl_hub_launch :: proc(base, token: string, args: []string) {
 	agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
-	if agent_id == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> --bridge-id <bridge_id> [--display-name <name>] [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
-	if option_value(args, "--bridge-id", "") == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> --bridge-id <bridge_id> [--display-name <name>] [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
+	provider := option_value(args, "--provider", "")
+	model := option_value(args, "--model", "")
+	if agent_id == "" || option_value(args, "--bridge-id", "") == "" || provider == "" || model == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> --bridge-id <bridge_id> --provider <provider> --model <model> [--display-name <name>] [--project-id <id>] [--chain-id <id>]"); return }
 	fields := make([dynamic]string)
-	append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("tier", option_value(args, "--tier", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", ""))))
+	append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", provider)); append(&fields, json_kv("model", model)); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", ""))))
 	if dn := option_value(args, "--display-name", ""); dn != "" do append(&fields, json_kv("display_name", dn))
 	ctl_hub_request(base, token, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:]))
 }
@@ -74,7 +75,7 @@ ctl_hub_chats :: proc(base, token, action: string, args: []string) {
 		instance_id := option_value(args, "--agent-instance-id", option_value(args, "--instance-id", ""))
 		if agent_id == "" && instance_id == "" { fmt.println("usage: ham-ctl hub chats create --agent-id <agent_id>|--agent-instance-id <id> [--body <text>]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("agent_instance_id", instance_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("tier", option_value(args, "--tier", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", "")))); append(&fields, json_kv("title", option_value(args, "--title", "")))
+		append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("agent_instance_id", instance_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("model", option_value(args, "--model", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", "")))); append(&fields, json_kv("title", option_value(args, "--title", "")))
 		body := option_value(args, "--body", "")
 		if body != "" do append(&fields, strings.concatenate({"\"initial_message\":", json_object(json_kv("body", body))}))
 		ctl_hub_request(base, token, "POST", "/api/v1/chats", json_object_from_slice(fields[:]))
@@ -200,13 +201,13 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 	}
 	if action == "add-agent" {
 		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
-		if chain_id == "" || agent_id == "" { fmt.println("usage: ham-ctl hub task-chains add-agent --chain-id <id> --agent-id <id> [--bridge-id <id>] [--provider <profile>] [--tier <tier>] [--project-id <id>]"); return }
+		if chain_id == "" || agent_id == "" { fmt.println("usage: ham-ctl hub task-chains add-agent --chain-id <id> --agent-id <id> [--bridge-id <id>] [--provider <profile>] [--model <model>] [--project-id <id>]"); return }
 		fields := make([dynamic]string)
 		append(&fields, json_kv("agent_id", agent_id))
 		append(&fields, json_kv("chain_id", chain_id))
 		if b := option_value(args, "--bridge-id", ""); b != "" do append(&fields, json_kv("bridge_id", b))
 		if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
-		if t := option_value(args, "--tier", ""); t != "" do append(&fields, json_kv("tier", t))
+		if t := option_value(args, "--model", ""); t != "" do append(&fields, json_kv("model", t))
 		if pr := option_value(args, "--project-id", ""); pr != "" do append(&fields, json_kv("project_id", pr))
 		ctl_hub_request(base, token, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:])); return
 	}
@@ -642,7 +643,7 @@ ctl_hub_actions :: proc(base, token: string, tokens, args: []string) {
 	if action == "create" {
 		prompt := option_value(args, "--prompt", option_value(args, "--body", ""))
 		if prompt == "" {
-			fmt.println("usage: ham-ctl hub actions create --prompt <text> (--instance <id> | --agent-id <id> --bridge <id>) [--provider <p>] [--tier <t>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--cron <expr>] [--timezone <tz>] [--interval <int>] [--active-from <t>] [--active-until <t>] [--blackout-dates <json>] [--target-run-at <t>]")
+			fmt.println("usage: ham-ctl hub actions create --prompt <text> (--instance <id> | --agent-id <id> --bridge <id>) [--provider <p>] [--model <t>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--cron <expr>] [--timezone <tz>] [--interval <int>] [--active-from <t>] [--active-until <t>] [--blackout-dates <json>] [--target-run-at <t>]")
 			return
 		}
 		fields := make([dynamic]string)
@@ -659,7 +660,7 @@ ctl_hub_actions :: proc(base, token: string, tokens, args: []string) {
 			append(&fields, json_kv("target_bridge_id", br))
 		}
 		if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("target_provider", p))
-		if t := option_value(args, "--tier", ""); t != "" do append(&fields, json_kv("target_tier", t))
+		if t := option_value(args, "--model", ""); t != "" do append(&fields, json_kv("target_model", t))
 		if pid := option_value(args, "--project", option_value(args, "--project-id", option_value(args, "--target-project-id", ""))); pid != "" {
 			append(&fields, json_kv("target_project_id", pid))
 		}
@@ -744,8 +745,8 @@ print_hub_help :: proc(cmd: []string) {
 	if len(cmd) > 0 {
 		if cmd[0] == "hub" || cmd[0] == "help" { if len(cmd) > 1 do resource = cmd[1] } else { resource = cmd[0] }
 	}
-	if resource == "agents" { fmt.println("ham-ctl hub agents <list|create>\nPurpose: manage durable Hub agent identities.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... agents list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... agents create --name reviewer --tier normal"); return }
-	if resource == "launch" { fmt.println("ham-ctl hub launch --agent-id <id> [--bridge-id <id>] [--tier <tier>]\nPurpose: start a new agent instance through Hub/Bridge.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer --tier normal"); return }
+	if resource == "agents" { fmt.println("ham-ctl hub agents <list|create>\nPurpose: manage durable Hub agent identities.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... agents list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... agents create --name reviewer --model normal"); return }
+	if resource == "launch" { fmt.println("ham-ctl hub launch --agent-id <id> [--bridge-id <id>] [--model <model>]\nPurpose: start a new agent instance through Hub/Bridge.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer --model normal"); return }
 	if resource == "chats" { fmt.println("ham-ctl hub chats <list|create|send|messages>\nPurpose: read/write user chat conversations.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... chats list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... chats send --conversation-id chat_123 --body 'Hello'"); return }
 	if resource == "tasks" { fmt.println("ham-ctl hub tasks <list|create|publish|status|nudge> --chain-id <id>\nPurpose: manage Hub task records.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... tasks list --chain-id chain_123"); return }
 	if resource == "task-chains" { fmt.println("ham-ctl hub task-chains <list|create|show|directory|publish|complete|pin|unpin>\nPurpose: manage Hub task chains.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... task-chains create --title 'Fix bug'"); return }
@@ -778,7 +779,7 @@ print_hub_help :: proc(cmd: []string) {
 		fmt.println("  project.delete          Archive (soft-delete) a project.")
 		fmt.println("  task_chain.set_status   Change a task chain's status.")
 		fmt.println("  agent.prompt            Send a prompt/message to an agent instance's conversation.")
-		fmt.println("  agent.update            Edit a durable agent's fields (name/provider/tier/instructions/...).")
+		fmt.println("  agent.update            Edit a durable agent's fields (name/provider/model/instructions/...).")
 		fmt.println("  agent.delete            Archive (soft-delete) a durable agent.")
 		fmt.println("")
 		fmt.println("  Operations run ATOMICALLY (all-or-nothing) only when a card is ACCEPTED; a single")

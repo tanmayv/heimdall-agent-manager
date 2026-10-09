@@ -40,8 +40,8 @@ export function agentProvider(agent: any): string {
   return String(agent?.providerProfile || agent?.provider_profile || '');
 }
 
-export function agentTier(agent: any): string {
-  return String(agent?.modelTier || agent?.model_tier || 'normal') || 'normal';
+export function agentModel(agent: any): string {
+	return String(agent?.model || '');
 }
 
 export function agentProject(agent: any): string {

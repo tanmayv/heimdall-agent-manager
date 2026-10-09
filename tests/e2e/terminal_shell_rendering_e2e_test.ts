@@ -1,7 +1,7 @@
 /**
  * Comprehensive Opaque-Box E2E Test Suite for Terminal Shell Rendering Architecture
  * 
- * Verifies Requirements R1, R2, R3 across Tiers 1-4:
+ * Verifies Requirements R1, R2, R3 across Models 1-4:
  * - R1: Initial Cursor Placement & Screen Snapshot Cleanliness
  * - R2: TUI Application First-Frame Rendering (e.g. Neovim)
  * - R3: Client Terminal Registry & Tab Persistence
@@ -101,10 +101,10 @@ function writeToTerminal(term: any, data: string | Uint8Array): Promise<void> {
 }
 
 // ============================================================================
-// TIER 1: Category-Partition Feature Coverage
+// MODEL 1: Category-Partition Feature Coverage
 // ============================================================================
 
-describe('Tier 1: Category-Partition Feature Coverage', () => {
+describe('Model 1: Category-Partition Feature Coverage', () => {
 
   // Feature Group R1: Screen Snapshot Cleanliness & Initial Cursor Placement
   describe('Group R1: Initial Cursor Placement & Screen Snapshot Cleanliness', () => {
@@ -389,10 +389,10 @@ describe('Tier 1: Category-Partition Feature Coverage', () => {
 });
 
 // ============================================================================
-// TIER 2: Boundary Value Analysis (BVA) & Corner Cases
+// MODEL 2: Boundary Value Analysis (BVA) & Corner Cases
 // ============================================================================
 
-describe('Tier 2: Boundary Value Analysis (BVA) & Corner Cases', () => {
+describe('Model 2: Boundary Value Analysis (BVA) & Corner Cases', () => {
 
   // Boundary Group R1: Snapshot & Cursor Extremes
   describe('Boundary Group R1: Snapshot & Cursor Extremes', () => {
@@ -567,10 +567,10 @@ describe('Tier 2: Boundary Value Analysis (BVA) & Corner Cases', () => {
 });
 
 // ============================================================================
-// TIER 3: Pairwise Combinatorial & Cross-Feature Integration Testing
+// MODEL 3: Pairwise Combinatorial & Cross-Feature Integration Testing
 // ============================================================================
 
-describe('Tier 3: Pairwise Combinatorial & Cross-Feature Integration Testing', () => {
+describe('Model 3: Pairwise Combinatorial & Cross-Feature Integration Testing', () => {
 
   test('T3-COMB-01: Tab switch while active TUI/Neovim stream emits alternate screen buffer sequence', async () => {
     const term1 = new Terminal({ cols: 80, rows: 24, convertEol: false });
@@ -703,10 +703,10 @@ describe('Tier 3: Pairwise Combinatorial & Cross-Feature Integration Testing', (
 });
 
 // ============================================================================
-// TIER 4: Real-World Application Scenarios (End-to-End Workflows)
+// MODEL 4: Real-World Application Scenarios (End-to-End Workflows)
 // ============================================================================
 
-describe('Tier 4: Real-World Application Scenarios', () => {
+describe('Model 4: Real-World Application Scenarios', () => {
 
   test('T4-SCEN-01: Neovim Initial Frame Launch Workflow', async () => {
     // 1. Mount fresh terminal pane

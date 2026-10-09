@@ -44,7 +44,7 @@ DEVICE_TEST_CODE_CHALLENGE :: "J6jJRRlTiLmCVJAjMgzOjMLRQ-xSS_tovxAjutN8JWI"
 
 // The providers a connected bridge would report. Capabilities are NOT part of
 // enrollment in the device flow — see device_enroll_test_bridge.
-DEVICE_TEST_CAPABILITIES :: `{"capabilities":[{"provider":"claude","tiers":["normal","smart"],"default_tier":"normal"}]}`
+DEVICE_TEST_CAPABILITIES :: `{"capabilities":[{"provider":"claude","models":["normal","smart"],"default_model":"normal"}]}`
 
 // device_enroll_test_bridge provisions a bridge owned by whoever `headers`
 // authenticates as, and returns its id and its access token.
@@ -95,7 +95,7 @@ device_enroll_test_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HT
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// matching an agent to a provider/tier fails — a real difference between the
+	// matching an agent to a provider/model fails — a real difference between the
 	// two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online, as a connect would; the deleted enroll

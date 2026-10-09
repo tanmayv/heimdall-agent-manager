@@ -550,7 +550,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	if action == "add-agent" {
 		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
 		if agent_id == "" {
-			fmt.println("usage: ham-ctl task-chains add-agent --chain <id> --agent <id> [--bridge <id>] [--provider <profile>] [--tier <tier>] [--project <id>]")
+			fmt.println("usage: ham-ctl task-chains add-agent --chain <id> --agent <id> [--bridge <id>] [--provider <profile>] [--model <model>] [--project <id>]")
 			return
 		}
 		fields := make([dynamic]string)
@@ -558,7 +558,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		append(&fields, json_kv("chain_id", chain_id))
 		if b := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); b != "" do append(&fields, json_kv("bridge_id", b))
 		if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
-		if t := option_value(args, "--tier", ""); t != "" do append(&fields, json_kv("tier", t))
+		if t := option_value(args, "--model", ""); t != "" do append(&fields, json_kv("model", t))
 		if pr := option_value(args, "--project-id", option_value(args, "--project", "")); pr != "" do append(&fields, json_kv("project_id", pr))
 		ctl_tasks_request(transport, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:]))
 		return

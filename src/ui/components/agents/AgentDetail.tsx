@@ -206,13 +206,11 @@ export function AgentDetailActions({
   );
 }
 
-/** The meta line under the title: provider · tier · state · Updated <relative>. */
+/** The meta line under the title: state · Updated <relative>. */
 export function AgentDetailMeta({ record }: { record: AgentRecord }) {
   const state = agentState(record);
   return (
     <div className="flex flex-wrap items-center gap-2" data-debug-id="agent-view-meta">
-      {record.defaultProvider ? <Badge data-debug-id="agent-view-provider">{record.defaultProvider}</Badge> : null}
-      {record.defaultTier ? <Badge data-debug-id="agent-view-tier">{record.defaultTier}</Badge> : null}
       {state === 'archived' ? (
         <StatusPill tone={stateTone(state)} data-debug-id="agent-view-state">{stateLabel(state)}</StatusPill>
       ) : null}
@@ -258,16 +256,6 @@ export function AgentDetailHeader({
             {stateLabel(state)}
           </StatusPill>
         ) : undefined
-      }
-      badges={
-        <>
-          {record.defaultProvider ? (
-            <Badge data-debug-id="agent-view-provider">{record.defaultProvider}</Badge>
-          ) : null}
-          {record.defaultTier ? (
-            <Badge data-debug-id="agent-view-tier">{record.defaultTier}</Badge>
-          ) : null}
-        </>
       }
       timestamp={`Updated ${relativeTime(record.updatedAt)}`}
       timestampTooltip={absoluteTime(record.updatedAt)}
@@ -434,16 +422,6 @@ export function AgentDetailBody({
   const rail = (
     <Card title="Details" debugId="agent-view-details-card">
       <div className="flex flex-col gap-2">
-        {record.defaultProvider ? (
-          <DetailRow label="Provider">
-            <Text as="div" role="body-sm">{record.defaultProvider}</Text>
-          </DetailRow>
-        ) : null}
-        {record.defaultTier ? (
-          <DetailRow label="Tier">
-            <Text as="div" role="body-sm">{record.defaultTier}</Text>
-          </DetailRow>
-        ) : null}
         {record.templateId ? (
           <DetailRow label="Template">
             <Text as="div" role="body-sm" className="font-mono">{record.templateId}</Text>
@@ -567,7 +545,7 @@ export function LiveInstanceDetailPane({
   const runtimeStatus = String(inst?.runtime_status || inst?.runtimeStatus || '');
   const activityStatus = String(inst?.activity_status || inst?.activityStatus || '');
   const provider = String(inst?.provider || '');
-  const tier = String(inst?.tier || '');
+  const model = String(inst?.model || '');
   const currentTaskId = String(inst?.current_task_id || inst?.currentTaskId || '');
   const currentTaskRole = String(inst?.current_task_role || inst?.currentTaskRole || '');
   const bridgeId = String(inst?.bridge_id || inst?.bridgeId || '');
@@ -726,11 +704,11 @@ export function LiveInstanceDetailPane({
           </div>
         </DetailRow>
 
-        <DetailRow label="Provider & Tier">
+        <DetailRow label="Provider & Model">
           <div className="flex items-center gap-1.5 mt-0.5">
             {provider ? <Badge data-debug-id="live-instance-provider">{provider}</Badge> : null}
-            {tier ? <Badge data-debug-id="live-instance-tier">{tier}</Badge> : null}
-            {!provider && !tier ? <Text role="body" tone="muted">—</Text> : null}
+            {model ? <Badge data-debug-id="live-instance-model">{model}</Badge> : null}
+            {!provider && !model ? <Text role="body" tone="muted">—</Text> : null}
           </div>
         </DetailRow>
 
@@ -790,7 +768,7 @@ export function LiveInstanceDetailPane({
           badges={
             <>
               {provider ? <Badge data-debug-id="live-instance-header-provider">{provider}</Badge> : null}
-              {tier ? <Badge data-debug-id="live-instance-header-tier">{tier}</Badge> : null}
+              {model ? <Badge data-debug-id="live-instance-header-model">{model}</Badge> : null}
             </>
           }
           timestamp={startedAt ? `Started ${relativeTime(startedAt)}` : undefined}

@@ -4,7 +4,7 @@
  * One page serves create and edit (REQ-UI-9).
  *
  * Fields: name (required), slug (optional, auto-derived from name on create),
- * instructions (optional), defaultProvider, defaultTier, templateId.
+ * instructions (optional), templateId.
  *
  * No per-bridge paths: agents are not filesystem-bound like projects.
  * No "cannot clear" complexity: agent PATCH accepts empty strings and the
@@ -33,7 +33,6 @@ import {
   useUpdateAgentIdentityMutation,
   type AgentRecord,
 } from '../../api/endpoints/agents';
-import { normalizeBridgeCapabilities, useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import {
   agentEditHref,
   agentListHref,
@@ -97,8 +96,6 @@ interface FormState {
   name: string;
   slug: string;
   instructions: string;
-  defaultProvider: string;
-  defaultTier: string;
   templateId: string;
 }
 
@@ -106,8 +103,6 @@ const EMPTY_FORM: FormState = {
   name: '',
   slug: '',
   instructions: '',
-  defaultProvider: '',
-  defaultTier: '',
   templateId: '',
 };
 
@@ -120,8 +115,6 @@ function formFromRecord(record: AgentRecord): FormState {
     name: record.name,
     slug: record.slug,
     instructions: record.instructions,
-    defaultProvider: record.defaultProvider,
-    defaultTier: record.defaultTier,
     templateId: record.templateId,
   };
 }
@@ -129,8 +122,6 @@ function formFromRecord(record: AgentRecord): FormState {
 function isDirty(form: FormState, baseline: FormState): boolean {
   return (Object.keys(form) as (keyof FormState)[]).some((k) => form[k] !== baseline[k]);
 }
-
-const TIER_OPTIONS = ['', 'cheap', 'normal', 'smart'];
 
 /* ------------------------------------------------------------------ *
  * The page
@@ -141,7 +132,6 @@ export default function AgentFormPage({ agentId }: { agentId?: string } = {}) {
   const listState = React.useMemo(() => parseAgentListUrl(getRouteSearch()), []);
 
   const agentQuery = useFetchAgentIdentityQuery({ agentId: agentId! }, { skip: !isEdit });
-  const bridgesQuery = useListBridgesQuery(undefined, { refetchOnMountOrArgChange: true });
   const templatesQuery = useListAgentTemplatesQuery();
 
   const [createAgent, { isLoading: creating }] = useCreateAgentMutation();
@@ -168,17 +158,6 @@ export default function AgentFormPage({ agentId }: { agentId?: string } = {}) {
 
   const dirty = isDirty(form, baseline);
   const { pendingHref, setPendingHref } = useUnsavedChangesGuard(dirty);
-
-  const providerOptions = React.useMemo(() => {
-    const providers = new Set<string>();
-    for (const bridge of (bridgesQuery.data?.bridges || [])) {
-      for (const cap of normalizeBridgeCapabilities(bridge)) {
-        if (cap.provider) providers.add(cap.provider);
-      }
-    }
-    if (form.defaultProvider) providers.add(form.defaultProvider);
-    return Array.from(providers).sort();
-  }, [bridgesQuery.data?.bridges, form.defaultProvider]);
 
   const templates = React.useMemo(
     () => (templatesQuery.data?.templates || []).map((tmpl: any) => ({
@@ -217,8 +196,6 @@ export default function AgentFormPage({ agentId }: { agentId?: string } = {}) {
           name: form.name,
           slug: form.slug || undefined,
           templateId: form.templateId || undefined,
-          defaultProvider: form.defaultProvider || undefined,
-          defaultTier: form.defaultTier || undefined,
           instructions: form.instructions,
         }).unwrap();
         navigateTo(agentViewHref(agentId!));
@@ -227,8 +204,6 @@ export default function AgentFormPage({ agentId }: { agentId?: string } = {}) {
           name: form.name,
           slug: form.slug || slugify(form.name) || form.name,
           templateId: form.templateId || undefined,
-          defaultProvider: form.defaultProvider || undefined,
-          defaultTier: form.defaultTier || undefined,
           instructions: form.instructions,
         }).unwrap();
         const newId = String(result?.agent_id || result?.agentId || result?.agent?.agent_id || '');
@@ -343,50 +318,12 @@ export default function AgentFormPage({ agentId }: { agentId?: string } = {}) {
 
         <Panel className="p-4">
           <div className="mb-3">
-            <p className="text-title text-primary">Model defaults</p>
+            <p className="text-title text-primary">Template</p>
             <p className="text-body-sm text-muted">
-              Inherited by new instances. A bridge can override these per-instance.
+              Provider and model are selected explicitly when an instance launches.
             </p>
           </div>
           <div className="flex flex-col gap-4">
-            <FormField label="Provider" hint="Leave blank to use the bridge's default provider.">
-              {providerOptions.length > 0 ? (
-                <Select
-                  value={form.defaultProvider}
-                  onChange={(next) => setField('defaultProvider', next)}
-                  aria-label="Default provider"
-                  data-debug-id="agent-form-provider"
-                >
-                  <option value="">Bridge default</option>
-                  {providerOptions.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </Select>
-              ) : (
-                <Input
-                  value={form.defaultProvider}
-                  onChange={(next) => setField('defaultProvider', next)}
-                  placeholder="e.g. anthropic"
-                  aria-label="Default provider"
-                  data-debug-id="agent-form-provider"
-                />
-              )}
-            </FormField>
-
-            <FormField label="Tier" hint="Model capability tier.">
-              <Select
-                value={form.defaultTier}
-                onChange={(next) => setField('defaultTier', next)}
-                aria-label="Default tier"
-                data-debug-id="agent-form-tier"
-              >
-                <option value="">Bridge default</option>
-                {TIER_OPTIONS.filter(Boolean).map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </Select>
-            </FormField>
-
             {templates.length > 0 ? (
               <FormField label="Template" hint="Base template to inherit settings from.">
                 <Select

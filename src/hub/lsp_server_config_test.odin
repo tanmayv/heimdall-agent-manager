@@ -275,10 +275,10 @@ test_lsp_resolve_literal_prefix_beats_dir_pattern :: proc(t: ^testing.T) {
 @(test)
 test_lsp_resolve_full_precedence_chain :: proc(t: ^testing.T) {
 	configs := []domain.Lsp_Server_Config{
-		make_cfg("go", "", "", ""),                // default (Tier 1)
-		make_cfg("go", "", "/work/**", ""),        // pattern (Tier 2)
-		make_cfg("go", "/work/proj", "", ""),      // shorter prefix (Tier 3)
-		make_cfg("go", "/work/proj/deep", "", ""), // longest prefix (Tier 3 winner)
+		make_cfg("go", "", "", ""),                // default (Model 1)
+		make_cfg("go", "", "/work/**", ""),        // pattern (Model 2)
+		make_cfg("go", "/work/proj", "", ""),      // shorter prefix (Model 3)
+		make_cfg("go", "/work/proj/deep", "", ""), // longest prefix (Model 3 winner)
 	}
 
 	// Longest prefix wins

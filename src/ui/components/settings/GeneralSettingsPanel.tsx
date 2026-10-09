@@ -346,7 +346,7 @@ export function GeneralSettingsPanel({ onClose, className }: GeneralSettingsPane
               <Textarea
                 value={settings.commandSetupScript}
                 onChange={(val) => updateSetting('commandSetupScript', val)}
-                placeholder="example:&#10;source ~/.jetski_shell_setup"
+                placeholder="example:&#10;source ~/.profile"
                 rows={3}
                 width="full"
                 size="sm"

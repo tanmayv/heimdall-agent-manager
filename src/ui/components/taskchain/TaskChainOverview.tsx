@@ -57,7 +57,7 @@ import { useListAllAgentInstancesQuery } from '../../api/endpoints/actions';
 import {
   bridgeLabel,
   launchProvidersFor,
-  launchTiersFor,
+  launchModelsFor,
   launchableBridgeRows,
 } from '../../utils/bridgeLaunchOptions';
 import { taskBridgeDisplay, taskBridgeOptions } from '../../utils/taskBridgePin';
@@ -289,11 +289,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [addMode, setAddMode] = useState<'existing' | 'launch'>('existing');
   const [addExistingInstanceId, setAddExistingInstanceId] = useState('');
   const [addingExisting, setAddingExisting] = useState(false);
-  // Add-Agent popup selection state (identity -> bridge -> provider -> tier).
+  // Add-Agent popup selection state (identity -> bridge -> provider -> model).
   const [addAgentId, setAddAgentId] = useState('');
   const [addBridgeId, setAddBridgeId] = useState('');
   const [addProvider, setAddProvider] = useState('');
-  const [addTier, setAddTier] = useState('');
+  const [addModel, setAddModel] = useState('');
   const [addAgentError, setAddAgentError] = useState('');
 
   // Edit Assignee Modal State
@@ -499,7 +499,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [focusTaskId, tasks, isLoading]);
 
-  // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
+  // Add-Agent popup dependent option lists (identity -> bridge -> provider -> model).
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agentIdentities: any[] = agentIdentitiesQuery.data?.agents || [];
   const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
@@ -541,7 +541,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
-  const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
+  const addModelOptions = selectedAddBridge ? launchModelsFor(selectedAddBridge, addProvider) : [];
 
   const toggleTaskExpanded = (id: string) => {
     setExpandedTaskIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -656,8 +656,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   };
 
   // Add-Agent popup: LAUNCH a new instance of the chosen agent-id on the chosen
-  // bridge/provider/tier bound to THIS chain, then add it as a member with the
-  // selected role. bridge_id/chain_id/provider/tier are honored by the hub's
+  // bridge/provider/model bound to THIS chain, then add it as a member with the
+  // selected role. bridge_id/chain_id/provider/model are honored by the hub's
   // POST /api/v1/agent-instances handler (instance_input_from_body), so this is a
   // pure UI plumb through createAgentInstanceInChain.
   // H14: add an EXISTING agent instance as a member via addChainMember directly
@@ -691,14 +691,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     if (addMode === 'existing') { await handleAddExistingMember(); return; }
     if (!addAgentId) { setAddAgentError('Choose an agent identity to launch.'); return; }
     if (addProvider && !addProviderOptions.includes(addProvider)) { setAddAgentError('Selected provider is not supported by the chosen bridge.'); return; }
-    if (addTier && !addTierOptions.includes(addTier)) { setAddAgentError('Selected tier is not supported by the chosen bridge/provider.'); return; }
+    if (addModel && !addModelOptions.includes(addModel)) { setAddAgentError('Selected model is not supported by the chosen bridge/provider.'); return; }
     try {
       const result: any = await createInstanceInChain({
         agentId: addAgentId,
         chainId,
         ...(addBridgeId ? { bridgeId: addBridgeId } : {}),
         ...(addProvider ? { providerProfile: addProvider } : {}),
-        ...(addTier ? { modelTier: addTier } : {}),
+        ...(addModel ? { model: addModel } : {}),
       }).unwrap();
       // H14: the launch mutation RESOLVES { ok:false } (it does not reject) when the
       // shell has no session token. Do NOT swallow that — surface it instead of a
@@ -731,7 +731,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         }
       }
       setShowAddMemberModal(false);
-      setAddAgentId(''); setAddBridgeId(''); setAddProvider(''); setAddTier('');
+      setAddAgentId(''); setAddBridgeId(''); setAddProvider(''); setAddModel('');
       refetch();
     } catch (err: any) {
       setAddAgentError(String(err?.message || err || 'Failed to launch and add agent'));
@@ -2279,7 +2279,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       )}
 
       {/* Add Agent to Chain popup: launch a new instance (identity + bridge +
-          provider + tier) and add it to this chain with the chosen role. */}
+          provider + model) and add it to this chain with the chosen role. */}
       {showAddMemberModal && (
         <div className="fixed inset-x-0 top-0 app-viewport-height z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4">
           <form
@@ -2366,7 +2366,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   className="mt-1"
                   width="full"
                   value={addBridgeId}
-                  onChange={(v) => { setAddBridgeId(v); setAddProvider(''); setAddTier(''); }}
+                  onChange={(v) => { setAddBridgeId(v); setAddProvider(''); setAddModel(''); }}
                 >
                   <option value="">Choose bridge…</option>
                   {addBridgeRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{bridgeLabel(row.bridge)}</option>)}
@@ -2380,7 +2380,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   className="mt-1"
                   width="full"
                   value={addProvider}
-                  onChange={(v) => { setAddProvider(v); setAddTier(''); }}
+                  onChange={(v) => { setAddProvider(v); setAddModel(''); }}
                   disabled={!selectedAddBridge}
                 >
                   <option value="">Use bridge default provider</option>
@@ -2388,17 +2388,17 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 </Select>
               </div>
               <div>
-                <label className="block text-muted">Tier</label>
+                <label className="block text-muted">Model</label>
                 <Select
-                  data-debug-id="taskchain-add-agent-tier-select"
+                  data-debug-id="taskchain-add-agent-model-select"
                   className="mt-1"
                   width="full"
-                  value={addTier}
-                  onChange={setAddTier}
+                  value={addModel}
+                  onChange={setAddModel}
                   disabled={!selectedAddBridge}
                 >
-                  <option value="">Use bridge default tier</option>
-                  {addTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+                  <option value="">Use bridge default model</option>
+                  {addModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
                 </Select>
               </div>
               </>

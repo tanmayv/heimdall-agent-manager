@@ -18,6 +18,7 @@ import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
+import provider_service "odin_test:hub/service/provider"
 import taskchain_service "odin_test:hub/service/taskchain"
 import ws "odin_test:lib/ws"
 import shell_session_svc "odin_test:hub/service/shell_session"
@@ -38,6 +39,7 @@ Bridge_Handlers :: struct {
 	// REQ-LSP-RLY-1: live LSP relays, so lsp_* frames can be fanned out to the
 	// browser socket that owns each session.
 	lsp_sessions: ^Lsp_Session_Registry,
+	providers: ^provider_service.Provider_Service,
 }
 
 list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -115,28 +117,6 @@ rename_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	b := strings.builder_make()
 	write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
-}
-
-list_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "list_providers", "", "")
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-get_detected_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "detect_supported_providers", "", "")
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-enable_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "enable_providers", "", req.body)
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 // POST /api/v1/bridges/{bridge_id}/shells/{shell_id}/input
@@ -1180,109 +1160,6 @@ read_instance_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
-put_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	name := path_part(req.path, 6)
-	if strings.trim_space(name) == "" do return bridge_provider_error_response(domain.domain_error(.Validation_Failed, "provider name is required"), req.request_id)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "upsert_provider", name, req.body)
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-delete_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "delete_provider", path_part(req.path, 6), "")
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-set_bridge_provider_defaults_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "set_provider_defaults", "", req.body)
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-refresh_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "refresh_capabilities", "", "")
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
-bridge_provider_error_response :: proc(err: domain.Domain_Error, request_id: string) -> Response {
-	if err.code != .Validation_Failed do return respond_error(err, request_id)
-	return Response{status = 422, content_type = "application/json", body = contracts.api_error_json(contracts.API_Error{code = domain.error_code_string(err.code), message = err.message, details_json = err.details_json}, contracts.api_meta(request_id, ""))}
-}
-
-bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, command_type, provider_name, body: string) -> (string, bool, domain.Domain_Error) {
-	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
-	// discover a bridge's providers (agent API v2 `bridge providers`). Same-owner
-	// scoping is enforced by get_bridge via the auth context.
-	auth_ctx, auth_ok, auth_resp := require_auth_any(h.auth, req)
-	if !auth_ok do return auth_resp.body, false, domain.domain_error(.Unauthenticated, "authentication required")
-	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
-	if !bridge_ok do return "", false, bridge_err
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
-	command_id := fmt.tprintf("cmd_provider_%d", time.to_unix_nanoseconds(time.now()))
-	cmd_body := bridge_provider_command_json(command_type, command_id, provider_name, body)
-	timeout_ms := 10000
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, timeout_ms)
-	if !reply_ok do return "", false, reply_err
-	reply_type := json_string(reply, "type")
-	if command_type == "list_providers" && reply_type == "providers_report" {
-		payload, _ := json_object_raw_balanced(reply, "payload")
-		if payload == "" do payload = "{}"
-		return payload, true, domain.Domain_Error{}
-	}
-	status := json_string(reply, "status")
-	result, ok_obj := json_object_raw_balanced(reply, "result")
-	if !ok_obj || result == "" {
-		if arr, ok_arr := json_array_raw_balanced(reply, "result"); ok_arr {
-			result = arr
-		} else {
-			result = "{}"
-		}
-	}
-	if status == "failed" {
-		message := json_string(result, "error")
-		if message == "" do message = json_string(result, "message")
-		if message == "" do message = "provider command failed"
-		return "", false, domain.domain_error(.Validation_Failed, message)
-	}
-	return result, true, domain.Domain_Error{}
-}
-
-bridge_provider_command_json :: proc(command_type, command_id, provider_name, body: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, command_type)
-	strings.write_string(&b, "\",\"protocol_version\":1,\"command_id\":\""); write_handler_json_string(&b, command_id)
-	strings.write_string(&b, "\",\"payload\":")
-	switch command_type {
-	case "list_providers", "refresh_capabilities", "detect_supported_providers":
-		strings.write_string(&b, "{}")
-	case "enable_providers":
-		if strings.trim_space(body) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, body) }
-	case "upsert_provider":
-		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name)
-		strings.write_string(&b, "\",\"profile\":")
-		if strings.trim_space(body) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, body) }
-		strings.write_string(&b, "}")
-	case "delete_provider":
-		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"}")
-	case "set_provider_defaults":
-		strings.write_string(&b, "{\"provider\":\""); write_handler_json_string(&b, json_string(body, "provider"))
-		strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, json_string(body, "tier"))
-		strings.write_string(&b, "\"}")
-	case:
-		strings.write_string(&b, "{}")
-	}
-	strings.write_string(&b, "}")
-	return strings.to_string(b)
-}
-
 bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket) {
 	h := (^Bridge_Handlers)(ctx)
 	if rejected, resp := reject_query_or_body_token(req); rejected { write_upgrade_error(client, resp); return }
@@ -1324,7 +1201,16 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	delete(hello_pub_key)
 	// From here the socket is registered, so other threads (fs/file commands) may
 	// write it — serialize this and every subsequent write.
-	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
+	catalog, catalog_err := provider_service.list_catalog(h.providers)
+	if catalog_err.code != .None {
+		_ = write_ws_text_frame_locked(h, client, bridge_ws_error_payload(catalog_err.message))
+		return
+	}
+	catalog_etag := strings.clone(catalog.catalog_etag)
+	domain.provider_catalog_destroy(catalog.providers)
+	delete(catalog.catalog_etag)
+	defer delete(catalog_etag)
+	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag))
 	if bridge.telemetry_enabled == "enabled" {
 		cmd_id := fmt.tprintf("cmd_tel_%d", time.to_unix_nanoseconds(time.now()))
 		payload := bridge_set_telemetry_payload(cmd_id, true)
@@ -1590,6 +1476,12 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	defer delete(type)
 
 	switch type {
+	case "provider_catalog_request":
+		payload, payload_ok := bridge_provider_catalog_payload(h.providers)
+		if payload_ok {
+			_ = write_ws_text_frame_locked(h, client, payload)
+		}
+		delete(payload)
 	case "bridge_heartbeat":
 		if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
 		// REQ-BVS-1. Runs AFTER update_runtime_capabilities, which rewrites the row:
@@ -1683,7 +1575,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
+	case "command_result", "project_path_validation_result", "provider_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {
@@ -1721,8 +1613,6 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			delete(input.error_code)
 			delete(input.message)
 		}
-	case "capability_report":
-		_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
 	case "bridge_vault_status":
 		// REQ-BVS-1: the immediate report the bridge pushes after a successful unseal
 		// or lock, so the vault settings page does not wait for the next heartbeat.
@@ -2199,13 +2089,13 @@ bridge_capabilities_json :: proc(br: domain.Bridge) -> string {
 	if caps, ok := json_array_raw_balanced(br.capabilities_json, "capabilities"); ok do return caps
 	provider := json_string(br.capabilities_json, "provider")
 	defer delete(provider)
-	default_tier := json_string(br.capabilities_json, "default_tier")
-	defer delete(default_tier)
+	default_model := json_string(br.capabilities_json, "default_model")
+	defer delete(default_model)
 	if provider == "" do return "[]"
 	b := strings.builder_make()
 	strings.write_string(&b, "[{\"provider\":\""); write_handler_json_string(&b, provider)
-	strings.write_string(&b, "\",\"tiers\":[]")
-	strings.write_string(&b, ",\"default_tier\":\""); write_handler_json_string(&b, default_tier)
+	strings.write_string(&b, "\",\"models\":[]")
+	strings.write_string(&b, ",\"default_model\":\""); write_handler_json_string(&b, default_model)
 	strings.write_string(&b, "\"}]")
 	return strings.to_string(b)
 }
@@ -2214,7 +2104,7 @@ json_key_present :: proc(body, key: string) -> bool {
 	return jsonx.has_key(body, key)
 }
 
-bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool) -> string {
+bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool, catalog_etag: string = "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_ready\",\"protocol_version\":1,\"payload\":{\"bridge_id\":\"")
 	write_handler_json_string(&b, bridge_id)
@@ -2222,7 +2112,36 @@ bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool)
 	strings.write_string(&b, fmt.tprintf("%d", generation))
 	strings.write_string(&b, ",\"replaced_existing\":")
 	strings.write_string(&b, "true" if replaced else "false")
+	strings.write_string(&b, ",\"catalog_etag\":\"")
+	write_handler_json_string(&b, catalog_etag)
+	strings.write_string(&b, "\"")
 	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
+bridge_provider_catalog_payload :: proc(providers: ^provider_service.Provider_Service) -> (string, bool) {
+	result, err := provider_service.list_catalog(providers)
+	if err.code != .None do return bridge_ws_error_payload(err.message), false
+	defer {
+		domain.provider_catalog_destroy(result.providers)
+		delete(result.catalog_etag)
+	}
+	body := provider_service.catalog_body_json(result.providers)
+	defer delete(body)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"provider_catalog\",\"catalog_etag\":\"")
+	write_handler_json_string(&b, result.catalog_etag)
+	strings.write_string(&b, "\",\"catalog_json\":\"")
+	write_handler_json_string(&b, body)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b), true
+}
+
+bridge_provider_catalog_version_payload :: proc(catalog_etag: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"provider_catalog_version\",\"catalog_etag\":\"")
+	write_handler_json_string(&b, catalog_etag)
+	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
 

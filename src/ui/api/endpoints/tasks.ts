@@ -331,7 +331,7 @@ function normalizeTaskChainDetail(data: any) {
       runtimeStatus: m.runtime_status || '',
       activityStatus: m.activity_status || '',
       provider: m.provider || '',
-      tier: m.tier || '',
+      model: m.model || '',
       bridgeId: m.bridge_id || m.bridgeId || '',
       bridge_id: m.bridge_id || m.bridgeId || '',
       createdAt: m.created_at,
@@ -680,10 +680,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
       coordinatorAgentId?: string;
       bridgeId?: string;
       provider?: string;
-      tier?: string;
+      model?: string;
       projectId?: string;
     }>({
-      queryFn: async ({ title, description, kind, coordinatorAgentId, bridgeId, provider, tier, projectId }, api) => {
+      queryFn: async ({ title, description, kind, coordinatorAgentId, bridgeId, provider, model, projectId }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -709,7 +709,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
           if (coordinatorAgentId) body.coordinator_agent_id = coordinatorAgentId;
           if (bridgeId) body.bridge_id = bridgeId;
           if (provider) body.provider = provider;
-          if (tier) body.tier = tier;
+          if (model) body.model = model;
           if (projectId) body.project_id = projectId;
           const data = await cookieMutation('/task-chains', 'POST', body);
           return { data };

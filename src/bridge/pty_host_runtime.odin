@@ -145,10 +145,16 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // the resolved provider startup-detection JSON (stored verbatim; HOST-2 parses).
 // Returns ok=false when the provider has no runnable command. Caller owns the
 // returned request's heap slices (free with bridge_pty_host_spawn_request_delete).
-bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, tier, agent_token: string, env: []string, display_name := "") -> (Pty_Host_Spawn_Request, bool) {
-	profile, profile_ok := bridge_provider_by_name_or_default(provider)
-	if !profile_ok || !profile.enabled || len(profile.command) == 0 do return {}, false
-	agent_argv := bridge_runtime_agent_argv_for_profile(profile, tier, agent_token, instance_id)
+bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "") -> (Pty_Host_Spawn_Request, bool) {
+	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
+	if !bridge_provider_catalog_has_model(provider, model) do return {}, false
+	profile, profile_ok := bridge_provider_catalog_profile(provider)
+	if !profile_ok do return {}, false
+	resolved_path, path_ok := bridge_provider_resolve_path(provider)
+	if !path_ok do return {}, false
+	defer delete(resolved_path)
+	profile.command = []string{resolved_path}
+	agent_argv := bridge_runtime_agent_argv_for_profile(profile, model, agent_token, instance_id)
 	if len(agent_argv) == 0 do return {}, false
 
 	cloned_argv := make([]string, len(agent_argv))

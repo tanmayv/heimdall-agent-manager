@@ -60,7 +60,7 @@ action_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Action {
 	action.target_agent_id = domain.Agent_ID(column_text(stmt, 17))
 	action.target_bridge_id = domain.Bridge_ID(column_text(stmt, 18))
 	action.target_provider = column_text(stmt, 19)
-	action.target_tier = column_text(stmt, 20)
+	action.target_model = column_text(stmt, 20)
 	action.target_project_id = domain.Project_ID(column_text(stmt, 21))
 	action.instance_strategy = column_text(stmt, 22)
 	if action.instance_strategy == "" do action.instance_strategy = "reuse"
@@ -79,7 +79,7 @@ action_save_sqlite :: proc(ctx: rawptr, action: domain.Action) -> (domain.Action
 		cron_expr, timezone, blackout_dates, active_from, active_until,
 		target_run_at, interval, state, in_flight, leased_at, deleted_at,
 		created_at, updated_at, target_agent_id, target_bridge_id,
-		target_provider, target_tier, target_project_id,
+		target_provider, target_model, target_project_id,
 		instance_strategy, last_spawned_instance_id
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
@@ -100,7 +100,7 @@ action_save_sqlite :: proc(ctx: rawptr, action: domain.Action) -> (domain.Action
 		target_agent_id=excluded.target_agent_id,
 		target_bridge_id=excluded.target_bridge_id,
 		target_provider=excluded.target_provider,
-		target_tier=excluded.target_tier,
+		target_model=excluded.target_model,
 		target_project_id=excluded.target_project_id,
 		instance_strategy=excluded.instance_strategy,
 		last_spawned_instance_id=excluded.last_spawned_instance_id;`
@@ -142,7 +142,7 @@ action_save_sqlite :: proc(ctx: rawptr, action: domain.Action) -> (domain.Action
 	bind_text(stmt, 18, string(action.target_agent_id))
 	bind_text(stmt, 19, string(action.target_bridge_id))
 	bind_text(stmt, 20, action.target_provider)
-	bind_text(stmt, 21, action.target_tier)
+	bind_text(stmt, 21, action.target_model)
 	bind_text(stmt, 22, string(action.target_project_id))
 	strategy := action.instance_strategy
 	if strategy == "" do strategy = "reuse"
@@ -165,7 +165,7 @@ action_get_sqlite :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action, 
 		return domain.Action{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_tier, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE id = ? AND deleted_at = '';"
+	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE id = ? AND deleted_at = '';"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return domain.Action{}, false, domain.domain_error(.Internal_Error, "failed to prepare action lookup")
 	}
@@ -201,7 +201,7 @@ action_list_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]dom
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_tier, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE owner_user_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
+	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE owner_user_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return nil, domain.domain_error(.Internal_Error, "failed to prepare action list")
 	}
@@ -221,7 +221,7 @@ action_list_by_instance_sqlite :: proc(ctx: rawptr, instance_id: domain.Agent_In
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_tier, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE target_instance_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
+	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE target_instance_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return nil, domain.domain_error(.Internal_Error, "failed to prepare action list by instance")
 	}
@@ -241,7 +241,7 @@ action_list_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: domain.Bridge_ID) -
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := `SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_tier, target_project_id, instance_strategy, last_spawned_instance_id
+	query := `SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id
 		FROM actions
 		WHERE (target_bridge_id = ? OR target_instance_id IN (SELECT agent_instance_id FROM agent_instances WHERE bridge_id = ?))
 		  AND deleted_at = ''

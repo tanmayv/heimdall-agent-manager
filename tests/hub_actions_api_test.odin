@@ -135,7 +135,7 @@ main :: proc() {
 	b, b_ok, _ := iface.bridge_get_bridge(graph.bridges.repo, bridge1_id)
 	if b_ok {
 		b.status = .Online
-		b.capabilities_json = "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\"]}]}"
+		b.capabilities_json = "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\"]}]}"
 		_, _, _ = iface.bridge_save_bridge(graph.bridges.repo, b)
 	}
 	project_service.bridge_runtime_registry_mark_live(graph.agents.bridge_runtime_registry, bridge1_id, false, "")
@@ -148,7 +148,7 @@ main :: proc() {
 		name = "Test Agent",
 		slug = "test-agent",
 		default_provider = "claude",
-		default_tier = "normal",
+		default_model = "normal",
 		state = .Active,
 		created_at = now_ts,
 		updated_at = now_ts,
@@ -164,7 +164,7 @@ main :: proc() {
 		bridge_id = bridge1_id,
 		conversation_id = "conv_ac_1",
 		provider = "claude",
-		tier = "normal",
+		model = "normal",
 		runtime_status = "running",
 		created_at = now_ts,
 		updated_at = now_ts,
@@ -489,7 +489,7 @@ main :: proc() {
 	check(resp_no_agent.status == 400, fmt.tprintf("expected 400 for missing agent_id, got %d: %s", resp_no_agent.status, resp_no_agent.body))
 
 	// 9b. Create valid agent-targeted action
-	create_agent_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"target_provider\":\"claude\",\"target_tier\":\"normal\",\"prompt_text\":\"Curator recurring prompt\",\"cron_expr\":\"0 9 * * 1-5\"}"})
+	create_agent_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"target_provider\":\"claude\",\"target_model\":\"normal\",\"prompt_text\":\"Curator recurring prompt\",\"cron_expr\":\"0 9 * * 1-5\"}"})
 	defer delete(create_agent_body)
 	create_agent_action_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
@@ -505,7 +505,7 @@ main :: proc() {
 	check(strings.contains(create_agent_action_resp.body, "\"target_agent_id\":\"agt_ac_1\""), "target_agent_id in response")
 	check(strings.contains(create_agent_action_resp.body, bridge1_id), "target_bridge_id in response")
 	check(strings.contains(create_agent_action_resp.body, "\"target_provider\":\"claude\""), "target_provider in response")
-	check(strings.contains(create_agent_action_resp.body, "\"target_tier\":\"normal\""), "target_tier in response")
+	check(strings.contains(create_agent_action_resp.body, "\"target_model\":\"normal\""), "target_model in response")
 
 	// 9c. Bridge actions sync includes agent-targeted action
 	bridge_sync_resp := api_http.router_dispatch(&graph.router, api_http.Request{

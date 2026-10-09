@@ -33,20 +33,20 @@ import {
   detectLiveInstanceRuntimeMismatch,
   fleetApplyRequests,
   fleetProviderCapabilities,
-  flattenProviderTierDrafts,
+  flattenProviderModelDrafts,
   getOriginalFleetCapacity,
-  getOriginalProviderTier,
+  getOriginalProviderModel,
   hasCustomRuntimeOverrides,
   liveInstancesByRole,
-  nextTierOnProviderChange,
+  nextModelOnProviderChange,
   restartAffectedEntries,
-  seedPerBridgeProviderTierDrafts,
-  seedProviderTierDrafts,
+  seedPerBridgeProviderModelDrafts,
+  seedProviderModelDrafts,
   summarizeFleetRestartResults,
-  tierOptionsForProvider,
+  modelOptionsForProvider,
   type ChangedFleetEntry,
   type FleetProviderCapability,
-  type FleetProviderTier,
+  type FleetProviderModel,
   type FleetRestartSummary,
 } from './fleetSelection';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
@@ -190,9 +190,9 @@ interface BridgeRuntimeRowProps {
   agentId: string;
   roleName: string;
   bridge: any;
-  draftPT: FleetProviderTier;
+  draftPT: FleetProviderModel;
   onProviderChange: (provider: string, capabilities: FleetProviderCapability[]) => void;
-  onTierChange: (tier: string) => void;
+  onModelChange: (model: string) => void;
   disabled: boolean;
 }
 
@@ -202,7 +202,7 @@ const BridgeRuntimeRow: React.FC<BridgeRuntimeRowProps> = ({
   bridge,
   draftPT,
   onProviderChange,
-  onTierChange,
+  onModelChange,
   disabled,
 }) => {
   const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
@@ -216,8 +216,8 @@ const BridgeRuntimeRow: React.FC<BridgeRuntimeRowProps> = ({
   }, [providersQuery.data, bridge]);
 
   const effectiveProvider = draftPT?.provider || '';
-  const effectiveTier = draftPT?.tier || '';
-  const tierOptions = tierOptionsForProvider(capabilities, effectiveProvider);
+  const effectiveModel = draftPT?.model || '';
+  const modelOptions = modelOptionsForProvider(capabilities, effectiveProvider);
 
   const status = String(bridge.status || bridge.runtime_status || '').toLowerCase();
   const isOnline = status === 'online' || status === 'connected';
@@ -267,19 +267,19 @@ const BridgeRuntimeRow: React.FC<BridgeRuntimeRowProps> = ({
         </div>
         <div className="space-y-1">
           <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">
-            Tier
+            Model
           </span>
           <Select
-            data-debug-id={`fleet-tier-select-${agentId}`}
-            value={effectiveTier}
-            onChange={onTierChange}
+            data-debug-id={`fleet-model-select-${agentId}`}
+            value={effectiveModel}
+            onChange={onModelChange}
             disabled={effectiveProvider === '' || disabled}
             size="sm"
             width="full"
-            aria-label={`Model tier for ${roleName} on ${label}`}
+            aria-label={`Model model for ${roleName} on ${label}`}
             options={[
               { value: '', label: 'Auto (inherit)' },
-              ...tierOptions.map((tier) => ({ value: tier, label: tier })),
+              ...modelOptions.map((model) => ({ value: model, label: model })),
             ]}
           />
         </div>
@@ -293,7 +293,7 @@ interface PendingRestartRole extends ChangedFleetEntry {
   liveCount: number;
   activeTaskCount: number;
   originalProvider: string;
-  originalTier: string;
+  originalModel: string;
 }
 
 export interface FleetManagementDrawerProps {
@@ -329,7 +329,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   const liveInstancesByRoleMap = useMemo(() => liveInstancesByRole(members), [members]);
   const activeTasksByRoleMap = useMemo(() => activeTasksByRole(tasks, members), [tasks, members]);
 
-  // Provider/tier options come from the chain's first bridge directory; chains
+  // Provider/model options come from the chain's first bridge directory; chains
   // without a bridge keep the capacity-only drawer.
   const directories = (chainDetailQuery.data?.chain?.directories || []) as any[];
   const bridgeId = directories.length > 0 ? String(directories[0]?.bridgeId || '') : '';
@@ -360,8 +360,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [isApplying, setIsApplying] = useState(false);
   const [draftCapacities, setDraftCapacities] = useState<Record<string, number>>({});
-  const [draftProviderTiers, setDraftProviderTiers] = useState<
-    Record<string, Record<string, FleetProviderTier>>
+  const [draftProviderModels, setDraftProviderModels] = useState<
+    Record<string, Record<string, FleetProviderModel>>
   >({});
   const [expandedRuntimeRoles, setExpandedRuntimeRoles] = useState<Record<string, boolean>>({});
   const [pendingRestart, setPendingRestart] = useState<PendingRestartRole[] | null>(null);
@@ -382,8 +382,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       }
     }
     setDraftCapacities(init);
-    setDraftProviderTiers(
-      seedPerBridgeProviderTierDrafts(
+    setDraftProviderModels(
+      seedPerBridgeProviderModelDrafts(
         rawFleets.filter((f) => validIdentitiesSet.has(f.agent_id)),
         bridgesToRender,
         bridgeId
@@ -445,16 +445,16 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
 
   const handleDraftBridgeProviderChange = useCallback(
     (agentId: string, bId: string, provider: string, capabilities: FleetProviderCapability[]) => {
-      setDraftProviderTiers((prev) => {
+      setDraftProviderModels((prev) => {
         const roleDrafts = prev[agentId] || {};
-        const currentTier = roleDrafts[bId]?.tier ?? '';
+        const currentModel = roleDrafts[bId]?.model ?? '';
         return {
           ...prev,
           [agentId]: {
             ...roleDrafts,
             [bId]: {
               provider,
-              tier: nextTierOnProviderChange(currentTier, provider, capabilities),
+              model: nextModelOnProviderChange(currentModel, provider, capabilities),
             },
           },
         };
@@ -466,9 +466,9 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     []
   );
 
-  const handleDraftBridgeTierChange = useCallback(
-    (agentId: string, bId: string, tier: string) => {
-      setDraftProviderTiers((prev) => {
+  const handleDraftBridgeModelChange = useCallback(
+    (agentId: string, bId: string, model: string) => {
+      setDraftProviderModels((prev) => {
         const roleDrafts = prev[agentId] || {};
         return {
           ...prev,
@@ -476,7 +476,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
             ...roleDrafts,
             [bId]: {
               provider: roleDrafts[bId]?.provider ?? '',
-              tier,
+              model,
             },
           },
         };
@@ -496,12 +496,12 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     [bridgeId, bridgesToRender, bridgeCapabilities, handleDraftBridgeProviderChange]
   );
 
-  const handleDraftTierChange = useCallback(
-    (agentId: string, tier: string) => {
+  const handleDraftModelChange = useCallback(
+    (agentId: string, model: string) => {
       const targetBridgeId = bridgeId || bridgesToRender[0]?.bridge_id || 'default';
-      handleDraftBridgeTierChange(agentId, targetBridgeId, tier);
+      handleDraftBridgeModelChange(agentId, targetBridgeId, model);
     },
-    [bridgeId, bridgesToRender, handleDraftBridgeTierChange]
+    [bridgeId, bridgesToRender, handleDraftBridgeModelChange]
   );
 
   const handleAddFleet = useCallback(
@@ -511,14 +511,14 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
         ...prev,
         [agentId]: prev[agentId] ?? 1,
       }));
-      setDraftProviderTiers((prev) => {
-        const roleDrafts: Record<string, FleetProviderTier> = {};
+      setDraftProviderModels((prev) => {
+        const roleDrafts: Record<string, FleetProviderModel> = {};
         for (const b of bridgesToRender) {
           const bId = String(b.bridge_id || b.bridgeId || b.id || '');
-          if (bId) roleDrafts[bId] = { provider: '', tier: '' };
+          if (bId) roleDrafts[bId] = { provider: '', model: '' };
         }
         if (bridgeId && !roleDrafts[bridgeId]) {
-          roleDrafts[bridgeId] = { provider: '', tier: '' };
+          roleDrafts[bridgeId] = { provider: '', model: '' };
         }
         return {
           ...prev,
@@ -534,8 +534,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
   );
 
   const changedFleets = useMemo(
-    () => changedFleetEntries(fleets, draftCapacities, draftProviderTiers, rawFleets, bridgeId),
-    [fleets, draftCapacities, draftProviderTiers, rawFleets, bridgeId]
+    () => changedFleetEntries(fleets, draftCapacities, draftProviderModels, rawFleets, bridgeId),
+    [fleets, draftCapacities, draftProviderModels, rawFleets, bridgeId]
   );
 
   const hasPendingChanges = changedFleets.length > 0;
@@ -558,7 +558,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
         // Persist per-bridge overrides via usePatchAgentBridgeSupportMutation
         const bridgePatchPromises: Promise<any>[] = [];
         for (const cf of changedFleets) {
-          const roleDrafts = draftProviderTiers[cf.agentId];
+          const roleDrafts = draftProviderModels[cf.agentId];
           if (roleDrafts && typeof roleDrafts === 'object' && !('provider' in roleDrafts)) {
             for (const [bId, pt] of Object.entries(roleDrafts)) {
               if (bId && bId !== 'default') {
@@ -567,7 +567,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                     agentId: cf.agentId,
                     bridgeId: bId,
                     providerProfile: pt.provider || '',
-                    modelTier: pt.tier || '',
+                    model: pt.model || '',
                   }).unwrap().catch((err: any) => {
                     console.warn(`Failed to patch bridge support for ${cf.agentId} on ${bId}:`, err);
                   })
@@ -586,7 +586,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               agentId: cf.agentId,
               capacity: cf.capacity,
               provider: cf.provider,
-              tier: cf.tier,
+              model: cf.model,
               restartLiveInstances: cf.restartLiveInstances,
             }).unwrap();
             return {
@@ -627,7 +627,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
       isUpdating,
       isApplying,
       changedFleets,
-      draftProviderTiers,
+      draftProviderModels,
       patchAgentBridgeSupport,
       updateFleet,
       chainId,
@@ -646,13 +646,13 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     const affected = restartAffectedEntries(
       changedFleets,
       rawFleets,
-      draftProviderTiers,
+      draftProviderModels,
       liveCounts,
       bridgeId
     );
     const mismatches = detectLiveInstanceRuntimeMismatch(
       members,
-      draftProviderTiers,
+      draftProviderModels,
       rawFleets,
       bridgeId
     );
@@ -663,13 +663,13 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     }
     setPendingRestart(
       affected.map((entry) => {
-        const original = getOriginalProviderTier(rawFleets, entry.agentId);
+        const original = getOriginalProviderModel(rawFleets, entry.agentId);
         return {
           ...entry,
           liveCount: liveCounts[entry.agentId] ?? 0,
           activeTaskCount: (activeTasksByRoleMap[entry.agentId] || []).length,
           originalProvider: original.provider,
-          originalTier: original.tier,
+          originalModel: original.model,
         };
       })
     );
@@ -679,7 +679,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
     isApplying,
     changedFleets,
     rawFleets,
-    draftProviderTiers,
+    draftProviderModels,
     liveInstancesByRoleMap,
     members,
     activeTasksByRoleMap,
@@ -756,7 +756,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
             footer out of the viewport. */}
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
           <div className="text-xs text-muted">
-            Configure concurrency limits and provider/tier overrides per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
+            Configure concurrency limits and provider/model overrides per agent role. The scheduler JIT-provisions warm instances up to capacity when tasks become actionable.
           </div>
 
           <div className="space-y-3">
@@ -768,18 +768,18 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               const activeCount = fleet.active_count ?? fleet.activeCount ?? 0;
               const isSaturated = activeCount >= effectiveCapacity;
 
-              const origProviderTier = getOriginalProviderTier(rawFleets, agentId);
-              const roleDraftMap = draftProviderTiers[agentId] || {};
+              const origProviderModel = getOriginalProviderModel(rawFleets, agentId);
+              const roleDraftMap = draftProviderModels[agentId] || {};
               const flatDraftPT =
-                flattenProviderTierDrafts({ [agentId]: roleDraftMap }, bridgeId)[agentId] || {
+                flattenProviderModelDrafts({ [agentId]: roleDraftMap }, bridgeId)[agentId] || {
                   provider: '',
-                  tier: '',
+                  model: '',
                 };
               const effectiveProvider = flatDraftPT.provider || fleet.provider || '';
-              const effectiveTier = flatDraftPT.tier || fleet.tier || '';
+              const effectiveModel = flatDraftPT.model || fleet.model || '';
               const capacityModified = origCapacity === null || effectiveCapacity !== origCapacity;
-              const providerModified = effectiveProvider !== origProviderTier.provider;
-              const tierModified = effectiveTier !== origProviderTier.tier;
+              const providerModified = effectiveProvider !== origProviderModel.provider;
+              const tierModified = effectiveModel !== origProviderModel.model;
               const isModified = capacityModified || providerModified || tierModified;
 
               const pendingParts: string[] = [];
@@ -787,10 +787,10 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                 pendingParts.push(`${origCapacity ?? 0} → ${effectiveCapacity}`);
               }
               if (providerModified) {
-                pendingParts.push(`provider ${origProviderTier.provider || 'auto'} → ${effectiveProvider || 'auto'}`);
+                pendingParts.push(`provider ${origProviderModel.provider || 'auto'} → ${effectiveProvider || 'auto'}`);
               }
               if (tierModified) {
-                pendingParts.push(`tier ${origProviderTier.tier || 'auto'} → ${effectiveTier || 'auto'}`);
+                pendingParts.push(`model ${origProviderModel.model || 'auto'} → ${effectiveModel || 'auto'}`);
               }
 
               const liveInstances = liveInstancesByRoleMap[agentId] || [];
@@ -935,7 +935,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                         ) : (
                           bridgesToRender.map((bridge: any) => {
                             const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
-                            const bridgeDraftPT = roleDraftMap[bId] ?? { provider: '', tier: '' };
+                            const bridgeDraftPT = roleDraftMap[bId] ?? { provider: '', model: '' };
                             return (
                               <BridgeRuntimeRow
                                 key={bId}
@@ -946,8 +946,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                                 onProviderChange={(newProvider, caps) =>
                                   handleDraftBridgeProviderChange(agentId, bId, newProvider, caps)
                                 }
-                                onTierChange={(newTier) =>
-                                  handleDraftBridgeTierChange(agentId, bId, newTier)
+                                onModelChange={(newModel) =>
+                                  handleDraftBridgeModelChange(agentId, bId, newModel)
                                 }
                                 disabled={isUpdating || isApplying}
                               />
@@ -1110,7 +1110,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
         </div>
 
         {/* Confirm-before-restart. Opens from Apply (before any PUT) only when a
-            provider/tier edit would leave live instances on the old values. Mounted
+            provider/model edit would leave live instances on the old values. Mounted
             inside the panel so the drawer's backdrop click handler sees none of the
             portal's bubbled events; @ui Modal owns Esc / backdrop / focus return
             (the Apply button is the focus trigger). */}
@@ -1126,7 +1126,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
           >
             <ModalBody>
               <Text role="body">
-                Provider/tier changes only take effect for instances started after the change. These
+                Provider/model changes only take effect for instances started after the change. These
                 roles currently have live instances running with the old values:
               </Text>
               <ul className="mt-3 space-y-2">
@@ -1146,8 +1146,8 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                         </span>
                       </div>
                       <div className="font-mono text-[11px] text-muted">
-                        provider {role.originalProvider || 'auto'} → {role.provider || 'auto'} · tier{' '}
-                        {role.originalTier || 'auto'} → {role.tier || 'auto'}
+                        provider {role.originalProvider || 'auto'} → {role.provider || 'auto'} · model{' '}
+                        {role.originalModel || 'auto'} → {role.model || 'auto'}
                       </div>
                     </li>
                   );

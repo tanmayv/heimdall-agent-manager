@@ -15,7 +15,7 @@ export type CreateTaskChainInput = {
   coordinatorAgentId?: string;
   bridgeId?: string;
   provider?: string;
-  tier?: string;
+  model?: string;
   projectId?: string;
 };
 
@@ -40,7 +40,7 @@ export interface TaskChainFleet {
   idle_ttl_seconds?: number;
   idleTtlSeconds?: number;
   provider?: string;
-  tier?: string;
+  model?: string;
   // PUT-only additive fields, present when the request carried a well-formed
   // restart_live_instances boolean; absent on fleet list rows.
   restarted_instance_ids?: string[];
@@ -63,7 +63,7 @@ function normalizeFleet(f: any): TaskChainFleet {
     idle_ttl_seconds: typeof f.idle_ttl_seconds === 'number' ? f.idle_ttl_seconds : (typeof f.idleTtlSeconds === 'number' ? f.idleTtlSeconds : 600),
     idleTtlSeconds: typeof f.idleTtlSeconds === 'number' ? f.idleTtlSeconds : (typeof f.idle_ttl_seconds === 'number' ? f.idle_ttl_seconds : 600),
     provider: f.provider || '',
-    tier: f.tier || '',
+    model: f.model || '',
     restarted_instance_ids: Array.isArray(f.restarted_instance_ids)
       ? f.restarted_instance_ids.map((id: any) => String(id))
       : undefined,
@@ -101,13 +101,13 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       minWarm?: number;
       idleTtlSeconds?: number;
       provider?: string;
-      tier?: string;
-      /** Ask the hub to relaunch this role's live instances with the new provider/tier. */
+      model?: string;
+      /** Ask the hub to relaunch this role's live instances with the new provider/model. */
       restartLiveInstances?: boolean;
     }>({
-      queryFn: async ({ chainId, agentId, capacity, minWarm, idleTtlSeconds, provider, tier, restartLiveInstances }) => {
+      queryFn: async ({ chainId, agentId, capacity, minWarm, idleTtlSeconds, provider, model, restartLiveInstances }) => {
         try {
-          const body: any = { capacity, provider: provider ?? '', tier: tier ?? '' };
+          const body: any = { capacity, provider: provider ?? '', model: model ?? '' };
           if (minWarm !== undefined) body.min_warm = minWarm;
           if (idleTtlSeconds !== undefined) body.idle_ttl_seconds = idleTtlSeconds;
           // Only a true flag reaches the wire: flag-less bodies stay byte-identical
@@ -207,7 +207,7 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           if (payload.coordinatorAgentId) body.coordinator_agent_id = payload.coordinatorAgentId;
           if (payload.bridgeId) body.bridge_id = payload.bridgeId;
           if (payload.provider) body.provider = payload.provider;
-          if (payload.tier) body.tier = payload.tier;
+          if (payload.model) body.model = payload.model;
           if (payload.projectId) body.project_id = payload.projectId;
 
           const data = await cookieMutation('/task-chains', 'POST', body);

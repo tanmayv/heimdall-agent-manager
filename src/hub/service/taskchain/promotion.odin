@@ -87,7 +87,7 @@ work_task_activity_time :: proc(t: domain.Task) -> string {
 // work_task_prefers is the deterministic ordering within a work candidate pool:
 //   1. Rework preference: Validated_Not_Good (NGTM feedback) takes precedence over normal actionable work.
 //   2. Recent start preference: If multiple in_progress tasks exist for the same agent, the latest started_at/updated_at wins (respecting explicit user starts).
-//   3. Priority tier (P0 > P1 > P2).
+//   3. Priority model (P0 > P1 > P2).
 //   4. Active over inactive to prevent unnecessary churn.
 //   5. Tie-breaker: earliest created_at, then lexically smallest task_id.
 work_task_prefers :: proc(a, b: domain.Task) -> bool {
@@ -179,11 +179,11 @@ fleet_capacity_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: st
 	return 1
 }
 
-// fleet_provider_tier_for_agent queries the configured provider/tier for
+// fleet_provider_model_for_agent queries the configured provider/model for
 // (chain_id, agent_id); "" means inherit the standard resolution order.
-fleet_provider_tier_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: string) -> (string, string) {
+fleet_provider_model_for_agent :: proc(fleets: []domain.Task_Chain_Fleet, agent_id: string) -> (string, string) {
 	for f in fleets {
-		if f.agent_id == agent_id do return f.provider, f.tier
+		if f.agent_id == agent_id do return f.provider, f.model
 	}
 	return "", ""
 }
@@ -253,7 +253,7 @@ task_effective_bridge_is_online :: proc(service: ^Taskchain_Service, chain: doma
 
 // jit_provision_agent_instance launches a new instance of agent_id for the chain
 // using agent_service.create_instance and the task's effective bridge.
-jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task, agent_id: string, role: string, provider: string, tier: string) -> string {
+jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task, agent_id: string, role: string, provider: string, model: string) -> string {
 	if service == nil || service.agent_service == nil do return ""
 
 	bridge_id, project_id := task_effective_bridge(service, chain, task)
@@ -268,7 +268,7 @@ jit_provision_agent_instance :: proc(service: ^Taskchain_Service, chain: domain.
 		agent_id   = agent_id,
 		bridge_id  = bridge_id,
 		provider   = provider,
-		tier       = tier,
+		model       = model,
 		chain_id   = string(chain.chain_id),
 		project_id = project_id,
 	}
@@ -430,8 +430,8 @@ allocate_or_jit_worker_instance :: proc(service: ^Taskchain_Service, chain: doma
 	if chosen_instance_id != "" {
 		return strings.clone(chosen_instance_id), true
 	} else if live_count < capacity {
-		fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
-		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "worker", fleet_provider, fleet_tier)
+		fleet_provider, fleet_model := fleet_provider_model_for_agent(fleets, target_agent_id)
+		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "worker", fleet_provider, fleet_model)
 		if new_instance_id != "" {
 			return new_instance_id, true
 		}
@@ -579,8 +579,8 @@ allocate_or_jit_reviewer_instance :: proc(service: ^Taskchain_Service, chain: do
 	if chosen_reviewer_id != "" {
 		return strings.clone(chosen_reviewer_id), true
 	} else if live_count < capacity {
-		fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
-		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "reviewer", fleet_provider, fleet_tier)
+		fleet_provider, fleet_model := fleet_provider_model_for_agent(fleets, target_agent_id)
+		new_instance_id := jit_provision_agent_instance(service, chain, task, target_agent_id, "reviewer", fleet_provider, fleet_model)
 		if new_instance_id != "" {
 			return new_instance_id, true
 		}
@@ -813,8 +813,8 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 				}
 			}
 		} else if live_count < capacity {
-			fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, target_agent_id)
-			new_instance_id := jit_provision_agent_instance(service, chain, cand, target_agent_id, "worker", fleet_provider, fleet_tier)
+			fleet_provider, fleet_model := fleet_provider_model_for_agent(fleets, target_agent_id)
+			new_instance_id := jit_provision_agent_instance(service, chain, cand, target_agent_id, "worker", fleet_provider, fleet_model)
 			if new_instance_id != "" {
 				defer delete(new_instance_id)
 				ensure_chain_member(service, chain, new_instance_id, target_agent_id)
@@ -946,8 +946,8 @@ dynamic_fleet_schedule :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 					}
 				}
 			} else if live_count < capacity {
-				fleet_provider, fleet_tier := fleet_provider_tier_for_agent(fleets, rev_agent_id)
-				new_instance_id := jit_provision_agent_instance(service, chain, t, rev_agent_id, "reviewer", fleet_provider, fleet_tier)
+				fleet_provider, fleet_model := fleet_provider_model_for_agent(fleets, rev_agent_id)
+				new_instance_id := jit_provision_agent_instance(service, chain, t, rev_agent_id, "reviewer", fleet_provider, fleet_model)
 				if new_instance_id != "" {
 					defer delete(new_instance_id)
 					ensure_chain_member(service, chain, new_instance_id, rev_agent_id)
@@ -1347,7 +1347,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 				task_id           = cf.new_task_id,
 				role              = role,
 				provider          = inst.provider,
-				tier              = inst.tier,
+				model              = inst.model,
 				agent_id          = inst.agent_id,
 				agent_name        = agent_name,
 				chain_id          = string(chain.chain_id),
@@ -1526,7 +1526,7 @@ ensure_actionable_agent_started :: proc(
 		task_id           = string(task.task_id),
 		role              = role_str,
 		provider          = inst.provider,
-		tier              = inst.tier,
+		model              = inst.model,
 		agent_id          = inst.agent_id,
 		agent_name        = agent_name,
 		chain_id          = string(chain.chain_id),

@@ -40,13 +40,6 @@ Bridge :: struct {
 	vault_status: string,
 }
 
-Bridge_Provider_Capability :: struct {
-	provider:     string   `json:"provider"`,
-	tiers:        []string `json:"tiers"`,
-	default_tier: string   `json:"default_tier"`,
-}
-
-
 // bridge_destroy frees every heap string on a Bridge read from a repository.
 //
 // It exists because the REQ-SHELL-14 sweep reads bridges on the reaper's
@@ -89,4 +82,3 @@ bridge_status_string :: proc(status: Bridge_Status) -> string {
 	}
 	return "offline"
 }
-

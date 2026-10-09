@@ -22,7 +22,7 @@ main :: proc() {
 
 	bridge_id := enroll_bridge(&graph, alice[:], "Alice Bridge")
 	bridge_id_2 := enroll_bridge(&graph, alice[:], "Second Bridge")
-	agent := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Backend Agent\",\"slug\":\"backend\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
+	agent := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Backend Agent\",\"slug\":\"backend\",\"default_provider\":\"claude\",\"default_model\":\"normal\"}", alice[:])
 	check(agent.status == 201 && strings.contains(agent.body, "backend"), "create agent endpoint must return agent")
 	agent_id := extract_json_string(agent.body, "agent_id")
 	list_a := request(&graph, "GET", "/api/v1/agents", "", alice[:])
@@ -38,31 +38,31 @@ main :: proc() {
 	check(updated.status == 200 && strings.contains(updated.body, "Backend Updated"), "update agent endpoint must update owner agent")
 	bob_agent := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Bob Agent\",\"slug\":\"bob-agent\"}", bob[:])
 	bob_agent_id := extract_json_string(bob_agent.body, "agent_id")
-	bob_cross_bridge := request(&graph, "PATCH", support_url(bob_agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"smart\"}", bob[:])
+	bob_cross_bridge := request(&graph, "PATCH", support_url(bob_agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"smart\"}", bob[:])
 	check(bob_cross_bridge.status == 404, "cannot configure another user's bridge support")
-	substring_support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"laud\",\"tier\":\"mart\"}", alice[:])
-	check(substring_support.status == 503, "provider/tier validation must reject substrings of capabilities")
-	provider_as_tier := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"claude\"}", alice[:])
-	check(provider_as_tier.status == 503, "provider/tier validation must reject provider name as tier when not in tiers array")
-	key_as_tier := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"tiers\"}", alice[:])
-	check(key_as_tier.status == 503, "provider/tier validation must reject JSON key names as tiers")
-	bad_support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"openai\",\"tier\":\"smart\"}", alice[:])
-	check(bad_support.status == 503, "unsupported provider/tier must be rejected")
-	support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"smart\",\"priority\":10,\"max_instances\":2}", alice[:])
+	substring_support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"laud\",\"model\":\"mart\"}", alice[:])
+	check(substring_support.status == 503, "provider/model validation must reject substrings of capabilities")
+	provider_as_tier := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"claude\"}", alice[:])
+	check(provider_as_tier.status == 503, "provider/model validation must reject provider name as model when not in models array")
+	key_as_tier := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"models\"}", alice[:])
+	check(key_as_tier.status == 503, "provider/model validation must reject JSON key names as models")
+	bad_support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"openai\",\"model\":\"smart\"}", alice[:])
+	check(bad_support.status == 503, "unsupported provider/model must be rejected")
+	support := request(&graph, "PATCH", support_url(agent_id, bridge_id), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"smart\",\"priority\":10,\"max_instances\":2}", alice[:])
 	check(support.status == 200 && strings.contains(support.body, bridge_id) && strings.contains(support.body, "smart"), "support endpoint must configure owned bridge")
 	enabled_after, enabled_after_err := agent_service.require_enabled_support(&graph.agents, auth_ctx, agent_id)
 	check(enabled_after && enabled_after_err.code == .None, "enabled support must satisfy run precondition")
-	resolved_support, resolved_support_ok, resolved_support_err := agent_service.resolve_provider_tier(&graph.agents, auth_ctx, agent_id, bridge_id, agent_service.Run_Request{})
-	check(resolved_support_ok && resolved_support_err.code == .None && resolved_support.provider == "claude" && resolved_support.tier == "smart", "resolution must use support override before agent/bridge defaults")
-	resolved_request, resolved_request_ok, resolved_request_err := agent_service.resolve_provider_tier(&graph.agents, auth_ctx, agent_id, bridge_id, agent_service.Run_Request{tier = "normal"})
-	check(resolved_request_ok && resolved_request_err.code == .None && resolved_request.tier == "normal", "resolution must use request override before support override")
-	second_support := request(&graph, "PATCH", support_url(agent_id, bridge_id_2), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"normal\"}", alice[:])
+	resolved_support, resolved_support_ok, resolved_support_err := agent_service.resolve_provider_model(&graph.agents, auth_ctx, agent_id, bridge_id, agent_service.Run_Request{})
+	check(resolved_support_ok && resolved_support_err.code == .None && resolved_support.provider == "claude" && resolved_support.model == "smart", "resolution must use support override before agent/bridge defaults")
+	resolved_request, resolved_request_ok, resolved_request_err := agent_service.resolve_provider_model(&graph.agents, auth_ctx, agent_id, bridge_id, agent_service.Run_Request{model = "normal"})
+	check(resolved_request_ok && resolved_request_err.code == .None && resolved_request.model == "normal", "resolution must use request override before support override")
+	second_support := request(&graph, "PATCH", support_url(agent_id, bridge_id_2), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"normal\"}", alice[:])
 	check(second_support.status == 200, "second support setup must work before replace")
-	replace_two := request(&graph, "PUT", agent_url(agent_id, "/bridge-support"), strings.concatenate({"{\"bridges\":[{\"bridge_id\":\"", bridge_id, "\",\"enabled\":true,\"provider\":\"claude\",\"tier\":\"smart\"},{\"bridge_id\":\"", bridge_id_2, "\",\"enabled\":true,\"provider\":\"claude\",\"tier\":\"normal\"}]}"}), alice[:])
+	replace_two := request(&graph, "PUT", agent_url(agent_id, "/bridge-support"), strings.concatenate({"{\"bridges\":[{\"bridge_id\":\"", bridge_id, "\",\"enabled\":true,\"provider\":\"claude\",\"model\":\"smart\"},{\"bridge_id\":\"", bridge_id_2, "\",\"enabled\":true,\"provider\":\"claude\",\"model\":\"normal\"}]}"}), alice[:])
 	check(replace_two.status == 200 && strings.contains(replace_two.body, bridge_id) && strings.contains(replace_two.body, bridge_id_2), "replace support endpoint must persist every bridges array entry")
 	list_two := request(&graph, "GET", agent_url(agent_id, "/bridge-support"), "", alice[:])
 	check(list_two.status == 200 && strings.contains(list_two.body, bridge_id) && strings.contains(list_two.body, bridge_id_2), "list support must show all replaced entries")
-	replace_support := request(&graph, "PUT", agent_url(agent_id, "/bridge-support"), strings.concatenate({"{\"bridges\":[{\"bridge_id\":\"", bridge_id, "\",\"enabled\":true,\"provider\":\"claude\",\"tier\":\"smart\"}]}"}), alice[:])
+	replace_support := request(&graph, "PUT", agent_url(agent_id, "/bridge-support"), strings.concatenate({"{\"bridges\":[{\"bridge_id\":\"", bridge_id, "\",\"enabled\":true,\"provider\":\"claude\",\"model\":\"smart\"}]}"}), alice[:])
 	check(replace_support.status == 200, "replace support endpoint must accept documented bridges array")
 	list_support := request(&graph, "GET", agent_url(agent_id, "/bridge-support"), "", alice[:])
 	check(list_support.status == 200 && strings.contains(list_support.body, bridge_id) && !strings.contains(list_support.body, bridge_id_2), "replace support endpoint must remove omitted support rows")
@@ -122,12 +122,12 @@ enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, l
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// that matches an agent to a provider/tier fails — which is a real difference
+	// that matches an agent to a provider/model fails — which is a real difference
 	// between the two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online (as a connect would), where the deleted
 	// enroll path left it Offline.
-	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\",\"smart\"],\"default_model\":\"normal\"}]}")
 
 	return extract_json_string(issued.body, "bridge_id")
 }

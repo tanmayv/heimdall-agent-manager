@@ -16,6 +16,7 @@ import taskchain_service "odin_test:hub/service/taskchain"
 import search_service "odin_test:hub/service/search"
 import events "odin_test:hub/service/events"
 import push_service "odin_test:hub/service/push"
+import provider_service "odin_test:hub/service/provider"
 import card_service "odin_test:hub/service/card"
 
 Agent_Action_Handlers :: struct {
@@ -31,6 +32,7 @@ Agent_Action_Handlers :: struct {
 	// PWA is closed/backgrounded. public_app_origin builds the absolute click href.
 	push: ^push_service.Push_Service,
 	public_app_origin: string,
+	providers: ^provider_service.Provider_Service,
 }
 
 agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -473,7 +475,7 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "\",\"conversation_id\":\""); if conv_ok { write_handler_json_string(&b, conv.conversation_id) } else { write_handler_json_string(&b, inst.conversation_id) }
 	strings.write_string(&b, "\",\"project_id\":\""); write_handler_json_string(&b, string(inst.project_id))
 	strings.write_string(&b, "\",\"runtime\":{\"provider\":\""); write_handler_json_string(&b, inst.provider)
-	strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, inst.tier)
+	strings.write_string(&b, "\",\"model\":\""); write_handler_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"runtime_status\":\""); write_handler_json_string(&b, inst.runtime_status)
 	strings.write_string(&b, "\",\"startup_status\":\""); write_handler_json_string(&b, inst.startup_status)
 	strings.write_string(&b, "\"},\"unread_summary\":{\"conversation_unread_count\":")
@@ -1158,6 +1160,11 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if !ok do return resp
 	inst, saved, err := agent_service.mark_instance_start_success(h.agents, auth)
 	if !saved do return respond_error(err, req.request_id)
+	if inst.kind == "provider_test" {
+		if h.providers != nil do provider_service.provider_test_mark_instance_ready(h.providers, inst.agent_instance_id)
+		b := strings.builder_make(); strings.write_string(&b, "{\"instance\":"); write_agent_instance_json(&b, inst); strings.write_byte(&b, '}')
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+	}
 	startup_note, note_saved, _ := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = "Agent has started and is ready.", artifact_ids_json = "[]", message_type = "system"})
 	conv, conv_ok, _ := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if conv_ok {

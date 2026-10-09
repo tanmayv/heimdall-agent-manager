@@ -9,7 +9,7 @@
  *  - Agent verbs: edit + archive. No restore — the archive endpoint is
  *    one-way (no `state` in Update_Agent_Input, no un-archive route).
  *  - Instructions replaces description throughout.
- *  - Row pills: provider · tier · active instances · (Archived).
+ *  - Row pills: provider · model · active instances · (Archived).
  */
 import { buildRouteHash } from '../../utils/appLocation';
 import type { Tone } from '@ui';
@@ -270,7 +270,7 @@ export function takeRememberedRow(): string {
  * The form
  * ------------------------------------------------------------------ */
 
-export type AgentFormField = 'name' | 'slug' | 'instructions' | 'defaultProvider' | 'defaultTier' | 'templateId' | 'form';
+export type AgentFormField = 'name' | 'slug' | 'instructions' | 'templateId' | 'form';
 
 export interface MappedServerError {
   field: AgentFormField;

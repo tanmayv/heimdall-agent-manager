@@ -105,8 +105,6 @@ Daemon_Config :: struct {
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
 	agent_idle_shutdown_seconds: int, // TODO: remove; idle auto-close disabled
-	default_agent_provider_profile: string,
-	default_agent_model_tier: string,
 	default_agent_ids: [dynamic]Role_Default_Agent_Config,
 	system_agent_ids: []string,
 	wrapper_bin: string,
@@ -121,12 +119,8 @@ Daemon_Config :: struct {
 Wrapper_Config :: struct {
 	daemon_url: string,
 	credentials_path: string,
-	agent_name: string,
-	default_agent: string,
 	display_name: string,
 	requested_access_mode: contracts.Client_Access_Mode,
-	command: []string,
-	agent_commands: [dynamic]Agent_Command_Config,
 	tmux_session: string,
 	tmux_window_prefix: string,
 	agent_run_dir: string,
@@ -160,46 +154,6 @@ Activity_Detection_Config :: struct {
 	max_gap_ms: int,
 }
 
-Model_Tiers_Config :: struct {
-	flag:   string,
-	cheap:  string,
-	normal: string,
-	smart:  string,
-}
-
-Bootstrap_Feature_Config :: struct {
-	name:         string,
-	content:      []string,
-	relative_dir: string,
-	filename:     string,
-}
-
-Bootstrap_Config :: struct {
-	features: map[string]Bootstrap_Feature_Config,
-}
-
-Agent_Command_Config :: struct {
-	name: string,
-	command: []string,
-	yolo_flags: []string,
-	prompt_flags: []string,
-	starter_prompt: string,
-	prompt_delivery: string,
-	prompt_tmux_delay_ms: int,
-	prompt_tmux_enter: bool,
-	prompt_tmux_enter_set: bool,
-	agent_run_dir: string,
-	use_random_dir: bool,
-	use_random_dir_set: bool,
-	project: string,
-	bootstrap: Bootstrap_Config,
-	models: Model_Tiers_Config,
-	memory_templates: []string,
-	stop_message: string,
-	startup_detection: Startup_Detection_Config,
-	activity_detection: Activity_Detection_Config,
-}
-
 Ctl_Config :: struct {
 	daemon_url: string,
 }
@@ -214,12 +168,6 @@ Section :: enum {
 	Daemon,
 	Bridge,
 	Wrapper,
-	Wrapper_Agent_Command,
-	Wrapper_Agent_Bootstrap,
-	Wrapper_Agent_Bootstrap_Feature,
-	Wrapper_Agent_Models,
-	Wrapper_Agent_Startup_Detection,
-	Wrapper_Agent_Activity_Detection,
 	Ctl,
 }
 
@@ -264,8 +212,6 @@ expand_home :: proc(path: string) -> string {
 
 parse_config :: proc(content: string, cfg: ^Config) {
 	section := Section.None
-	current_agent_command := ""
-	current_bootstrap_feature := ""
 	legacy_warned := make([dynamic]string)
 	lines := strings.split(content, "\n")
 
@@ -280,63 +226,10 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		}
 		if line == "[wrapper]" {
 			section = .Wrapper
-			current_agent_command = ""
 			continue
 		}
 		if line == "[bridge]" {
 			section = .Bridge
-			continue
-		}
-		// Most specific first: [wrapper.agent-cmd.<name>.bootstrap.<FEATURE>]
-		// Length guard: prefix(19) + name(≥1) + ".bootstrap."(11) + feature(≥1) + "]"(1) = ≥33
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") && len(line) > 33 {
-			inner := line[len("[wrapper.agent-cmd."):len(line) - 1]
-			if bi := strings.index(inner, ".bootstrap."); bi >= 0 && bi > 0 && bi + len(".bootstrap.") < len(inner) {
-				section = .Wrapper_Agent_Bootstrap_Feature
-				current_agent_command = inner[:bi]
-				current_bootstrap_feature = inner[bi + len(".bootstrap."):]
-				ensure_agent_command(&cfg.wrapper, current_agent_command)
-				continue
-			}
-		}
-		// [wrapper.agent-cmd.<name>.bootstrap]
-		// Length guard: prefix(19) + name(≥1) + ".bootstrap]"(11) = ≥31
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".bootstrap]") && len(line) > 19 + len(".bootstrap]") {
-			section = .Wrapper_Agent_Bootstrap
-			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".bootstrap]")]
-			ensure_agent_command(&cfg.wrapper, current_agent_command)
-			continue
-		}
-		// [wrapper.agent-cmd.<name>.models]
-		// Length guard: prefix(19) + name(≥1) + ".models]"(8) = ≥28
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".models]") && len(line) > 19 + len(".models]") {
-			section = .Wrapper_Agent_Models
-			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".models]")]
-			ensure_agent_command(&cfg.wrapper, current_agent_command)
-			continue
-		}
-		// [wrapper.agent-cmd.<name>.startup_detection]
-		// Length guard: prefix(19) + name(≥1) + ".startup_detection]"(19) = ≥39
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".startup_detection]") && len(line) > 19 + len(".startup_detection]") {
-			section = .Wrapper_Agent_Startup_Detection
-			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".startup_detection]")]
-			ensure_agent_command(&cfg.wrapper, current_agent_command)
-			continue
-		}
-		// [wrapper.agent-cmd.<name>.activity_detection]
-		// Length guard: prefix(19) + name(≥1) + ".activity_detection]"(20) = ≥40
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".activity_detection]") && len(line) > 19 + len(".activity_detection]") {
-			section = .Wrapper_Agent_Activity_Detection
-			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".activity_detection]")]
-			ensure_agent_command(&cfg.wrapper, current_agent_command)
-			continue
-		}
-		// [wrapper.agent-cmd.<name>]
-		// Length guard: prefix(19) + name(≥1) + "]"(1) = ≥21
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") && len(line) > 20 {
-			section = .Wrapper_Agent_Command
-			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - 1]
-			ensure_agent_command(&cfg.wrapper, current_agent_command)
 			continue
 		}
 		if line == "[ctl]" {
@@ -349,7 +242,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 
 		key := strings.trim_space(line[:eq])
 		value := strings.trim_space(line[eq + 1:])
-		if legacy_config_key_warned(section, current_agent_command, current_bootstrap_feature, key, &legacy_warned) do continue
+		if legacy_config_key_warned(section, key, &legacy_warned) do continue
 
 		#partial switch section {
 		case .Daemon:
@@ -358,18 +251,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_bridge_key(key, value, &cfg.bridge)
 		case .Wrapper:
 			parse_wrapper_key(key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Command:
-			parse_agent_command_key(current_agent_command, key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Bootstrap:
-			parse_bootstrap_key(current_agent_command, key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Bootstrap_Feature:
-			parse_bootstrap_feature_key(current_agent_command, current_bootstrap_feature, key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Models:
-			parse_models_key(current_agent_command, key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Startup_Detection:
-			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
-		case .Wrapper_Agent_Activity_Detection:
-			parse_activity_detection_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Ctl:
 			parse_ctl_key(key, value, &cfg.ctl)
 		case:
@@ -377,20 +258,12 @@ parse_config :: proc(content: string, cfg: ^Config) {
 	}
 }
 
-legacy_config_key_warned :: proc(section: Section, agent_name, bootstrap_feature, key: string, warned: ^[dynamic]string) -> bool {
+legacy_config_key_warned :: proc(section: Section, key: string, warned: ^[dynamic]string) -> bool {
 	legacy_key := ""
 	#partial switch section {
 	case .Wrapper:
 		if key == "project" || key == "memory_templates" || key == "default_agent" {
 			legacy_key = strings.concatenate({"wrapper.", key})
-		}
-	case .Wrapper_Agent_Command:
-		if key == "project" || key == "memory_templates" {
-			legacy_key = strings.concatenate({"wrapper.agent-cmd.", agent_name, ".", key})
-		}
-	case .Wrapper_Agent_Bootstrap_Feature:
-		if key == "content" {
-			legacy_key = strings.concatenate({"wrapper.agent-cmd.", agent_name, ".bootstrap.", bootstrap_feature, ".content"})
 		}
 	case:
 	}
@@ -452,10 +325,6 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 	case "team_idle_shutdown_seconds":
 		fmt.println("WARN deprecated config key ignored: daemon.team_idle_shutdown_seconds; use agent_idle_shutdown_seconds")
 		if n, ok := strconv.parse_int(value); ok do cfg.agent_idle_shutdown_seconds = int(n)
-	case "default_agent_provider_profile":
-		cfg.default_agent_provider_profile = parse_string(value)
-	case "default_agent_model_tier":
-		cfg.default_agent_model_tier = parse_string(value)
 	case "system_agent_ids":
 		cfg.system_agent_ids = parse_string_array(value)
 	case "wrapper_bin":
@@ -529,14 +398,10 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.daemon_url = parse_string(value)
 	case "credentials_path":
 		cfg.credentials_path = expand_home(parse_string(value))
-	case "agent_name":
-		cfg.agent_name = parse_string(value)
 	case "display_name":
 		cfg.display_name = parse_string(value)
 	case "requested_access_mode":
 		cfg.requested_access_mode = parse_access_mode(parse_string(value))
-	case "command":
-		cfg.command = parse_string_array(value)
 	case "tmux_session":
 		cfg.tmux_session = parse_string(value)
 	case "tmux_window_prefix":
@@ -557,125 +422,6 @@ parse_ctl_key :: proc(key, value: string, cfg: ^Ctl_Config) {
 	switch key {
 	case "daemon_url":
 		cfg.daemon_url = parse_string(value)
-	case:
-	}
-}
-
-ensure_agent_command :: proc(cfg: ^Wrapper_Config, name: string) -> int {
-	for command, i in cfg.agent_commands {
-		if command.name == name do return i
-	}
-	cmd := Agent_Command_Config{name = strings.clone(name)}
-	cmd.bootstrap.features = make(map[string]Bootstrap_Feature_Config)
-	cmd.activity_detection = default_activity_detection_config()
-	append(&cfg.agent_commands, cmd)
-	return len(cfg.agent_commands) - 1
-}
-
-parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	switch key {
-	case "command":
-		cfg.agent_commands[idx].command = parse_string_array(value)
-	case "yolo_flags":
-		cfg.agent_commands[idx].yolo_flags = parse_string_array(value)
-	case "prompt_flags":
-		cfg.agent_commands[idx].prompt_flags = parse_string_array(value)
-	case "starter_prompt":
-		cfg.agent_commands[idx].starter_prompt = parse_string(value)
-	case "prompt_delivery":
-		cfg.agent_commands[idx].prompt_delivery = parse_string(value)
-	case "prompt_tmux_delay_ms":
-		if n, ok := strconv.parse_int(value); ok do cfg.agent_commands[idx].prompt_tmux_delay_ms = int(n)
-	case "prompt_tmux_enter":
-		cfg.agent_commands[idx].prompt_tmux_enter = parse_bool(value)
-		cfg.agent_commands[idx].prompt_tmux_enter_set = true
-	case "agent_run_dir":
-		cfg.agent_commands[idx].agent_run_dir = expand_home(parse_string(value))
-	case "use_random_dir":
-		cfg.agent_commands[idx].use_random_dir = parse_bool(value)
-		cfg.agent_commands[idx].use_random_dir_set = true
-	case "stop_message":
-		cfg.agent_commands[idx].stop_message = parse_string(value)
-	case:
-	}
-}
-
-parse_bootstrap_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	// enabled_features removed — all bootstrap files are always generated.
-	_ = name; _ = key; _ = value; _ = cfg
-}
-
-parse_bootstrap_feature_key :: proc(name, feature, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	fc := cfg.agent_commands[idx].bootstrap.features[feature]
-	switch key {
-	case "name":
-		fc.name = parse_string(value)
-	case "relative_dir":
-		fc.relative_dir = parse_string(value)
-	case "filename":
-		fc.filename = parse_string(value)
-	case:
-	}
-	cfg.agent_commands[idx].bootstrap.features[feature] = fc
-}
-
-parse_models_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	switch key {
-	case "flag":
-		cfg.agent_commands[idx].models.flag = parse_string(value)
-	case "cheap":
-		cfg.agent_commands[idx].models.cheap = parse_string(value)
-	case "normal":
-		cfg.agent_commands[idx].models.normal = parse_string(value)
-	case "smart":
-		cfg.agent_commands[idx].models.smart = parse_string(value)
-	case:
-	}
-}
-
-parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	sd := &cfg.agent_commands[idx].startup_detection
-	switch key {
-	case "enabled":
-		sd.enabled = parse_bool(value)
-	case "startup_probe_seconds":
-		if n, ok := strconv.parse_int(value); ok do sd.startup_probe_seconds = int(n)
-	case "capture_interval_ms":
-		if n, ok := strconv.parse_int(value); ok do sd.capture_interval_ms = int(n)
-	case "blocked_patterns":
-		sd.blocked_patterns = parse_string_array(value)
-	case "auto_enter_patterns":
-		sd.auto_enter_patterns = parse_string_array(value)
-	case "auto_enter_pre_keys":
-		sd.auto_enter_pre_keys = parse_string_array(value)
-	case "startup_unknown_is_blocked":
-		sd.startup_unknown_is_blocked = parse_bool(value)
-	case "sanitized_reason_mapping", "reason_mapping":
-		sd.sanitized_reason_mapping = parse_string_array(value)
-	case:
-	}
-}
-
-parse_activity_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	ad := &cfg.agent_commands[idx].activity_detection
-	switch key {
-	case "enabled":
-		ad.enabled = parse_bool(value)
-	case "sample_line_count":
-		if n, ok := strconv.parse_int(value); ok do ad.sample_line_count = int(n)
-	case "ignore_bottom_lines":
-		if n, ok := strconv.parse_int(value); ok do ad.ignore_bottom_lines = int(n)
-	case "check_interval_seconds":
-		if n, ok := strconv.parse_int(value); ok do ad.check_interval_seconds = int(n)
-	case "min_gap_ms":
-		if n, ok := strconv.parse_int(value); ok do ad.min_gap_ms = int(n)
-	case "max_gap_ms":
-		if n, ok := strconv.parse_int(value); ok do ad.max_gap_ms = int(n)
 	case:
 	}
 }
@@ -741,15 +487,6 @@ split_top_level_commas :: proc(s: string) -> []string {
 	return out[:]
 }
 
-resolve_model_value :: proc(m: Model_Tiers_Config, tier: string) -> string {
-	switch tier {
-	case "cheap":  return m.cheap
-	case "normal": return m.normal
-	case "smart":  return m.smart
-	}
-	return ""
-}
-
 parse_access_mode :: proc(value: string) -> contracts.Client_Access_Mode {
 	switch value {
 	case "main", "Main":
@@ -805,8 +542,6 @@ default_config :: proc() -> Config {
 	cfg.daemon.nudge_send_escape_prefix = false
 	cfg.daemon.startup_stale_after_seconds = 120
 	cfg.daemon.agent_idle_shutdown_seconds = 1800
-	cfg.daemon.default_agent_provider_profile = "pi"
-	cfg.daemon.default_agent_model_tier = "normal"
 	cfg.daemon.default_agent_ids = make([dynamic]Role_Default_Agent_Config)
 	daemon_default_agent_id_set(&cfg.daemon, "conversation", "conversation")
 	daemon_default_agent_id_set(&cfg.daemon, "guide", "guide")
@@ -832,12 +567,8 @@ default_config :: proc() -> Config {
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
 	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
-	cfg.wrapper.agent_name = "pi"
-	cfg.wrapper.default_agent = "pi"
 	cfg.wrapper.display_name = "{instance}"
 	cfg.wrapper.requested_access_mode = .Main
-	cfg.wrapper.command = nil
-	cfg.wrapper.agent_commands = make([dynamic]Agent_Command_Config)
 	cfg.wrapper.tmux_session = "ham-agents"
 	cfg.wrapper.tmux_window_prefix = "agent"
 	cfg.wrapper.agent_run_dir = ""

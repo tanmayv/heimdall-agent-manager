@@ -612,7 +612,7 @@ SEARCH_SQL_AGENTS :: `SELECT resource_type, id, label, sublabel, route, score FR
   SELECT 'agent' AS resource_type, agent_id AS id, name AS label,
          'slug ' || slug || ' · ' || state AS sublabel,
          '/agents/' || agent_id AS route, updated_at, owner_user_id,
-         slug || ' ' || template_id || ' ' || default_provider || ' ' || default_tier AS aux,
+		 slug || ' ' || template_id AS aux,
          '' AS scope_task_id, '' AS scope_chain_id, '' AS scope_project_id, '' AS scope_conversation_id,
          CASE
            WHEN lower(name) = lower(?) THEN 100
@@ -628,7 +628,7 @@ ORDER BY score DESC, updated_at DESC, id ASC LIMIT ?;`
 
 SEARCH_SQL_AGENT_INSTANCES :: `SELECT resource_type, id, label, sublabel, route, score FROM (
   SELECT 'agent_instance' AS resource_type, agent_instance_id AS id, agent_id AS label,
-         runtime_status || ' · ' || provider || '/' || tier AS sublabel,
+		 runtime_status || ' · ' || provider || '/' || model AS sublabel,
          -- Conversation routing is instance-id-only (#/conversations/{instance});
          -- link to the instance itself, not its conversation_id.
          CASE WHEN agent_instance_id != '' THEN '/conversations/' || agent_instance_id ELSE '/agents/' || agent_id END AS route,

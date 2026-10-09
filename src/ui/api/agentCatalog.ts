@@ -97,7 +97,7 @@ export function mapAgent(agent: any) {
     connected: Boolean(agent.connected) || ['launching', 'starting', 'running', 'idle', 'busy', 'stopping'].includes(runtimeStatus),
     connectionState: agent.connection_state || agent.connectionState || (['launching', 'starting', 'running', 'idle', 'busy', 'stopping'].includes(runtimeStatus) ? 'connected' : ''),
     runtimeStatus,
-    modelTier: agent.model_tier || agent.modelTier || 'normal',
+    model: agent.model || agent.model || 'normal',
     known: agent.known ?? true,
     execState,
     execStateSinceUnixMs,
@@ -249,7 +249,7 @@ export function applyAgentLifecycleEvent(agents: any[], payload: any) {
       projectName: mapped.projectName || existing.projectName || '',
       templateId: mapped.templateId || existing.templateId || '',
       providerProfile: mapped.providerProfile || existing.providerProfile || '',
-      modelTier: mapped.modelTier || existing.modelTier || 'normal',
+      model: mapped.model || existing.model || 'normal',
       known: true,
     };
   } else {

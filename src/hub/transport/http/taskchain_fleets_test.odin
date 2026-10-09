@@ -13,7 +13,7 @@ test_write_fleet_json :: proc(t: ^testing.T) {
 		min_warm         = 2,
 		idle_ttl_seconds = 600,
 		provider         = "claude",
-		tier             = "smart",
+		model             = "smart",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:05:00Z",
 	}
@@ -32,13 +32,13 @@ test_write_fleet_json :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"created_at":"2026-09-23T10:00:00Z"`), "must contain created_at")
 	testing.expect(t, strings.contains(out, `"updated_at":"2026-09-23T10:05:00Z"`), "must contain updated_at")
 	testing.expect(t, strings.contains(out, `"provider":"claude"`), "must contain provider claude")
-	testing.expect(t, strings.contains(out, `"tier":"smart"`), "must contain tier smart")
+	testing.expect(t, strings.contains(out, `"model":"smart"`), "must contain model smart")
 }
 
 // write_fleet_json is shared by the PUT response and the GET list, so this pins
 // the payload contract REQ-FLEET-PT-2 relies on for both verbs.
 @(test)
-test_write_fleet_json_omitted_provider_tier_empty :: proc(t: ^testing.T) {
+test_write_fleet_json_omitted_provider_model_empty :: proc(t: ^testing.T) {
 	fleet := domain.Task_Chain_Fleet{
 		task_chain_id    = domain.Task_Chain_ID("chain_fleet_empty"),
 		agent_id         = "agt_worker",
@@ -55,22 +55,22 @@ test_write_fleet_json_omitted_provider_tier_empty :: proc(t: ^testing.T) {
 	out := strings.to_string(b)
 
 	testing.expect(t, strings.contains(out, `"provider":""`), "omitted provider must serialize as empty string (inherit)")
-	testing.expect(t, strings.contains(out, `"tier":""`), "omitted tier must serialize as empty string (inherit)")
+	testing.expect(t, strings.contains(out, `"model":""`), "omitted model must serialize as empty string (inherit)")
 }
 
 @(test)
-test_fleet_provider_tier_parse :: proc(t: ^testing.T) {
-	body := `{"capacity":2,"provider":"claude","tier":"smart"}`
+test_fleet_provider_model_parse :: proc(t: ^testing.T) {
+	body := `{"capacity":2,"provider":"claude","model":"smart"}`
 	testing.expect_value(t, json_string(body, "provider"), "claude")
-	testing.expect_value(t, json_string(body, "tier"), "smart")
+	testing.expect_value(t, json_string(body, "model"), "smart")
 
-	spaced := `{"provider": "claude", "tier": "smart"}`
+	spaced := `{"provider": "claude", "model": "smart"}`
 	testing.expect_value(t, json_string(spaced, "provider"), "claude")
-	testing.expect_value(t, json_string(spaced, "tier"), "smart")
+	testing.expect_value(t, json_string(spaced, "model"), "smart")
 
 	omitted := `{"capacity":2}`
 	testing.expect_value(t, json_string(omitted, "provider"), "")
-	testing.expect_value(t, json_string(omitted, "tier"), "")
+	testing.expect_value(t, json_string(omitted, "model"), "")
 }
 
 // restart_live_instances is an optional boolean body field: only a well-formed
@@ -88,7 +88,7 @@ test_fleet_restart_live_instances_bool_parse :: proc(t: ^testing.T) {
 	testing.expect(t, ok_false, "present false must parse as a boolean literal")
 	testing.expect(t, !value_false, "false must parse to false")
 
-	absent_body := `{"capacity":2,"provider":"claude","tier":"smart"}`
+	absent_body := `{"capacity":2,"provider":"claude","model":"smart"}`
 	_, ok_absent := json_bool_literal(absent_body, "restart_live_instances")
 	testing.expect(t, !ok_absent, "absent flag must not report ok")
 
@@ -114,15 +114,15 @@ test_fleet_restart_instance_live_predicate :: proc(t: ^testing.T) {
 	testing.expect(t, !fleet_restart_instance_live("terminated"), "terminated is not live")
 }
 
-// Only a real provider/tier change versus the prior row restarts live instances;
+// Only a real provider/model change versus the prior row restarts live instances;
 // capacity-only edits never do.
 @(test)
-test_fleet_provider_tier_changed :: proc(t: ^testing.T) {
-	testing.expect(t, !fleet_provider_tier_changed("claude", "smart", "claude", "smart"), "identical provider/tier is no change")
-	testing.expect(t, fleet_provider_tier_changed("claude", "smart", "codex", "smart"), "provider change must be detected")
-	testing.expect(t, fleet_provider_tier_changed("claude", "smart", "claude", "cheap"), "tier change must be detected")
-	testing.expect(t, fleet_provider_tier_changed("", "", "claude", "smart"), "unset (inherit) to set values is a change")
-	testing.expect(t, fleet_provider_tier_changed("claude", "smart", "", ""), "clearing to inherit is a change")
+test_fleet_provider_model_changed :: proc(t: ^testing.T) {
+	testing.expect(t, !fleet_provider_model_changed("claude", "smart", "claude", "smart"), "identical provider/model is no change")
+	testing.expect(t, fleet_provider_model_changed("claude", "smart", "codex", "smart"), "provider change must be detected")
+	testing.expect(t, fleet_provider_model_changed("claude", "smart", "claude", "cheap"), "model change must be detected")
+	testing.expect(t, fleet_provider_model_changed("", "", "claude", "smart"), "unset (inherit) to set values is a change")
+	testing.expect(t, fleet_provider_model_changed("claude", "smart", "", ""), "clearing to inherit is a change")
 }
 
 // The GET list calls write_fleet_json with the default nil restart params, so its
@@ -135,7 +135,7 @@ test_write_fleet_json_default_omits_restart_fields :: proc(t: ^testing.T) {
 		capacity         = 1,
 		idle_ttl_seconds = 600,
 		provider         = "claude",
-		tier             = "smart",
+		model             = "smart",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:05:00Z",
 	}
@@ -180,7 +180,7 @@ test_write_fleet_json_restart_fields_present :: proc(t: ^testing.T) {
 		capacity         = 2,
 		idle_ttl_seconds = 600,
 		provider         = "codex",
-		tier             = "cheap",
+		model             = "cheap",
 		created_at       = "2026-09-23T10:00:00Z",
 		updated_at       = "2026-09-23T10:05:00Z",
 	}

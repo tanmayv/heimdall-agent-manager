@@ -273,7 +273,7 @@ test_bridge_enrollment_end_to_end :: proc() {
 	// credential try to act for it.
 	agent_row := domain.Agent{
 		agent_id = "agt_crossbridge", owner_user_id = "approving-human", name = "Cross Bridge",
-		slug = "cross-bridge", default_provider = "claude", default_tier = "normal", state = .Active,
+		slug = "cross-bridge", default_provider = "claude", default_model = "normal", state = .Active,
 		created_at = "2026-10-07T00:00:00Z", updated_at = "2026-10-07T00:00:00Z",
 	}
 	_, _, _ = iface.agent_save(graph.agents.agents, agent_row)
@@ -346,7 +346,7 @@ save_instance :: proc(graph: ^app.App_Graph, instance_id, bridge_id: string) -> 
 	inst := domain.Agent_Instance{
 		agent_instance_id = instance_id, owner_user_id = "approving-human",
 		agent_id = "agt_crossbridge", bridge_id = bridge_id,
-		display_name = "Cross Bridge #1", provider = "claude", tier = "normal",
+		display_name = "Cross Bridge #1", provider = "claude", model = "normal",
 		runtime_status = "running", startup_status = "ready", activity_status = "idle",
 		created_at = "2026-10-07T00:00:00Z", updated_at = "2026-10-07T00:00:00Z",
 	}

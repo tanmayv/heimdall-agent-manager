@@ -24,7 +24,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   permissionPreset: 'default',
   planReviewPolicy: 'always_ask',
   browserJsExecutionPolicy: 'request_review',
-  commandSetupScript: 'example:\nsource ~/.jetski_shell_setup',
+  commandSetupScript: 'example:\nsource ~/.profile',
   advancedExpanded: true,
 };
 

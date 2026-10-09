@@ -273,7 +273,7 @@ function routeTitle(path: string): string {
 
 function routeDescription(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Recent task chains, issues, and action items.';
-  if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
+  if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and model controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Update the prompt or schedule for this action.';
@@ -1048,7 +1048,7 @@ function DefaultsSettingsPanel() {
                 {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                 <div className="break-words font-semibold text-primary">{agent.name || agent.agent_id}</div>
                 {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                <div className="mt-1 break-all text-xs text-muted">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div>
+                <div className="mt-1 break-all text-xs text-muted">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'}</div>
               </div>
             );
           })}

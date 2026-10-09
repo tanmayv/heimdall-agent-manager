@@ -13,7 +13,18 @@ Agent_Repo_SQLite :: struct {
 
 new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Agent_Repository {
 	impl.conn = conn
-	return iface.Agent_Repository{ctx = rawptr(impl), save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite}
+	return iface.Agent_Repository{ctx = rawptr(impl), save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite}
+}
+
+agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM agent_instances WHERE agent_instance_id = ? AND kind = 'provider_test';"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare provider-test cleanup")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, instance_id)
+	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "provider-test instance could not be removed")
+	return true, {}
 }
 
 // agent_next_title_counter_sqlite atomically bumps the per-agent title counter and
@@ -40,7 +51,7 @@ agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_use
 agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, template_id=excluded.template_id, default_provider=excluded.default_provider, default_tier=excluded.default_tier, instructions=excluded.instructions, state=excluded.state, updated_at=excluded.updated_at;"
+	query := "INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, template_id=excluded.template_id, instructions=excluded.instructions, state=excluded.state, updated_at=excluded.updated_at;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent{}, false, domain.domain_error(.Internal_Error, "failed to prepare agent save")
 	defer sqlite3_finalize(stmt)
 	bind_agent(stmt, agent)
@@ -54,7 +65,7 @@ agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bo
 agent_get_sqlite :: proc(ctx: rawptr, agent_id: string) -> (domain.Agent, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE agent_id = ?;"
+	query := "SELECT agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at FROM agents WHERE agent_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent{}, false, domain.domain_error(.Internal_Error, "failed to prepare agent lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, agent_id)
@@ -66,8 +77,8 @@ agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, l
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
-	query := "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
-	if cursor != "" do query = "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
+	query := "SELECT agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
+	if cursor != "" do query = "SELECT agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare agent list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -85,7 +96,7 @@ agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, l
 agent_save_support_sqlite :: proc(ctx: rawptr, support: domain.Agent_Bridge_Support) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO agent_bridge_support (agent_id, bridge_id, owner_user_id, enabled, provider, tier, priority, max_instances, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, bridge_id) DO UPDATE SET enabled=excluded.enabled, provider=excluded.provider, tier=excluded.tier, priority=excluded.priority, max_instances=excluded.max_instances, updated_at=excluded.updated_at;"
+	query := "INSERT INTO agent_bridge_support (agent_id, bridge_id, owner_user_id, enabled, priority, max_instances, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, bridge_id) DO UPDATE SET enabled=excluded.enabled, priority=excluded.priority, max_instances=excluded.max_instances, updated_at=excluded.updated_at;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Bridge_Support{}, false, domain.domain_error(.Internal_Error, "failed to prepare support save")
 	defer sqlite3_finalize(stmt)
 	bind_support(stmt, support)
@@ -96,7 +107,7 @@ agent_save_support_sqlite :: proc(ctx: rawptr, support: domain.Agent_Bridge_Supp
 agent_get_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_id, bridge_id, owner_user_id, enabled, provider, tier, priority, max_instances, created_at, updated_at FROM agent_bridge_support WHERE agent_id = ? AND bridge_id = ?;"
+	query := "SELECT agent_id, bridge_id, owner_user_id, enabled, priority, max_instances, created_at, updated_at FROM agent_bridge_support WHERE agent_id = ? AND bridge_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Bridge_Support{}, false, domain.domain_error(.Internal_Error, "failed to prepare support lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, agent_id); bind_text(stmt, 2, bridge_id)
@@ -107,7 +118,7 @@ agent_get_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string) -> (d
 agent_list_support_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID) -> ([]domain.Agent_Bridge_Support, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_id, bridge_id, owner_user_id, enabled, provider, tier, priority, max_instances, created_at, updated_at FROM agent_bridge_support WHERE agent_id = ? AND owner_user_id = ? ORDER BY priority ASC, updated_at DESC;"
+	query := "SELECT agent_id, bridge_id, owner_user_id, enabled, priority, max_instances, created_at, updated_at FROM agent_bridge_support WHERE agent_id = ? AND owner_user_id = ? ORDER BY priority ASC, updated_at DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare support list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, agent_id); bind_text(stmt, 2, string(owner_user_id))
@@ -130,7 +141,7 @@ agent_delete_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string, ow
 agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO agent_instances (agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_instance_id) DO UPDATE SET display_name=excluded.display_name, provider=excluded.provider, tier=excluded.tier, project_id=excluded.project_id, project_path=excluded.project_path, runtime_status=excluded.runtime_status, startup_status=excluded.startup_status, activity_status=excluded.activity_status, status_message=excluded.status_message, last_applied_seq=excluded.last_applied_seq, run_count=excluded.run_count, current_task_id=excluded.current_task_id, current_task_role=excluded.current_task_role, updated_at=excluded.updated_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at, last_seen_at=excluded.last_seen_at;"
+	query := "INSERT INTO agent_instances (agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_instance_id) DO UPDATE SET display_name=excluded.display_name, provider=excluded.provider, model=excluded.model, project_id=excluded.project_id, project_path=excluded.project_path, runtime_status=excluded.runtime_status, startup_status=excluded.startup_status, activity_status=excluded.activity_status, status_message=excluded.status_message, last_applied_seq=excluded.last_applied_seq, run_count=excluded.run_count, current_task_id=excluded.current_task_id, current_task_role=excluded.current_task_role, updated_at=excluded.updated_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at, last_seen_at=excluded.last_seen_at, kind=excluded.kind;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "failed to prepare instance save")
 	defer sqlite3_finalize(stmt)
 	bind_instance(stmt, instance)
@@ -149,7 +160,7 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
 agent_get_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE agent_instance_id = ?;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind FROM agent_instances WHERE agent_instance_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "failed to prepare instance lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, instance_id)
@@ -161,8 +172,8 @@ agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE owner_user_id = ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
-	if cursor != "" do query = "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
+	if cursor != "" do query = "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -180,7 +191,7 @@ agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.
 agent_list_instances_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE bridge_id = ? ORDER BY updated_at DESC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind FROM agent_instances WHERE kind = 'agent' AND bridge_id = ? ORDER BY updated_at DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare bridge instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, bridge_id)
@@ -192,7 +203,7 @@ agent_list_instances_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) ->
 agent_list_active_runtime_instances_sqlite :: proc(ctx: rawptr) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE runtime_status IN ('running','idle','busy','launching','starting','stopping','blocked') ORDER BY last_seen_at ASC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind FROM agent_instances WHERE kind = 'agent' AND runtime_status IN ('running','idle','busy','launching','starting','stopping','blocked') ORDER BY last_seen_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare active runtime instance list")
 	defer sqlite3_finalize(stmt)
 	out := make([dynamic]domain.Agent_Instance)
@@ -201,27 +212,27 @@ agent_list_active_runtime_instances_sqlite :: proc(ctx: rawptr) -> ([]domain.Age
 }
 
 bind_agent :: proc(stmt: sqlite3_stmt, agent: domain.Agent) {
-	bind_text(stmt, 1, agent.agent_id); bind_text(stmt, 2, string(agent.owner_user_id)); bind_text(stmt, 3, agent.name); bind_text(stmt, 4, agent.slug); bind_text(stmt, 5, agent.template_id); bind_text(stmt, 6, agent.default_provider); bind_text(stmt, 7, agent.default_tier); bind_text(stmt, 8, agent.instructions); bind_text(stmt, 9, domain.agent_state_string(agent.state)); bind_text(stmt, 10, agent.created_at); bind_text(stmt, 11, agent.updated_at)
+	bind_text(stmt, 1, agent.agent_id); bind_text(stmt, 2, string(agent.owner_user_id)); bind_text(stmt, 3, agent.name); bind_text(stmt, 4, agent.slug); bind_text(stmt, 5, agent.template_id); bind_text(stmt, 6, agent.instructions); bind_text(stmt, 7, domain.agent_state_string(agent.state)); bind_text(stmt, 8, agent.created_at); bind_text(stmt, 9, agent.updated_at)
 }
 
 bind_support :: proc(stmt: sqlite3_stmt, s: domain.Agent_Bridge_Support) {
-	bind_text(stmt, 1, s.agent_id); bind_text(stmt, 2, s.bridge_id); bind_text(stmt, 3, string(s.owner_user_id)); bind_text(stmt, 4, "1" if s.enabled else "0"); bind_text(stmt, 5, s.provider); bind_text(stmt, 6, s.tier); bind_text(stmt, 7, i32_to_string(s.priority)); bind_text(stmt, 8, i32_to_string(s.max_instances)); bind_text(stmt, 9, s.created_at); bind_text(stmt, 10, s.updated_at)
+	bind_text(stmt, 1, s.agent_id); bind_text(stmt, 2, s.bridge_id); bind_text(stmt, 3, string(s.owner_user_id)); bind_text(stmt, 4, "1" if s.enabled else "0"); bind_text(stmt, 5, i32_to_string(s.priority)); bind_text(stmt, 6, i32_to_string(s.max_instances)); bind_text(stmt, 7, s.created_at); bind_text(stmt, 8, s.updated_at)
 }
 
 agent_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent {
-	return domain.Agent{agent_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), name = column_text(stmt, 2), slug = column_text(stmt, 3), template_id = column_text(stmt, 4), default_provider = column_text(stmt, 5), default_tier = column_text(stmt, 6), instructions = column_text(stmt, 7), state = agent_state_from_string(column_text_unowned(stmt, 8)), created_at = column_text(stmt, 9), updated_at = column_text(stmt, 10)}
+	return domain.Agent{agent_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), name = column_text(stmt, 2), slug = column_text(stmt, 3), template_id = column_text(stmt, 4), instructions = column_text(stmt, 5), state = agent_state_from_string(column_text_unowned(stmt, 6)), created_at = column_text(stmt, 7), updated_at = column_text(stmt, 8)}
 }
 
 support_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent_Bridge_Support {
-	return domain.Agent_Bridge_Support{agent_id = column_text(stmt, 0), bridge_id = column_text(stmt, 1), owner_user_id = domain.User_ID(column_text(stmt, 2)), enabled = column_text_unowned(stmt, 3) == "1", provider = column_text(stmt, 4), tier = column_text(stmt, 5), priority = string_to_i32(column_text_unowned(stmt, 6)), max_instances = string_to_i32(column_text_unowned(stmt, 7)), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)}
+	return domain.Agent_Bridge_Support{agent_id = column_text(stmt, 0), bridge_id = column_text(stmt, 1), owner_user_id = domain.User_ID(column_text(stmt, 2)), enabled = column_text_unowned(stmt, 3) == "1", priority = string_to_i32(column_text_unowned(stmt, 4)), max_instances = string_to_i32(column_text_unowned(stmt, 5)), created_at = column_text(stmt, 6), updated_at = column_text(stmt, 7)}
 }
 
 bind_instance :: proc(stmt: sqlite3_stmt, inst: domain.Agent_Instance) {
-	bind_text(stmt, 1, inst.agent_instance_id); bind_text(stmt, 2, string(inst.owner_user_id)); bind_text(stmt, 3, inst.agent_id); bind_text(stmt, 4, inst.bridge_id); bind_text(stmt, 5, inst.display_name); bind_text(stmt, 6, inst.provider); bind_text(stmt, 7, inst.tier); bind_text(stmt, 8, string(inst.project_id)); bind_text(stmt, 9, inst.project_path); bind_text(stmt, 10, inst.chain_id); bind_text(stmt, 11, inst.conversation_id); bind_text(stmt, 12, inst.runtime_status); bind_text(stmt, 13, inst.startup_status); bind_text(stmt, 14, inst.activity_status); bind_text(stmt, 15, inst.status_message); bind_text(stmt, 16, i32_to_string(inst.last_applied_seq)); bind_text(stmt, 17, i32_to_string(inst.run_count)); bind_text(stmt, 18, inst.current_task_id); bind_text(stmt, 19, domain.current_task_role_string(inst.current_task_role)); bind_text(stmt, 20, inst.created_at); bind_text(stmt, 21, inst.updated_at); bind_text(stmt, 22, inst.started_at); bind_text(stmt, 23, inst.stopped_at); bind_text(stmt, 24, inst.last_seen_at)
+	bind_text(stmt, 1, inst.agent_instance_id); bind_text(stmt, 2, string(inst.owner_user_id)); bind_text(stmt, 3, inst.agent_id); bind_text(stmt, 4, inst.bridge_id); bind_text(stmt, 5, inst.display_name); bind_text(stmt, 6, inst.provider); bind_text(stmt, 7, inst.model); bind_text(stmt, 8, string(inst.project_id)); bind_text(stmt, 9, inst.project_path); bind_text(stmt, 10, inst.chain_id); bind_text(stmt, 11, inst.conversation_id); bind_text(stmt, 12, inst.runtime_status); bind_text(stmt, 13, inst.startup_status); bind_text(stmt, 14, inst.activity_status); bind_text(stmt, 15, inst.status_message); bind_text(stmt, 16, i32_to_string(inst.last_applied_seq)); bind_text(stmt, 17, i32_to_string(inst.run_count)); bind_text(stmt, 18, inst.current_task_id); bind_text(stmt, 19, domain.current_task_role_string(inst.current_task_role)); bind_text(stmt, 20, inst.created_at); bind_text(stmt, 21, inst.updated_at); bind_text(stmt, 22, inst.started_at); bind_text(stmt, 23, inst.stopped_at); bind_text(stmt, 24, inst.last_seen_at); bind_text(stmt, 25, "agent" if inst.kind == "" else inst.kind)
 }
 
 instance_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent_Instance {
-	return domain.Agent_Instance{agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), tier = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text_unowned(stmt, 15)), run_count = string_to_i32(column_text_unowned(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text_unowned(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23)}
+	return domain.Agent_Instance{agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), model = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text_unowned(stmt, 15)), run_count = string_to_i32(column_text_unowned(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text_unowned(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23), kind = column_text(stmt, 24)}
 }
 
 agent_state_from_string :: proc(state: string) -> domain.Agent_State { if state == "archived" do return .Archived; return .Active }

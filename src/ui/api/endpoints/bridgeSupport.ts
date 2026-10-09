@@ -6,7 +6,7 @@ export type AgentBridgeSupportEntry = {
   bridgeId: string;
   enabled: boolean;
   providerProfile?: string;
-  modelTier?: string;
+  model?: string;
   priority?: number;
   maxInstances?: number;
 };
@@ -56,8 +56,7 @@ export interface Bridge {
 
 export type BridgeCapability = {
   provider: string;
-  tiers: string[];
-  defaultTier?: string;
+  models: string[];
 };
 
 export function normalizeBridgeCapabilities(raw: any): BridgeCapability[] {
@@ -70,10 +69,9 @@ export function normalizeBridgeCapabilities(raw: any): BridgeCapability[] {
         ? caps.provider_profiles
         : [];
   return source.map((entry: any) => {
-    if (typeof entry === 'string') return { provider: entry, tiers: [], defaultTier: undefined };
-    const tiers = Array.isArray(entry?.tiers) ? entry.tiers.map((tier: any) => String(tier)).filter(Boolean) : [];
-    const defaultTier = String(entry?.default_tier || entry?.defaultTier || '');
-    return { provider: String(entry?.provider || entry?.name || ''), tiers, defaultTier: defaultTier || undefined };
+    if (typeof entry === 'string') return { provider: entry, models: [] };
+    const models = Array.isArray(entry?.models) ? entry.models.map((model: any) => String(model)).filter(Boolean) : [];
+    return { provider: String(entry?.provider || entry?.name || ''), models };
   }).filter((entry: BridgeCapability) => Boolean(entry.provider));
 }
 
@@ -82,7 +80,7 @@ function normalizeBridgeSupportEntry(raw: any): AgentBridgeSupportEntry {
     bridgeId: String(raw?.bridge_id || raw?.bridgeId || ''),
     enabled: Boolean(raw?.enabled ?? raw?.is_enabled ?? false),
     providerProfile: raw?.provider || raw?.provider_profile || raw?.providerProfile || undefined,
-    modelTier: raw?.tier || raw?.model_tier || raw?.modelTier || undefined,
+    model: raw?.model || raw?.model || raw?.model || undefined,
     priority: raw?.priority !== undefined ? Number(raw.priority) : undefined,
     maxInstances: raw?.max_instances !== undefined ? Number(raw.max_instances) : raw?.maxInstances !== undefined ? Number(raw.maxInstances) : undefined,
   };
@@ -111,12 +109,12 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { agentId }) => [{ type: 'BridgeSupport' as const, id: agentId }],
     }),
-    patchAgentBridgeSupport: build.mutation<any, { agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; modelTier?: string; priority?: number; maxInstances?: number }>({
+    patchAgentBridgeSupport: build.mutation<any, { agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; model?: string; priority?: number; maxInstances?: number }>({
       queryFn: async (arg) => {
         if (!arg.agentId || !arg.bridgeId) return { data: { ok: false, message: 'Missing agentId/bridgeId' } };
         try {
           let current: AgentBridgeSupportEntry | undefined;
-          const preservesFields = arg.providerProfile === undefined || arg.modelTier === undefined || arg.priority === undefined || arg.maxInstances === undefined;
+          const preservesFields = arg.providerProfile === undefined || arg.model === undefined || arg.priority === undefined || arg.maxInstances === undefined;
           if (preservesFields) {
             const rows = normalizeBridgeSupport(await cookieJsonFetch(`/agents/${encodeURIComponent(arg.agentId)}/bridge-support`)).entries;
             current = rows.find((row) => row.bridgeId === arg.bridgeId);
@@ -124,8 +122,6 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
           const payload = {
             bridge_id: arg.bridgeId,
             enabled: arg.enabled ?? current?.enabled ?? true,
-            provider: arg.providerProfile !== undefined ? arg.providerProfile : (current?.providerProfile || ''),
-            tier: arg.modelTier !== undefined ? arg.modelTier : (current?.modelTier || ''),
             priority: arg.priority !== undefined ? arg.priority : (current?.priority || 0),
             max_instances: arg.maxInstances !== undefined ? arg.maxInstances : (current?.maxInstances || 0),
           };
@@ -141,7 +137,20 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       queryFn: async () => {
         try {
           const data = await cookieJsonFetch('/bridges');
-          return { data: { bridges: data?.bridges || data || [] } };
+          const bridges = data?.bridges || data || [];
+          const enriched = await Promise.all(bridges.map(async (bridge: any) => {
+            const id = String(bridge?.bridge_id || bridge?.id || '');
+            if (!id || String(bridge?.status || '').toLowerCase() === 'revoked') return bridge;
+            try {
+              const status = await cookieJsonFetch(`/bridges/${encodeURIComponent(id)}/provider-status`);
+              const providers = Array.isArray(status?.providers) ? status.providers : [];
+              const capabilities = providers
+                .filter((entry: any) => entry?.enabled && entry?.state === 'present' && entry?.catalog_state === 'active')
+                .map((entry: any) => ({ provider: String(entry.provider), models: (entry.models || []).filter((model: any) => model?.state === 'active').map((model: any) => String(model.model_id)) }));
+              return { ...bridge, capabilities };
+            } catch { return { ...bridge, capabilities: [] }; }
+          }));
+          return { data: { bridges: enriched } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -219,140 +228,23 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       queryFn: async ({ bridgeId }) => {
         if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
         try {
-          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/providers`);
-          return { data: { bridge_id: data?.bridge_id || bridgeId, default_provider: data?.default_provider || data?.defaultProvider || '', default_tier: data?.default_tier || data?.defaultTier || '', providers: Array.isArray(data?.providers) ? data.providers : [] } };
+          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/provider-status`);
+          const providers = (Array.isArray(data?.providers) ? data.providers : [])
+            .filter((entry: any) => entry?.enabled && entry?.state === 'present' && entry?.catalog_state === 'active')
+            .map((entry: any) => ({
+              provider: String(entry?.provider || ''),
+              enabled: true,
+              models: (Array.isArray(entry?.models) ? entry.models : [])
+                .filter((model: any) => model?.state === 'active')
+                .map((model: any) => String(model?.model_id || ''))
+                .filter(Boolean),
+            }));
+          return { data: { bridge_id: data?.bridge_id || bridgeId, providers } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
       providesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
-    }),
-    listAllBridgeProviders: build.query<any, void>({
-      queryFn: async () => {
-        try {
-          const bridgesData = await cookieJsonFetch('/bridges');
-          const rawBridges = bridgesData?.bridges || (Array.isArray(bridgesData) ? bridgesData : []);
-          const bridges = rawBridges.filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
-          const results = await Promise.all(
-            bridges.map(async (bridge: any) => {
-              const bId = String(bridge.bridge_id || bridge.bridgeId || bridge.id || '');
-              const isOnline = String(bridge.status || '').toLowerCase() === 'online';
-              const bridgeLabel = String(bridge.label || bridge.machine_hostname || bId);
-              if (!isOnline || !bId) {
-                return { bridgeId: bId, bridgeLabel, isOnline, defaultProvider: '', defaultTier: '', providers: [], detectedProviders: [] };
-              }
-              try {
-                const [providersRes, detectedRes] = await Promise.allSettled([
-                  cookieJsonFetch(`/bridges/${encodeURIComponent(bId)}/providers`),
-                  cookieJsonFetch(`/bridges/${encodeURIComponent(bId)}/detected-providers`),
-                ]);
-                const data = providersRes.status === 'fulfilled' ? providersRes.value : null;
-                const dData = detectedRes.status === 'fulfilled' ? detectedRes.value : null;
-                const detectedList = Array.isArray(dData?.detected_providers)
-                  ? dData.detected_providers
-                  : Array.isArray(dData)
-                    ? dData
-                    : [];
-                return {
-                  bridgeId: bId,
-                  bridgeLabel,
-                  isOnline,
-                  defaultProvider: data?.default_provider || data?.defaultProvider || '',
-                  defaultTier: data?.default_tier || data?.defaultTier || '',
-                  providers: Array.isArray(data?.providers) ? data.providers : [],
-                  detectedProviders: detectedList,
-                };
-              } catch {
-                return { bridgeId: bId, bridgeLabel, isOnline, defaultProvider: '', defaultTier: '', providers: [], detectedProviders: [] };
-              }
-            })
-          );
-          return { data: { bridges: results } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: (result) => [
-        { type: 'BridgeProviders' as const, id: 'LIST' },
-        { type: 'Bridges' as const, id: 'LIST' },
-        ...(result?.bridges || []).map((b: any) => ({ type: 'BridgeProviders' as const, id: b.bridgeId })),
-      ],
-    }),
-    upsertBridgeProvider: build.mutation<any, { bridgeId: string; name: string; profile: any }>({
-      queryFn: async ({ bridgeId, name, profile }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}`, 'PUT', profile);
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
-    }),
-    deleteBridgeProvider: build.mutation<any, { bridgeId: string; name: string }>({
-      queryFn: async ({ bridgeId, name }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}`, 'DELETE');
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
-    }),
-    setBridgeProviderDefaults: build.mutation<any, { bridgeId: string; provider: string; tier: string }>({
-      queryFn: async ({ bridgeId, provider, tier }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/provider-defaults`, 'POST', { provider, tier });
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
-    }),
-    refreshBridgeCapabilities: build.mutation<any, { bridgeId: string }>({
-      queryFn: async ({ bridgeId }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/refresh`, 'POST');
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
-    }),
-    getDetectedBridgeProviders: build.query<any, { bridgeId: string }>({
-      queryFn: async ({ bridgeId }) => {
-        if (!bridgeId) return { data: { detected_providers: [] } };
-        try {
-          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/detected-providers`);
-          const list = Array.isArray(data?.detected_providers)
-            ? data.detected_providers
-            : Array.isArray(data)
-              ? data
-              : [];
-          return { data: { detected_providers: list } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
-    }),
-    enableBridgeProviders: build.mutation<any, { bridgeId: string; providers: string[] }>({
-      queryFn: async ({ bridgeId, providers }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/enable-detected`, 'POST', { providers });
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [
-        { type: 'BridgeProviders' as const, id: bridgeId },
-        { type: 'Bridges' as const, id: 'LIST' },
-        { type: 'Bridges' as const, id: bridgeId },
-      ],
     }),
     putProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string; path: string }>({
       queryFn: withSessionQuery(async ({ projectId, bridgeId, path }, { session }) => daemonApi.putProjectBridgePath({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, projectId, bridgeId, path })),
@@ -378,13 +270,6 @@ export const {
   useRevokeBridgeMutation,
   useUpdateBridgeMutation,
   useListBridgeProvidersQuery,
-  useListAllBridgeProvidersQuery,
-  useUpsertBridgeProviderMutation,
-  useDeleteBridgeProviderMutation,
-  useSetBridgeProviderDefaultsMutation,
-  useRefreshBridgeCapabilitiesMutation,
-  useGetDetectedBridgeProvidersQuery,
-  useEnableBridgeProvidersMutation,
   usePutProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
   useValidateProjectBridgePathMutation,

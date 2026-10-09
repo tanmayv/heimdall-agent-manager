@@ -53,7 +53,7 @@ ctl_agents_start :: proc(target: string, args: []string, config_path, daemon_url
 ctl_agents_create :: proc(daemon_url: string, args: []string) {
 	name := option_value(args, "--name", option_value(args, "--id", ""))
 	agent := option_value(args, "--agent", option_value(args, "--provider", "pi"))
-	tier := option_value(args, "--tier", "normal")
+	model := option_value(args, "--model", "normal")
 	display_name := option_value(args, "--display-name", name)
 	template_id := option_value(args, "--template", "")
 	project_id := option_value(args, "--project", "")
@@ -64,7 +64,7 @@ ctl_agents_create :: proc(daemon_url: string, args: []string) {
 	append(&fields, json_kv("provider_profile", agent))
 	append(&fields, json_kv("template_id", template_id))
 	append(&fields, json_kv("project_id", project_id))
-	append(&fields, json_kv("model_tier", tier))
+	append(&fields, json_kv("model", model))
 	body := json_object_from_slice(fields[:])
 	response, ok := http.post(daemon_url, "/agents/create", body)
 	if !ok { fmt.println(`{"ok":false,"message":"create request failed"}`); return }
@@ -73,11 +73,11 @@ ctl_agents_create :: proc(daemon_url: string, args: []string) {
 
 ctl_agents_update :: proc(daemon_url: string, args: []string) {
 	agent_instance_id := option_value(args, "--id", "")
-	if agent_instance_id == "" { fmt.println("usage: ham-ctl agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>]"); return }
+	if agent_instance_id == "" { fmt.println("usage: ham-ctl agents update --id <agent_instance_id> [--model cheap|normal|smart] [--display-name <name>]"); return }
 
 	fields := make([dynamic]string)
 	append(&fields, json_kv("agent_instance_id", agent_instance_id))
-	if tier := option_value(args, "--tier", ""); tier != "" do append(&fields, json_kv("model_tier", tier))
+	if model := option_value(args, "--model", ""); model != "" do append(&fields, json_kv("model", model))
 	if dn := option_value(args, "--display-name", ""); dn != "" do append(&fields, json_kv("display_name", dn))
 	if pp := option_value(args, "--provider", ""); pp != "" do append(&fields, json_kv("provider_profile", pp))
 	body := json_object_from_slice(fields[:])

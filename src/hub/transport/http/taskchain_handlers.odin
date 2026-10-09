@@ -253,7 +253,7 @@ Task_Chain_Fleet_Wire :: struct {
 	created_at:             string                         `json:"created_at"`,
 	updated_at:             string                         `json:"updated_at"`,
 	provider:               string                         `json:"provider"`,
-	tier:                   string                         `json:"tier"`,
+	model:                   string                         `json:"model"`,
 	restarted_instance_ids: Maybe([]string)                `json:"restarted_instance_ids,omitempty"`,
 	restart_failures:       Maybe([]Fleet_Restart_Failure) `json:"restart_failures,omitempty"`,
 }
@@ -601,7 +601,7 @@ make_chain_fleet_wire :: proc(
 		created_at             = f.created_at,
 		updated_at             = f.updated_at,
 		provider               = f.provider,
-		tier                   = f.tier,
+		model                   = f.model,
 		restarted_instance_ids = restarted_ids_maybe,
 		restart_failures       = restart_failures_maybe,
 	}
@@ -1144,7 +1144,7 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !created do return respond_error(err, req.request_id)
 	if coord_agent_id := json_string(req.body, "coordinator_agent_id"); coord_agent_id != "" {
 		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
-		inst, inst_created, inst_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), tier = json_string(req.body, "tier"), project_id = domain.Project_ID(json_string(req.body, "project_id")), chain_id = string(chain.chain_id)})
+		inst, inst_created, inst_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id")), chain_id = string(chain.chain_id)})
 		if !inst_created do return respond_error(inst_err, req.request_id)
 		chain, created, err = taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
 		if !created do return respond_error(err, req.request_id)
@@ -1875,12 +1875,12 @@ json_int_field :: proc(body, key: string, default_value: int) -> int {
 	return jsonx.extract_int(body, key, default_value)
 }
 
-// fleet_provider_tier_changed reports whether a fleet upsert actually changes the
-// role's provider or tier relative to the prior row. Capacity/min_warm/TTL edits
+// fleet_provider_model_changed reports whether a fleet upsert actually changes the
+// role's provider or model relative to the prior row. Capacity/min_warm/TTL edits
 // alone never restart live instances, and a missing prior row has nothing to
 // compare against, so both cases report false.
-fleet_provider_tier_changed :: proc(prior_provider, prior_tier, provider, tier: string) -> bool {
-	return prior_provider != provider || prior_tier != tier
+fleet_provider_model_changed :: proc(prior_provider, prior_model, provider, model: string) -> bool {
+	return prior_provider != provider || prior_model != model
 }
 
 // fleet_restart_instance_live mirrors the active_count predicate of the fleet list
@@ -1933,9 +1933,9 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	min_warm := json_int_field(req.body, "min_warm", 0)
 	idle_ttl_seconds := json_int_field(req.body, "idle_ttl_seconds", 600)
 	provider := json_string(req.body, "provider")
-	tier := json_string(req.body, "tier")
+	model := json_string(req.body, "model")
 	// Optional user-confirmed restart of the role's live instances when this PUT
-	// actually changes the role's provider/tier. Absent or malformed values keep the
+	// actually changes the role's provider/model. Absent or malformed values keep the
 	// historical flag-less behavior (persist only), so only a well-formed JSON
 	// boolean counts as "carried the flag".
 	restart_live_instances, restart_flag_ok := json_bool_literal(req.body, "restart_live_instances")
@@ -1946,7 +1946,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		defer if prior_err.code == .None do delete(prior_fleets)
 		for prior in prior_fleets {
 			if prior.agent_id == role {
-				restart_role_instances = fleet_provider_tier_changed(prior.provider, prior.tier, provider, tier)
+				restart_role_instances = fleet_provider_model_changed(prior.provider, prior.model, provider, model)
 				break
 			}
 		}
@@ -1958,7 +1958,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		min_warm         = min_warm,
 		idle_ttl_seconds = idle_ttl_seconds,
 		provider         = provider,
-		tier             = tier,
+		model             = model,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
 	restarted_ids := make([dynamic]string)
@@ -1979,10 +1979,10 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 				// liveness check matches the fleet list's active_count predicate.
 				inst, inst_ok, _ := agent_service.get_instance(h.agents, auth_ctx, m.agent_instance_id)
 				if !inst_ok || !fleet_restart_instance_live(inst.runtime_status) do continue
-				// relaunch_instance is the primitive that persists the NEW provider/tier
+				// relaunch_instance is the primitive that persists the NEW provider/model
 				// verbatim on the same instance id ("" resolves through the standard
 				// inheritance order) and re-sends the launch command.
-				if _, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, provider, tier); relaunched {
+				if _, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, provider, model); relaunched {
 					append(&restarted_ids, inst.agent_instance_id)
 				} else {
 					// Clone: relaunch path messages can come from fmt.tprintf (temp memory).

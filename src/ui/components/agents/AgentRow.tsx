@@ -6,15 +6,15 @@
  *     row 1   Name ..........................................  [ … ]
  *     row 2   instructions line 1
  *     row 3   instructions line 2
- *     row 4   [provider] [tier] [N running] .........  12m ago
+ *     row 4   [provider] [model] [N running] .........  12m ago
  *
  * What differs for an agent:
- *  - Pills are provider · tier · active-instance count · (Archived).
- *    Provider and tier identify the agent's model config at a glance.
+ *  - Pills are provider · model · active-instance count · (Archived).
+ *    Provider and model identify the agent's model config at a glance.
  *    Active-instance count shows whether the agent is live right now.
  *  - There is no path chip (agents are not filesystem-bound).
  *  - "Active" pill is suppressed on the Active tab — see ProjectRow.
- *  - No per-row Launch button. Launch needs bridge+provider+tier input
+ *  - No per-row Launch button. Launch needs bridge+provider+model input
  *    and belongs on the view page header only.
  */
 import React from 'react';
@@ -110,12 +110,6 @@ export function AgentRow({
       snippet={snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
       badges={
         <>
-          {row.defaultProvider ? (
-            <Badge data-debug-id={`agent-row-provider-${agentId}`}>{row.defaultProvider}</Badge>
-          ) : null}
-          {row.defaultTier ? (
-            <Badge data-debug-id={`agent-row-tier-${agentId}`}>{row.defaultTier}</Badge>
-          ) : null}
           {row.activeInstanceCount > 0 ? (
             <StatusPill tone="success" data-debug-id={`agent-row-instances-${agentId}`}>
               {row.activeInstanceCount} running

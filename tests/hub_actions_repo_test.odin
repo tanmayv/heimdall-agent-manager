@@ -196,7 +196,7 @@ main :: proc() {
 		target_agent_id = domain.Agent_ID("agt_curator"),
 		target_bridge_id = domain.Bridge_ID("brg_ac1"),
 		target_provider = "vertex",
-		target_tier = "fast",
+		target_model = "fast",
 		target_project_id = domain.Project_ID("prj_main"),
 		prompt_text = "Curator scan",
 		cron_expr = "0 0 * * *",
@@ -216,7 +216,7 @@ main :: proc() {
 	check(saved_agt.target_agent_id == "agt_curator", "saved target_agent_id mismatch")
 	check(saved_agt.target_bridge_id == "brg_ac1", "saved target_bridge_id mismatch")
 	check(saved_agt.target_provider == "vertex", "saved target_provider mismatch")
-	check(saved_agt.target_tier == "fast", "saved target_tier mismatch")
+	check(saved_agt.target_model == "fast", "saved target_model mismatch")
 	check(saved_agt.target_project_id == "prj_main", "saved target_project_id mismatch")
 
 	got_agt, ok_get_agt, err_get_agt := repo.get(repo.ctx, domain.Action_ID("act_agent_1"))
@@ -225,7 +225,7 @@ main :: proc() {
 	check(got_agt.target_agent_id == "agt_curator", "target_agent_id mismatch")
 	check(got_agt.target_bridge_id == "brg_ac1", "target_bridge_id mismatch")
 	check(got_agt.target_provider == "vertex", "target_provider mismatch")
-	check(got_agt.target_tier == "fast", "target_tier mismatch")
+	check(got_agt.target_model == "fast", "target_model mismatch")
 	check(got_agt.target_project_id == "prj_main", "target_project_id mismatch")
 	check(domain.action_target_mode(got_agt) == .Agent, "target_mode should be Agent")
 

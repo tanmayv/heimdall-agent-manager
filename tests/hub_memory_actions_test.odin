@@ -99,12 +99,12 @@ enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header) -
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// that matches an agent to a provider/tier fails — which is a real difference
+	// that matches an agent to a provider/model fails — which is a real difference
 	// between the two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online (as a connect would), where the deleted
 	// enroll path left it Offline.
-	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\",\"smart\"],\"default_model\":\"normal\"}]}")
 
 	return extract_json_string(issued.body, "bridge_id"), extract_json_string(issued.body, "access_token")
 }
@@ -146,7 +146,7 @@ main :: proc() {
 		name = "Memory Test Agent",
 		slug = "mem-agent",
 		default_provider = "claude",
-		default_tier = "normal",
+		default_model = "normal",
 		state = .Active,
 		created_at = now,
 		updated_at = now,
@@ -159,7 +159,7 @@ main :: proc() {
 		agent_id = agent_id,
 		bridge_id = bridge_id,
 		provider = "claude",
-		tier = "normal",
+		model = "normal",
 		chain_id = "chain_test",
 		runtime_status = "live",
 		startup_status = "ready",
@@ -283,7 +283,7 @@ main :: proc() {
 		name = "Memory Test Agent 2",
 		slug = "mem-agent-2",
 		default_provider = "claude",
-		default_tier = "normal",
+		default_model = "normal",
 		state = .Active,
 		created_at = now,
 		updated_at = now,

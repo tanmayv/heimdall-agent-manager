@@ -131,7 +131,7 @@ enroll_bridge_offline :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_H
 connect_bridge :: proc(graph: ^app.App_Graph, bridge_token: string) {
 	bridge_auth, auth_ok, auth_err := bridge_service.verify_bridge_token(&graph.bridges, bridge_token)
 	check(auth_ok, auth_err.message)
-	bridge, bridge_ok, bridge_err := bridge_service.bridge_runtime_connect(&graph.bridges, bridge_token, "host", "", "", "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\"],\"default_tier\":\"normal\"}]}")
+	bridge, bridge_ok, bridge_err := bridge_service.bridge_runtime_connect(&graph.bridges, bridge_token, "host", "", "", "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\"],\"default_model\":\"normal\"}]}")
 	check(bridge_ok && bridge.bridge_id == bridge_auth.bridge_id, bridge_err.message)
 }
 

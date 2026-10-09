@@ -14,7 +14,7 @@ import {
   planSaveProvider,
   formFromProfile,
   profileFromForm,
-  configuredTiers,
+  configuredModels,
   providerDefault,
   shellHash,
   type ProviderForm,
@@ -140,7 +140,7 @@ test('planSaveProvider handles new duplicate provider saving (not a rename)', ()
     providerName: '',
     formName: 'claude-copy',
     currentProfile: undefined,
-    providersData: { default_provider: 'claude', default_tier: 'normal' },
+    providersData: { default_provider: 'claude', default_model: 'normal' },
     providersList: [{ name: 'claude', models: { normal: 'n' } }],
     profile,
   });
@@ -158,7 +158,7 @@ test('planSaveProvider handles editing provider without changing name (not a ren
     providerName: 'claude',
     formName: 'claude',
     currentProfile: { name: 'claude', source: 'store' },
-    providersData: { default_provider: 'claude', default_tier: 'normal' },
+    providersData: { default_provider: 'claude', default_model: 'normal' },
     providersList: [{ name: 'claude', models: { normal: 'n' } }],
     profile,
   });
@@ -176,7 +176,7 @@ test('planSaveProvider renames store-persisted provider that is NOT default', ()
     providerName: 'pi',
     formName: 'pi-renamed',
     currentProfile: { name: 'pi', source: 'store' },
-    providersData: { default_provider: 'claude', default_tier: 'normal' },
+    providersData: { default_provider: 'claude', default_model: 'normal' },
     providersList: [
       { name: 'claude', models: { normal: 'n' } },
       { name: 'pi', source: 'store', models: { normal: 'n' } },
@@ -198,7 +198,7 @@ test('planSaveProvider renames store-persisted provider that IS the default prov
     providerName: 'claude',
     formName: 'claude-v2',
     currentProfile: { name: 'claude', source: 'store' },
-    providersData: { default_provider: 'claude', default_tier: 'smart' },
+    providersData: { default_provider: 'claude', default_model: 'smart' },
     providersList: [
       { name: 'claude', source: 'store', models: { smart: 'opus' } },
     ],
@@ -210,7 +210,7 @@ test('planSaveProvider renames store-persisted provider that IS the default prov
   assert.equal(plan.newName, 'claude-v2');
   assert.equal(plan.shouldDeleteOld, true, 'Store provider must have old entry deleted on rename');
   assert.equal(plan.shouldUpdateDefault, true, 'Default provider rename must update default');
-  assert.equal(plan.defaultTier, 'smart', 'Should preserve matching configured tier for default');
+  assert.equal(plan.defaultModel, 'smart', 'Should preserve matching configured model for default');
 });
 
 test('planSaveProvider renames config-persisted provider without issuing DELETE on old entry', () => {
@@ -220,7 +220,7 @@ test('planSaveProvider renames config-persisted provider without issuing DELETE 
     providerName: 'config-base',
     formName: 'config-renamed',
     currentProfile: { name: 'config-base', source: 'config' },
-    providersData: { default_provider: 'config-base', default_tier: 'normal' },
+    providersData: { default_provider: 'config-base', default_model: 'normal' },
     providersList: [
       { name: 'config-base', source: 'config', models: { normal: 'n' } },
     ],
@@ -232,17 +232,17 @@ test('planSaveProvider renames config-persisted provider without issuing DELETE 
   assert.equal(plan.newName, 'config-renamed');
   assert.equal(plan.shouldDeleteOld, false, 'Config-persisted provider must NOT issue DELETE on rename');
   assert.equal(plan.shouldUpdateDefault, true, 'Default provider rename must still update default');
-  assert.equal(plan.defaultTier, 'normal');
+  assert.equal(plan.defaultModel, 'normal');
 });
 
-test('planSaveProvider falls back to first available tier when previous default tier is not configured', () => {
+test('planSaveProvider falls back to first available model when previous default model is not configured', () => {
   const profile = { name: 'claude-cheap-only', models: { cheap: 'haiku' } };
   const plan = planSaveProvider({
     isEdit: true,
     providerName: 'claude',
     formName: 'claude-cheap-only',
     currentProfile: { name: 'claude', source: 'store' },
-    providersData: { default_provider: 'claude', default_tier: 'smart' },
+    providersData: { default_provider: 'claude', default_model: 'smart' },
     providersList: [
       { name: 'claude', source: 'store', models: { cheap: 'haiku', smart: 'opus' } },
     ],
@@ -251,7 +251,7 @@ test('planSaveProvider falls back to first available tier when previous default 
 
   assert.equal(plan.isRenamed, true);
   assert.equal(plan.shouldUpdateDefault, true);
-  assert.equal(plan.defaultTier, 'cheap', 'Fallback to cheap tier since smart is no longer configured');
+  assert.equal(plan.defaultModel, 'cheap', 'Fallback to cheap model since smart is no longer configured');
 });
 
 // -----------------------------------------------------------------------------
@@ -315,7 +315,7 @@ test('ProvidersPanel.tsx satisfies REQ-BRG-2 UI requirements and debug IDs', () 
   );
   assert.match(
     content,
-    /setDefaults\(\{\s*bridgeId:\s*selectedId,\s*provider:\s*newName,\s*tier:\s*plan\.defaultTier\s*\}\)/,
+    /setDefaults\(\{\s*bridgeId:\s*selectedId,\s*provider:\s*newName,\s*model:\s*plan\.defaultModel\s*\}\)/,
     'saveProvider must update default_provider via setDefaults (POST)'
   );
   assert.match(

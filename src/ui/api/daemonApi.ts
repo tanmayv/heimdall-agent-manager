@@ -218,21 +218,21 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
+export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, model }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; model?: string }) {
   const body: any = {
     template_id: templateId || '',
     project_id: sanitizeProjectId(projectId),
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
     agent_instance_id: agentInstanceId || '',
-    model_tier: modelTier || '',
+    model: model || '',
     agent_id: agentId || '',
   };
   if (provider !== undefined) {
     body.agent = provider || '';
     body.provider_profile = provider || '';
   }
-  if (modelTier !== undefined) body.model_tier = modelTier || '';
+  if (model !== undefined) body.model = model || '';
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   if (agentId) body.agent_id = agentId;
   // Explicit runtime restart project override (incl. clearing to none) so the
@@ -250,7 +250,7 @@ export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', pro
 // the architecture doc and confirmed ready in the gap analysis. This never
 // attaches an unrelated live instance from another chain — it hydrates a fresh
 // instance into the current chain and creates its 1:1 conversation.
-export async function createAgentInstanceInChain({ daemonUrl, clientToken, agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }: { daemonUrl: string; clientToken: string; agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }) {
+export async function createAgentInstanceInChain({ daemonUrl, clientToken, agentId, chainId, bridgeId, providerProfile, model, projectId, displayName, templateId }: { daemonUrl: string; clientToken: string; agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; model?: string; projectId?: string; displayName?: string; templateId?: string }) {
   if (!agentId || !chainId) throw new Error('agentId and chainId are required to add an agent to a chain');
   return requestJson(joinUrl(daemonUrl, '/api/v1/agent-instances'), {
     method: 'POST',
@@ -262,7 +262,7 @@ export async function createAgentInstanceInChain({ daemonUrl, clientToken, agent
       // popup's chosen bridge is respected (falls back to bridge default when omitted).
       ...(bridgeId ? { bridge_id: bridgeId } : {}),
       ...(providerProfile ? { provider_profile: providerProfile } : {}),
-      ...(modelTier ? { model_tier: modelTier } : {}),
+      ...(model ? { model: model } : {}),
       ...(projectId ? { project_id: projectId } : {}),
       ...(displayName ? { display_name: displayName } : {}),
       ...(templateId ? { template_id: templateId } : {}),
@@ -284,7 +284,7 @@ export type AgentBridgeSupportEntry = {
   bridgeId: string;
   enabled: boolean;
   providerProfile?: string;
-  modelTier?: string;
+  model?: string;
   priority?: number;
   maxInstances?: number;
 };
@@ -296,14 +296,14 @@ export async function listAgentBridgeSupport({ daemonUrl, clientToken, agentId }
   });
 }
 
-export async function patchAgentBridgeSupport({ daemonUrl, clientToken, agentId, bridgeId, enabled, providerProfile, modelTier, priority, maxInstances }: { daemonUrl: string; clientToken: string; agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; modelTier?: string; priority?: number; maxInstances?: number }) {
+export async function patchAgentBridgeSupport({ daemonUrl, clientToken, agentId, bridgeId, enabled, providerProfile, model, priority, maxInstances }: { daemonUrl: string; clientToken: string; agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; model?: string; priority?: number; maxInstances?: number }) {
   return requestJson(joinUrl(daemonUrl, `/api/v1/agents/${encodeURIComponent(agentId)}/bridge-support/${encodeURIComponent(bridgeId)}`), {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${clientToken}` },
     body: {
       ...(enabled !== undefined ? { enabled } : {}),
       ...(providerProfile !== undefined ? { provider_profile: providerProfile } : {}),
-      ...(modelTier !== undefined ? { model_tier: modelTier } : {}),
+      ...(model !== undefined ? { model: model } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(maxInstances !== undefined ? { max_instances: maxInstances } : {}),
     },
@@ -376,7 +376,7 @@ export async function validateProjectBridgePath({ daemonUrl, clientToken, projec
   });
 }
 
-export async function createAgent({ daemonUrl, agentId, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, start }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; start?: boolean }) {
+export async function createAgent({ daemonUrl, agentId, agentInstanceId, displayName, providerProfile, templateId, projectId, model, start }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; model?: string; start?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/agents/create'), {
     method: 'POST',
     body: {
@@ -386,20 +386,20 @@ export async function createAgent({ daemonUrl, agentId, agentInstanceId, display
       provider_profile: providerProfile || '',
       template_id: templateId || '',
       project_id: sanitizeProjectId(projectId),
-      model_tier: modelTier || 'normal',
+      model: model || 'normal',
       start: Boolean(start),
     },
   });
 }
 
-export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir, modelTier, updateAgentIdDefaults }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string; modelTier?: string; updateAgentIdDefaults?: boolean }) {
+export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir, model, updateAgentIdDefaults }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string; model?: string; updateAgentIdDefaults?: boolean }) {
   const body: any = { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '' };
   if (displayName !== undefined) body.display_name = displayName;
   if (templateId !== undefined) body.template_id = templateId;
   if (providerProfile !== undefined) body.provider_profile = providerProfile;
   if (projectId !== undefined) body.project_id = sanitizeProjectId(projectId);
   if (runDir !== undefined) body.run_dir = runDir;
-  if (modelTier !== undefined) body.model_tier = modelTier;
+  if (model !== undefined) body.model = model;
   if (updateAgentIdDefaults) body.update_agent_id_defaults = true;
   return requestJson(joinUrl(daemonUrl, '/agents/update'), {
     method: 'POST',
@@ -1095,8 +1095,8 @@ export async function decideMemory({ daemonUrl, clientInstanceId, clientToken, p
   return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_decide', body: { proposal_id: proposalId, decision, reason: reason || '' } });
 }
 
-export async function testLaunch({ daemonUrl, provider, tier }: { daemonUrl: string; provider: string; tier: string }) {
-  return requestJson(joinUrl(daemonUrl, '/agents/test-launch'), { method: 'POST', body: { provider, tier } });
+export async function testLaunch({ daemonUrl, provider, model }: { daemonUrl: string; provider: string; model: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/test-launch'), { method: 'POST', body: { provider, model } });
 }
 
 export async function getTestStatus({ daemonUrl, testRunId }: { daemonUrl: string; testRunId: string }) {

@@ -5,7 +5,7 @@
  * form controls, a details card, a mini-editor — where `Menu` (a list of
  * actions) and `Modal` (a centered, focus-trapped dialog) are both wrong. It
  * standardizes the hand-rolled "click a chip → a bordered dark panel appears"
- * overlays (e.g. the conversation runtime bridge/provider/tier controls).
+ * overlays (e.g. the conversation runtime bridge/provider/model controls).
  *
  * NOT for: a list of actions (use `Menu`), a value picker (`Select`/`Combobox`),
  * or a blocking dialog (`Modal`). It is non-modal: the page behind stays live.

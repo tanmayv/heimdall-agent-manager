@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   useFetchAgentIdentityQuery,
   useLaunchAgentInstanceMutation,
@@ -12,7 +12,6 @@ import {
   normalizeBridgeCapabilities,
   useListAgentBridgeSupportQuery,
   useListBridgesQuery,
-  usePatchAgentBridgeSupportMutation,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
@@ -21,11 +20,7 @@ import { useListFlatTaskChainsQuery } from '../../api/endpoints/taskChains';
 import { VaultText } from '../vault/VaultText';
 import { Button, Input, Link, PageShell, Select, Textarea } from '@ui';
 
-type ProviderScope = 'bridge_default' | 'same_provider';
-type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
 type EnabledSupportRow = { bridgeId: string; bridge: any; support: any };
-
-const tierOrder = ['cheap', 'normal', 'smart'];
 
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const agentQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
@@ -40,7 +35,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
   const templatesQuery = useListAgentTemplatesQuery();
   const [updateAgent, { isLoading: updatingAgent }] = useUpdateAgentIdentityMutation();
-  const [patchSupport, { isLoading: patchingSupport }] = usePatchAgentBridgeSupportMutation();
   const [launchInstance, { isLoading: launching }] = useLaunchAgentInstanceMutation();
   const [stopInstance] = useStopAgentInstanceMutation();
   const [restartInstance] = useRestartAgentInstanceMutation();
@@ -64,81 +58,35 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const templates = useMemo(() => (templatesQuery.data?.templates || []).map(normalizeTemplateOption).filter((tmpl: { id: string }) => tmpl.id), [templatesQuery.data?.templates]);
   const enabledSupportRows = useMemo(() => enabledRows(bridges, supportByBridge), [bridges, supportByBridge]);
 
-  const [defaultScope, setDefaultScope] = useState<ProviderScope>('bridge_default');
-  const [defaultProvider, setDefaultProvider] = useState('');
-  const [defaultTier, setDefaultTier] = useState('normal');
-  const [rowDrafts, setRowDrafts] = useState<Record<string, BridgeRowDraft>>({});
   const [launchOpen, setLaunchOpen] = useState(false);
   const [launchBridge, setLaunchBridge] = useState('');
   const [launchProvider, setLaunchProvider] = useState('');
-  const [launchTier, setLaunchTier] = useState('');
+  const [launchModel, setLaunchModel] = useState('');
   const [launchProject, setLaunchProject] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  // Edit-agent form: identity fields (name/template/provider/tier/instructions).
+  // Edit-agent form: identity fields only. Runtime provider/model are selected
+  // explicitly for each launch.
   // Pre-filled from the current agent on open; the agent_id is immutable so it is
   // never editable here.
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editTemplate, setEditTemplate] = useState('');
-  const [editProvider, setEditProvider] = useState('');
-  const [editTier, setEditTier] = useState('');
   const [editInstructions, setEditInstructions] = useState('');
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState('');
 
-  const editProviderOptions = useMemo(() => {
-    const providers = new Set<string>();
-    for (const bridge of bridges) for (const cap of normalizeBridgeCapabilities(bridge)) if (cap.provider) providers.add(cap.provider);
-    if (editProvider) providers.add(editProvider); // keep the current value selectable even if no bridge advertises it
-    return Array.from(providers).sort();
-  }, [bridges, editProvider]);
-  const editTierOptions = useMemo(() => (editTier && !tierOrder.includes(editTier) ? [editTier, ...tierOrder] : tierOrder), [editTier]);
-
-  useEffect(() => {
-    if (!agent) return;
-    const nextProvider = String(agent.default_provider || agent.defaultProvider || '');
-    setDefaultScope(nextProvider ? 'same_provider' : 'bridge_default');
-    setDefaultProvider(nextProvider);
-    setDefaultTier(String(agent.default_tier || agent.defaultTier || 'normal'));
-  }, [agent?.agent_id, agent?.default_provider, agent?.default_tier]);
-
-  useEffect(() => {
-    const next: Record<string, BridgeRowDraft> = {};
-    for (const bridge of bridges) {
-      const id = bridgeId(bridge);
-      const support: any = supportByBridge.get(id);
-      const provider = String(support?.providerProfile || '');
-      next[id] = {
-        enabled: true,
-        providerScope: provider ? 'same_provider' : 'bridge_default',
-        provider,
-        tier: String(support?.modelTier || ''),
-      };
-    }
-    setRowDrafts(next);
-  }, [bridges, supportByBridge]);
-
-  const proposedDefaultProvider = '';
-  const defaultProviderOptions = useMemo(() => validDefaultProviders(enabledSupportRows, defaultTier), [enabledSupportRows, defaultTier]);
-  const defaultTierOptions = useMemo(() => validDefaultTiers(enabledSupportRows, proposedDefaultProvider), [enabledSupportRows, proposedDefaultProvider]);
-  const defaultInvalidRows = useMemo(() => invalidDefaultRows(enabledSupportRows, proposedDefaultProvider, defaultTier), [enabledSupportRows, proposedDefaultProvider, defaultTier]);
-  const defaultWarning = defaultInvalidRows.length > 0 ? `These global defaults are not supported by ${defaultInvalidRows.map((row) => row.bridge.label || row.bridge.machine_hostname || row.bridgeId).join(', ')}. Set a per-bridge override there, or pick a provider/tier from that bridge at launch time.` : '';
-
-  const launchRows = useMemo(() => enabledSupportRows.filter((row) => isOnline(row.bridge) && launchProvidersFor(row, agent).length > 0), [enabledSupportRows, agent]);
+  const launchRows = useMemo(() => enabledSupportRows.filter((row) => isOnline(row.bridge) && launchProvidersFor(row).length > 0), [enabledSupportRows]);
   const selectedLaunchRow = launchRows.find((row) => row.bridgeId === launchBridge);
-  const launchProviderOptions = selectedLaunchRow ? launchProvidersFor(selectedLaunchRow, agent) : [];
-  const launchTierOptions = selectedLaunchRow ? launchTiersFor(selectedLaunchRow, agent, launchProvider) : [];
-  const launchEffective = selectedLaunchRow ? effectiveProviderTier(agent, selectedLaunchRow.bridge, { enabled: true, providerScope: launchProvider ? 'same_provider' : 'bridge_default', provider: launchProvider, tier: launchTier }) : { provider: '', tier: '' };
+  const launchProviderOptions = selectedLaunchRow ? launchProvidersFor(selectedLaunchRow) : [];
+  const launchModelOptions = selectedLaunchRow ? launchModelsFor(selectedLaunchRow, launchProvider) : [];
   const launchWarning = launchRows.length === 0 ? 'No online Bridge with provider capabilities is available. Reconnect or configure a Bridge before launching.' : '';
 
   function openEdit() {
     if (!agent) return;
     setEditName(String(agent.name || ''));
     setEditTemplate(String(agent.template_id || agent.templateId || ''));
-    setEditProvider(String(agent.default_provider || agent.defaultProvider || ''));
-    setEditTier(String(agent.default_tier || agent.defaultTier || ''));
     setEditInstructions(String(agent.instructions || ''));
     setEditError('');
     setEditOpen(true);
@@ -155,8 +103,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
         agentId,
         name,
         templateId: editTemplate,
-        defaultProvider: editProvider,
-        defaultTier: editTier,
         instructions: editInstructions,
       }).unwrap();
       setEditOpen(false);
@@ -169,44 +115,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
     }
   }
 
-  async function saveDefaults() {
-    if (!agentId) return;
-    setError(''); setMessage('');
-    try {
-      await updateAgent({
-        agentId,
-        defaultProvider: '',
-        defaultTier,
-      }).unwrap();
-      setMessage('Saved default provider/tier.');
-      await agentQuery.refetch();
-      await supportQuery.refetch();
-    } catch (err: any) {
-      setError(String(err?.message || 'Failed to save defaults'));
-    }
-  }
-
-  async function saveBridge(bridge: any) {
-    const id = bridgeId(bridge);
-    const draft = rowDrafts[id];
-    if (!draft) return;
-    setError(''); setMessage('');
-    try {
-      await patchSupport({
-        agentId,
-        bridgeId: id,
-        enabled: true,
-        providerProfile: draft.providerScope === 'same_provider' ? draft.provider : '',
-        modelTier: draft.tier,
-      }).unwrap();
-      setMessage(`Saved overrides for ${bridge.label || bridge.machine_hostname || id}.`);
-      await supportQuery.refetch();
-      await agentQuery.refetch();
-    } catch (err: any) {
-      setError(String(err?.message || 'Failed to save bridge support'));
-    }
-  }
-
   async function launch() {
     setError(''); setMessage('');
     try {
@@ -214,19 +122,19 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
         setError(launchWarning);
         return;
       }
-      if (!launchBridge) {
-        setError('Choose the Bridge to run this agent on.');
+      if (!launchBridge || !launchProvider || !launchModel) {
+        setError('Choose a Bridge, provider, and model.');
         return;
       }
-      if (launchProvider && !launchProviderOptions.includes(launchProvider)) {
+      if (!launchProviderOptions.includes(launchProvider)) {
         setError('Selected provider is not supported by the chosen Bridge.');
         return;
       }
-      if (launchTier && !launchTierOptions.includes(launchTier)) {
-        setError('Selected tier is not supported by the chosen Bridge/provider.');
+      if (!launchModelOptions.includes(launchModel)) {
+        setError('Selected model is not supported by the chosen Bridge/provider.');
         return;
       }
-      await launchInstance({ agentId, bridgeId: launchBridge, provider: launchProvider, tier: launchTier, projectId: launchProject }).unwrap();
+      await launchInstance({ agentId, bridgeId: launchBridge, provider: launchProvider, model: launchModel, projectId: launchProject }).unwrap();
       setLaunchOpen(false);
       setMessage('Launch requested.');
       await instancesQuery.refetch();
@@ -281,8 +189,6 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className="block text-sm text-muted">Name<Input data-debug-id="agents-detail-edit-name" value={editName} onChange={setEditName} placeholder="Agent name" width="full" className="mt-1" /></label>
             <label className="block text-sm text-muted">Template / persona<Select data-debug-id="agents-detail-edit-template" value={editTemplate} onChange={setEditTemplate} width="full" className="mt-1"><option value="">Choose template</option>{templates.map((tmpl: { id: string; name: string }) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>)}</Select></label>
-            <label className="block text-sm text-muted">Default provider<Select data-debug-id="agents-detail-edit-provider" value={editProvider} onChange={setEditProvider} width="full" className="mt-1"><option value="">Use Bridge default</option>{editProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</Select></label>
-            <label className="block text-sm text-muted">Default tier<Select data-debug-id="agents-detail-edit-tier" value={editTier} onChange={setEditTier} width="full" className="mt-1"><option value="">Use Bridge default tier</option>{editTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
             <label className="block text-sm text-muted sm:col-span-2">Instructions<Textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={setEditInstructions} placeholder="Optional additions layered on the selected template." width="full" className="mt-1 h-28" /></label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
@@ -293,53 +199,16 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
       ) : null}
 
       <section className="rounded-2xl border border-subtle bg-surface-raised/40 p-4">
-        <h3 className="font-semibold text-primary">Default provider/tier</h3>
-        <p className="mt-1 text-xs text-muted">The agent can prefer a tier. Provider comes from each Bridge by default, or from a per-Bridge override below.</p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="block text-sm text-muted">Default tier<Select data-debug-id="agent-detail-default-tier-select" value={defaultTier} onChange={setDefaultTier} width="full" className="mt-1"><option value="">Use Bridge default tier</option>{(defaultTierOptions.length ? defaultTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
-        </div>
-        {defaultWarning ? <div data-debug-id="agent-detail-default-warning" className="mt-3 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-xs text-warning">{defaultWarning}</div> : null}
-        <div className="mt-4 flex justify-end"><Button variant="secondary" data-debug-id="agent-detail-default-save-btn" onClick={() => void saveDefaults()} disabled={updatingAgent}>Save defaults</Button></div>
-      </section>
-
-      <section className="rounded-2xl border border-subtle bg-surface-raised/40 p-4">
-        <h3 className="font-semibold text-primary">Bridge defaults and overrides</h3>
-        <div className="mt-3 space-y-3">
-          {bridges.map((bridge: any) => {
-            const id = bridgeId(bridge);
-            const draft = rowDrafts[id] || { enabled: true, providerScope: 'bridge_default' as ProviderScope, provider: '', tier: '' };
-            const caps = normalizeBridgeCapabilities(bridge);
-            const rowTierOptions = unionTiers([bridge], draft.providerScope === 'same_provider' ? draft.provider : '');
-            const effective = effectiveProviderTier(agent, bridge, draft);
-            return (
-              <div key={id} data-debug-id={`agent-detail-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div><div className="font-medium text-primary">{bridge.label || bridge.machine_hostname || id}</div><div className="mt-1 text-xs text-muted">{id} · {bridge.status || 'offline'} · supports {caps.map((cap) => `${cap.provider}${cap.tiers?.length ? ` (${cap.tiers.join('/')})` : cap.defaultTier ? ` (${cap.defaultTier})` : ''}`).join(', ') || 'no capabilities'}</div></div>
-                  <div data-debug-id={`agent-detail-bridge-effective-${id}`} className={`rounded-xl px-3 py-2 text-xs ${capSupports(bridge, effective.provider, effective.tier) ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'}`}>launch default<br /><span className="text-primary">{effective.provider || '—'} / {effective.tier || '—'}</span></div>
-                </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                  <label className="block text-sm text-muted">Provider override<Select data-debug-id={`agent-detail-bridge-provider-select-${id}`} value={draft.provider} onChange={(value) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, provider: value, providerScope: value ? 'same_provider' : 'bridge_default' } })} width="full" className="mt-1"><option value="">Use Bridge default provider</option>{caps.map((cap) => <option key={cap.provider} value={cap.provider}>{cap.provider}</option>)}</Select></label>
-                  <label className="block text-sm text-muted">Tier override<Select data-debug-id={`agent-detail-bridge-tier-select-${id}`} value={draft.tier} onChange={(value) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, tier: value } })} width="full" className="mt-1"><option value="">Use agent/Bridge default tier</option>{(rowTierOptions.length ? rowTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
-                  <div className="flex items-end justify-end"><Button variant="secondary" size="sm" data-debug-id={`agent-detail-bridge-save-btn-${id}`} onClick={() => void saveBridge(bridge)} disabled={patchingSupport}>Save overrides</Button></div>
-                </div>
-              </div>
-            );
-          })}
-          {!bridges.length ? <div className="rounded-xl border border-dashed border-subtle p-5 text-sm text-muted">No Bridges are enrolled.</div> : null}
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-subtle bg-surface-raised/40 p-4">
         <div className="flex items-center justify-between gap-3"><h3 className="font-semibold text-primary">Instances</h3><button data-debug-id="agent-detail-launch-instance-btn" type="button" onClick={() => setLaunchOpen(!launchOpen)} className="rounded-xl border border-info/30 px-3 py-1.5 text-sm text-info hover:bg-info-soft">Launch instance</button></div>
         {launchOpen ? (
           <div className="mt-3 grid gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3 sm:grid-cols-4">
             {launchWarning ? <div data-debug-id="agent-detail-launch-warning" className="sm:col-span-4 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">{launchWarning}</div> : null}
-            <label className="block text-sm text-muted">Bridge<Select data-debug-id="agent-detail-launch-bridge-select" value={launchBridge} onChange={(value) => { setLaunchBridge(value); setLaunchProvider(''); setLaunchTier(''); }} width="full" className="mt-1"><option value="">Choose Bridge…</option>{launchRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{row.bridge.label || row.bridge.machine_hostname || row.bridgeId}</option>)}</Select></label>
-            <label className="block text-sm text-muted">Provider<Select data-debug-id="agent-detail-launch-provider-select" value={launchProvider} onChange={setLaunchProvider} width="full" className="mt-1"><option value="">Resolved default</option>{launchProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</Select></label>
-            <label className="block text-sm text-muted">Tier<Select data-debug-id="agent-detail-launch-tier-select" value={launchTier} onChange={setLaunchTier} width="full" className="mt-1"><option value="">Resolved default</option>{(launchTierOptions.length ? launchTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
+            <label className="block text-sm text-muted">Bridge<Select data-debug-id="agent-detail-launch-bridge-select" value={launchBridge} onChange={(value) => { setLaunchBridge(value); setLaunchProvider(''); setLaunchModel(''); }} width="full" className="mt-1"><option value="">Choose Bridge…</option>{launchRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{row.bridge.label || row.bridge.machine_hostname || row.bridgeId}</option>)}</Select></label>
+            <label className="block text-sm text-muted">Provider<Select data-debug-id="agent-detail-launch-provider-select" value={launchProvider} onChange={(value) => { setLaunchProvider(value); setLaunchModel(''); }} width="full" className="mt-1"><option value="">Choose provider…</option>{launchProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</Select></label>
+            <label className="block text-sm text-muted">Model<Select data-debug-id="agent-detail-launch-model-select" value={launchModel} onChange={setLaunchModel} width="full" className="mt-1"><option value="">Choose model…</option>{launchModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}</Select></label>
             <label className="block text-sm text-muted">Project<Select data-debug-id="agent-detail-launch-project-select" value={launchProject} onChange={setLaunchProject} width="full" className="mt-1"><option value="">Conversations default</option>{projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}</Select></label>
-            {launchBridge ? <div className="sm:col-span-4 rounded-xl bg-neutral-soft px-3 py-2 text-xs text-muted">Will launch on <span className="text-primary">{launchBridge}</span> with <span className="text-primary">{launchEffective.provider || '—'} / {launchEffective.tier || '—'}</span>. Override provider/tier above for this instance only.</div> : null}
-            <div className="sm:col-span-4 flex justify-end"><Button variant="primary" data-debug-id="agent-detail-launch-submit-btn" onClick={() => void launch()} disabled={launching || Boolean(launchWarning) || !launchBridge || (launchProvider !== '' && !launchProviderOptions.includes(launchProvider)) || (launchTier !== '' && !launchTierOptions.includes(launchTier))}>{launching ? 'Launching…' : 'Launch'}</Button></div>
+            {launchBridge ? <div className="sm:col-span-4 rounded-xl bg-neutral-soft px-3 py-2 text-xs text-muted">Will launch on <span className="text-primary">{launchBridge}</span> with <span className="text-primary">{launchProvider || '—'} / {launchModel || '—'}</span>.</div> : null}
+            <div className="sm:col-span-4 flex justify-end"><Button variant="primary" data-debug-id="agent-detail-launch-submit-btn" onClick={() => void launch()} disabled={launching || Boolean(launchWarning) || !launchBridge || !launchProvider || !launchModel || !launchProviderOptions.includes(launchProvider) || !launchModelOptions.includes(launchModel)}>{launching ? 'Launching…' : 'Launch'}</Button></div>
           </div>
         ) : null}
         <div className="mt-3 space-y-2">
@@ -347,7 +216,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
             const id = instanceIdOf(instance);
             const chainId = String(instance.chain_id || instance.chainId || '');
             const chainName = chainMap.get(chainId) || chainId;
-            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="min-w-0"><div className="font-mono text-xs text-primary">{id}</div><div className="mt-1 text-xs text-muted">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.tier || '—'} · chain {chainId ? <span title={chainId}><VaultText value={chainName} fallback={chainId} /></span> : '—'}</div></div><div className="flex items-center gap-2"><CoordinatorChainsDropdown agentInstanceId={id} currentChainId={chainId} /><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-neutral-soft px-2 py-0.5 text-xs text-muted">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-info/30 bg-info-soft px-2.5 py-1 text-xs font-semibold text-info hover:bg-info-soft/80">Task chain</a> : null}{id ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${encodeURIComponent(id)}`)} className="rounded-lg border border-subtle px-2.5 py-1 text-xs text-muted hover:bg-neutral-soft">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-warning/30 px-2.5 py-1 text-xs text-warning hover:bg-warning-soft">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-info/30 px-2.5 py-1 text-xs text-info hover:bg-info-soft">Restart</button></div></div>;
+            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3"><div className="min-w-0"><div className="font-mono text-xs text-primary">{id}</div><div className="mt-1 text-xs text-muted">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.model || '—'} · chain {chainId ? <span title={chainId}><VaultText value={chainName} fallback={chainId} /></span> : '—'}</div></div><div className="flex items-center gap-2"><CoordinatorChainsDropdown agentInstanceId={id} currentChainId={chainId} /><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-neutral-soft px-2 py-0.5 text-xs text-muted">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-info/30 bg-info-soft px-2.5 py-1 text-xs font-semibold text-info hover:bg-info-soft/80">Task chain</a> : null}{id ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${encodeURIComponent(id)}`)} className="rounded-lg border border-subtle px-2.5 py-1 text-xs text-muted hover:bg-neutral-soft">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-warning/30 px-2.5 py-1 text-xs text-warning hover:bg-warning-soft">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-info/30 px-2.5 py-1 text-xs text-info hover:bg-info-soft">Restart</button></div></div>;
           })}
           {!instances.length ? <div className="rounded-xl border border-dashed border-subtle p-5 text-sm text-muted">No instances yet. Launch one to create a private chain and conversation.</div> : null}
         </div>
@@ -408,75 +277,12 @@ function enabledRows(bridges: any[], supportByBridge: Map<any, any>): EnabledSup
   return bridges.map((bridge) => ({ bridgeId: bridgeId(bridge), bridge, support: supportByBridge.get(bridgeId(bridge)) || {} }));
 }
 
-function validDefaultProviders(rows: EnabledSupportRow[], _tier: string): string[] {
-  const providers = new Set<string>();
-  for (const row of rows) for (const cap of normalizeBridgeCapabilities(row.bridge)) providers.add(cap.provider);
-  return Array.from(providers).sort();
-}
-
-function validDefaultTiers(rows: EnabledSupportRow[], provider: string): string[] {
-  if (!rows.length) return tierOrder;
-  const tiers = new Set<string>();
-  for (const row of rows) {
-    const resolvedProvider = provider || row.support?.providerProfile || defaultCapability(row.bridge)?.provider || '';
-    const cap = defaultCapability(row.bridge, resolvedProvider);
-    for (const tier of cap?.tiers || []) tiers.add(tier);
-    if (cap?.defaultTier) tiers.add(cap.defaultTier);
-    if (row.support?.modelTier) tiers.add(row.support.modelTier);
-  }
-  return tierOrder.concat(Array.from(tiers).filter((tier) => !tierOrder.includes(tier)).sort()).filter((tier, index, all) => all.indexOf(tier) === index);
-}
-
-function invalidDefaultRows(rows: EnabledSupportRow[], provider: string, tier: string): EnabledSupportRow[] {
-  return rows.filter((row) => {
-    const resolvedProvider = row.support?.providerProfile || provider || defaultCapability(row.bridge)?.provider || '';
-    const cap = defaultCapability(row.bridge, resolvedProvider);
-    const resolvedTier = row.support?.modelTier || tier || cap?.defaultTier || cap?.tiers?.[0] || '';
-    return !capSupports(row.bridge, resolvedProvider, resolvedTier);
-  });
-}
-
-function launchProvidersFor(row: EnabledSupportRow, _agent: any): string[] {
+function launchProvidersFor(row: EnabledSupportRow): string[] {
   return normalizeBridgeCapabilities(row.bridge).map((cap) => cap.provider).filter(Boolean).sort();
 }
 
-function launchTiersFor(row: EnabledSupportRow, agent: any, requestedProvider: string): string[] {
-  const provider = requestedProvider || row.support?.providerProfile || String(agent?.default_provider || agent?.defaultProvider || '') || defaultCapability(row.bridge)?.provider || '';
-  const cap = defaultCapability(row.bridge, provider);
-  const tiers = [...(cap?.tiers || [])];
-  if (cap?.defaultTier) tiers.push(cap.defaultTier);
-  return tierOrder.concat(tiers.filter((tier) => !tierOrder.includes(tier)).sort()).filter((tier, index, all) => all.indexOf(tier) === index && capSupports(row.bridge, provider, tier));
-}
-
-function unionTiers(bridges: any[], provider: string): string[] {
-  const tiers = new Set<string>();
-  for (const bridge of bridges) {
-    for (const cap of normalizeBridgeCapabilities(bridge)) {
-      if (provider && cap.provider !== provider) continue;
-      for (const tier of cap.tiers || []) tiers.add(tier);
-      if (cap.defaultTier) tiers.add(cap.defaultTier);
-    }
-  }
-  return tierOrder.filter((tier) => tiers.has(tier)).concat(Array.from(tiers).filter((tier) => !tierOrder.includes(tier)).sort());
-}
-
-function defaultCapability(bridge: any, provider?: string): BridgeCapability | undefined {
-  const caps = normalizeBridgeCapabilities(bridge);
-  if (provider) return caps.find((cap) => cap.provider === provider);
-  return caps.find((cap) => cap.defaultTier) || caps[0];
-}
-
-function capSupports(bridge: any, provider: string, tier: string): boolean {
-  if (!provider || !tier) return false;
-  const cap = defaultCapability(bridge, provider);
-  if (!cap) return false;
-  const tiers = cap.tiers?.length ? cap.tiers : (cap.defaultTier ? [cap.defaultTier] : []);
-  return tiers.includes(tier);
-}
-
-function effectiveProviderTier(agent: any, bridge: any, draft: BridgeRowDraft): { provider: string; tier: string } {
-  const provider = draft.provider || String(agent?.default_provider || agent?.defaultProvider || '') || defaultCapability(bridge)?.provider || '';
-  const cap = defaultCapability(bridge, provider);
-  const tier = draft.tier || String(agent?.default_tier || agent?.defaultTier || '') || cap?.defaultTier || cap?.tiers?.[0] || '';
-  return { provider, tier };
+function launchModelsFor(row: EnabledSupportRow, provider: string): string[] {
+  if (!provider) return [];
+  const capability = normalizeBridgeCapabilities(row.bridge).find((cap) => cap.provider === provider);
+  return Array.from(new Set(capability?.models || [])).sort();
 }

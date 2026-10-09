@@ -342,7 +342,7 @@ export const startAgentInstance = createAsyncThunk('chat/startAgentInstance', as
     provider: agent.providerProfile || agent.agent_class || '',
     templateId: agent.templateId,
     projectId: agent.projectId,
-    modelTier: agent.modelTier,
+    model: agent.model,
   });
   dispatch(refreshAgents());
 });
@@ -558,7 +558,7 @@ const chatSlice = createSlice({
       const mapped = {
         testRunId: run.test_run_id,
         provider: run.provider,
-        tier: run.tier,
+        model: run.model,
         resolvedModel: run.resolved_model,
         status: 'starting',
         startedUnixMs: run.started_unix_ms,
@@ -572,7 +572,7 @@ const chatSlice = createSlice({
       const update = {
         testRunId: run.test_run_id,
         provider: run.provider,
-        tier: run.tier,
+        model: run.model,
         resolvedModel: run.resolved_model,
         status: run.status,
         reason: run.reason,
@@ -587,7 +587,7 @@ const chatSlice = createSlice({
       state.testRuns = (action.payload ?? []).map((r: any) => ({
         testRunId: r.test_run_id,
         provider: r.provider,
-        tier: r.tier,
+        model: r.model,
         resolvedModel: r.resolved_model,
         status: r.status,
         reason: r.reason,

@@ -45,10 +45,10 @@ test('SUPPORTED_PROVIDER_PRESETS defines canonical presets for all 5 required pr
     assert.ok(preset.skillDir.length > 0, `Preset '${key}' must have skillDir`);
     assert.ok(preset.bootstrapFileName === 'CLAUDE.md' || preset.bootstrapFileName === 'AGENTS.md', `Preset '${key}' must have bootstrapFileName`);
 
-    // Ensure default tiers are all members of availableModels
-    assert.ok(preset.availableModels.includes(preset.defaultTiers.cheap), `Preset '${key}' cheap tier must be in availableModels`);
-    assert.ok(preset.availableModels.includes(preset.defaultTiers.normal), `Preset '${key}' normal tier must be in availableModels`);
-    assert.ok(preset.availableModels.includes(preset.defaultTiers.smart), `Preset '${key}' smart tier must be in availableModels`);
+    // Ensure default models are all members of availableModels
+    assert.ok(preset.availableModels.includes(preset.defaultModels.cheap), `Preset '${key}' cheap model must be in availableModels`);
+    assert.ok(preset.availableModels.includes(preset.defaultModels.normal), `Preset '${key}' normal model must be in availableModels`);
+    assert.ok(preset.availableModels.includes(preset.defaultModels.smart), `Preset '${key}' smart model must be in availableModels`);
   }
 });
 
@@ -338,8 +338,8 @@ test('ProvidersPanel.tsx satisfies REQ-PROVIDER-ADDITIVE-1 built-in simplified m
   );
   assert.match(
     content,
-    /data-debug-id="providers-editor-default-tier-selector"/,
-    'ProviderEditorPage must render default tier selector for built-in providers'
+    /data-debug-id="providers-editor-default-model-selector"/,
+    'ProviderEditorPage must render default model selector for built-in providers'
   );
 
   // Acceptance Criterion: Built-in editor exposes cheap, normal, and smart model inputs

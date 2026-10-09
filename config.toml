@@ -9,9 +9,6 @@ wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 # Unique daemon identity, required for federation. Peers match incoming requests
 # on both the shared token AND this daemon_id (learned via /daemon/info).
 daemon_id = "cloudtop"
-# Default provider/tier for generated agents. Settings can override these via preferences.
-default_agent_provider_profile = "pi"
-default_agent_model_tier = "normal"
 # Role/default-use -> durable default agent id map. Coordinators/skills use these
 # defaults when assigning task participants; task participant state remains the
 # authority for actual roles.
@@ -35,8 +32,6 @@ autostart = false
 restart_if_stopped = false
 agent_instance_id = "guide@heimdall"
 template_id = "guide"
-provider_profile = "jetski"
-model_tier = "smart"
 
 [daemon]
 # NOTE: nudge_* knobs are now bridge-owned. Configure them in the [bridge]
@@ -77,11 +72,8 @@ model_tier = "smart"
 [wrapper]
 daemon_url = "http://127.0.0.1:49322"
 credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
-agent_name = "pi"
-default_agent = "pi"
 display_name = "{instance}"
 requested_access_mode = "main"
-command = ["/google/bin/releases/jetski-devs/tools/cli"]
 tmux_session = "ham-agents"
 tmux_window_prefix = "agent"
 # Optional managed runtime cwd root. When set, wrappers run agents in
@@ -89,210 +81,5 @@ tmux_window_prefix = "agent"
 # Set use_random_dir=true to use <agent_run_dir>/<project>/<random-slug> instead.
 agent_run_dir = "~/.local/share/heimdall/agent-runs"
 use_random_dir = false
-# Optional per-provider managed run-dir/bootstrap controls.
-# agent_run_dir = "~/.local/share/heimdall/agent-runs"
-# use_random_dir = false
-# bootstrap_profile = "pi" # pi|claude|codex or custom profile name
-
-# Per-agent-command launch customization. The wrapper selects this section by
-# wrapper.command[0] ("pi" here), or by stripping "-agent" from the agent class
-# when wrapper.command is empty.
-[wrapper.agent-cmd.jetski]
-command = ["/google/bin/releases/jetski-devs/tools/cli"]
-prompt_flags = ["--prompt-interactive"]
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-yolo_flags = ["--dangerously-skip-permissions"]
-
-[wrapper.agent-cmd.jetski.bootstrap.AGENTS_MD]
-content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
-name = "AGENTS.md"
-
-[wrapper.agent-cmd.jetski.bootstrap.SKILLS]
-filename = "SKILL.md"
-relative_dir = ".agents/skills"
-
-[wrapper.agent-cmd.jetski.models]
-cheap = "Gemini 3.5 Flash"
-flag = "--model"
-normal = "Gemini 3.5 Flash"
-smart = "Gemini 3.1 Pro"
-
-[wrapper.agent-cmd.pi]
-command = ["pi"]
-yolo_flags = []
-# pi accepts the starter prompt as a positional arg:
-#   pi "prompt"
-prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-
-[wrapper.agent-cmd.pi.models]
-flag = "--model"
-# OpenAI Codex model tier mapping for pi:
-# - cheap is intentionally upgraded to normal so no agent uses a cheap model
-# - normal: stronger day-to-day SWE work
-# - smart: highest-capability planning/review/complex implementation
-cheap = "openai-codex/gpt-5.4"
-normal = "openai-codex/gpt-5.4"
-smart = "openai-codex/gpt-5.5"
-
-[wrapper.agent-cmd.pi.startup_detection]
-enabled = false
-
-[wrapper.agent-cmd.pi.activity_detection]
-enabled = true
-sample_line_count = 20
-ignore_bottom_lines = 0
-check_interval_seconds = 15
-min_gap_ms = 100
-max_gap_ms = 500
-
-[wrapper.agent-cmd.claude]
-# Claude subscription via pi + pi-anthropic-oauth. This intentionally launches
-# pi, not the Claude Code CLI, so no claude-code install is required after
-# OAuth login. Anthropic models are selected via --model below.
-command = ["pi"]
-yolo_flags = []
-prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-
-[wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
-name = "AGENTS.md"
-
-[wrapper.agent-cmd.claude.bootstrap.MEMORY_MD]
-name = "MEMORY.md"
-
-[wrapper.agent-cmd.claude.bootstrap.SKILLS]
-relative_dir = "skills"
-filename = "SKILL.md"
-
-[wrapper.agent-cmd.claude.models]
-flag = "--model"
-cheap  = "anthropic/claude-sonnet-4-6"
-normal = "anthropic/claude-sonnet-4-6"
-smart  = "anthropic/claude-opus-4-8"
-
-# Startup detection is parsed per provider profile but remains disabled unless enabled.
-# Later wrapper/daemon lifecycle tasks consume these patterns to classify startup state.
-[wrapper.agent-cmd.claude.startup_detection]
-enabled = true
-startup_probe_seconds = 20
-capture_interval_ms = 500
-# auto_enter_patterns: when matched in pane during startup probe, wrapper presses
-# the matching pre-key (if any) followed by Enter, then resumes detection.
-# auto_enter_pre_keys is parallel: empty / missing index = just Enter; otherwise
-# the value is passed to `tmux send-keys` first (e.g. "Down", "Tab", "Up", "1").
-# Use a pre-key when the prompt's default option isn't what we want.
-auto_enter_patterns = ["Yes, I trust this folder", "WARNING: Claude Code running in Bypass Permissions mode"]
-# Trust prompt's default is "Yes" → bare Enter is fine. Bypass-permissions
-# warning defaults to "No, exit" → press Down to move to "Yes, proceed".
-auto_enter_pre_keys = ["", "Down"]
-blocked_patterns = ["Enter auto mode"]
-startup_unknown_is_blocked = false
-sanitized_reason_mapping = ["trust=Claude directory trust prompt", "trust=Claude directory trust prompt", "bypass=Claude bypass permissions warning", "confirm=Claude interactive confirm prompt"]
-
-[wrapper.agent-cmd.claude.activity_detection]
-enabled = true
-sample_line_count = 20
-# Ignore volatile footer/timer lines if needed for this provider.
-ignore_bottom_lines = 0
-check_interval_seconds = 15
-min_gap_ms = 100
-max_gap_ms = 500
-
-[wrapper.agent-cmd.copilot]
-command = ["copilot"]
-prompt_delivery = "flag-injection"
-prompt_flags = ["-i"]
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-yolo_flags = ["--yolo"]
-
-[wrapper.agent-cmd.copilot.models]
-flag = "--model"
-cheap = "claude-sonnet-4.6"
-normal = "claude-sonnet-4.6"
-smart = "claude-opus-4.6"
-
-[wrapper.agent-cmd.copilot.startup_detection]
-enabled = true
-startup_probe_seconds = 20
-capture_interval_ms = 500
-auto_enter_patterns = ["Confirm folder trust"]
-auto_enter_pre_keys = ["Down"]
-
-[wrapper.agent-cmd.codex]
-command = ["codex"]
-yolo_flags = []
-prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-
-[wrapper.agent-cmd.codex.models]
-flag = "-m"
-cheap = "gpt-5"
-normal = "gpt-5"
-smart = "gpt-5-pro"
-
-# Google Antigravity CLI (`agy`). Command surface verified via `agy --help`:
-#   --prompt-interactive  Run an initial prompt interactively and continue the session (-i)
-#   --dangerously-skip-permissions  Auto-approve all tool permission requests without prompting
-#   --model  Model for the current CLI session
-# Model names come from `agy models`.
-[wrapper.agent-cmd.antigravity]
-command = ["agy"]
-yolo_flags = ["--dangerously-skip-permissions"]
-prompt_flags = ["--prompt-interactive"]
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
-
-[wrapper.agent-cmd.antigravity.bootstrap.AGENTS_MD]
-name = "AGENTS.md"
-
-[wrapper.agent-cmd.antigravity.bootstrap.SKILLS]
-filename = "SKILL.md"
-relative_dir = ".agents/skills"
-
-[wrapper.agent-cmd.antigravity.models]
-flag = "--model"
-cheap  = "Gemini 3.5 Flash (Medium)"
-normal = "Gemini 3.5 Flash (Medium)"
-smart  = "Gemini 3.1 Pro (High)"
-
-# Startup detection tuned against a fresh `~/.gemini/antigravity-cli` state.
-# First-run onboarding shows two consecutive blocking screens before the CLI
-# is ready:
-#   1. "Choose your color scheme:" — default highlight is `terminal`, so bare
-#      Enter advances to the ToS screen.
-#   2. "Terms of Service & Data Use" with the data-collection checkbox
-#      pre-focused. Two Tabs (or two Downs) move the highlight past the
-#      checkbox and [Previous] to reach [Done]; Enter confirms.
-# After onboarding, if `--dangerously-skip-permissions` is missing and the
-# agent tries to write outside its workspace, a "File access / Allow access to
-# this file?" prompt appears. We include the yolo flag by default, but the
-# pattern is listed under blocked_patterns so an operator running without it
-# still gets a clean startup_blocked signal instead of a hang.
-[wrapper.agent-cmd.antigravity.startup_detection]
-enabled = true
-startup_probe_seconds = 30
-capture_interval_ms = 500
-auto_enter_patterns = ["Choose your color scheme", "Terms of Service & Data Use"]
-# Color-scheme screen: default (`terminal`) is already highlighted, bare Enter
-# advances. ToS screen: two Tabs move focus from the checkbox past [Previous]
-# onto [Done], then Enter confirms.
-auto_enter_pre_keys = ["", "Tab Tab"]
-blocked_patterns = ["Allow access to this file?", "File access", "outside workspace"]
-startup_unknown_is_blocked = false
-sanitized_reason_mapping = [
-  "color=Antigravity CLI color-scheme picker",
-  "tos=Antigravity CLI Terms of Service prompt",
-  "file_access=Antigravity CLI file-access prompt; add --dangerously-skip-permissions to yolo_flags",
-]
-
-[wrapper.agent-cmd.antigravity.activity_detection]
-enabled = true
-sample_line_count = 20
-ignore_bottom_lines = 0
-check_interval_seconds = 15
-min_gap_ms = 100
-max_gap_ms = 500
-
-
 [ctl]
 daemon_url = "http://127.0.0.1:49322"

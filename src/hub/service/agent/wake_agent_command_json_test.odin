@@ -15,7 +15,7 @@ wake_agent_command_json_includes_enriched_descriptor :: proc(t: ^testing.T) {
 			task_id           = "task_1",
 			role              = "worker",
 			provider          = "pi",
-			tier              = "smart",
+			model              = "smart",
 			agent_id          = "agt_1",
 			agent_name        = "coder",
 			chain_id          = "chain_1",

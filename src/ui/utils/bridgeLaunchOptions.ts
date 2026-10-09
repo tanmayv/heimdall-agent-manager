@@ -1,4 +1,4 @@
-// Pure helpers for deriving the launch option lists (bridge -> provider -> tier)
+// Pure helpers for deriving the launch option lists (bridge -> provider -> model)
 // from a bridge's normalized capabilities. Extracted from AgentDetailPanel so the
 // same logic backs both the agent-detail launch UI and the "Add agent to chain"
 // popup, and so it can be unit-tested without React (see
@@ -9,9 +9,6 @@
 // the option arrays the selects render.
 
 import { normalizeBridgeCapabilities, type BridgeCapability } from '../api/endpoints/bridgeSupport';
-
-// Canonical tier ordering surfaced first in every tier dropdown.
-export const TIER_ORDER = ['cheap', 'normal', 'smart'];
 
 export type LaunchBridgeRow = { bridgeId: string; bridge: any };
 
@@ -28,17 +25,16 @@ export function bridgeLabel(bridge: any): string {
 }
 
 export function defaultCapability(bridge: any, provider?: string): BridgeCapability | undefined {
-  const caps = normalizeBridgeCapabilities(bridge);
-  if (provider) return caps.find((cap) => cap.provider === provider);
-  return caps.find((cap) => cap.defaultTier) || caps[0];
+	const caps = normalizeBridgeCapabilities(bridge);
+	if (provider) return caps.find((cap) => cap.provider === provider);
+	return undefined;
 }
 
-export function capSupports(bridge: any, provider: string, tier: string): boolean {
-  if (!provider || !tier) return false;
+export function capSupports(bridge: any, provider: string, model: string): boolean {
+  if (!provider || !model) return false;
   const cap = defaultCapability(bridge, provider);
   if (!cap) return false;
-  const tiers = cap.tiers?.length ? cap.tiers : (cap.defaultTier ? [cap.defaultTier] : []);
-  return tiers.includes(tier);
+	return (cap.models || []).includes(model);
 }
 
 // Providers a bridge advertises (sorted, de-duped).
@@ -49,19 +45,13 @@ export function launchProvidersFor(bridge: any): string[] {
     .sort();
 }
 
-// Tiers valid for the given bridge + (optional) requested provider. Falls back to
-// the agent/bridge default provider when none is requested. Canonical tiers first,
-// then any extra advertised tiers, filtered to those the bridge actually supports.
-export function launchTiersFor(bridge: any, requestedProvider: string, agent?: any): string[] {
-  const provider = requestedProvider
-    || String(agent?.default_provider || agent?.defaultProvider || '')
-    || defaultCapability(bridge)?.provider
-    || '';
-  const cap = defaultCapability(bridge, provider);
-  const tiers = [...(cap?.tiers || [])];
-  if (cap?.defaultTier) tiers.push(cap.defaultTier);
-  return TIER_ORDER.concat(tiers.filter((tier) => !TIER_ORDER.includes(tier)).sort())
-    .filter((tier, index, all) => all.indexOf(tier) === index && capSupports(bridge, provider, tier));
+// Models valid for the given bridge + (optional) requested provider. Falls back to
+// the agent/bridge default provider when none is requested. Canonical models first,
+// then any extra advertised models, filtered to those the bridge actually supports.
+export function launchModelsFor(bridge: any, requestedProvider: string): string[] {
+	const provider = requestedProvider;
+	const cap = defaultCapability(bridge, provider);
+	return [...(cap?.models || [])].filter((model, index, all) => all.indexOf(model) === index).sort();
 }
 
 // Online bridges that advertise at least one provider — the only bridges a launch

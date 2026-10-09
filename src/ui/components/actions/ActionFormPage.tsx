@@ -114,7 +114,7 @@ interface FormState {
   targetAgentId: string;
   targetBridgeId: string;
   targetProvider: string;
-  targetTier: string;
+  targetModel: string;
   targetProjectId: string;
   instanceStrategy: ActionInstanceStrategy;
   promptText: string;
@@ -133,7 +133,7 @@ function emptyForm(): FormState {
     targetAgentId: '',
     targetBridgeId: '',
     targetProvider: '',
-    targetTier: '',
+    targetModel: '',
     targetProjectId: '',
     instanceStrategy: 'reuse',
     promptText: '',
@@ -154,7 +154,7 @@ function formFromRecord(record: Action): FormState {
     targetAgentId: String(record.target_agent_id || ''),
     targetBridgeId: String(record.target_bridge_id || ''),
     targetProvider: String(record.target_provider || ''),
-    targetTier: String(record.target_tier || ''),
+    targetModel: String(record.target_model || ''),
     targetProjectId: String(record.target_project_id || ''),
     instanceStrategy: (record.instance_strategy as ActionInstanceStrategy) || 'reuse',
     promptText: String(record.prompt_text || ''),
@@ -309,7 +309,7 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
                 target_agent_id: form.targetAgentId,
                 target_bridge_id: form.targetBridgeId,
                 target_provider: form.targetProvider || undefined,
-                target_tier: form.targetTier || undefined,
+                target_model: form.targetModel || undefined,
                 target_project_id: form.targetProjectId || undefined,
                 instance_strategy: form.instanceStrategy,
               };
@@ -474,13 +474,13 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
                   />
                 </FormField>
 
-                <FormField label="Tier" hint="Optional. Leave blank to use the agent's default.">
+                <FormField label="Model" hint="Optional. Leave blank to use the agent's default.">
                   <Input
-                    value={form.targetTier}
-                    onChange={(next) => setField('targetTier', next)}
+                    value={form.targetModel}
+                    onChange={(next) => setField('targetModel', next)}
                     placeholder="e.g. smart"
-                    aria-label="Tier"
-                    data-debug-id="action-form-tier"
+                    aria-label="Model"
+                    data-debug-id="action-form-model"
                   />
                 </FormField>
 

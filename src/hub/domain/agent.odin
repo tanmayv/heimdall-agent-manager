@@ -20,8 +20,6 @@ Agent :: struct {
 	name: string,
 	slug: string,
 	template_id: string,
-	default_provider: string,
-	default_tier: string,
 	instructions: string,
 	state: Agent_State,
 	created_at: string,
@@ -33,17 +31,16 @@ Agent_Bridge_Support :: struct {
 	bridge_id: string,
 	owner_user_id: User_ID,
 	enabled: bool,
-	provider: string,
-	tier: string,
+	kind: string,
 	priority: int,
 	max_instances: int,
 	created_at: string,
 	updated_at: string,
 }
 
-Resolved_Provider_Tier :: struct {
+Resolved_Provider_Model :: struct {
 	provider: string,
-	tier: string,
+	model: string,
 }
 
 Agent_Instance :: struct {
@@ -54,7 +51,8 @@ Agent_Instance :: struct {
 	// display_name is the human-readable title for this instance (defaults to "<agent-name> #<n>").
 	display_name: string,
 	provider: string,
-	tier: string,
+	model: string,
+	kind: string,
 	project_id: Project_ID,
 	project_path: string,
 	chain_id: string,
@@ -107,7 +105,8 @@ agent_instance_destroy :: proc(inst: ^Agent_Instance) {
 	if len(inst.bridge_id) > 0 do delete(inst.bridge_id)
 	if len(inst.display_name) > 0 do delete(inst.display_name)
 	if len(inst.provider) > 0 do delete(inst.provider)
-	if len(inst.tier) > 0 do delete(inst.tier)
+	if len(inst.model) > 0 do delete(inst.model)
+	if len(inst.kind) > 0 do delete(inst.kind)
 	if len(string(inst.project_id)) > 0 do delete(string(inst.project_id))
 	if len(inst.project_path) > 0 do delete(inst.project_path)
 	if len(inst.chain_id) > 0 do delete(inst.chain_id)

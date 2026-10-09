@@ -45,7 +45,7 @@ export function adaptConversationWorkspaceContext({
   live,
   runtimeLabel,
   provider,
-  modelTier,
+  model,
 }: {
   agent: any;
   title: string;
@@ -53,7 +53,7 @@ export function adaptConversationWorkspaceContext({
   live: boolean;
   runtimeLabel: string;
   provider: string;
-  modelTier: string;
+  model: string;
 }): WorkspaceContext {
   const capabilities: WorkspaceCapabilities = {
     canChat: true,
@@ -96,8 +96,8 @@ export function adaptConversationWorkspaceContext({
       runtime: {
         status: live ? 'active' : 'stopped',
         statusLabel: live ? 'Active' : runtimeLabel,
-        provider: provider || 'pi',
-        modelTier: modelTier || 'smart',
+        provider,
+        model,
         projectId: agent?.projectId || '',
         canStart: true,
         canStop: true,
@@ -129,7 +129,7 @@ export function adaptDirectAgentWorkspaceContext({
   runtimeLabel,
   live,
   provider,
-  modelTier,
+  model,
 }: {
   agent: any;
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -139,7 +139,7 @@ export function adaptDirectAgentWorkspaceContext({
   runtimeLabel: string;
   live: boolean;
   provider: string;
-  modelTier: string;
+  model: string;
 }): WorkspaceContext {
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const taskIds = Object.values(tasksById || {}).filter((task: any) => {
@@ -190,8 +190,8 @@ export function adaptDirectAgentWorkspaceContext({
       runtime: {
         status: live ? 'active' : 'stopped',
         statusLabel: live ? 'Live' : runtimeLabel,
-        provider: provider || 'pi',
-        modelTier: modelTier || 'normal',
+        provider,
+        model,
         projectId: agent?.projectId || '',
         canStart: true,
         canStop: true,
@@ -223,7 +223,7 @@ export function adaptChainCoordinatorWorkspaceContext({
   taskIds,
   projectName,
   provider,
-  modelTier,
+  model,
   hasWorkspace,
   statusLabel,
 }: {
@@ -233,7 +233,7 @@ export function adaptChainCoordinatorWorkspaceContext({
   taskIds: string[];
   projectName: string;
   provider: string;
-  modelTier: string;
+  model: string;
   hasWorkspace: boolean;
   statusLabel: string;
 }): WorkspaceContext {
@@ -281,8 +281,8 @@ export function adaptChainCoordinatorWorkspaceContext({
       runtime: {
         status: coordinatorAgent?.status || 'offline',
         statusLabel: statusLabel || coordinatorAgent?.status || 'offline',
-        provider: provider || 'pi',
-        modelTier: modelTier || 'normal',
+        provider,
+        model,
         projectId: chain?.projectId || chain?.project_id || '',
         canStart: true,
         canStop: false,

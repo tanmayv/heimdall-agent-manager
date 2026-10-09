@@ -7,9 +7,9 @@ import {
   restartAffectedEntries,
   fleetApplyRequests,
   summarizeFleetRestartResults,
-  providerTierModified,
+  providerModelModified,
   changedFleetEntries,
-  type FleetProviderTier,
+  type FleetProviderModel,
   type ChangedFleetEntry,
 } from '../src/ui/components/tasks/fleetSelection.ts';
 
@@ -28,12 +28,12 @@ test('detectLiveInstanceRuntimeMismatch returns empty array on empty or undefine
 
 test('detectLiveInstanceRuntimeMismatch filters out non-live members (stopped, failed, terminated)', () => {
   const instances = [
-    { agent_instance_id: 'inst_stopped', agent_id: 'agt_worker', provider: 'codex', tier: 'normal', runtime_status: 'stopped' },
-    { agent_instance_id: 'inst_failed', agent_id: 'agt_worker', provider: 'codex', tier: 'normal', runtime_status: 'failed' },
-    { agent_instance_id: 'inst_terminated', agent_id: 'agt_worker', provider: 'codex', tier: 'normal', runtime_status: 'terminated' },
+    { agent_instance_id: 'inst_stopped', agent_id: 'agt_worker', provider: 'codex', model: 'normal', runtime_status: 'stopped' },
+    { agent_instance_id: 'inst_failed', agent_id: 'agt_worker', provider: 'codex', model: 'normal', runtime_status: 'failed' },
+    { agent_instance_id: 'inst_terminated', agent_id: 'agt_worker', provider: 'codex', model: 'normal', runtime_status: 'terminated' },
   ];
   const targetConfig = {
-    agt_worker: { provider: 'claude', tier: 'smart' },
+    agt_worker: { provider: 'claude', model: 'smart' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(instances, targetConfig);
@@ -47,12 +47,12 @@ test('detectLiveInstanceRuntimeMismatch identifies provider mismatch for active 
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'codex',
-      tier: 'normal',
+      model: 'normal',
       runtime_status: 'running',
     },
   ];
   const targetConfig = {
-    agt_worker: { provider: 'claude', tier: 'normal' },
+    agt_worker: { provider: 'claude', model: 'normal' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(instances, targetConfig);
@@ -61,49 +61,49 @@ test('detectLiveInstanceRuntimeMismatch identifies provider mismatch for active 
   assert.equal(mismatches[0].agentId, 'agt_worker');
   assert.equal(mismatches[0].actualProvider, 'codex');
   assert.equal(mismatches[0].targetProvider, 'claude');
-  assert.equal(mismatches[0].actualTier, 'normal');
-  assert.equal(mismatches[0].targetTier, 'normal');
+  assert.equal(mismatches[0].actualModel, 'normal');
+  assert.equal(mismatches[0].targetModel, 'normal');
   assert.equal(mismatches[0].mismatchType, 'provider');
   assert.deepEqual(mismatches.affectedRoleIds, ['agt_worker']);
 });
 
-test('detectLiveInstanceRuntimeMismatch identifies tier mismatch for active instance', () => {
+test('detectLiveInstanceRuntimeMismatch identifies model mismatch for active instance', () => {
   const instances = [
     {
       agent_instance_id: 'inst_live_2',
       agent_id: 'agt_reviewer',
       bridge_id: 'brg_alpha',
       provider: 'claude',
-      tier: 'cheap',
+      model: 'cheap',
       runtime_status: 'running',
     },
   ];
   const targetConfig = {
-    agt_reviewer: { provider: 'claude', tier: 'smart' },
+    agt_reviewer: { provider: 'claude', model: 'smart' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(instances, targetConfig);
   assert.equal(mismatches.length, 1);
   assert.equal(mismatches[0].instanceId, 'inst_live_2');
   assert.equal(mismatches[0].agentId, 'agt_reviewer');
-  assert.equal(mismatches[0].actualTier, 'cheap');
-  assert.equal(mismatches[0].targetTier, 'smart');
-  assert.equal(mismatches[0].mismatchType, 'tier');
+  assert.equal(mismatches[0].actualModel, 'cheap');
+  assert.equal(mismatches[0].targetModel, 'smart');
+  assert.equal(mismatches[0].mismatchType, 'model');
 });
 
-test('detectLiveInstanceRuntimeMismatch identifies multiple mismatches (provider and tier)', () => {
+test('detectLiveInstanceRuntimeMismatch identifies multiple mismatches (provider and model)', () => {
   const instances = [
     {
       agent_instance_id: 'inst_live_3',
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'codex',
-      tier: 'cheap',
+      model: 'cheap',
       runtime_status: 'running',
     },
   ];
   const targetConfig = {
-    agt_worker: { provider: 'claude', tier: 'smart' },
+    agt_worker: { provider: 'claude', model: 'smart' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(instances, targetConfig);
@@ -119,12 +119,12 @@ test('detectLiveInstanceRuntimeMismatch returns 0 mismatches when instance runti
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'claude',
-      tier: 'smart',
+      model: 'smart',
       runtime_status: 'running',
     },
   ];
   const targetConfig = {
-    agt_worker: { provider: 'claude', tier: 'smart' },
+    agt_worker: { provider: 'claude', model: 'smart' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(instances, targetConfig);
@@ -140,7 +140,7 @@ test('detectLiveInstanceRuntimeMismatch respects per-bridge overrides', () => {
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'claude',
-      tier: 'smart',
+      model: 'smart',
       runtime_status: 'running',
     },
     // Running on brg_beta where override is gemini/pro -> currently running codex/normal -> mismatch
@@ -149,15 +149,15 @@ test('detectLiveInstanceRuntimeMismatch respects per-bridge overrides', () => {
       agent_id: 'agt_worker',
       bridge_id: 'brg_beta',
       provider: 'codex',
-      tier: 'normal',
+      model: 'normal',
       runtime_status: 'running',
     },
   ];
 
   const targetConfig = {
     agt_worker: {
-      brg_alpha: { provider: 'claude', tier: 'smart' },
-      brg_beta: { provider: 'gemini', tier: 'pro' },
+      brg_alpha: { provider: 'claude', model: 'smart' },
+      brg_beta: { provider: 'gemini', model: 'pro' },
     },
   };
 
@@ -167,8 +167,8 @@ test('detectLiveInstanceRuntimeMismatch respects per-bridge overrides', () => {
   assert.equal(mismatches[0].bridgeId, 'brg_beta');
   assert.equal(mismatches[0].actualProvider, 'codex');
   assert.equal(mismatches[0].targetProvider, 'gemini');
-  assert.equal(mismatches[0].actualTier, 'normal');
-  assert.equal(mismatches[0].targetTier, 'pro');
+  assert.equal(mismatches[0].actualModel, 'normal');
+  assert.equal(mismatches[0].targetModel, 'pro');
 });
 
 test('detectLiveInstanceRuntimeMismatch falls back to role default when per-bridge override inherits', () => {
@@ -178,16 +178,16 @@ test('detectLiveInstanceRuntimeMismatch falls back to role default when per-brid
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'codex',
-      tier: 'normal',
+      model: 'normal',
       runtime_status: 'running',
     },
   ];
 
-  // brg_alpha has empty (inherit) provider/tier, role default is claude/smart
+  // brg_alpha has empty (inherit) provider/model, role default is claude/smart
   const targetConfig = {
-    roleDefaults: { agt_worker: { provider: 'claude', tier: 'smart' } },
+    roleDefaults: { agt_worker: { provider: 'claude', model: 'smart' } },
     perBridgeOverrides: {
-      agt_worker: { brg_alpha: { provider: '', tier: '' } },
+      agt_worker: { brg_alpha: { provider: '', model: '' } },
     },
   };
 
@@ -195,7 +195,7 @@ test('detectLiveInstanceRuntimeMismatch falls back to role default when per-brid
   assert.equal(mismatches.length, 1);
   assert.equal(mismatches[0].actualProvider, 'codex');
   assert.equal(mismatches[0].targetProvider, 'claude');
-  assert.equal(mismatches[0].targetTier, 'smart');
+  assert.equal(mismatches[0].targetModel, 'smart');
 });
 
 test('detectLiveInstanceRuntimeMismatch detects bridge mismatch when targetBridgeId specified', () => {
@@ -205,12 +205,12 @@ test('detectLiveInstanceRuntimeMismatch detects bridge mismatch when targetBridg
       agent_id: 'agt_worker',
       bridge_id: 'brg_alpha',
       provider: 'claude',
-      tier: 'smart',
+      model: 'smart',
       runtime_status: 'running',
     },
   ];
   const targetConfig = {
-    roleDefaults: { agt_worker: { provider: 'claude', tier: 'smart' } },
+    roleDefaults: { agt_worker: { provider: 'claude', model: 'smart' } },
     targetBridgeId: 'brg_beta',
   };
 
@@ -229,13 +229,13 @@ test('detectLiveInstanceRuntimeMismatch supports grouped map input and camelCase
         agentId: 'agt_worker',
         bridgeId: 'brg_alpha',
         provider: 'old_provider',
-        tier: 'old_tier',
+        model: 'old_model',
         runtimeStatus: 'running',
       },
     ],
   };
   const targetConfig = {
-    agt_worker: { provider: 'new_provider', tier: 'new_tier' },
+    agt_worker: { provider: 'new_provider', model: 'new_model' },
   };
 
   const mismatches = detectLiveInstanceRuntimeMismatch(groupedInstances, targetConfig);
@@ -243,7 +243,7 @@ test('detectLiveInstanceRuntimeMismatch supports grouped map input and camelCase
   assert.equal(mismatches[0].agent_instance_id, 'inst_camel_1');
   assert.equal(mismatches[0].agent_id, 'agt_worker');
   assert.equal(mismatches[0].provider, 'old_provider');
-  assert.equal(mismatches[0].tier, 'old_tier');
+  assert.equal(mismatches[0].model, 'old_model');
 });
 
 test('groupMismatchesByRole summarizes mismatches correctly', () => {
@@ -253,32 +253,32 @@ test('groupMismatchesByRole summarizes mismatches correctly', () => {
       agentId: 'agt_worker',
       bridgeId: 'brg_1',
       actualProvider: 'a',
-      actualTier: 'b',
+      actualModel: 'b',
       targetProvider: 'c',
-      targetTier: 'd',
+      targetModel: 'd',
       mismatchType: 'provider' as const,
       reasons: [],
       agent_instance_id: 'inst_1',
       agent_id: 'agt_worker',
       bridge_id: 'brg_1',
       provider: 'a',
-      tier: 'b',
+      model: 'b',
     },
     {
       instanceId: 'inst_2',
       agentId: 'agt_worker',
       bridgeId: 'brg_1',
       actualProvider: 'a',
-      actualTier: 'b',
+      actualModel: 'b',
       targetProvider: 'c',
-      targetTier: 'd',
+      targetModel: 'd',
       mismatchType: 'provider' as const,
       reasons: [],
       agent_instance_id: 'inst_2',
       agent_id: 'agt_worker',
       bridge_id: 'brg_1',
       provider: 'a',
-      tier: 'b',
+      model: 'b',
     },
   ];
 
@@ -292,18 +292,18 @@ test('groupMismatchesByRole summarizes mismatches correctly', () => {
 // Restart actions and fleet persistence helpers (REQ-FLEET-PERSIST-1, REQ-RS-3/4)
 // ---------------------------------------------------------------------------
 
-test('restartAffectedEntries identifies affected roles with live instances and modified provider/tier', () => {
+test('restartAffectedEntries identifies affected roles with live instances and modified provider/model', () => {
   const rawFleets = [
-    { agent_id: 'agt_worker', capacity: 2, provider: 'codex', tier: 'normal' },
-    { agent_id: 'agt_reviewer', capacity: 1, provider: 'claude', tier: 'smart' },
+    { agent_id: 'agt_worker', capacity: 2, provider: 'codex', model: 'normal' },
+    { agent_id: 'agt_reviewer', capacity: 1, provider: 'claude', model: 'smart' },
   ];
   const changedEntries: ChangedFleetEntry[] = [
-    { agentId: 'agt_worker', capacity: 2, provider: 'claude', tier: 'smart' },
-    { agentId: 'agt_reviewer', capacity: 3, provider: 'claude', tier: 'smart' }, // Capacity only!
+    { agentId: 'agt_worker', capacity: 2, provider: 'claude', model: 'smart' },
+    { agentId: 'agt_reviewer', capacity: 3, provider: 'claude', model: 'smart' }, // Capacity only!
   ];
   const draftPT = {
-    agt_worker: { provider: 'claude', tier: 'smart' },
-    agt_reviewer: { provider: 'claude', tier: 'smart' },
+    agt_worker: { provider: 'claude', model: 'smart' },
+    agt_reviewer: { provider: 'claude', model: 'smart' },
   };
   const liveCounts = {
     agt_worker: 2,
@@ -317,11 +317,11 @@ test('restartAffectedEntries identifies affected roles with live instances and m
 
 test('fleetApplyRequests sets restartLiveInstances flag for "Apply & Restart Now"', () => {
   const changedEntries: ChangedFleetEntry[] = [
-    { agentId: 'agt_worker', capacity: 2, provider: 'claude', tier: 'smart' },
-    { agentId: 'agt_other', capacity: 1, provider: '', tier: '' },
+    { agentId: 'agt_worker', capacity: 2, provider: 'claude', model: 'smart' },
+    { agentId: 'agt_other', capacity: 1, provider: '', model: '' },
   ];
   const restartAffected: ChangedFleetEntry[] = [
-    { agentId: 'agt_worker', capacity: 2, provider: 'claude', tier: 'smart' },
+    { agentId: 'agt_worker', capacity: 2, provider: 'claude', model: 'smart' },
   ];
 
   const requests = fleetApplyRequests(changedEntries, restartAffected);
@@ -334,7 +334,7 @@ test('fleetApplyRequests sets restartLiveInstances flag for "Apply & Restart Now
 
 test('fleetApplyRequests omits restartLiveInstances for "Apply to New Instances Only"', () => {
   const changedEntries: ChangedFleetEntry[] = [
-    { agentId: 'agt_worker', capacity: 2, provider: 'claude', tier: 'smart' },
+    { agentId: 'agt_worker', capacity: 2, provider: 'claude', model: 'smart' },
   ];
   // Empty restartAffected = Apply to New Instances Only
   const requests = fleetApplyRequests(changedEntries, []);

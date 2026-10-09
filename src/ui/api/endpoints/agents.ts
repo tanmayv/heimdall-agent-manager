@@ -113,8 +113,8 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 600,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; slug?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
-      queryFn: async ({ agentId, name, slug, templateId, defaultProvider, defaultTier, instructions }) => {
+    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; slug?: string; templateId?: string; instructions?: string }>({
+      queryFn: async ({ agentId, name, slug, templateId, instructions }) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = {};
@@ -126,8 +126,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
           // when the key is present (has_template_id), so omitting it leaves the
           // agent's template unchanged.
           if (templateId !== undefined) payload.template_id = templateId;
-          if (defaultProvider !== undefined) payload.default_provider = defaultProvider;
-          if (defaultTier !== undefined) payload.default_tier = defaultTier;
           if (instructions !== undefined) payload.instructions = instructions;
           const data = await cookieMutation(`/agents/${encodeURIComponent(agentId)}`, 'PATCH', payload);
           return { data };
@@ -137,7 +135,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'BridgeSupport' as const, id: agentId }],
     }),
-    enableBridgeSupport: build.mutation<any, { agentId: string; bridges?: Array<{ bridgeId?: string; bridge_id?: string; enabled?: boolean; provider?: string; providerProfile?: string; tier?: string; modelTier?: string; priority?: number; maxInstances?: number }> }>({
+    enableBridgeSupport: build.mutation<any, { agentId: string; bridges?: Array<{ bridgeId?: string; bridge_id?: string; enabled?: boolean; provider?: string; providerProfile?: string; model?: string; priority?: number; maxInstances?: number }> }>({
       queryFn: async ({ agentId, bridges }) => {
         try {
           let rows = bridges || [];
@@ -150,7 +148,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
               bridge_id: b.bridge_id || b.bridgeId,
               enabled: b.enabled !== false,
               provider: b.provider || b.providerProfile || '',
-              tier: b.tier || b.modelTier || '',
+              model: b.model || b.model || '',
               priority: b.priority || 0,
               max_instances: b.maxInstances || 0,
             }))
@@ -297,10 +295,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }, { session }) => {
+    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; model?: string }>({
+      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model }, { session }) => {
         if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier });
+        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model });
       }),
       invalidatesTags: (_result, _error, { agentInstanceId }) => [
         { type: 'Agents' as const, id: 'LIST' },
@@ -321,22 +319,22 @@ export const agentsApi = heimdallApi.injectEndpoints({
     // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
     // creates its 1:1 conversation; never attaches an unrelated live instance.
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
+    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; model?: string; projectId?: string; displayName?: string; templateId?: string }>({
       // Launch a new instance of a durable agent, bound to a chain. Uses the cookie
       // path (POST /agent-instances) like launchAgentInstance, so it works in the
       // trusted-proxy/cookie-auth shell. The previous token-based path required a
       // session.clientToken that the cookie shell never has, so "Launch new" from
       // the Add-Member dialog always failed with "Missing agentId/chainId" even
-      // with an agent selected. The hub create endpoint reads provider/tier (not
-      // provider_profile/model_tier), so map to those field names.
-      queryFn: async ({ agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }) => {
+      // with an agent selected. The hub create endpoint reads provider/model (not
+      // provider_profile/model), so map to those field names.
+      queryFn: async ({ agentId, chainId, bridgeId, providerProfile, model, projectId, displayName, templateId }) => {
         if (!agentId || !chainId) return { data: { ok: false, message: 'Choose an agent identity to launch.' } };
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = { agent_id: agentId, chain_id: chainId };
           if (bridgeId) payload.bridge_id = bridgeId;
           if (providerProfile) payload.provider = providerProfile;
-          if (modelTier) payload.tier = modelTier;
+          if (model) payload.model = model;
           if (projectId) payload.project_id = projectId;
           if (displayName) payload.display_name = displayName;
           if (templateId) payload.template_id = templateId;
@@ -352,7 +350,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
+    createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string }>({
       queryFn: async (arg) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -363,8 +361,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
             template_id: arg.templateId || '',
             instructions: arg.instructions || '',
           };
-          if (arg.defaultProvider) payload.default_provider = arg.defaultProvider;
-          if (arg.defaultTier) payload.default_tier = arg.defaultTier;
           const data = await cookieMutation('/agents', 'POST', payload);
           return { data };
         } catch (error: any) {
@@ -429,14 +425,14 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 300,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; tier?: string; projectId?: string }>({
-      queryFn: async ({ agentId, bridgeId, provider, tier, projectId }) => {
+    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; model?: string; projectId?: string }>({
+      queryFn: async ({ agentId, bridgeId, provider, model, projectId }) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = { agent_id: agentId };
           if (bridgeId) payload.bridge_id = bridgeId;
           if (provider) payload.provider = provider;
-          if (tier) payload.tier = tier;
+          if (model) payload.model = model;
           if (projectId) payload.project_id = projectId;
           const data = await cookieMutation('/agent-instances', 'POST', payload);
           return { data };
@@ -487,13 +483,13 @@ export const agentsApi = heimdallApi.injectEndpoints({
       ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string; bridgeId?: string }>({
-      queryFn: async ({ instanceId, provider, tier, bridgeId }) => {
+    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; model?: string; bridgeId?: string }>({
+      queryFn: async ({ instanceId, provider, model, bridgeId }) => {
         try {
           // The hub reconfigure endpoint accepts an optional bridge_id to move the
           // instance to another device (bridge); only send it when set so we don't
           // clobber the current bridge with an empty value.
-          const body: Record<string, string> = { provider: provider || '', tier: tier || '' };
+          const body: Record<string, string> = { provider: provider || '', model: model || '' };
           if (bridgeId) body.bridge_id = bridgeId;
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', body);
           return { data };
@@ -703,8 +699,6 @@ export type AgentRecord = {
   name: string;
   slug: string;
   templateId: string;
-  defaultProvider: string;
-  defaultTier: string;
   instructions: string;
   /** `active` | `archived` */
   state: string;
@@ -727,8 +721,6 @@ export function normalizeAgent(raw: any): AgentRecord {
     name: String(src.name || ''),
     slug: String(src.slug || ''),
     templateId: String(src.template_id || src.templateId || ''),
-    defaultProvider: String(src.default_provider || src.defaultProvider || ''),
-    defaultTier: String(src.default_tier || src.defaultTier || ''),
     instructions: String(src.instructions || ''),
     state: String(src.state || 'active'),
     supportedBridgeCount: Number(src.supported_bridge_count ?? src.supportedBridgeCount ?? 0),

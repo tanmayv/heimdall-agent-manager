@@ -28,9 +28,9 @@ main :: proc() {
 	owner := domain.User_ID("tanmay")
 	now := "2026-09-09T17:00:00Z"
 
-	_, asaved, aerr := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = "agent_x", owner_user_id = owner, name = "Fixer Bot", slug = "fixer", default_provider = "claude", default_tier = "normal", state = .Active, created_at = now, updated_at = now})
+	_, asaved, aerr := iface.agent_save(&graph.repos.agents, domain.Agent{agent_id = "agent_x", owner_user_id = owner, name = "Fixer Bot", slug = "fixer", default_provider = "claude", default_model = "normal", state = .Active, created_at = now, updated_at = now})
 	check(asaved, aerr.message)
-	_, isaved, ierr := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = "inst_x", owner_user_id = owner, agent_id = "agent_x", bridge_id = "brg_seed", provider = "claude", tier = "normal", chain_id = "chain_m7", runtime_status = "running", startup_status = "ready", activity_status = "idle", display_name = "coder #7", created_at = now, updated_at = now, started_at = now, last_seen_at = now})
+	_, isaved, ierr := iface.agent_save_instance(&graph.repos.agents, domain.Agent_Instance{agent_instance_id = "inst_x", owner_user_id = owner, agent_id = "agent_x", bridge_id = "brg_seed", provider = "claude", model = "normal", chain_id = "chain_m7", runtime_status = "running", startup_status = "ready", activity_status = "idle", display_name = "coder #7", created_at = now, updated_at = now, started_at = now, last_seen_at = now})
 	check(isaved, ierr.message)
 
 	_, csaved, cerr := iface.taskchain_save_chain(&graph.repos.taskchains, domain.Task_Chain{chain_id = "chain_m7", owner_user_id = owner, title = "MEM-7 Chain", publish_state = .Published, status = .Active, kind = "team_work", coordinator_agent_instance_id = "inst_x", created_at = now, updated_at = now, published_at = now})

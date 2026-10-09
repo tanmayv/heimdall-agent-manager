@@ -48,7 +48,7 @@ Action_Queue_Item :: struct {
 	target_agent_id:    string,
 	target_bridge_id:   string,
 	target_provider:    string,
-	target_tier:        string,
+	target_model:        string,
 	target_project_id:  string,
 	// REQ-SCHED-2: "reuse" (default) or "fresh_per_run"; last_spawned_instance_id is
 	// the instance created by the previous fresh_per_run fire, reaped on the next fire.
@@ -439,7 +439,7 @@ action_queue_item_free :: proc(item: ^Action_Queue_Item) {
 	delete(item.target_agent_id)
 	delete(item.target_bridge_id)
 	delete(item.target_provider)
-	delete(item.target_tier)
+	delete(item.target_model)
 	delete(item.target_project_id)
 	delete(item.instance_strategy)
 	delete(item.last_spawned_instance_id)
@@ -566,7 +566,7 @@ bridge_action_scheduler_sync :: proc() -> bool {
 		target_agent := extract_json_string(obj, "target_agent_id", "")
 		target_bridge := extract_json_string(obj, "target_bridge_id", "")
 		target_provider := extract_json_string(obj, "target_provider", "")
-		target_tier := extract_json_string(obj, "target_tier", "")
+		target_model := extract_json_string(obj, "target_model", "")
 		target_project := extract_json_string(obj, "target_project_id", "")
 		instance_strategy := extract_json_string(obj, "instance_strategy", "reuse")
 		last_spawned := extract_json_string(obj, "last_spawned_instance_id", "")
@@ -625,7 +625,7 @@ bridge_action_scheduler_sync :: proc() -> bool {
 			q.target_agent_id = strings.clone(target_agent)
 			q.target_bridge_id = strings.clone(target_bridge)
 			q.target_provider = strings.clone(target_provider)
-			q.target_tier = strings.clone(target_tier)
+			q.target_model = strings.clone(target_model)
 			q.target_project_id = strings.clone(target_project)
 			q.instance_strategy = strings.clone(instance_strategy)
 			q.last_spawned_instance_id = strings.clone(last_spawned)
@@ -657,7 +657,7 @@ bridge_action_scheduler_sync :: proc() -> bool {
 				target_agent_id    = strings.clone(target_agent),
 				target_bridge_id   = strings.clone(target_bridge),
 				target_provider    = strings.clone(target_provider),
-				target_tier        = strings.clone(target_tier),
+				target_model        = strings.clone(target_model),
 				target_project_id  = strings.clone(target_project),
 				instance_strategy        = strings.clone(instance_strategy),
 				last_spawned_instance_id = strings.clone(last_spawned),
@@ -812,7 +812,7 @@ action_scheduler_reap_target :: proc(strategy, prev_last_spawned, new_instance_i
 // 1. Reuse: check if an existing instance of target_agent_id on this bridge is live (running/idle).
 // 2. Wake: check if an existing instance of target_agent_id on this bridge is stopped, and wake it.
 // 3. Launch: if no instance exists, call POST /api/v1/agent-instances with target_agent_id,
-//    target_bridge_id, provider, tier, project_id, and await readiness.
+//    target_bridge_id, provider, model, project_id, and await readiness.
 bridge_action_scheduler_resolve_or_launch_instance :: proc(due: Action_Queue_Item, now_ms: i64) -> (string, bool) {
 	if due.target_agent_id == "" do return "", false
 	if strings.trim_space(bridge_config.bridge_token) == "" || strings.trim_space(bridge_config.daemon_url) == "" {
@@ -889,9 +889,9 @@ bridge_action_scheduler_resolve_or_launch_instance :: proc(due: Action_Queue_Ite
 		bridge_runtime_write_json_string(&b, due.target_provider)
 		strings.write_string(&b, "\"")
 	}
-	if due.target_tier != "" {
-		strings.write_string(&b, ",\"tier\":\"")
-		bridge_runtime_write_json_string(&b, due.target_tier)
+	if due.target_model != "" {
+		strings.write_string(&b, ",\"model\":\"")
+		bridge_runtime_write_json_string(&b, due.target_model)
 		strings.write_string(&b, "\"")
 	}
 	if due.target_project_id != "" {

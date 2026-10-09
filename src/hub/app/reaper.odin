@@ -1,11 +1,14 @@
 package app
 
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import http "odin_test:hub/transport/http"
 import bridge_service "odin_test:hub/service/bridge"
+import project_service "odin_test:hub/service/project"
+import provider_service "odin_test:hub/service/provider"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import shell_session_svc "odin_test:hub/service/shell_session"
@@ -137,6 +140,25 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	// removes. The no-polling rule is about STATUS PROPAGATION, which must be pushed; an
 	// age reap is not a status, and nothing here asks a bridge how it is doing.
 	reaper_sweep_aged_servers(graph)
+
+	// Provider tests are intentionally transient. Reap them independently of the
+	// browser polling their status, and also when their bridge is no longer live.
+	// cleanup_provider_test_instance sends stop only while the bridge is connected,
+	// then always removes the operational agent_instances row.
+	provider_runs := provider_service.provider_test_active_runs(&graph.providers)
+	defer provider_service.provider_test_runs_destroy(provider_runs)
+	now := platform.clock_now(&graph.clock)
+	for run in provider_runs {
+		expired := run.expires_at != "" && run.expires_at <= now
+		disconnected := !project_service.bridge_runtime_registry_has_live(&graph.bridge_runtime_registry, run.bridge_id)
+		if !expired && !disconnected do continue
+		auth := contracts.Auth_Context{kind = .User_Token, user_id = run.owner_user_id}
+		_ = agent_service.cleanup_provider_test_instance(&graph.agents, auth, run.agent_instance_id)
+		state := "expired" if expired else "cancelled"
+		reason := "provider test expired" if expired else "bridge disconnected during provider test"
+		updated, _ := provider_service.provider_test_set_state(&graph.providers, run.run_id, run.owner_user_id, state, reason)
+		provider_service.provider_test_run_destroy(&updated)
+	}
 
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	defer domain.agent_instances_destroy(reaped)

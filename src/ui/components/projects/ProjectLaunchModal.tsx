@@ -111,7 +111,7 @@ export default function ProjectLaunchModal({
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const rawIdentities: any[] = identitiesQuery.data?.agents || [];
   const durableAgents = useMemo(() => {
-    const list: Array<{ agentId: string; name: string; tier: string; provider: string; state: string }> = [];
+    const list: Array<{ agentId: string; name: string; state: string }> = [];
     for (const item of rawIdentities) {
       // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const agentId = String(item.agent_id || item.agentId || item.id || '').trim();
@@ -122,10 +122,6 @@ export default function ProjectLaunchModal({
         agentId,
         // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.slug || agentId),
-        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-        tier: String(item.default_tier || item.defaultTier || ''),
-        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-        provider: String(item.default_provider || item.defaultProvider || ''),
         state: item.state || 'active',
       });
     }
@@ -792,16 +788,6 @@ export default function ProjectLaunchModal({
                             {agent.agentId}
                           </div>
                         </div>
-                        {agent.tier && (
-                          <span className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] text-muted">
-                            {agent.tier}
-                          </span>
-                        )}
-                        {agent.provider && (
-                          <span className="text-[10.5px] text-faint capitalize">
-                            {agent.provider}
-                          </span>
-                        )}
                       </label>
                     );
                   })

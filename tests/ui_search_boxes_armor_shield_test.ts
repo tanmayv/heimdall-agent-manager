@@ -131,7 +131,7 @@ function filterCardsPanelCards(
 
 // 3. ActionListPage searchableText & matchesQuery logic (src/ui/components/actions/ActionListPage.tsx:117-143)
 function actionListPageSearchableText(
-  row: { id: string; prompt_text?: string; cron_expr?: string; timezone?: string; target_instance_id?: string; target_agent_id?: string; target_provider?: string; target_tier?: string },
+  row: { id: string; prompt_text?: string; cron_expr?: string; timezone?: string; target_instance_id?: string; target_agent_id?: string; target_provider?: string; target_model?: string },
   catalog: any = { instances: { byId: new Map() }, agents: { byId: new Map() } },
 ): string {
   return [
@@ -147,7 +147,7 @@ function actionListPageSearchableText(
     '', // bridgeLabel
     '', // projectLabel
     row.target_provider,
-    row.target_tier,
+    row.target_model,
   ]
     .filter(Boolean)
     .join(' ')
@@ -533,7 +533,7 @@ test('Area 3: ActionListPage - armored prompt_text is omitted from searchableTex
     cron_expr: '0 2 * * *',
     timezone: 'UTC',
     target_provider: 'jetski',
-    target_tier: 'smart',
+    target_model: 'smart',
   };
 
   const rowPlaintext = {
@@ -542,7 +542,7 @@ test('Area 3: ActionListPage - armored prompt_text is omitted from searchableTex
     cron_expr: '0 3 * * *',
     timezone: 'UTC',
     target_provider: 'jetski',
-    target_tier: 'smart',
+    target_model: 'smart',
   };
 
   const catalog = { instances: { byId: new Map() }, agents: { byId: new Map() } };

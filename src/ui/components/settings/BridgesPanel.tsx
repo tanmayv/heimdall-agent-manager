@@ -67,7 +67,7 @@ export default function BridgesPanel() {
 
   function capabilitiesLabel(bridge: Bridge): string {
     const providers = normalizeBridgeCapabilities(bridge);
-    return providers.length ? providers.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : ''}`).join(', ') : '—';
+    return providers.length ? providers.map((cap) => `${cap.provider}${cap.models.length ? ` (${cap.models.join('/')})` : ''}`).join(', ') : '—';
   }
 
   // REQ-BRG-1: An enrolled, online bridge is ready regardless of whether provider capabilities are loaded yet.

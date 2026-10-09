@@ -72,7 +72,7 @@ import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 // e2e conversation thread for /conversations/{agentInstanceId}. Cookie-auth,
 // hub-native. Fetches messages via /api/v1/chats/{id}/messages, sends via POST,
-// marks read, and (per the launch composer) exposes provider/tier selection for
+// marks read, and (per the launch composer) exposes provider/model selection for
 // the bound instance — plus a Bridge indicator — so a live conversation can be
 // reconfigured/restarted without leaving the page.
 
@@ -127,7 +127,7 @@ type PendingAttachment = {
   error: string;
 };
 
-const tierOrder = ['cheap', 'normal', 'smart'];
+const modelOrder = ['cheap', 'normal', 'smart'];
 
 // RTK Query queryFn errors reject with `{ status: 'CUSTOM_ERROR', error: '...' }`
 // (not an Error), so `err.message` is undefined and String(err) => "[object
@@ -339,10 +339,9 @@ function scheduleContextFromMetadata(metadata: any): { summary: string; triggere
   return { summary, triggeredAt };
 }
 
-function capTiers(cap: BridgeCapability | undefined): string[] {
+function capModels(cap: BridgeCapability | undefined): string[] {
   if (!cap) return [];
-  const t = Array.isArray(cap.tiers) ? cap.tiers.filter(Boolean) : [];
-  return t.length ? t : (cap.defaultTier ? [cap.defaultTier] : []);
+  return Array.isArray(cap.models) ? cap.models.filter(Boolean) : [];
 }
 
 function coerceUnixMs(value: any): number {
@@ -546,7 +545,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
   const chainTitle = String(chainDetailQuery.data?.chain?.title || '').trim();
 
-  // The instance record is the source of truth for the CONCRETE provider / tier /
+  // The instance record is the source of truth for the CONCRETE provider / model /
   // bridge this conversation runs on (never "default"/"Auto").
   // Adaptive polling: while the runtime is transitional (starting) poll fast so
   // the status chip settles quickly; once stable, poll moderately. The interval is
@@ -575,7 +574,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     if (s) lastInstanceStatusRef.current = s;
   }, [instance?.runtime_status, instance?.runtimeStatus]);
   const instanceProvider = String(instance?.provider || '');
-  const instanceTier = String(instance?.tier || '');
+  const instanceModel = String(instance?.model || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
   // Project the conversation/instance is scoped to — powers the Files (project
   // directory browser) tab. Prefer the live instance, fall back to conversation.
@@ -591,7 +590,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
 
 
-  // Bridges are near-static (label + provider/tier caps); no refetch on every
+  // Bridges are near-static (label + provider/model caps); no refetch on every
   // conversation switch. The Bridges LIST tag invalidates on bridge mutations,
   // and the slow poll is a backstop.
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
@@ -679,7 +678,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
-  const [tier, setTier] = useState('');
+  const [model, setModel] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [isSmallComposer, setIsSmallComposer] = useState(false);
   // Flatten the live projects->chains->agents tree into a single @-mention list
@@ -1011,7 +1010,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
 
-  // Bridge (device) is fixed per-instance. Provider/tier options follow
+  // Bridge (device) is fixed per-instance. Provider/model options follow
   // the instance bridge's capability matrix.
   const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
   const caps = useMemo(() => normalizeBridgeCapabilities(instanceBridge), [instanceBridge]);
@@ -1022,14 +1021,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     if (instanceProvider && !list.includes(instanceProvider)) list.push(instanceProvider);
     return Array.from(new Set(list)).sort();
   }, [caps, instanceProvider]);
-  const tierOptions = useMemo(() => {
+  const modelOptions = useMemo(() => {
     const selectedProvider = provider || instanceProvider || providerOptions[0] || '';
     const cap = caps.find((c) => c.provider === selectedProvider);
-    const t = capTiers(cap);
-    const ordered = tierOrder.filter((x) => t.includes(x)).concat(t.filter((x) => !tierOrder.includes(x)));
-    if (instanceTier && !ordered.includes(instanceTier)) ordered.unshift(instanceTier);
+    const t = capModels(cap);
+    const ordered = modelOrder.filter((x) => t.includes(x)).concat(t.filter((x) => !modelOrder.includes(x)));
+    if (instanceModel && !ordered.includes(instanceModel)) ordered.unshift(instanceModel);
     return ordered;
-  }, [caps, provider, providerOptions, instanceProvider, instanceTier]);
+  }, [caps, provider, providerOptions, instanceProvider, instanceModel]);
 
   const chatMessages = useMemo(
     // REQ-SUBTLE-AGENT-START-14: Retain agent start/restart system messages for subtle divider rendering
@@ -1105,11 +1104,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   useEffect(() => { if (!renaming) setTitleDraft(editableTitle); }, [editableTitle, renaming]);
   useEffect(() => { if (agentInstanceId && (conversation?.unread_count || conversation?.unreadCount)) void markRead({ conversationId }); }, [conversationId, agentInstanceId]);
-  // Seed the selects from the instance's ACTUAL provider/tier (no empty/"default").
+  // Seed the selects from the instance's ACTUAL provider/model (no empty/"default").
   useEffect(() => { if (instanceProvider) setProvider(instanceProvider); }, [instanceProvider]);
-  useEffect(() => { if (instanceTier) setTier(instanceTier); }, [instanceTier]);
+  useEffect(() => { if (instanceModel) setModel(instanceModel); }, [instanceModel]);
   useEffect(() => { setProvider((p) => (p && providerOptions.includes(p) ? p : (instanceProvider || providerOptions[0] || p))); }, [providerOptions.join('|')]);
-  useEffect(() => { setTier((t) => (t && tierOptions.includes(t) ? t : (instanceTier || tierOptions[0] || t))); }, [tierOptions.join('|')]);
+  useEffect(() => { setModel((t) => (t && modelOptions.includes(t) ? t : (instanceModel || modelOptions[0] || t))); }, [modelOptions.join('|')]);
   useEffect(() => {
     setOlderMessages([]);
     setOlderCursor('');
@@ -1136,8 +1135,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Apply & relaunch only matters when the selection differs from what the
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
-  const effectiveTier = tier || instanceTier;
-  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveTier && effectiveTier !== instanceTier));
+  const effectiveModel = model || instanceModel;
+  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveModel && effectiveModel !== instanceModel));
 
   async function saveConversationTitle() {
     const next = titleDraft.trim();
@@ -1228,7 +1227,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (sendDisabled) return;
-    // A staged provider/tier change from the model switcher applies on the next
+    // A staged provider/model change from the model switcher applies on the next
     // send: reconfigure + relaunch this instance before delivering the message.
     if (selectionChangesConfig && !runtimeActionBusy) {
       try { await applyReconfigure(); } catch (_err) { /* status surfaced via reconfigStatus */ }
@@ -1619,14 +1618,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   async function applyReconfigure() {
     if (!agentInstanceId) return;
     const nextProvider = provider || providerOptions[0] || '';
-    const nextTier = tier || tierOptions[0] || '';
-    if (!nextProvider || !nextTier) { setReconfigStatus('Choose a provider and tier first.'); return; }
+    const nextModel = model || modelOptions[0] || '';
+    if (!nextProvider || !nextModel) { setReconfigStatus('Choose a provider and model first.'); return; }
     setReconfigStatus('Applying selected runtime config…');
     try {
-      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier }).unwrap();
-      setReconfigStatus(`Applied ${nextProvider}/${nextTier} — restarting…`);
+      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, model: nextModel }).unwrap();
+      setReconfigStatus(`Applied ${nextProvider}/${nextModel} — restarting…`);
       await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      setReconfigStatus(`Restart requested with ${nextProvider}/${nextTier}.`);
+      setReconfigStatus(`Restart requested with ${nextProvider}/${nextModel}.`);
       void instanceQuery.refetch();
       void messagesQuery.refetch();
     } catch (err: any) {
@@ -1643,7 +1642,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="text-left">
       <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
-      <input data-debug-id="conversation-tier-select" type="hidden" value={tier} readOnly />
+      <input data-debug-id="conversation-model-select" type="hidden" value={model} readOnly />
       <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Provider</div>
       {providerOptions.map((p) => {
         const selected = (provider || instanceProvider) === p;
@@ -1660,13 +1659,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         );
       })}
       <div className="my-1.5 border-t border-subtle" />
-      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Tier</div>
-      {tierOptions.map((t) => {
-        const selected = (tier || instanceTier) === t;
-        const current = instanceTier === t;
-        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Model tier' };
+      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Model</div>
+      {modelOptions.map((t) => {
+        const selected = (model || instanceModel) === t;
+        const current = instanceModel === t;
+        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Model model' };
         return (
-          <button key={t} type="button" data-debug-id={`conversation-tier-option-${t}`} onClick={() => setTier(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
+          <button key={t} type="button" data-debug-id={`conversation-model-option-${t}`} onClick={() => setModel(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name={meta.icon} size={16} /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-primary">{t}</span>
@@ -1928,38 +1927,38 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <Icon name="chevron-down" size={13} className="shrink-0" />
       </button>
     );
-    const activeTier = tier || instanceTier || 'normal';
-    const activeTierMeta = tierMeta[activeTier] || { icon: 'spark' as const, blurb: 'Model tier' };
-    const activeTierIcon = activeTierMeta.icon;
+    const activeModel = model || instanceModel || 'normal';
+    const activeModelMeta = tierMeta[activeModel] || { icon: 'spark' as const, blurb: 'Model model' };
+    const activeModelIcon = activeModelMeta.icon;
     const useCompactModelTrigger = isMobile || isSmallComposer;
 
     const runtimeMenuTrigger = useCompactModelTrigger ? (
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label="Change provider and tier"
-        title={`${instanceProvider || 'model'} · ${instanceTier || '—'} — click to change runtime`}
+        aria-label="Change provider and model"
+        title={`${instanceProvider || 'model'} · ${instanceModel || '—'} — click to change runtime`}
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
         className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-primary hover:bg-neutral-soft"
       >
-        <Icon name={activeTierIcon} size={16} />
+        <Icon name={activeModelIcon} size={16} />
       </button>
     ) : (
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label="Change provider and tier"
-        title="Change provider / tier — restarts the agent"
+        aria-label="Change provider and model"
+        title="Change provider / model — restarts the agent"
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
         className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
       >
-        <Icon name={activeTierIcon} size={14} className="shrink-0 text-muted" />
+        <Icon name={activeModelIcon} size={14} className="shrink-0 text-muted" />
         <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
-        <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
+        <span className="hidden text-muted sm:inline truncate">· {instanceModel || '—'}</span>
         <Icon name="chevron-down" size={14} className="shrink-0" />
       </button>
     );
@@ -2401,7 +2400,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentDisplayName || agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
-                <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+                <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-model">Model: {instanceModel || '—'}</span></div>
                 <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
                 {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: <VaultText value={chainTitle || chainId} as="span" /></div> : null}
               </div>

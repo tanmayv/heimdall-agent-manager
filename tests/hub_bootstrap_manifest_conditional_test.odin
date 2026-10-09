@@ -34,7 +34,7 @@ main :: proc() {
 	bearer := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_token})}}
 
 	// Create an agent with instructions so the identity fragment is non-empty.
-	agent := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Backend Agent\",\"slug\":\"backend\",\"default_provider\":\"claude\",\"default_tier\":\"normal\",\"instructions\":\"You are a backend specialist.\"}", alice[:])
+	agent := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Backend Agent\",\"slug\":\"backend\",\"default_provider\":\"claude\",\"default_model\":\"normal\",\"instructions\":\"You are a backend specialist.\"}", alice[:])
 	check(agent.status == 201, "create agent must return 201")
 	agent_id := extract_json_string(agent.body, "agent_id")
 	check(agent_id != "", "agent_id must be present")
@@ -165,12 +165,12 @@ enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header) -
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// that matches an agent to a provider/tier fails — which is a real difference
+	// that matches an agent to a provider/model fails — which is a real difference
 	// between the two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online (as a connect would), where the deleted
 	// enroll path left it Offline.
-	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\",\"smart\"],\"default_model\":\"normal\"}]}")
 
 	return extract_json_string(issued.body, "access_token")
 }

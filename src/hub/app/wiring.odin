@@ -14,6 +14,7 @@ import device_auth_service "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
+import provider_service "odin_test:hub/service/provider"
 import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
@@ -47,6 +48,7 @@ App_Graph :: struct {
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
+	sqlite_providers: sqlite.Provider_Repo_SQLite,
 	sqlite_user_vaults: sqlite.User_Vault_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
@@ -82,6 +84,7 @@ App_Graph :: struct {
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
 	lsp_server_config_repo: iface.Lsp_Server_Config_Repository,
+	provider_repo: iface.Provider_Repository,
 	shell_session_service: shell_session_svc.Shell_Session_Service,
 	shell_session_stream_handlers: http.Shell_Session_Stream_Handlers,
 	lsp_session_registry:          http.Lsp_Session_Registry,
@@ -89,6 +92,8 @@ App_Graph :: struct {
 	shell_session_rest_handlers: http.Shell_Session_Rest_Handlers,
 	experiment_handlers: http.Experiment_Rest_Handlers,
 	lsp_server_config_handlers: http.Lsp_Server_Config_Rest_Handlers,
+	provider_handlers: http.Provider_Handlers,
+	providers: provider_service.Provider_Service,
 	card_handlers: http.Card_Handlers,
 	issues: issue_service.Issue_Service,
 	issue_handlers: http.Issue_Handlers,
@@ -143,6 +148,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
+	graph.provider_repo = sqlite.new_provider_repository(&graph.sqlite_providers, &graph.db)
 	graph.repos.user_vaults = sqlite.new_user_vault_repository(&graph.sqlite_user_vaults, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
@@ -158,6 +164,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	bridge_service.with_connection_closer(&graph.bridges, bridge_runtime_service.new_bridge_connection_closer(&graph.bridge_runtime_registry))
 	graph.bridges.catalog = &graph.bridge_update_catalog
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
+	graph.agents.providers = &graph.provider_repo
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
@@ -250,7 +257,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		// state the serializer reports.
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
-	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry}
+	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry, providers = &graph.providers}
 	graph.agent_handlers = http.Agent_Handlers{
 		auth           = &graph.auth,
 		agents         = &graph.agents,
@@ -297,6 +304,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	)
 	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
+	graph.providers = provider_service.new_provider_service(&graph.provider_repo)
+	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents}
+	graph.agent_action_handlers.providers = &graph.providers
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
@@ -342,6 +352,15 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens/*/revoke", rawptr(&graph.user_handlers), http.revoke_my_token_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/experiments", rawptr(&graph.experiment_handlers), http.experiment_list_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/providers", rawptr(&graph.provider_handlers), http.provider_catalog_list_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/providers/*/icon", rawptr(&graph.provider_handlers), http.provider_icon_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/provider-status", rawptr(&graph.provider_handlers), http.bridge_provider_status_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/discover", rawptr(&graph.provider_handlers), http.bridge_provider_discover_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/bridges/*/providers/*", rawptr(&graph.provider_handlers), http.bridge_provider_enable_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/provider-tests", rawptr(&graph.provider_handlers), http.provider_test_start_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/provider-tests/*", rawptr(&graph.provider_handlers), http.provider_test_get_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/provider-tests/*/validate", rawptr(&graph.provider_handlers), http.provider_test_validate_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/provider-tests/*", rawptr(&graph.provider_handlers), http.provider_test_cancel_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/user/vault", rawptr(&graph.user_vault_handlers), http.get_user_vault_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/user/vault", rawptr(&graph.user_vault_handlers), http.set_user_vault_handler)
 	// LSP server config CRUD (REQ-LSP-CFG-1). The /resolve literal route must be
@@ -554,13 +573,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fs", rawptr(&graph.bridge_handlers), http.list_bridge_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fs/stat", rawptr(&graph.bridge_handlers), http.stat_bridge_path_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fs/mkdir", rawptr(&graph.bridge_handlers), http.mkdir_bridge_path_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/providers", rawptr(&graph.bridge_handlers), http.list_bridge_providers_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/detected-providers", rawptr(&graph.bridge_handlers), http.get_detected_bridge_providers_handler)
-	http.router_add(&graph.router, "PUT", "/api/v1/bridges/*/providers/*", rawptr(&graph.bridge_handlers), http.put_bridge_provider_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/enable-detected", rawptr(&graph.bridge_handlers), http.enable_bridge_providers_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/providers/*", rawptr(&graph.bridge_handlers), http.delete_bridge_provider_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/provider-defaults", rawptr(&graph.bridge_handlers), http.set_bridge_provider_defaults_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/refresh", rawptr(&graph.bridge_handlers), http.refresh_bridge_providers_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.bridge_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.rename_bridge_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/revoke", rawptr(&graph.bridge_handlers), http.revoke_bridge_handler)

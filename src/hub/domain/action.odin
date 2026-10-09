@@ -36,7 +36,7 @@ Action :: struct {
 	target_agent_id:    Agent_ID,
 	target_bridge_id:   Bridge_ID,
 	target_provider:    string,
-	target_tier:        string,
+	target_model:        string,
 	target_project_id:  Project_ID,
 	// Instance strategy for durable agent-id targets (REQ-SCHED-2):
 	// "reuse" (default, legacy) reuses/wakes an existing instance of the agent-id;

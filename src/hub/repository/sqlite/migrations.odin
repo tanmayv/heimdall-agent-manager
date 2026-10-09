@@ -23,35 +23,68 @@ MIGRATION_003_DEVICE_TOKENS :: #load("migrations/003_device_tokens.sql", string)
 
 MIGRATION_004_DEFAULT_SKILL_MEMORY :: #load("migrations/004_default_skill_memory.sql", string)
 
-MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: #load("migrations/005_agent_to_agent_cross_chain_memory.sql", string)
+MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: #load(
+	"migrations/005_agent_to_agent_cross_chain_memory.sql",
+	string,
+)
 
-MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: #load("migrations/006_live_agents_skill_memory.sql", string)
+MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: #load(
+	"migrations/006_live_agents_skill_memory.sql",
+	string,
+)
 
-MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT :: #load("migrations/007_hide_agent_to_agent_from_user_chat.sql", string)
+MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT :: #load(
+	"migrations/007_hide_agent_to_agent_from_user_chat.sql",
+	string,
+)
 
-MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: #load("migrations/008_read_inbound_messages_skill_memory.sql", string)
+MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: #load(
+	"migrations/008_read_inbound_messages_skill_memory.sql",
+	string,
+)
 
 MIGRATION_009_ARTIFACT_METADATA :: #load("migrations/009_artifact_metadata.sql", string)
 
-MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: #load("migrations/010_artifact_usage_skill_memory.sql", string)
+MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: #load(
+	"migrations/010_artifact_usage_skill_memory.sql",
+	string,
+)
 
-MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: #load("migrations/011_artifact_download_skill_memory.sql", string)
+MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: #load(
+	"migrations/011_artifact_download_skill_memory.sql",
+	string,
+)
 
 MIGRATION_012_TASK_CHAINS_V2 :: #load("migrations/012_task_chains_v2.sql", string)
 
-MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: #load("migrations/013_task_workflow_skill_memory.sql", string)
+MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: #load(
+	"migrations/013_task_workflow_skill_memory.sql",
+	string,
+)
 
-MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: #load("migrations/014_task_workflow_skill_comments.sql", string)
+MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: #load(
+	"migrations/014_task_workflow_skill_comments.sql",
+	string,
+)
 
 MIGRATION_015_MEMORY_TARGET_SCOPE :: #load("migrations/015_memory_target_scope.sql", string)
 
-MIGRATION_018_COORDINATOR_MEMBER_BACKFILL :: #load("migrations/018_coordinator_member_backfill.sql", string)
+MIGRATION_018_COORDINATOR_MEMBER_BACKFILL :: #load(
+	"migrations/018_coordinator_member_backfill.sql",
+	string,
+)
 
 MIGRATION_017_CHAT_MESSAGE_TYPES :: #load("migrations/017_chat_message_types.sql", string)
 
-MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: #load("migrations/016_memory_workflow_skill_memory.sql", string)
+MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: #load(
+	"migrations/016_memory_workflow_skill_memory.sql",
+	string,
+)
 
-MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: #load("migrations/019_current_task_and_priority.sql", string)
+MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: #load(
+	"migrations/019_current_task_and_priority.sql",
+	string,
+)
 
 // MIGRATION_020_TITLE_TRACKING adds per-run auto-title tracking fields to
 // conversations and task chains, plus a per-agent monotonic counter table used
@@ -61,7 +94,10 @@ MIGRATION_020_TITLE_TRACKING :: #load("migrations/020_title_tracking.sql", strin
 
 // MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME adds human-readable display_name
 // support to agent_instances, defaulting to "<agent-name> #<n>".
-MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME :: #load("migrations/021_agent_instance_display_name.sql", string)
+MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME :: #load(
+	"migrations/021_agent_instance_display_name.sql",
+	string,
+)
 
 // MIGRATION_022_SCHEDULED_PROMPTS adds the scheduled_prompts table for
 // delayed and recurring prompt injection into agent instances.
@@ -98,11 +134,17 @@ MIGRATION_026_MEMORY_SCOPE_LISTS :: #load("migrations/026_memory_scope_lists.sql
 // 'System Reviewer' template onto the default 'tmpl_empty'. Idempotent via the
 // NOT EXISTS guard + deterministic agent_id and the template WHERE clause. Kept
 // byte-identical to 027_default_coordinator_agent.sql.
-MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: #load("migrations/027_default_coordinator_agent.sql", string)
+MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: #load(
+	"migrations/027_default_coordinator_agent.sql",
+	string,
+)
 
 // MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP adds first-class description to
 // memories and deletes legacy seeded system memories in favor of static skills.
-MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: #load("migrations/028_memory_description_and_cleanup.sql", string)
+MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: #load(
+	"migrations/028_memory_description_and_cleanup.sql",
+	string,
+)
 
 // MIGRATION_029_SEARCH_FTS_COMMENTS adds an external-content FTS5 index over
 // task_comments.body so comment search is tokenized + multi-word + relevance-
@@ -135,7 +177,10 @@ MIGRATION_032_AI_NATIVE_TEMPLATES :: #load("migrations/032_ai_native_templates.s
 
 // MIGRATION_033_DEFAULT_AGENTS_AND_CONVERSATION_PROJECT seeds canonical durable
 // agents (coordinator, worker, reviewer) and the dedicated Conversation project for all users.
-MIGRATION_033_DEFAULT_AGENTS_AND_CONVERSATION_PROJECT :: #load("migrations/033_default_agents_and_conversation_project.sql", string)
+MIGRATION_033_DEFAULT_AGENTS_AND_CONVERSATION_PROJECT :: #load(
+	"migrations/033_default_agents_and_conversation_project.sql",
+	string,
+)
 
 // MIGRATION_034_CARDS creates the cards table, indexes, and owner-immutable trigger
 // for Curator action cards (REQ-CARD-1).
@@ -146,7 +191,7 @@ MIGRATION_034_CARDS :: #load("migrations/034_cards.sql", string)
 MIGRATION_035_CURATOR_TEMPLATE :: #load("migrations/035_curator_template.sql", string)
 
 // MIGRATION_036_ACTION_TARGETS adds target_agent_id, target_bridge_id, target_provider,
-// target_tier, target_project_id to actions table (REQ-SCHED-1).
+// target_model, target_project_id to actions table (REQ-SCHED-1).
 MIGRATION_036_ACTION_TARGETS :: #load("migrations/036_action_targets.sql", string)
 
 // MIGRATION_037_PROJECT_STATE adds the soft-archive `state` column to projects
@@ -155,7 +200,10 @@ MIGRATION_037_PROJECT_STATE :: #load("migrations/037_project_state.sql", string)
 
 // MIGRATION_038_ACTION_INSTANCE_STRATEGY adds instance_strategy + last_spawned_instance_id
 // to actions (REQ-SCHED-2). Defaults keep existing rows on the legacy "reuse" behavior.
-MIGRATION_038_ACTION_INSTANCE_STRATEGY :: #load("migrations/038_action_instance_strategy.sql", string)
+MIGRATION_038_ACTION_INSTANCE_STRATEGY :: #load(
+	"migrations/038_action_instance_strategy.sql",
+	string,
+)
 
 // MIGRATION_039_SHELL_JOBS adds the shell_jobs table tracking bridge-executed shell
 // commands (REQ-15). Status/metadata only — command output lives on the bridge host
@@ -208,7 +256,10 @@ MIGRATION_048_TASK_SUBSCRIPTIONS :: #load("migrations/048_task_subscriptions.sql
 // run|shell|server (dropping the dead 'agent' rows) and rebuilds the table with
 // PRIMARY KEY (bridge_id, session_id) so one bridge cannot overwrite another's
 // row (REQ-SHELL-1 §1, §7).
-MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY :: #load("migrations/048_shell_sessions_kind_and_key.sql", string)
+MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY :: #load(
+	"migrations/048_shell_sessions_kind_and_key.sql",
+	string,
+)
 
 // MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION adds the two columns
 // explicit backgrounding needs on the row: `background` (REQ-SHELL-2 deletes the
@@ -216,7 +267,10 @@ MIGRATION_048_SHELL_SESSIONS_KIND_AND_KEY :: #load("migrations/048_shell_session
 // than an elapsed-time accident) and `conversation_id` (the TRIGGERING
 // conversation, which REQ-SHELL-5 scopes the completion marker to and REQ-SHELL-6
 // filters on).
-MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION :: #load("migrations/049_shell_sessions_background_and_conversation.sql", string)
+MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION :: #load(
+	"migrations/049_shell_sessions_background_and_conversation.sql",
+	string,
+)
 
 // MIGRATION_050_SHELL_SESSIONS_KILL_INTENT adds kill_requested_at (REQ-SHELL-3):
 // the durable record that a kill was ACCEPTED for a session. Before it, a kill
@@ -224,7 +278,10 @@ MIGRATION_049_SHELL_SESSIONS_BACKGROUND_AND_CONVERSATION :: #load("migrations/04
 // re-issued it on reconnect and the process ran forever. With it the accept
 // succeeds, the intent survives the disconnect, and the hub replays outstanding
 // intents when the bridge's WS comes back.
-MIGRATION_050_SHELL_SESSIONS_KILL_INTENT :: #load("migrations/050_shell_sessions_kill_intent.sql", string)
+MIGRATION_050_SHELL_SESSIONS_KILL_INTENT :: #load(
+	"migrations/050_shell_sessions_kill_intent.sql",
+	string,
+)
 
 // MIGRATION_051_SHELL_SESSIONS_RUN_SEQ adds run_seq (REQ-SHELL-4): which RUN of a
 // session an exit report is about. A durable exit outbox can deliver an exit after
@@ -240,7 +297,10 @@ MIGRATION_051_SHELL_SESSIONS_RUN_SEQ :: #load("migrations/051_shell_sessions_run
 MIGRATION_052_DROP_SHELL_JOBS :: #load("migrations/052_drop_shell_jobs.sql", string)
 
 // MIGRATION_053_BRIDGE_VERSION_AND_UPDATES adds version, commit_sha, build_timestamp, update_status, and update_error to bridges (REQ-BUPD-1).
-MIGRATION_053_BRIDGE_VERSION_AND_UPDATES :: #load("migrations/053_bridge_version_and_updates.sql", string)
+MIGRATION_053_BRIDGE_VERSION_AND_UPDATES :: #load(
+	"migrations/053_bridge_version_and_updates.sql",
+	string,
+)
 
 // MIGRATION_054_BRIDGE_TELEMETRY adds telemetry_enabled to bridges (REQ-TEL-1).
 MIGRATION_054_BRIDGE_TELEMETRY :: #load("migrations/054_bridge_telemetry.sql", string)
@@ -260,9 +320,116 @@ MIGRATION_056_BRIDGE_VAULT_STATUS :: #load("migrations/056_bridge_vault_status.s
 // needs its own table rather than more columns on `bridges`.
 MIGRATION_057_BRIDGE_TOKENS :: #load("migrations/057_bridge_tokens.sql", string)
 
-migration_order :: [60]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_experiments.sql", "043_task_chain_directories.sql", "044_issues.sql", "044_lsp_servers.sql", "045_lsp_server_patterns.sql", "046_task_chain_fleets.sql", "047_user_vaults.sql", "048_task_subscriptions.sql", "048_shell_sessions_kind_and_key.sql", "049_shell_sessions_background_and_conversation.sql", "050_shell_sessions_kill_intent.sql", "051_shell_sessions_run_seq.sql", "052_drop_shell_jobs.sql", "053_bridge_version_and_updates.sql", "054_bridge_telemetry.sql", "055_memory_action_expiry.sql", "056_bridge_vault_status.sql", "057_bridge_tokens.sql"}
+// MIGRATION_058_PROVIDER_CATALOG seeds the Hub-owned recipes, literal model ids,
+// catalog etag, and locally served icon bytes (REQ-PROVIDER-CATALOG-1).
+MIGRATION_058_PROVIDER_CATALOG :: #load("migrations/058_provider_catalog.sql", string)
 
-run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
+MIGRATION_059_BRIDGE_PROVIDER_STATE :: #load("migrations/059_bridge_provider_state.sql", string)
+MIGRATION_060_EXPLICIT_PROVIDER_MODELS :: #load(
+	"migrations/060_explicit_provider_models.sql",
+	string,
+)
+MIGRATION_061_CODEX_LAUNCH_RECIPE :: #load("migrations/061_codex_launch_recipe.sql", string)
+MIGRATION_062_CLAUDE_STARTUP_DETECTION :: #load(
+	"migrations/062_claude_startup_detection.sql",
+	string,
+)
+MIGRATION_063_CLAUDE_LOGIN_METHOD_DETECTION :: #load(
+	"migrations/063_claude_login_method_detection.sql",
+	string,
+)
+MIGRATION_064_CODEX_TRUST_DETECTION :: #load(
+	"migrations/064_codex_trust_detection.sql",
+	string,
+)
+MIGRATION_065_ANTIGRAVITY_LAUNCH_RECIPE :: #load(
+	"migrations/065_antigravity_launch_recipe.sql",
+	string,
+)
+MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION :: #load(
+	"migrations/066_antigravity_trust_detection.sql",
+	string,
+)
+
+migration_order :: [69]string {
+	"001_foundation.sql",
+	"002_owner_scoped_core.sql",
+	"003_device_tokens.sql",
+	"004_default_skill_memory.sql",
+	"005_agent_to_agent_cross_chain_memory.sql",
+	"006_live_agents_skill_memory.sql",
+	"007_hide_agent_to_agent_from_user_chat.sql",
+	"008_read_inbound_messages_skill_memory.sql",
+	"009_artifact_metadata.sql",
+	"010_artifact_usage_skill_memory.sql",
+	"011_artifact_download_skill_memory.sql",
+	"012_task_chains_v2.sql",
+	"013_task_workflow_skill_memory.sql",
+	"014_task_workflow_skill_comments.sql",
+	"015_memory_target_scope.sql",
+	"016_memory_workflow_skill_memory.sql",
+	"017_chat_message_types.sql",
+	"018_coordinator_member_backfill.sql",
+	"019_current_task_and_priority.sql",
+	"020_title_tracking.sql",
+	"021_agent_instance_display_name.sql",
+	"022_scheduled_prompts.sql",
+	"023_actions.sql",
+	"024_push_subscriptions.sql",
+	"025_lookup_indexes.sql",
+	"026_memory_scope_lists.sql",
+	"027_default_coordinator_agent.sql",
+	"028_memory_description_and_cleanup.sql",
+	"029_search_fts_comments.sql",
+	"030_search_fts_all.sql",
+	"031_search_fts_messages.sql",
+	"032_ai_native_templates.sql",
+	"033_default_agents_and_conversation_project.sql",
+	"034_cards.sql",
+	"035_curator_template.sql",
+	"036_action_targets.sql",
+	"037_project_state.sql",
+	"038_action_instance_strategy.sql",
+	"039_shell_jobs.sql",
+	"040_artifact_list_indexes.sql",
+	"041_shell_sessions.sql",
+	"042_pinned_task_chains.sql",
+	"043_experiments.sql",
+	"043_task_chain_directories.sql",
+	"044_issues.sql",
+	"044_lsp_servers.sql",
+	"045_lsp_server_patterns.sql",
+	"046_task_chain_fleets.sql",
+	"047_user_vaults.sql",
+	"048_task_subscriptions.sql",
+	"048_shell_sessions_kind_and_key.sql",
+	"049_shell_sessions_background_and_conversation.sql",
+	"050_shell_sessions_kill_intent.sql",
+	"051_shell_sessions_run_seq.sql",
+	"052_drop_shell_jobs.sql",
+	"053_bridge_version_and_updates.sql",
+	"054_bridge_telemetry.sql",
+	"055_memory_action_expiry.sql",
+	"056_bridge_vault_status.sql",
+	"057_bridge_tokens.sql",
+	"058_provider_catalog.sql",
+	"059_bridge_provider_state.sql",
+	"060_explicit_provider_models.sql",
+	"061_codex_launch_recipe.sql",
+	"062_claude_startup_detection.sql",
+	"063_claude_login_method_detection.sql",
+	"064_codex_trust_detection.sql",
+	"065_antigravity_launch_recipe.sql",
+	"066_antigravity_trust_detection.sql",
+}
+
+run_migrations :: proc(
+	conn: ^Conn,
+	migrations_dir := "src/hub/repository/sqlite/migrations",
+) -> (
+	bool,
+	domain.Domain_Error,
+) {
 	if conn == nil || conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "database connection is not open")
 	}
@@ -271,27 +438,39 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
 		}
 		if migration_applied(conn, name) do continue
-		if name == "003_device_tokens.sql" && table_column_exists(conn, "user_api_tokens", "created_from") && table_column_exists(conn, "user_api_tokens", "device_label") {
+		if name == "003_device_tokens.sql" &&
+		   table_column_exists(conn, "user_api_tokens", "created_from") &&
+		   table_column_exists(conn, "user_api_tokens", "device_label") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "017_chat_message_types.sql" && table_column_exists(conn, "chat_messages", "message_type") && table_column_exists(conn, "chat_messages", "message_status") && table_column_exists(conn, "chat_messages", "metadata_json") {
+		if name == "017_chat_message_types.sql" &&
+		   table_column_exists(conn, "chat_messages", "message_type") &&
+		   table_column_exists(conn, "chat_messages", "message_status") &&
+		   table_column_exists(conn, "chat_messages", "metadata_json") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "019_current_task_and_priority.sql" && table_column_exists(conn, "agent_instances", "current_task_id") && table_column_exists(conn, "agent_instances", "current_task_role") && table_column_exists(conn, "tasks", "priority") {
+		if name == "019_current_task_and_priority.sql" &&
+		   table_column_exists(conn, "agent_instances", "current_task_id") &&
+		   table_column_exists(conn, "agent_instances", "current_task_role") &&
+		   table_column_exists(conn, "tasks", "priority") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "020_title_tracking.sql" && table_column_exists(conn, "chat_conversations", "title_source") && table_column_exists(conn, "task_chains", "title_source") {
+		if name == "020_title_tracking.sql" &&
+		   table_column_exists(conn, "chat_conversations", "title_source") &&
+		   table_column_exists(conn, "task_chains", "title_source") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "021_agent_instance_display_name.sql" && table_column_exists(conn, "agent_instances", "display_name") {
+		if name == "021_agent_instance_display_name.sql" &&
+		   table_column_exists(conn, "agent_instances", "display_name") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "022_scheduled_prompts.sql" && table_column_exists(conn, "scheduled_prompts", "id") {
+		if name == "022_scheduled_prompts.sql" &&
+		   table_column_exists(conn, "scheduled_prompts", "id") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -299,30 +478,36 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "024_push_subscriptions.sql" && table_column_exists(conn, "push_subscriptions", "endpoint") {
+		if name == "024_push_subscriptions.sql" &&
+		   table_column_exists(conn, "push_subscriptions", "endpoint") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "026_memory_scope_lists.sql" && table_column_exists(conn, "memories", "agent_ids") {
+		if name == "026_memory_scope_lists.sql" &&
+		   table_column_exists(conn, "memories", "agent_ids") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "028_memory_description_and_cleanup.sql" && table_column_exists(conn, "memories", "description") {
+		if name == "028_memory_description_and_cleanup.sql" &&
+		   table_column_exists(conn, "memories", "description") {
 			mark_migration_applied(conn, name)
 			continue
 		}
 		// FTS5 migrations are skipped (marked applied) when FTS5 is unavailable or the
 		// vtable already exists, so the append-only ledger stays consistent and
 		// non-FTS builds boot on the indexed-LIKE fallback.
-		if name == "029_search_fts_comments.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "task_comments_fts")) {
+		if name == "029_search_fts_comments.sql" &&
+		   (!fts5_available(conn) || sqlite_object_exists(conn, "task_comments_fts")) {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "030_search_fts_all.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "memories_fts")) {
+		if name == "030_search_fts_all.sql" &&
+		   (!fts5_available(conn) || sqlite_object_exists(conn, "memories_fts")) {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "031_search_fts_messages.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "chat_messages_fts")) {
+		if name == "031_search_fts_messages.sql" &&
+		   (!fts5_available(conn) || sqlite_object_exists(conn, "chat_messages_fts")) {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -330,7 +515,8 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "036_action_targets.sql" && table_column_exists(conn, "actions", "target_agent_id") {
+		if name == "036_action_targets.sql" &&
+		   table_column_exists(conn, "actions", "target_agent_id") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -338,7 +524,8 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "038_action_instance_strategy.sql" && table_column_exists(conn, "actions", "instance_strategy") {
+		if name == "038_action_instance_strategy.sql" &&
+		   table_column_exists(conn, "actions", "instance_strategy") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -346,15 +533,19 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "040_artifact_list_indexes.sql" && sqlite_object_exists(conn, "idx_artifacts_owner_created") {
+		if name == "040_artifact_list_indexes.sql" &&
+		   sqlite_object_exists(conn, "idx_artifacts_owner_created") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "041_shell_sessions.sql" && table_column_exists(conn, "shell_sessions", "session_id") {
+		if name == "041_shell_sessions.sql" &&
+		   table_column_exists(conn, "shell_sessions", "session_id") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "042_pinned_task_chains.sql" && table_column_exists(conn, "task_chains", "is_pinned") && table_column_exists(conn, "task_chains", "pinned_at") {
+		if name == "042_pinned_task_chains.sql" &&
+		   table_column_exists(conn, "task_chains", "is_pinned") &&
+		   table_column_exists(conn, "task_chains", "pinned_at") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -366,19 +557,25 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "043_task_chain_directories.sql" && sqlite_object_exists(conn, "task_chain_directories") {
+		if name == "043_task_chain_directories.sql" &&
+		   sqlite_object_exists(conn, "task_chain_directories") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "044_issues.sql" && sqlite_object_exists(conn, "issues") && sqlite_object_exists(conn, "issue_comments") && sqlite_object_exists(conn, "issue_votes") {
+		if name == "044_issues.sql" &&
+		   sqlite_object_exists(conn, "issues") &&
+		   sqlite_object_exists(conn, "issue_comments") &&
+		   sqlite_object_exists(conn, "issue_votes") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if (name == "045_lsp_server_patterns.sql" || name == "046_lsp_server_patterns.sql") && table_column_exists(conn, "lsp_server_configs", "dir_pattern") {
+		if (name == "045_lsp_server_patterns.sql" || name == "046_lsp_server_patterns.sql") &&
+		   table_column_exists(conn, "lsp_server_configs", "dir_pattern") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if (name == "046_task_chain_fleets.sql" || name == "044_task_chain_fleets.sql") && sqlite_object_exists(conn, "task_chain_fleets") {
+		if (name == "046_task_chain_fleets.sql" || name == "044_task_chain_fleets.sql") &&
+		   sqlite_object_exists(conn, "task_chain_fleets") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -404,7 +601,8 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		//
 		// This is robustness against a FUTURE partial failure, not a live bug: no
 		// reachable database today has 048 half-applied.
-		if name == "048_shell_sessions_kind_and_key.sql" && sqlite_object_exists(conn, "shell_sessions_owner_session") {
+		if name == "048_shell_sessions_kind_and_key.sql" &&
+		   sqlite_object_exists(conn, "shell_sessions_owner_session") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -413,7 +611,8 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		// ALTER TABLE ADD COLUMN is not idempotent in SQLite -- re-running it is a
 		// hard "duplicate column name" error, which would abort startup migrations
 		// on any database that reached 049 through the pre-ledger recovery path.
-		if name == "049_shell_sessions_background_and_conversation.sql" && table_column_exists(conn, "shell_sessions", "background") {
+		if name == "049_shell_sessions_background_and_conversation.sql" &&
+		   table_column_exists(conn, "shell_sessions", "background") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -449,7 +648,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			}
 			if table_column_exists(conn, "shell_sessions", "kill_requested_at") {
 				if !upgrade_shell_sessions_kill_intent_schema(conn) {
-					return false, domain.domain_error(.Internal_Error, "failed to repair a half-applied 050_shell_sessions_kill_intent")
+					return false, domain.domain_error(
+						.Internal_Error,
+						"failed to repair a half-applied 050_shell_sessions_kill_intent",
+					)
 				}
 				mark_migration_applied(conn, name)
 				continue
@@ -464,23 +666,29 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		// IF NOT EXISTS for ADD COLUMN, so a re-run on a database that reached 051
 		// through the pre-ledger recovery path is a hard "duplicate column name" that
 		// would abort startup migrations.
-		if name == "051_shell_sessions_run_seq.sql" && table_column_exists(conn, "shell_sessions", "run_seq") {
+		if name == "051_shell_sessions_run_seq.sql" &&
+		   table_column_exists(conn, "shell_sessions", "run_seq") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "053_bridge_version_and_updates.sql" && table_column_exists(conn, "bridges", "version") && table_column_exists(conn, "bridges", "update_error") {
+		if name == "053_bridge_version_and_updates.sql" &&
+		   table_column_exists(conn, "bridges", "version") &&
+		   table_column_exists(conn, "bridges", "update_error") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "054_bridge_telemetry.sql" && table_column_exists(conn, "bridges", "telemetry_enabled") {
+		if name == "054_bridge_telemetry.sql" &&
+		   table_column_exists(conn, "bridges", "telemetry_enabled") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "055_memory_action_expiry.sql" && table_column_exists(conn, "memories", "expires_at") {
+		if name == "055_memory_action_expiry.sql" &&
+		   table_column_exists(conn, "memories", "expires_at") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "056_bridge_vault_status.sql" && table_column_exists(conn, "bridges", "vault_status") {
+		if name == "056_bridge_vault_status.sql" &&
+		   table_column_exists(conn, "bridges", "vault_status") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -497,13 +705,28 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "058_provider_catalog.sql" && sqlite_object_exists(conn, "provider_icons") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "059_bridge_provider_state.sql" &&
+		   sqlite_object_exists(conn, "bridge_provider_settings") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
-			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
+			return false, domain.domain_error(
+				.Internal_Error,
+				fmt.tprintf("missing migration %s", name),
+			)
 		}
 		if !exec(conn, sql) {
 			delete(sql)
-			return false, domain.domain_error(.Internal_Error, fmt.tprintf("migration failed: %s", name))
+			return false, domain.domain_error(
+				.Internal_Error,
+				fmt.tprintf("migration failed: %s", name),
+			)
 		}
 		mark_migration_applied(conn, name)
 		delete(sql)
@@ -606,12 +829,24 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "055_memory_action_expiry.sql" do return strings.clone(MIGRATION_055_MEMORY_ACTION_EXPIRY)
 	if name == "056_bridge_vault_status.sql" do return strings.clone(MIGRATION_056_BRIDGE_VAULT_STATUS)
 	if name == "057_bridge_tokens.sql" do return strings.clone(MIGRATION_057_BRIDGE_TOKENS)
+	if name == "058_provider_catalog.sql" do return strings.clone(MIGRATION_058_PROVIDER_CATALOG)
+	if name == "059_bridge_provider_state.sql" do return strings.clone(MIGRATION_059_BRIDGE_PROVIDER_STATE)
+	if name == "060_explicit_provider_models.sql" do return strings.clone(MIGRATION_060_EXPLICIT_PROVIDER_MODELS)
+	if name == "061_codex_launch_recipe.sql" do return strings.clone(MIGRATION_061_CODEX_LAUNCH_RECIPE)
+	if name == "062_claude_startup_detection.sql" do return strings.clone(MIGRATION_062_CLAUDE_STARTUP_DETECTION)
+	if name == "063_claude_login_method_detection.sql" do return strings.clone(MIGRATION_063_CLAUDE_LOGIN_METHOD_DETECTION)
+	if name == "064_codex_trust_detection.sql" do return strings.clone(MIGRATION_064_CODEX_TRUST_DETECTION)
+	if name == "065_antigravity_launch_recipe.sql" do return strings.clone(MIGRATION_065_ANTIGRAVITY_LAUNCH_RECIPE)
+	if name == "066_antigravity_trust_detection.sql" do return strings.clone(MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION)
 	return ""
 }
 
 migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	stmt: sqlite3_stmt = nil
-	query := fmt.tprintf("SELECT 1 FROM schema_migrations WHERE version='%s' LIMIT 1;", escape_sql_literal(version))
+	query := fmt.tprintf(
+		"SELECT 1 FROM schema_migrations WHERE version='%s' LIMIT 1;",
+		escape_sql_literal(version),
+	)
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
@@ -649,7 +884,10 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 }
 
 mark_migration_applied :: proc(conn: ^Conn, version: string) {
-	query := fmt.tprintf("INSERT OR IGNORE INTO schema_migrations (version) VALUES ('%s');", escape_sql_literal(version))
+	query := fmt.tprintf(
+		"INSERT OR IGNORE INTO schema_migrations (version) VALUES ('%s');",
+		escape_sql_literal(version),
+	)
 	exec(conn, query)
 }
 
@@ -685,7 +923,10 @@ fts5_available :: proc(conn: ^Conn) -> bool {
 sqlite_object_exists :: proc(conn: ^Conn, name: string) -> bool {
 	if conn == nil || conn.db == nil do return false
 	stmt: sqlite3_stmt = nil
-	query := fmt.tprintf("SELECT 1 FROM sqlite_master WHERE name='%s' LIMIT 1;", escape_sql_literal(name))
+	query := fmt.tprintf(
+		"SELECT 1 FROM sqlite_master WHERE name='%s' LIMIT 1;",
+		escape_sql_literal(name),
+	)
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	return sqlite3_step(stmt) == SQLITE_ROW
@@ -782,7 +1023,9 @@ upgrade_agent_instance_display_name_schema :: proc(conn: ^Conn) -> bool {
 }
 
 upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS scheduled_prompts (
+	return exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS scheduled_prompts (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
   target_instance_id TEXT NOT NULL,
@@ -796,11 +1039,14 @@ upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`)
+CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`,
+	)
 }
 
 upgrade_actions_schema :: proc(conn: ^Conn) -> bool {
-	if !exec(conn, `CREATE TABLE IF NOT EXISTS actions (
+	if !exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS actions (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
   target_instance_id TEXT NOT NULL,
@@ -822,7 +1068,8 @@ upgrade_actions_schema :: proc(conn: ^Conn) -> bool {
 CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
 CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
 CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
-CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`) {
+CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
+	) {
 		return false
 	}
 
@@ -834,7 +1081,7 @@ CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user
 	if !table_column_exists(conn, "actions", "target_agent_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_agent_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "target_bridge_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_bridge_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "target_provider") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_provider TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_tier") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_tier TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "actions", "target_model") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_model TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "target_project_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_project_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "instance_strategy") && !exec(conn, "ALTER TABLE actions ADD COLUMN instance_strategy TEXT NOT NULL DEFAULT 'reuse';") do return false
 	if !table_column_exists(conn, "actions", "last_spawned_instance_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN last_spawned_instance_id TEXT NOT NULL DEFAULT '';") do return false
@@ -842,14 +1089,17 @@ CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_bridge ON actions(target_bridge_id);") do return false
 
 	if table_column_exists(conn, "scheduled_prompts", "id") {
-		exec(conn, `INSERT OR IGNORE INTO actions (
+		exec(
+			conn,
+			`INSERT OR IGNORE INTO actions (
   id, owner_user_id, target_instance_id, prompt_text, target_run_at,
   interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
 )
 SELECT
   id, owner_user_id, target_instance_id, prompt_text, target_run_at,
   interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-FROM scheduled_prompts;`)
+FROM scheduled_prompts;`,
+		)
 	}
 	return true
 }
@@ -858,7 +1108,9 @@ FROM scheduled_prompts;`)
 // table, its unique-endpoint index, and the owner-immutable trigger exist. Runs
 // on every startup so a DB predating migration 024 self-heals.
 upgrade_push_subscriptions_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS push_subscriptions (
+	return exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
   endpoint TEXT NOT NULL,
@@ -869,21 +1121,27 @@ upgrade_push_subscriptions_schema :: proc(conn: ^Conn) -> bool {
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_owner ON push_subscriptions(owner_user_id);
-CREATE TRIGGER IF NOT EXISTS push_subscriptions_owner_immutable BEFORE UPDATE OF owner_user_id ON push_subscriptions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
+CREATE TRIGGER IF NOT EXISTS push_subscriptions_owner_immutable BEFORE UPDATE OF owner_user_id ON push_subscriptions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
+	)
 }
 
 upgrade_memory_description_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "memories", "description") {
 		if !exec(conn, "ALTER TABLE memories ADD COLUMN description TEXT NOT NULL DEFAULT '';") do return false
 	}
-	exec(conn, "DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');")
+	exec(
+		conn,
+		"DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');",
+	)
 	return true
 }
 
 // upgrade_cards_schema idempotently ensures the cards table, its indexes,
 // and the owner-immutable trigger exist (REQ-CARD-1).
 upgrade_cards_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS cards (
+	return exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS cards (
   card_id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
@@ -905,7 +1163,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_owner ON cards(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
 CREATE INDEX IF NOT EXISTS idx_cards_status ON cards(status);
 CREATE INDEX IF NOT EXISTS idx_cards_owner_status ON cards(owner_user_id, status);
-CREATE TRIGGER IF NOT EXISTS cards_owner_immutable BEFORE UPDATE OF owner_user_id ON cards BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
+CREATE TRIGGER IF NOT EXISTS cards_owner_immutable BEFORE UPDATE OF owner_user_id ON cards BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
+	)
 }
 
 // upgrade_projects_state_schema idempotently ensures the projects `state` column
@@ -919,12 +1178,15 @@ upgrade_projects_state_schema :: proc(conn: ^Conn) -> bool {
 // upgrade_artifact_indexes_schema idempotently ensures the composite indexes
 // for the artifacts table exist (REQ-ARTIFACT-DB-INDEXES).
 upgrade_artifact_indexes_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE INDEX IF NOT EXISTS idx_artifacts_owner_project_created ON artifacts(owner_user_id, project_id, created_at DESC);
+	return exec(
+		conn,
+		`CREATE INDEX IF NOT EXISTS idx_artifacts_owner_project_created ON artifacts(owner_user_id, project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_instance_created ON artifacts(owner_user_id, agent_instance_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_chain_created ON artifacts(owner_user_id, chain_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_task_created ON artifacts(owner_user_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_created ON artifacts(owner_user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_artifacts_owner_updated ON artifacts(owner_user_id, updated_at DESC);`)
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_updated ON artifacts(owner_user_id, updated_at DESC);`,
+	)
 }
 
 // upgrade_pinned_task_chains_schema idempotently ensures the task_chains
@@ -939,7 +1201,9 @@ upgrade_pinned_task_chains_schema :: proc(conn: ^Conn) -> bool {
 // upgrade_task_chain_directories_schema idempotently ensures the task_chain_directories
 // table and index exist (REQ-BE-TASK-CHAIN-RELEVANT-DIRECTORIES).
 upgrade_task_chain_directories_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS task_chain_directories (
+	return exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS task_chain_directories (
   directory_id TEXT PRIMARY KEY,
   chain_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
@@ -952,14 +1216,17 @@ upgrade_task_chain_directories_schema :: proc(conn: ^Conn) -> bool {
   FOREIGN KEY (chain_id) REFERENCES task_chains(chain_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_task_chain_directories_chain_owner ON task_chain_directories(chain_id, owner_user_id);
-CREATE TRIGGER IF NOT EXISTS task_chain_directories_owner_immutable BEFORE UPDATE OF owner_user_id ON task_chain_directories BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
+CREATE TRIGGER IF NOT EXISTS task_chain_directories_owner_immutable BEFORE UPDATE OF owner_user_id ON task_chain_directories BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
+	)
 }
 
 // upgrade_task_chain_fleets_schema idempotently ensures the task_chain_fleets
-// table, provider/tier columns, and index exist (REQ-FLEET-SCHEMA-1,
+// table, provider/model columns, and index exist (REQ-FLEET-SCHEMA-1,
 // REQ-FLEET-PT-1).
 upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
-	if !exec(conn, `CREATE TABLE IF NOT EXISTS task_chain_fleets (
+	if !exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS task_chain_fleets (
   task_chain_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   capacity INTEGER NOT NULL DEFAULT 1,
@@ -969,11 +1236,16 @@ upgrade_task_chain_fleets_schema :: proc(conn: ^Conn) -> bool {
   updated_at TEXT NOT NULL,
   PRIMARY KEY (task_chain_id, agent_id),
   FOREIGN KEY (task_chain_id) REFERENCES task_chains(chain_id) ON DELETE CASCADE
-);`) {
+);`,
+	) {
 		return false
 	}
 	if !table_column_exists(conn, "task_chain_fleets", "provider") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN provider TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "task_chain_fleets", "tier") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN tier TEXT NOT NULL DEFAULT '';") do return false
+	if table_column_exists(conn, "task_chain_fleets", "tier") &&
+	   !table_column_exists(conn, "task_chain_fleets", "model") {
+		if !exec(conn, "ALTER TABLE task_chain_fleets RENAME COLUMN tier TO model;") do return false
+	}
+	if !table_column_exists(conn, "task_chain_fleets", "model") && !exec(conn, "ALTER TABLE task_chain_fleets ADD COLUMN model TEXT NOT NULL DEFAULT '';") do return false
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_task_chain_fleets_chain ON task_chain_fleets(task_chain_id);") do return false
 	return true
 }
@@ -989,7 +1261,9 @@ upgrade_task_bridge_schema :: proc(conn: ^Conn) -> bool {
 // upgrade_user_vaults_schema idempotently ensures the user_vaults
 // table exists (REQ-VAULT-DB-SCHEMA-1).
 upgrade_user_vaults_schema :: proc(conn: ^Conn) -> bool {
-	return exec(conn, `CREATE TABLE IF NOT EXISTS user_vaults (
+	return exec(
+		conn,
+		`CREATE TABLE IF NOT EXISTS user_vaults (
   user_id                      TEXT PRIMARY KEY,
   encrypted_vault_key          TEXT NOT NULL,
   vault_key_nonce              TEXT NOT NULL,
@@ -1003,10 +1277,9 @@ upgrade_user_vaults_schema :: proc(conn: ^Conn) -> bool {
   recovery_salt                TEXT NOT NULL,
   created_at                   TEXT NOT NULL,
   updated_at                   TEXT NOT NULL
-);`)
+);`,
+	)
 }
-
-
 
 
 // upgrade_shell_sessions_kind_and_key_schema is the idempotent self-heal twin of
@@ -1042,7 +1315,10 @@ upgrade_shell_sessions_background_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "shell_sessions", "conversation_id") {
 		if !exec(conn, "ALTER TABLE shell_sessions ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';") do return false
 	}
-	return exec(conn, "CREATE INDEX IF NOT EXISTS shell_sessions_conversation ON shell_sessions(owner_user_id, conversation_id);")
+	return exec(
+		conn,
+		"CREATE INDEX IF NOT EXISTS shell_sessions_conversation ON shell_sessions(owner_user_id, conversation_id);",
+	)
 }
 
 // upgrade_shell_sessions_run_seq_schema is the idempotent self-heal twin of
@@ -1079,7 +1355,10 @@ upgrade_shell_sessions_kill_intent_schema :: proc(conn: ^Conn) -> bool {
 	// CREATE INDEX IF NOT EXISTS is idempotent on its own, unlike ADD COLUMN, so this
 	// needs no existence check of its own — it is the statement that repairs the
 	// partial-apply case the guards above are keyed on.
-	return exec(conn, "CREATE INDEX IF NOT EXISTS shell_sessions_pending_kill ON shell_sessions(bridge_id) WHERE kill_requested_at != '';")
+	return exec(
+		conn,
+		"CREATE INDEX IF NOT EXISTS shell_sessions_pending_kill ON shell_sessions(bridge_id) WHERE kill_requested_at != '';",
+	)
 }
 
 upgrade_bridge_version_and_updates_schema :: proc(conn: ^Conn) -> bool {
@@ -1099,5 +1378,3 @@ upgrade_memory_action_expiry_schema :: proc(conn: ^Conn) -> bool {
 	}
 	return true
 }
-
-

@@ -3,8 +3,8 @@ import { Button, Icon, Spinner, StatusPill } from '@ui';
 import {
   type BridgeProviderStatus,
   type ProviderSetupResponse,
-  providerSetupMockApi,
-} from './providerSetupMockApi';
+  providerSetupApi,
+} from './providerSetupApi';
 import ProviderTestRunModal, { type ProviderTestTarget } from './ProviderTestRunModal';
 
 export interface ProviderSetupSurfaceProps {
@@ -14,8 +14,7 @@ export interface ProviderSetupSurfaceProps {
 }
 
 function providerStatus(provider: BridgeProviderStatus): { label: string; tone: 'success' | 'warning' | 'neutral' | 'danger' } {
-  if (provider.detection.state === 'absent') return { label: 'Not detected', tone: 'neutral' };
-  if (provider.authentication.state === 'needs_auth') return { label: 'Login required', tone: 'warning' };
+  if (provider.state === 'absent') return { label: 'Not detected', tone: 'neutral' };
   if (provider.enabled) return { label: 'Enabled', tone: 'success' };
   return { label: 'Detected', tone: 'neutral' };
 }
@@ -30,7 +29,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
   useEffect(() => {
     let cancelled = false;
     setLoadError('');
-    void providerSetupMockApi.get(bridgeId).then(
+    void providerSetupApi.get(bridgeId || '').then(
       (response) => { if (!cancelled) setPayload(response); },
       (error) => { if (!cancelled) setLoadError(String(error?.message || error)); },
     );
@@ -39,7 +38,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
 
   const enabledProviders = useMemo(() => {
     if (!payload) return 0;
-    return payload.data.providers.filter((provider) => provider.enabled).length;
+    return payload.providers.filter((provider) => provider.enabled).length;
   }, [payload]);
 
   async function rediscover() {
@@ -47,7 +46,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
     setBusy('discovery');
     setNotice('Asking this bridge to scan for supported provider CLIs…');
     try {
-      setPayload(await providerSetupMockApi.discover(payload));
+      setPayload(await providerSetupApi.discover(payload));
       setNotice('Provider discovery completed on the bridge.');
     } catch (error: any) {
       setNotice(String(error?.message || error));
@@ -62,23 +61,10 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
     setBusy(key);
     setNotice('');
     try {
-      const result = await providerSetupMockApi.saveSelection(payload, provider.provider, enabled);
-      setPayload(result.response);
+      setPayload(await providerSetupApi.setEnabled(payload, provider.provider, enabled));
       setNotice(`${provider.display_name} ${enabled ? 'enabled' : 'disabled'} on this bridge.`);
     } catch (error: any) {
       setNotice(String(error?.message || error));
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function authenticate(provider: BridgeProviderStatus) {
-    if (!payload) return;
-    setBusy(`auth:${provider.provider}`);
-    setNotice(`Opening a mock login session for ${provider.display_name}…`);
-    try {
-      setPayload(await providerSetupMockApi.authenticate(payload, provider.provider));
-      setNotice(`${provider.display_name} authentication completed.`);
     } finally {
       setBusy('');
     }
@@ -96,7 +82,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
     return <div role="alert" data-debug-id="provider-setup-load-error" className="rounded-xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger">{loadError}</div>;
   }
 
-  const { bridge, providers, discovery } = payload.data;
+  const { bridge, providers, discovery } = payload;
 
   return (
     <div data-debug-id={`provider-setup-${mode}`} className="w-full">
@@ -129,10 +115,9 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
 
       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-muted">
         <StatusPill tone={discovery.state === 'complete' ? 'success' : 'neutral'}>{discovery.state}</StatusPill>
-        <span>{providers.filter((provider) => provider.detection.state === 'present').length} of {providers.length} providers detected</span>
+        <span>{providers.filter((provider) => provider.state === 'present').length} of {providers.length} providers detected</span>
         <span>·</span>
         <span>{enabledProviders} providers enabled</span>
-        <span className="rounded-full border border-warning/30 bg-warning-soft px-2 py-0.5 text-warning">Mock API</span>
       </div>
 
       {notice ? (
@@ -144,7 +129,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
       <div className="mt-5 space-y-3" data-debug-id="provider-setup-list">
         {providers.map((provider) => {
           const status = providerStatus(provider);
-          const available = provider.detection.state === 'present';
+          const available = provider.state === 'present';
           const providerBusy = busy === `provider:${provider.provider}`;
           return (
             <section key={provider.provider} data-debug-id={`provider-setup-card-${provider.provider}`} className={`overflow-hidden rounded-2xl border bg-surface ${provider.enabled ? 'border-accent/50 shadow-sm' : 'border-subtle'}`}>
@@ -157,16 +142,11 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
                       <StatusPill tone={status.tone}>{status.label}</StatusPill>
                     </div>
                     <p className="mt-1 truncate text-xs text-muted">
-                      {available ? `${provider.detection.binary_path} · ${provider.detection.version_text}` : 'No supported executable found in the bridge service PATH'}
+                      {available ? `${provider.binary_path} · ${provider.version_text}` : 'No supported executable found in the bridge service PATH'}
                     </p>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  {provider.authentication.state === 'needs_auth' ? (
-                    <Button size="sm" variant="secondary" data-debug-id={`provider-setup-login-${provider.provider}`} disabled={busy !== ''} onClick={() => void authenticate(provider)}>
-                      {busy === `auth:${provider.provider}` ? 'Signing in…' : 'Sign in'}
-                    </Button>
-                  ) : null}
                   <label data-debug-id={`provider-setup-enable-label-${provider.provider}`} className={`flex min-h-10 items-center gap-2 rounded-xl border px-3 text-sm font-medium ${available ? 'cursor-pointer border-subtle text-primary' : 'cursor-not-allowed border-subtle text-faint'}`}>
                     <input
                       data-debug-id={`provider-setup-enable-${provider.provider}`}
@@ -185,13 +165,13 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Models</div>
                   <div className="space-y-2">
                     {provider.models.map((model) => {
-                      const canTest = provider.enabled && provider.authentication.state === 'ready' && busy === '';
+                      const canTest = provider.enabled && busy === '';
                       return (
                         <div key={model.model_id} data-debug-id={`provider-model-row-${provider.provider}-${model.model_id}`} className="flex flex-col gap-3 rounded-xl border border-subtle bg-surface px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                           <div className="flex min-w-0 items-start gap-3">
                             <span className="min-w-0">
                               <span className="block text-sm font-medium text-primary">{model.label}</span>
-                              <span className="block text-xs text-muted">{model.model_id} · {model.description}</span>
+                              <span className="block text-xs text-muted">{model.model_id}</span>
                             </span>
                           </div>
                           <div className="flex shrink-0 items-center gap-2 pl-7 sm:pl-0">
@@ -205,7 +185,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
                                 providerLabel: provider.display_name,
                                 modelId: model.model_id,
                                 modelLabel: model.label,
-                                binaryPath: provider.detection.binary_path,
+                                binaryPath: provider.binary_path,
                               })}
                             >
                               Test
@@ -218,7 +198,7 @@ export function ProviderSetupSurface({ bridgeId, mode, onApply }: ProviderSetupS
                 </div>
               ) : (
                 <div className="border-t border-subtle bg-surface-raised/30 px-4 py-3 text-sm text-muted">
-                  Install this provider CLI, then scan again. Manual executable selection will be designed after this mock is approved.
+                  Install this provider CLI in the bridge service PATH, then scan again.
                 </div>
               )}
             </section>

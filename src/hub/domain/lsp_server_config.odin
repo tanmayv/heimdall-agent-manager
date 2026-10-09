@@ -173,7 +173,7 @@ lsp_server_config_resolve :: proc(configs: []Lsp_Server_Config, file_path: strin
 		}
 
 		if prefix_matches {
-			// Tier 3: literal dir_prefix (longest prefix wins)
+			// Model 3: literal dir_prefix (longest prefix wins)
 			if best_tier < 3 || len(prefix) > best_prefix_len {
 				best_idx = i
 				best_tier = 3

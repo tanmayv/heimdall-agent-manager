@@ -65,12 +65,12 @@ export type ChatComposerRuntimeControlsProps = {
   providers?: any[];
   projects?: any[];
   provider: string;
-  modelTier: string;
+  model: string;
   projectId: string;
   disabled?: boolean;
   restarting?: boolean;
   showProject?: boolean;
-  onRestart: (next: { provider: string; modelTier: string; projectId: string }) => void | Promise<void>;
+  onRestart: (next: { provider: string; model: string; projectId: string }) => void | Promise<void>;
 };
 
 export type ChatComposerProps = {

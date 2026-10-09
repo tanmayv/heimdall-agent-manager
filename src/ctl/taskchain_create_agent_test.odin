@@ -20,7 +20,7 @@ test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
 		"--bridge", "brg_local_1",
 		"--project", "proj_alpha",
 		"--provider", "jetski",
-		"--tier", "smart",
+		"--model", "smart",
 	}
 
 	params := ctl_agentmode_task_chain_create_params(args)
@@ -33,7 +33,7 @@ test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(params, `"bridge_id":"brg_local_1"`), "bridge_id should match")
 	testing.expect(t, strings.contains(params, `"project_id":"proj_alpha"`), "project_id should match")
 	testing.expect(t, strings.contains(params, `"provider":"jetski"`), "provider should match")
-	testing.expect(t, strings.contains(params, `"tier":"smart"`), "tier should match")
+	testing.expect(t, strings.contains(params, `"model":"smart"`), "model should match")
 	testing.expect(t, !strings.contains(params, "vault:v1:"), "should not be encrypted without vault key")
 }
 

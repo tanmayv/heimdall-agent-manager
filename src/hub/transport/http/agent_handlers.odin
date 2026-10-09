@@ -296,19 +296,19 @@ patch_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input {
-	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_template_id = strings.contains(body, "\"template_id\""), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
+	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), instructions = json_string(body, "instructions"), has_template_id = strings.contains(body, "\"template_id\"")}
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {
-	return agent_service.Create_Instance_Input{agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), provider = json_string(body, "provider"), tier = json_string(body, "tier"), project_id = domain.Project_ID(json_string(body, "project_id")), chain_id = json_string(body, "chain_id"), display_name = json_string(body, "display_name")}
+	return agent_service.Create_Instance_Input{agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), provider = json_string(body, "provider"), model = json_string(body, "model"), project_id = domain.Project_ID(json_string(body, "project_id")), chain_id = json_string(body, "chain_id"), display_name = json_string(body, "display_name")}
 }
 
 reconfigure_input_from_body :: proc(body: string) -> agent_service.Reconfigure_Instance_Input {
-	return agent_service.Reconfigure_Instance_Input{provider = json_string(body, "provider"), tier = json_string(body, "tier"), agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), chain_id = json_string(body, "chain_id"), conversation_id = json_string(body, "conversation_id"), display_name = json_string(body, "display_name"), project_id = domain.Project_ID(json_string(body, "project_id")), has_agent_id = strings.contains(body, "\"agent_id\""), has_bridge_id = strings.contains(body, "\"bridge_id\""), has_project_id = strings.contains(body, "\"project_id\""), has_chain_id = strings.contains(body, "\"chain_id\""), has_conversation_id = strings.contains(body, "\"conversation_id\""), has_display_name = strings.contains(body, "\"display_name\"")}
+	return agent_service.Reconfigure_Instance_Input{provider = json_string(body, "provider"), model = json_string(body, "model"), agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), chain_id = json_string(body, "chain_id"), conversation_id = json_string(body, "conversation_id"), display_name = json_string(body, "display_name"), project_id = domain.Project_ID(json_string(body, "project_id")), has_agent_id = strings.contains(body, "\"agent_id\""), has_bridge_id = strings.contains(body, "\"bridge_id\""), has_project_id = strings.contains(body, "\"project_id\""), has_chain_id = strings.contains(body, "\"chain_id\""), has_conversation_id = strings.contains(body, "\"conversation_id\""), has_display_name = strings.contains(body, "\"display_name\"")}
 }
 
 support_input_from_body :: proc(body: string) -> agent_service.Support_Input {
-	return agent_service.Support_Input{bridge_id = json_string(body, "bridge_id"), enabled = !strings.contains(body, "\"enabled\":false"), provider = json_string(body, "provider"), tier = json_string(body, "tier"), priority = json_int(body, "priority", 0), max_instances = json_int(body, "max_instances", 0)}
+	return agent_service.Support_Input{bridge_id = json_string(body, "bridge_id"), enabled = !strings.contains(body, "\"enabled\":false"), priority = json_int(body, "priority", 0), max_instances = json_int(body, "max_instances", 0)}
 }
 
 support_inputs_from_body :: proc(body: string) -> []agent_service.Support_Input {
@@ -348,8 +348,6 @@ write_agent_json :: proc(b: ^strings.Builder, service: ^agent_service.Agent_Serv
 	strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, a.name)
 	strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, a.slug)
 	strings.write_string(b, "\",\"template_id\":\""); write_handler_json_string(b, a.template_id)
-	strings.write_string(b, "\",\"default_provider\":\""); write_handler_json_string(b, a.default_provider)
-	strings.write_string(b, "\",\"default_tier\":\""); write_handler_json_string(b, a.default_tier)
 	strings.write_string(b, "\",\"instructions\":\""); write_handler_json_string(b, a.instructions)
 	strings.write_string(b, "\",\"state\":\""); write_handler_json_string(b, domain.agent_state_string(a.state))
 	strings.write_string(b, "\",\"supported_bridge_count\":"); strings.write_string(b, i32_to_string_http(agent_service.supported_bridge_count_for_agent(service, a)))
@@ -374,7 +372,7 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, inst.bridge_id)
 	strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, inst.display_name)
 	strings.write_string(b, "\",\"provider\":\""); write_handler_json_string(b, inst.provider)
-	strings.write_string(b, "\",\"tier\":\""); write_handler_json_string(b, inst.tier)
+	strings.write_string(b, "\",\"model\":\""); write_handler_json_string(b, inst.model)
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, string(inst.project_id))
 	strings.write_string(b, "\",\"project_path\":\""); write_handler_json_string(b, inst.project_path)
 	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, inst.chain_id)
@@ -403,9 +401,7 @@ write_support_json :: proc(b: ^strings.Builder, s: domain.Agent_Bridge_Support) 
 	strings.write_string(b, "{\"agent_id\":\""); write_handler_json_string(b, s.agent_id)
 	strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, s.bridge_id)
 	strings.write_string(b, "\",\"enabled\":"); strings.write_string(b, "true" if s.enabled else "false")
-	strings.write_string(b, ",\"provider\":\""); write_handler_json_string(b, s.provider)
-	strings.write_string(b, "\",\"tier\":\""); write_handler_json_string(b, s.tier)
-	strings.write_string(b, "\",\"priority\":"); strings.write_string(b, i32_to_string_http(s.priority))
+	strings.write_string(b, ",\"priority\":"); strings.write_string(b, i32_to_string_http(s.priority))
 	strings.write_string(b, ",\"max_instances\":"); strings.write_string(b, i32_to_string_http(s.max_instances))
 	strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, s.updated_at)
 	strings.write_string(b, "\"}")

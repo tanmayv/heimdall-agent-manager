@@ -62,7 +62,7 @@ test_agent_instance_input_route_registered_and_dispatches :: proc(t: ^testing.T)
 	agent_res := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = "/api/v1/agents",
-		body = `{"name":"Coder","slug":"coder","default_provider":"claude","default_tier":"normal"}`,
+		body = `{"name":"Coder","slug":"coder","default_provider":"claude","default_model":"normal"}`,
 		request_id = "req_3",
 		remote_addr = "127.0.0.1",
 		headers = alice[:],
@@ -81,7 +81,7 @@ test_agent_instance_input_route_registered_and_dispatches :: proc(t: ^testing.T)
 	api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "PATCH",
 		path = strings.concatenate({"/api/v1/agents/", agent_id, "/bridge-support/", bridge_id}),
-		body = `{"enabled":true,"provider":"claude","tier":"normal"}`,
+		body = `{"enabled":true,"provider":"claude","model":"normal"}`,
 		request_id = "req_4",
 		remote_addr = "127.0.0.1",
 		headers = alice[:],

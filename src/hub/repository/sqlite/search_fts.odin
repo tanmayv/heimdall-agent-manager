@@ -77,7 +77,7 @@ FTS_PROVIDERS := []Fts_Provider{
 		{
 			resource_type = "agent_instance", base = "agent_instances", fts = "agent_instances_fts",
 			id_expr = "c.agent_instance_id", label_expr = "c.agent_id",
-			sublabel_expr = "c.runtime_status || ' \u00b7 ' || c.provider || '/' || c.tier",
+			sublabel_expr = "c.runtime_status || ' \u00b7 ' || c.provider || '/' || c.model",
 			route_expr = "CASE WHEN c.agent_instance_id != '' THEN '/conversations/' || c.agent_instance_id ELSE '/agents/' || c.agent_id END",
 			primary_expr = "c.display_name",
 			scope_chain = "c.chain_id", scope_project = "c.project_id", scope_conversation = "c.conversation_id",

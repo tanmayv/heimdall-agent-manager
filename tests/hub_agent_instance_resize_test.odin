@@ -84,12 +84,12 @@ enroll_bridge :: proc(graph: ^app.App_Graph, headers: []contracts.HTTP_Header, l
 	//
 	// No bridge connects in these tests, so this calls the same service proc the WS
 	// handler does. Without it the bridge has no declared providers and anything
-	// that matches an agent to a provider/tier fails — which is a real difference
+	// that matches an agent to a provider/model fails — which is a real difference
 	// between the two flows, not a test artifact.
 	//
 	// NOTE it also marks the bridge Online (as a connect would), where the deleted
 	// enroll path left it Offline.
-	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\",\"smart\"],\"default_tier\":\"normal\"}]}")
+	_, _, _ = bridge_service.update_runtime_capabilities(&graph.bridges, extract_json_string(issued.body, "bridge_id"), "{\"capabilities\":[{\"provider\":\"claude\",\"models\":[\"normal\",\"smart\"],\"default_model\":\"normal\"}]}")
 
 	bridge_id = extract_json_string(issued.body, "bridge_id")
 	bridge_token = extract_json_string(issued.body, "access_token")
@@ -171,12 +171,12 @@ main :: proc() {
 	graph.agents.bridge_command_sink.send_runtime_command_wait = mock_send_runtime_command_wait
 
 	// Create agent for alice
-	agent_res := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Coder Agent\",\"slug\":\"coder\",\"default_provider\":\"claude\",\"default_tier\":\"normal\"}", alice[:])
+	agent_res := request(&graph, "POST", "/api/v1/agents", "{\"name\":\"Coder Agent\",\"slug\":\"coder\",\"default_provider\":\"claude\",\"default_model\":\"normal\"}", alice[:])
 	check(agent_res.status == 201, "agent creation must succeed")
 	agent_id := extract_json_string(agent_res.body, "agent_id")
 
 	// Enable bridge support for agent
-	support_res := request(&graph, "PATCH", strings.concatenate({"/api/v1/agents/", agent_id, "/bridge-support/", bridge_id}), "{\"enabled\":true,\"provider\":\"claude\",\"tier\":\"normal\"}", alice[:])
+	support_res := request(&graph, "PATCH", strings.concatenate({"/api/v1/agents/", agent_id, "/bridge-support/", bridge_id}), "{\"enabled\":true,\"provider\":\"claude\",\"model\":\"normal\"}", alice[:])
 	check(support_res.status == 200, "bridge support configuration must succeed")
 
 	// Create an agent instance for alice

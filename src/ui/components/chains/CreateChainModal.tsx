@@ -10,9 +10,6 @@ import {
   normalizeBridgeCapabilities,
 } from '../../api/endpoints/bridgeSupport';
 
-const FALLBACK_PROVIDERS = ['jetski', 'claude', 'pi', 'anthropic', 'openai'];
-const FALLBACK_TIERS = ['cheap', 'normal', 'smart'];
-
 type Props = {
   projectId: string;
   isOpen: boolean;
@@ -83,8 +80,8 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
 
   const [bridgeId, setBridgeId] = useState('');
   const [agentId, setAgentId] = useState('');
-  const [provider, setProvider] = useState<string>('jetski');
-  const [tier, setTier] = useState<string>('smart');
+  const [provider, setProvider] = useState('');
+  const [model, setModel] = useState('');
   const [error, setError] = useState('');
 
   // Selected bridge and dynamic capabilities
@@ -94,16 +91,10 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
   const bridgeProviders = Array.from(
     new Set(capabilities.map((c) => c.provider).filter(Boolean)),
   );
-  const providers = bridgeProviders.length > 0 ? bridgeProviders : FALLBACK_PROVIDERS;
+  const providers = bridgeProviders;
 
   const selectedCap = capabilities.find((c) => c.provider === provider);
-  const capTiers = Array.from(
-    new Set([
-      ...(selectedCap?.tiers ?? []),
-      ...(selectedCap?.defaultTier ? [selectedCap.defaultTier] : []),
-    ]),
-  ).filter(Boolean);
-  const tiers = capTiers.length > 0 ? capTiers : FALLBACK_TIERS;
+  const models = Array.from(new Set(selectedCap?.models ?? [])).filter(Boolean);
 
   // Pre-select defaults once data loads
   useEffect(() => {
@@ -121,21 +112,16 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
   // Keep provider synchronized with supported providers
   useEffect(() => {
     if (providers.length > 0 && !providers.includes(provider)) {
-      setProvider(providers.includes('jetski') ? 'jetski' : providers[0]);
+      setProvider(providers[0]);
     }
   }, [providers, provider]);
 
-  // Keep tier synchronized with supported tiers, preferring 'smart' when available
+  // A model is a literal catalog id; there is no tier/default fallback.
   useEffect(() => {
-    if (tiers.length > 0 && !tiers.includes(tier)) {
-      const preferredTier = tiers.includes('smart')
-        ? 'smart'
-        : (selectedCap?.defaultTier && tiers.includes(selectedCap.defaultTier)
-            ? selectedCap.defaultTier
-            : tiers[0]);
-      setTier(preferredTier);
+    if (models.length > 0 && !models.includes(model)) {
+      setModel(models[0]);
     }
-  }, [tiers, tier, selectedCap]);
+  }, [models, model]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -162,7 +148,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
         coordinatorAgentId: agentId,
         bridgeId: bridgeId || undefined,
         provider: provider,
-        tier: tier,
+        model: model,
         projectId,
       }).unwrap();
 
@@ -185,7 +171,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
           chainId,
           bridgeId: bridgeId || undefined,
           providerProfile: provider,
-          modelTier: tier,
+          model: model,
           projectId,
         }).unwrap();
         instanceId = String(
@@ -230,7 +216,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
             onChange={(val) => {
               setBridgeId(val);
               setProvider('');
-              setTier('');
+              setModel('');
             }}
             disabled={loading || bridges.length === 0}
           >
@@ -275,7 +261,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
             value={provider}
             onChange={(val) => {
               setProvider(val);
-              setTier('');
+              setModel('');
             }}
             disabled={loading || providers.length === 0}
           >
@@ -285,16 +271,16 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
           </Select>
         </div>
 
-        {/* Tier */}
+        {/* Model */}
         <div className="space-y-1.5">
-          <label className="text-xs font-semibold text-muted">Tier</label>
+          <label className="text-xs font-semibold text-muted">Model</label>
           <Select
             width="full"
-            value={tier}
-            onChange={setTier}
-            disabled={loading || tiers.length === 0}
+            value={model}
+            onChange={setModel}
+            disabled={loading || models.length === 0}
           >
-            {tiers.map((t) => (
+            {models.map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </Select>
@@ -308,7 +294,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
         <Button
           variant="primary"
           onClick={handleSubmit}
-          disabled={loading || !agentId || !provider || !tier}
+          disabled={loading || !agentId || !provider || !model}
         >
           {loading ? 'Starting…' : 'Start chain →'}
         </Button>

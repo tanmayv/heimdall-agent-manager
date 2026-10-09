@@ -9,7 +9,7 @@
  *
  *  2. **No tabs for agents (REQ-UI-3).** Wait — the coordinator's scope change
  *     retained tabs: Active | Archived is client-side, same as Projects. The
- *     original REQ-UI-3 ruling was about "no provider/tier tabs", not state tabs.
+ *     original REQ-UI-3 ruling was about "no provider/model tabs", not state tabs.
  *     Active and Archived tabs are present.
  *
  *  3. **Bulk verbs on Active only.** Archived agents get no bulk action (no
@@ -567,8 +567,6 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
                   name: hit.label,
                   slug: hit.slug,
                   templateId: '',
-                  defaultProvider: '',
-                  defaultTier: '',
                   instructions: hit.preview,
                   state: 'active',
                   supportedBridgeCount: 0,
@@ -690,7 +688,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
               const status = String(inst.runtime_status || inst.runtimeStatus || 'running');
               const actStatus = String(inst.activity_status || inst.activityStatus || '');
               const prov = String(inst.provider || '');
-              const tr = String(inst.tier || '');
+              const tr = String(inst.model || '');
               const projId = String(inst.project_id || inst.projectId || '');
               const projName = projectMap.get(projId) || projId;
               const chId = String(inst.chain_id || inst.chainId || '');
@@ -773,7 +771,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
                     <div className="mt-1.5 flex items-end justify-between gap-3">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         {prov ? <Badge data-debug-id={`live-instance-provider-${instId}`}>{prov}</Badge> : null}
-                        {tr ? <Badge data-debug-id={`live-instance-tier-${instId}`}>{tr}</Badge> : null}
+                        {tr ? <Badge data-debug-id={`live-instance-model-${instId}`}>{tr}</Badge> : null}
                         {actStatus ? (
                           <StatusPill tone={actStatus.toLowerCase() === 'busy' ? 'info' : 'neutral'}>
                             {actStatus}
@@ -1050,4 +1048,3 @@ function AgentDetailPane({ agentId, onAfterArchive }: { agentId: string; onAfter
 /** Re-exported for the shell's route table. */
 export { EMPTY_LIST_URL_STATE };
 export { agentState };
-

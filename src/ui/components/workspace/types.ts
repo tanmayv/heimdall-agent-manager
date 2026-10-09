@@ -57,7 +57,7 @@ export type WorkspaceSelectedAgentContext = {
     status: string;
     statusLabel: string;
     provider: string;
-    modelTier: string;
+    model: string;
     projectId?: string;
     canStart: boolean;
     canStop: boolean;

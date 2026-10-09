@@ -140,8 +140,8 @@ validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool
 		if op_arg_string(op_obj, "prompt") == "" && op_arg_string(op_obj, "prompt_text") == "" && op_arg_string(op_obj, "body") == "" do return false, op_field_missing("prompt")
 	case "agent.update":
 		if op_arg_string(op_obj, "agent_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("agent_id")
-		if op_arg_string(op_obj, "name") == "" && op_arg_string(op_obj, "slug") == "" && op_arg_string(op_obj, "template_id") == "" && op_arg_string(op_obj, "default_provider") == "" && op_arg_string(op_obj, "default_tier") == "" && op_arg_string(op_obj, "instructions") == "" {
-			return false, "requires at least one updatable field (name/slug/template_id/default_provider/default_tier/instructions)"
+		if op_arg_string(op_obj, "name") == "" && op_arg_string(op_obj, "slug") == "" && op_arg_string(op_obj, "template_id") == "" && op_arg_string(op_obj, "instructions") == "" {
+			return false, "requires at least one updatable field (name/slug/template_id/instructions)"
 		}
 	case "agent.delete":
 		if op_arg_string(op_obj, "agent_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("agent_id")
@@ -1087,18 +1087,12 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			name := op_arg_string(op_obj, "name")
 			slug := op_arg_string(op_obj, "slug")
 			template_id := op_arg_string(op_obj, "template_id")
-			provider := op_arg_string(op_obj, "default_provider")
-			tier := op_arg_string(op_obj, "default_tier")
 			instructions := op_arg_string(op_obj, "instructions")
 			_, au_ok, au_err := agent_service.update_agent(s.agents, user_auth, aid, agent_service.Create_Agent_Input{
 				name                 = name,
 				slug                 = slug,
 				template_id          = template_id,
 				has_template_id      = template_id != "",
-				default_provider     = provider,
-				has_default_provider = provider != "",
-				default_tier         = tier,
-				has_default_tier     = tier != "",
 				instructions         = instructions,
 			})
 			if !au_ok {

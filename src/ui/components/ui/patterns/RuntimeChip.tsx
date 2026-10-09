@@ -2,11 +2,11 @@
  * RuntimeChip — a product pattern: an agent instance's runtime status chip.
  * ------------------------------------------------------------------
  * Purpose: the chip shown under a conversation title answering "which bridge /
- * provider / tier is this on, and is it running?" — a `StatusDot` + state label +
- * bridge·provider·tier, with an optional "Change" affordance.
+ * provider / model is this on, and is it running?" — a `StatusDot` + state label +
+ * bridge·provider·model, with an optional "Change" affordance.
  *
  * Layer: pattern (product-specific). Built from @ui primitives (StatusDot, Icon).
- * Backed by existing instance data (runtime_status / bridge / provider / tier);
+ * Backed by existing instance data (runtime_status / bridge / provider / model);
  * no new backend.
  *
  * The three UI states are derived from the many raw `runtime_status` strings via
@@ -60,7 +60,7 @@ export interface RuntimeChipProps {
   state: RuntimeState;
   bridgeLabel: string;
   provider: string;
-  tier: string;
+  model: string;
   /** Opens the change popover/sheet (wired by the caller). */
   onClick?: () => void;
   /** Test hook. */
@@ -73,12 +73,12 @@ export function RuntimeChip({
   state,
   bridgeLabel,
   provider,
-  tier,
+  model,
   onClick,
   debugId,
   showChange = true,
 }: RuntimeChipProps) {
-  const parts = [bridgeLabel, provider, tier].filter(Boolean);
+  const parts = [bridgeLabel, provider, model].filter(Boolean);
   return (
     <button
       type="button"

@@ -1,5 +1,5 @@
 /**
- * Tier 5 White-Box Adversarial Hardening Test Suite
+ * Model 5 White-Box Adversarial Hardening Test Suite
  * Milestone M4: Terminal Shell Rendering, Initial Cursor Positioning, and Tab State Persistence
  * 
  * Thoroughly probes edge cases, boundary conditions, race conditions, and error paths

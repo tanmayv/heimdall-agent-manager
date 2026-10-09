@@ -360,8 +360,8 @@ bridge_scheduler_fetch_enriched_launch_json :: proc(instance_id, command_id: str
 	coordinator_display_name := extract_json_string(inst_obj, "coordinator_display_name", "")
 	project_id               := extract_json_string(inst_obj, "project_id", "")
 	project_path             := extract_json_string(inst_obj, "project_path", "")
-	// task_id/provider/tier are unknown to the scheduler wake (the agent resolves its
-	// current task after boot via reconcile; provider/tier fall back to bridge/instance
+	// task_id/provider/model are unknown to the scheduler wake (the agent resolves its
+	// current task after boot via reconcile; provider/model fall back to bridge/instance
 	// defaults in bridge_runtime_launch_agent). agent_id is the load-bearing field.
 	return bridge_wake_launch_command_json(command_id, instance_id, "", role, "", "", agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name), true
 }
