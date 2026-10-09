@@ -55,11 +55,6 @@ Taskchain_Service :: struct {
 	// reap, which keeps every existing test that builds a bare Taskchain_Service
 	// working unchanged.
 	shell_sessions: ^shell_session.Shell_Session_Service,
-	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
-	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
-	// set on every connect. Guarded by replay_mutex.
-	replay_mutex: sync.Mutex,
-	replay_last_unix_ms: map[string]i64,
 	nudge_debounce_mutex: sync.Mutex,
 	nudge_debounce_last_unix_ms: map[string]i64,
 }

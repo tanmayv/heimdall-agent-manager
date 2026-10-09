@@ -981,11 +981,6 @@ SHELL_SESSION_KILL_REPLAY_MAX :: 256
 //   - The intent lives in the hub DB, so the hub already knows the whole answer. A
 //     pull would need a new bridge->hub request and a new hub endpoint to answer it,
 //     to move data the hub could simply have sent.
-//   - There is an exact precedent a few lines above the call site
-//     (replay_bridge_actionable_notifications): "a cascade that fanned out to this
-//     bridge while it was offline was dropped (fire-and-forget); on reconnect we
-//     re-fire the current actionable state". This is the same problem and now has
-//     the same shape.
 //   - Decisively: the bridge's reconcile pass (bridge_shell_session_reconcile_now)
 //     returns WITHOUT TOUCHING ANYTHING when the pty-host daemon is unreachable,
 //     because without a daemon roster it cannot tell a live session from a dead one.

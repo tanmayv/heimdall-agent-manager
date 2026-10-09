@@ -1240,19 +1240,10 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	}
 	for s in hello_active do delete(s)
 	delete(hello_active)
-	// Orphan recovery: replay actionable-task notifications for this bridge's
-	// instances. A cross-bridge cascade (or any status change) that fanned out to
-	// this bridge while it was offline was dropped (fire-and-forget); on reconnect
-	// we re-fire the current actionable state so agents get woken/nudged. Runs
-	// once per (re)connect, after bridge_ready so the command socket is registered.
-	if h.taskchains != nil {
-		_ = taskchain_service.replay_bridge_actionable_notifications(h.taskchains, domain.User_ID(bridge.owner_user_id), bridge.bridge_id)
-	}
 	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
 	// while the bridge was offline is durable on the row and undelivered; this is
 	// where it is re-issued, so "kill it even if the bridge is disconnected; it dies
-	// when the bridge is next connected" holds. Same shape and same placement as the
-	// notification replay above, and for the same reason — after bridge_ready, so the
+	// when the bridge is next connected" holds. It runs after bridge_ready so the
 	// command socket the send needs is registered.
 	//
 	// PUSHED from here rather than pulled by the bridge's reconcile pass: that pass

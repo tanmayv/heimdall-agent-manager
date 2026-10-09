@@ -1,17 +1,8 @@
 package taskchain
 
-import "base:runtime"
 import "core:strings"
-import "core:sync"
-import "core:time"
-import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
-
-// Minimum gap between orphan-recovery replays for the same bridge. A flapping
-// bridge that reconnects rapidly will only trigger one full replay per window;
-// the bridge-side nudge cooldown and wake coalescing absorb the rest.
-REPLAY_MIN_INTERVAL_MS :: i64(10_000)
 
 // Actionable-tasks read model. The Bridge scheduler polls this once per tick to
 // learn which of *its* local instances have work to advance or nudge, without
@@ -121,8 +112,9 @@ resolve_target_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_
 	return ""
 }
 
-// actionable_tasks_for_bridge resolves the bridge's hosted instances (via the
-// agent repository) and returns their actionable set.
+// actionable_tasks_for_bridge resolves the bridge's hosted instances and returns
+// their actionable read model. This powers the explicit Bridge actionable-tasks
+// endpoint; it does not dispatch notifications or run during reconnect.
 actionable_tasks_for_bridge :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string) -> ([]Actionable_Task, domain.Domain_Error) {
 	if service == nil || service.agents == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
@@ -134,64 +126,4 @@ actionable_tasks_for_bridge :: proc(service: ^Taskchain_Service, owner: domain.U
 		append(&ids, inst.agent_instance_id)
 	}
 	return actionable_tasks_for_instances(service, owner, ids[:])
-}
-
-// replay_bridge_actionable_notifications re-fires task_status_changed_notify for
-// every actionable task targeting an instance hosted on `bridge_id`. This is the
-// orphan-recovery path: when a cross-bridge cascade (or any status change) fans
-// out to a bridge that is offline at the time, the fire-and-forget notify is
-// dropped. On the bridge's next reconnect the Hub replays the current actionable
-// state so the (now-online) bridge wakes/nudges its agents. It is idempotent:
-// re-sending a notify for an already-live agent is a harmless wrapper push.
-//
-// Returns the number of notifications sent. Iterates over ALL owners' bridges
-// with this bridge_id is not needed — a bridge belongs to exactly one owner — so
-// the caller supplies the owner resolved from the bridge's auth/record.
-replay_bridge_actionable_notifications :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string) -> int {
-	return replay_bridge_actionable_notifications_at(service, owner, bridge_id, time.to_unix_nanoseconds(time.now()) / 1_000_000)
-}
-
-// replay_should_run applies the per-bridge throttle: returns true (and records
-// now) when at least REPLAY_MIN_INTERVAL_MS has elapsed since the last replay for
-// this bridge, false otherwise. now_ms is injected for testability.
-replay_should_run :: proc(service: ^Taskchain_Service, bridge_id: string, now_ms: i64) -> bool {
-	if service == nil do return false
-	sync.mutex_lock(&service.replay_mutex)
-	defer sync.mutex_unlock(&service.replay_mutex)
-	if service.replay_last_unix_ms == nil do service.replay_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
-	last, has := service.replay_last_unix_ms[bridge_id]
-	if has {
-		if now_ms - last < REPLAY_MIN_INTERVAL_MS do return false
-		service.replay_last_unix_ms[bridge_id] = now_ms
-		return true
-	}
-	// First insert for this bridge: own the key on the persistent heap. The caller
-	// passes bridge.bridge_id, which on the request/arena path (MEM-4) would be
-	// freed after the response and leave this long-lived map key dangling.
-	service.replay_last_unix_ms[strings.clone(bridge_id, runtime.heap_allocator())] = now_ms
-	return true
-}
-
-// replay_bridge_actionable_notifications_at is the now-injectable form used by
-// tests; the public wrapper passes the real wall clock.
-replay_bridge_actionable_notifications_at :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string, now_ms: i64) -> int {
-	if service == nil || service.repo == nil do return 0
-	if service.bridge_command_sink.send_runtime_command == nil do return 0
-	if !replay_should_run(service, bridge_id, now_ms) do return 0
-	items, err := actionable_tasks_for_bridge(service, owner, bridge_id)
-	if err.code != .None do return 0
-	sent := 0
-	for item in items {
-		// Only replay tasks that are actually ready to act on. deps-unsatisfied
-		// tasks will be re-notified when their parent completes (a fresh cascade).
-		if !item.deps_satisfied do continue
-		task, ok, _ := iface.taskchain_get_task(service.repo, item.task_id)
-		if !ok do continue
-		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
-		if !chain_ok do continue
-		// System-initiated replay: empty auth actor so the target isn't excluded.
-		notify_task_status_change(service, contracts.Auth_Context{}, task, chain)
-		sent += 1
-	}
-	return sent
 }

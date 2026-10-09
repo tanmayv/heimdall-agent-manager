@@ -264,7 +264,7 @@ bridge_task_prune_unseen :: proc(seen: map[string]bool) {
 }
 
 // bridge_task_status_notify_wake_local wakes a non-live target in response to a
-// task_status_changed_notify (including the reconnect-replay orphan path). The
+// task_status_changed_notify. The
 // Hub routes each notify ONLY to the bridge that hosts the target instance, so a
 // target that arrives here is authoritative — we must not gate on the bridge's
 // in-memory runtime registry, which is empty right after a bridge restart (the

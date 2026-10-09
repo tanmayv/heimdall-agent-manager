@@ -7,7 +7,7 @@ package taskchain
 // allocator on the request path therefore retains ARENA memory that dangles the
 // instant the request returns; the next map probe/resize reads freed pages and the
 // hub SIGSEGVs (the "intermittent 502 that clears on refresh"). These throttle maps
-// (nudge debounce, idle-nudge backoff, orphan-replay) are reached from the request
+// (nudge debounce and idle-nudge backoff) are reached from the request
 // path (manual_nudge, the task-status-change cascade, bridge reconnect), so their
 // retained keys MUST live on the persistent heap. Each test installs a real arena,
 // calls the helper, then asserts the retained key does not point into the arena.
@@ -52,26 +52,4 @@ test_nudge_debounce_key_not_in_request_arena :: proc(t: ^testing.T) {
 	delete_key(&svc.nudge_debounce_last_unix_ms, key)
 	delete(key, runtime.heap_allocator())
 	delete(svc.nudge_debounce_last_unix_ms)
-}
-
-@(test)
-test_replay_bridge_key_not_in_request_arena :: proc(t: ^testing.T) {
-	svc: Taskchain_Service
-	arena: virtual.Arena
-	testing.expect(t, virtual.arena_init_growing(&arena, 64 * 1024) == nil)
-	defer virtual.arena_destroy(&arena)
-
-	prev := context.allocator
-	context.allocator = virtual.arena_allocator(&arena)
-	_ = replay_should_run(&svc, "brg_1", 1000)
-	context.allocator = prev
-
-	key := first_key(svc.replay_last_unix_ms)
-	testing.expect(t, key != "", "expected a stored replay bridge key")
-	testing.expect(t, !ptr_in_arena(&arena, rawptr(raw_data(key))),
-		"replay bridge_id key retained per-request arena memory (use-after-free)")
-
-	delete_key(&svc.replay_last_unix_ms, key)
-	delete(key, runtime.heap_allocator())
-	delete(svc.replay_last_unix_ms)
 }
