@@ -380,7 +380,7 @@ verify_bridge_token :: proc(service: ^Bridge_Service, token: string) -> (contrac
 // command that fixes it rather than describing the problem. The bridge logs this
 // message verbatim when the Hub refuses it, and `heimdall status`/`heimdall doctor`
 // surface the same instruction.
-BRIDGE_LEGACY_CREDENTIAL_MESSAGE :: "this bridge's credential was issued by the removed enrollment flow and is no longer accepted; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>"
+BRIDGE_LEGACY_CREDENTIAL_MESSAGE :: "this bridge's credential was issued by the removed enrollment flow and is no longer accepted; re-enroll this machine with: ham-bridge enroll --hub <your-hub-url>"
 
 refresh_hostname :: proc(service: ^Bridge_Service, bridge: domain.Bridge, hostname: string) -> domain.Bridge {
 	updated := bridge
@@ -756,4 +756,3 @@ send_bridge_update :: proc(
 
 	return strings.clone(cmd_id), true, domain.Domain_Error{}
 }
-

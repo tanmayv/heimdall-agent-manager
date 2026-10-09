@@ -78,7 +78,7 @@ test('BridgesPanel.tsx implements REQ-BRG-1 requirements', () => {
   // the deleted enrollment-minting UI being reintroduced by a revert.
   assert.doesNotMatch(content, /bridge-enrollments/, 'the panel must not call the deleted bridge-enrollment endpoints');
   assert.doesNotMatch(content, /enrollment_token/, 'the panel must not handle a one-time enrollment token');
-  assert.match(content, /ham-bridge enroll --ui/, 'the panel must tell the operator the device-flow command');
+  assert.match(content, /ham-bridge enroll --hub/, 'the panel must tell the operator the device-flow command');
 
   // Acceptance Criterion 3: Enrolled, online bridge with 0 capabilities shows ready and no providers configured tag
   assert.match(content, /settings-bridge-ready-\$\{id\}/, 'Bridge ready badge must retain debug id');

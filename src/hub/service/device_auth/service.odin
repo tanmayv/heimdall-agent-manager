@@ -58,6 +58,9 @@ Bridge_Mint_Request :: struct {
 	// target_bridge_id carries the approver's "attach to an existing bridge"
 	// choice through to the minter. Empty means mint a new bridge.
 	target_bridge_id:       string,
+	// Operator-chosen display label for a NEW bridge. Empty falls back to the
+	// host-asserted hostname. Invalid when target_bridge_id is also present.
+	new_bridge_label:       string,
 }
 
 // Bridge_Mint_Result is what the bridge minter hands back.
@@ -77,6 +80,7 @@ Bridge_Mint_Result :: struct {
 	bridge_id:          string,
 	expires_in:         int,
 	refresh_expires_in: int,
+	vault_delivery_expected: bool,
 }
 
 // Bridge_Token_Minter mints a bridge-scoped credential pair. Returns ok=false to
@@ -258,6 +262,7 @@ Approve_Input :: struct {
 	user_code:        string,
 	approve:          bool,
 	target_bridge_id: string,
+	new_bridge_label: string,
 }
 
 // approve records the user's terminal decision on a grant.
@@ -268,6 +273,12 @@ Approve_Input :: struct {
 //   - unknown/expired -> generic Not_Found (no enumeration)
 approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_id, approver_ip, approver_ua: string) -> (bool, domain.Domain_Error) {
 	if input.user_code == "" do return false, GENERIC_UNKNOWN_CODE_ERROR()
+	if strings.trim_space(input.target_bridge_id) != "" && strings.trim_space(input.new_bridge_label) != "" {
+		return false, domain.domain_error(.Validation_Failed, "new_bridge_label is only valid when creating a new bridge")
+	}
+	if len(strings.trim_space(input.new_bridge_label)) > 128 {
+		return false, domain.domain_error(.Validation_Failed, "new_bridge_label must be 128 characters or fewer")
+	}
 	_, grant, ok := grant_by_user_code(service.store, input.user_code)
 	if !ok do return false, GENERIC_UNKNOWN_CODE_ERROR()
 	now := service.clock.now()
@@ -306,6 +317,7 @@ approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_
 				os = grant.os,
 				app_version = grant.app_version,
 				target_bridge_id = input.target_bridge_id,
+				new_bridge_label = input.new_bridge_label,
 			})
 			if !tok_ok do return false, domain.domain_error(.Internal_Error, "could not issue bridge credential")
 			// A minter that returns no bridge_id would leave the credential
@@ -321,6 +333,7 @@ approve :: proc(service: ^Device_Auth_Service, input: Approve_Input, owner_user_
 			grant.minted_refresh_token = mint.refresh_token
 			grant.minted_expires_in = mint.expires_in
 			grant.minted_refresh_expires_in = mint.refresh_expires_in
+			grant.vault_delivery_expected = mint.vault_delivery_expected
 		case .User_Token:
 			// Pre-mint the token so the first /device/token poll can return it (task 3).
 			// If the wired minter cannot issue, do not mark the grant approved; otherwise
@@ -397,6 +410,10 @@ Poll_Result :: struct {
 	// grant and for a legacy non-expiring credential.
 	refresh_token: string,
 	refresh_expires_in: int,
+	// True only for a bridge grant whose approving owner has a stored vault
+	// envelope. The enrolling process uses this to decide whether it must remain
+	// connected for the encrypted unseal relay before restarting the service.
+	vault_delivery_expected: bool,
 }
 
 // poll implements the device token-poll lifecycle (ELDA-3):
@@ -509,7 +526,7 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string, cod
 		// and conflating them is how a bridge ends up scheduling its refresh off the
 		// 900-second device-code window.
 		expires_in := minted_expires_in if minted_expires_in > 0 else service.store.config.expires_in
-		return Poll_Result{status = .Approved, access_token = token, token_id = tid, bridge_id = grant.minted_bridge_id, expires_in = expires_in, refresh_token = refresh, refresh_expires_in = minted_refresh_expires_in}, domain.Domain_Error{}
+		return Poll_Result{status = .Approved, access_token = token, token_id = tid, bridge_id = grant.minted_bridge_id, expires_in = expires_in, refresh_token = refresh, refresh_expires_in = minted_refresh_expires_in, vault_delivery_expected = grant.vault_delivery_expected}, domain.Domain_Error{}
 	case: // .Pending (covers Pending only; exhaustiveness)
 		set_grant(service.store, device_code, grant)
 	}

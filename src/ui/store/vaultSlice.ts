@@ -4,6 +4,8 @@ import {
   isVaultSupported,
   getActiveVaultKey,
   setActiveVaultKey,
+  getActiveBridgeVaultKeyMaterial,
+  setActiveBridgeVaultKeyMaterial,
 } from '../utils/vaultCrypto.ts';
 import {
   persistVaultKey,
@@ -11,7 +13,12 @@ import {
   deleteVaultKey,
 } from '../utils/vaultPersistence.ts';
 
-export { getActiveVaultKey, setActiveVaultKey };
+export {
+  getActiveVaultKey,
+  setActiveVaultKey,
+  getActiveBridgeVaultKeyMaterial,
+  setActiveBridgeVaultKeyMaterial,
+};
 
 export const VAULT_SESSION_KEY = 'heimdall:vault:raw-key';
 export const VAULT_ONBOARDING_DISMISSED_KEY = 'heimdall:vault:onboarding-dismissed';
@@ -89,13 +96,10 @@ export function validateHexVaultKey(hexKey: string): string {
 export async function importAndValidateCryptoKey(hexKey: string): Promise<CryptoKey> {
   const clean = validateHexVaultKey(hexKey);
   const key = await importRawKeyHex(clean);
-  // REQ-UNSEAL-1/REQ-UNSEAL-3: `clean` is NOT retained anywhere. This call used to
-  // pass it as a second argument into a module-level hex cache, which is the only
-  // reason a bridge unseal worked in the session where the operator typed the key
-  // and threw after a reload -- the restore path had no hex to cache. Both paths now
-  // hold exactly the same thing, a non-extractable handle, and a bridge unseal asks
-  // the operator for key material on either one.
   setActiveVaultKey(key);
+  // Keep the matching raw material in memory for bridge delivery during this
+  // unlocked browser session. It is never put in Redux, browser storage, or IDB.
+  setActiveBridgeVaultKeyMaterial(clean);
   return key;
 }
 
@@ -194,6 +198,9 @@ export const vaultSlice = createSlice({
             persistVaultKey(payload as CryptoKey).catch(() => {});
           } else if (payload.key) {
             setActiveVaultKey(payload.key);
+            if (payload.rawVaultKeyHex) {
+              setActiveBridgeVaultKeyMaterial(payload.rawVaultKeyHex);
+            }
             if (payload.rememberSession !== false) {
               persistVaultKey(payload.key).catch(() => {});
             }
@@ -201,6 +208,7 @@ export const vaultSlice = createSlice({
             // Asynchronously import hex key for backward compatibility with tests
             importRawKeyHex(payload.rawVaultKeyHex).then((key) => {
               setActiveVaultKey(key);
+              setActiveBridgeVaultKeyMaterial(payload.rawVaultKeyHex || null);
               if (payload.rememberSession) {
                 persistVaultKey(key).catch(() => {});
               }
@@ -260,12 +268,14 @@ export const vaultSlice = createSlice({
             persistVaultKey(payload as CryptoKey).catch(() => {});
           } else if (payload.key) {
             setActiveVaultKey(payload.key);
+            if (payload.hexKey) setActiveBridgeVaultKeyMaterial(payload.hexKey);
             if (payload.rememberSession !== false) {
               persistVaultKey(payload.key).catch(() => {});
             }
           } else if (payload.hexKey) {
             importRawKeyHex(payload.hexKey).then((key) => {
               setActiveVaultKey(key);
+              setActiveBridgeVaultKeyMaterial(payload.hexKey || null);
               if (payload.rememberSession) {
                 persistVaultKey(key).catch(() => {});
               }

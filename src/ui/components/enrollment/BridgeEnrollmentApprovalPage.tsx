@@ -58,7 +58,9 @@ import { unsealBridgeE2EE } from '../../api/endpoints/bridges';
 import { useGetUserVaultQuery } from '../../api/endpoints/userVault';
 import {
   getActiveVaultKey,
+  getActiveBridgeVaultKeyMaterial,
   selectIsVaultUnlocked,
+  setActiveBridgeVaultKeyMaterial,
   setVaultUnlocked,
 } from '../../store/vaultSlice';
 import {
@@ -70,17 +72,18 @@ import {
 import { canUnsealWithKey } from '../../utils/vaultBridgeUnseal';
 import { getRouteSearch } from '../../utils/appLocation';
 import {
+  approvedBridgeIsOnline,
+  BRIDGE_HOME_REDIRECT_DELAY_MS,
+  navigateEnrollmentHome,
+  nextAvailableBridgeLabel,
+} from './bridgeEnrollmentCompletion';
+import {
   parseApprovalFragment,
   evaluateKeyCheck,
-  hubMeasuredTime,
-  requestAgeSeconds,
-  formatAge,
   sanitizeForDisplay,
-  loopbackCallbackUrl,
   DISPLAY_MAX_CHARS,
   type ApprovalFragment,
   type KeyCheckResult,
-  type SanitizedDisplay,
 } from '../../utils/deviceApprovalSafety';
 
 // ---------------------------------------------------------------------------
@@ -127,6 +130,7 @@ interface VerifyPayload {
 /** Where the post-approval vault delivery has got to. */
 type DeliveryState =
   | { phase: 'idle' }
+  | { phase: 'not-needed' }
   | { phase: 'need-password' }
   | { phase: 'waiting-for-bridge'; secondsLeft: number }
   | { phase: 'delivering' }
@@ -153,108 +157,6 @@ function unwrap(body: any): any {
 // ---------------------------------------------------------------------------
 // Presentation helpers
 // ---------------------------------------------------------------------------
-
-/** One row of the provenance tables. Values are rendered as text, never HTML. */
-function Row({
-  term,
-  value,
-  info,
-  mono,
-}: {
-  term: string;
-  value: string;
-  info?: SanitizedDisplay;
-  mono?: boolean;
-}) {
-  const notes: string[] = [];
-  if (info?.removedControls) notes.push('hidden direction/invisible characters were removed');
-  if (info?.truncated) notes.push('shortened for display');
-  if (info?.mixedScript) notes.push(`mixes ${info.scripts.join(' + ')} letters`);
-
-  return (
-    <>
-      <dt style={{ color: 'var(--text-muted, #6b7280)', fontSize: '0.8rem' }}>{term}</dt>
-      <dd
-        style={{
-          margin: 0,
-          fontWeight: 500,
-          // Hard display bound: a 4000-character hostname must not be able to
-          // push the Approve/Reject buttons off-screen. The string is truncated
-          // too; this is the layer that holds regardless.
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-          maxHeight: '4.5rem',
-          overflow: 'hidden',
-          fontFamily: mono ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : undefined,
-          fontSize: mono ? '0.8rem' : undefined,
-        }}
-      >
-        {value || '—'}
-        {notes.length > 0 && (
-          <span style={{ display: 'block', fontWeight: 400, fontSize: '0.75rem', color: '#92400e' }}>
-            ⚠ {notes.join('; ')}
-          </span>
-        )}
-        {notes.length > 0 && info?.nonAscii && (
-          <span style={{ display: 'block', fontWeight: 400, fontSize: '0.75rem', color: '#92400e' }}>
-            exactly: {info.escaped}
-          </span>
-        )}
-      </dd>
-    </>
-  );
-}
-
-function ProvenanceGroup({
-  heading,
-  why,
-  tone,
-  children,
-}: {
-  heading: string;
-  why: string;
-  tone: 'observed' | 'asserted';
-  children: React.ReactNode;
-}) {
-  const palette =
-    tone === 'observed'
-      ? { bg: 'rgba(16,185,129,0.08)', line: '#86efac', fg: '#065f46' }
-      : { bg: 'rgba(245,158,11,0.10)', line: '#fcd34d', fg: '#92400e' };
-  return (
-    <div
-      style={{
-        background: palette.bg,
-        border: `1px solid ${palette.line}`,
-        borderRadius: 8,
-        padding: '12px 14px',
-        marginBottom: 12,
-      }}
-    >
-      <h3
-        style={{
-          fontSize: '0.8rem',
-          margin: '0 0 2px',
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          color: palette.fg,
-        }}
-      >
-        {heading}
-      </h3>
-      <p style={{ margin: '0 0 10px', fontSize: '0.78rem', color: 'var(--text-muted, #6b7280)' }}>{why}</p>
-      <dl
-        style={{
-          margin: 0,
-          display: 'grid',
-          gridTemplateColumns: 'minmax(7.5rem, auto) 1fr',
-          gap: '6px 12px',
-        }}
-      >
-        {children}
-      </dl>
-    </div>
-  );
-}
 
 function Banner({
   tone,
@@ -289,16 +191,6 @@ function Banner({
   );
 }
 
-function formatTime(epochSeconds: unknown): string {
-  const n = Number(epochSeconds);
-  if (!Number.isFinite(n) || n <= 0) return '';
-  try {
-    return new Date(n * 1000).toLocaleString();
-  } catch {
-    return String(epochSeconds);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
@@ -306,7 +198,8 @@ function formatTime(epochSeconds: unknown): string {
 export default function BridgeEnrollmentApprovalPage() {
   const dispatch = useDispatch();
   const isUnlocked = useSelector(selectIsVaultUnlocked);
-  const vaultEnvelope = useGetUserVaultQuery().data?.vault;
+  const vaultQuery = useGetUserVaultQuery();
+  const vaultEnvelope = vaultQuery.data?.vault;
 
   // The fragment is captured ONCE, on first render, before anything can
   // navigate. It never reached the Hub — that is the entire reason the bridge
@@ -331,6 +224,7 @@ export default function BridgeEnrollmentApprovalPage() {
   const [decideError, setDecideError] = useState('');
   const [deciding, setDeciding] = useState(false);
   const [bridgeId, setBridgeId] = useState('');
+  const [bridgeConnected, setBridgeConnected] = useState(false);
   const [delivery, setDelivery] = useState<DeliveryState>({ phase: 'idle' });
   const [masterPassword, setMasterPassword] = useState('');
   const [rememberSession, setRememberSession] = useState(true);
@@ -338,6 +232,7 @@ export default function BridgeEnrollmentApprovalPage() {
   // the default (unchanged) behaviour: create a new bridge.
   const [bridgeTargets, setBridgeTargets] = useState<BridgeSummary[]>([]);
   const [targetBridgeId, setTargetBridgeId] = useState('');
+  const [newBridgeLabel, setNewBridgeLabel] = useState('');
 
   const doVerify = useCallback(async (code: string) => {
     const trimmed = code.trim();
@@ -379,6 +274,7 @@ export default function BridgeEnrollmentApprovalPage() {
   useEffect(() => {
     if (grant?.is_bridge_enrollment !== true) {
       setBridgeTargets([]);
+      setNewBridgeLabel('');
       return;
     }
     let cancelled = false;
@@ -394,16 +290,35 @@ export default function BridgeEnrollmentApprovalPage() {
         if (!cancelled) {
           // A revoked bridge has nothing to attach to; the Hub also refuses
           // this server-side, this is just not offering a dead end in the UI.
-          setBridgeTargets(list.filter((b) => b && b.status !== 'revoked'));
+          const available = list.filter((b) => b && b.status !== 'revoked');
+          setBridgeTargets(available);
+          const hostname = sanitizeForDisplay(
+            grant.host_asserted?.device_label ?? grant.device_label,
+            DISPLAY_MAX_CHARS,
+          ).text;
+          // Revoked bridges are not valid attachment targets, but their labels
+          // still count as existing names for the suggested new identity.
+          setNewBridgeLabel(nextAvailableBridgeLabel(hostname, list));
         }
       } catch {
-        if (!cancelled) setBridgeTargets([]);
+        if (!cancelled) {
+          setBridgeTargets([]);
+          const hostname = sanitizeForDisplay(
+            grant.host_asserted?.device_label ?? grant.device_label,
+            DISPLAY_MAX_CHARS,
+          ).text;
+          setNewBridgeLabel(nextAvailableBridgeLabel(hostname, []));
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [grant?.is_bridge_enrollment]);
+  }, [
+    grant?.is_bridge_enrollment,
+    grant?.host_asserted?.device_label,
+    grant?.device_label,
+  ]);
 
   // ── The REQ-ENROLL-5 cross-check ────────────────────────────────────────
   const hubKey = String(
@@ -429,48 +344,47 @@ export default function BridgeEnrollmentApprovalPage() {
 
   const approvalBlocked = keyCheck.approvalBlocked;
 
-  // ── Hub-measured time ───────────────────────────────────────────────────
-  // Read from the wire, never substituted locally. See `hubMeasuredTime` for
-  // why a missing value renders as unavailable instead of falling back.
-  const serverNow = hubMeasuredTime(grant?.hub_observed?.server_time);
-  const requestAge = requestAgeSeconds(grant?.requested_at, grant?.hub_observed?.server_time);
-
-  // ── Host-asserted values, sanitised for display ─────────────────────────
-  //
-  // Only HOST-ASSERTED values go through `sanitizeForDisplay`. The asymmetry is
-  // deliberate: `hub_observed` fields are rendered as-is because the Hub
-  // derived them, and a Hub that forges them already serves this page, so
-  // sanitising them would buy nothing within the stated threat model. Do not
-  // copy that omission to any field a remote machine can set.
+  // Host-provided values remain sanitised even though the page intentionally
+  // presents only the two details an operator needs for this decision.
   const asserted = grant?.host_asserted ?? {};
   const label = sanitizeForDisplay(asserted.device_label ?? grant?.device_label, DISPLAY_MAX_CHARS);
   const os = sanitizeForDisplay(asserted.os ?? grant?.os, DISPLAY_MAX_CHARS);
-  const version = sanitizeForDisplay(asserted.app_version ?? grant?.app_version, 48);
-  const osUser = sanitizeForDisplay(asserted.os_user ?? grant?.os_user, 64);
-  const client = sanitizeForDisplay(grant?.client, 48);
   const flagged = [
     label.suspicious && 'hostname',
     os.suspicious && 'operating system',
-    version.suspicious && 'version',
-    osUser.suspicious && 'OS user',
-    client.suspicious && 'client',
   ].filter(Boolean) as string[];
 
   // ── Vault delivery ──────────────────────────────────────────────────────
 
-  /**
-   * Waits for the just-approved bridge to come online, then encrypts the vault
-   * key TO THE FRAGMENT KEY and dispatches it down the existing `bridge_unseal`
-   * relay. The Hub carries ciphertext only.
-   *
-   * `vaultKeyMaterial` is hex or a `CryptoKey`; it is passed in explicitly and
-   * read from nowhere else, and it is never placed in a URL, a query string or
-   * any pasted payload.
-   */
+  const waitForAuthenticatedBridge = useCallback(async (targetBridgeId: string): Promise<boolean> => {
+    const deadline = Date.now() + BRIDGE_ONLINE_TIMEOUT_SECONDS * 1000;
+    for (;;) {
+      const secondsLeft = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setDelivery({ phase: 'waiting-for-bridge', secondsLeft });
+
+      try {
+        const data = await cookieJsonFetch('/bridges');
+        const unwrapped = unwrap(data);
+        const list = Array.isArray(unwrapped) ? unwrapped : unwrapped?.bridges;
+        if (approvedBridgeIsOnline(list, targetBridgeId)) {
+          setBridgeConnected(true);
+          return true;
+        }
+      } catch {
+        // A transient authenticated-poll failure is not an enrollment failure.
+      }
+
+      if (Date.now() >= deadline) {
+        setDelivery({ phase: 'timed-out' });
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, BRIDGE_POLL_INTERVAL_MS));
+    }
+  }, []);
+
+  /** Encrypts the vault key to the fragment key and relays only ciphertext. */
   const deliverVaultKey = useCallback(
     async (targetBridgeId: string, vaultKeyMaterial: string | CryptoKey) => {
-      // Encrypting to the Hub's copy would reintroduce iss_18dc4591d95eb89f, so
-      // this path requires an agreed fragment key and has no fallback.
       if (!fragment.bpk) {
         setDelivery({
           phase: 'failed',
@@ -479,36 +393,6 @@ export default function BridgeEnrollmentApprovalPage() {
             'without trusting the Hub for the key. Unlock this bridge from Settings → Bridges instead.',
         });
         return;
-      }
-
-      const deadline = Date.now() + BRIDGE_ONLINE_TIMEOUT_SECONDS * 1000;
-      for (;;) {
-        const secondsLeft = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        setDelivery({ phase: 'waiting-for-bridge', secondsLeft });
-
-        let online = false;
-        try {
-          const data = await cookieJsonFetch('/bridges');
-          const list: any[] = unwrap(data)?.bridges || (Array.isArray(unwrap(data)) ? unwrap(data) : []);
-          online = list.some(
-            (b) =>
-              String(b?.bridge_id || b?.bridgeId || b?.id || '') === targetBridgeId &&
-              String(b?.status || '').trim().toLowerCase() === 'online',
-          );
-        } catch {
-          // A failed poll is not a failed enrollment; keep waiting until the
-          // deadline, which is visible to the operator the whole time.
-          online = false;
-        }
-
-        if (online) break;
-        if (Date.now() >= deadline) {
-          // VISIBLE timeout, never a silent skip: the operator must not believe
-          // the vault was delivered when it was not.
-          setDelivery({ phase: 'timed-out' });
-          return;
-        }
-        await new Promise((r) => setTimeout(r, BRIDGE_POLL_INTERVAL_MS));
       }
 
       setDelivery({ phase: 'delivering' });
@@ -528,7 +412,13 @@ export default function BridgeEnrollmentApprovalPage() {
   /** Obtains the vault key without ever degrading to a weaker payload. */
   const startDelivery = useCallback(
     async (targetBridgeId: string) => {
-      const active = getActiveVaultKey();
+      if (!(await waitForAuthenticatedBridge(targetBridgeId))) return;
+
+      if (!vaultQuery.isLoading && !vaultEnvelope) {
+        setDelivery({ phase: 'not-needed' });
+        return;
+      }
+      const active = getActiveBridgeVaultKeyMaterial() || getActiveVaultKey();
       if (isUnlocked && active && canUnsealWithKey(active)) {
         await deliverVaultKey(targetBridgeId, active);
         return;
@@ -537,8 +427,22 @@ export default function BridgeEnrollmentApprovalPage() {
       // expected case rather than a malfunction. Ask the operator.
       setDelivery({ phase: 'need-password' });
     },
-    [isUnlocked, deliverVaultKey],
+    [isUnlocked, deliverVaultKey, vaultEnvelope, vaultQuery.isLoading, waitForAuthenticatedBridge],
   );
+
+  useEffect(() => {
+    const enrollmentFinished =
+      decision === 'approved' &&
+      bridgeConnected &&
+      (delivery.phase === 'delivered' || delivery.phase === 'not-needed');
+    if (!enrollmentFinished) return;
+
+    const redirectTimer = window.setTimeout(
+      navigateEnrollmentHome,
+      BRIDGE_HOME_REDIRECT_DELAY_MS,
+    );
+    return () => window.clearTimeout(redirectTimer);
+  }, [bridgeConnected, decision, delivery.phase]);
 
   const handlePasswordSubmit = useCallback(
     async (e: FormEvent) => {
@@ -567,6 +471,7 @@ export default function BridgeEnrollmentApprovalPage() {
           vaultEnvelope.vault_key_tag,
         );
         dispatch(setVaultUnlocked({ key: handle, rememberSession }));
+        setActiveBridgeVaultKeyMaterial(unsealHex);
         setMasterPassword('');
         await deliverVaultKey(bridgeId, unsealHex);
       } catch (err: any) {
@@ -603,6 +508,10 @@ export default function BridgeEnrollmentApprovalPage() {
           // grant, so sending it unconditionally on a deny or a non-bridge
           // grant is harmless.
           target_bridge_id: targetBridgeId || undefined,
+          new_bridge_label:
+            grant?.is_bridge_enrollment === true && !targetBridgeId
+              ? newBridgeLabel.trim()
+              : undefined,
         });
         setDecision(approve ? 'approved' : 'rejected');
 
@@ -621,27 +530,30 @@ export default function BridgeEnrollmentApprovalPage() {
         setDeciding(false);
       }
     },
-    [keyCheck, codeInput, verifiedCode, startDelivery, targetBridgeId],
+    [keyCheck, codeInput, verifiedCode, startDelivery, targetBridgeId, grant?.is_bridge_enrollment, newBridgeLabel],
   );
-
-  const callbackUrl =
-    decision !== 'none'
-      ? loopbackCallbackUrl(fragment.cb, fragment.state, decision === 'approved' ? 'approved' : 'rejected')
-      : null;
 
   // ── Render ──────────────────────────────────────────────────────────────
 
   const isBridge = grant?.is_bridge_enrollment === true;
-  const observed = grant?.hub_observed ?? {};
 
   return (
-    <div style={{ maxWidth: 680, margin: '32px auto', padding: '0 16px', lineHeight: 1.5 }}>
-      <h1 style={{ fontSize: '1.25rem', margin: '0 0 4px' }}>
-        {isBridge ? 'A machine is asking to enroll as a bridge' : 'Authorize a device'}
-      </h1>
-      <p style={{ margin: '0 0 20px', color: 'var(--text-muted, #6b7280)', fontSize: '0.9rem' }}>
-        Review what is asking for access before you approve it.
-      </p>
+    <div
+      data-debug-id="enrollment-approval-page"
+      className="mx-auto flex min-h-full w-full max-w-lg items-start px-4 py-4 sm:py-6"
+    >
+      <section className="w-full rounded-2xl border border-subtle bg-surface p-5 shadow-2xl sm:p-7">
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
+            <Icon name="device" size={22} />
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight text-primary">
+            {isBridge ? 'Approve this bridge?' : 'Approve this device?'}
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            Only continue if you started this request on a device you trust.
+          </p>
+        </div>
 
       {!userCode && (
         <div style={{ marginBottom: 16 }}>
@@ -650,6 +562,7 @@ export default function BridgeEnrollmentApprovalPage() {
           </label>
           <Input
             id="user_code"
+            data-debug-id="enrollment-device-code-input"
             value={codeInput}
             placeholder="ABCD-2345"
             autoComplete="off"
@@ -657,6 +570,7 @@ export default function BridgeEnrollmentApprovalPage() {
             onChange={(value) => setCodeInput(value)}
           />
           <Button
+            data-debug-id="enrollment-device-code-submit-btn"
             variant="primary"
             onClick={() => void doVerify(codeInput)}
             disabled={verifying || !!grant}
@@ -688,120 +602,77 @@ export default function BridgeEnrollmentApprovalPage() {
               key worth checking, and why a link that lost it cannot be approved.
             </Banner>
           )}
-          {keyCheck.kind === 'agreed' && (
-            <Banner tone="ok" title="The bridge key matches.">
-              The key in your link and the key the Hub holds are identical, so the Hub has not substituted a
-              key of its own. This does not protect you if this page itself has been tampered with — the Hub
-              serves this page.
-            </Banner>
-          )}
-
           {flagged.length > 0 && (
-            <Banner tone="warn" title="These claimed values are not what they appear to be.">
-              The {flagged.join(', ')} contained hidden or mixed-alphabet characters. Characters that reorder
-              or hide text have been removed, and the exact contents are shown beneath each affected value. A
-              real machine rarely needs any of these. If you did not expect this, reject the request.
+            <Banner tone="warn" title="This device name may be misleading.">
+              The {flagged.join(' and ')} contained unusual or hidden characters. If you did not expect this,
+              reject the request.
             </Banner>
           )}
 
-          <ProvenanceGroup
-            tone="observed"
-            heading="Verified by Heimdall"
-            why="The Hub measured these itself. They do not depend on the requesting machine telling the truth."
-          >
-            <Row term="Request came from" value={observed.request_ip || grant.request_ip || ''} mono />
-            {/*
-              Both times below are the HUB's, so the age between them is a
-              Hub-to-Hub comparison and operator clock skew cannot shift it.
-              When the Hub sends no time, the row says so — it must NEVER fall
-              back to `Date.now()`, which is the defect this replaced.
-            */}
-            <Row
-              term="Server time now"
-              value={serverNow.available ? formatTime(serverNow.seconds) : 'not reported by the Hub'}
-            />
-            <Row
-              term="Request received"
-              value={
-                formatTime(grant.requested_at) +
-                (requestAge.available ? ` (${formatAge(requestAge)})` : '')
-              }
-            />
-            {isBridge && (
-              <>
-                <Row
-                  term="Key fingerprint"
-                  value={observed.bridge_key_fingerprint || grant.bridge_key_fingerprint || ''}
-                  mono
-                />
-                <Row term="Fingerprint method" value={observed.fingerprint_algorithm || ''} />
-                {bridgeId && <Row term="Bridge identity" value={bridgeId} mono />}
-              </>
-            )}
-          </ProvenanceGroup>
-
-          <ProvenanceGroup
-            tone="asserted"
-            heading="Claimed by the machine — not verified"
-            why="The machine asking for access supplied these. Anything here can be set to any value by whoever controls it. Treat them as a claim, not as evidence."
-          >
-            <Row term="Hostname" value={label.text} info={label} />
-            <Row term="Operating system" value={os.text} info={os} />
-            <Row term={isBridge ? 'Bridge version' : 'App version'} value={version.text} info={version} />
-            <Row term="Running as OS user" value={osUser.text} info={osUser} />
-            <Row term="Client" value={client.text} info={client} />
-            {isBridge && fragment.bpk !== '' && (
-              <Row
-                term="Public key (from link)"
-                value={`${fragment.bpk.slice(0, 16)}…${fragment.bpk.slice(-16)}`}
-                mono
-              />
-            )}
-            {isBridge && fragment.cb !== 0 && (
-              <Row term="Callback port" value={String(fragment.cb)} mono />
-            )}
-          </ProvenanceGroup>
-
-          <p
-            style={{
-              fontSize: '0.85rem',
-              color: 'var(--text-muted, #6b7280)',
-              borderLeft: '3px solid #fcd34d',
-              padding: '2px 0 2px 10px',
-              margin: '14px 0',
-            }}
-          >
-            Only approve this if you started it yourself, just now, on a machine you control. Heimdall will
-            never ask you to enter a code someone sent you, and no support person will ever ask you to approve
-            one. If this appeared without you starting it, choose Reject — the code stops working immediately.
-          </p>
-
-          {decision === 'none' && isBridge && bridgeTargets.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <label
-                htmlFor="target_bridge_id"
-                style={{ fontSize: '0.8rem', display: 'block', marginBottom: 4 }}
+          <dl className="mb-5 overflow-hidden rounded-xl border border-subtle bg-surface-raised/40">
+            <div className="grid grid-cols-[7rem_1fr] gap-3 border-b border-subtle px-4 py-3">
+              <dt className="text-sm text-muted">Hostname</dt>
+              <dd
+                data-debug-id="enrollment-device-hostname"
+                className="min-w-0 break-words text-right text-sm font-medium text-primary"
               >
-                Bridge identity
-              </label>
-              <Select
-                id="target_bridge_id"
-                value={targetBridgeId}
-                onChange={setTargetBridgeId}
-                disabled={deciding}
+                {label.text || 'Unknown'}
+              </dd>
+            </div>
+            <div className="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3">
+              <dt className="text-sm text-muted">Operating system</dt>
+              <dd
+                data-debug-id="enrollment-device-os"
+                className="min-w-0 break-words text-right text-sm font-medium text-primary"
               >
-                <option value="">Create a new bridge</option>
-                {bridgeTargets.map((b) => (
-                  <option key={b.bridge_id} value={b.bridge_id}>
-                    {(b.label || b.bridge_id || 'bridge') +
-                      ' (' +
-                      (b.machine_hostname || 'unknown host') +
-                      ')'}
-                  </option>
-                ))}
-              </Select>
+                {os.text || 'Unknown'}
+              </dd>
+            </div>
+          </dl>
+
+          {decision === 'none' && isBridge && (
+            <div className="mb-4 space-y-3">
+              {bridgeTargets.length > 0 && (
+                <div>
+                  <label htmlFor="target_bridge_id" className="mb-1 block text-xs font-medium text-muted">
+                    Bridge identity
+                  </label>
+                  <Select
+                    id="target_bridge_id"
+                    data-debug-id="enrollment-bridge-identity-select"
+                    value={targetBridgeId}
+                    onChange={setTargetBridgeId}
+                    disabled={deciding}
+                  >
+                    <option value="">Create a new bridge</option>
+                    {bridgeTargets.map((b) => (
+                      <option key={b.bridge_id} value={b.bridge_id}>
+                        {(b.label || b.bridge_id || 'bridge') +
+                          ' (' +
+                          (b.machine_hostname || 'unknown host') +
+                          ')'}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
+              {!targetBridgeId && (
+                <div>
+                  <label htmlFor="new_bridge_label" className="mb-1 block text-xs font-medium text-muted">
+                    Bridge name
+                  </label>
+                  <Input
+                    id="new_bridge_label"
+                    data-debug-id="enrollment-new-bridge-name-input"
+                    value={newBridgeLabel}
+                    onChange={setNewBridgeLabel}
+                    disabled={deciding}
+                    maxLength={128}
+                  />
+                </div>
+              )}
               {targetBridgeId && (
-                <p style={{ fontSize: '0.85rem', color: '#92400e', margin: '6px 0 0' }}>
+                <p className="text-xs leading-5 text-warning">
                   This replaces that bridge's credential and disconnects it, ending any of its
                   running sessions.
                 </p>
@@ -812,24 +683,33 @@ export default function BridgeEnrollmentApprovalPage() {
           {decision === 'none' ? (
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
+                data-debug-id="enrollment-approve-btn"
                 variant="primary"
                 onClick={() => void decide(true)}
-                disabled={deciding || approvalBlocked}
+                disabled={
+                  deciding ||
+                  approvalBlocked ||
+                  (isBridge && !targetBridgeId && !newBridgeLabel.trim())
+                }
                 title={approvalBlocked ? `Disabled: ${keyCheck.blockedReason}.` : undefined}
               >
                 {deciding ? 'Working…' : 'Approve'}
               </Button>
-              <Button onClick={() => void decide(false)} disabled={deciding}>
+              <Button
+                data-debug-id="enrollment-reject-btn"
+                onClick={() => void decide(false)}
+                disabled={deciding}
+              >
                 Reject
               </Button>
             </div>
           ) : (
             <Banner
               tone={decision === 'approved' ? 'ok' : 'warn'}
-              title={decision === 'approved' ? 'Approved.' : 'Rejected.'}
+              title={decision === 'approved' ? 'Approval accepted.' : 'Rejected.'}
             >
               {decision === 'approved'
-                ? 'The machine should connect within a few seconds.'
+                ? 'Waiting for this bridge to authenticate and connect to the Hub.'
                 : 'The code no longer works.'}
             </Banner>
           )}
@@ -839,8 +719,11 @@ export default function BridgeEnrollmentApprovalPage() {
           {/* ── Vault delivery status ───────────────────────────────────── */}
           {delivery.phase === 'waiting-for-bridge' && (
             <Banner tone="warn" title="Waiting for the bridge to connect…">
-              The vault key is delivered to the bridge itself, encrypted so the Hub cannot read it. That needs
-              the bridge online, which usually takes a few seconds. Giving up in {delivery.secondsLeft}s.
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <Icon name="refresh" size={16} className="animate-spin" />
+                Waiting for the approved bridge to authenticate with the Hub. Giving up in{' '}
+                {delivery.secondsLeft}s.
+              </span>
             </Banner>
           )}
           {delivery.phase === 'delivering' && (
@@ -850,14 +733,18 @@ export default function BridgeEnrollmentApprovalPage() {
           )}
           {delivery.phase === 'delivered' && (
             <Banner tone="ok" title="Vault key delivered.">
-              The bridge is enrolled and unsealed. There is no separate unlock step to do.
+              The bridge is enrolled and unsealed. Taking you home in 3 seconds.
+            </Banner>
+          )}
+          {delivery.phase === 'not-needed' && (
+            <Banner tone="ok" title="Enrollment approved.">
+              The bridge authenticated successfully. Taking you home in 3 seconds.
             </Banner>
           )}
           {delivery.phase === 'timed-out' && (
             <Banner tone="warn" title="The bridge did not connect in time.">
-              The enrollment itself succeeded — the machine is approved and will finish connecting on its own.
-              The vault key was <strong>not</strong> delivered, so the bridge is still sealed. Unlock it from
-              Settings → Bridges once it shows as online.
+              The machine was approved, but Heimdall could not confirm that this bridge authenticated and
+              connected. Leave this page open and retry enrollment if it does not appear in Settings → Bridges.
             </Banner>
           )}
           {delivery.phase === 'failed' && (
@@ -873,37 +760,39 @@ export default function BridgeEnrollmentApprovalPage() {
                 to be derived again here. It is used for this delivery and not stored.
               </Banner>
               <Input
+                data-debug-id="enrollment-master-password-input"
                 type="password"
                 value={masterPassword}
                 autoComplete="current-password"
                 placeholder="Master password"
                 onChange={(value) => setMasterPassword(value)}
               />
-              <label style={{ display: 'block', fontSize: '0.8rem', margin: '8px 0' }}>
+              <label
+                data-debug-id="enrollment-remember-session-label"
+                style={{ display: 'block', fontSize: '0.8rem', margin: '8px 0' }}
+              >
                 <input
+                  data-debug-id="enrollment-remember-session-checkbox"
                   type="checkbox"
                   checked={rememberSession}
                   onChange={(e) => setRememberSession(e.target.checked)}
                 />{' '}
                 Keep the vault unlocked for this session
               </label>
-              <Button variant="primary" type="submit" disabled={!masterPassword}>
+              <Button
+                data-debug-id="enrollment-deliver-vault-key-btn"
+                variant="primary"
+                type="submit"
+                disabled={!masterPassword}
+              >
                 Deliver vault key
               </Button>
             </form>
           )}
 
-          {/* Hand control back to the bridge's loopback listener: state and
-              status only. No token, key, code or fingerprint may reach a URL. */}
-          {callbackUrl && (
-            <p style={{ marginTop: 16 }}>
-              <a href={callbackUrl} rel="noreferrer noopener">
-                <Icon name="arrow-right" size={14} /> Return to the machine being enrolled
-              </a>
-            </p>
-          )}
         </>
       )}
+      </section>
     </div>
   );
 }

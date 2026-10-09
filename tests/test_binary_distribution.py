@@ -434,7 +434,7 @@ def dry_run_common_asserts(res, target, install_dir_hint):
     # new command, and the absence half is what catches a revert or a half-applied
     # merge putting the old one back -- a presence-only assert passes happily with
     # both flows in the file.
-    assert 'ham-bridge enroll --ui' in out, (
+    assert 'ham-bridge enroll --hub' in out, (
         'onboarding must show the device-flow enroll command')
     assert 'heimdall enroll' not in out, (
         'deleted `heimdall enroll` command reappeared in onboarding')
@@ -486,22 +486,11 @@ def test_install_sh_dry_run_hub(ctx):
     res = run(['bash', INSTALL_SCRIPT, '--dry-run', '--hub', hub], timeout=60,
               env=dry_run_env(ctx))
     dry_run_common_asserts(res, target, install_dir)
-    assert 'release: custom-hub-release' in res.stdout
-    assert f'would download: {hub}/heimdall-local-{target}.tar.gz' in res.stdout
-    assert f'would download: {hub}/SHA256SUMS' in res.stdout
-    # INVERTED (REQ-ENROLL-9). Note the HOST CHANGE and that it is not a typo:
-    # `--ui` takes the UI ORIGIN, and ui_origin_for_hub (install.sh:1186) relabels a
-    # leading `hub.` to `heimdall.`, mirroring BridgesPanel's inverse mapping,
-    # because `--ui` wants the origin a human opens in a browser rather than the hub
-    # API host. hub here is http://hub.example.test, so the origin is
-    # http://heimdall.example.test.
-    ui_origin = hub.replace('://hub.', '://heimdall.')
-    assert f'ham-bridge enroll --ui {ui_origin}' in res.stdout, (
-        f'onboarding must show `ham-bridge enroll --ui {ui_origin}`')
+    assert 'release: github' in res.stdout
+    assert f'would download: https://github.com/{GITHUB_REPO}/releases/' in res.stdout
+    assert f'ham-bridge enroll --hub {hub}' in res.stdout, (
+        f'onboarding must show `ham-bridge enroll --hub {hub}`')
     assert 'hbe_' not in res.stdout, 'deleted hbe_ token vocabulary reappeared'
-    assert f'ham-bridge enroll --ui {hub}' not in res.stdout, (
-        'onboarding passed the hub API url to --ui instead of the UI origin; '
-        'that 404s the authorize call on every `hub.`-prefixed deployment')
     # The hub URL must be baked into the rendered service file as well as the
     # download URLs and onboarding text (tarball + sums + unit + onboarding).
     assert res.stdout.count(hub) >= 4, 'hub URL must appear in downloads, unit and onboarding'
@@ -2885,7 +2874,7 @@ def test_heimdall_status_schema(ctx):
     # INVERTED (REQ-ENROLL-9): the hint names the device flow now. Ground truth is
     # src/manager/status.odin:60 -- a status report whose remedy line names a deleted
     # command is worse than no hint, because the operator trusts it and loses time.
-    assert 'hub url:      (not set — run: ham-bridge enroll --ui <your-heimdall-url>)' in out
+    assert 'hub url:      (not set — run: ham-bridge enroll --hub <your-heimdall-url>)' in out
     assert 'hbe_' not in out, 'deleted hbe_ token vocabulary reappeared in status output'
     assert '(this binary)' in out and 'heimdall' in out
 
@@ -3258,7 +3247,7 @@ def test_self_hosting_documents_installer(ctx):
     # 'heimdall update'). `heimdall enroll` is DELETED, so a test demanding the doc
     # document it was pinning a dead command and would have fought whoever fixed the
     # doc.
-    for command in ('ham-bridge enroll --ui', 'heimdall status', 'heimdall update'):
+    for command in ('ham-bridge enroll --hub', 'heimdall status', 'heimdall update'):
         assert command in part2, f'Part 2 must document {command}'
 
     # The absence half, SHAPED DELIBERATELY. Note what is NOT asserted: a bare
@@ -4646,7 +4635,7 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     #
     # INVERTED (REQ-ENROLL-9): the `enroll <token>` branch is GONE, not reshaped.
     # `heimdall enroll hbe_...` is deleted, and enrollment is no longer this binary's
-    # job at all --- the installer drives `ham-bridge enroll --ui` instead (mocked
+    # job at all --- the installer drives `ham-bridge enroll --hub` instead (mocked
     # separately below). What is left here is the vault ceremony, which is unrelated
     # to enrollment and unchanged.
     #
@@ -4694,7 +4683,7 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     # It records its argv, because argv is the only proof the installer actually
     # drove the device flow: stdout can be made to say anything, but the flags
     # passed to the binary are the behaviour under test. It also prints the ceremony
-    # a real `ham-bridge enroll --ui` prints, so the test can prove the link and the
+    # a real `ham-bridge enroll --hub` prints, so the test can prove the link and the
     # short code reach the operator's terminal rather than being swallowed.
     mock_bridge_argv = work / 'ham_bridge_argv.log'
     mock_ham_bridge = bin_dir / 'ham-bridge'
@@ -4781,12 +4770,11 @@ def test_install_sh_enrollment_interactive_scenarios(ctx):
     assert 'Enter one-time enrollment token' not in out, 'deleted token prompt reappeared'
     assert 'hbe_' not in out, 'deleted hbe_ token vocabulary reappeared'
     assert 'Node successfully enrolled.' in out, 'Missing enrollment success message'
-    # ARGV, not stdout: proof the device flow was actually invoked, with the UI ORIGIN
-    # (ui_origin_for_hub relabels a leading `hub.` to `heimdall.`; this hub has no
-    # `hub.` label so it passes through unchanged) and a credential destination.
+    # ARGV, not stdout: proof the device flow was invoked with the Hub origin and a
+    # credential destination.
     argv = mock_bridge_argv.read_text() if mock_bridge_argv.exists() else ''
-    assert 'enroll --ui http://my-test-hub.example.com' in argv, (
-        f'ham-bridge was not invoked as `enroll --ui <origin>`:\n{argv}')
+    assert 'enroll --hub http://my-test-hub.example.com' in argv, (
+        f'ham-bridge was not invoked as `enroll --hub <origin>`:\n{argv}')
     assert '--bridge-token-file' in argv, (
         f'ham-bridge enroll was not told where to write the credential:\n{argv}')
     assert '--enrollment-token' not in argv, (

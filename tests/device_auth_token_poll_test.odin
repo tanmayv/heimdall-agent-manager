@@ -77,6 +77,7 @@ fake_bridge_minter :: proc(ctx: rawptr, req: device_auth.Bridge_Mint_Request) ->
 		bridge_id = "brg_poll_fake",
 		expires_in = 3600,
 		refresh_expires_in = 2592000,
+		vault_delivery_expected = true,
 	}, true
 }
 
@@ -222,6 +223,7 @@ main :: proc() {
 	assert_true(good.expires_in == 3600, "expires_in is the CREDENTIAL's lifetime, not the grant window")
 	assert_true(good.refresh_expires_in == 2592000, "refresh lifetime is reported to the bridge")
 	assert_eq(good.bridge_id, "brg_poll_fake", "approved bridge poll returns the brg_ it is scoped to")
+	assert_true(good.vault_delivery_expected, "approved bridge poll tells enrollment to await the stored vault envelope")
 
 	// 4. Single-use still holds for a bridge grant: the second redemption is
 	//    Expired even with the right verifier.
@@ -242,6 +244,7 @@ main :: proc() {
 	assert_eq(epoll.status, device_auth.Poll_Status.Approved, "electron grant redeems with NO verifier (unchanged)")
 	assert_eq(epoll.access_token, "hut_fake_poll_token", "electron grant still returns its user token")
 	assert_eq(epoll.bridge_id, "", "electron grant carries no brg_")
+	assert_true(!epoll.vault_delivery_expected, "electron grant never requests bridge vault delivery")
 	eres3, _, _ := device_auth.authorize(&psvc, {client = "electron"}, "127.0.0.1:1", "")
 	FAKE_NOW += 5
 	device_auth.approve(&psvc, {user_code = eres3.user_code, approve = true}, "owner-e3", "203.0.113.30", "UA")
@@ -278,6 +281,7 @@ main :: proc() {
 	})
 	assert_eq(good_resp.status, 200, "handler: correct verifier -> HTTP 200")
 	assert_true(strings.contains(good_resp.body, "\"bridge_id\":\"brg_poll_fake\""), "handler: approved bridge poll carries bridge_id")
+	assert_true(strings.contains(good_resp.body, "\"vault_delivery_expected\":true"), "handler: bridge poll carries the vault handoff decision")
 	fmt.println("REQ-IMPL-2 OK: handler maps a PKCE failure to 401 and emits bridge_id on success")
 
 

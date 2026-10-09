@@ -12,9 +12,10 @@ Hub_Config :: struct {
 	auto_provision_users: bool,
 	login_url: string,
 	logout_url: string,
-	// Device-authorization flow (ELDA-1). The verification_uri is the browser/
-	// outpost URL the device opens; the API endpoint is /api/v1/device/authorize.
-	device_auth_verification_uri: string,
+	// Browser origin the Hub returns as `verification_uri` from device authorize.
+	// Empty is deliberately invalid for bridge enrollment: the bridge refuses to
+	// guess a UI hostname from the Hub API hostname.
+	ui_origin: string,
 	device_auth_expires_in: int,
 	device_auth_interval: int,
 	device_auth_rate_limit: int,
@@ -65,7 +66,7 @@ default_config :: proc() -> Hub_Config {
 		auto_provision_users = true,
 		login_url = "",
 		logout_url = "https://auth.example.com/application/o/heimdall/end-session/",
-		device_auth_verification_uri = "https://auth.example.com/application/o/heimdall/device/",
+		ui_origin = "",
 		device_auth_expires_in = 600,
 		device_auth_interval = 5,
 		device_auth_rate_limit = 10,

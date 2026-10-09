@@ -145,7 +145,7 @@ api_code() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://127.0.0.1:$P
 # POST /api/v1/bridges/enroll". Both endpoints are deleted and 404 now, and
 # `bridge enroll --hub --enrollment-token` is gone with them.
 #
-# The three HTTP steps are driven directly rather than via `bridge enroll --ui`,
+# The three HTTP steps are driven directly rather than via `bridge enroll --hub`,
 # which waits for an approval and would need backgrounding plus output scraping.
 # Here the script IS the approver: this suite talks through the dev-proxy, which
 # authenticates every request as the local user, so this is a real authenticated

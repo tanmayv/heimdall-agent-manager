@@ -155,6 +155,7 @@ Grant :: struct {
 	minted_refresh_token:       string,
 	minted_expires_in:          int,
 	minted_refresh_expires_in:  int,
+	vault_delivery_expected:    bool,
 }
 
 // Authorize_Input is the public /device/authorize request body (ELDA-1).

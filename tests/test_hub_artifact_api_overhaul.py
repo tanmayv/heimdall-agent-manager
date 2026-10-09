@@ -206,7 +206,7 @@ def test_hub_artifact_api_overhaul() -> None:
             # it. Both the endpoint and that flag are gone.
             #
             # The three HTTP steps are driven here rather than shelling out to
-            # `ham-bridge enroll --ui`, which blocks waiting for an approval. The
+            # `ham-bridge enroll --hub`, which blocks waiting for an approval. The
             # credential is written to the same token file the bridge is started with.
             #
             # Hard refusals: bridge_public_key must be a 130-char lowercase-hex

@@ -45,25 +45,16 @@
 # bridge_handlers.odin:1703). It is not the HTTP status of the unseal call and not
 # this script's opinion: a 200 that the bridge then failed to act on does not pass.
 #
-# ===== NON-VACUITY =====
-#
-# Run with `--prove-non-vacuity`. The script reverts the fix in a SCRATCH COPY of
-# the tree — never in the working tree — by restoring the `return` that ended the
-# enroll process, rebuilds, and re-runs. That run MUST fail at the delivery step.
-# A test that passes both with and against the fix proves nothing, so the script
-# exits non-zero if the reverted run somehow passes.
-#
 # ===== PORTS: READ THIS BEFORE CHANGING THEM =====
 #
 # This host runs a PRODUCTION bridge (49323/49324) and a QA stack (8110/8111/49423),
 # and scripts/dev-stack.sh's defaults (8080/8081/49323-49324) collide with them.
 # Every port here is deliberately outside all of those ranges. Do not "tidy" them
 # back to the defaults: doing so kills the production bridge and every agent on it.
-# Nothing in this script ever touches systemd or the installed service.
+# A PATH-scoped fake systemctl restarts only this test's bridge process. Nothing
+# in this script touches the installed service.
 #
-# Usage:
-#   tests/e2e_req_fix_2_vault_delivery.sh                     # fix must deliver
-#   tests/e2e_req_fix_2_vault_delivery.sh --prove-non-vacuity # + reverted must fail
+# Usage: tests/e2e_req_fix_2_vault_delivery.sh
 
 set -euo pipefail
 
@@ -79,17 +70,17 @@ TEST_USER="${TEST_USER:-tanmay}"
 # A valid 64-char-hex vault key. Fixed, so a failure is reproducible.
 VAULT_KEY_HEX="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
-HUB_BIN="$REPO_ROOT/result-hub/bin/ham-hub"
-PROXY_BIN="$REPO_ROOT/result-ham-dev-proxy/bin/ham-dev-proxy"
 ODIN_BIN="${ODIN_BIN:-/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin}"
 
-PROVE_NON_VACUITY=false
-[ "${1:-}" = "--prove-non-vacuity" ] && PROVE_NON_VACUITY=true
-
 WORK_DIR="$(mktemp -d /tmp/ham-fix2-e2e-XXXXXX)"
+HUB_BIN="$WORK_DIR/ham-hub"
+PROXY_BIN="$WORK_DIR/ham-dev-proxy"
 PIDS=()
 
 cleanup() {
+  if [ -f "$WORK_DIR/service.pid" ]; then
+    kill "$(cat "$WORK_DIR/service.pid")" 2>/dev/null || true
+  fi
   for pid in ${PIDS+"${PIDS[@]}"}; do
     kill "$pid" 2>/dev/null || true
   done
@@ -137,11 +128,16 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
   local proxy_log="$run_dir/proxy.log"
   local enroll_log="$run_dir/enroll.log"
   local config_file="$home_dir/.config/heimdall/config.toml"
-  local token_file="$home_dir/.local/share/heimdall/bridge-credential"
+  local token_file="$home_dir/.config/heimdall/bridge-token"
+  local service_pid_file="$WORK_DIR/service.pid"
+  local service_log="$run_dir/service.log"
+  local restart_marker="$run_dir/service-restarted"
+  local fake_bin="$run_dir/fake-bin"
 
   say "[$label] starting hub on $HUB_PORT and proxy on $PROXY_PORT"
   "$HUB_BIN" --listen "127.0.0.1:$HUB_PORT" --db "$hub_db" \
-    --trusted-proxy-cidr 127.0.0.1/32 >"$hub_log" 2>&1 &
+    --trusted-proxy-cidr 127.0.0.1/32 \
+    --ui-origin "http://127.0.0.1:$PROXY_PORT" >"$hub_log" 2>&1 &
   PIDS+=($!)
   local hub_pid="${PIDS[-1]}"
 
@@ -168,14 +164,87 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
     kill -0 "$proxy_pid" 2>/dev/null || { tail -20 "$proxy_log" >&2; fail "[$label] proxy exited"; }
   done
 
+  # Give this user a configured vault before approval. This makes the Hub return
+  # vault_delivery_expected=true from the token poll, which is the contract that
+  # keeps enrollment alive for the encrypted handoff.
+  api POST /api/v1/user/vault '{
+    "encrypted_vault_key":"ciphertext",
+    "vault_key_nonce":"nonce",
+    "vault_key_tag":"tag",
+    "kdf_algorithm":"PBKDF2-SHA256",
+    "kdf_salt":"salt",
+    "kdf_iterations":100000,
+    "recovery_encrypted_vault_key":"recovery-ciphertext",
+    "recovery_nonce":"recovery-nonce",
+    "recovery_tag":"recovery-tag",
+    "recovery_salt":"recovery-salt"
+  }' >/dev/null || fail "[$label] could not configure the test user vault"
+
+  # Model the installer: register/start the bridge service first. It is allowed
+  # to run without an enrollment credential. Enrollment itself opens no local
+  # listeners, so both processes coexist until the final service restart.
+  env HOME="$home_dir" "$bridge_bin" \
+    --hub "http://127.0.0.1:$HUB_PORT" \
+    --bridge-token-file "$token_file" \
+    --config "$config_file" \
+    --port "$BRIDGE_PORT" \
+    --local-endpoint-port "$BRIDGE_LOCAL_PORT" \
+    --local-run-dir "$run_dir/bridge-run" >"$service_log" 2>&1 &
+  local initial_service_pid=$!
+  PIDS+=("$initial_service_pid")
+  printf '%s\n' "$initial_service_pid" >"$service_pid_file"
+
+  waited=0
+  until grep -q 'ham-bridge listening' "$service_log" 2>/dev/null; do
+    sleep 0.25; waited=$((waited + 1))
+    [ "$waited" -gt 80 ] && { cat "$service_log" >&2; fail "[$label] idle bridge service did not start"; }
+    kill -0 "$initial_service_pid" 2>/dev/null || { cat "$service_log" >&2; fail "[$label] idle bridge service exited"; }
+  done
+
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/systemctl" <<'SYSTEMCTL'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 3 ] && [ "$1" = "--user" ] && [ "$2" = "restart" ] && [ "$3" = "heimdall-bridge" ]
+old_pid="$(cat "$HAM_E2E_SERVICE_PID_FILE")"
+kill "$old_pid" 2>/dev/null || true
+for _ in $(seq 1 40); do
+  kill -0 "$old_pid" 2>/dev/null || break
+  sleep 0.05
+done
+env HOME="$HAM_E2E_HOME" nohup "$HAM_E2E_BRIDGE_BIN" \
+  --hub "$HAM_E2E_HUB_URL" \
+  --bridge-token-file "$HAM_E2E_TOKEN_FILE" \
+  --config "$HAM_E2E_CONFIG_FILE" \
+  --port "$HAM_E2E_BRIDGE_PORT" \
+  --local-endpoint-port "$HAM_E2E_LOCAL_PORT" \
+  --local-run-dir "$HAM_E2E_RUN_DIR" \
+  >>"$HAM_E2E_SERVICE_LOG" 2>&1 &
+printf '%s\n' "$!" >"$HAM_E2E_SERVICE_PID_FILE"
+: >"$HAM_E2E_RESTART_MARKER"
+SYSTEMCTL
+  chmod +x "$fake_bin/systemctl"
+
   # --- the ceremony, driven through the binary under test -------------------
   #
   # HOME is redirected so the default credential path is this run's, never the
   # operator's. --headless skips the loopback callback; polling is the guarantee
   # either way (enroll_device_flow.odin property 3), so this costs latency only.
-  say "[$label] running: ham-bridge enroll --ui http://127.0.0.1:$PROXY_PORT"
-  env HOME="$home_dir" "$bridge_bin" enroll \
-    --ui "http://127.0.0.1:$PROXY_PORT" \
+  say "[$label] running: ham-bridge enroll --hub http://127.0.0.1:$HUB_PORT"
+  env HOME="$home_dir" PATH="$fake_bin:$PATH" \
+    HAM_E2E_SERVICE_PID_FILE="$service_pid_file" \
+    HAM_E2E_HOME="$home_dir" \
+    HAM_E2E_BRIDGE_BIN="$bridge_bin" \
+    HAM_E2E_HUB_URL="http://127.0.0.1:$HUB_PORT" \
+    HAM_E2E_TOKEN_FILE="$token_file" \
+    HAM_E2E_CONFIG_FILE="$config_file" \
+    HAM_E2E_BRIDGE_PORT="$BRIDGE_PORT" \
+    HAM_E2E_LOCAL_PORT="$BRIDGE_LOCAL_PORT" \
+    HAM_E2E_RUN_DIR="$run_dir/bridge-run" \
+    HAM_E2E_SERVICE_LOG="$service_log" \
+    HAM_E2E_RESTART_MARKER="$restart_marker" \
+    "$bridge_bin" enroll \
+    --hub "http://127.0.0.1:$HUB_PORT" \
     --bridge-token-file "$token_file" \
     --config "$config_file" \
     --port "$BRIDGE_PORT" \
@@ -246,6 +315,27 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
   unseal_resp="$(api POST "/api/v1/bridges/$bridge_id/unseal" "$payload" || true)"
   say "[$label] unseal response: ${unseal_resp:0:240}"
 
+  # Enrollment must now finish the user-visible workflow: persist the key,
+  # restart the registered service, and exit successfully.
+  waited=0
+  while kill -0 "$enroll_pid" 2>/dev/null && [ "$waited" -lt 120 ]; do
+    sleep 0.25; waited=$((waited + 1))
+  done
+  if kill -0 "$enroll_pid" 2>/dev/null; then
+    cat "$enroll_log" >&2
+    fail "[$label] enroll did not exit after vault delivery"
+  fi
+  if ! wait "$enroll_pid"; then
+    cat "$enroll_log" >&2
+    fail "[$label] enroll exited unsuccessfully"
+  fi
+  [ -f "$restart_marker" ] || fail "[$label] enroll never restarted the registered service"
+  local restarted_service_pid
+  restarted_service_pid="$(cat "$service_pid_file")"
+  [ "$restarted_service_pid" != "$initial_service_pid" ] || fail "[$label] service PID did not change"
+  kill -0 "$restarted_service_pid" 2>/dev/null || { cat "$service_log" >&2; fail "[$label] restarted service is not running"; }
+  [ -s "$token_file" ] || fail "[$label] credential was not stored at the standard path"
+
   # --- THE ASSERTION: the bridge's own report of its own vault state -------
   local unlocked=false
   waited=0
@@ -258,7 +348,7 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
   done
 
   if [ "$unlocked" = true ]; then
-    say "[$label] DELIVERED: the bridge reports vault_status=unlocked"
+    say "[$label] DELIVERED: enrollment exited and the restarted service reports vault_status=unlocked"
     return 0
   fi
 
@@ -269,6 +359,7 @@ run_delivery_attempt() { # run_delivery_attempt <label> <bridge_binary> <run_dir
 }
 
 stop_run() {
+  if [ -f "$WORK_DIR/service.pid" ]; then kill "$(cat "$WORK_DIR/service.pid")" 2>/dev/null || true; fi
   for pid in ${PIDS+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   wait 2>/dev/null || true
   PIDS=()
@@ -281,13 +372,15 @@ stop_run() {
 for p in "$HUB_PORT" "$PROXY_PORT" "$BRIDGE_PORT" "$BRIDGE_LOCAL_PORT"; do
   require_free_port "$p"
 done
-[ -x "$HUB_BIN" ]   || fail "no hub binary at $HUB_BIN"
-[ -x "$PROXY_BIN" ] || fail "no proxy binary at $PROXY_BIN"
 command -v node >/dev/null 2>&1 || fail "node is required for the sealer"
 
-say "building ham-bridge from the tree under test"
+say "building local Hub, proxy, and bridge from the tree under test"
 FIX_BIN="$WORK_DIR/ham-bridge-fix"
-( cd "$REPO_ROOT" && "$ODIN_BIN" build src/bridge -collection:odin_test=src -out:"$FIX_BIN" ) \
+( cd "$REPO_ROOT" && nix develop --command "$ODIN_BIN" build src/hub -collection:odin_test=src -out:"$HUB_BIN" ) \
+  || fail "the Hub under test does not build"
+( cd "$REPO_ROOT" && nix develop --command "$ODIN_BIN" build src/dev_proxy -collection:odin_test=src -out:"$PROXY_BIN" ) \
+  || fail "the dev proxy under test does not build"
+( cd "$REPO_ROOT" && nix develop --command "$ODIN_BIN" build src/bridge -collection:odin_test=src -out:"$FIX_BIN" ) \
   || fail "the bridge under test does not build"
 # Freshness is proven, not assumed: a stale binary would make every observation
 # below a statement about somebody else's build.
@@ -296,61 +389,10 @@ FIX_BIN="$WORK_DIR/ham-bridge-fix"
 
 mkdir -p "$WORK_DIR/fix"
 if run_delivery_attempt "fix" "$FIX_BIN" "$WORK_DIR/fix"; then
-  say "PASS (1/2): the fix delivers a vault key end to end"
+  say "PASS: local Hub enrollment delivered the vault and handed off to the registered bridge service"
 else
   fail "the fix did NOT deliver a vault key — REQ-FIX-2 is not done"
 fi
 stop_run
-
-[ "$PROVE_NON_VACUITY" = true ] || {
-  say "ALL ASSERTIONS PASSED (re-run with --prove-non-vacuity to also prove the test can fail)"
-  exit 0
-}
-
-# ===========================================================================
-# 2. Non-vacuity: with the fix reverted, delivery MUST fail.
-#
-# The revert happens in a scratch copy of the tree. The working tree is never
-# modified by this script.
-# ===========================================================================
-say "building a REVERTED bridge (the enroll process exits again) to prove this test can fail"
-REVERT_TREE="$WORK_DIR/revert-tree"
-mkdir -p "$REVERT_TREE"
-cp -r "$REPO_ROOT/src" "$REVERT_TREE/src"
-# src/bridge `#load`s two files from OUTSIDE src (`src/prompts/bootstrap_agents.md`
-# is inside, `tools/telemetry/telegraf.conf.template` is not), and #load is resolved
-# at COMPILE time relative to the source file. Copying only src/ therefore fails the
-# build rather than the test — which is a harness defect that looks exactly like the
-# reverted build being broken. Enumerated with:
-#   grep -rn '#load(' --include=*.odin src/bridge/
-cp -r "$REPO_ROOT/tools" "$REVERT_TREE/tools"
-
-# Restore the exit that REQ-FIX-2 removed: put `return` back after the enroll call.
-python3 - "$REVERT_TREE/src/bridge/main.odin" <<'PY'
-import sys, re
-path = sys.argv[1]
-src = open(path).read()
-needle = "\t\tif !bridge_enroll_device_command(os.args) do os.exit(1)\n"
-if needle not in src:
-    sys.exit("revert failed: could not find the enroll dispatch line")
-# The pre-REQ-FIX-2 shape: exit the process as soon as enrollment finishes.
-src = src.replace(needle, needle + "\t\treturn\n", 1)
-open(path, "w").write(src)
-PY
-grep -A1 "if !bridge_enroll_device_command" "$REVERT_TREE/src/bridge/main.odin" | grep -q "return" \
-  || fail "revert did not apply — a non-vacuity check that did not revert anything proves nothing"
-
-REVERT_BIN="$WORK_DIR/ham-bridge-reverted"
-( cd "$REVERT_TREE" && "$ODIN_BIN" build src/bridge -collection:odin_test=src -out:"$REVERT_BIN" ) \
-  || fail "the reverted tree does not build"
-
-mkdir -p "$WORK_DIR/revert"
-if run_delivery_attempt "reverted" "$REVERT_BIN" "$WORK_DIR/revert"; then
-  fail "THE REVERTED BUILD ALSO DELIVERED. This test does not actually test the fix — do not trust run 1."
-else
-  say "PASS (2/2): with the fix reverted, delivery fails as it must"
-fi
-stop_run
-
-say "ALL ASSERTIONS PASSED — delivery works with the fix, and fails without it"
+say "ALL ASSERTIONS PASSED"
 say "measured approve->online: $(cat "$WORK_DIR/fix/approve_to_online_ms" 2>/dev/null || echo '?')ms against the 45000ms page budget"

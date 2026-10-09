@@ -644,7 +644,7 @@ scripts/dev-stack.sh enroll
 ```
 
 This drives the real device flow end to end and needs **no browser**. It starts
-`ham-bridge enroll --ui http://$PROXY --headless`, reads the user code the bridge prints,
+`ham-bridge enroll --hub http://$PROXY --headless`, reads the user code the bridge prints,
 and POSTs the approval itself through the dev-proxy — which authenticates every request as
 the local user, so that is a genuine authenticated approval through the production
 endpoint, not a test bypass. It writes:
@@ -656,9 +656,9 @@ endpoint, not a test bypass. It writes:
 
 ```bash
 # 1. The bridge asks for a code. NO auth, NO hub url, NO secret.
-#    --ui points at the UI ORIGIN whose /api is proxied to the hub, not at the hub.
+#    --hub points directly at the Hub API origin; the Hub returns the browser origin.
 result-bridge/bin/ham-bridge enroll \
-  --ui http://127.0.0.1:8080 --headless \
+  --hub http://127.0.0.1:8081 --headless \
   --bridge-token-file /tmp/my-bridge-token &
 
 # 2. It prints a URL and a short code. Approve as yourself:
@@ -706,7 +706,7 @@ and must re-enroll. It is told so explicitly rather than getting a bare 401 — 
 replies:
 
 > `this bridge's credential was issued by the removed enrollment flow and is no longer
-> accepted; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>`
+> accepted; re-enroll this machine with: ham-bridge enroll --hub <your-heimdall-url>`
 
 `heimdall status` and `heimdall doctor` print the same instruction.
 
@@ -715,7 +715,7 @@ replies:
 ## 10a. Device-grant enrollment with EXPIRING credentials, and proving revocation (verified 2026-10-07, REQ-IMPL-3)
 
 §10 above is the **current and only** enrollment flow: browser approval, driven by
-`ham-bridge enroll --ui` (and by `scripts/dev-stack.sh enroll`, which wraps it). The
+`ham-bridge enroll --hub` (and by `scripts/dev-stack.sh enroll`, which wraps it). The
 legacy pre-shared `hbe_` flow this section used to contrast itself against is **deleted**
 as of REQ-IMPL-6 — its endpoints return 404, so there is nothing left to compare against.
 
@@ -908,7 +908,7 @@ the printed URL carries no `cb=` parameter. Approval then goes through the API a
 bridge picks it up by polling:
 
 ```bash
-./result-bridge/bin/ham-bridge enroll --ui http://127.0.0.1:8295 --headless \
+./result-bridge/bin/ham-bridge enroll --hub http://127.0.0.1:8295 --headless \
   --bridge-token-file /tmp/ham-r7/s4-token > /tmp/ham-r7/s4-enroll.log 2>&1 &
 UC=$(grep -o 'user_code=[A-Z0-9-]*' /tmp/ham-r7/s4-enroll.log | head -1 | cut -d= -f2)
 curl -s -X POST http://127.0.0.1:8295/api/v1/device/approve \
@@ -1005,7 +1005,7 @@ earlier, for the wrong reason:
 ```bash
 SEC=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 curl -s "$HUB/api/v1/agent-instances" -H "Authorization: Bearer hbr_${REAL_BRIDGE_ID}.${SEC}"
-# 401 "…issued by the removed enrollment flow…; re-enroll this machine with: ham-bridge enroll --ui <your-heimdall-url>"
+# 401 "…issued by the removed enrollment flow…; re-enroll this machine with: ham-bridge enroll --hub <your-heimdall-url>"
 curl -s "$HUB/api/v1/agent-instances" -H "Authorization: Bearer hbz_nonsense.secret"
 # 401 "unsupported bearer token"   ← the control: a DIFFERENT, non-naming message
 ```
@@ -1155,14 +1155,14 @@ HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt
 | 2026-09-03 | **`wrapper.bootstrap.list` RPC:** the bridge local endpoint is a unix socket (`<bridge-run-dir>/bridge.sock`), not an HTTP port. The wrapper calls it over the socket; you can't curl it directly from outside the bridge process. |
 
 | 2026-10-08 | **`grep -ran 'A|B|C'` is BRE: the `\|` is a LITERAL character, so the pattern matches one 70-char string that exists nowhere and the sweep returns ZERO.** Walked into by a reviewer whose issue (`iss_18dc6a9916ae246c`) concluded "no test asserts this" from such a sweep; the test existed and had for two commits. Run verbatim it returns `lines=0`. **Use `-E` (or `rg`), and pair every sweep with a positive control that MUST match** — a sweep with no control cannot tell "absent" from "my matcher is broken". |
-| 2026-10-08 | **A text sweep CANNOT establish that a behaviour is untested, even with a correct regex — because tests assert on FRAGMENTS, not on the artifact.** Generalises the row above and is the sharper rule. `iss_18dc6a9916ae246c` swept for the message text `re-enroll this machine`; the real test asserts `strings.contains(err.message, "ham-bridge enroll --ui")` and `"re-enroll"`, so **no amount of regex-fixing would ever have found it** (corrected to `-E` the sweep returns 8 lines, still not the test). To answer "is this tested?", **invert the behaviour and run the suite** — a green run then proves the gap. Never grep for it. |
+| 2026-10-08 | **A text sweep CANNOT establish that a behaviour is untested, even with a correct regex — because tests assert on FRAGMENTS, not on the artifact.** Generalises the row above and is the sharper rule. `iss_18dc6a9916ae246c` swept for the message text `re-enroll this machine`; the real test asserts `strings.contains(err.message, "ham-bridge enroll --hub")` and `"re-enroll"`, so **no amount of regex-fixing would ever have found it** (corrected to `-E` the sweep returns 8 lines, still not the test). To answer "is this tested?", **invert the behaviour and run the suite** — a green run then proves the gap. Never grep for it. |
 | 2026-10-08 | **`CLOSE-WAIT` makes a torn-down socket look alive: `ss \| grep -c` never reaches 0 after revocation.** The Hub FINs immediately, but the bridge process holds its fd, leaving one `CLOSE-WAIT` entry indefinitely. Counting sockets therefore reports "revocation did not close the connection", which is false. **Read the socket STATE, not the count** (`ss -tnp` and look for `ESTAB` vs `CLOSE-WAIT`). See §10d. |
 | 2026-10-08 | **You cannot shorten the bridge access-token TTL to test refresh — it is a compile-time constant (`BRIDGE_ACCESS_TOKEN_TTL_SECONDS :: 3600`).** You do not need to: on a **fresh start** the first refresh fires at `BRIDGE_REFRESH_MIN_DELAY_SECONDS` = 30s by design, because the bridge cannot know its stored token's remaining life. Wait ~40s and diff both token files; assert `next refresh in N` falls in 2700–3060 to test the 80%+jitter arithmetic. **This does not exercise a real expiry** — say so rather than claiming the hour boundary. See §10d. |
 | 2026-10-08 | **A revoked bridge logs `cannot connect WS … proxy/tunnel down, hub unreachable, or TLS failed` on every retry — blaming the network for an auth refusal.** The one actionable line (`bridge credential REVOKED by the hub … RE-ENROLLMENT REQUIRED`) is printed **once, before** that noise, so diagnosing from `tail` of the log points you at the network instead of at re-enrollment. |
 | 2026-10-08 | **`ham-ctl shell run` can fail for the whole bridge with `bridge failed to start shell session: unauthorized: invalid vault encryption`.** Observed 2026-10-08 on `brg_18c6785be1b4e5e6` while the local test stack (isolated ports) was perfectly healthy — so it is the **agent's own runtime bridge vault**, not your harness or the hub under test. Fall back to `nohup <script> > log 2>&1 &` for long runs and say that you did; do not read it as a failure of the thing you are testing. |
 
 | 2026-10-08 | **A failed vault delivery has TWO different error strings at TWO different sites, and confusing them sends you to the wrong subsystem.** `AEAD tag verification failed: tamper detected…` is the **bridge** (`src/bridge/unseal_protocol.odin:275`) — the envelope arrived and the recipient lacks the matching private key; it is NOT a wrong password. `The operation failed for an operation-specific reason` is the **browser** failing before it seals, which IS what a wrong master password looks like. Three distinct ECDH keys exist in a cold enrollment (enroll-process / Hub's stored copy / live bridge) and only the last can decrypt — see §10d before debugging. |
-| 2026-10-08 | **A stale `result-*` symlink ARGUES FOR THE WRONG CONCLUSION: deleted endpoints answer 401 instead of 404, and `dev-stack.sh enroll` fails with flags the current source deliberately removed. Run `dev-stack.sh build` before believing either.** Hit by the REQ-IMPL-6 reviewer, who nearly filed a false finding. The tell: `dev-stack.sh enroll` reports `ham-bridge enroll requires --hub and --enrollment-token` — the PRE-REQ-IMPL-6 binary's text. Current `src/` prints `ham-bridge enroll requires --ui <https://your-heimdall-url> (or HAM_BRIDGE_UI_URL)` (`src/bridge/main.odin:82`), and the full sentence `requires --hub and --enrollment-token` exists nowhere in `src/` (verified: `grep -arn 'requires --hub and' src/` → exit 1). **Do not discriminate by grepping `enrollment-token` alone** — that substring legitimately appears on 3 lines of current source, including the NEW binary's own tombstone `--hub and --enrollment-token were REMOVED` (`main.odin:84`), so it hits whichever binary you are on. Match the whole sentence, or just check for `--ui`. **Why this is nastier than the grep hazards in the rows above:** a vacuous grep merely fails to obstruct a wrong conclusion, whereas the stale binary actively supplies evidence for one — the 401 reads as a surviving authenticated route while absent sibling routes correctly give 404, and the error text names flags you can go and confirm were deleted. After `build`, 404 across the board. |
+| 2026-10-08 | **A stale `result-*` symlink ARGUES FOR THE WRONG CONCLUSION: deleted endpoints answer 401 instead of 404, and `dev-stack.sh enroll` fails with flags the current source deliberately removed. Run `dev-stack.sh build` before believing either.** Hit by the REQ-IMPL-6 reviewer, who nearly filed a false finding. The tell: `dev-stack.sh enroll` reports `ham-bridge enroll requires --hub and --enrollment-token` — the PRE-REQ-IMPL-6 binary's text. Current `src/` prints `ham-bridge enroll requires --ui <https://your-heimdall-url> (or HAM_BRIDGE_HUB_URL)` (`src/bridge/main.odin:82`), and the full sentence `requires --hub and --enrollment-token` exists nowhere in `src/` (verified: `grep -arn 'requires --hub and' src/` → exit 1). **Do not discriminate by grepping `enrollment-token` alone** — that substring legitimately appears on 3 lines of current source, including the NEW binary's own tombstone `--hub and --enrollment-token were REMOVED` (`main.odin:84`), so it hits whichever binary you are on. Match the whole sentence, or just check for `--ui`. **Why this is nastier than the grep hazards in the rows above:** a vacuous grep merely fails to obstruct a wrong conclusion, whereas the stale binary actively supplies evidence for one — the 401 reads as a surviving authenticated route while absent sibling routes correctly give 404, and the error text names flags you can go and confirm were deleted. After `build`, 404 across the board. |
 
 ---
 

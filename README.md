@@ -296,11 +296,11 @@ installer checks the `socat` runtime dependency, pulls prebuilt binaries, verifi
 their checksum, and registers the service:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.example.com
 ```
 
 Use `heimdall update` for later binary updates. See `SELF_HOSTING.md` for the full
-deployment guide, including the `--hub` mirror layout and the Linux linger step
+deployment guide, including the GitHub release flow and the Linux linger step
 required to keep a headless bridge running after logout. The
 `nix-homelab-config` repository contains the NixOS deployment configuration.
 
@@ -332,9 +332,8 @@ If this machine has not been enrolled with the Hub before:
 2. **Approve the node in a browser:**
 
    There is **no enrollment token**. Nothing is generated on the Hub beforehand and
-   nothing secret is copied between machines. **You run the enrollment yourself** —
-   the installer prints the exact command and does not run it for you (see step 3) —
-   and it prints an approval link and a short code:
+   nothing secret is copied between machines. The installer runs enrollment and
+   prints an approval link and a short code:
 
    ```text
    Open this link:
@@ -361,58 +360,31 @@ If this machine has not been enrolled with the Hub before:
    check it by eye instead. Approving via the code therefore leaves the vault
    locked here — enrollment still succeeds.
 
-3. **The installer does NOT enroll for you, and does not start the service:**
-   - It installs the binaries, registers the service unit, writes the hub URL into
-     `~/.config/heimdall/config.toml` (nothing secret goes in that file), and then
-     prints the `ham-bridge enroll` command whose output step 2 above describes.
-   - It asks whether you want to configure client vault encryption, and for a master
-     password (`[y/N]`).
-   - It deliberately stops there. `ham-bridge enroll` does not exit on success — the
-     same process continues into the bridge runtime, because the approval link
-     carries this machine's encryption key in its fragment and only that live
-     process holds the matching half. An installer that enrolled in one process and
-     then started the service in another sealed the vault key to a key no live
-     process held, so delivery failed on every install. The two would also collide
-     on port 49323.
-   - **So: run the enroll command yourself and leave it running** — that is step 2
-     above. The registered service is for later; see *Handing over to the service*
-     below.
+3. **Enrollment hands off to the registered service:**
+   - The installer installs the binaries, registers and starts the service in an
+     idle state, and writes the Hub URL to `~/.config/heimdall/config.toml`.
+   - On approval, `ham-bridge enroll` saves the credential. If a user vault exists,
+     it opens only the Hub connection, receives the encrypted vault key into the
+     Linux user keyring, restarts the registered service, and exits.
+   - If no vault is configured, it skips the vault wait, restarts the service, and
+     exits. On macOS, the Keychain handoff is not yet persistent, so the restarted
+     service may need to be unlocked from Settings → Bridges.
 
 **Enrolling by hand (CI, or a re-run after a failed approval):**
 ```bash
 # Install binaries and register the service non-interactively
 curl -fsSL https://raw.githubusercontent.com/tanmayv/heimdall-agent-manager/main/scripts/install.sh | bash -s -- --hub https://hub.mundus.in
 
-# Enroll, approve in a browser — and LEAVE THIS RUNNING. It does not exit on
-# success: the same process continues into the bridge runtime, and it must, because
-# it is the only process holding the key half that the approval link's fragment was
-# sealed to. Watch for 'bridge hub runtime ready'.
-ham-bridge enroll --ui https://heimdall.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
+# Enroll against the Hub API. The Hub supplies the browser origin, enrollment
+# waits for any encrypted vault delivery, restarts the service, and exits.
+ham-bridge enroll --hub https://hub.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
 ```
 
-**Handing over to the service (optional, and it costs one manual unlock):**
-
-The enroll process above is already the bridge, so the service is only needed to
-bring the bridge back after a reboot without you. Stop the enroll process first —
-it and the service both bind port 49323 — then:
-```bash
-systemctl --user enable --now heimdall-bridge        # Linux
-# or macOS:
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist
-launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
-```
-The service is a fresh process, and it cannot inherit the vault key: that key only
-ever existed in the memory of the process you approved, and it is never written to
-disk (which is what keeps an archived approval link undecryptable). After the
-handover, unlock the vault again from **Settings → Bridges**.
-
-`--ui` takes the **UI origin** — scheme and host only, with no path. A URL with a
-path is rejected rather than trimmed. Note that the UI origin is not the Hub API
-host: for the Hub at `https://hub.mundus.in` the UI origin is
-`https://heimdall.mundus.in`, because the UI proxies `/api` through to the Hub.
-Passing the Hub host instead produces a 404 on the authorize call, and the error
-names `--ui` as the thing to check. `HAM_BRIDGE_UI_URL` sets the same value from
-the environment.
+`--hub` takes the **Hub API origin**—scheme and host only, with no path. A URL
+with a path is rejected rather than trimmed. The Hub must be started with
+`--ui-origin`; its authorize response carries that browser origin in the existing
+`verification_uri` wire field. `HAM_BRIDGE_HUB_URL` sets the Hub origin from the
+environment. No client derives `hub.*` and `heimdall.*` hostnames from each other.
 
 Add `--headless` on a machine with no browser of its own: it skips the local
 loopback shortcut and waits on polling instead, so you approve the link from
@@ -420,9 +392,8 @@ another device with no paste step. Enrollment succeeds either way — the loopba
 callback only saves a few seconds.
 
 Omit `--bridge-token-file` and the credential lands at
-`~/.local/share/heimdall/bridge-credential` instead; `HAM_BRIDGE_TOKEN_FILE` is
-honoured too. The installer passes the flag explicitly so the credential sits
-beside `config.toml`, which is also where the registered service looks for it.
+`~/.config/heimdall/bridge-token`; `HAM_BRIDGE_TOKEN_FILE` is honoured too. The
+installer and registered service use that same path.
 
 #### 3. Reconnecting a node that is already enrolled
 
@@ -453,11 +424,10 @@ longer accepted.
   token *is* the test, and the test is what destroys the family.
 
   So if a node has lost its credential, or you are rebuilding it from a backup that
-  excludes one, just enroll again — it costs one browser approval. Stop the running
-  bridge (or its service) first, since `enroll` continues into the runtime on the
-  same port, and leave the command running afterwards:
+  excludes one, just enroll again — it costs one browser approval. Enrollment uses
+  only a temporary Hub connection, then restarts the registered service and exits:
   ```bash
-  ham-bridge enroll --ui https://heimdall.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
+  ham-bridge enroll --hub https://hub.mundus.in --bridge-token-file ~/.config/heimdall/bridge-token
   ```
   Back up `~/.config/heimdall/config.toml` by all means; leave the token files out of
   the backup set.
@@ -482,5 +452,3 @@ longer accepted.
   ```bash
   sudo loginctl enable-linger "$USER"
   ```
-
-

@@ -25,6 +25,8 @@ import {
   resolveVaultStatus,
   type VaultStatus,
   getActiveVaultKey,
+  getActiveBridgeVaultKeyMaterial,
+  setActiveBridgeVaultKeyMaterial,
 } from '../../store/vaultSlice';
 import {
   fetchBridgePublicKey,
@@ -236,7 +238,7 @@ export default function BridgeSettingsPanel({
    */
   const handleBridgeUnlock = useCallback(async (bridgeId: string) => {
     if (!bridgeId) return;
-    const activeKey = getActiveVaultKey();
+    const activeKey = getActiveBridgeVaultKeyMaterial() || getActiveVaultKey();
     if (!activeKey) {
       setBridgeError((prev) => ({
         ...prev,
@@ -367,7 +369,11 @@ export default function BridgeSettingsPanel({
         vaultEnvelope.vault_key_tag
       );
 
-      dispatch(setVaultUnlocked({ key: decryptedVaultKey, rememberSession }));
+      dispatch(setVaultUnlocked({
+        key: decryptedVaultKey,
+        rememberSession,
+      }));
+      setActiveBridgeVaultKeyMaterial(unsealHex);
 
       // Unseal with the hex just derived. When the prompt was raised by a single
       // bridge row, unseal only that row: a prompt the operator answered for one

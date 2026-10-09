@@ -809,25 +809,7 @@ SOCAT
 }
 
 # --- service templates (mirrors SELF_HOSTING.md sections 2.8 and 2.9) -------
-# REQ-INST-1: the unit carries --hub ONLY when the operator passed it
-# explicitly. Otherwise the bridge reads [wrapper] daemon_url from config.toml
-# — the single source of truth — instead of a baked-in URL beating the enrolled
-# config on every start.
-#
-# REQ-ENROLL-9: that key is written by ensure_config_toml_hub_url below, after a
-# successful `ham-bridge enroll --ui`. It is NOT written by 'heimdall enroll',
-# which this task deleted --- attributing it to a command that no longer exists
-# sent the next reader looking for a writer that is not there.
-
-service_hub_flags_systemd() {
-  if [ -n "$hub_url" ]; then printf ' \\\n    --hub "%s"' "$hub_url"; fi
-}
-
-service_hub_flags_plist() {
-  if [ -n "$hub_url" ]; then
-    printf '    <string>--hub</string>\n    <string>%s</string>\n' "$hub_url"
-  fi
-}
+# The Hub URL is mandatory and is always explicit in the registered service.
 
 # --- REQ-INST-23: the SYSTEM-wide user-unit search path ------------------------
 # The directories systemd searches for USER units that the MACHINE provides, in
@@ -959,10 +941,11 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart="$install_dir/ham-bridge" \\
+    --hub "$hub_url" \\
     --bridge-token-file "%h/.config/heimdall/bridge-token" \\
     --port 49323 \\
     --local-endpoint-port 49324 \\
-    --local-run-dir /tmp/heimdall-bridge-local$(service_hub_flags_systemd)
+    --local-run-dir /tmp/heimdall-bridge-local
 Environment="PATH=$(service_path_value)"
 Environment="HEIMDALL_HAM_PTY_HOST_BIN=$install_dir/ham-pty-host"
 Environment=HEIMDALL_BRIDGE_PTY_HOST=true
@@ -988,7 +971,9 @@ render_launchd_plist() {
   <key>ProgramArguments</key>
   <array>
     <string>$install_dir/ham-bridge</string>
-$(service_hub_flags_plist)    <string>--bridge-token-file</string>
+    <string>--hub</string>
+    <string>$hub_url</string>
+    <string>--bridge-token-file</string>
     <string>$service_home/.config/heimdall/bridge-token</string>
     <string>--port</string>
     <string>49323</string>
@@ -1026,6 +1011,38 @@ $(service_hub_flags_plist)    <string>--bridge-token-file</string>
 PLIST
 }
 
+start_registered_bridge_service() {
+  say "Starting bridge service in idle enrollment mode..."
+  if [ "$os" = "linux" ]; then
+    if [ -n "$service_user" ]; then
+      service_uid="$(id -u "$service_user")"
+      if sudo -u "$service_user" env "XDG_RUNTIME_DIR=/run/user/$service_uid" \
+          systemctl --user daemon-reload >/dev/null 2>&1 \
+        && sudo -u "$service_user" env "XDG_RUNTIME_DIR=/run/user/$service_uid" \
+          systemctl --user enable --now heimdall-bridge >/dev/null 2>&1; then
+        say "Bridge service started for $service_user."
+      else
+        warn "Could not start the bridge service for $service_user; enrollment will print a manual recovery command if restart also fails."
+      fi
+    elif command -v systemctl >/dev/null 2>&1 \
+      && systemctl --user daemon-reload >/dev/null 2>&1 \
+      && systemctl --user enable --now heimdall-bridge >/dev/null 2>&1; then
+      say "Bridge service started via systemctl --user."
+    else
+      warn "Could not start the bridge service via systemctl --user."
+    fi
+  else
+    launchctl bootstrap "gui/$(id -u)" "$service_file" 2>/dev/null \
+      || launchctl load "$service_file" 2>/dev/null \
+      || true
+    if launchctl kickstart -k "gui/$(id -u)/works.earendil.heimdall-bridge" 2>/dev/null; then
+      say "Bridge service started via launchctl."
+    else
+      warn "Could not start the bridge service via launchctl."
+    fi
+  fi
+}
+
 # REQ-FIX-3: the ONE enrollment instruction, in one place.
 #
 # Printed once by run_interactive_onboarding, at the end of the run, and worded to
@@ -1043,7 +1060,7 @@ PLIST
 # The awkward sentence about Settings → Bridges is deliberate. A smooth flow that
 # silently leaves the vault sealed is precisely what shipped (iss_18dc71789af7a745).
 print_manual_enroll_step() {
-  local ui_url="$1"
+  local enroll_hub_url="$1"
   local token_path="$2"
   # --bridge-token-file is passed UNCONDITIONALLY and deliberately, even though the
   # bridge would derive the same path from HOME on a plain install.
@@ -1074,16 +1091,14 @@ print_manual_enroll_step() {
   cat <<EOF
 
   ------------------------------------------------------------------------
-  ENROLL THIS NODE — run this yourself, and LEAVE IT RUNNING:
+  ENROLL THIS NODE:
 
-    $install_dir/ham-bridge enroll --ui $ui_url$enroll_token$enroll_config
+    $install_dir/ham-bridge enroll --hub $enroll_hub_url$enroll_token$enroll_config
 
   Add --headless if this machine has no browser of its own.
 $run_as_note
-  It prints a link and a short code, then keeps running. Do not stop it: once
-  you approve, that same process becomes the bridge. The installer no longer
-  does this for you, and that is on purpose — the process that prints the link
-  must be the one that stays alive to receive the vault key.
+  It prints and opens an approval link, waits for approval and any encrypted
+  vault delivery, restarts the registered bridge service, then exits.
 
   Open the LINK on any device and approve. Nothing to compare on this path:
   the link carries this machine's encryption key in its fragment, so approving
@@ -1095,88 +1110,26 @@ $run_as_note
   the link's fragment and never reaches the page); unlock it afterwards from
   Settings → Bridges.
 
-  The registered service is NOT started by this install. When you do hand the
-  bridge over to it later:
-
-    - stop the enroll process first — it and the service both bind port 49323;
-    - then unlock the vault again from Settings → Bridges. The service is a
-      fresh process and cannot inherit the key, which only ever existed in the
-      memory of the process you approved. Nothing on disk can replace it.
   ------------------------------------------------------------------------
 EOF
 }
 
 print_onboarding() {
-  hub_display="<your-hub-url>"
-  if [ -n "$hub_url" ]; then hub_display="$hub_url"; fi
   cat <<EOF
 
 Installed heimdall $effective_version for $target.
 
-Next steps:
+The bridge service is registered and started in safe idle mode against:
+  $hub_url
 
-1. On THIS machine, enroll this node — and LEAVE IT RUNNING:
-     ham-bridge enroll --ui $(ui_origin_for_hub "$hub_display")
+Complete browser-approved enrollment interactively with:
+  $install_dir/ham-bridge enroll --hub $hub_url \
+    --bridge-token-file $service_home/.config/heimdall/bridge-token
 
-   It prints a link and a short code, then keeps running. Do not stop it: once
-   you approve, that same process becomes the bridge. It is not a step that
-   finishes and hands off to something else.
+The command waits for approval and any vault delivery, restarts the service,
+then exits. There is no enrollment token and no UI hostname to derive.
 
-   Open the LINK on any device and approve. There is nothing to compare on this
-   path — the link carries this machine's encryption key in its own fragment, so
-   approving it also unlocks the vault here. Nothing else to do afterwards.
-
-   The short code is the FALLBACK, for when that link cannot be opened. Enter it
-   on the enroll page, and THERE check that the key fingerprint on the page
-   matches the one this machine printed. On the code path the vault stays LOCKED,
-   because the key rides in the link's fragment and never reaches the page —
-   unlock it afterwards from Settings → Bridges.
-
-   There is NO enrollment token to create on the Hub and nothing secret to copy
-   between machines — the credential is delivered to this machine directly.
-   Add --headless if this machine has no browser of its own.
-EOF
-  if [ -n "$hub_url" ]; then
-    cat <<EOF
-
-   The registered service starts the bridge with --hub $hub_url (explicit
-   operator override passed to install.sh).
-EOF
-  else
-    cat <<EOF
-
-   No hub URL is baked into the service file: after enrolling, the bridge
-   reads the hub from config.toml ([wrapper] daemon_url), which this step
-   writes.
-EOF
-  fi
-  cat <<EOF
-
-2. Only LATER, to hand the bridge over to the registered service:
-
-   The process from step 1 is already the bridge. Starting the service replaces
-   it with a FRESH process, and that process cannot inherit the vault key: the
-   key exists only in the memory of the process you approved, and nothing on
-   disk can replace it. So after this handover you must unlock the vault again
-   from Settings → Bridges.
-
-   Stop the step-1 process before you start the service. Both bind port 49323,
-   and the second one to start will fail.
-EOF
-  if [ "$os" = "linux" ]; then
-    cat <<'EOF'
-     systemctl --user enable --now heimdall-bridge
-     systemctl --user status heimdall-bridge
-EOF
-  else
-    cat <<'EOF'
-     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/works.earendil.heimdall-bridge.plist
-     launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge
-EOF
-  fi
-  cat <<EOF
-
-Service file: $service_file (registered but not started; enrollment comes first)
+Service file: $service_file
 EOF
   if [ -n "$service_user" ]; then
     cat <<EOF
@@ -1318,27 +1271,6 @@ write_service_file() {
         || warn "could not run 'systemctl --user daemon-reload'; run it manually before starting the service"
     fi
   fi
-}
-
-# ui_origin_for_hub derives the UI origin from the hub API url for `enroll --ui`.
-#
-# `--ui` wants the origin whose /api is proxied to the Hub, which is the thing a
-# human opens in a browser — NOT the hub API host.
-#
-# The mapping MIRRORS THE UI'S OWN, so the two cannot disagree: BridgesPanel derives
-# the hub url from the page origin by rewriting a leading `heimdall.` label to
-# `hub.`, so the inverse is `hub.` -> `heimdall.`. Note it is a RELABEL, not a strip:
-# dropping the label would yield the bare apex domain, which serves neither.
-#
-# Anything without a leading `hub.` is returned unchanged, which is correct for a
-# single-origin deployment (and for `http://127.0.0.1:8080`, where the dev-proxy
-# serves both).
-#
-# Override with HEIMDALL_UI_URL when the deployment does not follow that convention.
-# Guessing wrong is not silent — it produces a 404 on the authorize call, and the
-# bridge's own error names `--ui` as the thing to check.
-ui_origin_for_hub() {
-  printf '%s' "$1" | sed -E 's#^(https?://)hub\.#\1heimdall.#'
 }
 
 ensure_config_toml_hub_url() {
@@ -1491,44 +1423,14 @@ run_interactive_onboarding() {
   # to this machine directly. So the installer no longer prompts for anything secret,
   # and there is nothing for an operator to paste, mistype, or leave in shell history.
   #
-  # `--ui` takes the UI ORIGIN, not the hub API url. The two differ in a typical
-  # deployment (heimdall.example.com vs hub.example.com), and passing the hub url
-  # produces a 404 on the authorize call, so it is derived rather than guessed.
-  # REQ-FIX-3: THE INSTALLER DOES NOT ENROLL. THIS IS THE FIX, NOT AN OMISSION.
+  # `--hub` takes the Hub API origin. The Hub returns the configured browser/UI
+  # origin in the authorize response, so the installer never guesses hostnames.
   #
-  # It used to run `ham-bridge enroll` synchronously and then start the unit. That
-  # sequence is the second site of iss_18dc71789af7a745, and it ran AUTOMATICALLY on
-  # every install, which is why field installs ended up with a bridge whose approval
-  # link could never unlock the vault:
-  #
-  #   1. `ham-bridge enroll` (process 1) minted the ephemeral ECDH pair whose public
-  #      half rides in the approval link's `bpk` fragment, wrote the credential, exited.
-  #   2. The unit started (process 2), which generated its OWN pair and published
-  #      THAT in its hello.
-  #   3. The approval page sealed the vault key to `bpk` — process 1's key — and the
-  #      Hub relayed it to the CONNECTED bridge, process 2. Wrong key, AEAD tag
-  #      failure, vault sealed. There is no fallback to the Hub's copy (REQ-IMPL-5
-  #      removed it deliberately), so this could not recover on its own.
-  #
-  # REQ-FIX-2 (074d7781) fixed the bridge side: `enroll` now falls through into the
-  # runtime in the SAME process, so the pair that produced `bpk` is the pair still
-  # alive to receive the seal. That makes the call here actively harmful rather than
-  # merely wrong — it never returns by design, so a synchronous `if "${enroll_cmd[@]}"`
-  # would hang the installer forever and never reach the service start at all.
-  #
-  # Backgrounding it instead was considered and rejected. The operator must SEE the
-  # link and the code, must keep that process alive, and must be told what the later
-  # handover to the service costs. A detached process satisfies none of those, and an
-  # `--enroll-only` flag was rejected too: a second enrollment path is exactly how the
-  # vault came to be silently never delivered. There is ONE path, and the operator
-  # drives it.
-  #
-  # So: register the unit (done above), tell the operator what to run, and DO NOT
-  # start the service in this run — the enroll process binds 49323, the same port the
-  # unit uses (:916), and whichever starts second fails.
+  # The registered service is already running. Without a credential it stays idle.
+  # Enrollment owns only a temporary Hub WebSocket, persists the credential and any
+  # vault-key handoff, restarts that service, and exits.
   if ! "$already_enrolled"; then
     manual_enroll_pending=true
-    enroll_ui_url="${HEIMDALL_UI_URL:-$(ui_origin_for_hub "$hub_url")}"
 
     if [ ! -x "$install_dir/ham-bridge" ]; then
       warn "ham-bridge was not installed to $install_dir; the enroll command below will not run until it is."
@@ -1538,51 +1440,15 @@ run_interactive_onboarding() {
       take_ownership "$service_home/.config/heimdall"
     fi
 
-    say "Node is not enrolled yet. Enrollment is yours to run — the full command and"
-    say "  what to expect are printed at the end of this run."
+    say "Node is not enrolled yet; the installer will run browser-approved enrollment."
   fi
 
-  # Start registered bridge service.
-  #
-  # REQ-FIX-3: skipped entirely when enrollment is still the operator's to do. Their
-  # enroll process IS the bridge and holds 49323; starting the unit here would be the
-  # second process on that port, and on the old code path it was also the process that
-  # held the wrong key.
-  if ! "$manual_enroll_pending"; then
-    say "Starting bridge service..."
-  fi
-  if "$manual_enroll_pending"; then
-    say "Not starting the bridge service: enrollment is yours to run, and that process becomes the bridge."
-    say "  Start the service only after you stop it — both bind port 49323."
-  elif [ "$os" = "linux" ]; then
-    if [ -n "$service_user" ]; then
-      say "Bridge service registered for user $service_user."
-      say "Start it as $service_user: systemctl --user enable --now heimdall-bridge"
-    elif command -v systemctl >/dev/null 2>&1; then
-      if systemctl --user is-active heimdall-bridge >/dev/null 2>&1; then
-        if systemctl --user restart heimdall-bridge 2>/dev/null; then
-          say "Bridge service restarted via systemctl --user."
-        else
-          warn "Could not restart bridge service via 'systemctl --user restart heimdall-bridge'."
-        fi
-      elif systemctl --user enable --now heimdall-bridge 2>/dev/null; then
-        say "Bridge service started via systemctl --user."
-      else
-        warn "Could not start bridge service via 'systemctl --user enable --now heimdall-bridge'."
-      fi
-    fi
-  else
-    launchctl bootstrap "gui/$(id -u)" "$service_file" 2>/dev/null || launchctl load "$service_file" 2>/dev/null || true
-    launchctl kickstart -k "gui/$(id -u)/works.earendil.heimdall-bridge" 2>/dev/null || true
-    say "Bridge service started via launchctl."
-  fi
+  # The service was registered and started before onboarding. With no
+  # credential it remains safely idle; enrollment restarts it after handoff.
 
   # Verify bridge is running and enrolled.
   #
-  # REQ-FIX-3: skipped when enrollment is pending. There is deliberately no
-  # credential and no running service yet, so these checks would report a healthy
-  # install as broken — and that noise is what would train an operator to ignore
-  # the step-1 instructions they actually need.
+  # Skip token verification until interactive enrollment has completed.
   if ! "$manual_enroll_pending"; then
     say "Verifying bridge service and enrollment..."
     if [ -s "$token_file" ]; then
@@ -1683,16 +1549,16 @@ run_interactive_onboarding() {
   # point should keep it that way.
   if "$manual_enroll_pending"; then
     say "Install complete — one step left, and it is yours to run."
-    print_manual_enroll_step "$enroll_ui_url" "$token_file"
+    print_manual_enroll_step "$hub_url" "$token_file"
 
     if [ -x "$install_dir/ham-bridge" ]; then
-      enroll_cmd=("$install_dir/ham-bridge" enroll --ui "$enroll_ui_url" --bridge-token-file "$token_file")
+      enroll_cmd=("$install_dir/ham-bridge" enroll --hub "$hub_url" --bridge-token-file "$token_file")
       if [ -n "$service_user" ]; then
         enroll_cmd+=(--config "$service_home/.config/heimdall/config.toml")
       fi
 
       echo ""
-      say "Running it now — this process becomes the bridge; leave it running."
+      say "Running enrollment now; it will restart the registered service and exit."
       say "Opening the approval link in your browser as soon as it is printed..."
 
       # The link only exists once ham-bridge has talked to the hub, so it cannot be
@@ -1736,7 +1602,11 @@ run_interactive_onboarding() {
       watcher_pid=$!
 
       set +e
-      "${enroll_cmd[@]}" 2>&1 | tee "$enroll_log"
+      if [ -n "$service_user" ]; then
+        sudo -u "$service_user" -H "${enroll_cmd[@]}" 2>&1 | tee "$enroll_log"
+      else
+        "${enroll_cmd[@]}" 2>&1 | tee "$enroll_log"
+      fi
       enroll_status=$?
       set -e
       kill "$watcher_pid" 2>/dev/null || true
@@ -1745,23 +1615,8 @@ run_interactive_onboarding() {
       if [ "$enroll_status" -ne 0 ]; then
         warn "ham-bridge enroll exited with status $enroll_status; re-run the command above manually if you still need to enroll."
       else
-        # This run now runs the enroll command itself (foreground, attached to
-        # THIS shell) instead of only printing it, but the handover it was
-        # already documented to need never changed: that process IS the
-        # bridge and holds port 49323 until it exits (Ctrl-C, the terminal
-        # closing, an SSH session dropping) or the approval times out. Once
-        # it's gone, the registered service above was deliberately never
-        # started -- say so explicitly, or an operator who only watched this
-        # run end cleanly has no signal that nothing is actually running now.
         echo ""
-        say "ham-bridge enroll has exited, so nothing is running this bridge right now."
-        if [ "$os" = "linux" ] && [ -z "${service_user:-}" ]; then
-          say "Start the registered service: systemctl --user enable --now heimdall-bridge"
-        elif [ "$os" = "linux" ]; then
-          say "Start it as $service_user: systemctl --user enable --now heimdall-bridge"
-        else
-          say "Start the registered service: launchctl bootstrap \"gui/\$(id -u)\" \"$service_file\" && launchctl kickstart -k \"gui/\$(id -u)/works.earendil.heimdall-bridge\""
-        fi
+        say "Enrollment complete; the registered bridge service was restarted with its credential."
       fi
     fi
   else
@@ -2570,6 +2425,20 @@ main() {
     exit 0
   fi
 
+  # Enrollment and the installed service share one mandatory Hub API origin.
+  # Resolve it before dependency checks or any write/network action.
+  if [ -z "$hub_url" ]; then
+    if is_interactive; then
+      printf 'Enter Hub URL: '
+      prompt_read input_hub
+      hub_url="$(printf '%s' "$input_hub" | tr -d '[:space:]')"
+      while [ "${hub_url%/}" != "$hub_url" ]; do hub_url="${hub_url%/}"; done
+    else
+      fail "--hub <url> is required in non-interactive mode; no Hub hostname is guessed"
+    fi
+  fi
+  [ -n "$hub_url" ] || fail "Hub URL is required"
+
   # --- REQ-INST-23: never silently shadow a system-managed unit -----------------
   # A unit in ~/.config/systemd/user takes PRECEDENCE over the same name in the
   # system unit directories. Writing ours there on a host that already has a
@@ -2629,11 +2498,7 @@ main() {
   fi
 
   # --- release URL resolution -------------------------------------------------
-  if [ -n "$hub_url" ]; then
-    base_url="$hub_url"
-    tarball_name="heimdall-local-$target.tar.gz"
-    effective_version="${version:-custom-hub-release}"
-  elif [ -n "$version" ]; then
+  if [ -n "$version" ]; then
     base_url="https://github.com/$GITHUB_REPO/releases/download/$version"
     tarball_name="heimdall-local-$target-$version.tar.gz"
     effective_version="$version"
@@ -2829,9 +2694,8 @@ This installer will never remove or modify $system_unit."
 
   # --- service file (REQ-INST-2: never silently clobber) -------------------------
   write_service_file
-  if [ -n "$hub_url" ]; then
-    ensure_config_toml_hub_url "$service_home/.config/heimdall/config.toml" "$hub_url"
-  fi
+  ensure_config_toml_hub_url "$service_home/.config/heimdall/config.toml" "$hub_url"
+  start_registered_bridge_service
 
   if is_interactive; then
     run_interactive_onboarding

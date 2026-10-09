@@ -82,6 +82,10 @@ DEVICE_PAGE_HTML :: `<!DOCTYPE html>
     <select id="targetBridge">
       <option value="">Create a new bridge</option>
     </select>
+    <div id="newBridgeNameWrap">
+      <label for="newBridgeName">Bridge name</label>
+      <input id="newBridgeName" maxlength="128">
+    </div>
     <p class="warn hidden" id="bridgeTargetWarning"></p>
   </div>
   <button id="approveBtn" type="button" class="primary">Approve</button>
@@ -100,6 +104,8 @@ const denyBtn = document.getElementById("denyBtn");
 const codeInput = document.getElementById("user_code");
 const bridgeTargetWrap = document.getElementById("bridgeTargetWrap");
 const targetBridgeSelect = document.getElementById("targetBridge");
+const newBridgeNameWrap = document.getElementById("newBridgeNameWrap");
+const newBridgeName = document.getElementById("newBridgeName");
 const bridgeTargetWarning = document.getElementById("bridgeTargetWarning");
 
 function showErr(msg) { errEl.textContent = msg || ""; resultEl.textContent = ""; }
@@ -116,16 +122,24 @@ function setDD(id, value) {
 // option label is built with createElement + textContent, never innerHTML --
 // a bridge's own label/machine_hostname is host-asserted, not something this
 // page may trust as markup.
-async function loadBridgeTargets() {
+async function loadBridgeTargets(hostname) {
   while (targetBridgeSelect.options.length > 1) targetBridgeSelect.remove(1);
   bridgeTargetWarning.classList.add("hidden");
   bridgeTargetWarning.textContent = "";
   targetBridgeSelect.value = "";
+  newBridgeNameWrap.classList.remove("hidden");
+  newBridgeName.value = String(hostname || "").trim() || "bridge";
   try {
     const res = await fetch("/api/v1/bridges", { method: "GET", credentials: "same-origin" });
     if (!res.ok) return; // non-fatal: the picker just stays "create a new bridge" only
     const payload = await res.json();
     const bridges = (payload && payload.data) || [];
+    const labels = new Set(bridges.map((br) => String((br && br.label) || "").trim().toLowerCase()));
+    const base = String(hostname || "").trim() || "bridge";
+    let candidate = base;
+    let count = 2;
+    while (labels.has(candidate.toLowerCase())) candidate = base + "-" + count++;
+    newBridgeName.value = candidate;
     for (const br of bridges) {
       if (!br || br.status === "revoked") continue; // a dead bridge has nothing to attach to
       const opt = document.createElement("option");
@@ -140,10 +154,12 @@ async function loadBridgeTargets() {
 
 targetBridgeSelect.addEventListener("change", () => {
   if (targetBridgeSelect.value) {
+    newBridgeNameWrap.classList.add("hidden");
     bridgeTargetWarning.textContent =
       "This replaces that bridge's credential and disconnects it, ending any of its running sessions.";
     bridgeTargetWarning.classList.remove("hidden");
   } else {
+    newBridgeNameWrap.classList.remove("hidden");
     bridgeTargetWarning.classList.add("hidden");
     bridgeTargetWarning.textContent = "";
   }
@@ -171,7 +187,7 @@ verifyBtn.addEventListener("click", async () => {
     deviceSection.classList.remove("hidden");
     if (d.is_bridge_enrollment) {
       bridgeTargetWrap.classList.remove("hidden");
-      await loadBridgeTargets();
+      await loadBridgeTargets(d.device_label);
     } else {
       bridgeTargetWrap.classList.add("hidden");
     }
@@ -188,11 +204,12 @@ async function decide(approve) {
   // own "approve a Bridge_Enrollment grant" branch), so sending it harmlessly
   // on a deny or a non-bridge grant is fine.
   const target_bridge_id = bridgeTargetWrap.classList.contains("hidden") ? "" : targetBridgeSelect.value;
+  const new_bridge_label = target_bridge_id ? "" : newBridgeName.value.trim();
   try {
     const res = await fetch("/api/v1/device/approve", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_code, approve, target_bridge_id }),
+      body: JSON.stringify({ user_code, approve, target_bridge_id, new_bridge_label }),
     });
     if (res.status === 409) { showErr("This code was already used."); return; }
     if (!res.ok) { showErr("Invalid or expired code."); return; }

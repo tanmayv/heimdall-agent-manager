@@ -229,8 +229,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.login_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--logout-url" && i + 1 < len(os.args) {
 			config.logout_url = strings.clone(os.args[i + 1]); i += 1
-		} else if arg == "--device-auth-verification-uri" && i + 1 < len(os.args) {
-			config.device_auth_verification_uri = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--ui-origin" && i + 1 < len(os.args) {
+			config.ui_origin = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--public-app-origin" && i + 1 < len(os.args) {
 			config.public_app_origin = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {

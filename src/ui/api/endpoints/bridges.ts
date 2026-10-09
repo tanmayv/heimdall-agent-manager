@@ -74,8 +74,8 @@ export async function lockBridge(bridgeId: string): Promise<{ ok: boolean }> {
  * call `unsealBridgeE2EE` per bridge and handle the error, as BridgeSettingsPanel does.
  */
 export async function unsealAllConnectedBridges(vaultKey?: CryptoKey | string | null): Promise<number> {
-  const { getActiveVaultKey } = await import('../../store/vaultSlice');
-  const key = vaultKey || getActiveVaultKey();
+  const { getActiveVaultKey, getActiveBridgeVaultKeyMaterial } = await import('../../store/vaultSlice');
+  const key = vaultKey || getActiveBridgeVaultKeyMaterial() || getActiveVaultKey();
   if (!key) return 0;
 
   try {

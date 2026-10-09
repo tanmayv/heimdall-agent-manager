@@ -226,3 +226,23 @@ test_enroll_without_target_bridge_id_mints_distinct_bridges :: proc(t: ^testing.
 	testing.expect_value(t, a.bridge.status, domain.Bridge_Status.Offline)
 	testing.expect_value(t, b.bridge.status, domain.Bridge_Status.Offline)
 }
+
+@(test)
+test_new_device_enrollment_uses_operator_bridge_label :: proc(t: ^testing.T) {
+	f := setup_attach_fixture(t, "custom-label")
+	defer teardown_attach_fixture(f)
+
+	result, ok, err := enroll_bridge_from_device_grant(&f.svc, Device_Enroll_Input{
+		owner_user_id = "approving-human",
+		bridge_public_key = "04112233",
+		bridge_key_fingerprint = "1111 2222 3333 4444",
+		os_user = "tanmay",
+		machine_hostname = "dawnstar",
+		machine_os = "linux",
+		new_bridge_label = "dawnstar-2",
+	})
+	testing.expect(t, ok, err.message)
+	testing.expect_value(t, result.bridge.label, "dawnstar-2")
+	testing.expect(t, result.bridge.label_is_user_customized, "operator-entered enrollment label must survive runtime hostname updates")
+	testing.expect_value(t, result.bridge.machine_hostname, "dawnstar")
+}

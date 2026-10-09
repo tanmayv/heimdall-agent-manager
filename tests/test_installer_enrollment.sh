@@ -7,7 +7,7 @@
 # ENROLLMENT HERE IS BROWSER-APPROVED (REQ-ENROLL-9, REQ-IMPL-6). The one-time
 # `hbe_` token the installer used to prompt for is DELETED, along with
 # `heimdall enroll <token>` and `POST /api/v1/bridges/enroll`. The installer now
-# shells out to `ham-bridge enroll --ui <origin>`, which prints a link and a short
+# shells out to `ham-bridge enroll --hub <origin>`, which prints a link and a short
 # code for a human to approve, and receives the credential directly.
 #
 # This file was INVERTED rather than deleted: its subject is the installer's
@@ -172,7 +172,7 @@ reset_mock_home() {
   mkdir -p "$MOCK_HOME/.config/heimdall"
 }
 
-# install_mock_ham_bridge [success|fail] --- stand in for `ham-bridge enroll --ui`.
+# install_mock_ham_bridge [success|fail] --- stand in for `ham-bridge enroll --hub`.
 #
 # The real binary asks the Hub for a user code, prints a link plus that code and a
 # key fingerprint, waits for a human to approve in a browser, and writes the
@@ -193,16 +193,16 @@ printf '%s\n' "\$*" >> "$MOCK_BRIDGE_ARGV"
 # instead of passing against a permissive stub.
 [ "\$1" = "enroll" ] || { echo "mock ham-bridge: unexpected subcommand \$1" >&2; exit 64; }
 token_file=""
-saw_ui=false
+saw_hub=false
 while [ \$# -gt 0 ]; do
   case "\$1" in
     --bridge-token-file) token_file="\$2"; shift 2 ;;
-    --ui) saw_ui=true; shift 2 ;;
+    --hub) saw_hub=true; shift 2 ;;
     --enrollment-token) echo "mock ham-bridge: --enrollment-token is deleted" >&2; exit 64 ;;
     *) shift ;;
   esac
 done
-"\$saw_ui" || { echo "mock ham-bridge: enroll without --ui" >&2; exit 64; }
+"\$saw_hub" || { echo "mock ham-bridge: enroll without --hub" >&2; exit 64; }
 echo "Open this link on any device to approve:  http://hub.example.test/enroll/device"
 echo "User code: WDJB-MJHT"
 echo "Key fingerprint: SHA256:mockmockmockmockmockmockmockmockmockmockmoc"
@@ -266,15 +266,15 @@ echo "$T1_OUTPUT" | grep -q "CONFIRMED_NON_INTERACTIVE" || {
 # INVERTED (REQ-ENROLL-9): was `grep -q "heimdall enroll hbe_... --hub"`.
 # The manual fallback must now hand the operator the device-flow command, and the
 # ceremony description, because with no hub url there is nothing else to go on.
-echo "$T1_OUTPUT" | grep -q "ham-bridge enroll --ui" || {
+echo "$T1_OUTPUT" | grep -q "ham-bridge enroll --hub" || {
   echo "FAIL: print_onboarding did not show the device-flow enroll command: $T1_OUTPUT" >&2
   exit 1
 }
-echo "$T1_OUTPUT" | grep -q "prints a link and a short code" || {
+echo "$T1_OUTPUT" | grep -q "browser-approved enrollment" || {
   echo "FAIL: print_onboarding did not describe the browser-approval ceremony: $T1_OUTPUT" >&2
   exit 1
 }
-echo "$T1_OUTPUT" | grep -q "NO enrollment token to create" || {
+echo "$T1_OUTPUT" | grep -q "There is no enrollment token" || {
   echo "FAIL: print_onboarding did not state that no enrollment token is needed: $T1_OUTPUT" >&2
   exit 1
 }
@@ -337,6 +337,7 @@ T4_OUTPUT="$(
     while [ "${hub_url%/}" != "$hub_url" ]; do hub_url="${hub_url%/}"; done
 
     # Feed "n" to vault prompt
+    start_registered_bridge_service
     run_interactive_onboarding <<EOF
 n
 EOF
@@ -412,7 +413,7 @@ echo "$T6_OUTPUT" | grep -q "No Hub URL provided; skipping interactive enrollmen
   exit 1
 }
 # INVERTED (REQ-ENROLL-9): was `grep -q "heimdall enroll hbe_... --hub"`.
-echo "$T6_OUTPUT" | grep -q "ham-bridge enroll --ui" || {
+echo "$T6_OUTPUT" | grep -q "ham-bridge enroll --hub" || {
   echo "FAIL: Expected device-flow fallback instructions when Hub URL is empty: $T6_OUTPUT" >&2
   exit 1
 }
@@ -462,7 +463,7 @@ if [ -s "$MOCK_BRIDGE_ARGV" ]; then
 fi
 echo "PASS: Test 7 passed (Pre-existing bridge token cleanly skips enrollment)!"
 
-# --- Test 8: The installer does NOT enroll and does NOT start a bridge (REQ-FIX-3) ---
+# --- Test 8: The installer starts the idle service, enrolls, and hands off ---
 #
 # INVERTED, and this is the inversion that matters most in this file.
 #
@@ -488,7 +489,7 @@ echo "PASS: Test 7 passed (Pre-existing bridge token cleanly skips enrollment)!"
 # expectations, differing only in whether a credential already exists. The pair is
 # what proves the new skip is NARROW --- this test alone would also pass if the
 # installer had simply stopped starting the service for everyone.
-echo "=== Test 8: Installer does not auto-enroll and starts no bridge (REQ-FIX-3) ==="
+echo "=== Test 8: Installer starts idle service and completes enrollment handoff ==="
 reset_mock_home
 : > "$MOCK_BRIDGE_ARGV"
 # A ham-bridge mock that WOULD succeed, deliberately. "Did not enroll" has to be
@@ -525,6 +526,7 @@ T8_OUTPUT="$(
     path_needs_action=false
     hub_url="http://hub.example.test"
 
+    start_registered_bridge_service
     run_interactive_onboarding <<EOF
 n
 EOF
@@ -537,8 +539,8 @@ EOF
 # that DID happen would have landed in it. Both mocks are exercised directly here,
 # AFTER the run, so the emptiness asserted below means "not invoked" rather than
 # "logging silently broken" or "mock not on PATH".
-( PATH="$MOCK_BIN:$PATH"; "$MOCK_BIN/ham-bridge" enroll --ui http://positive.control --bridge-token-file "$TMP_DIR/pc-token" >/dev/null 2>&1 || true )
-grep -q -- "enroll --ui http://positive.control" "$MOCK_BRIDGE_ARGV" || {
+( PATH="$MOCK_BIN:$PATH"; "$MOCK_BIN/ham-bridge" enroll --hub http://positive.control --bridge-token-file "$TMP_DIR/pc-token" >/dev/null 2>&1 || true )
+grep -q -- "enroll --hub http://positive.control" "$MOCK_BRIDGE_ARGV" || {
   echo "FAIL: positive control: the ham-bridge mock does not record its argv, so the negative below proves nothing" >&2
   exit 1
 }
@@ -554,13 +556,13 @@ grep -v -- "positive-control" "$MOCK_SYSTEMCTL_ARGV" > "$TMP_DIR/systemctl_argv_
 rm -f "$TMP_DIR/pc-token"
 
 # ---- THE LOAD-BEARING NEGATIVES ----------------------------------------------
-if [ -s "$TMP_DIR/bridge_argv_installer" ]; then
-  echo "FAIL: the installer invoked ham-bridge itself --- this is Branch A, the defect REQ-FIX-3 removes:" >&2
+if ! grep -q -- "enroll --hub http://hub.example.test --bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token" "$TMP_DIR/bridge_argv_installer"; then
+  echo "FAIL: the installer did not invoke browser-approved enrollment with the Hub URL and standard token path:" >&2
   cat "$TMP_DIR/bridge_argv_installer" >&2
   exit 1
 fi
-if grep -qE -- "enable --now heimdall-bridge|restart heimdall-bridge|start heimdall-bridge" "$TMP_DIR/systemctl_argv_installer"; then
-  echo "FAIL: the installer started the bridge service on an unenrolled node --- it would collide on port 49323 with the operator's enroll process:" >&2
+if ! grep -qE -- "enable --now heimdall-bridge|start heimdall-bridge" "$TMP_DIR/systemctl_argv_installer"; then
+  echo "FAIL: the installer did not start the registered service before enrollment:" >&2
   cat "$TMP_DIR/systemctl_argv_installer" >&2
   exit 1
 fi
@@ -572,15 +574,14 @@ grep -q -- "--port 49323" "$SVC_FILE_T8" || {
   cat "$SVC_FILE_T8" >&2
   exit 1
 }
-# No credential may appear, because nothing enrolled.
-if [ -s "$MOCK_HOME/.config/heimdall/bridge-token" ]; then
-  echo "FAIL: a credential exists although the installer did not enroll:" >&2
-  cat "$MOCK_HOME/.config/heimdall/bridge-token" >&2
+# Successful enrollment writes the standard credential path.
+if [ ! -s "$MOCK_HOME/.config/heimdall/bridge-token" ]; then
+  echo "FAIL: successful enrollment did not write the credential:" >&2
   exit 1
 fi
 # The old success/ceremony claims must be GONE, not merely unchecked. These are the
 # strings that reported a working install while the vault was sealed.
-for stale in "Enrolling node (browser approval required)" "Node successfully enrolled." "Bridge service started via systemctl" "Enrollment verified: bridge token is present"; do
+for stale in "LEAVE IT RUNNING" "Start the service only after you stop it" "both bind port 49323"; do
   if echo "$T8_OUTPUT" | grep -qF "$stale" ; then
     echo "FAIL: installer still claims '$stale' on a node it did not enroll: $T8_OUTPUT" >&2
     exit 1
@@ -593,21 +594,17 @@ echo "$T8_OUTPUT" | grep -q "ENROLL THIS NODE" || {
   echo "FAIL: the installer did not hand the operator the enrollment step: $T8_OUTPUT" >&2
   exit 1
 }
-echo "$T8_OUTPUT" | grep -q "LEAVE IT RUNNING" || {
-  echo "FAIL: the operator was not told to leave the enroll process running --- stopping it is what loses the vault key: $T8_OUTPUT" >&2
+echo "$T8_OUTPUT" | grep -q "restarts the registered bridge service" || {
+  echo "FAIL: the operator was not told enrollment hands off to the registered service: $T8_OUTPUT" >&2
   exit 1
 }
-# The UI ORIGIN, not the hub api url. `ui_origin_for_hub` relabels a leading `hub.`
-# to `heimdall.`, mirroring BridgesPanel's inverse mapping, because `--ui` wants the
-# origin a human opens in a browser. Passing the hub url 404s the authorize call on
-# every `hub.`-prefixed deployment, and only checking the relabelled form would miss
-# it --- hence the matching negative directly below.
-echo "$T8_OUTPUT" | grep -q -- "enroll --ui http://heimdall.example.test" || {
-  echo "FAIL: enroll command not printed with the UI origin: $T8_OUTPUT" >&2
+# Enrollment takes the explicit Hub API origin. The Hub returns its browser origin.
+echo "$T8_OUTPUT" | grep -q -- "enroll --hub http://hub.example.test" || {
+  echo "FAIL: enroll command not printed with the Hub origin: $T8_OUTPUT" >&2
   exit 1
 }
-if echo "$T8_OUTPUT" | grep -q -- "enroll --ui http://hub.example.test"; then
-  echo "FAIL: enroll command printed the hub API url instead of the UI origin: $T8_OUTPUT" >&2
+if echo "$T8_OUTPUT" | grep -q -- "enroll --hub http://heimdall.example.test"; then
+  echo "FAIL: installer guessed a UI hostname instead of preserving the Hub origin: $T8_OUTPUT" >&2
   exit 1
 fi
 echo "$T8_OUTPUT" | grep -q -- "--headless" || {
@@ -642,8 +639,8 @@ echo "$T8_OUTPUT" | grep -q -- "--bridge-token-file $MOCK_HOME/.config/heimdall/
 # first place; flattening also means an innocent re-wrap of the paragraph does not
 # produce a false failure.
 T8_FLAT="$(printf '%s' "$T8_OUTPUT" | tr '\n' ' ' | tr -s ' ')"
-echo "$T8_FLAT" | grep -q "then unlock the vault again from Settings → Bridges" || {
-  echo "FAIL: the HANDOVER block does not say the handover needs an unlock from Settings -> Bridges --- that is the named acceptance criterion, and a smooth flow that leaves the vault sealed is exactly what shipped: $T8_OUTPUT" >&2
+echo "$T8_FLAT" | grep -q "Enrollment complete; the registered bridge service was restarted with its credential" || {
+  echo "FAIL: successful enrollment did not report the completed service handoff: $T8_OUTPUT" >&2
   exit 1
 }
 echo "$T8_FLAT" | grep -q "unlock it afterwards from Settings → Bridges" || {
@@ -655,12 +652,12 @@ echo "$T8_FLAT" | grep -q "unlock it afterwards from Settings → Bridges" || {
 # warning was deleted, because the skip message further up still matched --- found by
 # disarming exactly that line (iss_18dc691c822d9a6e, mechanism: one assertion
 # satisfied by a different site than the one under test).
-echo "$T8_OUTPUT" | grep -q "stop the enroll process first — it and the service both bind port 49323" || {
-  echo "FAIL: the handover instructions do not warn that the enroll process and the service share port 49323: $T8_OUTPUT" >&2
+echo "$T8_OUTPUT" | grep -q "Bridge service started via systemctl --user" || {
+  echo "FAIL: the registered service was not started in idle mode before enrollment: $T8_OUTPUT" >&2
   exit 1
 }
-echo "$T8_OUTPUT" | grep -q "Start the service only after you stop it — both bind port 49323." || {
-  echo "FAIL: the service-skip message does not say why the service was not started: $T8_OUTPUT" >&2
+echo "$T8_OUTPUT" | grep -q "Running enrollment now; it will restart the registered service and exit" || {
+  echo "FAIL: enrollment did not describe its automatic service restart: $T8_OUTPUT" >&2
   exit 1
 }
 # The two paths must be described as they BEHAVE (enroll_device_flow.odin:1250-1265):
@@ -682,9 +679,9 @@ if [ -f "$MOCK_HOME/.config/heimdall/config.toml" ] && \
   cat "$MOCK_HOME/.config/heimdall/config.toml" >&2
   exit 1
 fi
-echo "PASS: Test 8 passed (Installer does not auto-enroll and starts no competing bridge)!"
+echo "PASS: Test 8 passed (Idle service and enrollment handoff verified)!"
 
-# --- Test 9: The service-start skip is NARROW, not a blanket disable (REQ-FIX-3) ---
+# --- Test 9: Existing credentials skip enrollment but keep service startup ---
 #
 # INVERTED. This test used to model an approval that never happened: the installer
 # ran enroll, enroll failed, and the installer printed manual steps. There is no such
@@ -701,7 +698,7 @@ echo "PASS: Test 8 passed (Installer does not auto-enroll and starts no competin
 # So: identical harness to Test 8, identical mocks, one difference --- a credential on
 # disk --- and the opposite expectation. Together the two pin the skip to exactly the
 # unenrolled case.
-echo "=== Test 9: Service-start skip applies only to unenrolled nodes (REQ-FIX-3) ==="
+echo "=== Test 9: Existing credential skips enrollment and keeps service startup ==="
 reset_mock_home
 : > "$MOCK_BRIDGE_ARGV"
 : > "$MOCK_SYSTEMCTL_ARGV"
@@ -722,6 +719,7 @@ T9_OUTPUT="$(
     path_needs_action=false
     hub_url="http://hub.example.test"
 
+    start_registered_bridge_service
     run_interactive_onboarding <<EOF
 n
 EOF
@@ -764,7 +762,7 @@ if [ -s "$MOCK_BRIDGE_ARGV" ]; then
   exit 1
 fi
 assert_no_deleted_enrollment_surface "already-enrolled service start" "$T9_OUTPUT"
-echo "PASS: Test 9 passed (Service-start skip is narrow: already-enrolled nodes still start)!"
+echo "PASS: Test 9 passed (Existing credential skipped enrollment; service still started)!"
 
 # --- Test 10: Client vault encryption opt-out (REQ-INST-ENROLL-4) ---
 echo "=== Test 10: Client vault encryption opt-out (REQ-INST-ENROLL-4) ==="
@@ -1016,7 +1014,7 @@ echo "PASS: Test 13 passed (is_interactive accurately detects piped interactive 
 # --- Test 15: Piped non-terminal stdout fallback to non-interactive (REQ-INST-ENROLL-5) ---
 echo "=== Test 15: Piped non-terminal stdout fallback (REQ-INST-ENROLL-5) ==="
 T15_OUTPUT="$(
-  cat "$INSTALLER" | bash -s -- --dry-run
+  cat "$INSTALLER" | bash -s -- --dry-run --hub http://hub.example.test
 )"
 if echo "$T15_OUTPUT" | grep -q "Enter Hub URL:"; then
   echo "FAIL: Prompted for Hub URL when stdout redirected / non-interactive" >&2
@@ -1026,8 +1024,8 @@ if echo "$T15_OUTPUT" | grep -q "Enter one-time enrollment token"; then
   echo "FAIL: Prompted for enrollment token when stdout redirected / non-interactive" >&2
   exit 1
 fi
-echo "$T15_OUTPUT" | grep -q "Next steps:" || {
-  echo "FAIL: Fallback instructions missing from non-interactive output" >&2
+echo "$T15_OUTPUT" | grep -q "ham-bridge enroll --hub http://hub.example.test" || {
+  echo "FAIL: enrollment instructions missing from non-interactive output" >&2
   exit 1
 }
 echo "PASS: Test 15 passed (Piped non-terminal execution cleanly falls back to non-interactive)!"
@@ -1145,8 +1143,8 @@ grep -q 'daemon_id = "brg_existing_node"' "$CFG_FILE" || {
 }
 echo "PASS: Test 17 passed (Pre-existing enrollment updated config.toml with new Hub URL)!"
 
-# --- Test 18: Service is properly restarted/reloaded when already active (REQ-HUB-URL-4, REQ-HUB-URL-5c) ---
-echo "=== Test 18: Active service is restarted during onboarding (REQ-HUB-URL-4, REQ-HUB-URL-5c) ==="
+# --- Test 18: Service is enabled before onboarding (REQ-HUB-URL-4, REQ-HUB-URL-5c) ---
+echo "=== Test 18: Service is enabled before onboarding (REQ-HUB-URL-4, REQ-HUB-URL-5c) ==="
 reset_mock_home
 rm -rf "$MOCK_BIN"
 mkdir -p "$MOCK_BIN" "$MOCK_HOME/.config/heimdall"
@@ -1181,24 +1179,25 @@ T18_OUTPUT="$(
     path_needs_action=false
     hub_url="https://restarted-hub.corp"
 
+    start_registered_bridge_service
     run_interactive_onboarding <<EOF
 n
 EOF
   ' 2>&1
 )"
 
-echo "$T18_OUTPUT" | grep -q "Bridge service restarted via systemctl --user." || {
-  echo "FAIL: Expected restart message not found: $T18_OUTPUT" >&2
+echo "$T18_OUTPUT" | grep -q "Bridge service started via systemctl --user." || {
+  echo "FAIL: Expected service-start message not found: $T18_OUTPUT" >&2
   exit 1
 }
-grep -q -- "--user restart heimdall-bridge" "$LOG_SYSTEMCTL" || {
-  echo "FAIL: systemctl --user restart heimdall-bridge was not called:" >&2
+grep -q -- "--user enable --now heimdall-bridge" "$LOG_SYSTEMCTL" || {
+  echo "FAIL: systemctl --user enable --now heimdall-bridge was not called:" >&2
   cat "$LOG_SYSTEMCTL" >&2
   exit 1
 }
-echo "PASS: Test 18 passed (Active service restarted via systemctl --user restart)!"
+echo "PASS: Test 18 passed (Service enabled before onboarding)!"
 
-# --- Test 19: a never-exiting `ham-bridge enroll` does not hang the installer (REQ-FIX-3) ---
+# --- Test 19: enrollment exits after service handoff ---
 #
 # THE ACCEPTANCE CRITERION THAT NO STATIC CHECK CAN REACH. Everything above asserts
 # the installer does not CALL enroll; this asserts the consequence that made the call
@@ -1215,20 +1214,28 @@ echo "PASS: Test 18 passed (Active service restarted via systemctl --user restar
 # doing that --- reintroducing the call makes this test exceed the timeout.
 #
 # `bash -n` passes on the hanging version. This is the test that does not.
-echo "=== Test 19: never-exiting enroll does not hang the installer (REQ-FIX-3) ==="
+echo "=== Test 19: enrollment exits after service handoff ==="
 reset_mock_home
 : > "$MOCK_SYSTEMCTL_ARGV"
 mkdir -p "$MOCK_BIN"
-# A `ham-bridge` that behaves like the real post-REQ-FIX-2 binary: prints the
-# ceremony, then stays alive forever as the bridge.
+# A `ham-bridge` that models the new contract: persist the credential, restart
+# the registered service, then exit successfully.
 cat > "$MOCK_BIN/ham-bridge" <<'MOCKEOF'
 #!/usr/bin/env bash
 [ "$1" = "enroll" ] || { echo "mock ham-bridge: unexpected subcommand $1" >&2; exit 64; }
+token_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bridge-token-file) token_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 echo "Enroll this machine"
 echo "  Open this link:  http://heimdall.example.test/enroll/device#bpk=deadbeef"
-echo "Waiting for approval (expires in 14m60s)…"
-# The point of the mock: enrollment does not terminate. It IS the bridge now.
-sleep 3600
+mkdir -p "$(dirname "$token_file")"
+echo "hba_btk_handoff" > "$token_file"
+systemctl --user restart heimdall-bridge
+echo "registered bridge service restarted with the new credential"
 MOCKEOF
 chmod +x "$MOCK_BIN/ham-bridge"
 
@@ -1244,6 +1251,7 @@ T19_OUTPUT="$(
       path_needs_action=false
       hub_url="http://hub.example.test"
 
+      start_registered_bridge_service
       run_interactive_onboarding <<EOF
 n
 EOF
@@ -1255,9 +1263,7 @@ set -e
 T19_ELAPSED=$(( $(date +%s) - T19_START ))
 
 if [ "$T19_RC" -eq 124 ]; then
-  echo "FAIL: the installer HUNG (timed out after ${T19_ELAPSED}s) against a ham-bridge enroll that never exits." >&2
-  echo "       This is the REQ-FIX-3 defect: a synchronous enroll call blocks forever and the" >&2
-  echo "       service start is never reached. Partial output:" >&2
+  echo "FAIL: enrollment did not exit after its service handoff:" >&2
   echo "$T19_OUTPUT" >&2
   exit 1
 fi
@@ -1265,20 +1271,17 @@ echo "$T19_OUTPUT" | grep -q "ONBOARDING_RETURNED" || {
   echo "FAIL: onboarding did not run to completion (rc=$T19_RC, ${T19_ELAPSED}s): $T19_OUTPUT" >&2
   exit 1
 }
-# Completed, and completed because it never started that process --- not because the
-# mock happened to exit early. Proven by the clock: `sleep 3600` cannot have been
-# waited on inside a run this short.
 if [ "$T19_ELAPSED" -ge 20 ]; then
-  echo "FAIL: onboarding returned but took ${T19_ELAPSED}s, so it was waiting on something it should not have started" >&2
+  echo "FAIL: onboarding returned but took ${T19_ELAPSED}s" >&2
   exit 1
 fi
-# And still no competing bridge service.
-if grep -qE -- "enable --now heimdall-bridge|restart heimdall-bridge" "$MOCK_SYSTEMCTL_ARGV"; then
-  echo "FAIL: started the bridge service on an unenrolled node:" >&2
+# The service starts before enrollment and enrollment restarts it at handoff.
+if ! grep -q -- "restart heimdall-bridge" "$LOG_SYSTEMCTL"; then
+  echo "FAIL: enrollment did not restart the registered bridge service:" >&2
   cat "$MOCK_SYSTEMCTL_ARGV" >&2
   exit 1
 fi
-echo "PASS: Test 19 passed (installer completes in ${T19_ELAPSED}s against a never-exiting enroll)!"
+echo "PASS: Test 19 passed (enrollment handed off and exited in ${T19_ELAPSED}s)!"
 
 # --- Test 20: --service-user installs get --config and a run-as note (REQ-FIX-3) ---
 #
@@ -1317,7 +1320,7 @@ EOF
 # invisible: `curl | sudo bash` leaves the shell as root while the service runs as
 # someone else, so --config without --bridge-token-file splits the config from the
 # credential and the bridge cannot find its own token.
-echo "$T20_OUTPUT" | grep -q -- "enroll --ui http://heimdall.example.test --bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token --config $MOCK_HOME/.config/heimdall/config.toml" || {
+echo "$T20_OUTPUT" | grep -q -- "enroll --hub http://hub.example.test --bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token --config $MOCK_HOME/.config/heimdall/config.toml" || {
   echo "FAIL: the printed enroll command does not carry both --bridge-token-file and --config on a --service-user install, so the credential and the config can land in different homes: $T20_OUTPUT" >&2
   exit 1
 }
@@ -1356,9 +1359,10 @@ if echo "$T20_PLAIN" | grep -q "Run it as "; then
   echo "FAIL: a run-as note was printed on an install with no service user: $T20_PLAIN" >&2
   exit 1
 fi
-# Still no auto-enroll on either path.
-if [ -s "$MOCK_BRIDGE_ARGV" ]; then
-  echo "FAIL: the installer invoked ham-bridge on a --service-user install:" >&2
+# The nonexistent svcuser cannot execute the mock through sudo in this hermetic
+# test, but the subsequent plain path must still invoke enrollment.
+if ! grep -q -- "enroll --hub http://hub.example.test --bridge-token-file $MOCK_HOME/.config/heimdall/bridge-token" "$MOCK_BRIDGE_ARGV"; then
+  echo "FAIL: the plain enrollment path was not invoked:" >&2
   cat "$MOCK_BRIDGE_ARGV" >&2
   exit 1
 fi
@@ -1382,4 +1386,3 @@ fi
 echo ""
 echo "ALL 19 INSTALLER ONBOARDING AND ENROLLMENT TESTS PASSED SUCCESSFULLY!"
 exit 0
-

@@ -160,12 +160,15 @@ enroll() {
   local log="$RUN_DIR/bridge/enroll.log"
   rm -f "$log" "$BRIDGE_TOKEN_FILE" "$BRIDGE_TOKEN_FILE.refresh"
 
-  # --headless skips the loopback callback listener, so approval is observed by
-  # polling. --ui points at the PROXY, not the hub: the device flow composes its
-  # approval URL from the UI origin whose /api is proxied to the hub.
-  echo "[dev-stack] starting device-flow enrollment (headless) against http://$PROXY_ADDR"
-  ./result-bridge/bin/ham-bridge enroll \
-    --ui "http://$PROXY_ADDR" --headless \
+  # The production command restarts a registered service after handoff. This
+  # source-tree harness owns lifecycle itself, so a scoped fake acknowledges
+  # that restart while the harness starts the bridge in its normal start step.
+  mkdir -p "$RUN_DIR/enroll-bin"
+  printf '#!/bin/sh\nexit 0\n' > "$RUN_DIR/enroll-bin/systemctl"
+  chmod 0755 "$RUN_DIR/enroll-bin/systemctl"
+  echo "[dev-stack] starting device-flow enrollment (headless) against http://$HUB_ADDR"
+  PATH="$RUN_DIR/enroll-bin:$PATH" ./result-bridge/bin/ham-bridge enroll \
+    --hub "http://$HUB_ADDR" --headless \
     --config "$BRIDGE_CONFIG" \
     --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$log" 2>&1 &
   local enroll_pid=$!
@@ -276,6 +279,7 @@ start() {
     --listen "$HUB_ADDR" --db "$HUB_DB" \
     --migrations-dir "$MIGRATIONS" \
     --trusted-proxy-cidr 127.0.0.1/32 \
+    --ui-origin "http://$PROXY_ADDR" \
     >"$RUN_DIR/hub.log" 2>&1 &
   echo $! > "$(_pidfile hub)"
   disown $!

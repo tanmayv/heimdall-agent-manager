@@ -232,7 +232,11 @@ main :: proc() {
 	// --- approval dispatches to the BRIDGE minter, and only to it ---
 	user_mints_before := len(MINT_CALLS)
 	bridge_mints_before := len(BRIDGE_MINT_CALLS)
-	abok, aberr := device_auth.approve(&svc, {user_code = bres.user_code, approve = true},
+	abok, aberr := device_auth.approve(&svc, {
+		user_code = bres.user_code,
+		approve = true,
+		new_bridge_label = "dawnstar-2",
+	},
 		"approving-human-007", "203.0.113.9", "Mozilla/5.0 approval-page")
 	assert_true(abok, "approve bridge grant succeeds")
 	assert_eq(aberr.code, domain.Error_Code.None, "approve bridge grant no error")
@@ -250,6 +254,7 @@ main :: proc() {
 	assert_eq(bcall.bridge_key_fingerprint, BPK_FP, "bridge minter got the hub-computed fingerprint")
 	assert_eq(bcall.os_user, "tanmay", "bridge minter got os_user")
 	assert_eq(bcall.device_label, "dawnstar", "bridge minter got the machine descriptor")
+	assert_eq(bcall.new_bridge_label, "dawnstar-2", "bridge minter got the operator's new bridge label")
 
 	bgrant_after, bgaok := device_auth.get_grant(store, bres.device_code)
 	assert_true(bgaok, "bridge grant readable after approve")
@@ -259,6 +264,24 @@ main :: proc() {
 	assert_eq(bgrant_after.minted_bridge_id, BRIDGE_MINT_ID, "grant records the minted brg_")
 	assert_eq(bgrant_after.minted_token_id, BRIDGE_MINT_ID, "token_id is the brg_ for a bridge grant")
 	fmt.println("REQ-IMPL-2 OK: bridge grant mints via the bridge minter only, owner from context")
+
+	// The two identity choices are mutually exclusive. Reject the request before
+	// the minter can rotate an existing bridge while also accepting a new label.
+	conflict_res, conflict_ok, _ := device_auth.authorize(&svc, {
+		client = "ham-bridge", bridge_public_key = BPK,
+		code_challenge = PKCE_CHALLENGE, code_challenge_method = "S256",
+	}, "127.0.0.1:1", "")
+	assert_true(conflict_ok, "authorize bridge grant for conflicting identity choices")
+	conflict_mints_before := len(BRIDGE_MINT_CALLS)
+	conflict_approved, conflict_err := device_auth.approve(&svc, {
+		user_code = conflict_res.user_code,
+		approve = true,
+		target_bridge_id = "brg_existing",
+		new_bridge_label = "dawnstar-2",
+	}, "owner-conflict", "1.2.3.4", "UA")
+	assert_true(!conflict_approved, "target bridge and new label cannot be approved together")
+	assert_eq(conflict_err.code, domain.Error_Code.Validation_Failed, "conflicting identity choices -> validation error")
+	assert_eq(len(BRIDGE_MINT_CALLS), conflict_mints_before, "conflicting identity choices never reach the minter")
 
 	// --- and the converse: an ELDA grant is NEVER served by the bridge minter ---
 	eres2, eok3, _ := device_auth.authorize(&svc, {client = "electron", device_label = "MBP"}, "127.0.0.1:1", "")

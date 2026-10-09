@@ -5,12 +5,11 @@
 //
 // WHAT THE OPERATOR TYPES, AND WHY THAT IS THE WHOLE INPUT:
 //
-//	ham-bridge enroll --ui https://heimdall.mundus.in
+//	ham-bridge enroll --hub https://hub.mundus.in
 //
-// One hostname. No enrollment token, no Hub URL, and deliberately NO discovery
-// document: REQ-ENROLL-10's same-origin proxy puts the Hub API under `<ui>/api`,
-// so every endpoint is derivable from that single origin and a signed discovery
-// document would be a second trust root for no gain (REQ-ENROLL-1, dissolved).
+// One hostname. No enrollment token and no client-side UI hostname guess. The
+// bridge talks to `--hub`; the Hub's authorize response supplies the browser
+// origin in its RFC-aligned `verification_uri` field.
 //
 // ===== THE FOUR PROPERTIES THIS FILE EXISTS TO HOLD =====
 //
@@ -112,6 +111,7 @@ BRIDGE_ENROLL_SECRET_BYTES :: 32
 // that returns a nonsense `expires_in` cannot park the process forever.
 BRIDGE_ENROLL_MAX_WAIT_SECONDS :: 900
 BRIDGE_ENROLL_DEFAULT_INTERVAL_SECONDS :: 5
+BRIDGE_ENROLL_VAULT_WAIT_SECONDS :: 45
 
 // How long bridge_enroll_callback_shutdown waits for the listener thread to exit,
 // in 10ms steps. Two seconds is far more than a woken accept() needs; it is a
@@ -169,6 +169,7 @@ Bridge_Enroll_Credential :: struct {
 	refresh_token:      string,
 	expires_in:         int,
 	refresh_expires_in: int,
+	vault_delivery_expected: bool,
 }
 
 // ===== Base64url: used for PKCE and the callback nonce, NOT for the key =====
@@ -275,15 +276,15 @@ bridge_enroll_fingerprint :: proc(public_key_hex: string, allocator := context.a
 	return strings.to_string(out), true
 }
 
-// bridge_enroll_ui_origin normalises and validates the single `--ui` input. It
+// bridge_enroll_hub_url normalises and validates the single `--hub` input. It
 // accepts an origin only: scheme + authority, no path, query or fragment, and no
 // trailing slash in the result. Reusing bridge_hub_url_supported's rules keeps one
 // definition of "a base URL this bridge will talk to".
 //
-// A path is REJECTED rather than trimmed: `--ui https://host/enroll` most likely
+// A path is REJECTED rather than trimmed: `--hub https://host/enroll` most likely
 // means the operator pasted the approval page instead of the origin, and silently
 // deriving `https://host` from it would make a typo'd host look like it worked.
-bridge_enroll_ui_origin :: proc(raw: string, allocator := context.allocator) -> (string, bool) {
+bridge_enroll_hub_url :: proc(raw: string, allocator := context.allocator) -> (string, bool) {
 	trimmed := strings.trim_right(strings.trim_space(raw), "/")
 	if !bridge_hub_url_supported(trimmed) do return "", false
 	return strings.clone(trimmed, allocator), true
@@ -494,18 +495,13 @@ Bridge_Enroll_Callback :: struct {
 	// the poll loop so it can redeem immediately instead of waiting out its
 	// interval. Advisory only: the loop completes without it.
 	fired:    i32,
-	// REQ-FIX-2: shutdown handshake. `stop` is set by
+	// Shutdown handshake. `stop` is set by
 	// bridge_enroll_callback_shutdown and read by the listener thread; `done` is
 	// set by the listener thread as it exits, so the shutdown can WAIT for the
 	// socket to be gone instead of assuming it.
 	//
-	// WHY THIS EXISTS NOW AND NOT BEFORE. Enrollment used to end the process
-	// (main.odin returned straight after it), so a listener thread still parked in
-	// accept() was reaped by exit() seconds later. Enrollment now CONTINUES INTO
-	// THE RUNTIME in the same process, so anything left bound here would outlive
-	// the ceremony for the whole life of the bridge — a loopback listener whose
-	// only authenticator is a spent one-shot nonce. It must be gone before the
-	// runtime starts.
+	// The listener must be gone before the temporary Hub runtime begins waiting
+	// for vault delivery; its one-shot state is spent once approval completes.
 	stop:     i32,
 	done:     i32,
 	bound:    bool,
@@ -851,6 +847,7 @@ bridge_enroll_credential_from_json :: proc(body: string, allocator := context.al
 		refresh_token      = extract_json_string(body, "refresh_token", "", allocator),
 		expires_in         = extract_json_int(body, "expires_in", 0),
 		refresh_expires_in = extract_json_int(body, "refresh_expires_in", 0),
+		vault_delivery_expected = extract_json_bool(body, "vault_delivery_expected", false),
 	}
 }
 
@@ -1134,7 +1131,7 @@ bridge_credential_refresh_worker :: proc() {
 			sync.mutex_lock(&g_bridge_credential_mu)
 			bridge_config.bridge_token = ""
 			sync.mutex_unlock(&g_bridge_credential_mu)
-			fmt.eprintln("bridge credential REVOKED by the hub (invalid_grant): both tokens were wiped. RE-ENROLLMENT REQUIRED — run: ham-bridge enroll --ui <url>")
+			fmt.eprintln("bridge credential REVOKED by the hub (invalid_grant): both tokens were wiped. RE-ENROLLMENT REQUIRED — run: ham-bridge enroll --hub <url>")
 			return
 		case .Retry:
 			delay = backoff
@@ -1144,21 +1141,80 @@ bridge_credential_refresh_worker :: proc() {
 	}
 }
 
-// ===== The command: `ham-bridge enroll --ui <origin>` =====
+// bridge_enroll_restart_service hands the persisted credential to the already
+// registered service. It invokes no shell.
+bridge_enroll_restart_service :: proc() -> bool {
+	argv: []string
+	when ODIN_OS == .Linux {
+		argv = []string{"systemctl", "--user", "restart", "heimdall-bridge"}
+	} else when ODIN_OS == .Darwin {
+		service := fmt.tprintf("gui/%d/works.earendil.heimdall-bridge", int(posix.getuid()))
+		defer delete(service)
+		argv = []string{"launchctl", "kickstart", "-k", service}
+	} else {
+		fmt.eprintln("bridge enroll: automatic service restart is supported only on Linux and macOS")
+		return false
+	}
+	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = argv}, context.allocator)
+	defer if len(stdout) > 0 do delete(stdout)
+	defer if len(stderr) > 0 do delete(stderr)
+	if err != nil || !state.success {
+		fmt.eprintln("bridge enroll: credential saved, but the registered service could not be restarted.")
+		when ODIN_OS == .Linux {
+			fmt.eprintln("  Start it manually with: systemctl --user restart heimdall-bridge")
+		} else when ODIN_OS == .Darwin {
+			fmt.eprintfln("  Start it manually with: launchctl kickstart -k gui/%d/works.earendil.heimdall-bridge", int(posix.getuid()))
+		}
+		return false
+	}
+	return true
+}
+
+// Bring up only the Hub WebSocket, not either bridge-local listener. This can
+// coexist with the idle service while the browser relays the encrypted key to
+// the ephemeral enrollment keypair held by this process.
+bridge_enroll_wait_for_vault_delivery :: proc(args: []string, bridge_id: string) -> bool {
+	bridge_enrollment_unseal_reset()
+	bridge_config = bridge_config_from_args(args)
+	if strings.trim_space(bridge_config.bridge_token) == "" || bridge_config.daemon_id != bridge_id {
+		fmt.eprintln("bridge enroll FAILED: the saved credential could not be loaded for vault delivery")
+		return false
+	}
+	bridge_runtime_init()
+	bridge_hub_runtime_start()
+	fmt.printfln("  waiting up to %ds for encrypted vault delivery…", BRIDGE_ENROLL_VAULT_WAIT_SECONDS)
+	for _ in 0..<BRIDGE_ENROLL_VAULT_WAIT_SECONDS * 10 {
+		if bridge_enrollment_unseal_was_received() {
+			when ODIN_OS == .Linux {
+				key, persisted := keystore_read_keyring_vault_key()
+				if len(key) > 0 do delete(key)
+				if !persisted {
+					fmt.eprintln("bridge enroll FAILED: the vault key was decrypted but could not be persisted in the Linux user keyring.")
+					fmt.eprintln("  The service was not restarted because it would start locked.")
+					return false
+				}
+			}
+			return true
+		}
+		time.sleep(100 * time.Millisecond)
+	}
+	fmt.eprintln("bridge enroll FAILED: enrolled, but the vault key was not delivered before the handoff deadline.")
+	fmt.eprintln("  Unlock the bridge later from Settings → Bridges, then start the registered service.")
+	return false
+}
+
+// ===== The command: `ham-bridge enroll --hub <origin>` =====
 
 // bridge_enroll_device_command runs the whole ceremony. Steps are numbered to the
 // design's §2.2 so the two can be read side by side.
 bridge_enroll_device_command :: proc(args: []string) -> bool {
 	// Step 0 — the single input.
-	ui_raw := option_value(args, "--ui", os.get_env("HAM_BRIDGE_UI_URL", context.allocator))
-	ui_origin, origin_ok := bridge_enroll_ui_origin(ui_raw)
+	hub_raw := option_value(args, "--hub", os.get_env("HAM_BRIDGE_HUB_URL", context.allocator))
+	api_base, origin_ok := bridge_enroll_hub_url(hub_raw)
 	if !origin_ok {
-		fmt.eprintln("ham-bridge enroll --ui requires the UI ORIGIN only, e.g. --ui https://heimdall.mundus.in (scheme + host, no path)")
+		fmt.eprintln("ham-bridge enroll --hub requires the Hub API origin only, e.g. --hub https://hub.mundus.in (scheme + host, no path)")
 		return false
 	}
-	// The Hub API is same-origin with the UI (REQ-ENROLL-10): `<ui>/api/...`. There
-	// is deliberately no discovery document and no separate --hub.
-	api_base := ui_origin
 
 	// Step 2a — the machine descriptor. Gathered BEFORE anything is sent, because
 	// an unusable one aborts the ceremony rather than enrolling a machine the
@@ -1199,7 +1255,7 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 
 	// Step 4 — the anonymous device-authorization request.
 	body := bridge_enroll_authorize_body(descriptor, public_key_hex, code_challenge, context.temp_allocator)
-	fmt.printfln("bridge enroll: POST %s%s (no token, no hub url — host=%s user=%s)",
+	fmt.printfln("bridge enroll: POST %s%s (no token — host=%s user=%s)",
 		api_base, BRIDGE_ENROLL_AUTHORIZE_PATH, descriptor.hostname, descriptor.os_user)
 	resp, sent := http.request_with_headers_timeout(
 		"POST", api_base, BRIDGE_ENROLL_AUTHORIZE_PATH, body, nil, http.DEFAULT_TIMEOUT_MS)
@@ -1209,7 +1265,7 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 	}
 	if resp.status != 200 {
 		fmt.eprintfln("bridge enroll FAILED: hub returned HTTP %d — %s", resp.status, resp.body)
-		if resp.status == 404 do fmt.eprintln("  hint: --ui must point at the UI origin whose /api is proxied to the hub (REQ-ENROLL-10).")
+		if resp.status == 404 do fmt.eprintln("  hint: --hub must point at the Hub API origin.")
 		return false
 	}
 	device_code := extract_json_string(resp.body, "device_code", "")
@@ -1244,13 +1300,11 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 		fmt.eprintfln("  hub says:     %s", hub_fingerprint)
 		fmt.eprintln("  Do NOT approve unless the page shows this machine's value. A mismatch is what a key substitution looks like.")
 	}
-	// The Hub's configured verification_uri is an OPERATOR-SET value that in this
-	// tree defaults to an Authentik URL, so it is not this page and is not used to
-	// build the link. It is cross-checked only to catch a misconfigured deployment.
-	if hub_uri := extract_json_string(resp.body, "verification_uri", "", context.temp_allocator); hub_uri != "" {
-		if !strings.has_prefix(hub_uri, ui_origin) {
-			fmt.printfln("bridge enroll note: the hub's configured verification_uri (%s) is not on %s; using the --ui origin, as the approval link must be composed locally.", hub_uri, ui_origin)
-		}
+	verification_raw := extract_json_string(resp.body, "verification_uri", "", context.temp_allocator)
+	ui_origin, ui_ok := bridge_enroll_hub_url(verification_raw, context.temp_allocator)
+	if !ui_ok {
+		fmt.eprintln("bridge enroll FAILED: Hub is not configured with --ui-origin; cannot build an approval link")
+		return false
 	}
 
 	// Step 6 — print the ceremony. THE WHOLE LINK, FRAGMENT INCLUDED, IS COMPOSED
@@ -1301,7 +1355,7 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 				return false
 			}
 			config_path := cfg_lib.config_path_from_args(args)
-			if !bridge_enroll_persist(cred, token_file, config_path, ui_origin) do return false
+			if !bridge_enroll_persist(cred, token_file, config_path, api_base) do return false
 			fmt.println("")
 			fmt.printfln("bridge enroll SUCCESS: enrolled as bridge_id=%s", cred.bridge_id)
 			fmt.printfln("  credential      %s (0600)", token_file)
@@ -1309,30 +1363,22 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 				fmt.printfln("  refresh token   %s (0600), access token expires in %ds and is refreshed proactively", bridge_enroll_refresh_file_for(token_file, context.temp_allocator), cred.expires_in)
 			}
 			fmt.println("  nothing secret was written to config.toml (audit F2)")
-			// REQ-FIX-2: the callback listener is retired BEFORE the runtime starts.
-			// Its nonce is spent and the ceremony is over; nothing may stay bound.
 			bridge_enroll_callback_shutdown(&g_bridge_enroll_callback)
-			// THERE IS NO "next" STEP ANY MORE, AND THAT IS THE FIX.
-			//
-			// This line used to read "next: start the bridge (ham-bridge --hub ...)",
-			// which created a second process. The vault key is sealed to the ECDH
-			// public key THIS process put in the approval link's fragment
-			// (bridge_unseal_init, unseal_protocol.odin:25-53) and that key pair is
-			// in-memory and per-process — deliberately, because ephemerality is what
-			// makes archived approval links undecryptable (property 4 in this file's
-			// header, §5.4.6). A freshly started second bridge generates its OWN pair
-			// and advertises it in the WS hello, so the envelope reached a process
-			// that could not open it and delivery failed on an AEAD tag check
-			// (unseal_protocol.odin). That was iss_18dc71789af7a745.
-			//
-			// So the caller does not exit: main.odin falls through into the normal
-			// runtime in THIS process, which is the only way the key that produced
-			// `bpk` is still alive to receive the seal. Note what did NOT change to
-			// achieve that: the key is still never persisted, and the approval screen
-			// still has no fallback to the Hub's copy of the key.
-			fmt.printfln("  starting the bridge now in this process (hub %s) — watch for 'bridge hub runtime ready'.", ui_origin)
-			fmt.println("  keep this running: the vault key is delivered to THIS process when you approve, and")
-			fmt.println("  its decryption key only exists in memory here (nothing on disk can replace it).")
+			if cred.vault_delivery_expected {
+				if !bridge_enroll_wait_for_vault_delivery(args, cred.bridge_id) {
+					keystore_lock_and_purge()
+					return false
+				}
+				when ODIN_OS == .Darwin {
+					fmt.eprintln("  macOS cannot carry the in-memory vault key across the service restart.")
+					fmt.eprintln("  Unlock this bridge again from Settings → Bridges after it reconnects.")
+				}
+			}
+			if !bridge_enroll_restart_service() {
+				if cred.vault_delivery_expected do keystore_lock_and_purge()
+				return false
+			}
+			fmt.println("  registered bridge service restarted with the new credential")
 			return true
 		case .Denied:
 			fmt.eprintln("bridge enroll FAILED: the request was denied in the browser. Nothing was written.")
@@ -1375,7 +1421,7 @@ bridge_enroll_token_file_from_args :: proc(args: []string, allocator := context.
 	if env, found := os.lookup_env("HAM_BRIDGE_TOKEN_FILE", context.temp_allocator); found {
 		if strings.trim_space(env) != "" do return strings.clone(strings.trim_space(env), allocator)
 	}
-	// Default under the operator's own data directory, so `enroll --ui <url>` needs
+	// Default under the operator's own config directory, so `enroll --hub <url>` needs
 	// no second flag. Deliberately NOT a system path like /var/lib: enrollment is
 	// run by a person, and a default only root can write would make the common case
 	// fail at the last step, after the human has already approved in the browser.
@@ -1428,13 +1474,11 @@ bridge_hello_hostname :: proc() -> string {
 // writes it) and by startup (which reads it), so the two cannot drift apart and
 // leave an enrolled bridge unable to find its own credential.
 //
-// Deliberately under the operator's own data directory and NOT a system path like
-// /var/lib: enrollment is run by a person at a terminal, and a default only root
-// can write would fail at the last step, after the human has already approved in
-// the browser. Returns "" when no home directory can be resolved, and both callers
-// then require an explicit --bridge-token-file rather than guessing.
+// This is also the path rendered into installer-managed systemd/launchd units.
+// Keeping one default removes the previous split where enrollment wrote under
+// ~/.local/share while the service read under ~/.config.
 bridge_enroll_default_credential_path :: proc(allocator := context.allocator) -> string {
-	expanded := cfg_lib.expand_home("~/.local/share/heimdall/bridge-credential")
+	expanded := cfg_lib.expand_home("~/.config/heimdall/bridge-token")
 	if strings.has_prefix(expanded, "~") {
 		delete(expanded)
 		return ""
@@ -1478,6 +1522,6 @@ bridge_refuse_tokenless_start :: proc(cfg: Bridge_Config) -> bool {
 	if path := bridge_enroll_default_credential_path(context.temp_allocator); path != "" {
 		fmt.eprintfln("    - check the default location: %s", path)
 	}
-	fmt.eprintln("    - re-enroll: ham-bridge enroll --ui <url>")
+	fmt.eprintln("    - re-enroll: ham-bridge enroll --hub <url>")
 	return true
 }

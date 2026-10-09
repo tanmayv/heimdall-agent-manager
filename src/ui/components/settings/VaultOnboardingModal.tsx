@@ -17,6 +17,7 @@ import {
   setVaultUnlocked,
   importLocalKey,
   readOnboardingDismissed,
+  setActiveBridgeVaultKeyMaterial,
   writeOnboardingDismissed,
 } from '../../store/vaultSlice';
 import {
@@ -25,6 +26,7 @@ import {
 } from '../../api/endpoints/userVault';
 import {
   generateVaultKey,
+  exportRawKeyHex,
   importRawKeyHex,
   deriveKeyFromPassword,
   generate12RecoveryWords,
@@ -32,6 +34,7 @@ import {
   deriveKeyFromRecoveryWords,
   encryptVaultKeyEnvelope,
   decryptVaultKeyEnvelope,
+  decryptVaultKeyEnvelopeHex,
   generateSaltHex,
   DEFAULT_KDF_ITERATIONS,
 } from '../../utils/vaultCrypto';
@@ -227,6 +230,7 @@ export default function VaultOnboardingModal({
 
       // 1. Generate 256-bit symmetric AES-GCM Vault Key (KV)
       const vaultKey = await generateVaultKey();
+      const rawVaultKeyHex = await exportRawKeyHex(vaultKey);
 
       // 2. Derive Master Wrapping Key (KM) from Master Password
       const kdfSalt = generateSaltHex(16);
@@ -258,6 +262,7 @@ export default function VaultOnboardingModal({
       // inside the reducer, so there is no tick in which isUnlocked is true while
       // getActiveVaultKey() is still null (REQ-RAWKEY-A7b).
       dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
+      setActiveBridgeVaultKeyMaterial(rawVaultKeyHex);
 
       // Reset sensitive password inputs
       setMasterPassword('');
@@ -290,6 +295,12 @@ export default function VaultOnboardingModal({
     try {
       setIsUnlocking(true);
       const wrappingKey = await deriveKeyFromPassword(unlockPassword, record.kdfSalt, record.kdfIterations);
+      const rawVaultKeyHex = await decryptVaultKeyEnvelopeHex(
+        wrappingKey,
+        record.encryptedVaultKey,
+        record.vaultKeyNonce,
+        record.vaultKeyTag,
+      );
       const vaultKey = await decryptVaultKeyEnvelope(
         wrappingKey,
         record.encryptedVaultKey,
@@ -297,6 +308,7 @@ export default function VaultOnboardingModal({
         record.vaultKeyTag,
       );
       dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
+      setActiveBridgeVaultKeyMaterial(rawVaultKeyHex);
       setUnlockPassword('');
       handleClose();
     } catch (_err) {
@@ -331,6 +343,12 @@ export default function VaultOnboardingModal({
     try {
       setIsUnlocking(true);
       const recoveryWrappingKey = await deriveKeyFromRecoveryWords(words, record.recoverySalt, record.kdfIterations);
+      const rawVaultKeyHex = await decryptVaultKeyEnvelopeHex(
+        recoveryWrappingKey,
+        record.recoveryEncryptedVaultKey,
+        record.recoveryNonce,
+        record.recoveryTag,
+      );
       const vaultKey = await decryptVaultKeyEnvelope(
         recoveryWrappingKey,
         record.recoveryEncryptedVaultKey,
@@ -338,6 +356,7 @@ export default function VaultOnboardingModal({
         record.recoveryTag,
       );
       dispatch(setVaultUnlocked({ key: vaultKey, rememberSession }));
+      setActiveBridgeVaultKeyMaterial(rawVaultKeyHex);
       setRecoveryPhraseInput('');
       handleClose();
     } catch (_err) {
@@ -375,6 +394,7 @@ export default function VaultOnboardingModal({
 
       // Dispatch Redux importLocalKey action with the installed CryptoKey
       dispatch(importLocalKey({ key, rememberSession }));
+      setActiveBridgeVaultKeyMaterial(clean);
       setDirectHexKey('');
       handleClose();
     } catch (err: any) {

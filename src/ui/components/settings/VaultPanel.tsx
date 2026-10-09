@@ -19,6 +19,7 @@ import {
   selectIsVaultUnlocked,
   setVaultConfigured,
   setVaultUnlocked,
+  setActiveBridgeVaultKeyMaterial,
   lockVault,
   VAULT_UNSUPPORTED_TITLE,
   VAULT_UNSUPPORTED_REASON,
@@ -233,6 +234,7 @@ export default function VaultPanel() {
       // getActiveVaultKey() is still null (REQ-RAWKEY-A7b). rawHex is still needed
       // below, for the E2EE bridge unseal payload.
       dispatch(setVaultUnlocked(vaultKey));
+      setActiveBridgeVaultKeyMaterial(rawHex);
       void unsealAllConnectedBridges(rawHex);
 
       // Reset sensitive password inputs
@@ -272,8 +274,10 @@ export default function VaultPanel() {
         record.vaultKeyTag,
         true,
       );
+      const rawHex = await exportRawKeyHex(vaultKey);
       dispatch(setVaultUnlocked(vaultKey));
-      void unsealAllConnectedBridges(vaultKey);
+      setActiveBridgeVaultKeyMaterial(rawHex);
+      void unsealAllConnectedBridges(rawHex);
       setUnlockPassword('');
       setIsUnlockModalOpen(false);
     } catch (_err) {
@@ -315,8 +319,10 @@ export default function VaultPanel() {
         record.recoveryTag,
         true,
       );
+      const rawHex = await exportRawKeyHex(vaultKey);
       dispatch(setVaultUnlocked(vaultKey));
-      void unsealAllConnectedBridges(vaultKey);
+      setActiveBridgeVaultKeyMaterial(rawHex);
+      void unsealAllConnectedBridges(rawHex);
       setRecoveryPhraseInput('');
       setIsUnlockModalOpen(false);
     } catch (_err) {

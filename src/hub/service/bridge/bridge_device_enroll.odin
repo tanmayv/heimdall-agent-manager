@@ -61,6 +61,7 @@ Device_Enroll_Input :: struct {
 	// to rotate_bridge_for_device_grant instead, which re-checks ownership
 	// before touching anything -- see that proc.
 	target_bridge_id:       string,
+	new_bridge_label:       string,
 }
 
 // enroll_bridge_from_device_grant mints the per-machine identity + credential
@@ -86,6 +87,9 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	}
 	hostname := strings.trim_space(input.machine_hostname)
 	if hostname == "" do hostname = "unknown-host"
+	label := strings.trim_space(input.new_bridge_label)
+	label_is_custom := label != ""
+	if label == "" do label = hostname
 	now := platform.clock_now(service.clock)
 	// ===== REQ-IMPL-3: THE CREDENTIAL IS NOW AN EXPIRING PAIR =====
 	// REQ-IMPL-2 left this seam with a deliberately non-expiring `hbr_` and the note
@@ -111,8 +115,8 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 		// The label starts as the machine's own hostname and is NOT marked
 		// user-customized: the operator never typed it, the host asserted it, and
 		// a later rename is what sets that flag (see patch_bridge/rename_bridge).
-		label = hostname,
-		label_is_user_customized = false,
+		label = label,
+		label_is_user_customized = label_is_custom,
 		machine_hostname = hostname,
 		machine_os = input.machine_os,
 		capabilities_json = device_enroll_capabilities_json(input),

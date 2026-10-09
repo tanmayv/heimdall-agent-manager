@@ -190,7 +190,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// mode rather than hardening the comparison: a security control that can be
 	// switched off by a misspelling in a config file should not be switchable.
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
-		verification_uri = config.device_auth_verification_uri,
+		verification_uri = config.ui_origin,
 		expires_in = config.device_auth_expires_in,
 		interval = config.device_auth_interval,
 		rate_limit = config.device_auth_rate_limit,
@@ -669,8 +669,13 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		machine_os = req.os,
 		bridge_version = req.app_version,
 		target_bridge_id = req.target_bridge_id,
+		new_bridge_label = req.new_bridge_label,
 	})
 	if !ok do return device_auth_service.Bridge_Mint_Result{}, false
+	// The Hub, not the bridge, knows whether approval should also deliver a vault
+	// key. A stored envelope means the browser has key material to relay after the
+	// bridge connects; absence means enrollment can restart the service at once.
+	_, vault_found, _ := iface.user_vault_get(&graph.repos.user_vaults, domain.User_ID(req.owner_user_id))
 	// REQ-IMPL-3: enroll_bridge_from_device_grant now returns an EXPIRING PAIR
 	// (`hba_` + `hbf_`), so the approval hands both halves to the grant and the
 	// bridge receives them together on its single-use poll.
@@ -680,5 +685,6 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		bridge_id = result.bridge.bridge_id,
 		expires_in = result.expires_in,
 		refresh_expires_in = result.refresh_expires_in,
+		vault_delivery_expected = vault_found,
 	}, true
 }

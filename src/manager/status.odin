@@ -57,7 +57,7 @@ manager_status_command :: proc(args: []string) {
 	if hub_url != "" {
 		fmt.printfln("  hub url:      %s", hub_url)
 	} else {
-		fmt.println("  hub url:      (not set — run: ham-bridge enroll --ui <your-heimdall-url>)")
+		fmt.println("  hub url:      (not set — run: ham-bridge enroll --hub <your-heimdall-url>)")
 	}
 	if bridge_id != "" {
 		fmt.printfln("  bridge id:    %s", bridge_id)
@@ -117,7 +117,7 @@ manager_status_command :: proc(args: []string) {
 	case hub_url == "" || bridge_id == "":
 		fmt.println("  skipped (not enrolled)")
 	case token == "":
-		fmt.println("  skipped (no bridge token — run: ham-bridge enroll --ui <your-heimdall-url>)")
+		fmt.println("  skipped (no bridge token — run: ham-bridge enroll --hub <your-heimdall-url>)")
 	case:
 		detail_path := fmt.tprintf("/api/v1/bridges/%s", bridge_id)
 		headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
@@ -132,7 +132,7 @@ manager_status_command :: proc(args: []string) {
 			fmt.printfln("  GET %s%s: %s (machine %s, last seen %s)", hub_url, detail_path, status, machine, last_seen)
 		case:
 			fmt.printfln("  GET %s%s: HTTP %d — %s", hub_url, detail_path, resp.status, resp.body)
-			if resp.status == 401 || resp.status == 403 do fmt.println("  hint: bridge token rejected — re-run: ham-bridge enroll --ui <your-heimdall-url>")
+			if resp.status == 401 || resp.status == 403 do fmt.println("  hint: bridge token rejected — re-run: ham-bridge enroll --hub <your-heimdall-url>")
 		}
 	}
 

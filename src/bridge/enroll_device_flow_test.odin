@@ -400,24 +400,24 @@ refresh_delay_never_schedules_past_expiry_on_short_lifetimes :: proc(t: ^testing
 	}
 }
 
-// ===== The UI origin is the only input =====
+// ===== The Hub origin is the only input =====
 
 @(test)
-enroll_ui_origin_accepts_an_origin_and_rejects_everything_else :: proc(t: ^testing.T) {
-	origin, ok := bridge_enroll_ui_origin("https://heimdall.example.com/", context.temp_allocator)
-	testing.expect(t, ok && origin == "https://heimdall.example.com", "a trailing slash must be normalised away")
-	plain, plain_ok := bridge_enroll_ui_origin("http://127.0.0.1:8190", context.temp_allocator)
+enroll_hub_url_accepts_an_origin_and_rejects_everything_else :: proc(t: ^testing.T) {
+	origin, ok := bridge_enroll_hub_url("https://hub.example.com/", context.temp_allocator)
+	testing.expect(t, ok && origin == "https://hub.example.com", "a trailing slash must be normalised away")
+	plain, plain_ok := bridge_enroll_hub_url("http://127.0.0.1:8190", context.temp_allocator)
 	testing.expect(t, plain_ok && plain == "http://127.0.0.1:8190", "a local http origin must be accepted for the dev stack")
 	// A path is refused rather than trimmed: it most likely means the operator
 	// pasted the approval page, and silently deriving the origin from it would make
 	// a wrong host look like it worked.
-	_, with_path := bridge_enroll_ui_origin("https://heimdall.example.com/enroll", context.temp_allocator)
+	_, with_path := bridge_enroll_hub_url("https://hub.example.com/enroll", context.temp_allocator)
 	testing.expect(t, !with_path, "a URL with a path must be refused")
-	_, no_scheme := bridge_enroll_ui_origin("heimdall.example.com", context.temp_allocator)
+	_, no_scheme := bridge_enroll_hub_url("hub.example.com", context.temp_allocator)
 	testing.expect(t, !no_scheme, "a bare hostname must be refused")
-	_, empty := bridge_enroll_ui_origin("", context.temp_allocator)
+	_, empty := bridge_enroll_hub_url("", context.temp_allocator)
 	testing.expect(t, !empty, "an empty value must be refused")
-	_, fragment := bridge_enroll_ui_origin("https://heimdall.example.com/#x", context.temp_allocator)
+	_, fragment := bridge_enroll_hub_url("https://hub.example.com/#x", context.temp_allocator)
 	testing.expect(t, !fragment, "a URL with a fragment must be refused")
 }
 
@@ -547,7 +547,7 @@ enroll_and_startup_agree_on_the_default_credential_path :: proc(t: ^testing.T) {
     // ever disagreed, an enrolled bridge would come up unable to find its own
     // credential — and because the device flow no longer writes the token into
     // config.toml (F2), there would be no second source to fall back on.
-    written := bridge_enroll_token_file_from_args([]string{"ham-bridge", "enroll", "--ui", "https://example.com"}, context.temp_allocator)
+    written := bridge_enroll_token_file_from_args([]string{"ham-bridge", "enroll", "--hub", "https://hub.example.com"}, context.temp_allocator)
     read := bridge_enroll_default_credential_path(context.temp_allocator)
     testing.expectf(t, written == read, "enroll writes %q but startup reads %q", written, read)
     if read != "" {

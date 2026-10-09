@@ -18,34 +18,42 @@ export const MIN_ARMOR_PAYLOAD_BYTES = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES; 
 
 // Module-scoped active CryptoKey reference (in-memory C++ browser reference).
 //
-// REQ-UNSEAL-2: this used to be a PAIR of module variables -- the key plus a
-// `activeVaultKeyHex` copy of its raw bytes -- and `setActiveVaultKey(key, hex?)`
-// wrote them with an optional second parameter. That signature read as two branches
-// but had three: a truthy key with `hex` OMITTED (as opposed to explicitly `null`)
-// updated the key and left the hex copy at whatever the previous caller had put
-// there. Of the ten call sites, six took that silent third branch, including the
-// IndexedDB restore at app boot -- so whether a bridge unseal worked depended only
-// on which call site had last run, i.e. on page-reload history.
-//
-// The asymmetric parameter is gone rather than documented: there is no hex copy to
-// keep in sync, so the third state is unrepresentable instead of merely guarded, and
-// no future caller can re-arm the trap by omitting an argument. Key material for a
-// bridge unseal is now passed explicitly by the caller that holds it
-// (`prepareUnsealPayload`), never read back out of module state.
+// The active key and the optional bridge-delivery material have separate setters on
+// purpose. Replacing the key always clears the delivery material, so raw bytes from
+// a previous vault can never be paired with a newer CryptoKey. Callers that obtained
+// both values install the key first and then its matching raw material.
 let activeVaultCryptoKey: CryptoKey | null = null;
+let activeBridgeVaultKeyHex: string | null = null;
 
 export function getActiveVaultKey(): CryptoKey | null {
   return activeVaultCryptoKey;
 }
 
 /**
+ * Raw key material retained in memory only for the lifetime of an explicitly
+ * unlocked browser session, so adding a bridge does not ask for the same master
+ * password again. It is never written to Redux, sessionStorage, or IndexedDB.
+ */
+export function getActiveBridgeVaultKeyMaterial(): string | null {
+  return activeBridgeVaultKeyHex;
+}
+
+export function setActiveBridgeVaultKeyMaterial(rawHex: string | null): void {
+  const clean = String(rawHex || '').trim().toLowerCase();
+  activeBridgeVaultKeyHex = /^[0-9a-f]{64}$/.test(clean) ? clean : null;
+}
+
+/**
  * Install (or, with `null`, purge) the active vault key.
  *
- * One parameter, one assignment, no derived state -- see the note above the module
- * variable for why this deliberately has no `hex` companion (REQ-UNSEAL-2).
+ * This remains a one-parameter API so every key replacement unconditionally
+ * invalidates bridge-delivery material from the previous key.
  */
 export function setActiveVaultKey(key: CryptoKey | null): void {
   activeVaultCryptoKey = key;
+  // Every key replacement invalidates any material associated with the prior
+  // key. A caller that has matching raw material must install it explicitly.
+  activeBridgeVaultKeyHex = null;
 }
 
 /** Check if a string is armored with the vault content encryption prefix */

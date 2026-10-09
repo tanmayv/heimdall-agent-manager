@@ -168,6 +168,9 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		// target_bridge_id is re-checked downstream against the Auth_Context
 		// owner, never trusted from this body alone.
 		target_bridge_id = json_string(req.body, "target_bridge_id"),
+		// Optional operator-chosen label for a newly minted bridge. It is ignored
+		// nowhere: the service rejects combining it with target_bridge_id.
+		new_bridge_label = json_string(req.body, "new_bridge_label"),
 	}
 	// ELDA-6: owner comes from Auth_Context, NEVER from the body. We deliberately
 	// do NOT read owner_user_id/user from req.body.
@@ -274,10 +277,15 @@ device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			strings.write_string(&data, "\",\"refresh_token\":\"")
 			write_handler_json_string(&data, result.refresh_token)
 			strings.write_string(&data, fmt.tprintf("\",\"refresh_expires_in\":%d", result.refresh_expires_in))
-			strings.write_string(&data, fmt.tprintf(",\"expires_in\":%d}", result.expires_in))
+			strings.write_string(&data, fmt.tprintf(",\"expires_in\":%d", result.expires_in))
 		} else {
-			strings.write_string(&data, fmt.tprintf("\",\"expires_in\":%d}", result.expires_in))
+			strings.write_string(&data, fmt.tprintf("\",\"expires_in\":%d", result.expires_in))
 		}
+		if result.bridge_id != "" {
+			strings.write_string(&data, ",\"vault_delivery_expected\":")
+			strings.write_string(&data, "true" if result.vault_delivery_expected else "false")
+		}
+		strings.write_string(&data, "}")
 	case .Denied:
 		strings.write_string(&data, "{\"status\":\"denied\"}")
 	case .Expired:

@@ -88,6 +88,30 @@ Unseal_Nonce_Cache :: struct {
 }
 
 g_unseal_nonce_cache: Unseal_Nonce_Cache
+g_enrollment_unseal_mu: sync.Mutex
+g_enrollment_unseal_received: bool
+
+// Enrollment uses the normal Hub runtime relay, but exits after the key has
+// crossed into the secure keystore. These helpers let the enrollment thread
+// wait for that concrete event without treating an older keyring entry as proof
+// that this approval delivered anything.
+bridge_enrollment_unseal_reset :: proc() {
+	sync.mutex_lock(&g_enrollment_unseal_mu)
+	g_enrollment_unseal_received = false
+	sync.mutex_unlock(&g_enrollment_unseal_mu)
+}
+
+bridge_enrollment_unseal_mark_received :: proc() {
+	sync.mutex_lock(&g_enrollment_unseal_mu)
+	g_enrollment_unseal_received = true
+	sync.mutex_unlock(&g_enrollment_unseal_mu)
+}
+
+bridge_enrollment_unseal_was_received :: proc() -> bool {
+	sync.mutex_lock(&g_enrollment_unseal_mu)
+	defer sync.mutex_unlock(&g_enrollment_unseal_mu)
+	return g_enrollment_unseal_received
+}
 
 unseal_nonce_cache_check_and_insert :: proc(cache: ^Unseal_Nonce_Cache, nonce: string, now_ms: i64) -> bool {
 	if nonce == "" do return false
@@ -290,6 +314,7 @@ bridge_unseal_decrypt_and_verify :: proc(
 	if !store_ok {
 		return false, "failed to store unsealed vault key in secure keystore"
 	}
+	bridge_enrollment_unseal_mark_received()
 
 	return true, ""
 }

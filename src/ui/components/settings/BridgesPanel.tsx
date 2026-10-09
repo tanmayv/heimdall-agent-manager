@@ -89,10 +89,7 @@ export default function BridgesPanel() {
       (typeof window !== 'undefined' ? ((window as any).odinApi?.hubApiBaseUrl || '') : '')
     ).trim().replace(/\/$/, '');
     if (explicit) return explicit;
-    if (typeof window === 'undefined') return '';
-    const { protocol, hostname, port } = window.location;
-    if (hostname.startsWith('heimdall.')) return `${protocol}//hub.${hostname.slice('heimdall.'.length)}${port ? `:${port}` : ''}`;
-    return window.location.origin;
+    return '';
   }
 
   function resultEnv(key: string): string {
@@ -108,13 +105,11 @@ export default function BridgesPanel() {
   // panel has no secret to display, no token to leak through the clipboard, and no
   // server call to make before showing instructions.
   //
-  // THE ORIGIN, NOT THE HUB URL. `--ui` takes the origin whose /api is proxied to
-  // the Hub, which is this page's own origin. Passing the hub URL here is the most
-  // likely mistake and produces a 404 on the authorize call, so this deliberately
-  // uses window.location.origin rather than configuredHubUrl().
+  // Enrollment takes the Hub API origin. The Hub returns its configured UI
+  // origin in the authorize response; the browser client never derives one
+  // hostname from the other.
   function buildSetupCommand(): string {
-    const origin = (typeof window !== 'undefined' ? window.location.origin : '').replace(/\/$/, '');
-    return `ham-bridge enroll --ui ${origin || '<this-url>'}`;
+    return `ham-bridge enroll --hub ${configuredHubUrl() || '<hub-url>'}`;
   }
 
   async function handleSaveRename(bridgeId: string) {

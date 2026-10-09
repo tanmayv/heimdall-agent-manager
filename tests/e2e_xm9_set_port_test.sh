@@ -146,7 +146,7 @@ enroll() { # $1=label $2=token file -> writes the ACCESS token to $2
   # `bridge enroll --hub --enrollment-token` is gone with them.
   #
   # It drives the three HTTP steps directly rather than shelling out to
-  # `bridge enroll --ui`, because that command waits for an approval and would
+  # `bridge enroll --hub`, because that command waits for an approval and would
   # need backgrounding plus output scraping. Here the script IS the approver:
   # these suites talk through the dev-proxy, which authenticates every request
   # as the local user, so the approval is a real authenticated one.

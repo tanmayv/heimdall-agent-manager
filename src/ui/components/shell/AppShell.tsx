@@ -1644,6 +1644,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     );
   }
 
+  // Device approval is a focused consent ceremony, not an application workspace.
+  // Keep navigation, the bottom dock, previews, command palette, and vault onboarding
+  // out of this route so the operator sees only the machine asking for access and the
+  // decision in front of them.
+  if (path === '/enroll/approve') {
+    return (
+      <main
+        data-debug-id="enrollment-standalone-page"
+        className="fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary"
+      >
+        <BridgeEnrollmentApprovalPage />
+      </main>
+    );
+  }
+
   return (
     /* REQ-KBD-2: was `fixed inset-0 … h-full`. `inset-0` pinned this box's BOTTOM edge to
        the layout viewport, which iOS never shrinks for a soft keyboard, and `h-full` on a

@@ -390,7 +390,7 @@ test_legacy_credential_is_refused_with_a_message_naming_the_fix :: proc(t: ^test
 	testing.expect_value(t, err.code, domain.Error_Code.Unauthenticated)
 	// The message must carry the command an operator runs to recover, not merely
 	// the word "invalid". Asserted by substring so the surrounding prose can change.
-	testing.expect(t, strings.contains(err.message, "ham-bridge enroll --ui"), fmt.tprintf("the rejection must name the re-enrollment command; got: %s", err.message))
+	testing.expect(t, strings.contains(err.message, "ham-bridge enroll --hub"), fmt.tprintf("the rejection must name the re-enrollment command; got: %s", err.message))
 	testing.expect(t, strings.contains(err.message, "re-enroll"), fmt.tprintf("the rejection must say the bridge has to re-enroll; got: %s", err.message))
 	// And it must NOT be the generic message: that is the whole distinction being
 	// made, so assert the two are actually different strings.
