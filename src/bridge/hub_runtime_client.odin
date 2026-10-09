@@ -275,12 +275,14 @@ bridge_hub_runtime_worker :: proc() {
 	// proxy/tunnel doesn't spam the log every 500ms, but the operator still sees
 	// exactly which step is failing.
 	last_failure := ""
+	defer delete(last_failure)
 	attempts := 0
 	log_failure :: proc(last: ^string, count: ^int, msg: string) {
 		count^ += 1
 		if msg != last^ || count^ % 20 == 1 {
 			fmt.printfln("bridge hub runtime: %s (attempt %d)", msg, count^)
-			last^ = msg
+			delete(last^)
+			last^ = strings.clone(msg)
 		}
 	}
 	for {
@@ -305,6 +307,7 @@ bridge_hub_runtime_worker :: proc() {
 		ready_deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
 		ready := false
 		got_error := false
+		hub_error := ""
 		hub_catalog_etag := ""
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
@@ -324,6 +327,7 @@ bridge_hub_runtime_worker :: proc() {
 				}
 				if msg_type == "bridge_error" {
 					got_error = true
+					hub_error = bridge_hub_error_log_message(text)
 					delete(msg_type)
 					delete(text)
 					break
@@ -335,7 +339,7 @@ bridge_hub_runtime_worker :: proc() {
 		}
 		if ready {
 			fmt.println("bridge hub runtime ready")
-			last_failure = ""; attempts = 0
+			delete(last_failure); last_failure = ""; attempts = 0
 			if bridge_provider_catalog_needs_sync(hub_catalog_etag) {
 				request := bridge_provider_catalog_request_json()
 				_ = ws.send_text(&conn, request)
@@ -367,7 +371,8 @@ bridge_hub_runtime_worker :: proc() {
 			fmt.println("bridge hub runtime: connection closed, reconnecting…")
 		} else if got_error {
 			delete(hub_catalog_etag)
-			log_failure(&last_failure, &attempts, "hub sent bridge_error after hello — token rejected or bridge not recognized (re-enroll?)")
+			log_failure(&last_failure, &attempts, hub_error)
+			delete(hub_error)
 		} else {
 			delete(hub_catalog_etag)
 			log_failure(&last_failure, &attempts, "no bridge_ready within 5s after hello — hub didn't accept the session (slow link over the tunnel, or hub-side rejection)")
@@ -375,6 +380,18 @@ bridge_hub_runtime_worker :: proc() {
 		bridge_hub_connection_teardown(&conn)
 		time.sleep(500 * time.Millisecond)
 	}
+}
+
+// A bridge_error is a post-upgrade protocol error, not proof that bearer-token
+// authentication failed. Preserve the Hub's message so catalog/schema/runtime
+// failures are actionable instead of being mislabeled as an enrollment problem.
+bridge_hub_error_log_message :: proc(text: string) -> string {
+	detail := extract_json_string(text, "message", "")
+	defer delete(detail)
+	if strings.trim_space(detail) == "" {
+		return strings.clone("hub sent bridge_error after hello without a diagnostic message")
+	}
+	return strings.concatenate({"hub rejected bridge session after hello: ", detail})
 }
 
 // BRIDGE_HUB_HEARTBEAT_INTERVAL is the idle cadence of the bridge->hub

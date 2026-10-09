@@ -219,26 +219,21 @@ list_catalog :: proc(
 	if service == nil || service.repo == nil do return {}, domain.domain_error(.Internal_Error, "provider service is not configured")
 	providers, err := iface.provider_catalog_list(service.repo)
 	if err.code != .None do return {}, err
-	etag, etag_err := iface.provider_catalog_etag(service.repo)
-	if etag_err.code != .None {
-		domain.provider_catalog_destroy(providers)
-		return {}, etag_err
-	}
+	// The canonical wire body is the source of truth for the catalog version.
+	// provider_catalog_meta is retained as migration/audit metadata, but it must
+	// never be a second authority capable of taking every authenticated Bridge
+	// offline when a catalog migration changes rows without updating its hash.
 	body := catalog_body_json(providers)
 	defer delete(body)
-	actual_etag := catalog_body_etag(body)
-	defer delete(actual_etag)
-	if !strings.equal_fold(etag, actual_etag) {
-		domain.provider_catalog_destroy(providers)
-		delete(etag)
-		return {}, domain.domain_error(.Internal_Error, "provider catalog etag does not match the canonical catalog body")
-	}
+	etag := catalog_body_etag(body)
 	return Provider_Catalog_Result{providers = providers, catalog_etag = etag}, {}
 }
 
 catalog_etag :: proc(service: ^Provider_Service) -> (string, domain.Domain_Error) {
-	if service == nil || service.repo == nil do return "", domain.domain_error(.Internal_Error, "provider service is not configured")
-	return iface.provider_catalog_etag(service.repo)
+	result, err := list_catalog(service)
+	if err.code != .None do return "", err
+	domain.provider_catalog_destroy(result.providers)
+	return result.catalog_etag, {}
 }
 
 catalog_body_etag :: proc(body: string) -> string {

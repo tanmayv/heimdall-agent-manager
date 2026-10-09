@@ -6,6 +6,7 @@ import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import provider_service "odin_test:hub/service/provider"
 
 @(test)
 test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
@@ -48,6 +49,11 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 		t,
 		migration_applied(&conn, "067_codex_sandbox_and_models.sql"),
 		"Codex sandbox and model migration is recorded",
+	)
+	testing.expect(
+		t,
+		migration_applied(&conn, "068_repair_provider_catalog_etag.sql"),
+		"provider catalog etag repair migration is recorded",
 	)
 
 	impl := Provider_Repo_SQLite{}
@@ -133,6 +139,41 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 	testing.expect_value(t, etag_err.code, domain.Error_Code.None)
 	testing.expect(t, strings.has_prefix(etag, "sha256:"), "catalog etag is explicitly SHA-256")
 	testing.expect_value(t, len(etag), len("sha256:") + 64)
+	testing.expect_value(
+		t,
+		etag,
+		"sha256:fed00363892f968c89acaa087d42921d892853e33f2919015fdced7dfccd604b",
+	)
+
+	// Regression: migration 067 shipped a stale provider_catalog_meta hash and
+	// bridge hello treated that auxiliary metadata mismatch as fatal. The
+	// canonical catalog body now owns its version, so even deliberately corrupt
+	// metadata cannot prevent an authenticated Bridge from becoming ready.
+	testing.expect(
+		t,
+		exec(
+			&conn,
+			"UPDATE provider_catalog_meta SET catalog_etag='sha256:0000000000000000000000000000000000000000000000000000000000000000';",
+		),
+		"test can replace stored catalog metadata with a stale hash",
+	)
+	service := provider_service.new_provider_service(&repo)
+	canonical, canonical_err := provider_service.list_catalog(&service)
+	if testing.expect_value(t, canonical_err.code, domain.Error_Code.None) {
+		defer {
+			domain.provider_catalog_destroy(canonical.providers)
+			delete(canonical.catalog_etag)
+		}
+		body := provider_service.catalog_body_json(canonical.providers)
+		defer delete(body)
+		expected_etag := provider_service.catalog_body_etag(body)
+		defer delete(expected_etag)
+		testing.expect_value(
+			t,
+			canonical.catalog_etag,
+			expected_etag,
+		)
+	}
 
 	icon, icon_found, icon_err := iface.provider_icon_get(&repo, "codex")
 	defer if icon_found do domain.provider_icon_destroy(icon)

@@ -327,7 +327,8 @@ bootstrap_run_dir_ctl_routes_to_each_bridge :: proc(t: ^testing.T) {
 		delete(previous)
 	}
 	_ = os.set_env("HEIMDALL_HAM_CTL_BIN", "/bin/sh")
-	for endpoint in []string{"tcp:127.0.0.1:50324", "tcp:127.0.0.1:50326", "unix:/tmp/bridge-own/socket"} {
+	endpoints := []string{"tcp:127.0.0.1:50324", "tcp:127.0.0.1:50326", "unix:/tmp/bridge-own/socket"}
+	for endpoint in endpoints {
 		shim, ok := bridge_bootstrap_render_ham_ctl_shim(endpoint, "agent-test-token", "instance-test")
 		testing.expect(t, ok)
 		if !ok do continue
@@ -337,6 +338,6 @@ bootstrap_run_dir_ctl_routes_to_each_bridge :: proc(t: ^testing.T) {
 		defer delete(stdout)
 		defer delete(stderr)
 		testing.expect(t, err == nil && state.success)
-		testing.expect_value(t, stdout, endpoint)
+		testing.expect_value(t, string(stdout), endpoint)
 	}
 }

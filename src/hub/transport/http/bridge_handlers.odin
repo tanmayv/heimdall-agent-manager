@@ -1201,14 +1201,22 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	delete(hello_pub_key)
 	// From here the socket is registered, so other threads (fs/file commands) may
 	// write it — serialize this and every subsequent write.
-	catalog, catalog_err := provider_service.list_catalog(h.providers)
-	if catalog_err.code != .None {
-		_ = write_ws_text_frame_locked(h, client, bridge_ws_error_payload(catalog_err.message))
-		return
+	// Provider discovery is an optional capability sync, not part of Bridge
+	// authentication. Once the bearer token and hello are accepted, acknowledge
+	// the runtime even if the catalog repository is unavailable. An empty etag
+	// tells the Bridge to retain its last known-good cached catalog.
+	catalog_etag := ""
+	if catalog, catalog_err := provider_service.list_catalog(h.providers); catalog_err.code == .None {
+		catalog_etag = strings.clone(catalog.catalog_etag)
+		domain.provider_catalog_destroy(catalog.providers)
+		delete(catalog.catalog_etag)
+	} else {
+		fmt.eprintfln(
+			"bridge provider catalog unavailable during hello for %s: %s; continuing with cached Bridge catalog",
+			bridge.bridge_id,
+			catalog_err.message,
+		)
 	}
-	catalog_etag := strings.clone(catalog.catalog_etag)
-	domain.provider_catalog_destroy(catalog.providers)
-	delete(catalog.catalog_etag)
 	defer delete(catalog_etag)
 	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag))
 	if bridge.telemetry_enabled == "enabled" {
