@@ -1718,9 +1718,14 @@ run_interactive_onboarding() {
           link="$(grep -m1 -E '^[[:space:]]*https?://' "$enroll_log" 2>/dev/null | tr -d '[:space:]')"
           if [ -n "$link" ]; then
             if open_url "$link"; then
-              say "Opened $link in your browser."
+              say "Opened $link in your browser (if nothing opened, use the link above)."
             else
-              warn "Could not auto-open $link on this machine; open it yourself."
+              # Not a warning: a headless box or one with no xdg-open/gio/wslview/open
+              # on PATH is an ordinary environment, not a broken one. The enroll
+              # command above already prints this same link in its own output; this
+              # is a second, unmissable copy for the operator to click or copy.
+              say "No browser opener found on this machine -- open this link yourself:"
+              say "  $link"
             fi
             break
           fi
