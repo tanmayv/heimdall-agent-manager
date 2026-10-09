@@ -11,9 +11,10 @@ STAGE_DIR="${STAGE_DIR:-}"
 BRIDGE_PORT="${BRIDGE_PORT:-49323}"
 HUB_URL="${HUB_URL:-http://127.0.0.1:8989}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
-SERVICE_NAME="${SERVICE_NAME:-heimdall.service}"
-RESTART_CMD="${RESTART_CMD:-}"
-STOP_CMD="${STOP_CMD:-}"
+SERVICE_NAME="${SERVICE_NAME:-heimdall-bridge.service}"
+BRIDGE_PID="${BRIDGE_PID:-}"
+RESTART_HOOK="${RESTART_HOOK:-}"
+STOP_HOOK="${STOP_HOOK:-}"
 HEALTH_URL="${HEALTH_URL:-}"
 
 # Parse command line flags
@@ -43,12 +44,16 @@ while [[ $# -gt 0 ]]; do
       SERVICE_NAME="$2"
       shift 2
       ;;
-    --restart-cmd)
-      RESTART_CMD="$2"
+    --bridge-pid)
+      BRIDGE_PID="$2"
       shift 2
       ;;
-    --stop-cmd)
-      STOP_CMD="$2"
+    --restart-hook)
+      RESTART_HOOK="$2"
+      shift 2
+      ;;
+    --stop-hook)
+      STOP_HOOK="$2"
       shift 2
       ;;
     --health-url)
@@ -62,15 +67,16 @@ while [[ $# -gt 0 ]]; do
       echo "  --bridge-port PORT    Port bridge listens on for health check (default: 49323)"
       echo "  --hub-url URL         Central Hub URL"
       echo "  --health-timeout SEC  Healthcheck probe timeout in seconds (default: 30)"
-      echo "  --service-name NAME   Systemd service unit name (default: heimdall.service)"
-      echo "  --restart-cmd CMD     Command to restart bridge (optional)"
-      echo "  --stop-cmd CMD        Command to stop bridge (optional)"
+      echo "  --service-name NAME   Systemd user unit (default: heimdall-bridge.service)"
+      echo "  --bridge-pid PID      Exact bridge process to stop"
+      echo "  --restart-hook PATH   Executable restart hook for isolated tests"
+      echo "  --stop-hook PATH      Executable stop hook for isolated tests"
       echo "  --health-url URL      Explicit health URL override (optional)"
       exit 0
       ;;
     *)
       echo "Unknown flag: $1" >&2
-      shift
+      exit 2
       ;;
   esac
 done
@@ -100,6 +106,7 @@ log "  STAGE_DIR:      $STAGE_DIR"
 log "  BRIDGE_PORT:    $BRIDGE_PORT"
 log "  HEALTH_URL:     $HEALTH_URL"
 log "  HEALTH_TIMEOUT: ${HEALTH_TIMEOUT}s"
+log "  BRIDGE_PID:     ${BRIDGE_PID:-unset}"
 
 # Locate staged binaries
 STAGE_BIN=""
@@ -119,22 +126,45 @@ fi
 log "Located staged binaries at: $STAGE_BIN"
 
 # Helper to stop service
+bridge_pid_running() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A dead child can remain briefly as a zombie while its parent reaps it.
+  # Treat that as stopped; kill -0 alone cannot distinguish this state.
+  local stat
+  stat="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$stat" ] && [[ "$stat" != Z* ]]
+}
+
 stop_service() {
   log "Stopping active bridge service..."
-  if [ -n "$STOP_CMD" ]; then
-    eval "$STOP_CMD" || true
+  if [ -n "$STOP_HOOK" ]; then
+    [ -x "$STOP_HOOK" ] || { log_err "Stop hook is not executable: $STOP_HOOK"; return 1; }
+    "$STOP_HOOK" "$BRIDGE_PID"
+  elif [[ "$BRIDGE_PID" =~ ^[1-9][0-9]*$ ]]; then
+    kill -TERM "$BRIDGE_PID" 2>/dev/null || true
+    deadline=$((SECONDS + 10))
+    while bridge_pid_running "$BRIDGE_PID" && [ "$SECONDS" -lt "$deadline" ]; do
+      sleep 0.1
+    done
+    if bridge_pid_running "$BRIDGE_PID"; then
+      log_err "Bridge PID $BRIDGE_PID did not exit after SIGTERM"
+      return 1
+    fi
   elif command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/$SERVICE_NAME" ]; then
-    systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl --user stop "$SERVICE_NAME"
   else
-    pkill -f "ham-bridge" 2>/dev/null || true
+    log_err "No scoped bridge stop mechanism is available"
+    return 1
   fi
 }
 
 # Helper to start service
 start_service() {
   log "Starting bridge service..."
-  if [ -n "$RESTART_CMD" ]; then
-    eval "$RESTART_CMD"
+  if [ -n "$RESTART_HOOK" ]; then
+    [ -x "$RESTART_HOOK" ] || { log_err "Restart hook is not executable: $RESTART_HOOK"; return 1; }
+    "$RESTART_HOOK"
   elif command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/$SERVICE_NAME" ]; then
     systemctl --user daemon-reload || true
     systemctl --user restart "$SERVICE_NAME" || systemctl --user start "$SERVICE_NAME"
@@ -151,7 +181,10 @@ start_service() {
 }
 
 # 1. Stop current service cleanly
-stop_service
+if ! stop_service; then
+  log_err "Failed to stop bridge through a scoped mechanism"
+  exit 1
+fi
 
 # 2. Backup existing binaries
 log "Backing up current bin to $DATA_DIR/bin.bak"

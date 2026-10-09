@@ -1052,6 +1052,35 @@ bridge_update_copy_file :: proc(src, dest: string) -> bool {
 	}
 }
 
+Bridge_Update_Supervisor_Spawn :: proc(argv: []string) -> bool
+
+bridge_update_spawn_supervisor :: proc(argv: []string) -> bool {
+	if len(argv) == 0 do return false
+	process, err := os.process_start(os.Process_Desc{command = argv})
+	if err != nil do return false
+	// The supervisor intentionally outlives the bridge process. As with the PTY
+	// host daemon, retaining no join handle lets the OS adopt/reap it after the
+	// bridge exits.
+	_ = process
+	return true
+}
+
+bridge_update_launch_supervisor :: proc(
+	supervisor_path, data_dir, stage_dir, bridge_port, hub_url, bridge_pid: string,
+	spawn: Bridge_Update_Supervisor_Spawn = bridge_update_spawn_supervisor,
+) -> bool {
+	if spawn == nil do return false
+	argv := []string{
+		"bash", supervisor_path,
+		"--data-dir", data_dir,
+		"--stage-dir", stage_dir,
+		"--bridge-port", bridge_port,
+		"--hub-url", hub_url,
+		"--bridge-pid", bridge_pid,
+	}
+	return spawn(argv)
+}
+
 bridge_hub_handle_update_command :: proc(conn: ^ws.Connection, text: string) {
 	fmt.println("bridge hub runtime command bridge_update")
 	command_id := extract_json_string(text, "command_id", "")
@@ -1264,17 +1293,19 @@ bridge_runtime_apply_update :: proc(
 	}
 	_ = os.chmod(supervisor_target, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
 
-	// 8. Spawn detached out-of-process supervisor via nohup
+	// 8. Spawn the out-of-process supervisor through the injectable argv seam.
+	// No shell command string is involved, so paths and URLs remain data and the
+	// exact bridge PID can be stopped without host-wide process matching.
 	port_str := fmt.tprintf("%d", bridge_config.port)
-	sup_cmd := fmt.tprintf(
-		"nohup bash \"%s\" --data-dir \"%s\" --stage-dir \"%s\" --bridge-port \"%s\" --hub-url \"%s\" >/tmp/heimdall-update.log 2>&1 &",
-		supervisor_target, data_dir, stage_dir, port_str, bridge_config.daemon_url,
-	)
-	spawn_argv := []string{"bash", "-c", sup_cmd}
-	sp_state, sp_out, sp_err, sp_proc_err := os.process_exec(os.Process_Desc{command = spawn_argv}, context.allocator)
-	if len(sp_out) > 0 do delete(sp_out)
-	if len(sp_err) > 0 do delete(sp_err)
-	if sp_proc_err != nil || !sp_state.success {
+	pid_str := fmt.tprintf("%d", os.get_pid())
+	if !bridge_update_launch_supervisor(
+		supervisor_target,
+		data_dir,
+		stage_dir,
+		port_str,
+		bridge_config.daemon_url,
+		pid_str,
+	) {
 		_ = os.remove_all(stage_dir)
 		return false, "failed to spawn detached supervisor script"
 	}

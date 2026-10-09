@@ -3,6 +3,18 @@ package main
 import "core:strings"
 import "core:testing"
 
+bridge_update_test_spawn_args: [dynamic]string
+
+bridge_update_test_capture_spawn :: proc(argv: []string) -> bool {
+	for arg in argv do append(&bridge_update_test_spawn_args, strings.clone(arg))
+	return true
+}
+
+bridge_update_test_clear_spawn_args :: proc() {
+	for arg in bridge_update_test_spawn_args do delete(arg)
+	delete(bridge_update_test_spawn_args)
+}
+
 // REQ-BUPD-4: bridge_update_progress_json frame serialization
 @(test)
 test_bridge_update_progress_json_format :: proc(t: ^testing.T) {
@@ -17,17 +29,31 @@ test_bridge_update_progress_json_format :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(frame, "\"message\":\"Downloading update package\""), "message matches")
 }
 
-// DELETED (D1, on user instruction): test_bridge_update_command_dispatch_and_execution.
-//
-// That test drove the PRODUCTION bridge_update apply path end to end with a valid
-// SHA-256, which reaches hub_runtime_client.odin:1231-1239 and spawns the REAL detached
-// supervisor `scripts/apply-bridge-update.sh`. That script's stop_service() runs
-// `pkill -f "ham-bridge"` (scripts/apply-bridge-update.sh:129), which kills EVERY
-// ham-bridge process on the host -- including the live dawnstar bridge and the unrelated
-// heimdall-bridge-qa service. The `when !ODIN_TEST` guard at :1247 only suppresses the
-// test binary's own self-exit; it does NOT stop the supervisor spawn at :1231, so the
-// guard sits one step too late to make this test safe.
-//
-// Do not reinstate a test that calls bridge_hub_handle_command with a bridge_update
-// command whose sha256 matches its bundle. Any future coverage of the apply path must
-// inject a seam for the supervisor spawn rather than letting the real script run.
+// REQ-BUPD-FIX-5: update launch is an injectable argv boundary. This pins the
+// exact process identity forwarded to the supervisor without running the script.
+@(test)
+test_bridge_update_supervisor_launch_uses_structured_argv_and_exact_pid :: proc(t: ^testing.T) {
+	bridge_update_test_clear_spawn_args()
+	defer bridge_update_test_clear_spawn_args()
+
+	ok := bridge_update_launch_supervisor(
+		"/tmp/update scripts/apply-bridge-update.sh",
+		"/tmp/data dir",
+		"/tmp/stage dir",
+		"49323",
+		"https://hub.example.test/path?value=one&next=two",
+		"424242",
+		bridge_update_test_capture_spawn,
+	)
+	testing.expect(t, ok, "injected supervisor launcher succeeds")
+	testing.expect_value(t, len(bridge_update_test_spawn_args), 12)
+	if len(bridge_update_test_spawn_args) != 12 do return
+	testing.expect_value(t, bridge_update_test_spawn_args[0], "bash")
+	testing.expect_value(t, bridge_update_test_spawn_args[1], "/tmp/update scripts/apply-bridge-update.sh")
+	testing.expect_value(t, bridge_update_test_spawn_args[3], "/tmp/data dir")
+	testing.expect_value(t, bridge_update_test_spawn_args[5], "/tmp/stage dir")
+	testing.expect_value(t, bridge_update_test_spawn_args[7], "49323")
+	testing.expect_value(t, bridge_update_test_spawn_args[9], "https://hub.example.test/path?value=one&next=two")
+	testing.expect_value(t, bridge_update_test_spawn_args[10], "--bridge-pid")
+	testing.expect_value(t, bridge_update_test_spawn_args[11], "424242")
+}

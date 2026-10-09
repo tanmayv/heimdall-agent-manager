@@ -357,6 +357,13 @@ test_bridge_update_integration_failure_triggers_supervisor_rollback :: proc(t: ^
 	_ = os.write_entire_file(staged_bin_path, transmute([]byte)staged_bin_content)
 	_ = os.chmod(staged_bin_path, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
 
+	// Test hooks are executable paths, not shell command strings. Create one in
+	// the isolated fixture rather than assuming FHS paths such as /bin/true.
+	hook_path := fmt.tprintf("%s/succeed-hook", tmp_dir)
+	hook_content := "#!/usr/bin/env bash\nexit 0\n"
+	_ = os.write_entire_file(hook_path, transmute([]byte)hook_content)
+	_ = os.chmod(hook_path, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
+
 	// Locate supervisor script
 	supervisor_script := "scripts/apply-bridge-update.sh"
 	if !os.exists(supervisor_script) {
@@ -371,8 +378,8 @@ test_bridge_update_integration_failure_triggers_supervisor_rollback :: proc(t: ^
 		"--stage-dir", stage_dir,
 		"--bridge-port", "58999",
 		"--health-timeout", "2",
-		"--stop-cmd", "true",
-		"--restart-cmd", "true",
+		"--stop-hook", hook_path,
+		"--restart-hook", hook_path,
 	}
 
 	state, stdout, stderr, proc_err := os.process_exec(os.Process_Desc{command = sup_args}, context.allocator)

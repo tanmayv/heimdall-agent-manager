@@ -5,6 +5,7 @@
 # 1. Healthcheck timeout -> automated rollback to bin.bak
 # 2. Process crash on restart -> automated rollback to bin.bak
 # 3. Successful update -> atomic replacement and cleanup
+# 4. PID-scoped stop leaves an unrelated bridge-like process alive
 
 set -euo pipefail
 
@@ -15,7 +16,26 @@ SUPERVISOR="$REPO_ROOT/scripts/apply-bridge-update.sh"
 [ -x "$SUPERVISOR" ] || { echo "FAIL: $SUPERVISOR is not executable" >&2; exit 1; }
 
 TMP_DIR="$(mktemp -d /tmp/ham-sup-test-XXXXXX)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TARGET_PID=""
+UNRELATED_PID=""
+SERVER_PID=""
+cleanup() {
+  for pid in "$TARGET_PID" "$UNRELATED_PID" "$SERVER_PID"; do
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+TRUE_HOOK="$TMP_DIR/true-hook"
+cat > "$TRUE_HOOK" <<'HOOK'
+#!/usr/bin/env bash
+exit 0
+HOOK
+chmod +x "$TRUE_HOOK"
 
 echo "=== Test 1: Healthcheck timeout triggers automated rollback ==="
 mkdir -p "$TMP_DIR/t1/data/bin" "$TMP_DIR/t1/stage/bin"
@@ -28,8 +48,8 @@ set +e
   --stage-dir "$TMP_DIR/t1/stage" \
   --bridge-port 58901 \
   --health-timeout 2 \
-  --stop-cmd "true" \
-  --restart-cmd "true"
+  --stop-hook "$TRUE_HOOK" \
+  --restart-hook "$TRUE_HOOK"
 EXIT_CODE=$?
 set -e
 
@@ -55,8 +75,17 @@ mkdir -p "$TMP_DIR/t2/data/bin" "$TMP_DIR/t2/stage/bin"
 echo "stable-v1.0" > "$TMP_DIR/t2/data/bin/ham-bridge"
 echo "crashing-v2.0" > "$TMP_DIR/t2/stage/bin/ham-bridge"
 
-# Restart command that simulates the new binary crashing with exit 1
-CRASH_CMD='if [ "$(cat '"$TMP_DIR"'/t2/data/bin/ham-bridge 2>/dev/null)" = "crashing-v2.0" ]; then false; else true; fi'
+# Restart hook that simulates the new binary crashing with exit 1. After
+# rollback restores the stable marker, the same hook succeeds.
+CRASH_HOOK="$TMP_DIR/crash-hook"
+cat > "$CRASH_HOOK" <<HOOK
+#!/usr/bin/env bash
+if [ "\$(cat "$TMP_DIR/t2/data/bin/ham-bridge" 2>/dev/null)" = "crashing-v2.0" ]; then
+  exit 1
+fi
+exit 0
+HOOK
+chmod +x "$CRASH_HOOK"
 
 set +e
 "$SUPERVISOR" \
@@ -64,8 +93,8 @@ set +e
   --stage-dir "$TMP_DIR/t2/stage" \
   --bridge-port 58902 \
   --health-timeout 2 \
-  --stop-cmd "true" \
-  --restart-cmd "$CRASH_CMD"
+  --stop-hook "$TRUE_HOOK" \
+  --restart-hook "$CRASH_HOOK"
 EXIT_CODE=$?
 set -e
 
@@ -87,20 +116,30 @@ fi
 echo "PASS: Test 2 passed!"
 
 echo "=== Test 3: Successful update applies atomically and cleans up ==="
-# Start temporary healthcheck server
-python3 -c "
-import http.server, socketserver
+# Start a temporary healthcheck server on an OS-assigned port so concurrent or
+# immediately repeated test runs cannot collide.
+T3_PORT_FILE="$TMP_DIR/t3-health-port"
+python3 - "$T3_PORT_FILE" <<'PY' &
+import http.server, socketserver, sys
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(b'{\"ok\":true}')
-with socketserver.TCPServer(('127.0.0.1', 58903), Handler) as httpd:
+        self.wfile.write(b'{"ok":true}')
+with socketserver.TCPServer(('127.0.0.1', 0), Handler) as httpd:
+    with open(sys.argv[1], 'w', encoding='utf-8') as port_file:
+        port_file.write(str(httpd.server_address[1]))
+        port_file.flush()
     httpd.handle_request()
-" &
+PY
 SERVER_PID=$!
-sleep 0.5
+for _ in $(seq 1 50); do
+  [ -s "$T3_PORT_FILE" ] && break
+  sleep 0.1
+done
+[ -s "$T3_PORT_FILE" ] || { echo "FAIL: health server did not publish its port" >&2; exit 1; }
+T3_PORT="$(cat "$T3_PORT_FILE")"
 
 mkdir -p "$TMP_DIR/t3/data/bin" "$TMP_DIR/t3/stage/bin"
 echo "old-v1.0" > "$TMP_DIR/t3/data/bin/ham-bridge"
@@ -109,10 +148,10 @@ echo "verified-v2.0" > "$TMP_DIR/t3/stage/bin/ham-bridge"
 "$SUPERVISOR" \
   --data-dir "$TMP_DIR/t3/data" \
   --stage-dir "$TMP_DIR/t3/stage" \
-  --bridge-port 58903 \
+  --health-url "http://127.0.0.1:$T3_PORT/api/v1/health" \
   --health-timeout 5 \
-  --stop-cmd "true" \
-  --restart-cmd "true"
+  --stop-hook "$TRUE_HOOK" \
+  --restart-hook "$TRUE_HOOK"
 
 APPLIED=$(cat "$TMP_DIR/t3/data/bin/ham-bridge")
 if [ "$APPLIED" != "verified-v2.0" ]; then
@@ -131,6 +170,69 @@ if [ -d "$TMP_DIR/t3/stage" ]; then
 fi
 
 wait $SERVER_PID 2>/dev/null || true
+SERVER_PID=""
 echo "PASS: Test 3 passed!"
+
+echo "=== Test 4: PID-scoped stop preserves unrelated bridge-like process ==="
+mkdir -p "$TMP_DIR/t4/data/bin" "$TMP_DIR/t4/stage/bin"
+echo "old-v1.0" > "$TMP_DIR/t4/data/bin/ham-bridge"
+echo "new-v2.0" > "$TMP_DIR/t4/stage/bin/ham-bridge"
+
+bash -c 'while :; do sleep 1; done' ham-bridge-update-target &
+TARGET_PID=$!
+bash -c 'while :; do sleep 1; done' ham-bridge-unrelated &
+UNRELATED_PID=$!
+
+T4_PORT_FILE="$TMP_DIR/t4-health-port"
+python3 - "$T4_PORT_FILE" <<'PY' &
+import http.server, socketserver, sys
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+with socketserver.TCPServer(('127.0.0.1', 0), Handler) as httpd:
+    with open(sys.argv[1], 'w', encoding='utf-8') as port_file:
+        port_file.write(str(httpd.server_address[1]))
+        port_file.flush()
+    httpd.handle_request()
+PY
+SERVER_PID=$!
+for _ in $(seq 1 50); do
+  [ -s "$T4_PORT_FILE" ] && break
+  sleep 0.1
+done
+[ -s "$T4_PORT_FILE" ] || { echo "FAIL: health server did not publish its port" >&2; exit 1; }
+T4_PORT="$(cat "$T4_PORT_FILE")"
+
+"$SUPERVISOR" \
+  --data-dir "$TMP_DIR/t4/data" \
+  --stage-dir "$TMP_DIR/t4/stage" \
+  --health-url "http://127.0.0.1:$T4_PORT/api/v1/health" \
+  --health-timeout 5 \
+  --bridge-pid "$TARGET_PID" \
+  --restart-hook "$TRUE_HOOK"
+
+if kill -0 "$TARGET_PID" 2>/dev/null; then
+  target_stat="$(ps -o stat= -p "$TARGET_PID" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$target_stat" != Z* ]]; then
+    echo "FAIL: exact target PID $TARGET_PID is still running" >&2
+    exit 1
+  fi
+fi
+wait "$TARGET_PID" 2>/dev/null || true
+TARGET_PID=""
+
+if ! kill -0 "$UNRELATED_PID" 2>/dev/null; then
+  echo "FAIL: unrelated bridge-like PID $UNRELATED_PID was stopped" >&2
+  exit 1
+fi
+kill "$UNRELATED_PID" 2>/dev/null || true
+wait "$UNRELATED_PID" 2>/dev/null || true
+UNRELATED_PID=""
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+echo "PASS: Test 4 passed!"
 
 echo "ALL SUPERVISOR TESTS PASSED SUCCESSFULLY!"
