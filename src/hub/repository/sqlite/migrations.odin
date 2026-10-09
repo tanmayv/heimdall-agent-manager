@@ -350,8 +350,12 @@ MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION :: #load(
 	"migrations/066_antigravity_trust_detection.sql",
 	string,
 )
+MIGRATION_067_CODEX_SANDBOX_AND_MODELS :: #load(
+	"migrations/067_codex_sandbox_and_models.sql",
+	string,
+)
 
-migration_order :: [69]string {
+migration_order :: [70]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -421,6 +425,7 @@ migration_order :: [69]string {
 	"064_codex_trust_detection.sql",
 	"065_antigravity_launch_recipe.sql",
 	"066_antigravity_trust_detection.sql",
+	"067_codex_sandbox_and_models.sql",
 }
 
 run_migrations :: proc(
@@ -838,6 +843,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "064_codex_trust_detection.sql" do return strings.clone(MIGRATION_064_CODEX_TRUST_DETECTION)
 	if name == "065_antigravity_launch_recipe.sql" do return strings.clone(MIGRATION_065_ANTIGRAVITY_LAUNCH_RECIPE)
 	if name == "066_antigravity_trust_detection.sql" do return strings.clone(MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION)
+	if name == "067_codex_sandbox_and_models.sql" do return strings.clone(MIGRATION_067_CODEX_SANDBOX_AND_MODELS)
 	return ""
 }
 

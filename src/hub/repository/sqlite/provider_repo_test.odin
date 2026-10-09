@@ -44,6 +44,11 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 		migration_applied(&conn, "058_provider_catalog.sql"),
 		"provider catalog migration is recorded",
 	)
+	testing.expect(
+		t,
+		migration_applied(&conn, "067_codex_sandbox_and_models.sql"),
+		"Codex sandbox and model migration is recorded",
+	)
 
 	impl := Provider_Repo_SQLite{}
 	repo := new_provider_repository(&impl, &conn)
@@ -58,6 +63,11 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 	testing.expect_value(t, providers[3].provider, "antigravity")
 	testing.expect_value(t, providers[0].binary, "claude")
 	testing.expect_value(t, providers[1].model_flag, "-m")
+	testing.expect_value(
+		t,
+		providers[1].yolo_args_json,
+		`["--ask-for-approval","never","--sandbox","danger-full-access"]`,
+	)
 	testing.expect_value(t, providers[3].binary, "agy")
 	testing.expect_value(t, providers[3].yolo_args_json, `["--dangerously-skip-permissions"]`)
 	testing.expect_value(t, providers[3].prompt_args_json, `["--prompt-interactive"]`)
@@ -70,9 +80,12 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 		"Antigravity startup detection recognizes its project trust prompt",
 	)
 	testing.expect_value(t, len(providers[0].models), 3)
-	testing.expect_value(t, len(providers[1].models), 4)
+	testing.expect_value(t, len(providers[1].models), 3)
 	testing.expect_value(t, providers[0].models[0].model_id, "claude-opus-5")
-	testing.expect_value(t, providers[1].models[0].model_id, "gpt-5")
+	testing.expect_value(t, providers[1].models[0].model_id, "gpt-5.6-sol")
+	testing.expect_value(t, providers[1].models[0].label, "GPT-5.6-Sol")
+	testing.expect_value(t, providers[1].models[1].model_id, "gpt-5.6-terra")
+	testing.expect_value(t, providers[1].models[2].model_id, "gpt-5.6-luna")
 	testing.expect(
 		t,
 		strings.contains(
