@@ -78,8 +78,7 @@ import {
 import { canUnsealWithKey } from '../../utils/vaultBridgeUnseal';
 import {
   approvedBridgeIsOnline,
-  BRIDGE_HOME_REDIRECT_DELAY_MS,
-  navigateEnrollmentHome,
+  navigateEnrollmentProviderSetup,
   nextAvailableBridgeLabel,
 } from './bridgeEnrollmentCompletion';
 import {
@@ -506,20 +505,6 @@ export default function BridgeEnrollmentApprovalPage() {
     [isUnlocked, deliverVaultKey, vaultEnvelope, vaultQuery.isLoading, waitForAuthenticatedBridge],
   );
 
-  useEffect(() => {
-    const enrollmentFinished =
-      decision === 'approved' &&
-      bridgeConnected &&
-      (delivery.phase === 'delivered' || delivery.phase === 'not-needed');
-    if (!enrollmentFinished) return;
-
-    const redirectTimer = window.setTimeout(
-      navigateEnrollmentHome,
-      BRIDGE_HOME_REDIRECT_DELAY_MS,
-    );
-    return () => window.clearTimeout(redirectTimer);
-  }, [bridgeConnected, decision, delivery.phase]);
-
   const handlePasswordSubmit = useCallback(
     async (e: FormEvent) => {
       e.preventDefault();
@@ -852,14 +837,24 @@ export default function BridgeEnrollmentApprovalPage() {
           )}
           {delivery.phase === 'delivered' && (
             <Banner tone="ok" title="Vault key delivered.">
-              The bridge is enrolled and unsealed. Taking you home in 3 seconds.
+              The bridge is enrolled and unsealed.
             </Banner>
           )}
           {delivery.phase === 'not-needed' && (
             <Banner tone="ok" title="Enrollment approved.">
-              The bridge authenticated successfully. Taking you home in 3 seconds.
+              The bridge authenticated successfully.
             </Banner>
           )}
+          {decision === 'approved' && bridgeConnected &&
+          (delivery.phase === 'delivered' || delivery.phase === 'not-needed') && bridgeId ? (
+            <Button
+              variant="primary"
+              data-debug-id="enrollment-continue-provider-selection-btn"
+              onClick={() => navigateEnrollmentProviderSetup(bridgeId)}
+            >
+              Continue to provider selection
+            </Button>
+          ) : null}
           {delivery.phase === 'timed-out' && (
             <Banner tone="warn" title="The bridge did not connect in time.">
               The machine was approved, but Heimdall could not confirm that this bridge authenticated and

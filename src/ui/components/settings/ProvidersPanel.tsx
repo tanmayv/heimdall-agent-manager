@@ -68,6 +68,7 @@ import {
   getFlagSuggestions,
   type ProviderPreset,
 } from './providerCatalog.ts';
+import ProviderSetupSurface from '../providers/ProviderSetupSurface';
 
 export * from './providerManagement.ts';
 export * from './providerCatalog.ts';
@@ -89,6 +90,12 @@ export interface AggregatedProviderItem {
 }
 
 export function ProvidersPanel() {
+  return <ProviderSetupSurface mode="settings" bridgeId="brg_mock_dawnstar" />;
+}
+
+// Retained while the provider-management contract is being finalized from the
+// mock. This makes the prototype reversible without losing the existing editor.
+export function LegacyProvidersPanel() {
   const [route, setRoute] = useState(() => getRoutePathname());
   const dispatch = useDispatch();
   const viewport = useViewport();

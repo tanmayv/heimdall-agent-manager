@@ -1,5 +1,3 @@
-export const BRIDGE_HOME_REDIRECT_DELAY_MS = 3000;
-
 export function nextAvailableBridgeLabel(
   hostname: string,
   bridges: Array<{ label?: string }> | null | undefined,
@@ -35,4 +33,8 @@ export function approvedBridgeIsOnline(rows: unknown, bridgeId: string): boolean
 
 export function navigateEnrollmentHome(): void {
   window.location.hash = '#/home';
+}
+
+export function navigateEnrollmentProviderSetup(bridgeId: string): void {
+  window.location.hash = `#/device/providers/${encodeURIComponent(bridgeId)}`;
 }

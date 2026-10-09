@@ -27,6 +27,7 @@ import {
 } from '../../utils/clientPersistence';
 import BottomDock from './BottomDock';
 import BridgeEnrollmentApprovalPage from '../enrollment/BridgeEnrollmentApprovalPage';
+import ProviderEnrollmentSetupPage from '../providers/ProviderEnrollmentSetupPage';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
@@ -1641,7 +1642,8 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     );
   }
 
-  // Device approval is a focused consent ceremony, not an application workspace.
+  // Device approval and initial provider selection are focused setup ceremonies,
+  // not application workspaces.
   // Keep navigation, the bottom dock, previews, command palette, and vault onboarding
   // out of this route so the operator sees only the machine asking for access and the
   // decision in front of them.
@@ -1652,6 +1654,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         className="fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary"
       >
         <BridgeEnrollmentApprovalPage />
+      </main>
+    );
+  }
+
+  if (path === '/device/providers' || path.startsWith('/device/providers/')) {
+    const encodedBridgeId = path.slice('/device/providers/'.length);
+    const providerBridgeId = encodedBridgeId
+      ? decodeURIComponent(encodedBridgeId)
+      : 'brg_mock_dawnstar';
+    return (
+      <main
+        data-debug-id="provider-enrollment-standalone-page"
+        className="fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary"
+      >
+        <ProviderEnrollmentSetupPage bridgeId={providerBridgeId} />
       </main>
     );
   }

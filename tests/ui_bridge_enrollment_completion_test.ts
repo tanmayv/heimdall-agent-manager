@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   approvedBridgeIsOnline,
-  BRIDGE_HOME_REDIRECT_DELAY_MS,
+  navigateEnrollmentProviderSetup,
   nextAvailableBridgeLabel,
 } from '../src/ui/components/enrollment/bridgeEnrollmentCompletion.ts';
 import {
@@ -57,8 +57,7 @@ test('bridge key material is session-only and invalidated whenever the active ke
   assert.equal(getActiveBridgeVaultKeyMaterial(), null);
 });
 
-test('successful enrollment redirects home after three seconds', () => {
-  assert.equal(BRIDGE_HOME_REDIRECT_DELAY_MS, 3000);
+test('successful enrollment waits for an explicit provider-selection continuation', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'src/ui/components/enrollment/BridgeEnrollmentApprovalPage.tsx'),
     'utf8',
@@ -70,7 +69,22 @@ test('successful enrollment redirects home after three seconds', () => {
   assert.match(source, /bridgeConnected\s*&&/);
   assert.match(source, /delivery\.phase === 'delivered'/);
   assert.match(source, /delivery\.phase === 'not-needed'/);
-  assert.match(source, /window\.setTimeout\([\s\S]*navigateEnrollmentHome[\s\S]*BRIDGE_HOME_REDIRECT_DELAY_MS/);
+  assert.match(source, /enrollment-continue-provider-selection-btn/);
+  assert.match(source, /onClick=\{\(\) => navigateEnrollmentProviderSetup\(bridgeId\)\}/);
+  assert.match(source, /Continue to provider selection/);
+  assert.doesNotMatch(source, /BRIDGE_HOME_REDIRECT_DELAY_MS|Opening provider setup in 3 seconds/);
+});
+
+test('provider setup route retains the enrolled bridge id', () => {
+  const priorWindow = globalThis.window;
+  const mockWindow = { location: { hash: '' } } as any;
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: mockWindow });
+  try {
+    navigateEnrollmentProviderSetup('bridge/with spaces');
+    assert.equal(mockWindow.location.hash, '#/device/providers/bridge%2Fwith%20spaces');
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: priorWindow });
+  }
 });
 
 test('approval is a standalone minimal consent page', () => {

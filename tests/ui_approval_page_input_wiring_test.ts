@@ -102,16 +102,16 @@ test('REQ-FIX-1: setMasterPassword onChange passes the string value directly', (
 });
 
 // ---------------------------------------------------------------------------
-// REGRESSION TEST 4: The device-code (codeInput) Input uses a direct value pass-through
+// REGRESSION TEST 4: Each device-code cell passes the Input string directly
 //   Fails against b8d16379^ ✓  Passes after fix ✓
 //   Backreferences the parameter name so a correct rename stays green.
 // ---------------------------------------------------------------------------
 
-test('REQ-FIX-1: setCodeInput onChange passes the string value directly', () => {
+test('REQ-FIX-1: device-code cell onChange passes the string value directly', () => {
   assert.match(
     content,
-    /onChange=\{\s*\(\s*(\w+)\s*\)\s*=>\s*setCodeInput\(\s*\1\s*\)/,
-    'codeInput Input onChange must pass the string value directly — not an event-shaped accessor',
+    /onChange=\{\s*\(\s*(\w+)\s*\)\s*=>\s*putCodeSymbols\(\s*index\s*,\s*\1\s*\)/,
+    'device-code Input onChange must pass the string value directly — not an event-shaped accessor',
   );
 });
 
@@ -427,13 +427,13 @@ test('REQ-FIX-1 [class-guard B(3)]: no onChange on any of the 13 value-passing c
 //   resolving tags satisfies a floor and fails here.
 // ---------------------------------------------------------------------------
 
-test('REQ-FIX-1 [control, primary]: tag resolution classifies :607 and :797 as <Input> and :803 as a native <input> that is not a violation', () => {
+test('REQ-FIX-1 [control, primary]: tag resolution classifies device-code and password controls as <Input> and remember-session as native <input>', () => {
   const rel = 'src/ui/components/enrollment/BridgeEnrollmentApprovalPage.tsx';
   const onPage = sweep.allHandlers.filter((r) => r.rel === rel);
 
   const at = (line: number) => onPage.find((r) => Math.abs(r.line - line) <= 2);
 
-  const codeInput = onPage.find((r) => /setCodeInput/.test(r.body));
+  const codeInput = onPage.find((r) => /putCodeSymbols/.test(r.body));
   const password = onPage.find((r) => /setMasterPassword/.test(r.body));
   const remember = onPage.find((r) => /setRememberSession/.test(r.body));
 
