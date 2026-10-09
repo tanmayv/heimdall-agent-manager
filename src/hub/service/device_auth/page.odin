@@ -50,6 +50,10 @@ DEVICE_PAGE_HTML :: `<!DOCTYPE html>
   dd { margin: 0; word-break: break-all; font-weight: 500; }
   .err { color: #b91c1c; font-size: 0.85rem; min-height: 1em; }
   .ok { color: #047857; font-size: 0.85rem; }
+  .warn { color: #b45309; font-size: 0.85rem; margin: 6px 0 0; }
+  select { font: inherit; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; width: 100%;
+           box-sizing: border-box; background: #ffffff; color: inherit; margin-top: 2px; }
+  @media (prefers-color-scheme: dark) { select { background: #0b1220; border-color: #374151; } }
   .hidden { display: none; }
 </style>
 </head>
@@ -73,6 +77,13 @@ DEVICE_PAGE_HTML :: `<!DOCTYPE html>
     <dt>Version</dt><dd id="d_app_version"></dd>
     <dt>From IP</dt><dd id="d_request_ip"></dd>
   </dl>
+  <div id="bridgeTargetWrap" class="hidden">
+    <label for="targetBridge">Bridge identity</label>
+    <select id="targetBridge">
+      <option value="">Create a new bridge</option>
+    </select>
+    <p class="warn hidden" id="bridgeTargetWarning"></p>
+  </div>
   <button id="approveBtn" type="button" class="primary">Approve</button>
   <button id="denyBtn" type="button" class="danger">Deny</button>
   <p class="ok" id="result"></p>
@@ -87,6 +98,9 @@ const verifyBtn = document.getElementById("verifyBtn");
 const approveBtn = document.getElementById("approveBtn");
 const denyBtn = document.getElementById("denyBtn");
 const codeInput = document.getElementById("user_code");
+const bridgeTargetWrap = document.getElementById("bridgeTargetWrap");
+const targetBridgeSelect = document.getElementById("targetBridge");
+const bridgeTargetWarning = document.getElementById("bridgeTargetWarning");
 
 function showErr(msg) { errEl.textContent = msg || ""; resultEl.textContent = ""; }
 function clearErr() { errEl.textContent = ""; }
@@ -96,6 +110,44 @@ function setDD(id, value) {
   const el = document.getElementById(id);
   el.textContent = value || "—";
 }
+
+// Offers "attach to an existing bridge" only for a bridge-enrollment grant
+// (a plain user/Electron device grant has no bridge_id to attach to). Every
+// option label is built with createElement + textContent, never innerHTML --
+// a bridge's own label/machine_hostname is host-asserted, not something this
+// page may trust as markup.
+async function loadBridgeTargets() {
+  while (targetBridgeSelect.options.length > 1) targetBridgeSelect.remove(1);
+  bridgeTargetWarning.classList.add("hidden");
+  bridgeTargetWarning.textContent = "";
+  targetBridgeSelect.value = "";
+  try {
+    const res = await fetch("/api/v1/bridges", { method: "GET", credentials: "same-origin" });
+    if (!res.ok) return; // non-fatal: the picker just stays "create a new bridge" only
+    const payload = await res.json();
+    const bridges = (payload && payload.data) || [];
+    for (const br of bridges) {
+      if (!br || br.status === "revoked") continue; // a dead bridge has nothing to attach to
+      const opt = document.createElement("option");
+      opt.value = br.bridge_id || "";
+      opt.textContent = (br.label || br.bridge_id || "bridge") + " (" + (br.machine_hostname || "unknown host") + ")";
+      targetBridgeSelect.appendChild(opt);
+    }
+  } catch (e) {
+    // Network error here is non-fatal for the same reason as !res.ok above.
+  }
+}
+
+targetBridgeSelect.addEventListener("change", () => {
+  if (targetBridgeSelect.value) {
+    bridgeTargetWarning.textContent =
+      "This replaces that bridge's credential and disconnects it, ending any of its running sessions.";
+    bridgeTargetWarning.classList.remove("hidden");
+  } else {
+    bridgeTargetWarning.classList.add("hidden");
+    bridgeTargetWarning.textContent = "";
+  }
+});
 
 verifyBtn.addEventListener("click", async () => {
   clearErr();
@@ -117,6 +169,12 @@ verifyBtn.addEventListener("click", async () => {
     setDD("d_app_version", d.app_version);
     setDD("d_request_ip", d.request_ip);
     deviceSection.classList.remove("hidden");
+    if (d.is_bridge_enrollment) {
+      bridgeTargetWrap.classList.remove("hidden");
+      await loadBridgeTargets();
+    } else {
+      bridgeTargetWrap.classList.add("hidden");
+    }
   } catch (e) {
     showErr("Network error: " + e);
   }
@@ -125,11 +183,16 @@ verifyBtn.addEventListener("click", async () => {
 async function decide(approve) {
   clearErr();
   const user_code = codeInput.value.trim();
+  // Only meaningful on approval of a bridge-enrollment grant; the Hub ignores
+  // it for every other case (approve() reads target_bridge_id only inside its
+  // own "approve a Bridge_Enrollment grant" branch), so sending it harmlessly
+  // on a deny or a non-bridge grant is fine.
+  const target_bridge_id = bridgeTargetWrap.classList.contains("hidden") ? "" : targetBridgeSelect.value;
   try {
     const res = await fetch("/api/v1/device/approve", {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_code, approve }),
+      body: JSON.stringify({ user_code, approve, target_bridge_id }),
     });
     if (res.status === 409) { showErr("This code was already used."); return; }
     if (!res.ok) { showErr("Invalid or expired code."); return; }
