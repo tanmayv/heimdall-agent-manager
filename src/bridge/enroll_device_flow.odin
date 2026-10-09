@@ -1223,6 +1223,16 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 	}
 	if interval <= 0 do interval = BRIDGE_ENROLL_DEFAULT_INTERVAL_SECONDS
 	if expires_in <= 0 || expires_in > BRIDGE_ENROLL_MAX_WAIT_SECONDS do expires_in = BRIDGE_ENROLL_MAX_WAIT_SECONDS
+	// Captured for diagnostics only (REQ-DIAG-1): an "expired" report with no
+	// times attached is unfalsifiable -- the operator cannot tell a genuine
+	// 10-minute timeout from a Hub-side bug reporting Expired early, and
+	// neither can whoever they ask for help. Every print below that reports a
+	// time-related failure states the wall clock AT THAT MOMENT, how long this
+	// process actually waited, and the deadline it was told to expect, so a
+	// report of this message can be judged against the numbers instead of a
+	// guess at how much time "felt like" it had passed.
+	authorized_at_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
+	deadline_ms := authorized_at_ms + i64(expires_in) * 1000
 
 	// The Hub echoes its own fingerprint advisorily. The bridge trusts ITS OWN, and
 	// a disagreement is reported rather than resolved: the Hub computes this from
@@ -1328,7 +1338,12 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 			fmt.eprintln("bridge enroll FAILED: the request was denied in the browser. Nothing was written.")
 			return false
 		case .Expired:
+			now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
 			fmt.eprintln("bridge enroll FAILED: the enrollment request expired before it was approved. Run the command again.")
+			fmt.eprintfln("  this process started waiting at %s and was told the request would expire at %s",
+				action_scheduler_format_rfc3339_utc(authorized_at_ms), action_scheduler_format_rfc3339_utc(deadline_ms))
+			fmt.eprintfln("  the Hub reported Expired at %s -- %ds after this process started waiting, against a %ds budget (waited=%ds)",
+				action_scheduler_format_rfc3339_utc(now_ms), (now_ms - authorized_at_ms) / 1000, expires_in, waited)
 			return false
 		case .Fatal:
 			return false
@@ -1340,7 +1355,11 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 			// Nothing to do: wait out the next interval.
 		}
 	}
+	timeout_now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
 	fmt.eprintln("bridge enroll FAILED: timed out waiting for approval. Nothing was written.")
+	fmt.eprintfln("  this process started waiting at %s with a %ds budget (deadline %s) and gave up at %s (waited=%ds)",
+		action_scheduler_format_rfc3339_utc(authorized_at_ms), expires_in, action_scheduler_format_rfc3339_utc(deadline_ms),
+		action_scheduler_format_rfc3339_utc(timeout_now_ms), waited)
 	return false
 }
 
