@@ -277,6 +277,23 @@ parse_tag_name() {
   return 0
 }
 
+# resolve_tag_commit_sha prints the full commit SHA a release tag points at,
+# or nothing on any failure (no tool, no network, unknown tag). Used by
+# do_update's --check so "same version, same commit" can actually be true for
+# a GitHub-release install -- without this, do_update's "latest_commit" stayed
+# "unknown" forever, which never equals a real installed commit SHA and so
+# --check reported "update available" even immediately after updating to the
+# version it just claimed was latest.
+resolve_tag_commit_sha() {
+  tag="$1"
+  [ -n "$tag" ] || return 0
+  body_file="$(mktemp 2>/dev/null)" || return 0
+  api_fetch "https://api.github.com/repos/$GITHUB_REPO/commits/$tag" "$body_file" "$body_file.hdr" >/dev/null
+  sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$body_file" 2>/dev/null | head -n 1
+  rm -f "$body_file" "$body_file.hdr"
+  return 0
+}
+
 # REQ-INST-6. Resolves the release tag to install into $resolved_tag. Returns 0
 # on success; on failure returns 1 with a SPECIFIC diagnosis in $resolve_error.
 # $resolve_notice carries a non-fatal remark on an otherwise successful lookup.
@@ -2031,6 +2048,44 @@ extract_json_val() {
   fi
 }
 
+# gh_fetch_release_bundle downloads release $1's tarball for target $2 (the
+# SAME asset naming -- heimdall-local-<target>-<version>.tar.gz plus
+# SHA256SUMS -- the fresh-install path in main() downloads), verifies it, and
+# extracts it into $3. On success $3/bin holds the binaries, matching what
+# do_update's "locate staged binaries" step already looks for -- no further
+# format translation needed. On ANY failure (download, missing checksum
+# entry, mismatch) it cleans up its own partial files and returns 1; it never
+# leaves a half-written tarball or an unverified bin/ behind for the caller
+# to accidentally treat as staged.
+gh_fetch_release_bundle() {
+  local version="$1" target="$2" dest_dir="$3"
+  local tarball_name="heimdall-local-${target}-${version}.tar.gz"
+  local base_url="https://github.com/$GITHUB_REPO/releases/download/$version"
+  echo "[update] downloading $tarball_name from GitHub release $version..."
+  if ! curl -fsSL --connect-timeout "$NET_CONNECT_TIMEOUT" "$base_url/$tarball_name" \
+      -o "$dest_dir/$tarball_name" 2>/dev/null; then
+    rm -f "$dest_dir/$tarball_name"
+    return 1
+  fi
+  if ! curl -fsSL --connect-timeout "$NET_CONNECT_TIMEOUT" "$base_url/SHA256SUMS" \
+      -o "$dest_dir/SHA256SUMS" 2>/dev/null; then
+    rm -f "$dest_dir/$tarball_name" "$dest_dir/SHA256SUMS"
+    return 1
+  fi
+  local expected actual
+  expected="$(awk -v f="$tarball_name" '$2 == f {print $1; exit}' "$dest_dir/SHA256SUMS")"
+  actual="$(sha256_of "$dest_dir/$tarball_name")"
+  if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+    echo "[-] Error: SHA-256 mismatch for $tarball_name (expected '${expected:-<no entry>}', got '$actual'); refusing to apply an unverified update." >&2
+    rm -f "$dest_dir/$tarball_name" "$dest_dir/SHA256SUMS"
+    return 1
+  fi
+  echo "[update] checksum verified ($actual)"
+  tar -xzf "$dest_dir/$tarball_name" -C "$dest_dir"
+  rm -f "$dest_dir/$tarball_name" "$dest_dir/SHA256SUMS"
+  [ -d "$dest_dir/bin" ]
+}
+
 do_update() {
   local check_only="${1:-false}"
   local bundle_arg="${2:-}"
@@ -2137,6 +2192,21 @@ do_update() {
         latest_built="$(echo "$manifest_raw" | sed -n -E 's/.*"built_at"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
       fi
     fi
+    # Fall back to the GitHub release the fresh-install path (main()) already
+    # resolves against -- the actual binaries "the GitHub Action" publishes.
+    # This did NOT exist before: with no --bundle, no local dist/ build, and no
+    # reachable Hub manifest, this function fell straight through to
+    # package.json's version field, which is maintained independently of the
+    # release tags (release-local-binaries.yml bumps a tag; nothing bumps
+    # package.json to match) and was reporting versions several releases
+    # stale -- "latest" showed 0.3.3 while GitHub's actual latest tag was
+    # v0.3.8. `resolve_latest_tag` is the SAME function and the SAME GitHub
+    # API call the fresh-install path already uses and that this script's own
+    # tests/CI exercise, so this is one behaviour, not a second copy of it.
+    if [ -z "$latest_version" ] && resolve_latest_tag; then
+      latest_version="$resolved_tag"
+      latest_commit="$(resolve_tag_commit_sha "$resolved_tag")"
+    fi
     if [ -z "$latest_version" ] && [ -f "$root_dir/package.json" ]; then
       latest_version="$(extract_json_val "$root_dir/package.json" "version")"
       if [ -d "$root_dir/.git" ] && command -v git >/dev/null 2>&1; then
@@ -2206,6 +2276,8 @@ do_update() {
       echo "[update] Packaging fresh standalone bundle..."
       "$root_dir/scripts/package-cloudtop-bundle.sh"
       cp -R -p "$root_dir/dist/heimdall-cloudtop/"* "$stage_dir/"
+    elif [ -n "$latest_version" ] && gh_fetch_release_bundle "$latest_version" "$target_arch" "$stage_dir"; then
+      : # gh_fetch_release_bundle already left $stage_dir/bin populated and verified.
     else
       local bundle_url="$resolved_hub_url/api/v1/updates/bundle/heimdall-local-${target_arch}.tar.gz"
       echo "[update] Downloading bundle from Central Hub at $bundle_url..."
