@@ -27,16 +27,11 @@ import BridgeSettingsPanel from './BridgeSettingsPanel';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
-// Add bridge = instructions for the browser-approved device flow (REQ-ENROLL-9);
-// the Hub mints nothing here, so there is no one-time token to show. Detail allows
-// rename (PATCH), revoke (= "remove", POST /revoke). No hard delete in v1.
-// Rotate-token is a documented backend gap (not yet served).
+// Enrollment starts on the machine with `ham-bridge enroll`; this screen is an
+// inventory and management surface only. Archive maps to the Hub's revocation
+// operation: credentials die, the live socket closes, and the durable row remains.
 export default function BridgesPanel() {
-  const [enrollOpen, setEnrollOpen] = useState(false);
-  // Polling used to be driven by "is there a pending enrollment row", which no
-  // longer exists. The panel still polls while the add-bridge instructions are open,
-  // because that is exactly when a new bridge is expected to appear in the list.
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: enrollOpen ? 120000 : 0 });
+  const bridgesQuery = useListBridgesQuery(undefined);
   const [renameBridge] = useRenameBridgeMutation();
   const [updateBridgeTelemetry] = useUpdateBridgeTelemetryMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
@@ -44,12 +39,10 @@ export default function BridgesPanel() {
   const { data: globalTelemetryData } = useFetchTelemetryDefaultEnabledQuery();
   const [saveGlobalTelemetry] = useSaveTelemetryDefaultEnabledMutation();
 
-  const [enrollLabel, setEnrollLabel] = useState('');
   const [renamingId, setRenamingId] = useState('');
   const [renameValue, setRenameValue] = useState('');
-  const [revokeConfirmId, setRevokeConfirmId] = useState('');
+  const [archiveConfirmId, setArchiveConfirmId] = useState('');
   const [actionError, setActionError] = useState('');
-  const [copiedToken, setCopiedToken] = useState(false);
 
   // Update modal state
   const [updateModalBridge, setUpdateModalBridge] = useState<Bridge | null>(null);
@@ -82,36 +75,6 @@ export default function BridgesPanel() {
     return checkBridgeReady(bridge);
   }
 
-  function configuredHubUrl(): string {
-    const explicit = String(
-      resultEnv('VITE_HEIMDALL_HUB_API_URL') ||
-      resultEnv('VITE_HEIMDALL_HUB_URL') ||
-      (typeof window !== 'undefined' ? ((window as any).odinApi?.hubApiBaseUrl || '') : '')
-    ).trim().replace(/\/$/, '');
-    if (explicit) return explicit;
-    return '';
-  }
-
-  function resultEnv(key: string): string {
-    return String((import.meta as any).env?.[key] || '');
-  }
-
-  // buildSetupCommand is now a pure string: there is NOTHING TO MINT (REQ-ENROLL-9).
-  //
-  // It used to interpolate a one-time enrollment token that this panel had just
-  // created server-side, which is why the old UI had a "shown once, store it now"
-  // warning and a "Copy token" button. The device flow has no such secret — the
-  // bridge generates its own request and a human approves it in the browser — so the
-  // panel has no secret to display, no token to leak through the clipboard, and no
-  // server call to make before showing instructions.
-  //
-  // Enrollment takes the Hub API origin. The Hub returns its configured UI
-  // origin in the authorize response; the browser client never derives one
-  // hostname from the other.
-  function buildSetupCommand(): string {
-    return `ham-bridge enroll --hub ${configuredHubUrl() || '<hub-url>'}`;
-  }
-
   async function handleSaveRename(bridgeId: string) {
     const label = renameValue.trim();
     if (!label) return;
@@ -123,12 +86,12 @@ export default function BridgesPanel() {
     }
   }
 
-  async function handleRevoke(bridgeId: string) {
+  async function handleArchive(bridgeId: string) {
     try {
       await revokeBridge({ bridgeId }).unwrap();
-      setRevokeConfirmId('');
+      setArchiveConfirmId('');
     } catch (err: any) {
-      setActionError(String(err?.message || 'Revoke failed'));
+      setActionError(String(err?.message || 'Archive failed'));
     }
   }
 
@@ -168,53 +131,14 @@ export default function BridgesPanel() {
     }
   }
 
-  async function copyToken(token: string) {
-    try {
-      await navigator.clipboard.writeText(token);
-      setCopiedToken(true);
-      window.setTimeout(() => setCopiedToken(false), 1200);
-    } catch {
-      setActionError('Copy failed — select and copy manually.');
-    }
-  }
-
   return (
     <PageShell
       title="Bridges"
-      description="Your machines. “Remove” revokes the token (record kept); no hard delete in v1."
-      actions={
-        <Button variant="primary" data-debug-id="settings-bridges-add-btn" onClick={() => setEnrollOpen((o) => !o)} leading={<Icon name="plus" size={16} />}>Add bridge</Button>
-      }
+      description="Your connected machines. Archiving permanently revokes access and disconnects the bridge."
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
       {bridgesQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
       {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{actionError}</div> : null}
-
-      {/* ADD BRIDGE — instructions only. There is no enrollment ceremony in this
-          panel any more (REQ-ENROLL-9): the Hub mints nothing up front, so there is
-          no one-time token to display, to copy, or to leak. The operator runs one
-          command on the machine and approves the request that appears. */}
-      {enrollOpen ? (
-        <div data-debug-id="settings-bridges-enroll-panel" className="mt-3 rounded-2xl border border-info/30 bg-info-soft p-4">
-          <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-info">Add a bridge — run this on the machine you want to add:</div>
-          <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-subtle bg-surface-raised/50 p-3 text-[12px] leading-5 text-success">{buildSetupCommand()}</pre>
-          <div className="mt-2 text-xs text-muted">
-            It prints a link and a short code. Open the link, check the code and fingerprint match what the machine printed, and approve.
-            Nothing secret is copied between machines — the credential is delivered to the bridge itself.
-          </div>
-          <div className="mt-2 text-xs text-muted">
-            Add <code>--headless</code> if that machine has no browser of its own.
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(buildSetupCommand())}>{copiedToken ? 'Copied' : 'Copy command'}</Button>
-            <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollLabel(''); }}>Done</Button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* The "Pending enrollments" list is gone with the enrollment rows it showed.
-          A pending bridge enrollment is now a short-lived DEVICE GRANT, surfaced on
-          the approval screen rather than as a durable row to revoke here. */}
 
       {/* Bridge Encryption & Vault Settings */}
       <BridgeSettingsPanel bridges={bridges} />
@@ -242,13 +166,13 @@ export default function BridgesPanel() {
         <Text as="div" role="overline" tone="muted" className="mb-2">Bridges ({bridges.length})</Text>
         {bridgesQuery.isFetching && bridges.length === 0 ? <div className="text-sm text-muted">Loading bridges…</div> : null}
         {bridges.length === 0 && !bridgesQuery.isFetching ? (
-          <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-subtle bg-surface-raised/30 p-4 text-center text-sm text-muted">No bridges yet. Add one to connect a machine.</div>
+          <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-subtle bg-surface-raised/30 p-4 text-center text-sm text-muted">No active bridges.</div>
         ) : (
           <div className="space-y-2">
             {bridges.map((bridge: Bridge) => {
               const id = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
               const isRenaming = renamingId === id;
-              const isRevoking = revokeConfirmId === id;
+              const isArchiving = archiveConfirmId === id;
               const isReady = bridgeReady(bridge);
               const status = statusLabel(bridge);
               const isUpdating = isBridgeUpdating(bridge);
@@ -383,10 +307,10 @@ export default function BridgesPanel() {
                           <Button variant="primary" size="sm" data-debug-id={`settings-bridge-rename-save-${id}`} onClick={() => void handleSaveRename(id)}>Save</Button>
                           <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-cancel-${id}`} onClick={() => setRenamingId('')}>Cancel</Button>
                         </>
-                      ) : isRevoking ? (
+                      ) : isArchiving ? (
                         <>
-                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-confirm-${id}`} onClick={() => void handleRevoke(id)}>Revoke</Button>
-                          <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-revoke-cancel-${id}`} onClick={() => setRevokeConfirmId('')}>Cancel</Button>
+                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-archive-confirm-${id}`} onClick={() => void handleArchive(id)}>Archive permanently</Button>
+                          <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-archive-cancel-${id}`} onClick={() => setArchiveConfirmId('')}>Cancel</Button>
                         </>
                       ) : (
                         <>
@@ -405,7 +329,7 @@ export default function BridgesPanel() {
                             Update
                           </Button>
                           <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-btn-${id}`} onClick={() => { setRenamingId(id); setRenameValue(bridge?.label || ''); }}>Rename</Button>
-                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-btn-${id}`} onClick={() => setRevokeConfirmId(id)}>Revoke</Button>
+                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-archive-btn-${id}`} onClick={() => setArchiveConfirmId(id)}>Archive</Button>
                         </>
                       )}
                     </div>
@@ -512,9 +436,6 @@ export default function BridgesPanel() {
         </Modal>
       ) : null}
 
-      <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2 text-caption text-muted">
-        Backend gap: token rotation (<code>{"POST /bridges/{id}/rotate-token"}</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.
-      </div>
       </div>
     </PageShell>
   );

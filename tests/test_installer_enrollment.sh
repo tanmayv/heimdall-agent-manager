@@ -1231,7 +1231,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 echo "Enroll this machine"
-echo "  Open this link:  http://heimdall.example.test/enroll/device#bpk=deadbeef"
+echo "  Open this link:  http://heimdall.example.test/device/add"
 mkdir -p "$(dirname "$token_file")"
 echo "hba_btk_handoff" > "$token_file"
 systemctl --user restart heimdall-bridge

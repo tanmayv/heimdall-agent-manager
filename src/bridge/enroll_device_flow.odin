@@ -1,7 +1,5 @@
-// Bridge-side browser-approval enrollment: the RFC 8628 device grant with PKCE,
-// a loopback callback as a latency optimisation, and the bridge's own ECDH public
-// key carried to the browser in the approval link's FRAGMENT (REQ-IMPL-4,
-// REQ-ENROLL-2/3/4/10, design §2.2, §3, §4.2, §5.4, §7.4-7.6).
+// Bridge-side browser-approval enrollment: the RFC 8628 device grant with PKCE
+// and a short, manually entered user code (REQ-IMPL-4, REQ-ENROLL-2/3/4/10).
 //
 // WHAT THE OPERATOR TYPES, AND WHY THAT IS THE WHOLE INPUT:
 //
@@ -11,34 +9,19 @@
 // bridge talks to `--hub`; the Hub's authorize response supplies the browser
 // origin in its RFC-aligned `verification_uri` field.
 //
-// ===== THE FOUR PROPERTIES THIS FILE EXISTS TO HOLD =====
+// ===== THE THREE PROPERTIES THIS FILE EXISTS TO HOLD =====
 //
-//  1. THE PUBLIC KEY TRAVELS IN THE URL FRAGMENT, NEVER THE QUERY STRING.
-//     A fragment is never transmitted to a server. The browser reads it from
-//     `location.hash`; the Hub never receives it and therefore cannot substitute
-//     it. Move this value into a query parameter and the Hub sees it, can tamper
-//     with it, and the MITM this whole design exists to close is reintroduced in
-//     full (design §5.4.1). It is emitted in exactly one place,
-//     bridge_enroll_approval_url, and `enroll_device_flow_test.odin` asserts both
-//     halves: the fragment HAS the key and the query string does NOT.
-//     DO NOT "simplify" this into a query parameter.
+//  1. THE APPROVAL URL CARRIES NO PER-REQUEST DATA. It is safe to type, bookmark,
+//     or open on another device. The operator enters the short code and compares
+//     the fingerprint printed here with the Hub-computed fingerprint on the
+//     approval page. That human comparison is the independent check that prevents
+//     a substituting Hub from silently replacing the bridge encryption key.
 //
-//  2. NO SECRET EVER APPEARS IN THE CALLBACK URL. The callback carries `state`
-//     and `status` and nothing else. A loopback listener cannot hold a valid TLS
-//     certificate, so its URLs are cleartext and land in browser history, session
-//     restore, `Referer` and every installed extension (design §3.3). The bridge
-//     already has a server-authenticated TLS channel to the Hub and a PKCE
-//     verifier no other party holds, so it fetches its own credential over THAT
-//     (step 11) — strictly safer, and invisible to the operator either way.
+//  2. POLLING IS THE ONLY COMPLETION CHANNEL. The bridge redeems approval over
+//     its server-authenticated Hub connection with the device_code and PKCE
+//     verifier. There is no loopback listener or browser-to-bridge callback.
 //
-//  3. POLLING IS THE CORRECTNESS GUARANTEE; THE CALLBACK IS ONLY LATENCY. The
-//     poll loop runs whether or not the listener bound, so a blocked, squatted or
-//     unavailable loopback costs seconds, not the enrollment — and the headless
-//     path is then the same code with no paste step (design §4.2). Every
-//     acceptance criterion is reachable with the callback never firing, and a
-//     test pins exactly that.
-//
-//  4. THE ECDH KEY IS ENCRYPTION-ONLY AND EPHEMERAL. bridge_unseal_init's P-256
+//  3. THE ECDH KEY IS ENCRYPTION-ONLY AND EPHEMERAL. bridge_unseal_init's P-256
 //     keypair agrees the vault key and does nothing else. It is NOT a signing key
 //     (PKCE provides proof-of-possession instead, design §3.6) and it is NOT
 //     persisted: ephemerality is what makes every archived approval link and every
@@ -47,14 +30,11 @@
 //     be a SECOND key, not a replacement.
 package main
 
-import "core:crypto"
 import "core:crypto/hash"
 import base64 "core:encoding/base64"
 import "core:encoding/hex"
 import "core:fmt"
-import "core:net"
 import "core:os"
-import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -71,40 +51,13 @@ import http "odin_test:lib/http_client"
 // family design §9.3 names, so the design's paths are stale and these are not.
 BRIDGE_ENROLL_AUTHORIZE_PATH :: "/api/v1/device/authorize"
 BRIDGE_ENROLL_TOKEN_PATH :: "/api/v1/device/token"
-// BRIDGE_ENROLL_PAGE_PATH is the SPA route the approval link points at.
-//
-// IT IS A HASH ROUTE ("/#/enroll/approve"), and that is load-bearing in two
-// separate ways.
-//
-// WHY THE SPA AND NOT /api/v1/device: the approval screen has to encrypt the
-// vault key to the key in this fragment, and the vault key is in-memory module
-// state inside the SPA (getActiveVaultKey). The standalone page the Hub serves
-// at GET /api/v1/device is a different document: same origin, but no shared JS
-// module memory, so it cannot reach the vault key. Reimplementing vault key
-// derivation inside that page was considered and rejected — it would put the
-// most security-sensitive code in the system into a second, untested copy.
-// REQ-IMPL-5's coordinator ruling authorised this one-line move.
-//
-// The standalone page still exists and is unchanged; the Electron device flow
-// uses it, and the fallback message below still points there for the no-link
-// path.
-//
-// WHY THE PARAMETERS MOVE INTO THE FRAGMENT TOO: the app is hash-routed, so its
-// own route and query live after the '#'. Appending a second '#' would be
-// ambiguous, so `user_code` joins the others in the hash's query string. That
-// strictly IMPROVES the property this file cares about — `user_code` is public
-// by construction, but it now stays out of the Hub's request line and access
-// logs as well.
-BRIDGE_ENROLL_PAGE_PATH :: "/#/enroll/approve"
+// Stable authenticated web route. The UI uses the Hub's stored bridge key only
+// after the operator confirms its fingerprint against this terminal.
+BRIDGE_ENROLL_PAGE_PATH :: "/device/add"
 BRIDGE_ENROLL_REFRESH_PATH :: "/api/v1/device/bridge-refresh"
 
-// The loopback callback's one and only path. Everything else is a silent 404.
-BRIDGE_ENROLL_CALLBACK_PATH :: "/enroll/callback"
-
-// 32 bytes each: the PKCE verifier (RFC 7636 §4.1 permits 43-128 chars; 32 raw
-// bytes is 43 base64url chars, the minimum, and 256 bits of entropy) and the
-// callback nonce, which must be unguessable because it is the callback's only
-// authenticator (design §3.5).
+// 32 bytes for the PKCE verifier (RFC 7636 §4.1 permits 43-128 chars; 32 raw
+// bytes is 43 base64url chars, the minimum, and 256 bits of entropy).
 BRIDGE_ENROLL_SECRET_BYTES :: 32
 
 // Hard ceiling on the ceremony, independent of what the Hub reports, so a Hub
@@ -112,11 +65,6 @@ BRIDGE_ENROLL_SECRET_BYTES :: 32
 BRIDGE_ENROLL_MAX_WAIT_SECONDS :: 900
 BRIDGE_ENROLL_DEFAULT_INTERVAL_SECONDS :: 5
 BRIDGE_ENROLL_VAULT_WAIT_SECONDS :: 45
-
-// How long bridge_enroll_callback_shutdown waits for the listener thread to exit,
-// in 10ms steps. Two seconds is far more than a woken accept() needs; it is a
-// ceiling on a pathology, not a budget anything normally spends.
-BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS :: 200
 
 // ===== Proactive refresh (design §7.5) =====
 //
@@ -172,7 +120,7 @@ Bridge_Enroll_Credential :: struct {
 	vault_delivery_expected: bool,
 }
 
-// ===== Base64url: used for PKCE and the callback nonce, NOT for the key =====
+// ===== Base64url: used for PKCE =====
 //
 // ONE ENCODING CARRIES THE PUBLIC KEY EVERYWHERE: the 130-char lowercase hex that
 // `bridge_get_public_key_hex` emits. It is what the Hub validates `bridge_public_key`
@@ -189,9 +137,7 @@ Bridge_Enroll_Credential :: struct {
 // percent-encoding in a fragment, and the fingerprint is computed over the decoded
 // bytes either way, so both encodings agree on every comparison.
 //
-// base64url is still the right encoding for the two values below that are never
-// parsed by the UI: the PKCE verifier/challenge (RFC 7636 §4.2 specifies it) and the
-// callback nonce.
+// base64url is the encoding for the PKCE verifier/challenge (RFC 7636 §4.2).
 //
 // Compressed points were evaluated and rejected (§5.4.2): the UI hard-rejects
 // anything but 65 bytes and WebCrypto's `raw` import IS the uncompressed format.
@@ -208,8 +154,8 @@ bridge_base64url_unpadded :: proc(data: []byte, allocator := context.allocator) 
 //
 // It reads the device directly, with an explicit ok, rather than calling
 // crypto.rand_bytes, for one reason: this is the call that must be PROVABLY
-// unable to degrade. The PKCE verifier and the callback nonce are the two secrets
-// the ceremony rests on, and a silent fallback to anything weaker is the exact
+// unable to degrade. The PKCE verifier is the secret the redemption proof rests
+// on, and a silent fallback to anything weaker is the exact
 // failure class settled 7 and 8 exist to forbid on the Hub side. A short read is
 // a failure, not a partial success.
 bridge_enroll_entropy :: proc(dst: []byte) -> bool {
@@ -290,86 +236,23 @@ bridge_enroll_hub_url :: proc(raw: string, allocator := context.allocator) -> (s
 	return strings.clone(trimmed, allocator), true
 }
 
-// bridge_enroll_approval_url composes the link the operator opens. THE BRIDGE
-// COMPOSES IT, FROM ITS OWN KEY, AND PRINTS IT ON ITS OWN STDOUT (design §5.4.3):
-// if the Hub supplied this link, the Hub would supply the key, and the property is
-// void. Nothing here round-trips through the Hub.
-//
-// Shape:
-//
-//	<ui>/#/enroll/approve?user_code=<code>&bpk=<130-char hex of the 65-byte point>[&cb=<port>&state=<nonce>]
-//
-// EVERYTHING AFTER THE `#` IS THE FRAGMENT, so every parameter here is invisible
-// to the Hub — there is no query string before the `#` at all. That is a change
-// from the earlier `<ui>/api/v1/device?user_code=...#bpk=...` shape and it moves
-// in the safe direction: `user_code` is public by construction (the operator
-// types it by hand on the no-link path), and it now stays out of the Hub's
-// access logs too. `cb`/`state` ride in the fragment with the key for the same
-// reason the key does: the Hub has no `redirect_uri` field on /device/authorize,
-// so the browser can only learn the loopback port from the bridge itself — and
-// the fragment is the one channel that reaches the browser without passing
-// through the Hub. `state` in a fragment is acceptable where a credential would
-// not be: it is a correlator, and per design §3.5 even a VALID callback only
-// causes the bridge to attempt redemption, which still fails unless the Hub
-// genuinely recorded an approval. A forged callback cannot mint anything.
-bridge_enroll_approval_url :: proc(
-	ui_origin, user_code, public_key_hex: string,
-	callback_port: u16,
-	callback_state: string,
-	allocator := context.allocator,
-) -> string {
-	b := strings.builder_make(allocator)
-	strings.write_string(&b, ui_origin)
-	// ===== THE FRAGMENT STARTS HERE (BRIDGE_ENROLL_PAGE_PATH carries the '#').
-	// Everything from this point is invisible to the Hub. DO NOT introduce a
-	// '?' before it. See property 1 in the file header. =====
-	strings.write_string(&b, BRIDGE_ENROLL_PAGE_PATH)
-	strings.write_string(&b, "?user_code=")
-	bridge_enroll_write_url_component(&b, user_code)
-	strings.write_string(&b, "&bpk=")
-	// ENCODING: the 130-char hex the rest of the system already speaks.
-	//
-	// Design §5.4.2 specified base64url of the 65 raw bytes (~43 chars shorter) and
-	// the coordinator OVERRODE it, correctly. Hex is what `bridge_get_public_key_hex`
-	// emits, what the hub validates `bridge_public_key` as, and what the UI's unseal
-	// path already handles (`client_public_key: clientPublicKeyHex`). base64url would
-	// make this fragment the only place in the system using a third encoding and
-	// would need a new parser in the UI — whose absence fails SILENTLY at the vault
-	// unlock while enrollment still appears to succeed. Hex is URL-safe, and the
-	// fingerprint is computed over the decoded bytes either way, so both encodings
-	// agree on every comparison a human or the Hub makes.
-	strings.write_string(&b, public_key_hex)
-	if callback_port != 0 && callback_state != "" {
-		strings.write_string(&b, "&cb=")
-		strings.write_string(&b, fmt.tprintf("%d", callback_port))
-		strings.write_string(&b, "&state=")
-		bridge_enroll_write_url_component(&b, callback_state)
-	}
-	return strings.to_string(b)
+// bridge_enroll_approval_url composes the stable page the operator may open on
+// any signed-in device. It intentionally contains no user code or cryptographic
+// material; the terminal prints those separately for manual entry/comparison.
+bridge_enroll_approval_url :: proc(ui_origin: string, allocator := context.allocator) -> string {
+	return strings.concatenate({ui_origin, BRIDGE_ENROLL_PAGE_PATH}, allocator)
 }
 
-// bridge_enroll_write_url_component percent-encodes everything outside the
-// unreserved set. The values passed here (a user code, a base64url nonce) are
-// already safe, which is exactly why this is here: it keeps a future field that
-// is NOT safe from silently breaking the URL's structure.
-bridge_enroll_write_url_component :: proc(b: ^strings.Builder, value: string) {
-	HEX_DIGITS :: "0123456789ABCDEF"
-	digits := HEX_DIGITS
-	for i in 0 ..< len(value) {
-		c := value[i]
-		unreserved :=
-			(c >= 'A' && c <= 'Z') ||
-			(c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') ||
-			c == '-' || c == '.' || c == '_' || c == '~'
-		if unreserved {
-			strings.write_byte(b, c)
-		} else {
-			strings.write_byte(b, '%')
-			strings.write_byte(b, digits[c >> 4 & 0x0f])
-			strings.write_byte(b, digits[c & 0x0f])
-		}
-	}
+// The automatic same-machine convenience carries the short code in a fragment.
+// Browsers do not send fragments in HTTP requests or Referer headers, so the Hub
+// and reverse-proxy logs still see only the stable page above. The SPA consumes
+// and removes this fragment immediately. The terminal continues to print the
+// stable URL for phone/manual enrollment.
+bridge_enroll_automatic_approval_url :: proc(
+	approval_url, user_code: string,
+	allocator := context.allocator,
+) -> string {
+	return strings.concatenate({approval_url, "#/device/add?code=", user_code}, allocator)
 }
 
 // ===== The machine descriptor =====
@@ -485,295 +368,7 @@ bridge_enroll_os_display :: proc(d: Bridge_Machine_Descriptor, allocator := cont
 	return strings.join(parts[:], " ", allocator)
 }
 
-// ===== The loopback callback listener (design §3.1, §3.5) =====
-
-Bridge_Enroll_Callback :: struct {
-	listener: net.TCP_Socket,
-	port:     u16,
-	state:    string,
-	// Set by the listener thread once a hit with a MATCHING state arrives, read by
-	// the poll loop so it can redeem immediately instead of waiting out its
-	// interval. Advisory only: the loop completes without it.
-	fired:    i32,
-	// Shutdown handshake. `stop` is set by
-	// bridge_enroll_callback_shutdown and read by the listener thread; `done` is
-	// set by the listener thread as it exits, so the shutdown can WAIT for the
-	// socket to be gone instead of assuming it.
-	//
-	// The listener must be gone before the temporary Hub runtime begins waiting
-	// for vault delivery; its one-shot state is spent once approval completes.
-	stop:     i32,
-	done:     i32,
-	bound:    bool,
-}
-
-g_bridge_enroll_callback: Bridge_Enroll_Callback
-
-// bridge_enroll_callback_bind binds 127.0.0.1:0 and returns the kernel-assigned
-// port. Three choices here are load-bearing (design §3.1):
-//
-//   - LOOPBACK LITERAL, NEVER 0.0.0.0. A wildcard bind would expose the callback
-//     to the whole network, letting anyone who guesses the nonce complete someone
-//     else's enrollment.
-//   - 127.0.0.1, NOT "localhost". RFC 8252 §8.3: a name goes through resolution,
-//     so a poisoned /etc/hosts or a hostile resolver can point it elsewhere. An IP
-//     literal cannot be redirected.
-//   - PORT 0, NOT A FIXED PORT. A fixed port is squattable by a local process that
-//     starts first. And the socket is HELD FROM HERE — before the port appears in
-//     any printed URL — so there is no window in which the port is named but
-//     unbound.
-//
-// A bind failure is NOT fatal: the caller continues on the polling path.
-bridge_enroll_callback_bind :: proc(cb: ^Bridge_Enroll_Callback, state: string) -> bool {
-	listener, err := net.listen_tcp(net.Endpoint{net.IP4_Loopback, 0}, 4)
-	if err != nil {
-		fmt.println("enroll: could not bind a loopback callback listener; continuing on the polling path (this costs latency, not correctness)")
-		return false
-	}
-	endpoint, ep_err := net.bound_endpoint(listener)
-	if ep_err != nil || endpoint.port <= 0 {
-		net.close(listener)
-		fmt.println("enroll: could not read the callback listener's port; continuing on the polling path")
-		return false
-	}
-	cb.listener = listener
-	cb.port = u16(endpoint.port)
-	cb.state = state
-	cb.bound = true
-	return true
-}
-
-// bridge_enroll_callback_serve accepts until it gets ONE hit with a valid state,
-// then stops. Run on its own thread; the poll loop never blocks on it.
-bridge_enroll_callback_serve :: proc(cb: ^Bridge_Enroll_Callback) {
-	// THE LISTENER THREAD IS THE SOLE OWNER OF THE SOCKET and the only caller that
-	// ever closes it. bridge_enroll_callback_shutdown deliberately does not, so
-	// there is no window in which one thread closes an fd another is accepting on.
-	//
-	// DEFER ORDER IS LOAD-BEARING: Odin runs defers LIFO, so the one declared FIRST
-	// runs LAST. `done` is therefore declared first and published last — after the
-	// socket is actually closed. Declared the other way round (which is how this was
-	// first written) `done` was set while the close had not yet run, so a shutdown
-	// could observe "retired" with the port still bound for an instant. Harmless in
-	// isolation, but it made the wait a lie, and the whole point of the wait is that
-	// the listener is gone before the runtime starts.
-	defer sync.atomic_store(&cb.done, 1)
-	defer net.close(cb.listener)
-	for {
-		if sync.atomic_load(&cb.stop) == 1 do return
-		client, source, accept_err := net.accept_tcp(cb.listener)
-		if accept_err != nil do return
-		// A shutdown's wake-up connection arrives here. Hand it nothing and leave.
-		if sync.atomic_load(&cb.stop) == 1 {
-			net.close(client)
-			return
-		}
-		// Defence in depth against a future misbind: a peer that is not loopback is
-		// closed without a response, whatever the URL says (design §3.5 item 6).
-		if !bridge_enroll_peer_is_loopback(source) {
-			net.close(client)
-			continue
-		}
-		request, ok := read_http_request(client)
-		if !ok {
-			net.close(client)
-			continue
-		}
-		method, path, query := bridge_enroll_request_line(request)
-		state := bridge_enroll_query_value(query, "state")
-		status := bridge_enroll_query_value(query, "status")
-		// GET, the one path, and a constant-time state match. Anything else is a
-		// SILENT 404 with no detail: a prober must not be able to learn that an
-		// enrollment is in flight, nor to walk the nonce a byte at a time.
-		if method != "GET" || path != BRIDGE_ENROLL_CALLBACK_PATH || !bridge_enroll_state_matches(cb.state, state) {
-			bridge_enroll_callback_respond(client, 404, "Not Found", "text/plain; charset=utf-8", "not found\n")
-			net.close(client)
-			continue
-		}
-		body := bridge_enroll_callback_page(status)
-		bridge_enroll_callback_respond(client, 200, "OK", "text/html; charset=utf-8", body)
-		net.close(client)
-		sync.atomic_store(&cb.fired, 1)
-		return
-	}
-}
-
-// bridge_enroll_callback_take_fired reports whether a valid callback has arrived
-// since the last check, and CONSUMES the signal.
-//
-// Consuming is not an optimisation, it is the difference between one extra poll
-// and a hot loop. The signal is a latch set by the listener thread; a loop that
-// only READS it sees it set on every subsequent iteration, skips its sleep every
-// time, and polls the Hub as fast as the network allows — which is precisely the
-// self-inflicted DoS design §7.5 warns about in the refresh path, and would also
-// trip the Hub's per-IP poll limiter and turn a working enrollment into
-// `slow_down`. Measured before this fix: 7398 polls in ~8 seconds from a single
-// callback hit.
-//
-// One callback therefore produces exactly one immediate redemption attempt, after
-// which the loop returns to its normal interval.
-bridge_enroll_callback_take_fired :: proc(cb: ^Bridge_Enroll_Callback) -> bool {
-	return sync.atomic_exchange(&cb.fired, 0) == 1
-}
-
-// bridge_enroll_callback_shutdown retires the loopback callback listener before
-// the bridge runtime starts (REQ-FIX-2). Idempotent, and a no-op when nothing was
-// ever bound (--headless, or a bind that failed).
-//
-// IT WAKES accept() WITH A CONNECTION RATHER THAN CLOSING THE FD, and that is the
-// whole reason this is nine lines instead of one. Closing a listening socket from
-// another thread does NOT reliably wake a thread blocked in accept() on Linux: the
-// thread can stay parked on a descriptor number that the allocator is then free to
-// hand to an unrelated socket, at which point the enrollment callback is accepting
-// connections on somebody else's listener. `ctl_vault_fake_bridge_stop` in
-// src/ctl/vault_bridge_source_test.odin:104-112 documents and uses the same
-// self-connect wake for the same reason — this is that idiom, not a new one.
-//
-// The listener thread owns the close (see bridge_enroll_callback_serve), so the
-// socket is released exactly once no matter how the ceremony ended: the callback
-// fired and the thread had already gone, or it never fired and the wake-up
-// connection retires it here.
-bridge_enroll_callback_shutdown :: proc(cb: ^Bridge_Enroll_Callback) {
-	if !cb.bound do return
-	sync.atomic_store(&cb.stop, 1)
-	if wake, dial_err := net.dial_tcp(net.IP4_Loopback, int(cb.port)); dial_err == nil {
-		net.close(wake)
-	}
-	// Bounded wait, because "the port is gone" is a precondition of starting the
-	// runtime and not something to take on faith. A thread that somehow does not
-	// exit is REPORTED rather than passed over in silence; it cannot be waited on
-	// forever without making a stuck listener thread into a bridge that never
-	// starts.
-	for _ in 0 ..< BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS {
-		if sync.atomic_load(&cb.done) == 1 do break
-		time.sleep(10 * time.Millisecond)
-	}
-	if sync.atomic_load(&cb.done) != 1 {
-		fmt.eprintfln("warning: the enrollment callback listener on 127.0.0.1:%d did not retire within %dms; it holds a spent one-shot nonce and accepts nothing, but it should have exited",
-			cb.port, BRIDGE_ENROLL_CALLBACK_SHUTDOWN_WAIT_STEPS * 10)
-	}
-	cb.bound = false
-}
-
-bridge_enroll_peer_is_loopback :: proc(source: net.Endpoint) -> bool {
-	switch addr in source.address {
-	case net.IP4_Address:
-		return addr[0] == 127
-	case net.IP6_Address:
-		return addr == net.IP6_Loopback
-	}
-	return false
-}
-
-// bridge_enroll_request_line splits "GET /path?query HTTP/1.1" into its parts.
-// request_method_route (main.odin) deliberately DROPS the query string, so the
-// callback cannot reuse it — the query is where `state` lives.
-bridge_enroll_request_line :: proc(request: string) -> (method, path, query: string) {
-	line_end := strings.index(request, "\r\n")
-	line := request if line_end < 0 else request[:line_end]
-	first := strings.index_byte(line, ' ')
-	if first < 0 do return "", "", ""
-	method = line[:first]
-	rest := line[first + 1:]
-	second := strings.index_byte(rest, ' ')
-	target := rest if second < 0 else rest[:second]
-	if q := strings.index_byte(target, '?'); q >= 0 {
-		return method, target[:q], target[q + 1:]
-	}
-	return method, target, ""
-}
-
-// bridge_enroll_query_value reads one key from a raw query string. Values are
-// compared, not interpreted, so percent-decoding is limited to what a browser
-// actually emits for these two fields; an unknown escape is left verbatim and
-// simply fails the state match.
-bridge_enroll_query_value :: proc(query, key: string, allocator := context.temp_allocator) -> string {
-	rest := query
-	for len(rest) > 0 {
-		pair := rest
-		if amp := strings.index_byte(rest, '&'); amp >= 0 {
-			pair = rest[:amp]
-			rest = rest[amp + 1:]
-		} else {
-			rest = ""
-		}
-		eq := strings.index_byte(pair, '=')
-		if eq < 0 do continue
-		if pair[:eq] != key do continue
-		return bridge_enroll_percent_decode(pair[eq + 1:], allocator)
-	}
-	return ""
-}
-
-bridge_enroll_percent_decode :: proc(value: string, allocator := context.temp_allocator) -> string {
-	if !strings.contains(value, "%") do return value
-	b := strings.builder_make(allocator)
-	i := 0
-	for i < len(value) {
-		if value[i] == '%' && i + 2 < len(value) {
-			if decoded, ok := strconv.parse_u64_of_base(value[i + 1:i + 3], 16); ok {
-				strings.write_byte(&b, u8(decoded))
-				i += 3
-				continue
-			}
-		}
-		strings.write_byte(&b, value[i])
-		i += 1
-	}
-	return strings.to_string(b)
-}
-
-// bridge_enroll_state_matches compares the callback's state against the nonce in
-// CONSTANT TIME, so repeated probing cannot leak a prefix (design §3.5 item 2). A
-// length mismatch returns early — lengths are public — and an empty expectation
-// never matches, which is what keeps a bridge that failed to generate a nonce from
-// accepting every caller (the F4 failure class: a blank secret that authorises
-// everything).
-bridge_enroll_state_matches :: proc(expected, presented: string) -> bool {
-	if expected == "" || presented == "" do return false
-	if len(expected) != len(presented) do return false
-	return crypto.compare_constant_time(transmute([]byte)(expected), transmute([]byte)(presented)) == 1
-}
-
-// bridge_enroll_callback_page is the close-the-tab response. Self-contained, with
-// no subresources: nothing to leak the URL through a `Referer`, and nothing to
-// load from a cleartext origin.
-bridge_enroll_callback_page :: proc(status: string, allocator := context.temp_allocator) -> string {
-	headline := "Approved — you can close this tab."
-	if status != "" && status != "approved" {
-		headline = "This enrollment was not approved. You can close this tab."
-	}
-	return fmt.aprintf(
-		"<!doctype html><meta charset=\"utf-8\"><title>Heimdall bridge enrollment</title><p>%s</p>",
-		headline,
-		allocator = allocator,
-	)
-}
-
-// bridge_enroll_callback_head builds the response head. Split out from the socket
-// write so the headers can be asserted in a test: the listener is ONE-SHOT, so by
-// the time a second request could inspect them the listener is already gone, and
-// `Cache-Control: no-store` is a stated requirement rather than a detail.
-bridge_enroll_callback_head :: proc(status: int, reason, content_type: string, body_len: int, allocator := context.temp_allocator) -> string {
-	b := strings.builder_make(allocator)
-	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\n", status, reason))
-	strings.write_string(&b, fmt.tprintf("Content-Type: %s\r\n", content_type))
-	strings.write_string(&b, fmt.tprintf("Content-Length: %d\r\n", body_len))
-	// No caching and no referrer: the URL carries a correlator, and neither the
-	// browser's cache nor any downstream request needs a copy of it.
-	strings.write_string(&b, "Cache-Control: no-store\r\n")
-	strings.write_string(&b, "Referrer-Policy: no-referrer\r\n")
-	strings.write_string(&b, "Connection: close\r\n\r\n")
-	return strings.to_string(b)
-}
-
-bridge_enroll_callback_respond :: proc(client: net.TCP_Socket, status: int, reason, content_type, body: string) {
-	head := bridge_enroll_callback_head(status, reason, content_type, len(body))
-	_ = bridge_tcp_send_all(client, transmute([]byte)head)
-	if len(body) > 0 do _ = bridge_tcp_send_all(client, transmute([]byte)body)
-}
-
-// ===== The poll loop (RFC 8628 §3.4-3.5, design §2.2 step 7/11) =====
+// Enrollment completion uses Hub polling only; there is no browser callback.
 
 Bridge_Enroll_Poll_Status :: enum {
 	Pending,
@@ -1141,6 +736,36 @@ bridge_credential_refresh_worker :: proc() {
 	}
 }
 
+// bridge_enroll_run_browser_opener passes the URL as an argv element, never
+// through a shell. Besides avoiding quoting/injection problems, this lets the
+// operator copy the already-printed stable URL if no desktop opener is present.
+bridge_enroll_run_browser_opener :: proc(opener, url: string) -> bool {
+	process, start_err := os.process_start(os.Process_Desc{command = []string{opener, url}})
+	if start_err != nil do return false
+	// Desktop openers normally exit immediately, but some xdg-open backends wait
+	// for the browser process. Enrollment must never wait for the browser to
+	// close before it starts polling, so give the launcher a short head start and
+	// then reap it. A browser it already spawned remains independent.
+	state, _ := os.process_wait(process, 1 * time.Second)
+	if state.exited do return state.success
+	_ = os.process_kill(process)
+	_, _ = os.process_wait(process)
+	return true
+}
+
+// Try the platform's conventional opener first, then the other common name.
+// A missing command or a desktop-session failure is deliberately non-fatal:
+// enrollment keeps polling and the terminal still shows the phone-friendly URL.
+bridge_enroll_try_open_approval_url :: proc(url: string) -> bool {
+	when ODIN_OS == .Darwin {
+		if bridge_enroll_run_browser_opener("open", url) do return true
+		return bridge_enroll_run_browser_opener("xdg-open", url)
+	} else {
+		if bridge_enroll_run_browser_opener("xdg-open", url) do return true
+		return bridge_enroll_run_browser_opener("open", url)
+	}
+}
+
 // bridge_enroll_restart_service hands the persisted credential to the already
 // registered service. It invokes no shell.
 bridge_enroll_restart_service :: proc() -> bool {
@@ -1235,23 +860,10 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 		return false
 	}
 
-	// Step 2c — PKCE and the callback nonce, both fail-closed on entropy.
+	// Step 2c — PKCE, fail-closed on entropy.
 	code_verifier, verifier_ok := bridge_enroll_random_token()
 	if !verifier_ok do return false
 	code_challenge := bridge_pkce_challenge(code_verifier)
-	callback_state, state_ok := bridge_enroll_random_token()
-	if !state_ok do return false
-
-	// Step 3 — bind the loopback listener and HOLD THE SOCKET, before the port can
-	// appear in any printed URL. --headless skips it; polling covers that path
-	// identically, so the headless case needs no paste step (§4.2).
-	headless := has_flag(args, "--headless")
-	if !headless {
-		if bridge_enroll_callback_bind(&g_bridge_enroll_callback, callback_state) {
-			thread.run_with_poly_data(&g_bridge_enroll_callback, bridge_enroll_callback_serve)
-		}
-	}
-	callback_port: u16 = g_bridge_enroll_callback.port if g_bridge_enroll_callback.bound else 0
 
 	// Step 4 — the anonymous device-authorization request.
 	body := bridge_enroll_authorize_body(descriptor, public_key_hex, code_challenge, context.temp_allocator)
@@ -1307,44 +919,39 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 		return false
 	}
 
-	// Step 6 — print the ceremony. THE WHOLE LINK, FRAGMENT INCLUDED, IS COMPOSED
-	// HERE FROM THIS PROCESS'S OWN KEY and printed on its own stdout. It never
-	// round-trips through the Hub, which is the entire point (§5.4.3).
-	approval_url := bridge_enroll_approval_url(ui_origin, user_code, public_key_hex, callback_port, callback_state, context.temp_allocator)
+	// Step 6 — print a stable URL plus the short code and independently computed
+	// fingerprint. The URL contains no enrollment-specific material.
+	approval_url := bridge_enroll_approval_url(ui_origin, context.temp_allocator)
 	fmt.println("")
 	fmt.println("Enroll this machine")
 	fmt.println("  Open this link:")
 	fmt.println("")
 	fmt.printfln("  %s", approval_url)
 	fmt.println("")
-	fmt.println("  The link carries this machine's encryption key, so approving it also")
-	fmt.println("  unlocks the vault here. Nothing else to do afterwards.")
-	fmt.println("")
-	fmt.printfln("  If you cannot use the link, open %s%s", ui_origin, BRIDGE_ENROLL_PAGE_PATH)
-	fmt.printfln("  and enter the code     %s", user_code)
-	fmt.println("  then check this fingerprint matches the page:")
+	fmt.printfln("  Enter device code      %s", user_code)
+	fmt.println("  Confirm this fingerprint matches the approval page:")
 	fmt.printfln("                         %s", fingerprint)
-	fmt.println("  (the vault will stay locked on this path — the key rides in the link's fragment)")
+	fmt.println("  The code expires shortly. This process retrieves its credential directly")
+	fmt.println("  from the Hub using PKCE-protected polling.")
 	fmt.println("")
+	if !has_flag(args, "--headless") {
+		automatic_url := bridge_enroll_automatic_approval_url(
+			approval_url, user_code, context.temp_allocator)
+		if bridge_enroll_try_open_approval_url(automatic_url) {
+			fmt.println("Opened the approval page in your browser.")
+		} else {
+			fmt.println("Could not open a browser automatically; use the link shown above.")
+		}
+	}
 	fmt.printfln("Waiting for approval (expires in %dm%02ds)…", expires_in / 60, expires_in % 60)
 
-	// Steps 7-11 — poll until a terminal answer. POLLING IS THE GUARANTEE: the
-	// callback only shortens the wait, and this loop is identical with or without
-	// it, which is why a blocked callback cannot fail an enrollment.
+	// Steps 7-11 — poll until a terminal answer. Polling is the only completion
+	// channel; credentials never pass through the approving browser.
 	waited := 0
 	for waited < expires_in {
-		// Sleep in one-second steps so a callback can cut the wait short without
-		// making the poll interval itself tiny.
-		slept := 0
-		for slept < interval && waited < expires_in {
-			if bridge_enroll_callback_take_fired(&g_bridge_enroll_callback) {
-				fmt.println("enroll: approval callback received; redeeming now")
-				break
-			}
-			time.sleep(time.Second)
-			slept += 1
-			waited += 1
-		}
+		sleep_for := min(interval, expires_in - waited)
+		time.sleep(time.Duration(sleep_for) * time.Second)
+		waited += sleep_for
 		status, cred, retry_after := bridge_enroll_poll_once(api_base, device_code, code_verifier)
 		switch status {
 		case .Approved:
@@ -1363,7 +970,6 @@ bridge_enroll_device_command :: proc(args: []string) -> bool {
 				fmt.printfln("  refresh token   %s (0600), access token expires in %ds and is refreshed proactively", bridge_enroll_refresh_file_for(token_file, context.temp_allocator), cred.expires_in)
 			}
 			fmt.println("  nothing secret was written to config.toml (audit F2)")
-			bridge_enroll_callback_shutdown(&g_bridge_enroll_callback)
 			if cred.vault_delivery_expected {
 				if !bridge_enroll_wait_for_vault_delivery(args, cred.bridge_id) {
 					keystore_lock_and_purge()

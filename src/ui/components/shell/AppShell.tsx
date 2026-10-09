@@ -1207,12 +1207,9 @@ function RouteOutlet({
           <ProjectFormPage projectId={decodeURIComponent(path.slice('/projects/'.length, -'/edit'.length))} />
         ) : path.startsWith('/projects/') ? (
           <ProjectViewPage projectId={decodeURIComponent(path.slice('/projects/'.length))} />
-        ) : path === '/enroll/approve' ? (
-          // REQ-IMPL-5: the bridge-enrollment approval screen. The bridge prints
-          // a link to this route and puts the public key in the FRAGMENT, which
-          // never reaches the Hub. It lives in the SPA because the vault key is
-          // in-memory module state here; the standalone page at
-          // GET /api/v1/device is unchanged and still serves the Electron flow.
+        ) : path === '/device/add' ? (
+          // Authenticated bridge-enrollment approval. The operator enters the
+          // short code and confirms the terminal fingerprint before approval.
           <BridgeEnrollmentApprovalPage />
         ) : path === '/conversations/new' ? (
           <ConversationLaunchComposer />
@@ -1648,7 +1645,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // Keep navigation, the bottom dock, previews, command palette, and vault onboarding
   // out of this route so the operator sees only the machine asking for access and the
   // decision in front of them.
-  if (path === '/enroll/approve') {
+  if (path === '/device/add') {
     return (
       <main
         data-debug-id="enrollment-standalone-page"

@@ -1,7 +1,7 @@
 // REQ-IMPL-5 / REQ-ENROLL-5, REQ-ENROLL-6, REQ-ENROLL-14:
 // the untrusted-input handling behind the bridge-enrollment approval screen.
 //
-// Three jobs, all of them about one thing: the operator is making a trust
+// Two jobs, both about one thing: the operator is making a trust
 // decision from what this screen shows them, so everything the screen shows has
 // to be either verifiable or visibly marked as unverifiable.
 //
@@ -12,15 +12,9 @@
 //     Latin "a". Neither is caught by escaping, and both defeat exactly the
 //     visual check this screen exists to enable.
 //
-//  2. `parseApprovalFragment` — the bridge public key is read from the URL
-//     FRAGMENT, which the bridge itself wrote and which never leaves the
-//     browser. It is the one copy of the key a substituting Hub could not have
-//     touched. The fragment is a PARAMETER LIST, so `hash.slice(1)` is not the
-//     key.
-//
-//  3. `publicKeysAgree` — the cross-check. A mismatch between the fragment key
-//     and the Hub's stored copy is the relay attack in `iss_18dc4591d95eb89f`,
-//     and it must fail closed.
+//  2. `bridgeApprovalBlocked` — bridge approval fails closed unless the Hub
+//     returned canonical key material and the operator explicitly confirmed
+//     that its fingerprint matches the independently computed terminal value.
 //
 // These live in their own module rather than inside the component because they
 // are where the security properties are, and that is what the tests need to be
@@ -46,20 +40,6 @@ export interface SanitizedDisplay {
   escaped: string;
   /** Worth warning the operator about: something was removed, or scripts are mixed. */
   suspicious: boolean;
-}
-
-/** What the approval-link fragment yielded, and what was wrong with it. */
-export interface ApprovalFragment {
-  /** A fragment was present at all. */
-  present: boolean;
-  /** The bridge public key: 130 lowercase hex chars, or '' when unusable. */
-  bpk: string;
-  /** The bridge's loopback callback port, or 0 when absent/invalid. */
-  cb: number;
-  /** The bridge's correlation nonce, or '' when absent/invalid. */
-  state: string;
-  /** Machine-readable reasons a field was refused. Empty means nothing was wrong. */
-  problems: string[];
 }
 
 /**
@@ -207,229 +187,51 @@ export function sanitizeForDisplay(raw: unknown, maxChars: number = DISPLAY_MAX_
   };
 }
 
-/**
- * Parses the approval-link fragment emitted by the bridge:
- *
- *     #bpk=<130 hex chars>&cb=<port>&state=<nonce>
- *
- * It is a parameter list, so `hash.slice(1)` is NOT the key — using it that way
- * fails the length check in a manner that looks like the bridge emitted
- * something malformed rather than like a parsing mistake here.
- *
- * Every field is validated before it is returned, and a field that fails
- * validation is reported as a problem rather than returned in a degraded form:
- * there is no sensible fallback for "the key might be this", and in particular
- * never the Hub's copy — taking that is the defect being fixed.
- */
-export function parseApprovalFragment(hash: unknown): ApprovalFragment {
-  const out: ApprovalFragment = { present: false, bpk: '', cb: 0, state: '', problems: [] };
-  if (hash === null || hash === undefined) return out;
 
-  let raw = String(hash);
-  // Accepts either a raw fragment (`#bpk=...`) or the SPA router's hash-search
-  // (`?bpk=...`). Both are the fragment: the app is hash-routed, so its
-  // "search" string lives after the `#` and never reaches the Hub either. The
-  // caller should not have to care which shape it is holding.
-  if (raw.startsWith('#') || raw.startsWith('?')) raw = raw.slice(1);
-  if (raw === '') return out;
-  out.present = true;
-
-  // A bare hex fragment is what someone produces by hand, or from an older
-  // draft of the design. Naming it specifically makes the failure
-  // self-explaining instead of arriving as an unhelpful "key missing".
-  if (!raw.includes('=')) {
-    out.problems.push(/^04[0-9a-fA-F]{128}$/.test(raw) ? 'fragment_bare_value' : 'fragment_unparsable');
-    return out;
-  }
-
-  let params: URLSearchParams;
-  try {
-    params = new URLSearchParams(raw);
-  } catch {
-    out.problems.push('fragment_unparsable');
-    return out;
-  }
-
-  const bpk = String(params.get('bpk') ?? '').trim().toLowerCase();
-  if (bpk === '') out.problems.push('bpk_missing');
-  else if (!BPK_RE.test(bpk)) out.problems.push('bpk_malformed');
-  else out.bpk = bpk;
-
-  // `cb` is attacker-controllable. It is only ever used as the PORT of a
-  // hardcoded 127.0.0.1 URL, never as a host, and it must look like a port a
-  // user-space bridge could actually have bound.
-  const cbRaw = String(params.get('cb') ?? '').trim();
-  if (cbRaw !== '') {
-    if (!/^[0-9]{1,5}$/.test(cbRaw)) {
-      out.problems.push('cb_malformed');
-    } else {
-      const port = Number.parseInt(cbRaw, 10);
-      if (port < MIN_CALLBACK_PORT || port > MAX_CALLBACK_PORT) out.problems.push('cb_out_of_range');
-      else out.cb = port;
-    }
-  }
-
-  const state = String(params.get('state') ?? '').trim();
-  if (state !== '') {
-    if (!STATE_RE.test(state)) out.problems.push('state_malformed');
-    else out.state = state;
-  }
-
-  // `cb` without `state` is a callback we could not correlate — which is
-  // precisely the shape an attacker would supply. The headless path sends
-  // NEITHER, and that is fine.
-  if (out.cb !== 0 && out.state === '') out.problems.push('state_required_with_cb');
-
-  return out;
+/** True only for the Hub's canonical enrollment key and fingerprint shapes. */
+export function bridgeFingerprintConfirmationReady(publicKey: unknown, fingerprint: unknown): boolean {
+  const key = String(publicKey ?? '').trim().toLowerCase();
+  const fp = String(fingerprint ?? '').trim().toLowerCase();
+  return /^04[0-9a-f]{128}$/.test(key) && /^[0-9a-f]{4}( [0-9a-f]{4}){3}$/.test(fp);
 }
 
-/**
- * Compares the fragment key against the Hub's stored copy.
- *
- * Fails closed: an empty value on either side is never agreement. "Nothing to
- * compare" rendering as "the keys match" is the one way this check could be
- * worse than not having it at all.
- *
- * Length-first, then an accumulating XOR so the comparison does not stop at the
- * first differing character. Neither value is secret, so this is not a
- * timing-attack defence — a non-short-circuiting compare on attacker-influenced
- * input is simply cheap to write and tiresome to justify omitting.
- */
-export function publicKeysAgree(a: unknown, b: unknown): boolean {
-  const x = String(a ?? '').trim().toLowerCase();
-  const y = String(b ?? '').trim().toLowerCase();
-  if (x === '' || y === '') return false;
-  if (x.length !== y.length) return false;
-  let diff = 0;
-  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
-  return diff === 0;
+/** Bridge approval fails closed until the terminal fingerprint is confirmed. */
+export function bridgeApprovalBlocked(
+  isBridgeGrant: boolean,
+  publicKey: unknown,
+  fingerprint: unknown,
+  fingerprintConfirmed: boolean,
+): boolean {
+  if (!isBridgeGrant) return false;
+  return !bridgeFingerprintConfirmationReady(publicKey, fingerprint) || !fingerprintConfirmed;
 }
 
-/**
- * Builds the bridge's loopback callback URL.
- *
- * The host is a literal. `cb` contributes the port and nothing else, so no
- * value of it can redirect anywhere but this machine.
- *
- * The query carries STATE AND STATUS ONLY — no token, no key, no user_code, no
- * fingerprint. The bridge redeems over TLS by polling, so there is nothing here
- * worth putting into a URL that lands in browser history, proxy logs and
- * referrer headers.
- *
- * Returns null when there is nothing safe to build, including when the bridge
- * supplied no callback at all (the headless path), which is not an error.
- */
-export function loopbackCallbackUrl(
-  cb: unknown,
-  state: unknown,
-  status: 'approved' | 'rejected' | string,
-): string | null {
-  if (!/^[0-9]{1,5}$/.test(String(cb))) return null;
-  const port = Number.parseInt(String(cb), 10);
-  if (port < MIN_CALLBACK_PORT || port > MAX_CALLBACK_PORT) return null;
-  if (!STATE_RE.test(String(state))) return null;
-  if (status !== 'approved' && status !== 'rejected') return null;
-  return (
-    'http://127.0.0.1:' +
-    port +
-    '/enroll/callback?state=' +
-    encodeURIComponent(String(state)) +
-    '&status=' +
-    encodeURIComponent(status)
-  );
+/** Normalises human-entered device codes to their eight Base32 symbols. */
+export function normalizeDeviceCodeSymbols(raw: unknown): string {
+  return String(raw ?? '')
+    .toUpperCase()
+    .replace(/[\s-]+/g, '')
+    .replace(/[^A-Z2-7]/g, '')
+    .slice(0, 8);
 }
 
-// ── The approval gate (REQ-ENROLL-5) ──────────────────────────────────────
-//
-// Coordinator ruling, 2026-10-07T20:52:03Z: a BRIDGE grant reached without a
-// readable fragment key is REFUSED, not warned about.
-//
-// The reasoning, because the refusal looks harsher than the warning it
-// replaces: without `bpk` this screen can neither cross-check the Hub's copy
-// nor encrypt the vault key to the bridge. Approving anyway enrolls the bridge
-// and SILENTLY FAILS TO DELIVER the key — the operator believes they are
-// finished and discovers otherwise at the next unseal. That is the
-// silent-failure class this chain exists to remove. There is also nothing the
-// operator can do from this page to make it safe, so there is deliberately no
-// "approve anyway" escape.
-//
-// An absent `bpk` is NOT a legitimate headless flow: the `--headless` bridge
-// path omits `cb` and `state` but always emits `bpk`, so absence means the link
-// was truncated or its hash stripped.
-//
-// THE CONSTRAINT THAT DECIDES THE SHAPE OF THIS FUNCTION: the refusal applies
-// only to bridge grants, and it is keyed on `isBridgeGrant` — the wire
-// projection of the PERSISTED `Grant_Kind` (`is_bridge_grant`, derived once at
-// authorize) — and NEVER on whether `bpk` happens to be present. The
-// pre-existing Electron user-token flow carries no fragment at all, so a
-// refusal keyed on absent-`bpk` would break every Electron approval.
-
-/** What the fragment cross-check concluded, and whether approval may proceed. */
-export interface KeyCheckResult {
-  kind: 'not-a-bridge' | 'no-fragment' | 'agreed' | 'mismatch';
-  /** Operator-facing explanation of a `no-fragment` outcome; '' otherwise. */
-  why: string;
-  /** True when the Approve action must be unavailable. */
-  approvalBlocked: boolean;
-  /**
-   * Why approval is blocked, as a clause that reads correctly after
-   * "Approval is blocked: …". Empty exactly when `approvalBlocked` is false,
-   * so callers can derive the boolean from it and cannot drift apart.
-   */
-  blockedReason: string;
+/** Formats normalised symbols as the Hub's XXXX-XXXX lookup key. */
+export function formatDeviceCode(raw: unknown): string {
+  const symbols = normalizeDeviceCodeSymbols(raw);
+  if (symbols.length <= 4) return symbols;
+  return `${symbols.slice(0, 4)}-${symbols.slice(4)}`;
 }
 
-export interface KeyCheckInput {
-  /** From the PERSISTED grant kind, not from the presence of a key. */
-  isBridgeGrant: boolean;
-  fragment: ApprovalFragment;
-  /** The Hub's bound copy of the bridge key. */
-  hubKey: unknown;
+/** Reads a complete code from the hash-router query in `#/device/add?code=…`. */
+export function deviceCodeFromHash(rawHash: unknown): string {
+  const raw = String(rawHash ?? '').replace(/^#/, '');
+  const queryAt = raw.indexOf('?');
+  if (queryAt < 0) return '';
+  const value = new URLSearchParams(raw.slice(queryAt + 1)).get('code');
+  if (normalizeDeviceCodeSymbols(value).length !== 8) return '';
+  return formatDeviceCode(value);
 }
 
-/**
- * Decides whether this approval may proceed, given what the fragment carried
- * and what the Hub claims.
- *
- * Pure and exported so both ruled directions are testable directly: a bridge
- * grant with no fragment is refused, and a user-token grant with no fragment
- * still approves. There is no DOM harness in this repo, so a policy left inside
- * the component would be untestable — and this is the policy the security
- * property lives in.
- */
-export function evaluateKeyCheck(input: KeyCheckInput): KeyCheckResult {
-  // User-token grants return here, BEFORE any fragment reasoning. This is the
-  // branch that keeps Electron working.
-  if (!input.isBridgeGrant) {
-    return { kind: 'not-a-bridge', why: '', approvalBlocked: false, blockedReason: '' };
-  }
-
-  const f = input.fragment;
-  if (!f.present || f.problems.length > 0 || f.bpk === '') {
-    return {
-      kind: 'no-fragment',
-      why: !f.present
-        ? 'You reached this page without the enrollment link, so this page has no independently-supplied key to compare against and no key to encrypt the vault key to.'
-        : `The enrollment link was present but its key could not be read (${f.problems.join(', ')}).`,
-      approvalBlocked: true,
-      blockedReason:
-        'this enrollment link is incomplete, so the bridge key cannot be checked and the vault key cannot be delivered',
-    };
-  }
-
-  if (!publicKeysAgree(f.bpk, input.hubKey)) {
-    return {
-      kind: 'mismatch',
-      why: '',
-      approvalBlocked: true,
-      blockedReason: 'the bridge key reported by the Hub does not match the key in your link',
-    };
-  }
-
-  return { kind: 'agreed', why: '', approvalBlocked: false, blockedReason: '' };
-}
-
-// ── Hub-measured time (REQ-ENROLL-14) ─────────────────────────────────────
 //
 // Review finding, 2026-10-07T21:02:37Z: the approval screen rendered
 // `Date.now()` — the OPERATOR BROWSER's clock — in the group headed "Verified

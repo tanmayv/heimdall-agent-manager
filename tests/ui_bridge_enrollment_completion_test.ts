@@ -83,7 +83,7 @@ test('approval is a standalone minimal consent page', () => {
     'utf8',
   );
 
-  assert.match(shell, /if \(path === '\/enroll\/approve'\)[\s\S]*enrollment-standalone-page/);
+  assert.match(shell, /if \(path === '\/device\/add'\)[\s\S]*enrollment-standalone-page/);
   assert.match(page, /enrollment-device-hostname/);
   assert.match(page, /enrollment-device-os/);
   assert.match(page, /enrollment-new-bridge-name-input/);

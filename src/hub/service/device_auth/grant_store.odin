@@ -231,7 +231,7 @@ Grant_Store_Config :: struct {
 default_grant_store_config :: proc() -> Grant_Store_Config {
 	return Grant_Store_Config{
 		verification_uri = "https://auth.example.com/application/o/heimdall/device/",
-		expires_in = 600,
+		expires_in = 300,
 		interval = 5,
 		rate_limit = 10,
 		rate_window = 60,
@@ -292,10 +292,28 @@ allow_authorize :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 // calling); it is passed in rather than recomputed here so there is exactly one
 // place in the codebase that decides what a fingerprint is.
 create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: string, clock: Monotonic_Clock, bridge_key_fingerprint: string = "", grant_kind: Grant_Kind = .User_Token) -> (Authorize_Result, bool) {
-	device_code, ok := generate_device_code()
-	if !ok do return Authorize_Result{}, false
-	user_code, uok := generate_user_code()
-	if !uok do return Authorize_Result{}, false
+	sync.mutex_lock(&store.mutex)
+	defer sync.mutex_unlock(&store.mutex)
+	device_code := ""
+	user_code := ""
+	// The short code is a lookup key, so even its extremely unlikely collision
+	// must be retried rather than replacing another live enrollment's mapping.
+	for _ in 0..<8 {
+		candidate_device, device_ok := generate_device_code()
+		if !device_ok do return Authorize_Result{}, false
+		candidate_user, user_ok := generate_user_code()
+		if !user_ok do return Authorize_Result{}, false
+		_, device_exists := store.grants[candidate_device]
+		_, user_exists := store.by_user_code[candidate_user]
+		if !device_exists && !user_exists {
+			device_code = candidate_device
+			user_code = candidate_user
+			break
+		}
+		delete(candidate_device)
+		delete(candidate_user)
+	}
+	if device_code == "" || user_code == "" do return Authorize_Result{}, false
 	now := clock.now()
 	expires_in := store.config.expires_in
 	if expires_in <= 0 || expires_in > 600 do expires_in = 600 // ELDA-1 hard cap
@@ -319,10 +337,6 @@ create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: st
 		code_challenge_method = input.code_challenge_method,
 	}
 	heap := runtime.heap_allocator()
-	sync.mutex_lock(&store.mutex)
-	defer sync.mutex_unlock(&store.mutex)
-	// NOTE: device_code collisions are astronomically unlikely (256-bit CSPRNG);
-	// map insertion is idempotent for dups, so no explicit guard is needed.
 	// Persist heap-owned copies: `grant`'s request-derived fields (device_label,
 	// os, app_version, client, request_ip) live on the per-request arena.
 	stored := grant_clone_strings(grant, heap)

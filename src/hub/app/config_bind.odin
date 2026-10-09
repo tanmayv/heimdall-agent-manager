@@ -67,7 +67,7 @@ default_config :: proc() -> Hub_Config {
 		login_url = "",
 		logout_url = "https://auth.example.com/application/o/heimdall/end-session/",
 		ui_origin = "",
-		device_auth_expires_in = 600,
+		device_auth_expires_in = 300,
 		device_auth_interval = 5,
 		device_auth_rate_limit = 10,
 		device_auth_rate_window = 60,

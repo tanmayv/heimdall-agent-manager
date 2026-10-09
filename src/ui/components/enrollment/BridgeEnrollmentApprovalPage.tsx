@@ -1,7 +1,7 @@
 // REQ-IMPL-5 — the bridge-enrollment approval screen (REQ-ENROLL-5/6/14).
 //
-// Reached at `#/enroll/approve?user_code=...&bpk=...&cb=...&state=...`, from the
-// link the BRIDGE prints on the machine being enrolled.
+// Reached at `/device/add`. The operator types the short code printed by the
+// bridge and explicitly compares the displayed key fingerprint with the terminal.
 //
 // ── Why this screen lives in the SPA and not in the standalone device page ──
 //
@@ -25,15 +25,13 @@
 //    per-row marks, not by colour alone — a colour-blind or high-contrast
 //    operator must not lose it at the moment it matters.
 //
-// 2. THE FRAGMENT KEY (REQ-ENROLL-5). The bridge public key is read from the URL
-//    fragment, which the bridge itself wrote and which never leaves the browser.
-//    It is cross-checked against the Hub's stored copy, and the vault key is
-//    encrypted to the FRAGMENT key — never to the Hub's. `iss_18dc4591d95eb89f`
-//    is exactly the defect of taking the Hub's copy on trust.
+// 2. KEY CONFIRMATION (REQ-ENROLL-5). The Hub returns the bridge public key and
+//    its computed fingerprint. Approval remains disabled until the operator says
+//    that fingerprint matches the independently computed value on the bridge's
+//    terminal. The vault key is then encrypted to that confirmed public key.
 //
-// 3. NO AUTO-APPROVE (Part A item 4). Following the link verifies and displays;
-//    it never decides. The fragment can only ever REMOVE the approve option (on
-//    a key mismatch), never supply it.
+// 3. NO AUTO-APPROVE (Part A item 4). Entering a code verifies and displays; it
+//    never decides. Confirmation and approval are separate explicit actions.
 //
 // ── Residual risk — stated, not papered over ────────────────────────────────
 //
@@ -46,10 +44,18 @@
 //
 // Separately, the bridge's ECDH keypair is ephemeral per process
 // (`bridge_unseal_init`), so it legitimately changes on every bridge restart.
-// The fragment therefore exists only during enrollment, and the steady-state
-// unlock path has no fragment to read and no key that could be pinned.
+// The terminal fingerprint confirmation therefore applies to this enrollment
+// process only; the steady-state unlock path uses the currently advertised key.
 
-import React, { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Button, Input, Icon, Select } from '@ui';
 
@@ -70,7 +76,6 @@ import {
   DEFAULT_KDF_ITERATIONS,
 } from '../../utils/vaultCrypto';
 import { canUnsealWithKey } from '../../utils/vaultBridgeUnseal';
-import { getRouteSearch } from '../../utils/appLocation';
 import {
   approvedBridgeIsOnline,
   BRIDGE_HOME_REDIRECT_DELAY_MS,
@@ -78,12 +83,13 @@ import {
   nextAvailableBridgeLabel,
 } from './bridgeEnrollmentCompletion';
 import {
-  parseApprovalFragment,
-  evaluateKeyCheck,
+  bridgeApprovalBlocked,
+  bridgeFingerprintConfirmationReady,
+  deviceCodeFromHash,
+  formatDeviceCode,
+  normalizeDeviceCodeSymbols,
   sanitizeForDisplay,
   DISPLAY_MAX_CHARS,
-  type ApprovalFragment,
-  type KeyCheckResult,
 } from '../../utils/deviceApprovalSafety';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +155,7 @@ type DeliveryState =
  */
 const BRIDGE_ONLINE_TIMEOUT_SECONDS = 45;
 const BRIDGE_POLL_INTERVAL_MS = 2000;
+const DEVICE_CODE_LENGTH = 8;
 
 function unwrap(body: any): any {
   return (body && body.data) || body || {};
@@ -201,19 +208,13 @@ export default function BridgeEnrollmentApprovalPage() {
   const vaultQuery = useGetUserVaultQuery();
   const vaultEnvelope = vaultQuery.data?.vault;
 
-  // The fragment is captured ONCE, on first render, before anything can
-  // navigate. It never reached the Hub — that is the entire reason the bridge
-  // puts the key there rather than letting us ask for it.
-  const fragmentRef = useRef<ApprovalFragment | null>(null);
-  if (fragmentRef.current === null) fragmentRef.current = parseApprovalFragment(getRouteSearch());
-  const fragment = fragmentRef.current;
-
-  const userCode = useMemo(() => {
-    const params = new URLSearchParams(getRouteSearch().replace(/^\?/, ''));
-    return String(params.get('user_code') ?? '').trim();
-  }, []);
-
-  const [codeInput, setCodeInput] = useState(userCode);
+  const [fragmentCode] = useState(() =>
+    typeof window === 'undefined' ? '' : deviceCodeFromHash(window.location.hash),
+  );
+  const [codeSymbols, setCodeSymbols] = useState(() => normalizeDeviceCodeSymbols(fragmentCode));
+  const codeInput = formatDeviceCode(codeSymbols);
+  const codeInputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const fragmentCodeHandled = useRef(false);
   const [grant, setGrant] = useState<VerifyPayload | null>(null);
   // The code that actually produced `grant`. The decision is sent for THIS
   // value, never for whatever the editable input happens to hold at click time.
@@ -233,19 +234,21 @@ export default function BridgeEnrollmentApprovalPage() {
   const [bridgeTargets, setBridgeTargets] = useState<BridgeSummary[]>([]);
   const [targetBridgeId, setTargetBridgeId] = useState('');
   const [newBridgeLabel, setNewBridgeLabel] = useState('');
+  const [fingerprintConfirmed, setFingerprintConfirmed] = useState(false);
 
   const doVerify = useCallback(async (code: string) => {
-    const trimmed = code.trim();
-    if (!trimmed) {
-      setVerifyError('Enter the code shown on the machine you are enrolling.');
+    const canonical = formatDeviceCode(code);
+    if (normalizeDeviceCodeSymbols(canonical).length !== DEVICE_CODE_LENGTH) {
+      setVerifyError('Enter all eight characters shown on the machine you are enrolling.');
       return;
     }
     setVerifying(true);
     setVerifyError('');
     try {
-      const res = await cookieMutation('/device/verify', 'POST', { user_code: trimmed });
+      const res = await cookieMutation('/device/verify', 'POST', { user_code: canonical });
       setGrant(unwrap(res) as VerifyPayload);
-      setVerifiedCode(trimmed);
+      setVerifiedCode(canonical);
+      setFingerprintConfirmed(false);
     } catch (err: any) {
       // The Hub answers a generic error for unknown/expired codes on purpose
       // (anti-enumeration), so there is nothing more specific to say here.
@@ -256,15 +259,96 @@ export default function BridgeEnrollmentApprovalPage() {
       );
       setGrant(null);
       setVerifiedCode('');
+      setFingerprintConfirmed(false);
     } finally {
       setVerifying(false);
     }
   }, []);
 
-  // Following the link SHOWS the request. It never decides.
   useEffect(() => {
-    if (userCode) void doVerify(userCode);
-  }, [userCode, doVerify]);
+    if (fragmentCodeHandled.current) return;
+    fragmentCodeHandled.current = true;
+    if (!fragmentCode) return;
+
+    // Fragments are not sent in HTTP requests, but remove the short code from
+    // the visible URL and session history as soon as this page consumes it.
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${window.location.search}#/device/add`,
+    );
+    void doVerify(fragmentCode);
+  }, [doVerify, fragmentCode]);
+
+  const focusCodeCell = useCallback((index: number) => {
+    codeInputRefs.current[Math.max(0, Math.min(index, DEVICE_CODE_LENGTH - 1))]?.focus();
+  }, []);
+
+  const putCodeSymbols = useCallback(
+    (index: number, raw: string) => {
+      const incoming = normalizeDeviceCodeSymbols(raw);
+      if (!incoming) {
+        setCodeSymbols((current) => current.slice(0, index) + current.slice(index + 1));
+        return;
+      }
+
+      setCodeSymbols((current) => {
+        const cells = Array.from(
+          { length: DEVICE_CODE_LENGTH },
+          (_, cell) => current[cell] ?? '',
+        );
+        // A complete pasted code fills the control from the first box even if
+        // the operator happened to focus a later box.
+        const start = incoming.length === DEVICE_CODE_LENGTH ? 0 : index;
+        for (
+          let offset = 0;
+          offset < incoming.length && start + offset < DEVICE_CODE_LENGTH;
+          offset += 1
+        ) {
+          cells[start + offset] = incoming[offset];
+        }
+        return cells.join('');
+      });
+      const start = incoming.length === DEVICE_CODE_LENGTH ? 0 : index;
+      window.setTimeout(
+        () => focusCodeCell(Math.min(start + incoming.length, DEVICE_CODE_LENGTH - 1)),
+        0,
+      );
+    },
+    [focusCodeCell],
+  );
+
+  const handleCodePaste = useCallback(
+    (index: number, event: ClipboardEvent<HTMLInputElement>) => {
+      event.preventDefault();
+      putCodeSymbols(index, event.clipboardData.getData('text'));
+    },
+    [putCodeSymbols],
+  );
+
+  const handleCodeKeyDown = useCallback(
+    (index: number, event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Backspace') {
+        event.preventDefault();
+        if (codeSymbols[index]) {
+          setCodeSymbols(codeSymbols.slice(0, index) + codeSymbols.slice(index + 1));
+        } else if (index > 0) {
+          setCodeSymbols(codeSymbols.slice(0, index - 1) + codeSymbols.slice(index));
+          focusCodeCell(index - 1);
+        }
+      } else if (event.key === 'ArrowLeft' && index > 0) {
+        event.preventDefault();
+        focusCodeCell(index - 1);
+      } else if (event.key === 'ArrowRight' && index < DEVICE_CODE_LENGTH - 1) {
+        event.preventDefault();
+        focusCodeCell(index + 1);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        void doVerify(codeInput);
+      }
+    },
+    [codeInput, codeSymbols, doVerify, focusCodeCell],
+  );
 
   // Offer "attach to an existing bridge" only for a bridge-enrollment grant —
   // a plain user/Electron device grant has no bridge_id to attach to. Fetch
@@ -320,29 +404,22 @@ export default function BridgeEnrollmentApprovalPage() {
     grant?.device_label,
   ]);
 
-  // ── The REQ-ENROLL-5 cross-check ────────────────────────────────────────
+  // ── The REQ-ENROLL-5 operator cross-check ───────────────────────────────
   const hubKey = String(
     grant?.hub_observed?.bridge_public_key_on_record || grant?.bridge_public_key || '',
   )
     .trim()
     .toLowerCase();
-
-  // The policy itself lives in `deviceApprovalSafety` so it can be tested
-  // without a DOM. `isBridgeGrant` comes from the PERSISTED grant kind the Hub
-  // projects onto the wire, never from whether a key happens to be present —
-  // see `evaluateKeyCheck`, which explains why that distinction is what keeps
-  // the Electron user-token flow working.
-  const keyCheck: KeyCheckResult = useMemo(
-    () =>
-      evaluateKeyCheck({
-        isBridgeGrant: !!grant && grant.is_bridge_enrollment === true,
-        fragment,
-        hubKey,
-      }),
-    [grant, fragment, hubKey],
+  const hubFingerprint = String(
+    grant?.hub_observed?.bridge_key_fingerprint || grant?.bridge_key_fingerprint || '',
+  ).trim();
+  const bridgeKeyReady = bridgeFingerprintConfirmationReady(hubKey, hubFingerprint);
+  const approvalBlocked = bridgeApprovalBlocked(
+    grant?.is_bridge_enrollment === true,
+    hubKey,
+    hubFingerprint,
+    fingerprintConfirmed,
   );
-
-  const approvalBlocked = keyCheck.approvalBlocked;
 
   // Host-provided values remain sanitised even though the page intentionally
   // presents only the two details an operator needs for this decision.
@@ -382,22 +459,21 @@ export default function BridgeEnrollmentApprovalPage() {
     }
   }, []);
 
-  /** Encrypts the vault key to the fragment key and relays only ciphertext. */
+  /** Encrypts the vault key to the operator-confirmed bridge key. */
   const deliverVaultKey = useCallback(
     async (targetBridgeId: string, vaultKeyMaterial: string | CryptoKey) => {
-      if (!fragment.bpk) {
+      if (!bridgeKeyReady || !fingerprintConfirmed) {
         setDelivery({
           phase: 'failed',
           message:
-            'No bridge key was supplied by the enrollment link, so the vault key cannot be delivered ' +
-            'without trusting the Hub for the key. Unlock this bridge from Settings → Bridges instead.',
+            'The bridge fingerprint was not confirmed, so the vault key was not delivered.',
         });
         return;
       }
 
       setDelivery({ phase: 'delivering' });
       try {
-        const result = await unsealBridgeE2EE(targetBridgeId, fragment.bpk, vaultKeyMaterial);
+        const result = await unsealBridgeE2EE(targetBridgeId, hubKey, vaultKeyMaterial);
         if (result && (result as any).ok === false) {
           throw new Error(String((result as any).error || 'the bridge refused the unseal'));
         }
@@ -406,7 +482,7 @@ export default function BridgeEnrollmentApprovalPage() {
         setDelivery({ phase: 'failed', message: String(err?.message || err) });
       }
     },
-    [fragment.bpk],
+    [bridgeKeyReady, fingerprintConfirmed, hubKey],
   );
 
   /** Obtains the vault key without ever degrading to a weaker payload. */
@@ -490,8 +566,8 @@ export default function BridgeEnrollmentApprovalPage() {
     async (approve: boolean) => {
       // Belt and braces: the button is already disabled, but a code path that
       // could approve past a failed key check must not exist.
-      if (approve && keyCheck.approvalBlocked) {
-        setDecideError(`Approval is blocked: ${keyCheck.blockedReason}.`);
+      if (approve && approvalBlocked) {
+        setDecideError('Approval is blocked until you confirm the bridge fingerprint.');
         return;
       }
       setDeciding(true);
@@ -530,7 +606,7 @@ export default function BridgeEnrollmentApprovalPage() {
         setDeciding(false);
       }
     },
-    [keyCheck, codeInput, verifiedCode, startDelivery, targetBridgeId, grant?.is_bridge_enrollment, newBridgeLabel],
+    [approvalBlocked, codeInput, verifiedCode, startDelivery, targetBridgeId, grant?.is_bridge_enrollment, newBridgeLabel],
   );
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -555,25 +631,52 @@ export default function BridgeEnrollmentApprovalPage() {
           </p>
         </div>
 
-      {!userCode && (
+      {!grant && (
         <div style={{ marginBottom: 16 }}>
-          <label htmlFor="user_code" style={{ fontSize: '0.8rem', display: 'block', marginBottom: 4 }}>
+          <label htmlFor="user_code_1" style={{ fontSize: '0.8rem', display: 'block', marginBottom: 8 }}>
             Device code
           </label>
-          <Input
-            id="user_code"
+          <div
             data-debug-id="enrollment-device-code-input"
-            value={codeInput}
-            placeholder="ABCD-2345"
-            autoComplete="off"
-            disabled={!!grant}
-            onChange={(value) => setCodeInput(value)}
-          />
+            className="mb-4 flex items-center justify-center gap-2"
+            role="group"
+            aria-label="Eight-character device code"
+          >
+            {Array.from({ length: DEVICE_CODE_LENGTH }, (_, index) => (
+              <React.Fragment key={index}>
+                {index === 4 && (
+                  <span aria-hidden="true" className="px-0.5 text-xl font-semibold text-muted">
+                    –
+                  </span>
+                )}
+                <Input
+                  ref={(node) => { codeInputRefs.current[index] = node; }}
+                  id={`user_code_${index + 1}`}
+                  data-debug-id={`enrollment-device-code-char-${index + 1}`}
+                  aria-label={`Device code character ${index + 1} of ${DEVICE_CODE_LENGTH}`}
+                  value={codeSymbols[index] ?? ''}
+                  maxLength={1}
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  disabled={verifying}
+                  className="h-12 w-10 p-0 text-center font-mono text-lg font-semibold uppercase sm:w-11"
+                  onChange={(value) => putCodeSymbols(index, value)}
+                  onPaste={(event) => handleCodePaste(index, event)}
+                  onKeyDown={(event) => handleCodeKeyDown(index, event)}
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </React.Fragment>
+            ))}
+          </div>
           <Button
             data-debug-id="enrollment-device-code-submit-btn"
             variant="primary"
             onClick={() => void doVerify(codeInput)}
-            disabled={verifying || !!grant}
+            disabled={
+              verifying || normalizeDeviceCodeSymbols(codeInput).length !== DEVICE_CODE_LENGTH
+            }
           >
             {verifying ? 'Checking…' : 'Continue'}
           </Button>
@@ -584,22 +687,9 @@ export default function BridgeEnrollmentApprovalPage() {
 
       {grant && (
         <>
-          {/* The key cross-check, above the detail: it can invalidate everything below it. */}
-          {keyCheck.kind === 'mismatch' && (
-            <Banner tone="danger" title="Stop. The key the Hub reports is not the key the machine sent.">
-              Your link carries one bridge key and the Hub is reporting a different one. That is what a
-              machine-in-the-middle looks like: something between you and the bridge is trying to substitute a
-              key it controls so it can read your vault key. Approval is disabled. Reject this request and
-              check the Hub before enrolling anything.
-            </Banner>
-          )}
-          {keyCheck.kind === 'no-fragment' && (
-            <Banner tone="danger" title="This enrollment link is incomplete. Approval is disabled.">
-              {keyCheck.why} Approving from here would enrol the machine but could NOT deliver the vault key,
-              so the bridge would stay sealed and you would not find out until it next needed to unseal.
-              Re-open the full link the bridge printed on the machine being enrolled, including everything
-              after the <code>#</code> — that part never reaches the Hub, which is why it is the copy of the
-              key worth checking, and why a link that lost it cannot be approved.
+          {isBridge && !bridgeKeyReady && (
+            <Banner tone="danger" title="This enrollment request has no usable bridge key.">
+              Approval is disabled. Reject this request and restart enrollment on the machine.
             </Banner>
           )}
           {flagged.length > 0 && (
@@ -619,7 +709,7 @@ export default function BridgeEnrollmentApprovalPage() {
                 {label.text || 'Unknown'}
               </dd>
             </div>
-            <div className="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3">
+            <div className="grid grid-cols-[7rem_1fr] gap-3 border-b border-subtle px-4 py-3">
               <dt className="text-sm text-muted">Operating system</dt>
               <dd
                 data-debug-id="enrollment-device-os"
@@ -628,7 +718,36 @@ export default function BridgeEnrollmentApprovalPage() {
                 {os.text || 'Unknown'}
               </dd>
             </div>
+            {isBridge && (
+              <div className="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3">
+                <dt className="text-sm text-muted">Fingerprint</dt>
+                <dd
+                  data-debug-id="enrollment-device-fingerprint"
+                  className="min-w-0 break-words text-right font-mono text-sm font-semibold text-primary"
+                >
+                  {hubFingerprint || 'Unavailable'}
+                </dd>
+              </div>
+            )}
           </dl>
+
+          {decision === 'none' && isBridge && bridgeKeyReady && (
+            <label
+              data-debug-id="enrollment-fingerprint-confirm-label"
+              className="mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-subtle bg-surface-raised/40 px-4 py-3 text-sm text-primary"
+            >
+              <input
+                data-debug-id="enrollment-fingerprint-confirm-checkbox"
+                type="checkbox"
+                checked={fingerprintConfirmed}
+                disabled={deciding}
+                onChange={(event) => setFingerprintConfirmed(event.target.checked)}
+              />
+              <span>
+                This fingerprint exactly matches the one printed by the bridge enrollment command.
+              </span>
+            </label>
+          )}
 
           {decision === 'none' && isBridge && (
             <div className="mb-4 space-y-3">
@@ -691,7 +810,7 @@ export default function BridgeEnrollmentApprovalPage() {
                   approvalBlocked ||
                   (isBridge && !targetBridgeId && !newBridgeLabel.trim())
                 }
-                title={approvalBlocked ? `Disabled: ${keyCheck.blockedReason}.` : undefined}
+                title={approvalBlocked ? 'Confirm the bridge fingerprint before approving.' : undefined}
               >
                 {deciding ? 'Working…' : 'Approve'}
               </Button>

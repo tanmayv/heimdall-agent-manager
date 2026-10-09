@@ -4,23 +4,19 @@
 // separate test binary cannot import package main.
 //
 // WHAT IS ASSERTED HERE VERSUS WHAT NEEDS THE LIVE STACK. Everything in this file
-// is a property of the bridge's own output: the URL it emits, what it will and will
-// not accept on the callback, the shape of what it writes to disk, and when it
+// is a property of the bridge's own output: the URL it emits, the shape of what it
+// writes to disk, and when it
 // schedules a refresh. The end-to-end ceremony against a real Hub is the local
 // stack's job, and the handoff carries that transcript separately. The split
-// matters because the two highest-value properties in this task — the key is in
-// the fragment, the callback carries no secret — are decided entirely by the
-// emitted string, so a unit test pins them more precisely than a stack run can.
+// matters because the stable, request-free approval URL is decided entirely by
+// the emitted string, so a unit test pins it more precisely than a stack run can.
 package main
 
-import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
-import "core:net"
 import "core:os"
 import "core:sys/posix"
 import "core:strings"
-import "core:sync"
 import "core:testing"
 
 // A fixed, well-formed uncompressed P-256 point: 0x04 then bytes 1..64. Its
@@ -56,120 +52,30 @@ bridge_enroll_test_rmdir :: proc(path: string) {
 	posix.rmdir(strings.clone_to_cstring(path, context.temp_allocator))
 }
 
-// ===== Property 1: the public key is in the FRAGMENT, never the query string =====
+// ===== Property 1: the approval URL is stable and carries no request data =====
 
 @(test)
-enroll_approval_url_puts_the_key_in_the_fragment :: proc(t: ^testing.T) {
-	url := bridge_enroll_approval_url("https://heimdall.example.com", "KRJT-9FMQ", TEST_PUBKEY_HEX, 0, "")
+enroll_approval_url_is_stable_and_code_free :: proc(t: ^testing.T) {
+	url := bridge_enroll_approval_url("https://heimdall.example.com")
 	defer delete(url)
-
-	hash_at := strings.index_byte(url, '#')
-	testing.expect(t, hash_at > 0, "the approval URL must carry a fragment")
-	before := url[:hash_at]
-	fragment := url[hash_at + 1:]
-
-	// The key is present, as the 130-char hex the rest of the system speaks, AFTER
-	// the '#'. Hex rather than base64url is the coordinator's Q2 ruling: one encoding
-	// end to end, so no new parser can be silently missing at the vault unlock.
-	testing.expect(t, strings.contains(fragment, TEST_PUBKEY_HEX), "the fragment must carry the hex public key")
-	testing.expect(t, strings.contains(fragment, "bpk="), "the fragment must carry bpk=")
-
-	// THE LOAD-BEARING HALF: nothing about the key may appear before the '#'. A
-	// query parameter would be transmitted to the Hub, which could then substitute
-	// the key — the MITM this design exists to close (design §5.4.1).
-	testing.expect(t, !strings.contains(before, "bpk"), "nothing before the '#' may mention bpk — a fragment is never sent to the server, a query parameter is")
-	testing.expect(t, !strings.contains(before, TEST_PUBKEY_HEX), "nothing before the '#' may carry the public key")
-
-	// REQ-IMPL-5 moved the approval screen into the SPA, which is hash-routed, so
-	// the route itself now lives after the '#' and EVERY parameter rides in the
-	// fragment with it — including the user_code, which used to be the one thing in
-	// a real query string. That is strictly stronger than the previous shape: there
-	// is now NO query string for the Hub to log at all.
-	testing.expectf(t, !strings.contains(before, "?"), "there must be no query string before the '#' at all, got %q", before)
-	testing.expect(t, strings.contains(fragment, "user_code=KRJT-9FMQ"), "the user_code rides in the fragment with everything else")
-	testing.expectf(t, strings.has_prefix(fragment, "/enroll/approve?"), "the fragment must open with the SPA approval route, got %q", fragment)
+	testing.expect_value(t, url, "https://heimdall.example.com/device/add")
+	testing.expect(t, !strings.contains(url, "?"), "the stable URL must carry no query")
+	testing.expect(t, !strings.contains(url, "#"), "the stable URL must carry no fragment")
+	for forbidden in ([?]string{"user_code", "device_code", "bpk", "state", "callback", "access_token"}) {
+		testing.expectf(t, !strings.contains(url, forbidden), "approval URL leaked %s", forbidden)
+	}
 }
 
 @(test)
-enroll_approval_url_fragment_decodes_to_the_same_point :: proc(t: ^testing.T) {
-	url := bridge_enroll_approval_url("https://heimdall.example.com", "AAAA-BBBB", TEST_PUBKEY_HEX, 0, "")
-	defer delete(url)
-	start := strings.index(url, "bpk=")
-	testing.expect(t, start >= 0, "fragment must carry bpk=")
-	encoded := url[start + len("bpk="):]
-	if amp := strings.index_byte(encoded, '&'); amp >= 0 do encoded = encoded[:amp]
-	// The browser decodes this and imports a 65-byte uncompressed point; if the
-	// round-trip breaks, the UI's `!== 65 || [0] !== 0x04` guard rejects the key and
-	// the vault silently stays locked while enrollment still looks successful.
-	testing.expectf(t, encoded == TEST_PUBKEY_HEX, "fragment key must be the hex point verbatim, got %q", encoded)
-	decoded, ok := hex.decode(transmute([]byte)(encoded), context.temp_allocator)
-	testing.expect(t, ok, "the fragment value must be decodable hex")
-	testing.expect(t, len(decoded) == 65 && decoded[0] == 0x04, "it must decode to a 65-byte uncompressed point")
-	// Hex is URL-safe, so nothing in the fragment needs escaping — a percent-encoded
-	// key would not survive the UI's strict parser.
-	testing.expect(t, !strings.contains(encoded, "%"), "the hex key must need no percent-encoding")
+enroll_automatic_approval_url_uses_a_browser_only_fragment :: proc(t: ^testing.T) {
+	stable := bridge_enroll_approval_url("https://heimdall.example.com")
+	automatic := bridge_enroll_automatic_approval_url(stable, "ABCD-2345")
+	testing.expect(t, automatic == "https://heimdall.example.com/device/add#/device/add?code=ABCD-2345")
+	fragment_at := strings.index_byte(automatic, '#')
+	testing.expect(t, fragment_at > 0, "code must be after the fragment marker")
+	testing.expect(t, !strings.contains(automatic[:fragment_at], "code="), "code must not be sent to the server")
 }
 
-@(test)
-enroll_approval_url_carries_no_secret_anywhere :: proc(t: ^testing.T) {
-	// The callback port and state DO ride in the fragment (the Hub has no
-	// redirect_uri field, so the browser can only learn the port from the bridge).
-	// Neither is a credential: `state` is a correlator, and a valid callback only
-	// causes a redemption attempt that still fails without a real Hub-side approval.
-	url := bridge_enroll_approval_url("https://heimdall.example.com", "AAAA-BBBB", TEST_PUBKEY_HEX, 49281, "state-nonce-value")
-	defer delete(url)
-	// What must never be in the link, in any position: the PKCE verifier and the
-	// device code are the two values that would let a third party redeem the grant.
-	testing.expect(t, !strings.contains(url, "code_verifier"), "the approval link must never carry the PKCE verifier")
-	testing.expect(t, !strings.contains(url, "device_code"), "the approval link must never carry the device code")
-	testing.expect(t, !strings.contains(url, "access_token"), "the approval link must never carry a credential")
-	hash_at := strings.index_byte(url, '#')
-	testing.expect(t, strings.contains(url[hash_at:], "cb=49281"), "the callback port rides in the fragment")
-	testing.expect(t, !strings.contains(url[:hash_at], "cb="), "the callback port must not reach the Hub in the query string")
-	testing.expect(t, !strings.contains(url[:hash_at], "state="), "the callback state must not reach the Hub in the query string")
-}
-
-// ===== Property 2: the callback accepts state + status only, and nothing else =====
-
-@(test)
-enroll_callback_parses_only_state_and_status :: proc(t: ^testing.T) {
-	method, path, query := bridge_enroll_request_line("GET /enroll/callback?state=abc123&status=approved HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-	testing.expect(t, method == "GET", "method")
-	testing.expectf(t, path == BRIDGE_ENROLL_CALLBACK_PATH, "path was %q", path)
-	testing.expect(t, bridge_enroll_query_value(query, "state") == "abc123", "state")
-	testing.expect(t, bridge_enroll_query_value(query, "status") == "approved", "status")
-	// A field the callback does not accept reads back empty: the handler keys off
-	// state and status only, so a secret smuggled into the URL is never consumed.
-	testing.expect(t, bridge_enroll_query_value(query, "access_token") == "", "unknown fields must not be read")
-}
-
-@(test)
-enroll_callback_state_match_is_exact_and_fails_closed :: proc(t: ^testing.T) {
-	nonce := "s3cr3t-nonce-value-0123456789abcdef"
-	testing.expect(t, bridge_enroll_state_matches(nonce, nonce), "the matching nonce must be accepted")
-	testing.expect(t, !bridge_enroll_state_matches(nonce, "s3cr3t-nonce-value-0123456789abcdee"), "a one-byte difference must be rejected")
-	testing.expect(t, !bridge_enroll_state_matches(nonce, nonce[:len(nonce) - 1]), "a truncated prefix must be rejected")
-	testing.expect(t, !bridge_enroll_state_matches(nonce, ""), "an absent state must be rejected")
-	// THE F4 FAILURE CLASS: a blank expectation must never authorise a caller. This
-	// is the same bug shape as the loopback authorizer returning true when the
-	// configured token is empty.
-	testing.expect(t, !bridge_enroll_state_matches("", "anything"), "a bridge with no nonce must accept nobody")
-	testing.expect(t, !bridge_enroll_state_matches("", ""), "two empties must not be a match")
-}
-
-@(test)
-enroll_callback_page_is_self_contained :: proc(t: ^testing.T) {
-	page := bridge_enroll_callback_page("approved", context.temp_allocator)
-	// No subresources at all: nothing to leak the URL through a Referer, and nothing
-	// loaded from the bridge's cleartext loopback origin.
-	testing.expect(t, !strings.contains(page, "<script"), "the close-the-tab page must load no script")
-	testing.expect(t, !strings.contains(page, "src="), "the close-the-tab page must load no subresource")
-	testing.expect(t, !strings.contains(page, "http://"), "the close-the-tab page must reference no URL")
-	denied := bridge_enroll_callback_page("denied", context.temp_allocator)
-	testing.expect(t, strings.contains(denied, "not approved"), "a non-approved status must say so rather than claiming success")
-}
-
-// ===== PKCE =====
 
 @(test)
 enroll_pkce_challenge_matches_rfc7636_vector :: proc(t: ^testing.T) {
@@ -421,53 +327,17 @@ enroll_hub_url_accepts_an_origin_and_rejects_everything_else :: proc(t: ^testing
 	testing.expect(t, !fragment, "a URL with a fragment must be refused")
 }
 
-// ===== Property 3: the polling path is sufficient on its own =====
+// ===== Polling is the sole completion channel =====
 
 @(test)
-enroll_completes_on_the_polling_path_with_no_callback :: proc(t: ^testing.T) {
-	// THE ACCEPTANCE CRITERION: enrollment must complete with the callback blocked.
-	// This asserts the structural reason it can — with no listener bound, the
-	// emitted link simply carries no cb/state, and nothing in the redemption path
-	// consumes either. The poll loop's inputs are the device_code and the verifier,
-	// both independent of the callback.
-	url := bridge_enroll_approval_url("https://heimdall.example.com", "AAAA-BBBB", TEST_PUBKEY_HEX, 0, "")
+enroll_approval_url_advertises_no_callback :: proc(t: ^testing.T) {
+	url := bridge_enroll_approval_url("https://heimdall.example.com")
 	defer delete(url)
-	testing.expect(t, !strings.contains(url, "cb="), "with no listener bound, no callback port is advertised")
-	testing.expect(t, !strings.contains(url, "state="), "with no listener bound, no state is advertised")
-	// The key is still delivered, so the vault unlock still works headless.
-	testing.expect(t, strings.contains(url, TEST_PUBKEY_HEX), "the key must still ride in the fragment on the headless path")
-	// And a fired flag that nobody ever sets leaves the loop polling rather than
-	// stalling: the zero value is "not fired".
-	cb := Bridge_Enroll_Callback{}
-	testing.expect(t, cb.fired == 0, "the callback's zero value must mean 'has not fired'")
-	testing.expect(t, !cb.bound, "an unbound listener must not advertise itself")
+	testing.expect(t, !strings.contains(url, "cb="), "no callback port may be advertised")
+	testing.expect(t, !strings.contains(url, "state="), "no callback nonce may be advertised")
+	testing.expect(t, !strings.contains(url, "127.0.0.1"), "enrollment must not expose a loopback listener")
 }
 
-@(test)
-enroll_callback_bind_holds_the_socket_before_publishing_the_port :: proc(t: ^testing.T) {
-	// The socket is held from bind, before any URL is composed, so there is no
-	// window in which the port is named but unbound and squattable (design §3.1).
-	cb := Bridge_Enroll_Callback{}
-	state, _ := bridge_enroll_random_token(context.temp_allocator)
-	if !bridge_enroll_callback_bind(&cb, state) {
-		// A sandbox with no loopback is exactly the case the polling path covers.
-		testing.expect(t, !cb.bound, "a failed bind must leave the listener unbound")
-		return
-	}
-	defer net.close(cb.listener)
-	testing.expect(t, cb.bound, "a successful bind must be recorded")
-	testing.expect(t, cb.port != 0, "the kernel must have assigned an ephemeral port")
-	testing.expect(t, cb.state == state, "the nonce must be bound to the listener before it serves")
-	// A second bind gets a DIFFERENT port: the port is unpredictable, which is what
-	// makes pre-binding it unviable for a local attacker.
-	other := Bridge_Enroll_Callback{}
-	if bridge_enroll_callback_bind(&other, state) {
-		defer net.close(other.listener)
-		testing.expect(t, other.port != cb.port, "ephemeral ports must not be reused while held")
-	}
-}
-
-// ===== The second instance of the descriptor defect: the WS hello =====
 
 @(test)
 hello_reports_the_real_hostname_not_the_bridge_id :: proc(t: ^testing.T) {
@@ -501,44 +371,6 @@ hello_json_carries_the_real_hostname :: proc(t: ^testing.T) {
 	if host != "" {
 		testing.expectf(t, strings.contains(hello, fmt.tprintf("\"hostname\":\"%s\"", host)), "the hello must carry the resolved hostname %q", host)
 	}
-}
-
-@(test)
-enroll_callback_signal_is_consumed_so_the_poll_cannot_spin :: proc(t: ^testing.T) {
-    // REGRESSION TEST. The first implementation only READ the latch, so once a
-    // callback arrived the poll loop skipped its sleep on every later iteration and
-    // hammered the Hub: 7398 polls in ~8 seconds on the local stack, from one hit.
-    // A latch that is read but never cleared is the bug; consuming it is the fix.
-    cb := Bridge_Enroll_Callback{}
-    testing.expect(t, !bridge_enroll_callback_take_fired(&cb), "no callback yet means no signal")
-    sync.atomic_store(&cb.fired, 1)
-    testing.expect(t, bridge_enroll_callback_take_fired(&cb), "a fired callback must be reported once")
-    testing.expect(t, !bridge_enroll_callback_take_fired(&cb), "and must NOT be reported again — this is what stops the hot loop")
-    testing.expect(t, !bridge_enroll_callback_take_fired(&cb), "still consumed on every later check")
-    // A second genuine callback is reported again.
-    sync.atomic_store(&cb.fired, 1)
-    testing.expect(t, bridge_enroll_callback_take_fired(&cb), "a later callback must still be seen")
-    testing.expect(t, !bridge_enroll_callback_take_fired(&cb), "and consumed again")
-}
-
-@(test)
-enroll_callback_response_head_is_uncacheable_and_leaks_no_referrer :: proc(t: ^testing.T) {
-    // The callback URL carries the correlator, so the response must not encourage
-    // the browser to keep it or to pass it onward. Asserted on the built head
-    // because the listener is one-shot: a live second request cannot observe it.
-    head := bridge_enroll_callback_head(200, "OK", "text/html; charset=utf-8", 42)
-    testing.expect(t, strings.contains(head, "HTTP/1.1 200 OK\r\n"), "status line")
-    testing.expect(t, strings.contains(head, "Cache-Control: no-store\r\n"), "the response must be uncacheable")
-    testing.expect(t, strings.contains(head, "Referrer-Policy: no-referrer\r\n"), "the callback URL must not travel in a Referer")
-    testing.expect(t, strings.contains(head, "Content-Length: 42\r\n"), "content length")
-    testing.expect(t, strings.has_suffix(head, "\r\n\r\n"), "the head must be terminated")
-    // The bridge's OTHER loopback listener sends permissive CORS (write_response in
-    // main.odin). This one must not: nothing should be able to read the callback's
-    // response cross-origin.
-    testing.expect(t, !strings.contains(head, "Access-Control-Allow-Origin"), "the enrollment callback must not send permissive CORS")
-    not_found := bridge_enroll_callback_head(404, "Not Found", "text/plain; charset=utf-8", 10)
-    testing.expect(t, strings.contains(not_found, "HTTP/1.1 404 Not Found\r\n"), "the refusal is a plain 404")
-    testing.expect(t, strings.contains(not_found, "Cache-Control: no-store\r\n"), "the refusal must be uncacheable too")
 }
 
 @(test)

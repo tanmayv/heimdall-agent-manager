@@ -333,32 +333,25 @@ If this machine has not been enrolled with the Hub before:
 
    There is **no enrollment token**. Nothing is generated on the Hub beforehand and
    nothing secret is copied between machines. The installer runs enrollment and
-   prints an approval link and a short code:
+   prints a stable approval URL, a short code, and a key fingerprint:
 
    ```text
    Open this link:
 
-     https://heimdall.mundus.in/#/enroll/approve?...#key=...
+     https://heimdall.mundus.in/device/add
 
-   The link carries this machine's encryption key, so approving it also
-   unlocks the vault here. Nothing else to do afterwards.
-
-   If you cannot use the link, open https://heimdall.mundus.in/#/enroll/approve
-   and enter the code     ABCD-EFGH
-   then check this fingerprint matches the page:
+   Enter device code      ABCD-EFGH
+   Confirm this fingerprint matches the approval page:
                           a1b2 c3d4 e5f6 ...
    ```
 
-   Open the link on any device you are already signed in to and approve. The
+   The command tries to open this page with the platform browser opener. If that
+   is unavailable, open the link on any device you are already signed in to and approve. The
    credential is then delivered to this machine directly over its own
-   authenticated channel — it never travels through the browser or the callback URL.
-
-   Use the **code** path only if you cannot open the link. It is the one path that
-   asks you to compare the fingerprint, because typing the code by hand leaves the
-   machine's key out of the exchange: the link carries that key in its URL
-   *fragment*, which is never sent to a server, and the fingerprint is how you
-   check it by eye instead. Approving via the code therefore leaves the vault
-   locked here — enrollment still succeeds.
+   authenticated polling channel—it never travels through the browser. The URL
+   contains no enrollment data and can be typed or bookmarked on a phone. Always
+   compare the displayed fingerprint with the terminal before approving; that is
+   what prevents a substituted Hub-side key from receiving the vault key.
 
 3. **Enrollment hands off to the registered service:**
    - The installer installs the binaries, registers and starts the service in an
@@ -386,10 +379,10 @@ with a path is rejected rather than trimmed. The Hub must be started with
 `verification_uri` wire field. `HAM_BRIDGE_HUB_URL` sets the Hub origin from the
 environment. No client derives `hub.*` and `heimdall.*` hostnames from each other.
 
-Add `--headless` on a machine with no browser of its own: it skips the local
-loopback shortcut and waits on polling instead, so you approve the link from
-another device with no paste step. Enrollment succeeds either way — the loopback
-callback only saves a few seconds.
+Add `--headless` on a machine with no browser of its own: it suppresses the
+automatic `open`/`xdg-open` attempt and waits on polling while you approve the
+stable link from another device. Enrollment uses polling in either mode; the
+approving browser never calls back to the bridge.
 
 Omit `--bridge-token-file` and the credential lands at
 `~/.config/heimdall/bridge-token`; `HAM_BRIDGE_TOKEN_FILE` is honoured too. The

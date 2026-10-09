@@ -8,9 +8,8 @@
 #
 # The defect it pins is NOT a wiring bug and cannot be caught by a unit test.
 # `ham-bridge enroll` minted an ephemeral, in-memory, per-process ECDH pair, put
-# the public half in the approval link's `bpk` fragment, and then EXITED. The
-# approval screen seals the vault key to that fragment key with no fallback (that
-# fallback was removed on purpose by REQ-IMPL-5), and delivery is relayed to a
+# the public half in the pending Hub grant, and then EXITED. The approval screen
+# seals the vault key to that operator-confirmed key, and delivery is relayed to a
 # CONNECTED bridge — which was always a different, later process holding its own
 # different pair. So the envelope was always addressed to a key no live process
 # held, and delivery could not succeed on ANY path.
@@ -34,8 +33,8 @@
 # as the authenticated owner — which is exactly what the browser does — and the
 # vault key is a fixed test key instead of one derived from a master password.
 # NOT substituted anywhere: the keys, the envelope, the relay, or the bridge.
-# Browser-level concerns (the S6 fragment cross-check, the approval UI) are covered
-# by REQ-IMPL-7's S5/S6 and are deliberately out of scope here.
+# Browser-level concerns (terminal-fingerprint confirmation and the approval UI)
+# are covered by UI tests and are deliberately out of scope here.
 #
 # ===== THE ASSERTION, AND WHY IT IS THIS ONE =====
 #
@@ -228,8 +227,8 @@ SYSTEMCTL
   # --- the ceremony, driven through the binary under test -------------------
   #
   # HOME is redirected so the default credential path is this run's, never the
-  # operator's. --headless skips the loopback callback; polling is the guarantee
-  # either way (enroll_device_flow.odin property 3), so this costs latency only.
+  # operator's. Enrollment uses Hub polling only; --headless remains accepted for
+  # script compatibility but no longer changes transport behavior.
   say "[$label] running: ham-bridge enroll --hub http://127.0.0.1:$HUB_PORT"
   env HOME="$home_dir" PATH="$fake_bin:$PATH" \
     HAM_E2E_SERVICE_PID_FILE="$service_pid_file" \
@@ -254,21 +253,23 @@ SYSTEMCTL
   PIDS+=($!)
   local enroll_pid="${PIDS[-1]}"
 
-  # --- read bpk and the user code out of the link it printed ---------------
+  # --- read the user code, then verify as the authenticated browser does -----
   waited=0
-  until grep -aq "bpk=" "$enroll_log" 2>/dev/null; do
+  until grep -aq "Enter device code" "$enroll_log" 2>/dev/null; do
     sleep 0.5; waited=$((waited + 1))
     [ "$waited" -gt 120 ] && { cat "$enroll_log" >&2; fail "[$label] enroll never printed an approval link"; }
     kill -0 "$enroll_pid" 2>/dev/null || { cat "$enroll_log" >&2; fail "[$label] enroll exited before printing a link"; }
   done
 
-  local bpk user_code
-  bpk="$(grep -ao "bpk=[0-9a-f]*" "$enroll_log" | head -1 | cut -d= -f2)"
-  user_code="$(grep -aoP 'enter the code\s+\K\S+' "$enroll_log" | head -1)"
-  [ -n "$bpk" ] || { cat "$enroll_log" >&2; fail "[$label] could not read bpk from the approval link"; }
+  local bpk user_code verify_resp
+  user_code="$(grep -aoP 'Enter device code\s+\K\S+' "$enroll_log" | head -1)"
   [ -n "$user_code" ] || { cat "$enroll_log" >&2; fail "[$label] could not read the user code"; }
+  verify_resp="$(api POST /api/v1/device/verify "{\"user_code\":\"$user_code\"}")" \
+    || { cat "$enroll_log" >&2; fail "[$label] verify call failed"; }
+  bpk="$(json_field "$verify_resp" bridge_public_key_on_record)"
+  [ -n "$bpk" ] || fail "[$label] verify returned no bridge public key: $verify_resp"
   [ "${#bpk}" -eq 130 ] || fail "[$label] bpk is ${#bpk} chars, expected 130 (65-byte point in hex)"
-  say "[$label] approval link carries bpk=${bpk:0:16}…${bpk: -16} code=$user_code"
+  say "[$label] verified bpk=${bpk:0:16}…${bpk: -16} code=$user_code"
 
   # --- approve, exactly as the browser does -------------------------------
   local approve_ms approve_resp
@@ -307,8 +308,8 @@ SYSTEMCTL
   say "[$label] MEASURED approve->online: ${delta_ms}ms (page budget: 45000ms)"
   printf '%s\n' "$delta_ms" > "$run_dir/approve_to_online_ms"
 
-  # --- seal the vault key to the FRAGMENT key and deliver it ---------------
-  say "[$label] sealing a vault key to the link's bpk and POSTing the unseal"
+  # --- seal the vault key to the operator-confirmed key and deliver it ------
+  say "[$label] sealing a vault key to the verified bpk and POSTing the unseal"
   local payload unseal_resp
   payload="$(node "$SCRIPT_DIR/helpers/req_fix_2_seal.mjs" "$bridge_id" "$bpk" "$VAULT_KEY_HEX")" \
     || fail "[$label] the sealer itself failed — harness bug, not a product result"
