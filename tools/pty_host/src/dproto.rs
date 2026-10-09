@@ -85,6 +85,9 @@ pub struct SpawnRequest {
     pub meta: Option<serde_json::Value>,
     /// Absolute path to tee output file; None = no tee.
     pub tee_path: Option<String>,
+    /// Maximum lifetime of the child process in seconds. `None` means no
+    /// deadline. A restart starts a fresh timeout from the new child spawn.
+    pub timeout_seconds: Option<u64>,
 }
 
 impl SpawnRequest {
@@ -437,6 +440,26 @@ fn get_opt_str(rest: &[u8], off: &mut usize) -> io::Result<Option<String>> {
     }
 }
 
+fn put_opt_u64(p: &mut Vec<u8>, v: Option<u64>) {
+    match v {
+        Some(value) => {
+            p.push(1);
+            put_u64(p, value);
+        }
+        None => p.push(0),
+    }
+}
+
+fn get_opt_u64(rest: &[u8], off: &mut usize) -> io::Result<Option<u64>> {
+    let present = *rest.get(*off).ok_or_else(|| bad("opt-u64 tag missing"))?;
+    *off += 1;
+    match present {
+        0 => Ok(None),
+        1 => Ok(Some(get_u64(rest, off)?)),
+        _ => Err(bad("bad opt-u64 tag")),
+    }
+}
+
 fn put_u16(p: &mut Vec<u8>, v: u16) {
     p.extend_from_slice(&v.to_be_bytes());
 }
@@ -556,6 +579,7 @@ impl CtlMsg {
                 let meta_str = req.meta.as_ref().map(|v| v.to_string());
                 put_opt_str(&mut p, &meta_str);
                 put_opt_str(&mut p, &req.tee_path);
+                put_opt_u64(&mut p, req.timeout_seconds);
             }
             CtlMsg::Close { instance } => {
                 p.push(T_CLOSE);
@@ -630,12 +654,13 @@ impl CtlMsg {
                 let rows = get_u16(rest, &mut off)?;
                 let cols = get_u16(rest, &mut off)?;
                 let display_name = get_opt_str(rest, &mut off)?;
-                // Backward-compat: old senders stop here; new fields default to None.
+                // Optional shell metadata precedes the required timeout option.
                 let kind = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let label = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let meta_str = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 let meta = meta_str.and_then(|s| serde_json::from_str(&s).ok());
                 let tee_path = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
+                let timeout_seconds = get_opt_u64(rest, &mut off)?;
                 CtlMsg::Spawn(SpawnRequest {
                     instance,
                     argv,
@@ -649,6 +674,7 @@ impl CtlMsg {
                     label,
                     meta,
                     tee_path,
+                    timeout_seconds,
                 })
             }
             T_CLOSE => CtlMsg::Close {
@@ -1052,6 +1078,7 @@ mod tests {
             label: Some("my-worker".into()),
             meta: Some(serde_json::json!({"project": "acme", "priority": 1})),
             tee_path: Some("/var/log/agent_abc.log".into()),
+            timeout_seconds: Some(120),
         }));
     }
 
@@ -1070,14 +1097,13 @@ mod tests {
             label: None,
             meta: None,
             tee_path: None,
+            timeout_seconds: None,
         }));
     }
 
     #[test]
-    fn spawn_request_backward_compat_old_sender() {
-        // Simulate an old client that sends a SpawnRequest without the new fields.
-        // The decoder must default kind/label/meta/tee_path to None.
-        let old = CtlMsg::Spawn(SpawnRequest {
+    fn spawn_request_with_all_optional_fields_absent_roundtrips() {
+        let request = CtlMsg::Spawn(SpawnRequest {
             instance: "old".into(),
             argv: vec!["sh".into()],
             cwd: None,
@@ -1090,12 +1116,12 @@ mod tests {
             label: None,
             meta: None,
             tee_path: None,
+            timeout_seconds: None,
         });
-        // Encode with new format (all None → same bytes as old format).
-        let bytes = old.encode();
+        let bytes = request.encode();
         let mut cur = std::io::Cursor::new(bytes);
         let decoded = read_ctl_msg(&mut cur).unwrap().unwrap();
-        assert_eq!(decoded, old);
+        assert_eq!(decoded, request);
     }
 
     #[test]

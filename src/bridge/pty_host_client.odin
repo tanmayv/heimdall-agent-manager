@@ -96,13 +96,15 @@ Pty_Host_Spawn_Request :: struct {
 	// that omit these fields still work — just set has_* = false.
 	kind:             string, // "run"|"shell"|"server"
 	tee_path:         string, // absolute path; "" => None (no tee)
-	has_cwd:          bool,
-	has_detect:       bool,
-	has_display_name: bool,
-	has_kind:         bool,
-	has_tee_path:     bool,
-	rows:             u16,
-	cols:             u16,
+	has_cwd:             bool,
+	has_detect:          bool,
+	has_display_name:    bool,
+	has_kind:            bool,
+	has_tee_path:        bool,
+	has_timeout_seconds: bool,
+	timeout_seconds:     u64,
+	rows:                u16,
+	cols:                u16,
 }
 
 // Pty_Host_Agent_Info is one row of a List reply: an agent's live state.
@@ -290,6 +292,12 @@ pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
 	pty_host_put_opt_str(&p, false, "") // label (None — display_name carries the label)
 	pty_host_put_opt_str(&p, false, "") // meta  (None — not used by shell sessions)
 	pty_host_put_opt_str(&p, req.has_tee_path, req.tee_path)
+	if req.has_timeout_seconds {
+		append(&p, 1)
+		pty_host_put_u64(&p, req.timeout_seconds)
+	} else {
+		append(&p, 0)
+	}
 	return pty_host_frame(p[:])
 }
 

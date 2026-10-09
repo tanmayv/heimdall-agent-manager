@@ -19,6 +19,8 @@ import http "odin_test:lib/http_client"
 import ws "odin_test:lib/ws"
 import "core:sys/posix"
 
+PROVIDER_TEST_TIMEOUT_SECONDS :: 120
+
 // REQ-VAULT-HARDEN-7, REQ-VAULT-HARDEN-10: Tri-state vault status
 Vault_Status :: enum {
 	Disabled,
@@ -1808,7 +1810,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		return false, detail
 	}
-	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name)
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0)
 }
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) -> (bool, string) {
@@ -1832,7 +1834,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider test bootstrap failed"
 	}
-	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test")
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS)
 }
 
 // bridge_runtime_launch_agent_pty_host is the wrapper-free launch path (BR-2).
@@ -1841,7 +1843,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // ham-pty-host daemon, and (3) spawn (or restart, if the instance is already
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
-bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string) -> (bool, string) {
+bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64) -> (bool, string) {
 	// Bootstrap files were already clean-slated + written to run_dir by
 	// bridge_bootstrap_launch_materialize_run_dir in the caller (the bridge is the
 	// sole materializer in the pty-host runtime). Here we only build the agent env.
@@ -1854,7 +1856,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		return false, "ham-pty-host daemon unavailable"
 	}
 
-	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name)
+	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds)
 	if !req_ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider has no runnable command"

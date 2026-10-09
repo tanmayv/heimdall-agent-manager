@@ -14,6 +14,8 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import project_service "odin_test:hub/service/project"
 import provider_service "odin_test:hub/service/provider"
 
+PROVIDER_TEST_TTL :: 2 * time.Minute
+
 Provider_Handlers :: struct {
 	auth:                    ^auth_service.Auth_Service,
 	providers:               ^provider_service.Provider_Service,
@@ -453,7 +455,7 @@ provider_test_start_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		agent_instance_id = inst.agent_instance_id,
 		state             = "detecting",
 		expires_at        = platform.format_rfc3339_utc(
-			time.time_add(time.now(), 5 * time.Minute),
+			time.time_add(time.now(), PROVIDER_TEST_TTL),
 		),
 	}
 	saved, register_err := provider_service.provider_test_register(h.providers, run)

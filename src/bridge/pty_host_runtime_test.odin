@@ -367,6 +367,18 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 }
 
 @(test)
+pty_host_build_spawn_carries_optional_timeout :: proc(t: ^testing.T) {
+	bridge_provider_store_init()
+	env := []string{"HEIMDALL_AGENT_TOKEN=hlat_x"}
+	req, ok := bridge_pty_host_build_spawn("inst_test_timeout", "/tmp/run/inst_test_timeout", "", "", "hlat_x", env, "Provider test", 120)
+	if !ok do return
+	defer bridge_pty_host_spawn_request_delete(req)
+
+	testing.expect(t, req.has_timeout_seconds, "timeout present")
+	testing.expect_value(t, req.timeout_seconds, u64(120))
+}
+
+@(test)
 pty_host_raw_input_framing :: proc(t: ^testing.T) {
 	data := "echo hello\n"
 	frame := pty_host_encode_input("inst_a", transmute([]byte)data)

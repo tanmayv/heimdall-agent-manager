@@ -254,6 +254,9 @@ impl Daemon {
         if spec.argv.is_empty() {
             return Err(anyhow!("spawn: empty argv"));
         }
+        if spec.timeout_seconds == Some(0) {
+            return Err(anyhow!("spawn: timeout_seconds must be greater than zero"));
+        }
         {
             let agents = self.agents.lock().unwrap();
             if agents.contains_key(&spec.instance) {
@@ -327,10 +330,21 @@ impl Daemon {
             let stop = Arc::clone(&stop);
             let host = Arc::clone(&host);
             let instance = instance.clone();
+            let timeout = spec.timeout_seconds.map(Duration::from_secs);
             std::thread::spawn(move || {
+                let started = Instant::now();
+                let mut timeout_fired = false;
                 while alive.load(Ordering::SeqCst) {
                     if stop.load(Ordering::SeqCst) {
                         return;
+                    }
+                    if !timeout_fired && timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        timeout_fired = true;
+                        host.lock().unwrap().terminate();
+                        let dead = host.lock().unwrap().wait_timeout(TERM_GRACE).is_some();
+                        if !dead {
+                            host.lock().unwrap().kill();
+                        }
                     }
                     std::thread::sleep(Duration::from_millis(30));
                 }
@@ -1209,6 +1223,7 @@ mod tests {
             label: None,
             meta: None,
             tee_path: None,
+            timeout_seconds: None,
         }
     }
 
@@ -1300,6 +1315,46 @@ mod tests {
         assert!(drive_until(&d, "keep", b"echo STILL_HERE\n", "STILL_HERE", Duration::from_secs(5)));
 
         d.shutdown();
+    }
+
+    #[test]
+    fn spawn_timeout_terminates_child_but_default_has_no_deadline() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+
+        let mut timed = sh_spec("timed", &sh);
+        timed.argv = vec![sh.clone(), "-c".into(), "while :; do sleep 1; done".into()];
+        timed.timeout_seconds = Some(1);
+        d.spawn(timed).unwrap();
+
+        let mut unlimited = sh_spec("unlimited", &sh);
+        unlimited.argv = vec![sh, "-c".into(), "while :; do sleep 1; done".into()];
+        d.spawn(unlimited).unwrap();
+
+        assert!(
+            wait_for(|| !d.is_alive("timed"), Duration::from_secs(3)),
+            "timed child was still alive after its deadline"
+        );
+        assert!(d.is_alive("unlimited"), "omitted timeout must leave the child running");
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn spawn_rejects_zero_timeout() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        let mut spec = sh_spec("zero-timeout", &sh);
+        spec.timeout_seconds = Some(0);
+        assert!(d.spawn(spec).is_err(), "zero timeout was accepted");
     }
 
     /// REQ HOST-1 (env plumbing, deterministic): spawn a ONE-SHOT, NON-LOGIN,
@@ -2759,5 +2814,3 @@ mod tests {
         server.shutdown();
     }
 }
-
-

@@ -147,6 +147,9 @@ enum Command {
         /// Startup-detection config as JSON (stored verbatim; parsed in HOST-2).
         #[arg(long)]
         detect: Option<String>,
+        /// Maximum child lifetime in seconds. Omit for no timeout.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_seconds: Option<u64>,
         /// Human-readable agent display name.
         #[arg(long)]
         display_name: Option<String>,
@@ -207,11 +210,23 @@ fn main() -> Result<()> {
             cwd,
             env,
             detect,
+            timeout_seconds,
             display_name,
             rows,
             cols,
             argv,
-        } => ctl_spawn(socket, instance, cwd, env, detect, display_name, rows, cols, argv),
+        } => ctl_spawn(
+            socket,
+            instance,
+            cwd,
+            env,
+            detect,
+            timeout_seconds,
+            display_name,
+            rows,
+            cols,
+            argv,
+        ),
         Command::Close { instance } => ctl_close(socket, instance),
         Command::Restart { instance } => ctl_restart(socket, instance),
         Command::List {} => ctl_list(socket),
@@ -263,6 +278,7 @@ fn ctl_spawn(
     cwd: Option<String>,
     env: Vec<String>,
     detect: Option<String>,
+    timeout_seconds: Option<u64>,
     display_name: Option<String>,
     rows: u16,
     cols: u16,
@@ -281,6 +297,7 @@ fn ctl_spawn(
         label: None,
         meta: None,
         tee_path: None,
+        timeout_seconds,
     };
     match request(&socket, &CtlMsg::Spawn(req))? {
         CtlReply::Spawned { instance, pid } => {

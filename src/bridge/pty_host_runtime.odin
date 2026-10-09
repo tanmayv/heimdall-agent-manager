@@ -145,7 +145,7 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // the resolved provider startup-detection JSON (stored verbatim; HOST-2 parses).
 // Returns ok=false when the provider has no runnable command. Caller owns the
 // returned request's heap slices (free with bridge_pty_host_spawn_request_delete).
-bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "") -> (Pty_Host_Spawn_Request, bool) {
+bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0) -> (Pty_Host_Spawn_Request, bool) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
 	if !bridge_provider_catalog_has_model(provider, model) do return {}, false
 	profile, profile_ok := bridge_provider_catalog_profile(provider)
@@ -172,8 +172,10 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		has_detect       = strings.trim_space(detect_json) != "",
 		display_name     = strings.clone(display_name),
 		has_display_name = strings.trim_space(display_name) != "",
-		rows             = PTY_HOST_DEFAULT_ROWS,
-		cols             = PTY_HOST_DEFAULT_COLS,
+		has_timeout_seconds = timeout_seconds > 0,
+		timeout_seconds     = timeout_seconds,
+		rows                = PTY_HOST_DEFAULT_ROWS,
+		cols                = PTY_HOST_DEFAULT_COLS,
 	}
 	return req, true
 }
