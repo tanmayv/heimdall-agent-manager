@@ -51,7 +51,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Button, Input, Icon } from '@ui';
+import { Button, Input, Icon, Select } from '@ui';
 
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { unsealBridgeE2EE } from '../../api/endpoints/bridges';
@@ -86,6 +86,14 @@ import {
 // ---------------------------------------------------------------------------
 // Wire shapes
 // ---------------------------------------------------------------------------
+
+/** One row of GET /api/v1/bridges, trimmed to what the picker below needs. */
+interface BridgeSummary {
+  bridge_id?: string;
+  label?: string;
+  machine_hostname?: string;
+  status?: string;
+}
 
 interface VerifyPayload {
   client?: string;
@@ -326,6 +334,10 @@ export default function BridgeEnrollmentApprovalPage() {
   const [delivery, setDelivery] = useState<DeliveryState>({ phase: 'idle' });
   const [masterPassword, setMasterPassword] = useState('');
   const [rememberSession, setRememberSession] = useState(true);
+  // "Attach to an existing bridge" instead of minting a new one. Empty means
+  // the default (unchanged) behaviour: create a new bridge.
+  const [bridgeTargets, setBridgeTargets] = useState<BridgeSummary[]>([]);
+  const [targetBridgeId, setTargetBridgeId] = useState('');
 
   const doVerify = useCallback(async (code: string) => {
     const trimmed = code.trim();
@@ -358,6 +370,40 @@ export default function BridgeEnrollmentApprovalPage() {
   useEffect(() => {
     if (userCode) void doVerify(userCode);
   }, [userCode, doVerify]);
+
+  // Offer "attach to an existing bridge" only for a bridge-enrollment grant —
+  // a plain user/Electron device grant has no bridge_id to attach to. Fetch
+  // runs once the grant verifies; a failure here is non-fatal, the picker
+  // just stays empty (new bridge only), same as the plain /api/v1/device
+  // page's fallback behaviour.
+  useEffect(() => {
+    if (grant?.is_bridge_enrollment !== true) {
+      setBridgeTargets([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await cookieJsonFetch('/bridges');
+        const unwrapped = unwrap(data);
+        const list: BridgeSummary[] = Array.isArray(unwrapped)
+          ? unwrapped
+          : Array.isArray(unwrapped?.bridges)
+            ? unwrapped.bridges
+            : [];
+        if (!cancelled) {
+          // A revoked bridge has nothing to attach to; the Hub also refuses
+          // this server-side, this is just not offering a dead end in the UI.
+          setBridgeTargets(list.filter((b) => b && b.status !== 'revoked'));
+        }
+      } catch {
+        if (!cancelled) setBridgeTargets([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [grant?.is_bridge_enrollment]);
 
   // ── The REQ-ENROLL-5 cross-check ────────────────────────────────────────
   const hubKey = String(
@@ -553,6 +599,10 @@ export default function BridgeEnrollmentApprovalPage() {
         const res = await cookieMutation('/device/approve', 'POST', {
           user_code: (verifiedCode || codeInput).trim(),
           approve,
+          // Ignored server-side for anything but an approved bridge-enrollment
+          // grant, so sending it unconditionally on a deny or a non-bridge
+          // grant is harmless.
+          target_bridge_id: targetBridgeId || undefined,
         });
         setDecision(approve ? 'approved' : 'rejected');
 
@@ -571,7 +621,7 @@ export default function BridgeEnrollmentApprovalPage() {
         setDeciding(false);
       }
     },
-    [keyCheck, codeInput, verifiedCode, startDelivery],
+    [keyCheck, codeInput, verifiedCode, startDelivery, targetBridgeId],
   );
 
   const callbackUrl =
@@ -725,6 +775,39 @@ export default function BridgeEnrollmentApprovalPage() {
             never ask you to enter a code someone sent you, and no support person will ever ask you to approve
             one. If this appeared without you starting it, choose Reject — the code stops working immediately.
           </p>
+
+          {decision === 'none' && isBridge && bridgeTargets.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <label
+                htmlFor="target_bridge_id"
+                style={{ fontSize: '0.8rem', display: 'block', marginBottom: 4 }}
+              >
+                Bridge identity
+              </label>
+              <Select
+                id="target_bridge_id"
+                value={targetBridgeId}
+                onChange={setTargetBridgeId}
+                disabled={deciding}
+              >
+                <option value="">Create a new bridge</option>
+                {bridgeTargets.map((b) => (
+                  <option key={b.bridge_id} value={b.bridge_id}>
+                    {(b.label || b.bridge_id || 'bridge') +
+                      ' (' +
+                      (b.machine_hostname || 'unknown host') +
+                      ')'}
+                  </option>
+                ))}
+              </Select>
+              {targetBridgeId && (
+                <p style={{ fontSize: '0.85rem', color: '#92400e', margin: '6px 0 0' }}>
+                  This replaces that bridge's credential and disconnects it, ending any of its
+                  running sessions.
+                </p>
+              )}
+            </div>
+          )}
 
           {decision === 'none' ? (
             <div style={{ display: 'flex', gap: 8 }}>
