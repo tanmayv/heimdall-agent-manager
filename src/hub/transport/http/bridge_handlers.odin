@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:net"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -1218,12 +1219,12 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 		)
 	}
 	defer delete(catalog_etag)
-	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag))
+	_ = write_ws_text_frame_locked(h, bridge.bridge_id, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag))
 	if bridge.telemetry_enabled == "enabled" {
 		cmd_id := fmt.tprintf("cmd_tel_%d", time.to_unix_nanoseconds(time.now()))
 		payload := bridge_set_telemetry_payload(cmd_id, true)
 		defer delete(payload)
-		_ = write_ws_text_frame_locked(h, client, payload)
+		_ = write_ws_text_frame_locked(h, bridge.bridge_id, client, payload)
 	}
 	// REQ-RECON-FIX-2: Ingest active_instance_ids from bridge_hello on WS connect
 	// and immediately reconcile active instances for the connecting bridge.
@@ -1435,7 +1436,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	text := raw_text
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
 		delete(text)
-		_ = write_ws_text_frame_locked(h, client, bridge_connection_replaced_payload())
+		_ = write_ws_text_frame_locked(h, bridge_id, client, bridge_connection_replaced_payload())
 		return false
 	}
 	type := json_string(text, "type")
@@ -1470,15 +1471,14 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			delete(kind)
 		}
 	}
-	is_command_result := false
-	defer if !is_command_result do delete(text)
+	defer delete(text)
 	defer delete(type)
 
 	switch type {
 	case "provider_catalog_request":
 		payload, payload_ok := bridge_provider_catalog_payload(h.providers)
 		if payload_ok {
-			_ = write_ws_text_frame_locked(h, client, payload)
+			_ = write_ws_text_frame_locked(h, bridge_id, client, payload)
 		}
 		delete(payload)
 	case "bridge_heartbeat":
@@ -1536,7 +1536,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
 		}
 		ack := bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version)
-		_ = write_ws_text_frame_locked(h, client, ack)
+		_ = write_ws_text_frame_locked(h, bridge_id, client, ack)
 		delete(ack)
 		if superseded != nil {
 			for s in superseded do delete(s)
@@ -1569,19 +1569,15 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		_ = got
 		applied := current_seq == state_seq && current_runtime == runtime_status
 		ack := bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime)
-		_ = write_ws_text_frame_locked(h, client, ack)
+		_ = write_ws_text_frame_locked(h, bridge_id, client, ack)
 		delete(ack)
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
 	case "command_result", "project_path_validation_result", "provider_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
 		command_id := json_string(text, "command_id")
-		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
-		if existed {
-			delete(command_id)
-		} else {
-			is_command_result = true
-		}
+		_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
+		delete(command_id)
 	case "pane_capture_result":
 		if json_int(text, "protocol_version", 0) != 1 do return true
 		if h.content != nil {
@@ -2507,9 +2503,11 @@ write_ws_text_frame_browser :: proc(client: net.TCP_Socket, text: string) -> ws.
 // sends on other threads), holding the registry command lock only for the write so
 // bytes never interleave into a corrupt frame. Use this for any write AFTER the
 // command socket is registered.
-write_ws_text_frame_locked :: proc(h: ^Bridge_Handlers, client: net.TCP_Socket, text: string) -> bool {
-	project_service.bridge_runtime_registry_command_lock(h.bridge_runtime_registry)
-	defer project_service.bridge_runtime_registry_command_unlock(h.bridge_runtime_registry)
+write_ws_text_frame_locked :: proc(h: ^Bridge_Handlers, bridge_id: string, client: net.TCP_Socket, text: string) -> bool {
+	writer_mu := project_service.bridge_runtime_registry_writer_mutex(h.bridge_runtime_registry, bridge_id)
+	if writer_mu == nil do return false
+	sync.lock(writer_mu)
+	defer sync.unlock(writer_mu)
 	return write_ws_text_frame(client, text)
 }
 

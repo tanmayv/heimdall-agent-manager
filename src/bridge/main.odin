@@ -761,6 +761,7 @@ bridge_ws_frame_is_chunk :: proc(text: string) -> bool {
 _bridge_hub_send_mu: sync.Mutex
 
 bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
+	if bridge_command_worker_capture_send(conn, text) do return true
 	sync.mutex_lock(&_bridge_hub_send_mu)
 	defer sync.mutex_unlock(&_bridge_hub_send_mu)
 	frames := bridge_hub_chunk_frames(text)

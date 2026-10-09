@@ -72,16 +72,32 @@ bridge_provider_path_executable :: proc(path: string) -> bool {
 }
 
 bridge_provider_probe_version :: proc(path: string) -> string {
-	if path == "" do return ""
+	version, _ := bridge_provider_probe_version_with_timeout(path, 2 * time.Second)
+	return version
+}
+
+bridge_provider_probe_version_with_timeout :: proc(path: string, timeout: time.Duration) -> (string, bool) {
+	if path == "" do return "", false
 	argv := []string{path, "--version"}
-	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = argv}, context.allocator)
+	stdout_r, stdout_w, pipe_err := os.pipe()
+	if pipe_err != nil do return "", false
+	defer os.close(stdout_r)
+	process, start_err := os.process_start(os.Process_Desc{command = argv, stdout = stdout_w, stderr = stdout_w})
+	_ = os.close(stdout_w)
+	if start_err != nil do return "", false
+	state, wait_err := os.process_wait(process, timeout)
+	if wait_err != nil || !state.exited {
+		_ = os.process_kill(process)
+		_, _ = os.process_wait(process, 500 * time.Millisecond)
+		return "", false
+	}
+	stdout, read_err := os.read_entire_file(stdout_r, context.allocator)
 	defer if len(stdout) > 0 do delete(stdout)
-	defer if len(stderr) > 0 do delete(stderr)
-	if err != nil || !state.success do return ""
+	if read_err != nil || !state.success do return "", false
 	text := strings.trim_space(string(stdout))
 	if newline := strings.index_byte(text, '\n'); newline >= 0 do text = text[:newline]
 	if len(text) > 256 do text = text[:256]
-	return strings.clone(text)
+	return strings.clone(text), true
 }
 
 bridge_provider_probe_one :: proc(provider, binary: string) -> Bridge_Provider_Path {

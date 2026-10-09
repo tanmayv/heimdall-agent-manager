@@ -203,6 +203,7 @@ bridge_runtime_local_endpoint_loopback_started: bool
 bridge_runtime_local_endpoint_descriptor: string
 
 bridge_hub_runtime_init :: proc() {
+	bridge_command_dispatch_init()
 	bridge_runtime_mutex = sync.Mutex{}
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, runtime.default_allocator())
@@ -404,8 +405,10 @@ bridge_hub_error_log_message :: proc(text: string) -> string {
 // timely. schedules_version rides the heartbeat ack, so this also bounds
 // scheduled-prompt pickup latency (~45s), which is fine for cron/interval work.
 BRIDGE_HUB_HEARTBEAT_INTERVAL :: 45 * time.Second
+BRIDGE_HUB_INBOUND_BUDGET :: 32
 
 bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
+	connection_generation := bridge_command_dispatch_begin_connection()
 	last_heartbeat := time.to_unix_nanoseconds(time.now())
 	// PER-CONNECTION inbound chunk reassembly (REQ-SHELL-36). The hub splits any
 	// hub->bridge command larger than one 16-bit WS frame into ordered kind:"chunk"
@@ -427,20 +430,25 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	_ = ws.send_text(conn, init_hb)
 	delete(init_hb)
 	for conn.connected {
-		if text, got := ws.poll_text(conn); got {
-			defer delete(text)
+		inbound_count := 0
+		for inbound_count < BRIDGE_HUB_INBOUND_BUDGET {
+			text, got := ws.poll_text(conn)
+			if !got do break
+			inbound_count += 1
 			if hub_command_frame_is_chunk(text) {
 				// A chunk frame is NEVER dispatched as a command. Only a complete
 				// stream is.
 				assembled, complete, ok := hub_command_reassemble(&reassemblies, text)
 				if ok && complete {
-					defer delete(assembled)
-					bridge_hub_handle_command(conn, assembled)
+					if !bridge_command_dispatch(conn, assembled, connection_generation) do bridge_hub_handle_command(conn, assembled)
+					delete(assembled)
 				}
 			} else {
-				bridge_hub_handle_command(conn, text)
+				if !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
 			}
+			delete(text)
 		}
+		bridge_command_dispatch_drain(conn, connection_generation)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
 		bridge_shell_output_drain_outgoing(conn)
@@ -473,7 +481,9 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 			hub_command_reassembly_sweep(&reassemblies, now)
 			last_heartbeat = now
 		}
-		time.sleep(25 * time.Millisecond)
+		// Yield after a bounded burst. Idle connections retain the low-wake cadence;
+		// busy connections do not artificially process only 40 frames per second.
+		time.sleep(1 * time.Millisecond if inbound_count > 0 else 25 * time.Millisecond)
 	}
 }
 
@@ -2613,6 +2623,8 @@ bridge_runtime_cached_command :: proc(command_id: string) -> (string, bool) {
 	return "", false
 }
 
+BRIDGE_RUNTIME_RESULT_LIMIT :: 256
+
 bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 	if command_id == "" do return
 	sync.mutex_lock(&bridge_runtime_mutex)
@@ -2627,6 +2639,11 @@ bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 			bridge_runtime_results[i].result_json = strings.clone(result_json, alloc)
 			return
 		}
+	}
+	if len(bridge_runtime_results) >= BRIDGE_RUNTIME_RESULT_LIMIT {
+		delete(bridge_runtime_results[0].command_id, alloc)
+		delete(bridge_runtime_results[0].result_json, alloc)
+		ordered_remove(&bridge_runtime_results, 0)
 	}
 	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{
 		command_id = strings.clone(command_id, alloc),

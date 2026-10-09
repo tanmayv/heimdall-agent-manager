@@ -1,7 +1,10 @@
 package bridge_runtime
 
+import "base:runtime"
 import "core:net"
+import "core:fmt"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import domain "odin_test:hub/domain"
 import bridge_service "odin_test:hub/service/bridge"
@@ -38,12 +41,15 @@ new_bridge_command_sink :: proc(registry: ^project_service.Bridge_Runtime_Regist
 send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
 	registry := (^project_service.Bridge_Runtime_Registry)(ctx)
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
+	writer_mu := project_service.bridge_runtime_registry_writer_mutex(registry, command.bridge_id)
+	if writer_mu == nil do return false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
+	sync.lock(writer_mu)
+	defer sync.unlock(writer_mu)
 	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
 	if !socket_ok do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
-	// Serialize with the runtime loop's ack writes so the frame isn't interleaved.
-	project_service.bridge_runtime_registry_command_lock(registry)
+	// The writer lock is per durable Bridge id. A slow socket cannot stall command
+	// delivery or heartbeat acknowledgements for every other connected Bridge.
 	wrote := write_ws_command(socket, command.body_json)
-	project_service.bridge_runtime_registry_command_unlock(registry)
 	if wrote != .Ok do return false, command_write_error(wrote)
 	return true, domain.Domain_Error{}
 }
@@ -51,69 +57,42 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
 	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
+	writer_mu := project_service.bridge_runtime_registry_writer_mutex(registry, command.bridge_id)
+	if writer_mu == nil do return "", false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
+	sync.lock(writer_mu)
 	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
-	if !socket_ok do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
+	if !socket_ok {
+		sync.unlock(writer_mu)
+		return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
+	}
 	// Serialize ONLY the frame write with the runtime loop's ack writes (so bytes
 	// can't interleave on the shared socket). The lock is released before the poll
 	// below — holding it across the wait would stall the loop's heartbeat/state acks
 	// and could deadlock command delivery.
-	project_service.bridge_runtime_registry_command_lock(registry)
 	wrote := write_ws_command(socket, command.body_json)
-	project_service.bridge_runtime_registry_command_unlock(registry)
+	sync.unlock(writer_mu)
 	if wrote != .Ok do return "", false, command_write_error(wrote)
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms) * time.Millisecond)
-	// wait_id is a HEAP COPY of command.command_id, and it is load-bearing. Do not
-	// "simplify" it back to comparing command.command_id directly.
-	//
-	// command.command_id is almost always platform.generate_id output, which is
-	// fmt.tprintf memory: the PER-THREAD TEMP ALLOCATOR. The loop below re-reads that
-	// string on every iteration for up to timeout_ms (10s at most call sites). The temp
-	// allocator is a ring — once it wraps it hands back the same bytes and reuses them
-	// IN PLACE — so any allocation occurring inside this loop could rewrite the id while
-	// we were still comparing against it. The failure would not be a crash or a failing
-	// test: the compare would silently stop matching, the command's reply would never be
-	// recognised, and the call would time out after 10s, intermittently and only under
-	// enough load to wrap the ring.
-	//
-	// Comparing a heap copy makes that impossible rather than merely prevented, which is
-	// why this is a clone and not a comment telling you to avoid allocating in the loop.
-	// The loop is now free to allocate; no future edit here can reintroduce the defect.
-	//
-	// WHY THE CLONE SITS HERE AND NOT AT PROCEDURE ENTRY: it is placed after the
-	// socket lookup, the locked frame write and the deadline computation so the
-	// bridge-offline and send-failure paths — which never reach the loop — neither
-	// allocate nor free. That placement is SAFE ONLY BECAUSE nothing between
-	// procedure entry and this line advances the per-thread temp ring: registry
-	// has_live/command_socket do string compares over a fixed array, the command
-	// lock/unlock are bare sync calls, time.now is arithmetic, and the whole write
-	// path is heap-only. (Trace established by reviewer #46 under REQ-ALLOC-2;
-	// deliberately cited by procedure name rather than line number, which rots.)
-	//
-	// RE-ESTABLISHED FOR THE CHUNKED WRITE PATH (REQ-SHELL-36). The write is no longer
-	// one procedure: write_ws_command may now fan out into hub_command_chunk_frames ->
-	// base64.encode + hub_command_chunk_json + hub_chunk_next_id, and every one of
-	// those had to be checked, not assumed. They allocate via make([]byte, ...),
-	// base64.encode, strings.builder_make/to_string and strings.concatenate — all on
-	// context.allocator (HEAP). Integers go through strconv.write_int into STACK
-	// buffers SPECIFICALLY so that this argument survives; hub_command_chunk.odin's
-	// header says so, because fmt.tprintf is the obvious way to write that code and it
-	// would break this silently.
-	//
-	// That makes the argument CONDITIONAL, which is why it is written down: if any
-	// procedure on the write path is ever switched to the temp allocator, a wrap could
-	// occur BEFORE this line and we would faithfully clone already-corrupted bytes. The
-	// clone would still be here, still read as correct, and protect nothing — and no
-	// test would fail, because nothing at this site would have changed. The chunked
-	// path widened the surface this depends on from one procedure to five.
+	// The generated command id may come from a per-thread temporary ring. Keep an
+	// owned copy stable while the condition wait releases this thread.
 	wait_id := strings.clone(command.command_id)
 	defer delete(wait_id)
-	for time.to_unix_nanoseconds(time.now()) < deadline {
-		// runtime_command_cached takes the command lock internally (brief), then we
-		// sleep OUTSIDE the lock.
-		if cached, ok := runtime_command_cached(registry, wait_id); ok do return cached, true, domain.Domain_Error{}
-		time.sleep(25 * time.Millisecond)
+	cached, ok := runtime_command_wait_terminal(registry, command.bridge_id, wait_id, time.Duration(timeout_ms) * time.Millisecond)
+	if !ok do return "", false, domain.domain_error(.Bridge_Timeout, "bridge websocket command timed out")
+	error_code := jsonx.extract_string(cached, "error_code")
+	defer delete(error_code)
+	switch error_code {
+	case "bridge_busy":
+		retry_after_ms := jsonx.extract_int(cached, "retry_after_ms", 1000)
+		scope := jsonx.extract_string(cached, "overload_scope")
+		defer delete(scope)
+		details := fmt.aprintf("{\"retry_after_ms\":%d,\"overload_scope\":\"%s\"}", retry_after_ms, scope)
+		delete(cached, runtime.default_allocator())
+		return "", false, domain.domain_error(.Bridge_Busy, "bridge is busy; retry later", details)
+	case "deadline_exceeded":
+		delete(cached, runtime.default_allocator())
+		return "", false, domain.domain_error(.Bridge_Timeout, "bridge command deadline exceeded")
 	}
-	return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command timed out")
+	return cached, true, domain.Domain_Error{}
 }
 
 validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Project_Path_Command) -> (project_service.Project_Path_Validation_Result, bool, domain.Domain_Error) {
@@ -122,23 +101,17 @@ validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Pro
 	ws_url := project_service.bridge_runtime_registry_path_validation_url(registry, command.bridge_id)
 	if ws_url == "" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
 	if command.type != "validate_project_path" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Internal_Error, "unexpected bridge command type")
-	if cached, cached_ok := runtime_command_cached(registry, command.command_id); cached_ok do return parse_validation_result(command, cached), true, domain.Domain_Error{}
+	if cached, cached_ok := runtime_command_cached_copy(registry, command.bridge_id, command.command_id); cached_ok {
+		defer delete(cached, runtime.default_allocator())
+		return parse_validation_result(command, cached), true, domain.Domain_Error{}
+	}
 	result, ok, err := send_validate_project_path_command(ws_url, command)
 	if ok {
-		// REQ-SHELL-36 AC4 audit: CONDITIONALLY owned, which is why this is four lines
-		// and not one. runtime_command_result_idempotent stores result_json in the
-		// registry ring and returns already_cached=false; on already_cached=true it
-		// returns the FIRST result for this id and never takes ours — so the string we
-		// just built is ours to free, and previously was not freed at all.
-		//
-		// Do NOT "simplify" this to an unconditional delete: on the false branch the
-		// registry now holds the only reference and callers read it back out of the ring
-		// (runtime_command_cached -> send_runtime_command_wait), so freeing it there
-		// would be a use-after-free rather than a leak.
+		// The cache clones into its process-wide allocator. This caller always retains
+		// and frees its local serialization, regardless of duplicate/replacement state.
 		result_json := validation_result_json(result)
-		if _, already_cached := runtime_command_result_idempotent(registry, command.bridge_id, command.command_id, result_json); already_cached {
-			delete(result_json)
-		}
+		_, _ = runtime_command_result_idempotent(registry, command.bridge_id, command.command_id, result_json)
+		delete(result_json)
 	}
 	return result, ok, err
 }

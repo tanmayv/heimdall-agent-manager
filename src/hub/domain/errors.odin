@@ -8,6 +8,8 @@ Error_Code :: enum {
 	Validation_Failed,
 	Conflict,
 	Bridge_Offline,
+	Bridge_Busy,
+	Bridge_Timeout,
 	Bridge_Revoked,
 	Provider_Unavailable,
 	Instance_Not_Running,
@@ -33,6 +35,8 @@ error_code_string :: proc(code: Error_Code) -> string {
 	case .Validation_Failed: return "validation_failed"
 	case .Conflict: return "conflict"
 	case .Bridge_Offline: return "bridge_offline"
+	case .Bridge_Busy: return "bridge_busy"
+	case .Bridge_Timeout: return "bridge_timeout"
 	case .Bridge_Revoked: return "bridge_revoked"
 	case .Provider_Unavailable: return "provider_unavailable"
 	case .Instance_Not_Running: return "instance_not_running"

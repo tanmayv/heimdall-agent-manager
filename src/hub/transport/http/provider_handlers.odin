@@ -241,7 +241,8 @@ provider_discover_command_json :: proc(request_id: string, providers: []string) 
 		&b,
 		"{\"type\":\"provider_discover\",\"request_id\":\"",
 	); write_handler_json_string(&b, request_id)
-	strings.write_string(&b, "\",\"providers\":[")
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, request_id)
+	strings.write_string(&b, "\",\"timeout_ms\":10000,\"providers\":[")
 	for provider, i in providers {if i > 0 do strings.write_byte(&b, ','); strings.write_byte(
 			&b,
 			'"',
@@ -283,7 +284,7 @@ bridge_provider_discover_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		10000,
 	)
 	if !reply_ok {
-		if strings.contains(reply_err.message, "timed out") {
+		if reply_err.code == .Bridge_Timeout {
 			return Response {
 				status = 504,
 				content_type = "application/json",

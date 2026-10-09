@@ -1,5 +1,6 @@
 package project
 
+import "base:runtime"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -37,30 +38,41 @@ Bridge_Runtime_Registry :: struct {
 	connection_generations: [128]int,
 	command_sockets: [128]net.TCP_Socket,
 	live_bridge_count: int,
-	command_ids: [256]string,
-	command_results_json: [256]string,
+	// Eight terminal observations per admitted live Bridge. Results are short-lived
+	// transport state, so a bounded 128 * 8 slab avoids an unbounded map while still
+	// preventing one Bridge from consuming another Bridge's retention share.
+	command_ids: [1024]string,
+	command_bridge_ids: [1024]string,
+	command_results_json: [1024]string,
+	command_results_terminal: [1024]bool,
+	command_result_sequence: [1024]u64,
 	command_count: int,
+	command_slots_used: int,
+	// Stable per-Bridge writer locks. These are never compacted with live connection
+	// slots, so a slow write for one Bridge cannot block any other Bridge and a slot
+	// swap during disconnect cannot move a mutex while it is held.
+	writer_bridge_ids: [256]string,
+	writer_mutexes: [256]sync.Mutex,
+	writer_count: int,
 	instance_ids: [256]string,
 	instance_state_seq: [256]int,
 	instance_runtime_status: [256]string,
 	instance_activity_status: [256]string,
 	instance_count: int,
 	edge_event_count: int,
-	// command_mutex serializes (a) every write to a bridge command socket and (b)
-	// all access to the shared command result cache (command_ids/
-	// command_results_json/command_count). The hub is thread-per-connection: the
-	// bridge runtime loop (heartbeat/state/replaced acks) and each fs/file HTTP
-	// request write the SAME socket, and both touch the cache — without this lock
-	// their bytes interleave on the wire (corrupt frame -> silent drop -> command
-	// times out) and the cache tears. One registry-wide lock (not per-bridge)
-	// because the cache is a single shared array; it is held ONLY around the brief
-	// socket write / cache access, never across a command's blocking poll.
+	// command_mutex protects registry bookkeeping and the shared command-result
+	// cache. It is never held across network IO. Socket writes use writer_mutexes,
+	// isolated by durable bridge id.
 	command_mutex: sync.Mutex,
+	command_cond: sync.Cond,
+	// metadata_mutex protects the compact live-connection arrays. It is separate
+	// from both the result cache and per-Bridge writers so Bridge admission and
+	// disconnect churn cannot stall unrelated result delivery.
+	metadata_mutex: sync.Mutex,
 }
 
-// bridge_runtime_registry_command_lock/unlock guard the command socket + cache.
-// Hold ONLY around the actual socket write or the brief cache read/write — never
-// across a blocking poll/sleep, or a pending command would stall the runtime loop.
+// bridge_runtime_registry_command_lock/unlock guard registry metadata and the
+// command cache. They are never held across network IO, blocking polls, or sleeps.
 bridge_runtime_registry_command_lock :: proc(registry: ^Bridge_Runtime_Registry) {
 	if registry != nil do sync.lock(&registry.command_mutex)
 }
@@ -69,13 +81,36 @@ bridge_runtime_registry_command_unlock :: proc(registry: ^Bridge_Runtime_Registr
 	if registry != nil do sync.unlock(&registry.command_mutex)
 }
 
-bridge_runtime_registry_mark_live :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, path_validation_adapter_registered: bool, path_validation_url: string) {
-	if registry == nil || bridge_id == "" do return
+// Returns a stable lock dedicated to bridge_id. The mapping is process-lifetime
+// and explicitly bounded; live-connection slot compaction never moves these locks.
+bridge_runtime_registry_writer_mutex :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> ^sync.Mutex {
+	if registry == nil || bridge_id == "" do return nil
+	bridge_runtime_registry_command_lock(registry)
+	defer bridge_runtime_registry_command_unlock(registry)
+	for i in 0..<registry.writer_count {
+		if registry.writer_bridge_ids[i] == bridge_id do return &registry.writer_mutexes[i]
+	}
+	if registry.writer_count >= len(registry.writer_bridge_ids) do return nil
+	i := registry.writer_count
+	registry.writer_bridge_ids[i] = strings.clone(bridge_id, runtime.default_allocator())
+	registry.writer_mutexes[i] = sync.Mutex{}
+	registry.writer_count += 1
+	return &registry.writer_mutexes[i]
+}
+
+bridge_runtime_registry_mark_live :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, path_validation_adapter_registered: bool, path_validation_url: string) -> bool {
+	if registry == nil || bridge_id == "" do return false
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
+	return bridge_runtime_registry_mark_live_locked(registry, bridge_id, path_validation_adapter_registered, path_validation_url)
+}
+
+bridge_runtime_registry_mark_live_locked :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, path_validation_adapter_registered: bool, path_validation_url: string) -> bool {
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] == bridge_id {
 			registry.path_validation_adapter_registered[i] = path_validation_adapter_registered
 			registry.path_validation_urls[i] = path_validation_url
-			return
+			return true
 		}
 	}
 	if registry.live_bridge_count < len(registry.live_bridge_ids) {
@@ -83,17 +118,43 @@ bridge_runtime_registry_mark_live :: proc(registry: ^Bridge_Runtime_Registry, br
 		registry.path_validation_adapter_registered[registry.live_bridge_count] = path_validation_adapter_registered
 		registry.path_validation_urls[registry.live_bridge_count] = path_validation_url
 		registry.live_bridge_count += 1
+		return true
 	}
+	return false
+}
+
+// Atomically admits/replaces a live Bridge and assigns its generation. Two
+// concurrent hello frames for the same durable id cannot both observe generation
+// N and accidentally become current.
+bridge_runtime_registry_accept_live :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, path_validation_adapter_registered: bool, path_validation_url: string) -> (replaced: bool, generation: int, ok: bool) {
+	if registry == nil || bridge_id == "" do return false, 0, false
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
+	for i in 0..<registry.live_bridge_count {
+		if registry.live_bridge_ids[i] != bridge_id do continue
+		generation = registry.connection_generations[i] + 1
+		registry.connection_generations[i] = generation
+		registry.path_validation_adapter_registered[i] = path_validation_adapter_registered
+		registry.path_validation_urls[i] = path_validation_url
+		return true, generation, true
+	}
+	if !bridge_runtime_registry_mark_live_locked(registry, bridge_id, path_validation_adapter_registered, path_validation_url) do return false, 0, false
+	registry.connection_generations[registry.live_bridge_count - 1] = 1
+	return false, 1, true
 }
 
 bridge_runtime_registry_has_live :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> bool {
 	if registry == nil || bridge_id == "" do return false
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id do return true }
 	return false
 }
 
 bridge_runtime_registry_mark_offline :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, generation: int) {
 	if registry == nil || bridge_id == "" do return
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] != bridge_id do continue
 		if generation != 0 && registry.connection_generations[i] != generation do return
@@ -118,6 +179,8 @@ bridge_runtime_registry_mark_offline :: proc(registry: ^Bridge_Runtime_Registry,
 
 bridge_runtime_registry_set_public_key :: proc(registry: ^Bridge_Runtime_Registry, bridge_id, public_key: string) {
 	if registry == nil || bridge_id == "" do return
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] == bridge_id {
 			if registry.public_keys[i] != "" do delete(registry.public_keys[i])
@@ -134,6 +197,8 @@ bridge_runtime_registry_set_public_key :: proc(registry: ^Bridge_Runtime_Registr
 
 bridge_runtime_registry_public_key :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> string {
 	if registry == nil || bridge_id == "" do return ""
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] == bridge_id do return registry.public_keys[i]
 	}
@@ -142,24 +207,36 @@ bridge_runtime_registry_public_key :: proc(registry: ^Bridge_Runtime_Registry, b
 
 bridge_runtime_registry_has_path_validation_adapter :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> bool {
 	if registry == nil || bridge_id == "" do return false
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id do return registry.path_validation_adapter_registered[i] || registry.path_validation_urls[i] != "" }
 	return false
 }
 
 bridge_runtime_registry_path_validation_url :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> string {
 	if registry == nil || bridge_id == "" do return ""
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id do return registry.path_validation_urls[i] }
 	return ""
 }
 
 bridge_runtime_registry_generation :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> int {
 	if registry == nil || bridge_id == "" do return 0
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id do return registry.connection_generations[i] }
 	return 0
 }
 
 bridge_runtime_registry_set_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, socket: net.TCP_Socket) {
 	if registry == nil || bridge_id == "" do return
+	writer_mu := bridge_runtime_registry_writer_mutex(registry, bridge_id)
+	if writer_mu == nil do return
+	sync.lock(writer_mu)
+	defer sync.unlock(writer_mu)
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id { registry.command_sockets[i] = socket; return } }
 }
 
@@ -179,31 +256,38 @@ bridge_runtime_registry_set_command_socket :: proc(registry: ^Bridge_Runtime_Reg
 // Revocation therefore takes effect in milliseconds rather than at the next read
 // deadline, with no shared-descriptor race.
 //
-// The command mutex is held because every other writer to this socket holds it; a
-// shutdown racing a partially-written frame would otherwise interleave with it.
+// The per-Bridge writer mutex is held because every other writer to this socket
+// holds it; a shutdown racing a partially-written frame would otherwise interleave.
 // The registry entry is deliberately NOT removed here: the owning thread's
 // generation-guarded mark_offline is what retires it, and removing it from under
 // that thread would make a reconnect look like a replacement of a live connection.
 bridge_runtime_registry_shutdown_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> bool {
 	if registry == nil || bridge_id == "" do return false
-	bridge_runtime_registry_command_lock(registry)
-	defer bridge_runtime_registry_command_unlock(registry)
+	writer_mu := bridge_runtime_registry_writer_mutex(registry, bridge_id)
+	if writer_mu == nil do return false
+	sync.lock(writer_mu)
+	defer sync.unlock(writer_mu)
+	socket := net.TCP_Socket(0)
+	sync.lock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count {
 		if registry.live_bridge_ids[i] != bridge_id do continue
-		socket := registry.command_sockets[i]
-		if socket == net.TCP_Socket(0) do return false
-		// Both directions: `Send` alone would leave the bridge's own writes buffered
-		// and the parked read still parked, which is the exact failure this exists to
-		// avoid. An error is ignored on purpose — an already-dead socket is the
-		// outcome we wanted.
-		_ = net.shutdown(net.Any_Socket(socket), net.Shutdown_Manner.Both)
-		return true
+		socket = registry.command_sockets[i]
+		break
 	}
-	return false
+	sync.unlock(&registry.metadata_mutex)
+	if socket == net.TCP_Socket(0) do return false
+	// Both directions: `Send` alone would leave the bridge's own writes buffered
+	// and the parked read still parked, which is the exact failure this exists to
+	// avoid. An error is ignored on purpose — an already-dead socket is the outcome
+	// we wanted. No registry metadata lock is held across this syscall.
+	_ = net.shutdown(net.Any_Socket(socket), net.Shutdown_Manner.Both)
+	return true
 }
 
 bridge_runtime_registry_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> (net.TCP_Socket, bool) {
 	if registry == nil || bridge_id == "" do return {}, false
+	sync.lock(&registry.metadata_mutex)
+	defer sync.unlock(&registry.metadata_mutex)
 	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id && registry.command_sockets[i] != net.TCP_Socket(0) do return registry.command_sockets[i], true }
 	return {}, false
 }

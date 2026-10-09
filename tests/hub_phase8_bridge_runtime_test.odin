@@ -2,11 +2,13 @@ package hub_phase8_bridge_runtime_test
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import bridge_runtime "odin_test:hub/service/bridge_runtime"
 import project_service "odin_test:hub/service/project"
 
 main :: proc() {
 	registry: project_service.Bridge_Runtime_Registry
+	defer bridge_runtime.runtime_command_cache_destroy(&registry)
 	first, first_ok, first_err := bridge_runtime.runtime_accept_hello(&registry, "brg_a", 1, "ws://127.0.0.1:1/bridge-ws")
 	check(first_ok && first.accepted && !first.replaced_existing && first.generation == 1, first_err.message)
 	second, second_ok, second_err := bridge_runtime.runtime_accept_hello(&registry, "brg_a", 1, "ws://127.0.0.1:1/bridge-ws")
@@ -14,9 +16,18 @@ main :: proc() {
 	_, version_ok, version_err := bridge_runtime.runtime_accept_hello(&registry, "brg_bad", 2, "")
 	check(!version_ok && version_err.code == .Validation_Failed, "unsupported protocol version must be rejected")
 
-	result1, dup1 := bridge_runtime.runtime_command_result_idempotent(&registry, "brg_a", "cmd_1", "{\"status\":\"succeeded\"}")
-	result2, dup2 := bridge_runtime.runtime_command_result_idempotent(&registry, "brg_a", "cmd_1", "{\"status\":\"failed\"}")
-	check(!dup1 && dup2 && result1 == result2 && result2 == "{\"status\":\"succeeded\"}", "duplicate command_id must return first result")
+	accepted := strings.clone("{\"type\":\"command_result\",\"payload\":{\"status\":\"accepted\"}}")
+	terminal := strings.clone("{\"type\":\"command_result\",\"payload\":{\"status\":\"succeeded\"}}")
+	result1, dup1 := bridge_runtime.runtime_command_result_idempotent(&registry, "brg_a", "cmd_1", accepted)
+	_, cached_before_terminal := bridge_runtime.runtime_command_cached(&registry, "brg_a", "cmd_1")
+	result2, dup2 := bridge_runtime.runtime_command_result_idempotent(&registry, "brg_a", "cmd_1", terminal)
+	result3, dup3 := bridge_runtime.runtime_command_result_idempotent(&registry, "brg_a", "cmd_1", "{\"type\":\"command_result\",\"payload\":{\"status\":\"failed\"}}")
+	check(!dup1 && !cached_before_terminal, "accepted must not satisfy terminal waiters")
+	check(!dup2 && result2 == terminal, "terminal result must replace accepted")
+	check(dup3 && result3 == terminal, "first terminal result must remain idempotent")
+	_ = result1
+	delete(accepted)
+	delete(terminal)
 
 	edge1 := bridge_runtime.runtime_apply_state_report(&registry, "inst_1", 10, "running", "idle")
 	check(!edge1, "initial report establishes state without runtime edge")

@@ -1,7 +1,10 @@
 package main
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 test_provider_json_helpers :: proc(t: ^testing.T) {
@@ -50,4 +53,21 @@ test_provider_removed_from_path_degrades_to_absent :: proc(t: ^testing.T) {
 	// Destruction is part of the regression: an unavailable formerly-cached
 	// provider must produce a fully owned absent record, not a dangling PATH
 	// string that crashes the Bridge during launch cleanup.
+}
+
+@(test)
+test_provider_version_probe_kills_and_reaps_at_deadline :: proc(t: ^testing.T) {
+	path := fmt.aprintf("/tmp/heimdall-provider-probe-timeout-%d", time.to_unix_nanoseconds(time.now()))
+	defer { _ = os.remove(path); delete(path) }
+	fixture := "#!/bin/sh\nwhile :; do :; done\n"
+	write_err := os.write_entire_file(path, fixture)
+	if !testing.expect(t, write_err == nil, "timeout fixture must be writable") do return
+	chmod_err := os.chmod(path, os.Permissions{.Read_User, .Write_User, .Execute_User})
+	if !testing.expect(t, chmod_err == nil, "timeout fixture must be executable") do return
+	started := time.to_unix_nanoseconds(time.now())
+	version, ok := bridge_provider_probe_version_with_timeout(path, 50 * time.Millisecond)
+	elapsed := time.to_unix_nanoseconds(time.now()) - started
+	defer delete(version)
+	testing.expect(t, !ok && version == "", "timed out provider probe must not report a version")
+	testing.expect(t, elapsed < i64(2 * time.Second), "timed out provider probe must be killed and reaped promptly")
 }
