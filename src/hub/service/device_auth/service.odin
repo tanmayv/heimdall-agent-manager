@@ -427,8 +427,27 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string, cod
 		// Anti-enumeration: unknown device_code looks exactly like a pending grant.
 		return Poll_Result{status = .Pending}, domain.Domain_Error{}
 	}
-	// Expired TTL -> Expired.
-	if is_expired(grant, now) {
+	// Expired TTL -> Expired, but ONLY for a grant nobody ever decided.
+	//
+	// This used to run unconditionally, before the status switch below, which
+	// meant an ALREADY-APPROVED grant still got reported Expired the instant
+	// `now` crossed the original authorize-time deadline -- even though a
+	// human had successfully approved it moments earlier (device_auth.approve
+	// has its own, independent is_expired check, and once that passes the
+	// approval is real and the token is minted; the clock bounds how long an
+	// UNDECIDED request may sit around, not how long a decided one has left
+	// to be delivered to the one process polling for it).
+	//
+	// Observed in production: a human approving near the end of the window
+	// saw the UI say "Approved — the machine should connect", while the
+	// bridge's very next poll (its loop sleeps `interval` seconds between
+	// polls) landed moments later, now() had ticked past expires_at, and this
+	// check fired before the status switch ever looked at grant.status ==
+	// .Approved -- reporting Expired for a grant that had, in fact, just been
+	// approved. Gating on .Pending here means a decided grant (Approved,
+	// Denied, or already Used/Expired) always falls through to the switch
+	// below, which is the one place that actually knows what happened to it.
+	if grant.status == .Pending && is_expired(grant, now) {
 		set_grant_status(service.store, device_code, .Expired, &grant)
 		return Poll_Result{status = .Expired}, domain.Domain_Error{}
 	}

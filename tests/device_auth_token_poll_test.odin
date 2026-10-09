@@ -390,4 +390,52 @@ main :: proc() {
 	assert_eq(header_value(resp.headers, "Retry-After"), "7", "poll rate limit sets Retry-After")
 	assert_true(strings.contains(resp.body, "\"status\":\"slow_down\""), "poll rate limit body status slow_down")
 	fmt.println("AC7 OK: per-IP poll rate limit + Retry-After")
+
+	// =====================================================================
+	// REGRESSION, observed in production: approving near the end of the
+	// authorize-time window reported Expired to the polling device, even
+	// though the UI had just confirmed "Approved -- the machine should
+	// connect".
+	//
+	// poll() used to check is_expired(grant, now) FIRST, unconditionally,
+	// before ever looking at grant.status. approve() has its own, separate
+	// is_expired check, so a human clicking Approve just inside the deadline
+	// genuinely succeeds -- the grant is real, the token is minted. But the
+	// device's poll loop sleeps `interval` seconds between polls
+	// (src/bridge/enroll_device_flow.odin), so its NEXT poll can land a few
+	// seconds later, by which point now() has ticked past the ORIGINAL
+	// authorize-time expires_at -- and the old unconditional check reported
+	// Expired for a grant that had, in fact, just been approved, before the
+	// status switch ever got to see .Approved.
+	//
+	// The fix guards the expiry short-circuit on grant.status == .Pending:
+	// the clock bounds how long an UNDECIDED grant may sit around, not how
+	// long a DECIDED one has left to be delivered to the one process polling
+	// for it. This reproduces the exact timeline: authorize, advance the
+	// clock to just inside the deadline, approve (succeeds), advance the
+	// clock past the ORIGINAL deadline, then poll -- which must still return
+	// Approved with the token, not Expired.
+	// =====================================================================
+	race_store, race_svc := new_service()
+	defer device_auth.grant_store_free(race_store)
+	race_res, race_ok, _ := device_auth.authorize(&race_svc, {client = "ham-bridge", device_label = "late-approval"}, "127.0.0.1:1", "")
+	assert_true(race_ok, "regression: authorize for late-approval race succeeds")
+
+	// The grant's window is 600s (new_service's default expires_in). Approve
+	// with 5s left on the clock -- comfortably still Pending, so approve()'s
+	// own is_expired check passes.
+	FAKE_NOW += 595
+	race_approve_ok, race_approve_err := device_auth.approve(&race_svc, {user_code = race_res.user_code, approve = true}, "owner-race", "203.0.113.50", "UA")
+	assert_true(race_approve_ok, "REGRESSION: approving just inside the deadline succeeds")
+	assert_eq(race_approve_err.code, domain.Error_Code.None, "regression: late approval has no error")
+
+	// Now cross the ORIGINAL authorize-time deadline (600s total has elapsed)
+	// before the device's next scheduled poll -- the exact gap the bridge's
+	// own interval sleep leaves open in production.
+	FAKE_NOW += 10
+	race_poll, race_poll_err := device_auth.poll(&race_svc, race_res.device_code, "203.0.113.51")
+	assert_eq(race_poll_err.code, domain.Error_Code.None, "REGRESSION: poll just past the original deadline has no error")
+	assert_eq(race_poll.status, device_auth.Poll_Status.Approved, "REGRESSION: a grant approved in time must poll Approved, never Expired, even after the original deadline has since passed")
+	assert_eq(race_poll.access_token, "hut_fake_poll_token", "regression: the approved-late grant still hands out its token")
+	fmt.println("REGRESSION OK: approval just inside the deadline is not reported Expired by a poll that lands just after it")
 }
