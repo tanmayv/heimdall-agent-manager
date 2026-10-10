@@ -363,7 +363,9 @@ MIGRATION_069_ACCOUNT_BILLING :: #load("migrations/069_account_billing.sql", str
 
 MIGRATION_070_FREE_ONE_BRIDGE :: #load("migrations/070_free_one_bridge.sql", string)
 
-migration_order :: [73]string {
+MIGRATION_071_CODEX_FOLDER_ACCESS_TRUST :: #load("migrations/071_codex_folder_access_trust.sql", string)
+
+migration_order :: [74]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -437,6 +439,7 @@ migration_order :: [73]string {
 	"068_repair_provider_catalog_etag.sql",
 	"069_account_billing.sql",
 	"070_free_one_bridge.sql",
+	"071_codex_folder_access_trust.sql",
 }
 
 run_migrations :: proc(
@@ -856,6 +859,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "066_antigravity_trust_detection.sql" do return strings.clone(MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION)
 	if name == "067_codex_sandbox_and_models.sql" do return strings.clone(MIGRATION_067_CODEX_SANDBOX_AND_MODELS)
 	if name == "070_free_one_bridge.sql" do return strings.clone(MIGRATION_070_FREE_ONE_BRIDGE)
+	if name == "071_codex_folder_access_trust.sql" do return strings.clone(MIGRATION_071_CODEX_FOLDER_ACCESS_TRUST)
 	if name == "069_account_billing.sql" do return strings.clone(MIGRATION_069_ACCOUNT_BILLING)
 	if name == "068_repair_provider_catalog_etag.sql" do return strings.clone(MIGRATION_068_REPAIR_PROVIDER_CATALOG_ETAG)
 	return ""

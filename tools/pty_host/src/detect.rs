@@ -537,6 +537,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_folder_access_accepts_selected_trust_option() {
+        let mut d = cfg_detector(cfg_auto(
+            &[
+                "Do you trust the contents of this directory?",
+                "Allow for this session",
+                "1. Trust and continue",
+            ],
+            &["", "", ""],
+        ));
+        let screen = "Folder access\n/managed/run\nTrust this folder? Codex can read, edit, and run files here\n› 1. Trust and continue\n  2. Back to Agent Command Center";
+        assert_eq!(
+            d.step(screen, 0),
+            vec![DetectAction::SendKeys(vec![NamedKey::Enter])]
+        );
+        assert!(!d.is_done());
+        assert!(d.step(screen, 100).is_empty()); // do not repeatedly accept the same screen
+    }
+
+    #[test]
     fn auto_enter_prekey_down_then_enter() {
         let mut d = cfg_detector(cfg_auto(&["Bypass Permissions mode"], &["Down"]));
         let acts = d.step("WARNING: ... Bypass Permissions mode", 0);

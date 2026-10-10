@@ -117,13 +117,13 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 		t,
 		strings.contains(
 			providers[1].startup_detection_json,
-			`"auto_enter_patterns":["Do you trust the contents of this directory?","Allow for this session"]`,
+			`"auto_enter_patterns":["Do you trust the contents of this directory?","Allow for this session","1. Trust and continue"]`,
 		),
-		"Codex startup detection recognizes directory trust and session approval prompts",
+		"Codex startup detection recognizes old trust, session approval, and new folder-access prompts",
 	)
 	testing.expect(
 		t,
-		strings.contains(providers[1].startup_detection_json, `"auto_enter_pre_keys":["",""]`),
+		strings.contains(providers[1].startup_detection_json, `"auto_enter_pre_keys":["","",""]`),
 		"Codex startup detection accepts the already-selected safe choices",
 	)
 
@@ -137,12 +137,17 @@ test_provider_catalog_migration_and_repository :: proc(t: ^testing.T) {
 	etag, etag_err := iface.provider_catalog_etag(&repo)
 	defer delete(etag)
 	testing.expect_value(t, etag_err.code, domain.Error_Code.None)
+	catalog_body := provider_service.catalog_body_json(providers)
+	defer delete(catalog_body)
+	body_etag := provider_service.catalog_body_etag(catalog_body)
+	defer delete(body_etag)
+	testing.expect_value(t, etag, body_etag) // migration metadata must match the actual wire body
 	testing.expect(t, strings.has_prefix(etag, "sha256:"), "catalog etag is explicitly SHA-256")
 	testing.expect_value(t, len(etag), len("sha256:") + 64)
 	testing.expect_value(
 		t,
 		etag,
-		"sha256:fed00363892f968c89acaa087d42921d892853e33f2919015fdced7dfccd604b",
+		"sha256:9a33321525edf2d51446ef87b493dd0f7792055f28ad82d973f13b1f6f2a569d",
 	)
 
 	// Regression: migration 067 shipped a stale provider_catalog_meta hash and
