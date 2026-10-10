@@ -7,8 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version/tag to stamp into artifacts, for example v0.1.0-beta.1'
-        required: true
+        description: 'Optional version/tag; when empty, patch-bump the latest stable release'
+        required: false
+        default: ''
         type: string
       publish_release:
         description: 'Create/update the GitHub Release after building artifacts'
@@ -37,9 +38,88 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-local-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    name: Commit release version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      clean_version: ${{ steps.prepare.outputs.clean_version }}
+      commit_sha: ${{ steps.prepare.outputs.commit_sha }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and commit release version
+        id: prepare
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="$GITHUB_REF_NAME"
+            clean_version="${version#v}"
+            commit_sha="$GITHUB_SHA"
+          else
+            # Releases may have created tags after the selected branch was
+            # last fetched. Refresh them before calculating the next patch.
+            git fetch --force --tags origin
+            requested="${REQUESTED_VERSION#v}"
+            if [ -n "$requested" ]; then
+              clean_version="$requested"
+            else
+              latest_tag=""
+              while IFS= read -r candidate; do
+                if [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  latest_tag="$candidate"
+                  break
+                fi
+              done < <(git tag --list 'v*' --sort=-v:refname)
+              if [ -n "$latest_tag" ]; then
+                current="${latest_tag#v}"
+              else
+                current="$(sed -n 's/.*appVersion = "\([^"]*\)";.*/\1/p' flake.nix | head -n 1)"
+              fi
+              stable="${current%%-*}"
+              IFS=. read -r major minor patch <<< "$stable"
+              clean_version="$major.$minor.$((patch + 1))"
+            fi
+
+            if ! [[ "$clean_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "invalid release version: $clean_version" >&2
+              exit 2
+            fi
+
+            version="v$clean_version"
+            scripts/release/bump-version.sh --version-only "$clean_version"
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add flake.nix package.json src/contracts/protocol.odin
+            if [ -f package-lock.json ]; then git add package-lock.json; fi
+            git commit --allow-empty -m "chore: release $version"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+            commit_sha="$(git rev-parse HEAD)"
+          fi
+
+          {
+            echo "version=$version"
+            echo "clean_version=$clean_version"
+            echo "commit_sha=$commit_sha"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +141,7 @@ jobs:
       - name: Checkout clean source
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -70,29 +151,13 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            version="${GITHUB_REF_NAME}"
-          else
-            version="${{ inputs.version }}"
-          fi
-          if [ -z "$version" ]; then
-            echo "release version is required" >&2
-            exit 2
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "clean_version=${version#v}" >> "$GITHUB_OUTPUT"
-
       - name: Stamp release version into source and flake
         shell: bash
         run: |
           set -euo pipefail
-          raw_version="${{ steps.version.outputs.version }}"
-          commit_sha="${GITHUB_SHA:0:8}"
+          raw_version="${{ needs.prepare.outputs.version }}"
+          commit_sha="${{ needs.prepare.outputs.commit_sha }}"
+          commit_sha="${commit_sha:0:8}"
           scripts/release/bump-version.sh "$raw_version" "$commit_sha"
 
       - name: Build local binaries from flake
@@ -133,7 +198,7 @@ jobs:
           set -euo pipefail
           scripts/release/package-local-binary-tarball.sh \
             "${{ matrix.target }}" \
-            "${{ steps.version.outputs.version }}" \
+            "${{ needs.prepare.outputs.version }}" \
             dist \
             "${{ steps.nix-build.outputs.bridge }}" \
             "${{ steps.nix-build.outputs.ctl }}" \
@@ -148,7 +213,7 @@ jobs:
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
-          name: heimdall-local-${{ matrix.target }}-${{ steps.version.outputs.version }}
+          name: heimdall-local-${{ matrix.target }}-${{ needs.prepare.outputs.version }}
           path: |
             dist/heimdall-local-${{ matrix.target }}.tar.gz
             dist/heimdall-local-${{ matrix.target }}.contents.txt
@@ -270,7 +335,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build, verify-storeless]
+    needs: [prepare, build, verify-storeless]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
     permissions:
@@ -279,19 +344,8 @@ jobs:
       - name: Checkout release metadata
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
           persist-credentials: false
-
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            version="${GITHUB_REF_NAME}"
-          else
-            version="${{ inputs.version }}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Download built artifacts
         uses: actions/download-artifact@v4
@@ -304,7 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          version="${{ steps.version.outputs.version }}"
+          version="${{ needs.prepare.outputs.version }}"
           expected=(
             heimdall-local-darwin-arm64.tar.gz
             heimdall-local-darwin-amd64.tar.gz
@@ -335,7 +389,8 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -358,6 +413,7 @@ jobs:
           else
             gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/SHA256SUMS \
               --title "$VERSION" \
+              --target "$RELEASE_COMMIT" \
               --notes-file "$notes_file" \
               "${release_flags[@]}"
           fi
