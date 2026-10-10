@@ -568,15 +568,15 @@ test_shell_stream_broadcast_enc_output :: proc(t: ^testing.T) {
 
 	// Simulate encrypted output broadcast from Bridge
 	test_enc_b64 := "dmF1bHQ6djE6YWJjZGVmZ2hpams="
-	shell_session_svc.shell_session_broadcast_output(&svc, session_id, "", test_enc_b64)
+	shell_session_svc.shell_session_broadcast_output(&svc, session_id, test_enc_b64, true)
 
 	// Verify both client sockets received the unmasked output frame containing enc_b64
 	frame1, r1 := read_server_stream_frame(pair1.client, 2 * time.Second)
 	testing.expect(t, r1, "client 1 must receive encrypted output frame")
 	if r1 {
 		testing.expect(t, strings.contains(frame1, "\"type\":\"output\""))
-		testing.expect(t, strings.contains(frame1, "\"enc_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
-		testing.expect(t, !strings.contains(frame1, "data_b64"))
+		testing.expect(t, strings.contains(frame1, "\"data_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
+		testing.expect(t, !strings.contains(frame1, "enc_b64"))
 		delete(frame1)
 	}
 
@@ -584,8 +584,8 @@ test_shell_stream_broadcast_enc_output :: proc(t: ^testing.T) {
 	testing.expect(t, r2, "client 2 must receive encrypted output frame")
 	if r2 {
 		testing.expect(t, strings.contains(frame2, "\"type\":\"output\""))
-		testing.expect(t, strings.contains(frame2, "\"enc_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
-		testing.expect(t, !strings.contains(frame2, "data_b64"))
+		testing.expect(t, strings.contains(frame2, "\"data_b64\":\"dmF1bHQ6djE6YWJjZGVmZ2hpams=\""))
+		testing.expect(t, !strings.contains(frame2, "enc_b64"))
 		delete(frame2)
 	}
 }
@@ -603,7 +603,7 @@ test_bridge_shell_pty_output_enc_b64_forwarding :: proc(t: ^testing.T) {
 	defer shell_session_svc.shell_session_service_free(&svc)
 
 	session_id := "sh_bridge_enc_test"
-	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub, "brg_test")
 	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
 
 	bh := Bridge_Handlers{
@@ -613,7 +613,7 @@ test_bridge_shell_pty_output_enc_b64_forwarding :: proc(t: ^testing.T) {
 	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
 	defer bridge_chunk_reassemblies_free(&reassemblies)
 
-	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_enc_test\",\"enc_b64\":\"dmF1bHQ6djE6dGVzdA==\"}")
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_enc_test\",\"data_b64\":\"dmF1bHQ6djE6dGVzdA==\",\"is_encrypted\":true}")
 	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
 	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_output")
 
@@ -621,8 +621,8 @@ test_bridge_shell_pty_output_enc_b64_forwarding :: proc(t: ^testing.T) {
 	testing.expect(t, r, "client must receive output frame")
 	if r {
 		testing.expect(t, strings.contains(frame, "\"type\":\"output\""), "frame must have type output")
-		testing.expect(t, strings.contains(frame, "\"enc_b64\":\"dmF1bHQ6djE6dGVzdA==\""), "frame must contain enc_b64")
-		testing.expect(t, !strings.contains(frame, "data_b64"), "frame must not contain data_b64 when omitted")
+		testing.expect(t, strings.contains(frame, "\"data_b64\":\"dmF1bHQ6djE6dGVzdA==\",\"is_encrypted\":true"), "frame must contain enc_b64")
+		testing.expect(t, !strings.contains(frame, "enc_b64"), "ciphertext must not be duplicated")
 		delete(frame)
 	}
 }
@@ -640,7 +640,7 @@ test_bridge_shell_pty_output_armored_data_b64_forwarding :: proc(t: ^testing.T) 
 	defer shell_session_svc.shell_session_service_free(&svc)
 
 	session_id := "sh_bridge_armored_test"
-	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub)
+	shell_session_svc.shell_session_attach(&svc, session_id, pair.hub, "brg_test")
 	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
 
 	bh := Bridge_Handlers{
@@ -650,7 +650,7 @@ test_bridge_shell_pty_output_armored_data_b64_forwarding :: proc(t: ^testing.T) 
 	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
 	defer bridge_chunk_reassemblies_free(&reassemblies)
 
-	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_armored_test\",\"data_b64\":\"vault:v1:YWJjZGVmZ2hpams=\"}")
+	bridge_msg := strings.clone("{\"type\":\"shell_pty_output\",\"session_id\":\"sh_bridge_armored_test\",\"data_b64\":\"YWJjZGVmZ2hpams=\",\"is_encrypted\":false}")
 	handled := bridge_ws_process_frame(&bh, "brg_test", 0, pair.hub, &reassemblies, bridge_msg)
 	testing.expect(t, handled, "bridge_ws_process_frame must handle shell_pty_output")
 
@@ -658,7 +658,7 @@ test_bridge_shell_pty_output_armored_data_b64_forwarding :: proc(t: ^testing.T) 
 	testing.expect(t, r, "client must receive output frame")
 	if r {
 		testing.expect(t, strings.contains(frame, "\"type\":\"output\""), "frame must have type output")
-		testing.expect(t, strings.contains(frame, "\"data_b64\":\"vault:v1:YWJjZGVmZ2hpams=\""), "frame must contain armored data_b64")
+		testing.expect(t, strings.contains(frame, "\"data_b64\":\"YWJjZGVmZ2hpams=\",\"is_encrypted\":false"), "frame must contain armored data_b64")
 		delete(frame)
 	}
 }
@@ -838,11 +838,11 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 	if read_ok do delete(frame)
 
 	// Send an input frame from client: {"type":"input","data_b64":"Y2xlYXIK"} ("clear\n")
-	input_json := "{\"type\":\"input\",\"data_b64\":\"Y2xlYXIK\"}"
+	input_json := "{\"type\":\"input\",\"data_b64\":\"Y2xlYXIK\",\"is_encrypted\":false}"
 	_ = write_ws_text_frame(pair.client, input_json)
 
 	// Send an encrypted input frame: {"type":"input","enc_b64":"dmF1bHQ6djE6d3NfZW5j"}
-	enc_input_json := "{\"type\":\"input\",\"enc_b64\":\"dmF1bHQ6djE6d3NfZW5j\"}"
+	enc_input_json := "{\"type\":\"input\",\"data_b64\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"is_encrypted\":true}"
 	_ = write_ws_text_frame(pair.client, enc_input_json)
 
 	// Send a resize frame from client: {"type":"resize","rows":35,"cols":110}
@@ -871,11 +871,11 @@ test_shell_stream_input_and_resize_forwarding :: proc(t: ^testing.T) {
 	has_resize := false
 	for cmd in sink_state.commands {
 		if strings.contains(cmd.body_json, "\"type\":\"shell_pty_input\"") {
-			if strings.contains(cmd.body_json, "clear") {
+			if strings.contains(cmd.body_json, "Y2xlYXIK") {
 				has_input = true
 				testing.expect_value(t, cmd.bridge_id, "brg_input_target")
 			}
-			if strings.contains(cmd.body_json, "\"enc_b64\":\"dmF1bHQ6djE6d3NfZW5j\"") {
+			if strings.contains(cmd.body_json, "\"data_b64\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"is_encrypted\":true") {
 				has_enc_input = true
 				testing.expect_value(t, cmd.bridge_id, "brg_input_target")
 			}
@@ -1007,22 +1007,24 @@ test_shell_stream_broadcast_prunes_dead_socket :: proc(t: ^testing.T) {
 	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 2)
 
 	// Intentionally close pair1 client & hub so write fails on pair1.hub
-	net.close(pair1.client)
-	net.close(pair1.hub)
+	_ = net.shutdown(pair1.hub, .Send)
 
 	// Broadcast output
 	test_b64 := "dGVzdF9kYXRh"
 	shell_session_svc.shell_session_broadcast_output(&svc, session_id, test_b64)
 
-	// pair1 should have been pruned, leaving only pair2
+	stream_test_wait_viewers(t, &svc, session_id, 1)
+	shell_session_svc.shell_session_detach(&svc, session_id, pair1.hub, bridge_id)
+	// The woken reader owns detach; this fixture performs its teardown.
 	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 1)
 
 	// Now close pair2 as well
-	net.close(pair2.client)
-	net.close(pair2.hub)
+	_ = net.shutdown(pair2.hub, .Send)
 
 	// Second broadcast should prune pair2, reducing count to 0 and triggering detach to bridge
 	shell_session_svc.shell_session_broadcast_output(&svc, session_id, test_b64)
+	stream_test_wait_viewers(t, &svc, session_id, 0)
+	shell_session_svc.shell_session_detach(&svc, session_id, pair2.hub, bridge_id)
 	testing.expect_value(t, shell_session_svc.shell_session_viewer_count(&svc, session_id), 0)
 
 	sync.mutex_lock(&sink_state.mu)
@@ -1034,4 +1036,13 @@ test_shell_stream_broadcast_prunes_dead_socket :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, has_detach, "broadcast output pruning last socket must send detach to bridge")
 	sync.mutex_unlock(&sink_state.mu)
+}
+
+stream_test_wait_viewers :: proc(t: ^testing.T, svc: ^shell_session_svc.Shell_Session_Service, session_id: string, expected: int) {
+	start := time.tick_now()
+	for time.tick_since(start) < 2 * time.Second {
+		if shell_session_svc.shell_session_viewer_count(svc, session_id) == expected do return
+		time.sleep(time.Millisecond)
+	}
+	testing.expect(t, false, "writer did not wake its reader")
 }

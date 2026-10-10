@@ -122,6 +122,7 @@ req33_a_dead_viewer_is_still_detached :: proc(t: ^testing.T) {
 	_ = net.shutdown(pair.hub, .Send)
 
 	shell_session_broadcast_output(&svc, "sh_dead", "aGk=")
+	pane_test_wait_writer(t, &svc, pair.hub)
 	testing.expect_value(t, shell_session_viewer_count(&svc, "sh_dead"), 0)
 }
 
@@ -180,6 +181,7 @@ req33_the_fan_out_writes_under_the_session_write_lock :: proc(t: ^testing.T) {
 	)
 
 	sync.mutex_unlock(write_mu)
+	shell_session_viewer_write_release(&svc, "sh_lock")
 	thread.join(th)
 	testing.expect(t, sync.atomic_load(&blocked.done), "the fan-out must proceed once the lock is released")
 }

@@ -1,3 +1,4 @@
+import { PaneDeliveryQueue, repaintCapturedScreen, splitPaneInput } from './paneDeliveryQueue.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { apiAbsoluteUrl } from '../../api/apiBase.ts';
@@ -12,8 +13,8 @@ const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 
 type ShellStreamMsg =
-  | { type: 'output'; data_b64?: string; enc_b64?: string }
-  | { type: 'screen'; screen_b64?: string; data_b64?: string; enc_b64?: string }
+  | { type: 'output'; data_b64: string; is_encrypted: boolean }
+  | { type: 'screen'; data_b64: string; is_encrypted: boolean; cursor_row?: number; cursor_col?: number }
   | { type: 'ready'; session_id?: string }
   | { type: 'stream_ready'; session_id?: string; [key: string]: any }
   | { type: 'stream_closed'; session_id?: string; exit_code?: number; [key: string]: any }
@@ -249,6 +250,7 @@ export function useShellStream({
   isVaultUnlockedRef.current = isVaultUnlocked;
   const vaultLockedNoticeShownRef = useRef(false);
   const outputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const paneQueueRef = useRef<PaneDeliveryQueue | null>(null);
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -383,7 +385,11 @@ export function useShellStream({
           }, 750);
         };
 
-        socket.onmessage = (event) => {
+        const paneQueue = new PaneDeliveryQueue(() => {
+          try { socket.close(4008, 'pane delivery overloaded'); } catch { /* connection already closed */ }
+        });
+        paneQueueRef.current = paneQueue;
+        const handleMessage = async (event: MessageEvent) => {
           if (activeConnectIdRef.current !== connectId) return;
           let msg: ShellStreamMsg;
           try {
@@ -394,9 +400,8 @@ export function useShellStream({
           }
 
           if (msg.type === 'output') {
-            const rawPayload = msg.data_b64 || msg.enc_b64;
-            const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
-            const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
+            const isArmored = msg.is_encrypted === true;
+            const enc_b64 = isArmored ? msg.data_b64 : undefined;
             const data_b64 = !isArmored ? msg.data_b64 : undefined;
 
             // If unarmored plaintext base64 arrives, decode immediately via atob() with zero delay.
@@ -405,15 +410,15 @@ export function useShellStream({
                 const raw = atob(data_b64);
                 const bytes = new Uint8Array(raw.length);
                 for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                console.log('[useShellStream] decoded plaintext output chunk immediately:', bytes.length, 'bytes');
                 onOutputRef.current?.(bytes);
               } catch (err) {
                 console.error('[useShellStream] base64 decode failed for plaintext output frame:', err);
+                socket.close(4007, 'invalid pane base64');
               }
               return;
             }
 
-            outputQueueRef.current = outputQueueRef.current.then(async () => {
+            await (outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
                 const activeKey = getActiveVaultKey();
@@ -421,10 +426,11 @@ export function useShellStream({
                 if (isUnlocked && activeKey) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, activeKey);
-                    console.log('[useShellStream] decrypted output chunk successfully:', bytes.length, 'bytes');
+                    if (activeConnectIdRef.current !== connectId || socket.readyState !== WebSocket.OPEN) return;
                     onOutputRef.current?.(bytes);
                   } catch (err) {
                     console.error('[useShellStream] decryption failed for output frame:', err);
+                    socket.close(4007, 'pane decryption failed');
                   }
                 } else {
                   console.warn('[useShellStream] vault is locked; cannot decrypt encrypted output frame');
@@ -437,12 +443,11 @@ export function useShellStream({
                   }
                 }
               }
-            }).catch(() => { /* ignore queue errors */ });
+            }).catch(() => { /* ignore queue errors */ }));
           } else if (msg.type === 'screen') {
-            const rawPayload = msg.data_b64 || msg.screen_b64 || msg.enc_b64;
-            const isArmored = typeof rawPayload === 'string' && rawPayload.startsWith(VAULT_ARMOR_PREFIX);
-            const enc_b64 = isArmored ? rawPayload : msg.enc_b64;
-            const b64 = !isArmored ? (msg.screen_b64 || msg.data_b64) : undefined;
+            const isArmored = msg.is_encrypted === true;
+            const enc_b64 = isArmored ? msg.data_b64 : undefined;
+            const b64 = !isArmored ? msg.data_b64 : undefined;
 
             // If unarmored plaintext base64 arrives, decode immediately via atob() with zero delay.
             if (!isArmored && b64) {
@@ -450,15 +455,15 @@ export function useShellStream({
                 const raw = atob(b64);
                 const bytes = new Uint8Array(raw.length);
                 for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                console.log('[useShellStream] decoded plaintext screen snapshot immediately:', bytes.length, 'bytes');
                 onOutputRef.current?.(bytes);
               } catch (err) {
                 console.error('[useShellStream] base64 decode failed for plaintext screen frame:', err);
+                socket.close(4007, 'invalid pane base64');
               }
               return;
             }
 
-            outputQueueRef.current = outputQueueRef.current.then(async () => {
+            await (outputQueueRef.current = outputQueueRef.current.then(async () => {
               if (activeConnectIdRef.current !== connectId) return;
               if (enc_b64) {
                 const activeKey = getActiveVaultKey();
@@ -466,10 +471,11 @@ export function useShellStream({
                 if (isUnlocked && activeKey) {
                   try {
                     const bytes = await decryptShellStreamPayload(enc_b64, activeKey);
-                    console.log('[useShellStream] decrypted screen snapshot successfully:', bytes.length, 'bytes');
-                    onOutputRef.current?.(bytes);
+                    if (activeConnectIdRef.current !== connectId || socket.readyState !== WebSocket.OPEN) return;
+                    onOutputRef.current?.(repaintCapturedScreen(bytes, msg.cursor_row, msg.cursor_col));
                   } catch (err) {
                     console.error('[useShellStream] decryption failed for screen frame:', err);
+                    socket.close(4007, 'pane decryption failed');
                   }
                 } else {
                   console.warn('[useShellStream] vault is locked; cannot decrypt encrypted screen frame');
@@ -482,7 +488,7 @@ export function useShellStream({
                   }
                 }
               }
-            }).catch(() => { /* ignore queue errors */ });
+            }).catch(() => { /* ignore queue errors */ }));
           } else if (msg.type === 'stream_ready') {
             console.log('[useShellStream] received stream_ready frame:', msg);
             clearStreamReadyFallbackTimer();
@@ -515,7 +521,27 @@ export function useShellStream({
           }
         };
 
+        socket.onmessage = (event) => {
+          if (activeConnectIdRef.current !== connectId) return;
+          let type: string;
+          try {
+            const frame = JSON.parse(event.data);
+            type = frame.type;
+            if ((type === 'output' || type === 'screen') && (typeof frame.data_b64 !== 'string' || typeof frame.is_encrypted !== 'boolean')) {
+              socket.close(4007, 'invalid pane payload');
+              return;
+            }
+          } catch { return; }
+          if (type === 'output' || type === 'screen' || type === 'status' || type === 'stream_closed') {
+            // JSON/Base64 pane frames are ASCII; count UTF-16 storage conservatively.
+            paneQueue.enqueue(event.data.length * 2, () => handleMessage(event));
+          } else {
+            void handleMessage(event);
+          }
+        };
+
         socket.onclose = (event: CloseEvent) => {
+          paneQueue.cancel();
           if (activeConnectIdRef.current !== connectId) {
             console.log('[useShellStream] socket.onclose ignored for stale connectId');
             return;
@@ -587,7 +613,11 @@ export function useShellStream({
     };
   }, [sessionId, enabled, connect]);
 
-  const dispatchInput = useCallback((data: string) => {
+  const dispatchInput: (data: string) => void = useCallback((data: string) => {
+    if (data.length > 8192) {
+      for (const part of splitPaneInput(data)) dispatchInput(part);
+      return;
+    }
     const s = socketRef.current;
     if (!s || s.readyState !== WebSocket.OPEN) {
       console.warn('[useShellStream] sendInput called but socket is not open, readyState:', s?.readyState);
@@ -609,18 +639,16 @@ export function useShellStream({
         try {
           const enc_b64 = await encryptShellStreamPayload(data, activeKey);
           if (s.readyState === WebSocket.OPEN) {
-            s.send(JSON.stringify({ type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` }));
+            s.send(JSON.stringify({ type: 'input', data_b64: enc_b64, is_encrypted: true }));
             console.log('[useShellStream] sendInput sent encrypted input frame');
           }
         } catch (err) {
-          console.warn('[useShellStream] input encryption failed, falling back to plaintext:', err);
-          if (s.readyState === WebSocket.OPEN) {
-            s.send(JSON.stringify({ type: 'input', data_b64: toBase64(data) }));
-          }
+          console.warn('[useShellStream] input encryption failed:', err);
+          onErrorRef.current?.('Terminal input encryption failed');
         }
       }).catch(() => { /* ignore queue error */ });
     } else {
-      s.send(JSON.stringify({ type: 'input', data_b64: toBase64(data) }));
+      s.send(JSON.stringify({ type: 'input', data_b64: toBase64(data), is_encrypted: false }));
       console.log('[useShellStream] sendInput sent plaintext input frame');
     }
   }, []);

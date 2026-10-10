@@ -681,7 +681,7 @@ bridge_command_worker_capture_send :: proc(conn: ^ws.Connection, text: string) -
 }
 
 bridge_command_dispatch_drain :: proc(conn: ^ws.Connection, generation: i64) {
-	for {
+	for turn := 0; turn < 4; turn += 1 {
 		output: Bridge_Dispatch_Output
 		have := false
 		sync.mutex_lock(&bridge_dispatch_mu)

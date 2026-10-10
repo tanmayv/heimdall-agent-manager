@@ -1,6 +1,7 @@
 package bridge
 
 import "core:fmt"
+import base64 "core:encoding/base64"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -409,18 +410,13 @@ shell_pty_input_command_json :: proc(command_id, shell_id, data: string, enc_b64
 	write_service_json_string(&b, shell_id)
 	strings.write_string(&b, "\",\"agent_instance_id\":\"")
 	write_service_json_string(&b, shell_id)
-	strings.write_string(&b, "\",\"data\":\"")
-	write_service_json_string(&b, data)
-	strings.write_string(&b, "\"")
-	if enc_b64 != "" {
-		strings.write_string(&b, ",\"enc_b64\":\"")
-		write_service_json_string(&b, enc_b64)
-		strings.write_string(&b, "\"")
-		armored := enc_b64 if strings.has_prefix(enc_b64, "vault:v1:") else strings.concatenate({"vault:v1:", enc_b64}, context.temp_allocator)
-		strings.write_string(&b, ",\"data_b64\":\"")
-		write_service_json_string(&b, armored)
-		strings.write_string(&b, "\"")
-	}
+	strings.write_string(&b, "\",\"data_b64\":\"")
+	payload := enc_b64
+	if payload == "" { payload = string(base64.encode(transmute([]byte)data, allocator = context.temp_allocator)) }
+	if strings.has_prefix(payload, "vault:v1:") do payload = payload[len("vault:v1:"):]
+	write_service_json_string(&b, payload)
+	strings.write_string(&b, "\",\"is_encrypted\":")
+	strings.write_string(&b, "true" if enc_b64 != "" else "false")
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }

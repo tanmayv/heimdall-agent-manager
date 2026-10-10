@@ -41,8 +41,7 @@ make_viewer :: proc(t: ^testing.T) -> Viewer {
 
 @(private = "file")
 close_viewer :: proc(v: ^Viewer) {
-	net.close(v.hub)
-	net.close(v.browser)
+	_ = net.shutdown(v.hub, .Send)
 	net.close(v.listener)
 }
 
@@ -65,6 +64,7 @@ demo_first_frame_line_on_zero_to_one :: proc(t: ^testing.T) {
 	fmt.println("--- end line 3 ---")
 
 	// The one-shot is spent, which is what keeps this off the per-frame path.
+	pane_test_wait_writer(t, &svc, v.hub)
 	testing.expect(t, !shell_first_frame_take("sh_demo_first"))
 }
 
@@ -101,13 +101,13 @@ demo_forced_detach_reports_write_result_and_reason :: proc(t: ^testing.T) {
 
 	shell_session_attach(&svc, "sh_demo_forced", v.hub, "brg_demo")
 	// Make the hub's write fail: close BOTH ends, so the socket is unusable.
-	net.close(v.hub)
-	net.close(v.browser)
+	_ = net.shutdown(v.hub, .Send)
 
 	fmt.println("--- REQ-SHELL-41 trio line 2: a write to a gone peer forces a detach ---")
 	shell_session_broadcast_output(&svc, "sh_demo_forced", "aGVsbG8=")
 	fmt.println("--- end line 2 ---")
 
 	// The viewer really was removed, which is the event that used to be silent.
+	pane_test_wait_writer(t, &svc, v.hub)
 	testing.expect_value(t, shell_session_viewer_count(&svc, "sh_demo_forced"), 0)
 }

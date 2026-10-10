@@ -170,7 +170,7 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 	write_handler_json_string(&ready_b, instance_id)
 	strings.write_string(&ready_b, "\"}")
 	ready_json := strings.to_string(ready_b)
-	_ = write_ws_text_frame(client, ready_json)
+	_ = shell_session_svc.shell_session_write_viewer_frame(h.shell_sessions, instance_id, client, ready_json)
 	delete(ready_json)
 
 	// Send initial status frame if known.
@@ -180,7 +180,7 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 		write_handler_json_string(&st_b, string(inst.runtime_status))
 		strings.write_string(&st_b, "\"}")
 		st_json := strings.to_string(st_b)
-		_ = write_ws_text_frame(client, st_json)
+		_ = shell_session_svc.shell_session_write_viewer_frame(h.shell_sessions, instance_id, client, st_json)
 		delete(st_json)
 	}
 
@@ -191,11 +191,13 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 		write_handler_json_string(&sr_b, instance_id)
 		strings.write_string(&sr_b, "\"}")
 		sr_json := strings.to_string(sr_b)
-		_ = write_ws_text_frame(client, sr_json)
+		_ = shell_session_svc.shell_session_write_viewer_frame(h.shell_sessions, instance_id, client, sr_json)
 		delete(sr_json)
 	}
 
 	reader := bridge_ws_reader_make(client)
+	reader.control_context = rawptr(h.shell_sessions)
+	reader.control_writer = pane_reader_write_pong
 	defer bridge_ws_reader_destroy(&reader)
 
 	for {
@@ -219,7 +221,7 @@ agent_instance_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP
 				// bridge decrypts it or rejects-and-logs, so the pty is never fed ciphertext.
 				agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, "", frame.armored)
 			case .Plain:
-				agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, frame.plain, frame.enc_b64)
+				agent_service.agent_service_send_pty_input(h.agents, auth_ctx, instance_id, frame.plain, "")
 			case .Undecodable:
 				// REQ-PANE-INPUT-3: a dropped keystroke is never silent again.
 				fmt.eprintfln(

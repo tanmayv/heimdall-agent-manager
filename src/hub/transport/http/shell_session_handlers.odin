@@ -136,7 +136,7 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 	write_handler_json_string(&ready_b, session_id)
 	strings.write_string(&ready_b, "\"}")
 	ready_json := strings.to_string(ready_b)
-	_ = write_ws_text_frame(client, ready_json)
+	_ = shell_session_svc.shell_session_write_viewer_frame(h.shell_sessions, session_id, client, ready_json)
 	delete(ready_json)
 
 	// REQ-STREAM-EVENT-3: If late_join is true, stream is already running; emit stream_ready directly to this viewer.
@@ -146,11 +146,13 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 		write_handler_json_string(&sr_b, session_id)
 		strings.write_string(&sr_b, "\"}")
 		sr_json := strings.to_string(sr_b)
-		_ = write_ws_text_frame(client, sr_json)
+		_ = shell_session_svc.shell_session_write_viewer_frame(h.shell_sessions, session_id, client, sr_json)
 		delete(sr_json)
 	}
 
 	reader := bridge_ws_reader_make(client)
+	reader.control_context = rawptr(h.shell_sessions)
+	reader.control_writer = pane_reader_write_pong
 	defer bridge_ws_reader_destroy(&reader)
 
 	sink_override := h.bridge_command_sink
@@ -173,7 +175,7 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 				// The Hub has no vault key; the bridge decrypts or rejects-and-logs.
 				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, "", frame.armored, sink_override)
 			case .Plain:
-				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, frame.plain, frame.enc_b64, sink_override)
+				bridge_service.send_shell_input(h.bridges, auth_ctx, session.bridge_id, session_id, frame.plain, "", sink_override)
 			case .Undecodable:
 				// REQ-PANE-INPUT-3: a dropped keystroke is never silent. This site used to
 				// discard an undecodable data_b64 without a word.

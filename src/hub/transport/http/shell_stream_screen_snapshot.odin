@@ -177,11 +177,12 @@ _shell_screen_chunk_end :: proc(s: string, start: int) -> int {
 // shell_stream_screen_frame_json wraps a base64 payload in the frame both consumers parse.
 // When cursor_row and cursor_col are >= 0, they are included as JSON fields for client inspection.
 // Caller owns the result.
-shell_stream_screen_frame_json :: proc(screen_b64: string, cursor_row: int = -1, cursor_col: int = -1) -> string {
+shell_stream_screen_frame_json :: proc(data_b64: string, cursor_row: int = -1, cursor_col: int = -1, is_encrypted: bool = false) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"screen\",\"screen_b64\":\"")
-	write_handler_json_string(&b, screen_b64)
-	strings.write_string(&b, "\"")
+	strings.write_string(&b, "{\"type\":\"screen\",\"data_b64\":\"")
+	write_handler_json_string(&b, data_b64)
+	strings.write_string(&b, "\",\"is_encrypted\":")
+	strings.write_string(&b, "true" if is_encrypted else "false")
 	if cursor_row >= 0 {
 		strings.write_string(&b, ",\"cursor_row\":")
 		strings.write_int(&b, cursor_row)
@@ -236,9 +237,18 @@ _shell_stream_write_screen_frame :: proc(
 	output := json_string(pane_reply, "output")
 	defer delete(output)
 	if output == "" do return false
+	encrypted_capture := strings.has_prefix(output, "vault:v1:")
+	max_bytes := ((1024 * 1024 + 28 + 2) / 3) * 4 + len("vault:v1:") if encrypted_capture else 1024 * 1024
+	if len(output) > max_bytes do return false
 
 	cursor_row := json_int(pane_reply, "cursor_row", -1)
 	cursor_col := json_int(pane_reply, "cursor_col", -1)
+
+	if strings.has_prefix(output, "vault:v1:") {
+		frame := shell_stream_screen_frame_json(output[len("vault:v1:"):], cursor_row, cursor_col, true)
+		defer delete(frame)
+		return shell_session_svc.shell_session_write_viewer_frame(sessions, stream_id, client, frame) == .Ok
+	}
 
 	repaint := _shell_screen_repaint_text(output, cursor_row, cursor_col)
 	defer delete(repaint)
@@ -251,14 +261,14 @@ _shell_stream_write_screen_frame :: proc(
 	// guarded `defer if` keeps the release at proc exit.
 	write_mu := shell_session_svc.shell_session_viewer_write_lock(sessions, stream_id)
 	if write_mu != nil do sync.mutex_lock(write_mu)
-	defer if write_mu != nil do sync.mutex_unlock(write_mu)
+	defer if write_mu != nil { sync.mutex_unlock(write_mu); shell_session_svc.shell_session_viewer_write_release(sessions, stream_id) }
 
 	offset := 0
 	for offset < len(repaint) {
 		end := _shell_screen_chunk_end(repaint, offset)
 		payload := base64.encode(transmute([]byte)repaint[offset:end])
 		frame := shell_stream_screen_frame_json(payload, cursor_row, cursor_col)
-		result := write_ws_text_frame_browser(client, frame)
+		result := shell_session_svc.shell_session_enqueue_viewer_frame(sessions, client, frame)
 		delete(payload)
 		delete(frame)
 		if result != .Ok {

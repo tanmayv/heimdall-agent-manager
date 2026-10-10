@@ -2,6 +2,7 @@ package agent
 
 import "base:runtime"
 import "core:fmt"
+import base64 "core:encoding/base64"
 import "core:strings"
 import "core:sync"
 import "core:crypto/hash"
@@ -756,21 +757,13 @@ agent_pty_input_command_json :: proc(command_id, instance_id, data: string, enc_
 	write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"agent_instance_id\":\"")
 	write_service_json_string(&b, instance_id)
-	strings.write_string(&b, "\",\"data\":\"")
-	write_service_json_string(&b, data)
-	strings.write_string(&b, "\"")
-	if enc_b64 != "" {
-		strings.write_string(&b, ",\"enc_b64\":\"")
-		write_service_json_string(&b, enc_b64)
-		strings.write_string(&b, "\"")
-		// The bridge accepts the bare ciphertext or the armored form; send both, as the
-		// shells pane does, so an older bridge that only reads data_b64 still works.
-		armored :=
-			enc_b64 if strings.has_prefix(enc_b64, domain.VAULT_ARMOR_PREFIX) else strings.concatenate({domain.VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
-		strings.write_string(&b, ",\"data_b64\":\"")
-		write_service_json_string(&b, armored)
-		strings.write_string(&b, "\"")
-	}
+	strings.write_string(&b, "\",\"data_b64\":\"")
+	payload := enc_b64
+	if payload == "" { payload = string(base64.encode(transmute([]byte)data, allocator = context.temp_allocator)) }
+	if strings.has_prefix(payload, "vault:v1:") do payload = payload[len("vault:v1:"):]
+	write_service_json_string(&b, payload)
+	strings.write_string(&b, "\",\"is_encrypted\":")
+	strings.write_string(&b, "true" if enc_b64 != "" else "false")
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }

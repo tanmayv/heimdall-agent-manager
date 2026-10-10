@@ -26,6 +26,7 @@ Bridge_PTY_Stream_Worker :: struct {
 	salt:                  [4]byte,
 	seq:                   u64,
 	locked_banner_emitted: bool,
+	emitting_snapshot: bool,
 }
 
 bridge_pty_stream_fallback_mu: sync.Mutex
@@ -35,6 +36,8 @@ bridge_pty_stream_fallback_inited: bool
 
 Bridge_PTY_Stream_Outgoing :: struct {
 	json: string,
+	session_id: string,
+	snapshot: bool,
 }
 
 Bridge_PTY_Stream_Map :: struct {
@@ -95,7 +98,7 @@ bridge_pty_stream_worker_start :: proc(session_id, shell_id: string, conn: ^ws.C
 		bridge_pty_stream_map.workers = make(map[string]^Bridge_PTY_Stream_Worker, allocator = runtime.heap_allocator())
 	}
 	if existing, ok := bridge_pty_stream_map.workers[sid]; ok {
-		if existing.active {
+		if sync.atomic_load(&existing.active) {
 			existing.conn = conn
 			sync.mutex_unlock(&bridge_pty_stream_map.mu)
 			return true
@@ -127,7 +130,11 @@ bridge_pty_stream_worker_start :: proc(session_id, shell_id: string, conn: ^ws.C
 	worker.seq = 0
 
 	sync.mutex_lock(&bridge_pty_stream_map.mu)
-	bridge_pty_stream_map.workers[strings.clone(sid, runtime.heap_allocator())] = worker
+	if _, exists := bridge_pty_stream_map.workers[sid]; exists {
+		bridge_pty_stream_map.workers[sid] = worker
+	} else {
+		bridge_pty_stream_map.workers[strings.clone(sid, runtime.heap_allocator())] = worker
+	}
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
 	thread.run_with_data(rawptr(worker), bridge_pty_stream_reader_worker)
@@ -155,19 +162,12 @@ bridge_pty_stream_worker_detach :: proc(session_id: string) -> bool {
 		sync.mutex_unlock(&bridge_pty_stream_map.mu)
 		return true // already detached
 	}
-	worker.active = false
-	fd := worker.fd
-	sh_id := strings.clone(worker.shell_id, context.temp_allocator)
+	sync.atomic_store(&worker.active, false)
+	// The reader closes under this same map lock. Shutdown here cannot race fd reuse.
+	_ = posix.shutdown(worker.fd, .RDWR)
 	delete(key_to_delete, runtime.heap_allocator())
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
-	// Send CtlMsg::Detach to daemon
-	detach_frame := pty_host_encode_detach(sh_id)
-	defer delete(detach_frame)
-	_ = pty_host_send_all(fd, detach_frame)
-
-	// Shutdown socket to unblock reader thread immediately
-	_ = posix.shutdown(fd, .RDWR)
 	return true
 }
 
@@ -260,8 +260,10 @@ bridge_pty_stream_stop_all_for_reconnect :: proc() -> int {
 	for item in bridge_pty_stream_outgoing {
 		dropped_bytes += len(item.json)
 		delete(item.json, heap)
+		delete(item.session_id, heap)
 	}
 	clear(&bridge_pty_stream_outgoing)
+	bridge_pty_stream_outgoing_bytes = 0
 	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 
 	if len(ids) > 0 || dropped_frames > 0 {
@@ -443,7 +445,9 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 				int(reply.screen.cursor_col),
 			)
 			if len(content) > 0 {
-				bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content)
+				worker.emitting_snapshot = true
+				if len(content) <= 1024 * 1024 { bridge_pty_stream_emit_frame(worker, local_session_id, transmute([]byte)content) } else { bridge_pty_stream_emit_lifecycle_event(worker, "pane_resync_required", local_session_id, local_shell_id) }
+				worker.emitting_snapshot = false
 			}
 			delete(content)
 		case .Stream_Ready:
@@ -457,15 +461,14 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 		pty_host_reply_delete(reply)
 	}
 
-	if !saw_stream_closed {
-		bridge_pty_stream_emit_lifecycle_event(worker, "shell_pty_stream_closed", local_session_id, local_shell_id, false, 0)
+	if !saw_stream_closed && sync.atomic_load(&worker.active) {
+		bridge_pty_stream_emit_lifecycle_event(worker, "pane_resync_required", local_session_id, local_shell_id, false, 0)
 	}
 
 	// Teardown: send CtlMsg::Detach and close dedicated socket descriptor
 	detach_frame := pty_host_encode_detach(local_shell_id)
 	_ = pty_host_send_all(local_fd, detach_frame)
 	delete(detach_frame)
-	posix.close(local_fd)
 
 	// Deregister worker from map if still present
 	sync.mutex_lock(&bridge_pty_stream_map.mu)
@@ -476,6 +479,7 @@ bridge_pty_stream_reader_worker :: proc(data: rawptr) {
 			break
 		}
 	}
+	posix.close(local_fd)
 	sync.mutex_unlock(&bridge_pty_stream_map.mu)
 
 	delete(worker.session_id, heap)
@@ -568,34 +572,73 @@ bridge_pty_stream_decrypt_chunk :: proc(
 	return dst, true
 }
 
-_bridge_pty_stream_deliver_or_queue :: proc(worker: ^Bridge_PTY_Stream_Worker, frame: string, heap: runtime.Allocator) {
-	sent := false
-	if worker != nil && worker.active && worker.conn != nil && worker.conn.connected {
-		sent = bridge_hub_send(worker.conn, frame)
+BRIDGE_PANE_QUEUE_BYTES :: 8 * 1024 * 1024
+BRIDGE_PANE_QUEUE_FRAMES :: 1024
+bridge_pty_stream_outgoing_bytes: int
+bridge_pty_stream_reconnect_required: bool
+
+_bridge_pty_stream_deliver_or_queue :: proc(worker: ^Bridge_PTY_Stream_Worker, frame: string, heap: runtime.Allocator, session_id: string) {
+	if worker != nil && !sync.atomic_load(&worker.active) { delete(frame, heap); return }
+	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+	_bridge_pty_stream_outgoing_bind_heap()
+	if worker != nil && !sync.atomic_load(&worker.active) { sync.mutex_unlock(&bridge_pty_stream_outgoing_mu); delete(frame, heap); return }
+	snapshot := worker != nil && worker.emitting_snapshot
+	stream_bytes := 0
+	for item in bridge_pty_stream_outgoing { if item.session_id == session_id && item.snapshot == snapshot do stream_bytes += len(item.json) }
+	stream_limit := 2 * 1024 * 1024 if snapshot else 256 * 1024
+	overflow := len(frame) > stream_limit - stream_bytes || len(frame) > BRIDGE_PANE_QUEUE_BYTES - bridge_pty_stream_outgoing_bytes || len(bridge_pty_stream_outgoing) >= BRIDGE_PANE_QUEUE_FRAMES
+	if !overflow {
+		append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = frame, session_id = strings.clone(session_id, heap), snapshot = snapshot})
+		bridge_pty_stream_outgoing_bytes += len(frame)
 	}
-	if !sent {
-		if worker != nil && !worker.active {
-			delete(frame, heap)
-		} else {
-			sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
-			_bridge_pty_stream_outgoing_bind_heap()
-			append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = frame})
-			sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	if overflow {
+		// Obsolete bytes for this stream cannot be replayed after a gap. Release them
+		// and reserve one small control record so only this pane reconnects.
+		i := 0
+		for i < len(bridge_pty_stream_outgoing) {
+			item := bridge_pty_stream_outgoing[i]
+			if item.session_id != session_id { i += 1; continue }
+			bridge_pty_stream_outgoing_bytes -= len(item.json)
+			delete(item.json, heap)
+			delete(item.session_id, heap)
+			ordered_remove(&bridge_pty_stream_outgoing, i)
 		}
-	} else {
+		marker := bridge_pty_stream_format_lifecycle_event("pane_resync_required", session_id, "", false, 0, heap)
+		if len(bridge_pty_stream_outgoing) < BRIDGE_PANE_QUEUE_FRAMES {
+			// Control reserve: at most 1024 small markers in addition to 8 MiB of data.
+			append(&bridge_pty_stream_outgoing, Bridge_PTY_Stream_Outgoing{json = marker, session_id = strings.clone(session_id, heap)})
+			bridge_pty_stream_outgoing_bytes += len(marker)
+		} else { delete(marker, heap); sync.atomic_store(&bridge_pty_stream_reconnect_required, true) }
+	}
+	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
+	if overflow {
 		delete(frame, heap)
+		fmt.eprintln("bridge WARN pane queue overflow; detaching stream for a fresh screen")
+		if worker != nil {
+			sync.atomic_store(&worker.active, false)
+			if worker.fd > 0 do _ = posix.shutdown(worker.fd, .RDWR)
+		}
 	}
 }
 
 // bridge_pty_stream_emit_frame encodes data chunk to base64 and formats shell_pty_output JSON.
 // When vault status is Locked, it emits a locked warning banner and suppresses raw stream bytes.
-// When Unlocked, it encrypts the chunk with AES-256-GCM using a monotonic counter nonce emitting enc_b64.
+// When Unlocked, it encrypts the chunk with AES-256-GCM using a monotonic counter nonce and the is_encrypted flag.
 // When Disabled (or unconfigured fallback), it emits plaintext data_b64 without encryption or delay.
 bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_id: string, data: []byte) {
 	if len(data) == 0 do return
+	if len(data) > 8192 {
+		for offset := 0; offset < len(data); offset += 8192 { bridge_pty_stream_emit_frame(worker, session_id, data[offset:min(offset+8192, len(data))]) }
+		return
+	}
+	temp := runtime.default_temp_allocator_temp_begin()
+	defer runtime.default_temp_allocator_temp_end(temp)
 	heap := runtime.heap_allocator()
 
-	status := bridge_vault_status()
+	key_hex, vault_active := bridge_read_vault_key()
+	defer if vault_active do delete(key_hex)
+	status := Vault_Status.Disabled
+	if vault_active { status = .Unlocked } else if bridge_vault_is_workspace_configured() { status = .Locked }
 	#partial switch status {
 	case .Locked:
 		if worker != nil {
@@ -611,17 +654,17 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 		bridge_runtime_write_json_string(&b, session_id)
 		strings.write_string(&b, "\",\"data_b64\":\"")
 		bridge_runtime_write_json_string(&b, string(encoded))
-		strings.write_string(&b, "\"}")
+		strings.write_string(&b, "\",\"is_encrypted\":false")
+	if worker != nil && worker.emitting_snapshot do strings.write_string(&b, ",\"is_snapshot\":true")
+	strings.write_string(&b, "}")
 		frame := strings.to_string(b)
-		_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+		_bridge_pty_stream_deliver_or_queue(worker, frame, heap, session_id)
 		return
 
 	case .Unlocked:
 		if worker != nil {
 			worker.locked_banner_emitted = false
 		}
-		key_hex, vault_active := bridge_read_vault_key()
-		defer if vault_active do delete(key_hex)
 		if vault_active {
 			salt: [4]byte
 			seq: u64
@@ -642,20 +685,22 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 			}
 
 			if enc_b64, ok := bridge_pty_stream_encrypt_chunk(data, salt, seq, key_hex, context.temp_allocator); ok {
-				armored := strings.concatenate({VAULT_ARMOR_PREFIX, enc_b64}, context.temp_allocator)
 				b := strings.builder_make(heap)
 				strings.write_string(&b, "{\"type\":\"shell_pty_output\",\"session_id\":\"")
 				bridge_runtime_write_json_string(&b, session_id)
 				strings.write_string(&b, "\",\"data_b64\":\"")
-				bridge_runtime_write_json_string(&b, armored)
-				strings.write_string(&b, "\",\"enc_b64\":\"")
 				bridge_runtime_write_json_string(&b, enc_b64)
-				strings.write_string(&b, "\"}")
+				strings.write_string(&b, "\",\"is_encrypted\":true")
+				if worker != nil && worker.emitting_snapshot do strings.write_string(&b, ",\"is_snapshot\":true")
+				strings.write_string(&b, "}")
 				frame := strings.to_string(b)
-				_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+				_bridge_pty_stream_deliver_or_queue(worker, frame, heap, session_id)
 				return
 			}
 		}
+		fmt.eprintln("bridge WARN terminal encryption failed; refusing plaintext output")
+		bridge_pty_stream_emit_lifecycle_event(worker, "pane_resync_required", session_id, "")
+		return
 	}
 
 	// Plaintext fallback (e.g. Disabled status): zero encryption overhead or blocking
@@ -667,9 +712,11 @@ bridge_pty_stream_emit_frame :: proc(worker: ^Bridge_PTY_Stream_Worker, session_
 	bridge_runtime_write_json_string(&b, session_id)
 	strings.write_string(&b, "\",\"data_b64\":\"")
 	bridge_runtime_write_json_string(&b, string(encoded))
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\",\"is_encrypted\":false")
+	if worker != nil && worker.emitting_snapshot do strings.write_string(&b, ",\"is_snapshot\":true")
+	strings.write_string(&b, "}")
 	frame := strings.to_string(b)
-	_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+	_bridge_pty_stream_deliver_or_queue(worker, frame, heap, session_id)
 }
 
 // bridge_pty_stream_format_lifecycle_event formats shell_pty_stream_ready or shell_pty_stream_closed JSON.
@@ -707,31 +754,25 @@ bridge_pty_stream_emit_lifecycle_event :: proc(
 ) {
 	heap := runtime.heap_allocator()
 	frame := bridge_pty_stream_format_lifecycle_event(event_type, session_id, shell_id, has_exit_code, exit_code, heap)
-	_bridge_pty_stream_deliver_or_queue(worker, frame, heap)
+	_bridge_pty_stream_deliver_or_queue(worker, frame, heap, session_id)
 }
 
 // bridge_pty_stream_drain_outgoing flushes queued shell_pty_output frames to the hub connection.
 bridge_pty_stream_drain_outgoing :: proc(conn: ^ws.Connection) {
-	if conn == nil || !conn.connected do return
-	sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
-	_bridge_pty_stream_outgoing_bind_heap()
-	if len(bridge_pty_stream_outgoing) == 0 {
+	if sync.atomic_exchange(&bridge_pty_stream_reconnect_required, false) { ws.abort(conn); return }
+	// Bound each turn so heartbeat, lifecycle and inbound input are serviced.
+	for i := 0; i < 4; i += 1 {
+		sync.mutex_lock(&bridge_pty_stream_outgoing_mu)
+		if len(bridge_pty_stream_outgoing) == 0 { sync.mutex_unlock(&bridge_pty_stream_outgoing_mu); break }
+		item := bridge_pty_stream_outgoing[0]
+		ordered_remove(&bridge_pty_stream_outgoing, 0)
+		bridge_pty_stream_outgoing_bytes -= len(item.json)
 		sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
-		return
+		ok := bridge_hub_send(conn, item.json)
+		delete(item.json, runtime.heap_allocator())
+		delete(item.session_id, runtime.heap_allocator())
+		if !ok do break
 	}
-	items := bridge_pty_stream_outgoing[:]
-	bridge_pty_stream_outgoing = make([dynamic]Bridge_PTY_Stream_Outgoing, runtime.heap_allocator())
-	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
-
-	heap := runtime.heap_allocator()
-	for item in items {
-		_ = bridge_hub_send(conn, item.json)
-		delete(item.json, heap)
-	}
-	// `items` aliases the OLD backing array, which the bind above guarantees came from the heap.
-	// Naming the allocator explicitly matters here: a bare delete() would free it through
-	// context.allocator, which is the mismatched-free that made this queue crash in the first place.
-	delete(items, heap)
 }
 
 // bridge_pty_stream_take_outgoing drains all queued outgoing frames without sending (for tests).
@@ -743,8 +784,10 @@ bridge_pty_stream_take_outgoing :: proc() -> [dynamic]string {
 	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		append(&out, item.json)
+		delete(item.session_id, heap)
 	}
 	clear(&bridge_pty_stream_outgoing)
+	bridge_pty_stream_outgoing_bytes = 0
 	return out
 }
 
@@ -753,7 +796,7 @@ bridge_pty_stream_worker_is_active :: proc(session_id: string) -> bool {
 	sync.mutex_lock(&bridge_pty_stream_map.mu)
 	defer sync.mutex_unlock(&bridge_pty_stream_map.mu)
 	if worker, ok := bridge_pty_stream_map.workers[session_id]; ok {
-		return worker.active
+		return sync.atomic_load(&worker.active)
 	}
 	return false
 }
@@ -768,7 +811,7 @@ bridge_pty_stream_worker_get_active_conn :: proc(session_id: string) -> (conn: ^
 
 	if bridge_pty_stream_map.workers == nil do return nil, false
 	if worker, ok := bridge_pty_stream_map.workers[sid]; ok {
-		if worker != nil && worker.active {
+		if worker != nil && sync.atomic_load(&worker.active) {
 			return worker.conn, true
 		}
 	}
@@ -795,8 +838,10 @@ bridge_pty_stream_reset :: proc() {
 	_bridge_pty_stream_outgoing_bind_heap()
 	for item in bridge_pty_stream_outgoing {
 		delete(item.json, heap)
+		delete(item.session_id, heap)
 	}
 	clear(&bridge_pty_stream_outgoing)
+	bridge_pty_stream_outgoing_bytes = 0
 	sync.mutex_unlock(&bridge_pty_stream_outgoing_mu)
 
 	sync.mutex_lock(&bridge_pty_stream_fallback_mu)

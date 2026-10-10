@@ -147,7 +147,7 @@ impl PtyHost {
 
         let child_alive = Arc::new(AtomicBool::new(true));
         let exit_code = Arc::new(AtomicI32::new(-1));
-        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
+        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(64);
 
         // Reader thread: pump PTY bytes into the VT engine + broadcast raw bytes.
         let reader_thread = {
@@ -163,7 +163,7 @@ impl PtyHost {
                                 eng.feed(&buf[..n]);
                             }
                             // Best-effort broadcast; ignore if no consumer.
-                            let _ = output_tx.send(buf[..n].to_vec());
+                            if output_tx.send(buf[..n].to_vec()).is_err() { break; }
                         }
                         Err(e) => {
                             if e.kind() == std::io::ErrorKind::Interrupted {

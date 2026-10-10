@@ -84,7 +84,7 @@ test('REQ-SHELL-ENC-5: useShellStream.ts static contract verification', () => {
 
   // Must encrypt outgoing input when vault is unlocked and fall back to data_b64 when locked
   assert.ok(src.includes('encryptShellStreamPayload'), 'must call encryptShellStreamPayload in sendInput');
-  assert.ok(src.includes("type: 'input', enc_b64"), 'must send enc_b64 for input when vault unlocked');
+  assert.ok(src.includes("type: 'input', data_b64: enc_b64, is_encrypted: true"), 'must send enc_b64 for input when vault unlocked');
   assert.ok(src.includes("type: 'input', data_b64"), 'must fall back to data_b64 when vault locked');
 
   // Must preserve heartbeat and geometry logic
@@ -502,9 +502,9 @@ test('REQ-SHELL-ENC-11: ShellTerminalPane.tsx restores terminal cursor and elimi
 
 test('REQ-SHELL-ENC-12: useShellStream.ts inspects data_b64 for vault:v1: prefix', () => {
   const streamSrc = fs.readFileSync(USE_SHELL_STREAM, 'utf8');
-  assert.ok(streamSrc.includes('msg.data_b64 || msg.enc_b64'), 'must inspect data_b64 or enc_b64');
-  assert.ok(streamSrc.includes('rawPayload.startsWith(VAULT_ARMOR_PREFIX)'), 'must check for VAULT_ARMOR_PREFIX');
-  assert.ok(streamSrc.includes('data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}`'), 'sendInput must send armored data_b64');
+  assert.ok(streamSrc.includes('msg.is_encrypted === true'), 'must inspect data_b64 or enc_b64');
+  assert.ok(streamSrc.includes('isArmored ? msg.data_b64 : undefined'), 'must check for VAULT_ARMOR_PREFIX');
+  assert.ok(streamSrc.includes('data_b64: enc_b64, is_encrypted: true'), 'sendInput must send armored data_b64');
 });
 
 test('REQ-SHELL-ENC-12: decryptShellStreamPayload transparently decrypts vault:v1: armored data_b64', async () => {
@@ -549,12 +549,12 @@ test('REQ-FIX-ENC-2: useAgentStream.ts static contract verification', () => {
   // Verify stream message handling
   assert.ok(src.includes("msg.type === 'output'"), 'must handle output messages');
   assert.ok(src.includes("msg.type === 'screen'"), 'must handle screen messages');
-  assert.ok(src.includes('rawPayload.startsWith(VAULT_ARMOR_PREFIX)'), 'must check for armored vault:v1: payload');
+  assert.ok(src.includes('msg.is_encrypted === true'), 'must check for armored vault:v1: payload');
   assert.ok(src.includes('decryptShellStreamPayload(enc_b64, keyToUse)'), 'must decrypt stream chunk with keyToUse');
 
   // Verify sendInput encryption
   assert.ok(src.includes('encryptShellStreamPayload(data, keyToUse)'), 'must encrypt input with keyToUse');
-  assert.ok(src.includes("type: 'input', enc_b64"), 'must send encrypted enc_b64 frame');
+  assert.ok(src.includes("type: 'input', data_b64: enc_b64, is_encrypted: true"), 'must send encrypted enc_b64 frame');
   assert.ok(src.includes("type: 'input', data_b64: toBase64(data)"), 'must fall back to plaintext when locked');
 });
 
@@ -583,11 +583,13 @@ test('REQ-FIX-ENC-3: sendInput payload generation matches zero-trust protocol', 
   const cryptoKey = await importRawKeyHex(TEST_VAULT_KEY);
   const keystroke = 'cargo build\r';
   const enc_b64 = await encryptShellStreamPayload(keystroke, cryptoKey);
-  const frame = { type: 'input', enc_b64, data_b64: `${VAULT_ARMOR_PREFIX}${enc_b64}` };
+  const frame = { type: 'input', data_b64: enc_b64, is_encrypted: true };
 
   assert.equal(frame.type, 'input');
-  assert.ok(frame.data_b64.startsWith('vault:v1:'));
-  const decrypted = await decryptShellStreamPayload(frame.enc_b64, cryptoKey);
+  assert.equal(frame.is_encrypted, true);
+  assert.ok(!frame.data_b64.startsWith('vault:v1:'));
+  assert.ok(!('enc_b64' in frame));
+  const decrypted = await decryptShellStreamPayload(frame.data_b64, cryptoKey);
   assert.equal(new TextDecoder().decode(decrypted), keystroke);
 });
 

@@ -1,17 +1,17 @@
 # Binary pane streaming implementation plan
 
-**Status:** Proposed implementation plan  
-**Date:** 2026-10-09  
-**Source baseline:** `a55230c4` on `main`  
+**Status:** Phase 1 implemented; binary phases 2–5 pending
+**Date:** 2026-10-09; updated 2026-10-10
+**Source baseline:** `a55230c4` on `main`
 **Scope:** Agent and shell terminal streams between Bridge, Hub, and browser or Electron UI
 
-Move terminal output and screen snapshots from Base64 inside JSON to binary WebSocket messages. Keep JSON for control messages and retain the existing JSON pane format during a negotiated rollout. The Hub continues to route encrypted terminal data without receiving vault keys or decrypting payloads.
+Move terminal output and screen snapshots from Base64 inside JSON to binary WebSocket messages. Keep JSON for control messages. Deploy matching Hub, Bridge, and UI releases together; backward compatibility and mixed-format conversion are not required. The Hub continues to route encrypted terminal data without receiving vault keys or decrypting payloads.
 
 Binary transport reduces wire bytes and encoding work. It does not resolve blocking writes, growing queues, or retained command results. Those scaling defects must be addressed before broad rollout, and transport performance must be measured independently from those fixes.
 
 ## Current behavior and scaling constraints
 
-The Bridge reads raw terminal bytes from a dedicated PTY stream worker, optionally encrypts them, Base64 encodes them, and sends `shell_pty_output` JSON over its shared Hub WebSocket. The Hub parses that message and synchronously forwards JSON to attached viewers. The UI decodes Base64 and, for encrypted messages, decrypts before writing bytes to the terminal.
+The Bridge reads raw terminal bytes from a dedicated PTY stream worker, optionally encrypts them, Base64 encodes them, and sends `shell_pty_output` JSON over its shared Hub WebSocket. The Hub parses that message and enqueues JSON for independently bounded viewer writers. The UI decodes Base64 and, for encrypted messages, decrypts before writing bytes to the terminal.
 
 Relevant code:
 
@@ -22,7 +22,9 @@ Relevant code:
 - [Shell stream UI](../../src/ui/components/shells/useShellStream.ts) and [agent stream UI](../../src/ui/components/chat/useAgentStream.ts)
 - [WebSocket readers](../../src/lib/ws/reader.odin), [client transport](../../src/lib/ws/ws.odin), and [server writers](../../src/lib/ws/server_frame.odin)
 
-Encrypted output currently puts the same encrypted record in both `enc_b64` and an armored `data_b64` field. Measure both fields when comparing formats. A single Base64 representation expands binary data by approximately one third; removing it reduces that representation by approximately one quarter. Duplicated ciphertext and additional application chunk encoding can make the actual reduction larger. Report measured complete wire bytes rather than assuming one expansion factor.
+Phase 1 uses one `data_b64` field plus a required boolean `is_encrypted` for streamed input, output, and snapshots. Ciphertext is bare Base64, without a textual armor prefix or a second `enc_b64` copy. HTTP capture and stored vault content retain their existing representation. A single Base64 representation expands binary data by approximately one third; removing it reduces that representation by approximately one quarter. Report measured complete wire bytes, including application chunking.
+
+Phase 1 also implements connection-scoped registries, command-result byte budgets, independent viewer writers, bounded Bridge and PTY-host queues, total TCP/TLS write deadlines, fair drain budgets, and pane-specific resynchronization. See [bounded pane transport](../pane-transport.md) for limits, validation, and coordinated deployment requirements.
 
 Default pane viewing polls at 500 ms when expanded; WebSocket streaming is gated by `streaming_terminal_pane`. This change applies to the streaming path. HTTP pane capture, logs, filesystem messages, and other command responses retain their current contracts initially.
 
@@ -48,26 +50,11 @@ Keep input and resize in their existing JSON contracts for the first release. Ke
 
 The existing WebSocket parser already recognizes binary opcode `0x2`, but text-oriented helpers discard the opcode. Add a typed message API instead of passing binary data through JSON dispatch. Reuse shared framing and continuation handling rather than introducing another WebSocket implementation. Bridge-to-Hub writes must comply with client masking rules; Hub-to-browser writes use server framing.
 
-## Capability negotiation and compatibility
+## Version selection and deployment
 
-Introduce a capability named `pane_binary_v1`; keep the existing overall Bridge protocol version unchanged during migration.
+Use one versioned pane contract, `pane_binary_v1`, across matching Hub, Bridge, and UI releases. Capability exchange may select frame-size limits and report protocol errors; it must not introduce old/new conversion paths. Reject unsupported versions explicitly.
 
-1. A new Bridge advertises supported pane encodings and its maximum binary message size in its hello. A new Hub selects an encoding and size in `bridge_ready`.
-2. An omitted capability or selection means legacy JSON. A Bridge never emits binary messages before explicit selection.
-3. A new UI advertises `pane_binary_v1` on the existing stream URL using an optional query parameter. The Hub returns the selected encoding in its JSON `ready` frame. Until selection, the UI accepts the legacy format.
-4. Negotiation is separate on each hop. The Hub records the chosen mode for each Bridge connection and each viewer, rather than assuming every viewer uses the Bridge's format.
-5. Selection remains fixed for the connection. An encoding change requires a new connection, a new stream epoch, and a fresh screen snapshot.
-
-Prefer deploying a Hub that supports both formats first, then Bridges and the UI. Verify that old Hubs accept the additional hello fields; if they reject them, deploy the compatible Hub before capability-advertising Bridges.
-
-| Bridge mode | Viewer mode | Hub behavior |
-| --- | --- | --- |
-| JSON | JSON | Existing relay |
-| Binary | Binary | Forward validated routing header and opaque payload |
-| JSON | Binary | Decode the relevant Base64 record once, then emit binary |
-| Binary | JSON | Encode the record for that viewer only, preserving the existing JSON contract |
-
-Conversions never decrypt terminal data. Keep compatibility conversions out of the binary-to-binary fast path. Cache conversion work per frame when several viewers need the same representation, with explicit buffer ownership and lifetime.
+Deploy the complete release together. Feature flags may leave the current single-payload JSON transport active before binary activation, but every connection selects one encoding for its lifetime. Rollback restores the matching prior release and reconnects its streams; never change encoding inside a live stream.
 
 ## Proposed binary message format
 
@@ -99,7 +86,7 @@ Output is ordered by epoch and sequence. A sequence gap, duplicate, invalid snap
 
 ## Vault encryption and screen snapshots
 
-Expose byte-oriented encryption and decryption helpers. Initially preserve the existing encrypted record layout: **12-byte nonce, 16-byte authentication tag, then ciphertext**. Remove Base64 and the textual armor from the binary representation. Keep legacy helpers as wrappers around the byte helpers where compatibility requires them.
+Expose byte-oriented encryption and decryption helpers. Initially preserve the existing encrypted record layout: **12-byte nonce, 16-byte authentication tag, then ciphertext**. Remove Base64 and the textual armor from the binary representation. Retain helpers needed for HTTP and stored vault records; pane transport does not need legacy wrappers.
 
 The stream epoch is a routing and ordering identifier; it is not the AES nonce. Before rollout, review nonce uniqueness across concurrent workers, multiple Bridges sharing a vault key, reattachments, and process restarts. A random 32-bit worker salt must not be described as a global uniqueness guarantee. If the existing nonce allocation cannot meet the intended scale, specify and review a separate cryptographic change before enabling binary streaming broadly.
 
@@ -127,13 +114,13 @@ A send timeout or partial frame write terminates the affected connection. Retry 
 
 | Phase | Deliverables | Completion gate |
 | --- | --- | --- |
-| 1. Bound existing transport | Safe command-result ownership, per-connection writers, bounded queues, deadlines, registry synchronization, and fair inbound draining | Sustained legacy traffic has bounded memory; one slow peer cannot stall other Bridges |
-| 2. Define codecs | Shared envelope constants, Odin and TypeScript byte codecs, typed WS message APIs, crypto byte helpers, and negotiated capabilities | Cross-language fixtures round-trip exactly; malformed inputs fail within allocation limits |
-| 3. Bridge production and Hub relay | Split output before encryption, emit binary records, validate session ownership, route opaque bytes, and implement mixed-format conversion | Every old/new Bridge and Hub combination follows the negotiated mode without silent data loss |
+| 1. Bound existing transport | Safe command-result ownership, per-connection writers, bounded queues, deadlines, registry synchronization, and fair inbound draining | Sustained JSON traffic has bounded memory; one slow peer cannot stall other Bridges |
+| 2. Define codecs | Shared envelope constants, Odin and TypeScript byte codecs, typed WS message APIs, crypto byte helpers, and explicit version selection | Cross-language fixtures round-trip exactly; malformed inputs fail within allocation limits |
+| 3. Bridge production and Hub relay | Split output before encryption, emit binary records, validate session ownership, and route opaque bytes | Matching Hub, Bridge, and UI releases stream correctly without silent data loss |
 | 4. UI consumption | Shared binary decoder for agent and shell panes, `binaryType = 'arraybuffer'`, ordered decrypt/render queue, snapshot assembly, and reconnect handling | Identical rendered terminal state for JSON and binary fixtures, including vault and reconnect cases |
-| 5. Canary and expansion | Feature flags, metrics, actual proxy verification, and load tests | Resource, latency, correctness, and compatibility gates below pass |
+| 5. Canary and expansion | Feature flags, metrics, actual proxy verification, and load tests | Resource, latency, correctness, and version gates below pass |
 
-Land the phases as reviewable changes. Phase 2 may proceed while Phase 1 is being implemented, but broad activation depends on both. Binary input, compression, a separate data WebSocket, and removal of legacy JSON are later decisions based on measurements.
+Land the phases as reviewable changes. Phase 2 may proceed while Phase 1 is being implemented, but broad activation depends on both. Binary input, compression, and a separate data WebSocket remain later decisions based on measurements.
 
 ## Validation and acceptance criteria
 
@@ -141,13 +128,13 @@ Codec tests must cover empty and arbitrary binary payloads, split UTF-8, ANSI se
 
 Encryption tests must cover disabled, locked, and unlocked vault states, byte-for-byte conversion of the existing encrypted record format, tampered ciphertext, failed encryption, stale epochs, and nonce allocation under concurrent streams. Run the same terminal traces through both agent and shell hooks. Check final screen contents, cursor position, ordering, snapshot completeness, lifecycle events, and geometry.
 
-Integration tests must exercise the four negotiated mode combinations through a real isolated Hub and Bridge. Include multiple viewers, a viewer that stops reading, a Bridge that stops reading, bridge reconnect, viewer reconnect, a missed detach, mixed filesystem/LSP traffic, and UI decryption slower than arrival. Use test credentials and independent ports; never restart production services.
+Integration tests must exercise the selected binary version through a real isolated Hub and Bridge. Include multiple viewers, a viewer that stops reading, a Bridge that stops reading, bridge reconnect, viewer reconnect, a missed detach, mixed filesystem/LSP traffic, and UI decryption slower than arrival. Use test credentials and independent ports; never restart production services.
 
 Use a workload matrix of 1, 10, 50, and 100 Bridges initially, expanding to 250 only after admission and registry changes. Vary watched panes per Bridge, viewers per pane, idle periods, output rates of 1, 20, and 100 KiB/s, and bounded bursts. Record CPU, RSS, threads, descriptors, ingress and egress wire bytes, allocation rate, queued bytes, pane latency, and control round-trip latency. These are test inputs, not supported-capacity claims.
 
 Release gates:
 
-- No Base64 or JSON terminal payload in the negotiated binary-to-binary path; compatibility conversion is explicit and measured.
+- No Base64 or JSON terminal payload in the selected binary pane path.
 - Exact terminal output and complete screen repaint under ordinary delivery; sequence loss causes a diagnosed resynchronization.
 - No unauthenticated or cross-Bridge session routing and no plaintext fallback for encrypted sessions.
 - Memory plateaus under fixed sustained load and returns to a documented bounded idle baseline after detach; repeated connects do not accumulate workers or descriptors.
@@ -159,8 +146,8 @@ Expose negotiated modes, input/output bytes, queue high-water marks, write timeo
 
 ## Rollout and rollback
 
-Add a Hub capability flag independent of the existing terminal-streaming experiment. Keep binary mode disabled by default until compatibility and transport gates pass. Canary selected users and Bridges first, then expand by workload rather than registered Bridge count alone.
+Add a Hub capability flag independent of the existing terminal-streaming experiment. Keep binary mode disabled by default until version and transport gates pass. Canary selected users and Bridges first, then expand by workload rather than registered Bridge count alone.
 
-Rollback disables new binary selections. Existing binary connections are closed deliberately so they reconnect in legacy mode; never switch encoding halfway through a stream. Preserve JSON readers, writers, and UI decoding for at least one documented release window. The Hub, updated Bridges, and updated UI are all required to achieve the binary-to-binary path; `ham-ctl` needs no change for output-only streaming.
+Rollback disables new binary selections. Existing binary connections are closed deliberately during coordinated rollback; never switch encoding halfway through a stream. The Hub, updated Bridges, and updated UI are all required to achieve the binary-to-binary path; `ham-ctl` needs no change for output-only streaming.
 
 A second Hub replica does not by itself scale this architecture: live connections, viewer subscriptions, and pending command ownership are process-local. Distributed routing or tenant sharding is a separate plan. Keep this rollout scoped to making each Hub's transport efficient, bounded, and isolated under congestion.

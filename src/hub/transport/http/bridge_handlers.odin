@@ -1,5 +1,7 @@
 package http
 
+import "base:runtime"
+
 import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
 import "core:encoding/json"
@@ -1203,6 +1205,8 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
 	connection := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, admitted_bridge.bridge_id, hello.generation)
 	if connection == nil do return
+	reader.control_context = rawptr(connection)
+	reader.control_writer = bridge_reader_write_pong
 	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, connection)
 	defer project_service.bridge_runtime_connection_quiesce(h.bridge_runtime_registry, connection)
 	defer project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, connection.bridge_id, hello.generation)
@@ -1448,6 +1452,8 @@ bridge_ws_runtime_loop :: proc(
 }
 
 bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket, reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, raw_text: string) -> bool {
+	temp := runtime.default_temp_allocator_temp_begin()
+	defer runtime.default_temp_allocator_temp_end(temp)
 	text := raw_text
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
 		delete(text)
@@ -1477,7 +1483,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 				fmt.eprintfln(
 					"ham-hub WARN bridge ws chunk frame DROPPED bridge=%s (malformed, over-cap, or admission refused)",
 					bridge_id)
-				return true
+				return false
 			}
 			if !complete do return true
 			text = assembled
@@ -1657,11 +1663,16 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			defer delete(session_id)
 			data_b64 := json_string(text, "data_b64")
 			defer delete(data_b64)
-			enc_b64 := json_string(text, "enc_b64")
-			defer delete(enc_b64)
-			if session_id != "" && (data_b64 != "" || enc_b64 != "") {
-				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64, enc_b64)
+			is_encrypted, flag_ok := json_bool_literal(text, "is_encrypted")
+			if session_id != "" && data_b64 != "" && flag_ok {
+				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64, is_encrypted, json_bool(text, "is_snapshot"), bridge_id)
 			}
+		}
+	case "pane_resync_required":
+		if h.shell_sessions != nil {
+			session_id := json_string(text, "session_id")
+			defer delete(session_id)
+			shell_session_svc.shell_session_resync_viewers(h.shell_sessions, session_id, bridge_id)
 		}
 	case "shell_pty_stream_ready":
 		if h.shell_sessions != nil {
@@ -2332,6 +2343,8 @@ Bridge_WS_Reader :: struct {
 	fragmented:        [dynamic]byte,
 	fragmenting:       bool,
 	fragmented_opcode: u8,
+	control_context: rawptr,
+	control_writer: proc(rawptr, net.TCP_Socket, string) -> bool,
 }
 
 bridge_ws_reader_make :: proc(socket: net.TCP_Socket) -> Bridge_WS_Reader {
@@ -2380,7 +2393,7 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 
 		// Control frames ((op & 0x08) != 0)
 		if (op & 0x08) != 0 {
-			if !fin {
+			if !fin || len(payload) > 125 {
 				delete(payload)
 				reader.fatal_reason = .Fatal_Frame
 				return "", false, true
@@ -2391,11 +2404,12 @@ bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bo
 				return "", false, true
 			}
 			if op == 0x9 {
+				delivered := true
 				if reader.socket != 0 {
-					pong := [2]u8{0x8A, 0x00}
-					_, _ = net.send_tcp(reader.socket, pong[:])
+					if reader.control_writer != nil { delivered = reader.control_writer(reader.control_context, reader.socket, payload) } else { delivered = ws.write_server_opcode(reader.socket, 0xA, payload, true) == .Ok }
 				}
 				delete(payload)
+				if !delivered { reader.fatal_reason = .Write_Failed; return "", false, true }
 				continue
 			}
 			if op == 0xA {
@@ -2581,4 +2595,16 @@ pane_capture_chat_event_json :: proc(c:domain.Chat_Conversation,m:domain.Chat_Me
 
 json_int :: proc(body, key: string, default_value: int) -> int {
 	return jsonx.extract_int(body, key, default_value)
+}
+
+bridge_reader_write_pong :: proc(raw: rawptr, socket: net.TCP_Socket, payload: string) -> bool {
+	c := (^project_service.Bridge_Runtime_Connection)(raw)
+	sync.mutex_lock(&c.writer_mutex)
+	defer sync.mutex_unlock(&c.writer_mutex)
+	if sync.atomic_load(&c.retired) do return false
+	return ws.write_server_opcode(socket, 0xA, payload, false) == .Ok
+}
+
+pane_reader_write_pong :: proc(raw: rawptr, socket: net.TCP_Socket, payload: string) -> bool {
+	return shell_session_svc.shell_session_enqueue_viewer_control((^shell_session_svc.Shell_Session_Service)(raw), socket, 0xA, payload)
 }

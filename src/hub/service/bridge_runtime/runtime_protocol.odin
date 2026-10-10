@@ -33,7 +33,7 @@ runtime_accept_hello :: proc(registry: ^project_service.Bridge_Runtime_Registry,
 RUNTIME_COMMAND_RESULTS_PER_BRIDGE :: 8
 
 runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string) -> (string, bool) {
-	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" do return "", false
+	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" || len(command_id) > 256 do return "", false
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	live := registry.command_slots_used
@@ -96,8 +96,10 @@ runtime_command_result_is_terminal :: proc(result_json: string) -> bool {
 	return status != "accepted"
 }
 
-runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id, result_json: string) -> (string, bool) {
+runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id, raw_result_json: string) -> (string, bool) {
+	result_json := raw_result_json
 	if registry == nil || generation <= 0 || command_id == "" do return "", false
+	if len(result_json) > RUNTIME_RESULT_BRIDGE_BYTES { result_json = "{\"type\":\"command_result\",\"status\":\"failed\",\"error\":\"response_backpressure\"}" }
 	terminal := runtime_command_result_is_terminal(result_json)
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
@@ -105,6 +107,10 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	// exactly one terminal result; otherwise a background Bridge worker could be
 	// acknowledged successfully while every synchronous Hub caller times out or sees
 	// the acknowledgement as the operation result.
+	for i in 0..<registry.command_slots_used {
+		if registry.command_ids[i] == command_id && registry.command_bridge_ids[i] == bridge_id && registry.command_generations[i] == generation && (registry.command_results_terminal[i] || !terminal) do return registry.command_results_json[i], true
+	}
+	runtime_result_make_room_locked(registry, bridge_id, generation, command_id, len(result_json))
 	live := registry.command_slots_used
 	for i in 0..<live {
 		if registry.command_ids[i] != command_id || registry.command_bridge_ids[i] != bridge_id || registry.command_generations[i] != generation do continue
@@ -172,6 +178,7 @@ runtime_command_result_for_connection :: proc(registry: ^project_service.Bridge_
 
 runtime_command_cache_destroy :: proc(registry: ^project_service.Bridge_Runtime_Registry) {
 	if registry == nil do return
+	project_service.bridge_runtime_registry_command_lock(registry)
 	live := registry.command_slots_used
 	for i in 0..<live {
 		delete(registry.command_ids[i], runtime.default_allocator())
@@ -254,4 +261,42 @@ runtime_instance_status :: proc(registry: ^project_service.Bridge_Runtime_Regist
 string_slice_contains :: proc(values: []string, needle: string) -> bool {
 	for value in values { if strings.trim_space(value) == needle do return true }
 	return false
+}
+
+RUNTIME_RESULT_BRIDGE_BYTES :: 8 * 1024 * 1024
+RUNTIME_RESULT_GLOBAL_BYTES :: 64 * 1024 * 1024
+
+runtime_result_make_room_locked :: proc(r: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string, incoming_bytes: int) {
+	for {
+		total, same := 0, 0
+		for i in 0..<r.command_slots_used {
+			if r.command_ids[i] == command_id && r.command_bridge_ids[i] == bridge_id && r.command_generations[i] == generation do continue
+			total += len(r.command_results_json[i])
+			if r.command_bridge_ids[i] == bridge_id do same += len(r.command_results_json[i])
+		}
+		if same + incoming_bytes <= RUNTIME_RESULT_BRIDGE_BYTES && total + incoming_bytes <= RUNTIME_RESULT_GLOBAL_BYTES do return
+		oldest := -1
+		oldest_seq := ~u64(0)
+		for i in 0..<r.command_slots_used {
+			if r.command_ids[i] == command_id && r.command_bridge_ids[i] == bridge_id && r.command_generations[i] == generation do continue
+			if same + incoming_bytes > RUNTIME_RESULT_BRIDGE_BYTES && r.command_bridge_ids[i] != bridge_id do continue
+			if r.command_result_sequence[i] < oldest_seq { oldest = i; oldest_seq = r.command_result_sequence[i] }
+		}
+		if oldest < 0 do return
+		heap := runtime.default_allocator()
+		delete(r.command_ids[oldest], heap)
+		delete(r.command_bridge_ids[oldest], heap)
+		delete(r.command_results_json[oldest], heap)
+		last := r.command_slots_used - 1
+		r.command_ids[oldest] = r.command_ids[last]
+		r.command_bridge_ids[oldest] = r.command_bridge_ids[last]
+		r.command_generations[oldest] = r.command_generations[last]
+		r.command_results_json[oldest] = r.command_results_json[last]
+		r.command_results_terminal[oldest] = r.command_results_terminal[last]
+		r.command_result_sequence[oldest] = r.command_result_sequence[last]
+		r.command_ids[last] = ""
+		r.command_bridge_ids[last] = ""
+		r.command_results_json[last] = ""
+		r.command_slots_used -= 1
+	}
 }

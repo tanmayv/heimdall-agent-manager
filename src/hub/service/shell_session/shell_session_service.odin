@@ -39,6 +39,9 @@ Shell_Session_Service :: struct {
 	// interleaved writes — see shell_session_viewer_write_lock. The map itself is
 	// protected by mu; the mutexes it holds are taken WITHOUT mu.
 	viewer_write_mu: map[string]^sync.Mutex,
+	viewer_writers: map[net.TCP_Socket]^Pane_Viewer_Writer,
+	viewer_write_refs: map[string]int,
+	pane_bridge_bytes: map[string]int,
 	// CRUD layer (T5) — session_owners and session_bridges also protected by mu.
 	repo:                ^iface.Shell_Session_Repository,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
@@ -73,6 +76,9 @@ new_shell_session_service :: proc(
 	return Shell_Session_Service{
 		viewers        = make(map[string][dynamic]net.TCP_Socket, heap),
 		viewer_write_mu = make(map[string]^sync.Mutex, heap),
+		viewer_writers = make(map[net.TCP_Socket]^Pane_Viewer_Writer, heap),
+		viewer_write_refs = make(map[string]int, heap),
+		pane_bridge_bytes = make(map[string]int, heap),
 		repo            = repo,
 		bridge_command_sink = bridge_command_sink,
 		events          = event_bus,
@@ -88,6 +94,7 @@ new_shell_session_service :: proc(
 
 shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 	if svc == nil do return
+	pane_viewers_stop_all(svc)
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	defer sync.mutex_unlock(&svc.mu)
@@ -101,23 +108,13 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 		delete(viewers)
 	}
 	delete(svc.viewers)
-	// The per-session viewer write locks share the viewers map's lifetime.
-	//
-	// WARNING TO THE NEXT READER (REQ-SHELL-33). This map grows with sessions EVER
-	// CREATED, not sessions currently live, and is freed only here. That looks like a
-	// leak and the obvious fix — delete the entry when the last viewer detaches — is
-	// NOT SAFE: a writer may be holding that mutex at the moment the last viewer
-	// detaches, so freeing it there is a use-after-free on the very lock whose job is
-	// to make concurrent writes safe. It would be intermittent and crash-shaped, and
-	// far worse than the growth it removed. Doing it correctly needs a refcount or a
-	// generation guard; that was deliberately not done because the growth is bounded
-	// and small (a cloned session_id plus a sync.Mutex per session, well under a
-	// megabyte for ~10k sessions) and is reclaimed on every hub restart.
+	// Shutdown has drained readers and sequencing leases.
 	for k, write_mu in svc.viewer_write_mu {
 		delete(k, heap)
 		free(write_mu, heap)
 	}
 	delete(svc.viewer_write_mu)
+	delete(svc.viewer_write_refs)
 	for k, v in svc.session_owners { delete(k, heap); delete(v, heap) }
 	delete(svc.session_owners)
 	for k, v in svc.session_bridges { delete(k, heap); delete(v, heap) }
@@ -159,6 +156,17 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 	if svc == nil || session_id == "" do return false
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
+	if _, exists := svc.viewer_writers[socket]; !exists {
+		same_bridge := 0
+		for _, w in svc.viewer_writers { if w.bridge_id == bridge_id do same_bridge += 1 }
+		if len(svc.viewer_writers) >= PANE_VIEWER_LIMIT || same_bridge >= PANE_VIEWERS_PER_BRIDGE {
+			sync.mutex_unlock(&svc.mu)
+			_ = net.shutdown(socket, .Both)
+			fmt.eprintln("ham-hub WARN pane viewer admission rejected: active viewer quota")
+			return false
+		}
+	}
+
 	if _, ok := svc.viewers[session_id]; !ok {
 		svc.viewers[strings.clone(session_id, heap)] = make([dynamic]net.TCP_Socket, heap)
 	}
@@ -171,6 +179,7 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 		}
 	}
 	if !already_present {
+		if !pane_viewer_start_locked(svc, socket, bridge_id, session_id) { pane_sequence_collect_locked(svc, session_id); sync.mutex_unlock(&svc.mu); return false }
 		append(&svc.viewers[session_id], socket)
 	}
 
@@ -186,8 +195,11 @@ shell_session_attach :: proc(svc: ^Shell_Session_Service, session_id: string, so
 		if b, ok := svc.session_bridges[session_id]; ok do resolved_bridge = b
 	}
 	if resolved_bridge != "" {
-		if _, ok := svc.session_bridges[session_id]; !ok {
+		if old_bridge, ok := svc.session_bridges[session_id]; !ok {
 			svc.session_bridges[strings.clone(session_id, heap)] = strings.clone(resolved_bridge, heap)
+		} else if old_bridge != resolved_bridge {
+			delete(old_bridge, heap)
+			svc.session_bridges[session_id] = strings.clone(resolved_bridge, heap)
 		}
 	}
 
@@ -258,7 +270,11 @@ shell_session_detach :: proc(
 		// No by-session-id DB fallback — see the note in shell_session_attach.
 	}
 	remaining := len(viewers^)
+	writer := svc.viewer_writers[socket]
+	if removed do delete_key(&svc.viewer_writers, socket)
+	if remaining == 0 do pane_sequence_collect_locked(svc, session_id)
 	sync.mutex_unlock(&svc.mu)
+	if removed && writer != nil do pane_viewer_stop(writer)
 
 	// REQ-SHELL-41 (P0 addendum): EVERY detach, with the reason. This proc used to say
 	// nothing at all, which is why a silently unsubscribed viewer — the REQ-SHELL-33
@@ -302,65 +318,28 @@ shell_session_viewer_count :: proc(svc: ^Shell_Session_Service, session_id: stri
 	sync.mutex_lock(&svc.mu)
 	defer sync.mutex_unlock(&svc.mu)
 	if viewers, ok := svc.viewers[session_id]; ok {
-		return len(viewers)
+		count := 0
+		for socket in viewers {
+			if w, exists := svc.viewer_writers[socket]; exists { sync.mutex_lock(&w.mu); if !w.stopped do count += 1; sync.mutex_unlock(&w.mu) }
+		}
+		return count
 	}
 	return 0
 }
 
-// shell_session_viewer_write_lock returns the write lock for a session's viewer sockets,
-// creating it on first use. Hold it across EVERY frame written to a viewer of that
-// session — and, for a multi-frame sequence, across the WHOLE sequence.
-//
-// WHY THIS EXISTS (REQ-SHELL-33). Two independent threads write a viewer's socket: the
-// bridge-push path through shell_session_broadcast_output, and the stream handler's
-// late-join screen snapshot (shell_stream_screen_snapshot.odin). Nothing serialised them.
-// That was survivable only while the snapshot was a single frame — the original design
-// note argues exactly that, and it was right: one absolute repaint either lands whole or
-// not at all, and in-flight output is simply painted over.
-//
-// It stops being survivable the moment the snapshot spans several frames. The chunks after
-// the first carry no erase+home and no absolute positioning: they continue from wherever
-// the previous chunk left the cursor. An `output` frame delivered BETWEEN two chunks goes
-// into the same terminal sink, moves the cursor, and every remaining chunk then paints from
-// the wrong place — the staircase REQ-SHELL-30 and REQ-SHELL-31 removed, reintroduced
-// intermittently. Ordering on the socket does not help: the guarantee the repaint needs is
-// ATOMICITY against the other writer, not FIFO.
-//
-// Concurrent writes were in fact never safe here even at one frame each: two threads in
-// net.send_tcp on the same socket can interleave at the BYTE level if the send buffer fills
-// mid-copy, which corrupts the frame itself rather than merely the cursor. The lock closes
-// both. (bridge_handlers.write_ws_text_frame_locked and the LSP registry lock are the same
-// measure on their own sockets.)
-//
-// The lock is PER SESSION, not global: only writers to the same viewer socket can corrupt
-// each other, and every writer to a socket writes it as a viewer of one session. A global
-// lock would let a slow viewer of one session stall an unrelated one.
-//
-// LIFETIME — the entry is NOT freed when the session ends, and that is deliberate.
-// Freeing it at the last detach would be a use-after-free: a writer takes the pointer,
-// releases svc.mu, and only then blocks on the mutex, so a concurrent detach could free a
-// lock another thread is about to take or is already holding. Making that safe needs
-// refcounting, which buys nothing here — the entry is a pointer, an 8-byte mutex and a
-// cloned key, it sits beside a `viewers` entry already retained for the same key on the
-// same terms, and the growth is bounded by the number of DISTINCT session ids this process
-// has seen. Both are freed together in shell_session_service_free.
-// (The zero-growth alternative is a fixed array of striped locks hashed by session id. It
-// was rejected because it reintroduces exactly what per-session locking is for: two
-// unrelated sessions sharing a stripe, one able to stall the other.)
-//
-// This is NOT a bound on a WEDGED viewer. No send
-// timeout is set on these sockets, so a viewer that stops draining already blocks the
-// fan-out thread inside net.send_tcp; the lock extends that stall to the snapshot writer
-// for the same session. Bounding it is the REQ-LSP-RLY-2 measure (SO_SNDTIMEO) and is not
-// this ticket.
+// Acquire a sequencing-lock lease. It protects queue insertion, never network
+// writes. Release with shell_session_viewer_write_release after unlocking.
 shell_session_viewer_write_lock :: proc(svc: ^Shell_Session_Service, session_id: string) -> ^sync.Mutex {
 	if svc == nil || session_id == "" do return nil
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	defer sync.mutex_unlock(&svc.mu)
-	if existing, ok := svc.viewer_write_mu[session_id]; ok do return existing
+	if svc.viewer_write_refs == nil do svc.viewer_write_refs = make(map[string]int, heap)
+	if existing, ok := svc.viewer_write_mu[session_id]; ok { svc.viewer_write_refs[session_id] += 1; return existing }
 	created := new(sync.Mutex, heap)
-	svc.viewer_write_mu[strings.clone(session_id, heap)] = created
+	owned := strings.clone(session_id, heap)
+	svc.viewer_write_mu[owned] = created
+	svc.viewer_write_refs[owned] = 1
 	return created
 }
 
@@ -376,18 +355,19 @@ shell_session_write_viewer_frame :: proc(
 	write_mu := shell_session_viewer_write_lock(svc, session_id)
 	if write_mu == nil do return _write_ws_text(socket, text)
 	sync.mutex_lock(write_mu)
-	defer sync.mutex_unlock(write_mu)
-	return _write_ws_text(socket, text)
+	defer { sync.mutex_unlock(write_mu); shell_session_viewer_write_release(svc, session_id) }
+	return pane_viewer_enqueue(svc, socket, text)
 }
 
 // shell_session_broadcast_output fans PTY output (already base64-encoded by the bridge)
 // to all WS clients attached to session_id.
-shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, data_b64: string, enc_b64: string = "") {
+shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, data_b64: string, is_encrypted: bool = false, is_snapshot: bool = false, source_bridge_id: string = "") {
 	if svc == nil || session_id == "" do return
+	if source_bridge_id != "" && !shell_session_bridge_owns_stream(svc, session_id, source_bridge_id) do return
 	sockets := _copy_viewers(svc, session_id)
 	defer delete(sockets)
 	if len(sockets) == 0 do return
-	frame := _output_frame_json(data_b64, enc_b64)
+	frame := _output_frame_json(data_b64, is_encrypted, is_snapshot)
 	defer delete(frame)
 	for sock in sockets {
 		// The write happens under the session write lock; the detach deliberately does
@@ -395,19 +375,10 @@ shell_session_broadcast_output :: proc(svc: ^Shell_Session_Service, session_id, 
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
 		_log_viewer_write("output", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+			// The queue/worker has already woken the reader. It owns detach.
 			continue
 		}
-		// REQ-SHELL-41 (P0 addendum): the FIRST frame delivered after this session gained
-		// its first viewer, with its byte count. Fires at most once per 0->1 transition
-		// (shell_first_frame_take is once-only), so it is not per-frame logging — and it
-		// is reported only for a write that actually SUCCEEDED, because "a frame was
-		// emitted" is the claim being made.
-		if result == .Ok && shell_first_frame_take(session_id) {
-			fmt.println(
-				"shell first frame after attach", "session=", session_id,
-				"bytes=", len(frame), "viewer=", int(sock))
-		}
+
 	}
 }
 
@@ -423,7 +394,7 @@ shell_session_broadcast_status :: proc(svc: ^Shell_Session_Service, session_id, 
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
 		_log_viewer_write("status", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+			// The queue/worker has already woken the reader. It owns detach.
 		}
 	}
 }
@@ -440,7 +411,7 @@ shell_session_broadcast_stream_ready :: proc(svc: ^Shell_Session_Service, sessio
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
 		_log_viewer_write("stream_ready", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+			// The queue/worker has already woken the reader. It owns detach.
 		}
 	}
 }
@@ -457,7 +428,7 @@ shell_session_broadcast_stream_closed :: proc(svc: ^Shell_Session_Service, sessi
 		result := shell_session_write_viewer_frame(svc, session_id, sock, frame)
 		_log_viewer_write("stream_closed", session_id, result, len(frame))
 		if _viewer_write_ends_session(result) {
-			shell_session_detach(svc, session_id, sock, "", _detach_reason_for_write(result))
+			// The queue/worker has already woken the reader. It owns detach.
 		}
 	}
 }
@@ -1971,19 +1942,13 @@ _copy_viewers :: proc(svc: ^Shell_Session_Service, session_id: string) -> []net.
 	return out
 }
 
-_output_frame_json :: proc(data_b64: string, enc_b64: string = "") -> string {
+_output_frame_json :: proc(data_b64: string, is_encrypted: bool = false, is_snapshot: bool = false) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"output\"")
-	if data_b64 != "" {
-		strings.write_string(&b, ",\"data_b64\":\"")
-		contracts.write_json_string(&b, data_b64)
-		strings.write_string(&b, "\"")
-	}
-	if enc_b64 != "" {
-		strings.write_string(&b, ",\"enc_b64\":\"")
-		contracts.write_json_string(&b, enc_b64)
-		strings.write_string(&b, "\"")
-	}
+	strings.write_string(&b, "{\"type\":\"output\",\"data_b64\":\"")
+	contracts.write_json_string(&b, data_b64)
+	strings.write_string(&b, "\",\"is_encrypted\":")
+	strings.write_string(&b, "true" if is_encrypted else "false")
+	if is_snapshot do strings.write_string(&b, ",\"is_snapshot\":true")
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }

@@ -46,11 +46,7 @@ package ws
 //   2. allow_64bit IS A PARAMETER. LSP has exactly one peer kind (a browser) so it can
 //      hardcode the arm; this writer serves both kinds. See above.
 //   3. AN EXPLICIT CAP. LSP has none; a hub-side buffer sized by a remote pane needs one.
-//   4. A SHORT-WRITE LOOP — which, note, retries ONLY the no-error partial return and
-//      bails on any error, .Would_Block included. That is what keeps it compatible with
-//      LSP's SO_SNDTIMEO bound: a send timeout arrives as an error and ends the write
-//      rather than being retried, so the wedged-peer recovery LSP_SEND_TIMEOUT exists
-//      to provide is preserved, not defeated.
+//   4. A TOTAL WRITE DEADLINE, shared with the client and TLS pipe writers.
 
 import "core:net"
 
@@ -132,19 +128,11 @@ write_server_opcode_counted :: proc(socket: net.TCP_Socket, opcode: u8, text: st
 	server_frame_header_with_opcode(frame[:header_len], opcode, n)
 	copy(frame[header_len:], transmute([]byte)text)
 
-	sent = 0
-	for sent < len(frame) {
-		written, err := net.send_tcp(socket, frame[sent:])
-		if written > 0 do sent += written
-		if err != nil || written <= 0 {
-			// sent == 0 means not one byte of this frame reached the peer, so the
-			// stream is still clean and the caller may simply drop the session.
-			// sent > 0 is the corrupting case the type exists to expose.
-			if sent == 0 do return 0, .Peer_Gone
-			return sent, .Desynchronised
-		}
-	}
-	return sent, .Ok
+	ok: bool
+	sent, ok = send_socket_bytes(socket, frame)
+	if ok do return sent, .Ok
+	if sent == 0 do return 0, .Peer_Gone
+	return sent, .Desynchronised
 }
 
 // write_server_opcode writes one frame with a specific opcode and says what happened.

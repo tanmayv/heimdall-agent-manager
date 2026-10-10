@@ -9,6 +9,7 @@ import jsonx "../jsonx"
 
 CHUNK_THRESHOLD_BYTES   :: 32 * 1024
 CHUNK_RAW_BYTES         :: 24 * 1024
+CHUNK_MAX_BUFFERED_BYTES :: 16 * 1024 * 1024
 CHUNK_MAX_MESSAGE_BYTES :: 16 * 1024 * 1024
 CHUNK_MAX_INFLIGHT      :: 64
 CHUNK_MAX_COUNT         :: 4096
@@ -180,6 +181,7 @@ reassemble_chunk :: proc(
 	max_inflight := CHUNK_MAX_INFLIGHT,
 	max_count := CHUNK_MAX_COUNT,
 	ttl := CHUNK_REASSEMBLY_TTL,
+	max_buffered_bytes := CHUNK_MAX_BUFFERED_BYTES,
 ) -> (assembled: string, complete: bool, ok: bool) {
 	chunk_id := jsonx.extract_string(text, "chunk_id", "", top_level_only = true)
 	defer delete(chunk_id)
@@ -189,7 +191,7 @@ reassemble_chunk :: proc(
 	chunk_count := jsonx.extract_int(text, "chunk_count", 0, top_level_only = true)
 	total_bytes := jsonx.extract_int(text, "total_bytes", 0, top_level_only = true)
 
-	if chunk_id == "" || chunk_index < 0 || chunk_count <= 0 || chunk_index >= chunk_count || total_bytes <= 0 || fragment_b64 == "" {
+	if chunk_id == "" || len(chunk_id) > 256 || chunk_index < 0 || chunk_count <= 0 || chunk_index >= chunk_count || total_bytes <= 0 || fragment_b64 == "" {
 		return "", false, false
 	}
 	if chunk_count > max_count || chunk_count > total_bytes || total_bytes > max_message_bytes {
@@ -208,11 +210,9 @@ reassemble_chunk :: proc(
 	if idx < 0 {
 		current_time_ns := now_ns if now_ns > 0 else time.to_unix_nanoseconds(time.now())
 		_ = chunk_reassembly_sweep(reassemblies, current_time_ns, ttl)
-		if len(reassemblies) >= max_inflight {
-			oldest := chunk_reassembly_oldest(reassemblies)
-			if oldest < 0 do return "", false, false
-			chunk_reassembly_free(reassemblies, oldest)
-		}
+		reserved := 0
+		for r in reassemblies^ do reserved += r.total_bytes
+		if len(reassemblies) >= max_inflight || total_bytes > max_buffered_bytes - reserved do return "", false, false
 		append(reassemblies, Chunk_Reassembly{
 			chunk_id      = strings.clone(chunk_id),
 			chunk_count   = chunk_count,

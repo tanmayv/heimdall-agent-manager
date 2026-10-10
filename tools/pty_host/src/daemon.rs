@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -191,9 +191,49 @@ impl Agent {
     }
 }
 
+// Reply queues are byte-bounded and never block the shared PTY pump. On overflow
+// shut down that client; its next attach obtains a complete current screen.
+const REPLY_QUEUE_BYTES: usize = 1024 * 1024;
+const REPLY_QUEUE_FRAMES: usize = 256;
+struct ReplyBudget { bytes: usize, frames: usize, failed: bool }
+#[derive(Clone)]
+struct ReplySink {
+    tx: std::sync::mpsc::Sender<QueuedReply>,
+    budget: Arc<Mutex<ReplyBudget>>,
+    socket: Option<Arc<UnixStream>>,
+}
+struct QueuedReply { bytes: Vec<u8>, budget: Arc<Mutex<ReplyBudget>> }
+impl Drop for QueuedReply {
+    fn drop(&mut self) {
+        let mut b = self.budget.lock().unwrap();
+        b.bytes -= self.bytes.len();
+        b.frames -= 1;
+    }
+}
+fn reply_channel(socket: Option<UnixStream>) -> (ReplySink, Receiver<QueuedReply>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    (ReplySink { tx, budget: Arc::new(Mutex::new(ReplyBudget { bytes: 0, frames: 0, failed: false })), socket: socket.map(Arc::new) }, rx)
+}
+impl ReplySink {
+    fn send(&self, reply: CtlReply) -> Result<(), ()> {
+        let bytes = reply.encode();
+        let mut b = self.budget.lock().unwrap();
+        if b.failed { return Err(()); }
+        if bytes.len() > REPLY_QUEUE_BYTES.saturating_sub(b.bytes) || b.frames >= REPLY_QUEUE_FRAMES {
+            b.failed = true;
+            if let Some(socket) = &self.socket { let _ = socket.shutdown(std::net::Shutdown::Both); }
+            eprintln!("ham-pty-host: disconnecting slow consumer queued_bytes={}", b.bytes);
+            return Err(());
+        }
+        b.bytes += bytes.len(); b.frames += 1;
+        drop(b);
+        self.tx.send(QueuedReply { bytes, budget: Arc::clone(&self.budget) }).map_err(|_| ())
+    }
+}
+
 /// A connected client's event sink + the set of instances it has attached to.
 struct Subscriber {
-    tx: Sender<CtlReply>,
+    tx: ReplySink,
     instances: HashSet<String>,
 }
 
@@ -201,12 +241,12 @@ type Registry = Arc<Mutex<HashMap<String, Agent>>>;
 type Subscribers = Arc<Mutex<HashMap<u64, Subscriber>>>;
 
 /// A registered connection's event sink, before/independent of any Attach.
-type Sinks = Arc<Mutex<HashMap<u64, Sender<CtlReply>>>>;
+type Sinks = Arc<Mutex<HashMap<u64, ReplySink>>>;
 
 /// Connections that sent WatchEvents: they receive host-level async events
 /// (HostHeartbeat + lifecycle: ChildExited/ScreenChanged/StartupReady/
 /// StartupBlocked) for ALL agents without attaching to any instance's Output.
-type Watchers = Arc<Mutex<HashMap<u64, Sender<CtlReply>>>>;
+type Watchers = Arc<Mutex<HashMap<u64, ReplySink>>>;
 
 /// The per-machine multi-agent daemon.
 #[derive(Clone)]
@@ -603,7 +643,7 @@ impl Daemon {
 
     /// Remember a client's event sink so it can be (re)subscribed on Attach.
     /// Idempotent; does NOT by itself cause any events to be delivered.
-    fn register_sink(&self, id: u64, tx: Sender<CtlReply>) {
+    fn register_sink(&self, id: u64, tx: ReplySink) {
         self.sinks.lock().unwrap().insert(id, tx);
     }
 
@@ -998,7 +1038,7 @@ fn accept_loop(listener: UnixListener, daemon: Daemon, shutdown: Arc<AtomicBool>
 }
 
 fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<AtomicBool>) {
-    let (tx, rx) = std::sync::mpsc::channel::<CtlReply>();
+    let (tx, rx) = reply_channel(Some(stream.try_clone().expect("clone client shutdown handle")));
     // HOST-5: register the sink but do NOT subscribe to events. Async events
     // only flow to clients that later Attach; a control-only client stays out
     // of the `subs` map entirely and thus never sees an event frame.
@@ -1016,8 +1056,9 @@ fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<Atom
     let daemon_writer = daemon.clone();
     // Writer thread: drain this client's reply queue to the socket.
     std::thread::spawn(move || {
-        while let Ok(reply) = rx.recv() {
-            if dproto::write_ctl_reply(&mut write_stream, &reply).is_err() {
+        let _ = write_stream.set_write_timeout(Some(Duration::from_secs(5)));
+        while let Ok(frame) = rx.recv() {
+            if std::io::Write::write_all(&mut write_stream, &frame.bytes).is_err() {
                 let _ = write_stream.shutdown(std::net::Shutdown::Both);
                 daemon_writer.unsubscribe(id);
                 break;
@@ -1040,7 +1081,7 @@ fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<Atom
     });
 }
 
-fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &Sender<CtlReply>) {
+fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &ReplySink) {
     match msg {
         CtlMsg::Spawn(req) => {
             let instance = req.instance.clone();
@@ -1186,6 +1227,32 @@ fn install_stop_handler() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn slow_reply_sink_is_byte_bounded_and_does_not_block_other_clients() {
+        let (slow, slow_rx) = super::reply_channel(None);
+        let (healthy, healthy_rx) = super::reply_channel(None);
+        let output = super::CtlReply::Output { instance: "pane".into(), data: vec![b'x'; 64 * 1024] };
+        for _ in 0..32 { let _ = slow.send(output.clone()); }
+        assert!(slow.budget.lock().unwrap().failed);
+        assert!(slow.budget.lock().unwrap().bytes <= super::REPLY_QUEUE_BYTES);
+        assert!(healthy.send(super::CtlReply::Pong).is_ok());
+        drop(healthy_rx.recv().unwrap());
+        assert_eq!(healthy.budget.lock().unwrap().bytes, 0);
+        drop(slow_rx);
+        assert_eq!(slow.budget.lock().unwrap().bytes, 0);
+    }
+
+    #[test]
+    fn reply_overflow_wakes_its_socket_reader() {
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (sink, _rx) = super::reply_channel(Some(server));
+        let huge = super::CtlReply::Output { instance: "pane".into(), data: vec![0; super::REPLY_QUEUE_BYTES] };
+        assert!(sink.send(huge).is_err());
+        client.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let mut byte = [0];
+        assert_eq!(std::io::Read::read(&mut client, &mut byte).unwrap(), 0);
+    }
+
     use super::*;
     use crate::host::tests::{pty_available, resolve, shell};
 
@@ -2233,8 +2300,8 @@ mod tests {
         })
         .unwrap();
 
-        let (tx1, _rx1) = std::sync::mpsc::channel();
-        let (tx2, _rx2) = std::sync::mpsc::channel();
+        let (tx1, _rx1) = reply_channel(None);
+        let (tx2, _rx2) = reply_channel(None);
         d.register_sink(1, tx1);
         d.register_sink(2, tx2);
 
@@ -2281,8 +2348,8 @@ mod tests {
         })
         .unwrap();
 
-        let (tx1, _rx1) = std::sync::mpsc::channel();
-        let (tx2, _rx2) = std::sync::mpsc::channel();
+        let (tx1, _rx1) = reply_channel(None);
+        let (tx2, _rx2) = reply_channel(None);
         d.register_sink(1, tx1);
         d.register_sink(2, tx2);
 
@@ -2332,7 +2399,7 @@ mod tests {
         assert_eq!(d.capture("inst_crt_detach").unwrap().rows, CRT_ROWS);
         assert_eq!(d.capture("inst_crt_detach").unwrap().cols, CRT_COLS);
 
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = reply_channel(None);
         d.register_sink(1, tx);
 
         // Attaching at 40x120
@@ -2406,7 +2473,7 @@ mod tests {
         d.write_input("sh_test_1", b"echo world\n").unwrap();
 
         // Attach / detach by shell_id
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = reply_channel(None);
         d.register_sink(10, tx);
         let screen = d.shell_attach(10, "sh_test_1").unwrap();
         assert_eq!(screen.rows, 35);

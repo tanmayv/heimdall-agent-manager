@@ -6,6 +6,7 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:time"
 
 WS_KEY :: "dGhlIHNhbXBsZSBub25jZQ=="
@@ -154,6 +155,8 @@ connect_tls_with_bearer :: proc(host: string, port: u16, path, bearer_token: str
 }
 
 close :: proc(conn: ^Connection) {
+	sync.mutex_lock(&conn.send_mu)
+	defer sync.mutex_unlock(&conn.send_mu)
 	for s in conn.pending_texts do delete(s)
 	delete(conn.pending_texts)
 	conn.pending_texts = nil
@@ -163,7 +166,7 @@ close :: proc(conn: ^Connection) {
 	conn.fragmented = nil
 	conn.fragmenting = false
 
-	if conn.connected {
+	if conn.secure || conn.socket != 0 {
 		if conn.secure {
 			if conn.stdin_w != nil do _ = os.close(conn.stdin_w)
 			if conn.stdout_r != nil do _ = os.close(conn.stdout_r)
@@ -173,6 +176,10 @@ close :: proc(conn: ^Connection) {
 			net.close(conn.socket)
 		}
 		conn.connected = false
+		conn.socket = 0
+		conn.secure = false
+		conn.stdin_w = nil
+		conn.stdout_r = nil
 	}
 }
 
@@ -230,7 +237,7 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 
 		// Control frames ((opcode & 0x08) != 0)
 		if (opcode & 0x08) != 0 {
-			if !fin {
+			if !fin || len(payload) > 125 {
 				delete(payload)
 				if first_text != "" do delete(first_text)
 				conn.connected = false
@@ -242,10 +249,7 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 				return "", false
 			}
 			if opcode == 0x9 {
-				if !conn.secure && conn.socket != 0 {
-					pong := [2]byte{0x8A, 0x00}
-					_, _ = net.send_tcp(conn.socket, pong[:])
-				}
+				_ = send_frame(conn, 0xA, payload)
 				delete(payload)
 				continue
 			}
@@ -316,21 +320,17 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 	return first_text, true
 }
 
-// send_text writes one WS text frame. SERIALISED per connection (see send_mu):
-// concurrent callers may not interleave their bytes on the wire.
-//
-// BOUNDED (REQ-SHELL-32): the lock is held across the write, so a writer that cannot
-// make progress must not hold it forever or it starves every other writer on the
-// socket — including the bridge's hub heartbeats, whose loss would make the hub
-// declare the bridge offline and reconnect, a more visible failure than the one this
-// serialisation fixes. The bound is send_all_tcp's WRITE_DEADLINE (5s). The socat/TLS
-// path (send_all_file) writes a BLOCKING fd with no retry loop, so it cannot spin; it
-// can only block on a peer that has stopped draining, which is already bounded by the
-// hub's 120s read deadline.
-//
-// A timeout is OBSERVABLE, not silent: it increments send_timeouts. This whole defect
-// survived because a drop said nothing.
+// All frames, including pong, share the connection writer and deadline.
 send_text :: proc(conn: ^Connection, text: string) -> bool {
+	return send_frame(conn, 0x1, text)
+}
+
+send_text_with_deadline :: proc(conn: ^Connection, text: string, timeout: time.Duration) -> bool {
+	return send_frame(conn, 0x1, text, timeout)
+}
+
+@(private)
+send_frame :: proc(conn: ^Connection, opcode: u8, text: string, timeout: time.Duration = WRITE_DEADLINE) -> bool {
 	if !conn.connected do return false
 	n := len(text)
 	if n > WS_MAX_SERVER_PAYLOAD do return false
@@ -340,15 +340,20 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 	// peer another writer has since found dead.
 	if !conn.connected do return false
 	header: [WS_MAX_HEADER_BYTES]byte
-	header_len := server_frame_header(header[:], n)
+	header_len := server_frame_header_with_opcode(header[:], opcode, n)
 	frame := make([]byte, header_len + n)
 	// REQ-SHELL-52A: send_all_tcp/send_all_file BORROW this slice and free nothing on any
 	// exit, so without this every frame leaked header_len+len(text) bytes on the heap.
 	defer delete(frame)
 	copy(frame[:header_len], header[:header_len])
 	copy(frame[header_len:], transmute([]byte)text)
-	if conn.secure do return send_all_file(conn.stdin_w, frame)
-	return send_all_tcp(conn.socket, frame)
+	ok := false
+	if conn.secure { ok = send_all_file(conn.stdin_w, frame, timeout) } else { ok = send_all_tcp(conn.socket, frame, timeout) }
+	if !ok {
+		if conn.secure { _ = os.process_kill(conn.process) } else { _ = net.shutdown(conn.socket, .Both) }
+		conn.connected = false
+	}
+	return ok
 }
 
 // WRITE_DEADLINE caps ONE send_text call, and therefore caps how long one stuck
@@ -356,23 +361,7 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 // would trade a byte-interleaving bug for a heartbeat-starvation bug.
 WRITE_DEADLINE :: 5 * time.Second
 
-// send_timeouts counts writes abandoned at WRITE_DEADLINE. A nonzero value means
-// frames were dropped.
-//
-// >>> IT IS STRUCTURALLY ALWAYS ZERO ON ANY TLS DEPLOYMENT. DO NOT READ ZERO AS HEALTH. <<<
-// It is incremented only in send_all_tcp, and send_text reaches send_all_tcp only when
-// conn.secure == false — i.e. plain ws:// only. BOTH TLS backends (socat by default,
-// openssl s_client when HAM_TLS_BACKEND=s_client) go through connect_tls_with_bearer,
-// which returns secure=true with a PIPE to a child process, so they write via
-// send_all_file — which has no deadline, and therefore nothing to count. Every real
-// deployment is wss.
-//
-// So on the transport that matters this counter cannot observe anything, and a reader
-// who calls it and gets 0 learns nothing while appearing to learn that no writes were
-// abandoned. A metric that is guaranteed uninformative is worse than an absent one,
-// because zero looks like evidence. Write-abandonment observability on the pipe path
-// would have to be instrumented in send_all_file and needs a deadline to abandon at
-// first: that is a design question, not plumbing. REQ-SHELL-41 owns it.
+// Write deadline expirations, including TLS subprocess pipes.
 @(private)
 _send_timeouts: u64
 
@@ -383,37 +372,60 @@ send_timeouts :: proc() -> u64 { return sync.atomic_load(&_send_timeouts) }
 // bypass is unrepresentable rather than merely absent today — anything reaching a
 // Connection's fd without taking send_mu reintroduces the byte-interleaving bug.
 @(private)
-send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte) -> bool {
-	sent := 0
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(WRITE_DEADLINE)
+send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte, timeout: time.Duration = WRITE_DEADLINE) -> bool {
+	_, ok := send_socket_bytes(socket, bytes, timeout)
+	return ok
+}
+
+// One OS send per iteration: core:net send_tcp loops internally, which can
+// extend SO_SNDTIMEO indefinitely when a peer makes tiny amounts of progress.
+send_socket_bytes :: proc(socket: net.TCP_Socket, bytes: []byte, timeout: time.Duration = WRITE_DEADLINE) -> (sent: int, ok: bool) {
+	if net.set_option(socket, .Send_Timeout, 50 * time.Millisecond) != nil do return 0, false
+	started := time.tick_now()
 	for sent < len(bytes) {
-		if time.to_unix_nanoseconds(time.now()) > deadline {
-			sync.atomic_add(&_send_timeouts, 1)
+		if time.tick_since(started) >= timeout { sync.atomic_add(&_send_timeouts, 1); return sent, false }
+		n := posix.send(posix.FD(socket), raw_data(bytes[sent:]), uint(int(len(bytes))-sent), {.NOSIGNAL})
+		if n < 0 {
+			err := posix.errno()
+			if err == .EAGAIN || err == .EINTR { time.sleep(time.Millisecond); continue }
+			return sent, false
+		}
+		if n == 0 do return sent, false
+		sent += int(n)
+	}
+	return sent, true
+}
+
+// TLS helpers consume a nonblocking pipe. A stalled child must obey the same
+// deadline as TCP; a partial frame is fatal to this connection.
+@(private)
+send_all_file :: proc(file: ^os.File, bytes: []byte, timeout: time.Duration = WRITE_DEADLINE) -> bool {
+	if file == nil do return false
+	fd := posix.FD(os.fd(file))
+	flags := posix.fcntl(fd, .GETFL)
+	if flags < 0 || posix.fcntl(fd, .SETFL, flags | posix.O_NONBLOCK) < 0 do return false
+	sent := 0
+	started := time.tick_now()
+	for sent < len(bytes) {
+		if time.tick_since(started) >= timeout { sync.atomic_add(&_send_timeouts, 1); return false }
+		n := posix.write(fd, raw_data(bytes[sent:]), uint(int(len(bytes))-sent))
+		if n < 0 {
+			err := posix.errno()
+			if err == .EAGAIN || err == .EINTR { time.sleep(time.Millisecond); continue }
 			return false
 		}
-		n, err := net.send_tcp(socket, bytes[sent:])
-		if err != nil {
-			if err == .Would_Block { time.sleep(10 * time.Millisecond); continue }
-			return false
-		}
-		if n <= 0 do return false
-		sent += n
+		if n == 0 do return false
+		sent += int(n)
 	}
 	return true
 }
 
-// @(private) for the same reason as send_all_tcp. NOTE the asymmetry: this path has
-// NO deadline and no retry arm, because the fd is BLOCKING — it cannot spin, it can
-// only block on a peer that has stopped draining. See the bound note on send_text.
-@(private)
-send_all_file :: proc(file: ^os.File, bytes: []byte) -> bool {
-	sent := 0
-	for sent < len(bytes) {
-		n, err := os.write(file, bytes[sent:])
-		if err != nil || n <= 0 do return false
-		sent += n
-	}
-	return true
+// Wake the transport reader without closing a descriptor it may still use.
+abort :: proc(conn: ^Connection) {
+	sync.mutex_lock(&conn.send_mu)
+	defer sync.mutex_unlock(&conn.send_mu)
+	if conn.secure { _ = os.process_kill(conn.process) } else { _ = net.shutdown(conn.socket, .Both) }
+	conn.connected = false
 }
 
 // tls_client_command builds the argv for the subprocess that terminates TLS for

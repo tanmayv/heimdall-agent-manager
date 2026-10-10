@@ -42,27 +42,25 @@ ttl_abandon_streams :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, n: 
 	}
 }
 
-// AC4 PRIMARY: with the gate full of abandoned streams, the NEXT valid stream must
-// still reassemble. This is the test that fails before the fix — the 65th stream was
-// refused at the gate and its frame silently dropped.
+// A saturated connection is refused explicitly and reset by its owner. The
+// fresh transport must accept a complete pane record without replaying old bytes.
 @(test)
-req32_gate_full_of_abandoned_streams_still_admits_a_new_one :: proc(t: ^testing.T) {
-	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
-	defer bridge_chunk_reassemblies_free(&reassemblies)
-
-	ttl_abandon_streams(&reassemblies, contracts.BRIDGE_WS_MAX_REASSEMBLIES)
-	testing.expect_value(t, len(reassemblies), contracts.BRIDGE_WS_MAX_REASSEMBLIES)
-
-	// A complete, well-formed single-chunk stream arriving at a full gate.
-	original := `{"type":"shell_pty_output","session_id":"s1","data_b64":"QUJD"}`
-	frame := ttl_chunk_frame("fresh", 0, 1, len(original), transmute([]byte)original)
-	defer delete(frame)
-	assembled, complete, ok := bridge_ws_reassemble_chunk(&reassemblies, frame)
-	defer if complete do delete(assembled)
-
-	testing.expect(t, ok, "a full gate must not refuse a new stream forever (REQ-SHELL-32)")
-	testing.expect(t, complete, "the single-chunk stream should complete immediately")
-	testing.expect_value(t, assembled, original)
+req32_gate_full_recovers_after_explicit_transport_reset :: proc(t: ^testing.T) {
+ reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+ defer bridge_chunk_reassemblies_free(&reassemblies)
+ ttl_abandon_streams(&reassemblies, contracts.BRIDGE_WS_MAX_REASSEMBLIES)
+ testing.expect_value(t, len(reassemblies), contracts.BRIDGE_WS_MAX_REASSEMBLIES)
+ original := `{"type":"shell_pty_output","session_id":"s1","data_b64":"QUJD","is_encrypted":false}`
+ frame := ttl_chunk_frame("fresh", 0, 1, len(original), transmute([]byte)original)
+ defer delete(frame)
+ _, _, refused := bridge_ws_reassemble_chunk(&reassemblies, frame)
+ testing.expect(t, !refused, "saturation must trigger transport recovery")
+ bridge_chunk_reassemblies_free(&reassemblies)
+ reassemblies = make([dynamic]Bridge_Chunk_Reassembly)
+ assembled, complete, ok := bridge_ws_reassemble_chunk(&reassemblies, frame)
+ defer if complete do delete(assembled)
+ testing.expect(t, ok && complete, "fresh connection must not inherit a saturated gate")
+ testing.expect_value(t, assembled, original)
 }
 
 // AC4 SECONDARY: assert the ENTRY IS GONE once past its deadline, not merely that

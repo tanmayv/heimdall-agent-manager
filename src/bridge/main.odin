@@ -771,8 +771,10 @@ bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
 	// frame string (bridge_ws_chunk_json allocates each) so a large read never
 	// leaks on this hot path.
 	all_sent := true
+	started := time.tick_now()
 	for f in frames {
-		if all_sent && !ws.send_text(conn, f) do all_sent = false
+		remaining := ws.WRITE_DEADLINE - time.tick_since(started)
+		if all_sent && !ws.send_text_with_deadline(conn, f, remaining) do all_sent = false
 		delete(f)
 	}
 	return all_sent

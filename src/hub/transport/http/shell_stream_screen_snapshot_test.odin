@@ -40,16 +40,16 @@ test_req29_screen_payload_is_an_absolute_repaint :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_req29_frame_uses_screen_b64_not_the_data_b64_fallback :: proc(t: ^testing.T) {
+test_req29_frame_uses_data_b64_not_the_data_b64_fallback :: proc(t: ^testing.T) {
 	frame := shell_stream_screen_frame_json("QUJD")
 	defer delete(frame)
 
 	testing.expect(t, strings.contains(frame, "\"type\":\"screen\""), "frame type must be screen")
-	testing.expect(t, strings.contains(frame, "\"screen_b64\":\"QUJD\""), "payload must ride on screen_b64")
+	testing.expect(t, strings.contains(frame, "\"data_b64\":\"QUJD\""), "payload must ride on data_b64")
 	testing.expect(
 		t,
-		!strings.contains(frame, "data_b64"),
-		"data_b64 is the OUTPUT path's key; the screen frame must not produce it so the consumers' fallback stays unused",
+		strings.contains(frame, "\"is_encrypted\":false"),
+		"screen and output use the same explicit payload contract",
 	)
 }
 
@@ -150,13 +150,13 @@ test_req29_screen_frame_is_written_to_the_given_socket :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(got, "\"type\":\"screen\""), "received frame is a screen frame")
 
 	// Decode the payload actually delivered and prove the repaint prefix survived the wire.
-	key := "\"screen_b64\":\""
+	key := "\"data_b64\":\""
 	idx := strings.index(got, key)
-	testing.expect(t, idx >= 0, "delivered frame carries screen_b64")
+	testing.expect(t, idx >= 0, "delivered frame carries data_b64")
 	if idx < 0 do return
 	rest := got[idx + len(key):]
 	end := strings.index_byte(rest, '"')
-	testing.expect(t, end > 0, "screen_b64 is terminated")
+	testing.expect(t, end > 0, "data_b64 is terminated")
 	if end <= 0 do return
 
 	decoded, dec_err := base64.decode(rest[:end])
@@ -510,7 +510,7 @@ test_m1_frame_json_contains_cursor_coordinates :: proc(t: ^testing.T) {
 	defer delete(frame1)
 
 	testing.expect(t, strings.contains(frame1, "\"type\":\"screen\""), "type is screen")
-	testing.expect(t, strings.contains(frame1, "\"screen_b64\":\"QUJD\""), "payload is screen_b64")
+	testing.expect(t, strings.contains(frame1, "\"data_b64\":\"QUJD\""), "payload is data_b64")
 	testing.expect(t, strings.contains(frame1, "\"cursor_row\":0"), "cursor_row is 0")
 	testing.expect(t, strings.contains(frame1, "\"cursor_col\":8"), "cursor_col is 8")
 
@@ -519,14 +519,14 @@ test_m1_frame_json_contains_cursor_coordinates :: proc(t: ^testing.T) {
 	defer delete(frame2)
 
 	testing.expect(t, strings.contains(frame2, "\"type\":\"screen\""), "type is screen")
-	testing.expect(t, strings.contains(frame2, "\"screen_b64\":\"QUJD\""), "payload is screen_b64")
+	testing.expect(t, strings.contains(frame2, "\"data_b64\":\"QUJD\""), "payload is data_b64")
 	testing.expect(t, !strings.contains(frame2, "cursor_row"), "cursor_row omitted when negative")
 	testing.expect(t, !strings.contains(frame2, "cursor_col"), "cursor_col omitted when negative")
 
 	// Case 3: Default argument invocation
 	frame3 := shell_stream_screen_frame_json("QUJD")
 	defer delete(frame3)
-	testing.expect_value(t, frame3, "{\"type\":\"screen\",\"screen_b64\":\"QUJD\"}")
+	testing.expect_value(t, frame3, "{\"type\":\"screen\",\"data_b64\":\"QUJD\",\"is_encrypted\":false}")
 }
 
 // TEST M1.6: End-to-end socket write propagates cursor coordinates and CUP from pane_reply.
@@ -559,14 +559,14 @@ test_m1_write_screen_frame_propagates_cursor_from_pane_reply :: proc(t: ^testing
 	testing.expect(t, strings.contains(got, "\"cursor_row\":0"), "cursor_row propagated")
 	testing.expect(t, strings.contains(got, "\"cursor_col\":8"), "cursor_col propagated")
 
-	// Verify decoded screen_b64 contains prefix, trimmed prompt, and CUP \x1b[1;9H
-	key := "\"screen_b64\":\""
+	// Verify decoded data_b64 contains prefix, trimmed prompt, and CUP \x1b[1;9H
+	key := "\"data_b64\":\""
 	idx := strings.index(got, key)
-	testing.expect(t, idx >= 0, "delivered frame carries screen_b64")
+	testing.expect(t, idx >= 0, "delivered frame carries data_b64")
 	if idx < 0 do return
 	rest := got[idx + len(key):]
 	end := strings.index_byte(rest, '"')
-	testing.expect(t, end > 0, "screen_b64 is terminated")
+	testing.expect(t, end > 0, "data_b64 is terminated")
 	if end <= 0 do return
 
 	decoded, dec_err := base64.decode(rest[:end])

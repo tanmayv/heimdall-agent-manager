@@ -192,9 +192,9 @@ req33_wide_snapshot_paints_in_ordered_chunks :: proc(t: ^testing.T) {
 	defer strings.builder_destroy(&rebuilt)
 	for frame, i in frames {
 		// Each frame must stand alone: its own JSON, its own decodable base64.
-		b64 := json_string(frame, "screen_b64")
+		b64 := json_string(frame, "data_b64")
 		defer delete(b64)
-		testing.expect(t, b64 != "", "every chunk carries screen_b64")
+		testing.expect(t, b64 != "", "every chunk carries data_b64")
 		chunk, decode_err := base64.decode(b64)
 		testing.expect(t, decode_err == nil, "every chunk must decode on its own")
 		defer delete(chunk)
@@ -270,6 +270,7 @@ hammer_output :: proc(raw: rawptr) {
 	for !sync.atomic_load(&h.stop) {
 		shell_session_svc.shell_session_broadcast_output(h.svc, "sh_race", "T1VU")
 		h.written += 1
+		time.sleep(time.Millisecond)
 	}
 }
 
@@ -288,6 +289,7 @@ req33_output_cannot_interleave_with_a_chunked_snapshot :: proc(t: ^testing.T) {
 		thread.join(th)
 		thread.destroy(th)
 	}
+	time.sleep(2 * time.Millisecond)
 
 	reply := wide_pane_reply(220, 900)
 	defer delete(reply)
