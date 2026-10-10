@@ -150,9 +150,11 @@ pathlib.Path(os.environ['MOCK_ROOT']+'/ctl.json').write_text(json.dumps({'args':
         self.assertEqual(supervisor.read_bytes(),(ROOT/'scripts/apply-bridge-update.sh').read_bytes())
         self.assertTrue(os.access(supervisor,os.X_OK))
         unit=self.home/'.config/systemd/user'/f'{name}.service'
-        self.assertIn('HEIMDALL_BRIDGE_SERVICE_NAME='+name+'.service',unit.read_text())
-        self.assertIn('ExecStopPost=',unit.read_text())
-        self.assertIn('--stop-pty-hosts-only',unit.read_text())
+        unit_text=unit.read_text()
+        self.assertIn('HEIMDALL_BRIDGE_SERVICE_NAME='+name+'.service',unit_text)
+        self.assertIn('ExecStopPost=',unit_text)
+        self.assertNotIn('ExecStopPost="bash"',unit_text)
+        self.assertIn('--stop-pty-hosts-only',unit_text)
 
     def test_bad_origins(self):
         for hub in ('https://hub/a','https://u:p@hub','http://hub:99999','https://hub?q=x','https://hub/#f','garbage'):

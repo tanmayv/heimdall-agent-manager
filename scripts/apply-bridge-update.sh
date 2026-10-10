@@ -18,6 +18,7 @@ STOP_PTY_HOSTS_ONLY=false
 RESTART_HOOK="${RESTART_HOOK:-}"
 STOP_HOOK="${STOP_HOOK:-}"
 HEALTH_URL="${HEALTH_URL:-}"
+HEALTH_METHOD="${HEALTH_METHOD:-}"
 
 # Parse command line flags
 while [[ $# -gt 0 ]]; do
@@ -70,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       HEALTH_URL="$2"
       shift 2
       ;;
+    --health-method)
+      HEALTH_METHOD="$2"
+      shift 2
+      ;;
     -h|--help)
       echo "Usage: $0 [options]"
       echo "  --data-dir DIR        Root data directory (default: ~/.local/share/heimdall)"
@@ -84,6 +89,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --restart-hook PATH   Executable restart hook for isolated tests"
       echo "  --stop-hook PATH      Executable stop hook for isolated tests"
       echo "  --health-url URL      Explicit health URL override (optional)"
+      echo "  --health-method METHOD  Probe method override (default: OPTIONS, or GET with --health-url)"
       exit 0
       ;;
     *)
@@ -101,8 +107,19 @@ fi
 STAGE_DIR="${STAGE_DIR/#\~/$HOME}"
 
 if [ -z "$HEALTH_URL" ]; then
-  HEALTH_URL="http://127.0.0.1:$BRIDGE_PORT/api/v1/health"
+  HEALTH_URL="http://127.0.0.1:$BRIDGE_PORT/bridge/health"
+  HEALTH_METHOD="${HEALTH_METHOD:-OPTIONS}"
+else
+  HEALTH_METHOD="${HEALTH_METHOD:-GET}"
 fi
+
+case "$HEALTH_METHOD" in
+  GET|OPTIONS) ;;
+  *)
+    echo "Unsupported health method: $HEALTH_METHOD (expected GET or OPTIONS)" >&2
+    exit 2
+    ;;
+esac
 
 log() {
   printf '[apply-bridge-update] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -228,6 +245,7 @@ log "  DATA_DIR:       $DATA_DIR"
 log "  STAGE_DIR:      $STAGE_DIR"
 log "  BRIDGE_PORT:    $BRIDGE_PORT"
 log "  HEALTH_URL:     $HEALTH_URL"
+log "  HEALTH_METHOD:  $HEALTH_METHOD"
 log "  HEALTH_TIMEOUT: ${HEALTH_TIMEOUT}s"
 log "  BRIDGE_PID:     ${BRIDGE_PID:-unset}"
 
@@ -408,8 +426,9 @@ deadline=$((SECONDS + HEALTH_TIMEOUT))
 healthy=false
 
 while [ $SECONDS -lt $deadline ]; do
-  http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$HEALTH_URL" 2>/dev/null || true)
-  if [ "$http_code" = "200" ] || [ "$http_code" = "401" ] || curl -s "$HEALTH_URL" 2>/dev/null | grep -q '"ok":true'; then
+  http_code=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+    --request "$HEALTH_METHOD" --connect-timeout 2 --max-time 3 "$HEALTH_URL" 2>/dev/null || true)
+  if [ "$http_code" = "200" ]; then
     healthy=true
     log "Health check succeeded (HTTP code: $http_code)"
     break

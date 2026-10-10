@@ -296,7 +296,7 @@ PY
   log OK "Bridge: 127.0.0.1:$bridge_port · Agent endpoint: 127.0.0.1:$endpoint_port"
   # Render with proper escaping for spaces, XML, shell, and systemd specifiers.
   python3 - "$os" "$service_file" "$service_name" "$hub_url" "$bin_dir" "$state_dir" "$data_dir" "$bridge_port" "$endpoint_port" "$PATH" <<'PY'
-import json, pathlib, plistlib, shlex, sys
+import json, pathlib, plistlib, shlex, shutil, sys
 osname, file, name, hub, bin_dir, state, data, port, endpoint, path = sys.argv[1:]
 args=[bin_dir+'/ham-bridge','--hub',hub,'--config',state+'/config.toml','--bridge-token-file',state+'/bridge-token','--data-dir',data,'--bind-host','127.0.0.1','--port',port,'--local-endpoint-port',endpoint,'--local-run-dir',data+'/run']
 config = pathlib.Path(state)/'config.toml'
@@ -319,7 +319,10 @@ else:
     text+=''.join('Environment='+quote(k+'='+v)+'\n' for k,v in env.items())
     supervisor = pathlib.Path(data)/'updates/apply-bridge-update.sh'
     if supervisor.is_file():
-        stop_args = ['bash', str(supervisor), '--data-dir', data, '--stop-pty-hosts-only']
+        bash = shutil.which('bash', path=path)
+        if not bash:
+            raise SystemExit('bash was not found while rendering the systemd unit')
+        stop_args = [bash, str(supervisor), '--data-dir', data, '--stop-pty-hosts-only']
         text+='ExecStopPost='+' '.join(quote(a).replace('$','$$') for a in stop_args)+'\n'
     text+='Restart=on-failure\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n'
     pathlib.Path(file).write_text(text)

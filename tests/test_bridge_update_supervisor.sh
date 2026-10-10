@@ -4,7 +4,7 @@
 # Covers:
 # 1. Healthcheck timeout -> automated rollback to bin.bak
 # 2. Process crash on restart -> automated rollback to bin.bak
-# 3. Successful update -> atomic replacement and cleanup
+# 3. Default OPTIONS readiness probe -> atomic replacement and cleanup
 # 4. PID-scoped stop leaves an unrelated bridge-like process alive
 
 set -euo pipefail
@@ -115,14 +115,18 @@ if [ ! -f "$TMP_DIR/t2/data/logs/update_rollback.log" ]; then
 fi
 echo "PASS: Test 2 passed!"
 
-echo "=== Test 3: Successful update applies atomically and cleans up ==="
+echo "=== Test 3: Default OPTIONS readiness probe applies update ==="
 # Start a temporary healthcheck server on an OS-assigned port so concurrent or
 # immediately repeated test runs cannot collide.
 T3_PORT_FILE="$TMP_DIR/t3-health-port"
 python3 - "$T3_PORT_FILE" <<'PY' &
 import http.server, socketserver, sys
 class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
+    def do_OPTIONS(self):
+        if self.path != '/bridge/health':
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
@@ -148,7 +152,7 @@ echo "verified-v2.0" > "$TMP_DIR/t3/stage/bin/ham-bridge"
 "$SUPERVISOR" \
   --data-dir "$TMP_DIR/t3/data" \
   --stage-dir "$TMP_DIR/t3/stage" \
-  --health-url "http://127.0.0.1:$T3_PORT/api/v1/health" \
+  --bridge-port "$T3_PORT" \
   --health-timeout 5 \
   --stop-hook "$TRUE_HOOK" \
   --restart-hook "$TRUE_HOOK"
