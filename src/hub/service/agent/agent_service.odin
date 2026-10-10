@@ -201,6 +201,15 @@ default_support_for_agent_bridge :: proc(agent: domain.Agent, bridge_id: string)
 	return domain.Agent_Bridge_Support{agent_id = agent.agent_id, bridge_id = bridge_id, owner_user_id = agent.owner_user_id, enabled = true}
 }
 
+
+// Reserve active tracking capacity before any launch is sent. Reservations are
+// generation-scoped and expire if no status report confirms the launch.
+reserve_runtime_launch :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> (int, bool, domain.Domain_Error) {
+	generation := project_service.bridge_runtime_registry_generation(service.bridge_runtime_registry, inst.bridge_id)
+	_, admitted, err := project_service.bridge_runtime_instance_apply(service.bridge_runtime_registry, inst.bridge_id, generation, inst.agent_instance_id, string(inst.owner_user_id), "launching", "unknown", 0, reserve = true)
+	return generation, admitted, err
+}
+
 create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, false, owner_err
@@ -235,6 +244,10 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	display_name := strings.trim_space(input.display_name)
 	if display_name == "" do display_name = default_title
 	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
+	generation, admitted, quota_err := reserve_runtime_launch(service, instance)
+	if !admitted do return {}, false, quota_err
+	launch_sent := false
+	defer if !launch_sent do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, instance.bridge_id, generation, instance.agent_instance_id)
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, false, save_err
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
@@ -251,6 +264,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", saved.agent_instance_id})
 	command := project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, saved)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
+	launch_sent = true
 	return saved, true, domain.Domain_Error{}
 }
 
@@ -274,6 +288,10 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 
 launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Agent_Instance) -> domain.Domain_Error {
 	if saved.kind != "provider_test" do return domain.domain_error(.Validation_Failed, "instance is not a provider test")
+	generation, admitted, quota_err := reserve_runtime_launch(service, saved)
+	if !admitted do return quota_err
+	launch_sent := false
+	defer if !launch_sent do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, saved.bridge_id, generation, saved.agent_instance_id)
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_provider_test_"), "_", saved.agent_instance_id})
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"launch_provider_test\",\"command_id\":\""); write_service_json_string(&b, command_id)
@@ -285,6 +303,7 @@ launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Age
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent {
 		return send_err
 	}
+	launch_sent = true
 	return {}
 }
 
@@ -872,16 +891,21 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 	next.stopped_at = ""
 	next.updated_at = now
 	next.last_seen_at = now
+	generation, admitted, quota_err := reserve_runtime_launch(service, next)
+	if !admitted do return {}, false, quota_err
+	launch_sent := false
+	defer if !launch_sent do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, next.bridge_id, generation, next.agent_instance_id)
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", next.agent_instance_id})
 	command := project_service.Runtime_Command{bridge_id = next.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, next)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
+	launch_sent = true
 	return iface.agent_save_instance(service.agents, next)
 }
 
-apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
-	if inst.bridge_id != bridge_id {
+	if inst.bridge_id != bridge_id || (owner_user_id != "" && string(inst.owner_user_id) != owner_user_id) {
 		domain.agent_instance_destroy(&inst)
 		return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found on bridge")
 	}

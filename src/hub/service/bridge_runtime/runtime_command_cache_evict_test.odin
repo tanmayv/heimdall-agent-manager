@@ -75,11 +75,16 @@ runtime_command_cache_is_partitioned_by_bridge :: proc(t: ^testing.T) {
 runtime_writer_mutexes_are_isolated_by_bridge :: proc(t: ^testing.T) {
 	registry := new(project_service.Bridge_Runtime_Registry)
 	defer { runtime_command_cache_destroy(registry); free(registry) }
-	a1 := project_service.bridge_runtime_registry_writer_mutex(registry, "brg_a")
-	a2 := project_service.bridge_runtime_registry_writer_mutex(registry, "brg_a")
-	b := project_service.bridge_runtime_registry_writer_mutex(registry, "brg_b")
-	testing.expect(t, a1 != nil && a1 == a2, "one Bridge must retain one stable writer lock")
-	testing.expect(t, b != nil && a1 != b, "different Bridges must never share a socket writer lock")
+	_, _, _ = runtime_accept_hello(registry, "brg_a", 1, "")
+	_, _, _ = runtime_accept_hello(registry, "brg_b", 1, "")
+	a1 := project_service.bridge_runtime_connection_acquire(registry, "brg_a")
+	defer project_service.bridge_runtime_connection_release(registry, a1)
+	a2 := project_service.bridge_runtime_connection_acquire(registry, "brg_a")
+	defer project_service.bridge_runtime_connection_release(registry, a2)
+	b := project_service.bridge_runtime_connection_acquire(registry, "brg_b")
+	defer project_service.bridge_runtime_connection_release(registry, b)
+	testing.expect(t, a1 != nil && a1 == a2, "one live generation retains one writer object")
+	testing.expect(t, b != nil && &a1.writer_mutex != &b.writer_mutex, "different connections never share a writer lock")
 }
 
 @(test)

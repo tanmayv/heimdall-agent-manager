@@ -41,15 +41,19 @@ new_bridge_command_sink :: proc(registry: ^project_service.Bridge_Runtime_Regist
 send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
 	registry := (^project_service.Bridge_Runtime_Registry)(ctx)
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
-	writer_mu := project_service.bridge_runtime_registry_writer_mutex(registry, command.bridge_id)
-	if writer_mu == nil do return false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
+	connection := project_service.bridge_runtime_connection_acquire(registry, command.bridge_id)
+	if connection == nil do return false, domain.domain_error(.Bridge_Offline, "bridge connection retired")
+	defer project_service.bridge_runtime_connection_release(registry, connection)
+	writer_mu := &connection.writer_mutex
 	sync.lock(writer_mu)
 	defer sync.unlock(writer_mu)
-	socket, _, socket_ok := project_service.bridge_runtime_registry_command_connection(registry, command.bridge_id)
+	socket := connection.socket
+	socket_ok := socket != net.TCP_Socket(0) && !sync.atomic_load(&connection.retired)
 	if !socket_ok do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
 	// The writer lock is per durable Bridge id. A slow socket cannot stall command
 	// delivery or heartbeat acknowledgements for every other connected Bridge.
 	wrote := write_ws_command(socket, command.body_json)
+	if wrote == .Send_Failed do _ = net.shutdown(net.Any_Socket(socket), .Both)
 	if wrote != .Ok do return false, command_write_error(wrote)
 	return true, domain.Domain_Error{}
 }
@@ -57,10 +61,13 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
 	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
-	writer_mu := project_service.bridge_runtime_registry_writer_mutex(registry, command.bridge_id)
-	if writer_mu == nil do return "", false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
+	connection := project_service.bridge_runtime_connection_acquire(registry, command.bridge_id)
+	if connection == nil do return "", false, domain.domain_error(.Bridge_Offline, "bridge connection retired")
+	defer project_service.bridge_runtime_connection_release(registry, connection)
+	writer_mu := &connection.writer_mutex
 	sync.lock(writer_mu)
-	socket, generation, socket_ok := project_service.bridge_runtime_registry_command_connection(registry, command.bridge_id)
+	socket, generation := connection.socket, connection.generation
+	socket_ok := socket != net.TCP_Socket(0) && !sync.atomic_load(&connection.retired)
 	if !socket_ok {
 		sync.unlock(writer_mu)
 		return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
@@ -70,14 +77,18 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	// below — holding it across the wait would stall the loop's heartbeat/state acks
 	// and could deadlock command delivery.
 	wrote := write_ws_command(socket, command.body_json)
+	if wrote == .Send_Failed do _ = net.shutdown(net.Any_Socket(socket), .Both)
 	sync.unlock(writer_mu)
 	if wrote != .Ok do return "", false, command_write_error(wrote)
 	// The generated command id may come from a per-thread temporary ring. Keep an
 	// owned copy stable while the condition wait releases this thread.
 	wait_id := strings.clone(command.command_id)
 	defer delete(wait_id)
-	cached, ok := runtime_command_wait_terminal(registry, command.bridge_id, generation, wait_id, time.Duration(timeout_ms) * time.Millisecond)
-	if !ok do return "", false, domain.domain_error(.Bridge_Timeout, "bridge websocket command timed out")
+	cached, ok := runtime_command_wait_terminal(registry, command.bridge_id, generation, wait_id, time.Duration(timeout_ms) * time.Millisecond, require_connection = true)
+	if !ok {
+		if sync.atomic_load(&connection.retired) do return "", false, domain.domain_error(.Bridge_Offline, "bridge connection ended before its command result")
+		return "", false, domain.domain_error(.Bridge_Timeout, "bridge websocket command timed out")
+	}
 	error_code := jsonx.extract_string(cached, "error_code")
 	defer delete(error_code)
 	switch error_code {
@@ -99,6 +110,7 @@ validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Pro
 	registry := (^project_service.Bridge_Runtime_Registry)(ctx)
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	ws_url := project_service.bridge_runtime_registry_path_validation_url(registry, command.bridge_id)
+	defer delete(ws_url)
 	if ws_url == "" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
 	if command.type != "validate_project_path" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Internal_Error, "unexpected bridge command type")
 	generation := project_service.bridge_runtime_registry_generation(registry, command.bridge_id)

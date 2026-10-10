@@ -1,0 +1,518 @@
+package project
+
+import "base:runtime"
+import "core:net"
+import "core:strings"
+import "core:sync"
+import "core:time"
+import domain "odin_test:hub/domain"
+
+Runtime_Registry_Limits :: struct {
+	live_bridges: int,
+	live_bridges_per_owner: int,
+	active_instances: int,
+	active_instances_per_owner: int,
+	terminal_instances_per_bridge: int,
+	terminal_retention: time.Duration,
+}
+
+runtime_registry_limits :: proc(r: ^Bridge_Runtime_Registry) -> Runtime_Registry_Limits {
+	limits := r.limits
+	if limits.live_bridges <= 0 do limits.live_bridges = 1024
+	if limits.live_bridges_per_owner <= 0 do limits.live_bridges_per_owner = 256
+	if limits.active_instances <= 0 do limits.active_instances = 16384
+	if limits.active_instances_per_owner <= 0 do limits.active_instances_per_owner = 2048
+	if limits.terminal_instances_per_bridge <= 0 do limits.terminal_instances_per_bridge = 256
+	if limits.terminal_retention <= 0 do limits.terminal_retention = 5 * time.Minute
+	return limits
+}
+
+Runtime_Instance_State :: struct {
+	owner_id: string,
+	runtime_status: string,
+	activity_status: string,
+	state_seq: int,
+	last_seen_ns: i64,
+	expires_ns: i64,
+	active: bool,
+	reserved: bool,
+}
+
+// The registry and every reader/writer each own a reference. Retirement removes
+// lookup visibility immediately, but the mutex, strings and state map survive
+// until the final reference is released. Never copy a live connection value.
+Bridge_Runtime_Connection :: struct {
+	bridge_id: string,
+	owner_id: string,
+	generation: int,
+	socket: net.TCP_Socket,
+	path_validation_adapter_registered: bool,
+	path_validation_url: string,
+	public_key: string,
+	references: int, // registry.metadata_mutex
+	retired: bool, // atomic
+	writer_mutex: sync.Mutex,
+	retire_mutex: sync.Mutex,
+	state_mutex: sync.Mutex,
+	instances: map[string]Runtime_Instance_State,
+	terminal_count: int,
+	next_sweep_ns: i64,
+}
+
+Bridge_Runtime_Registry :: struct {
+	connections: map[string]^Bridge_Runtime_Connection,
+	next_generation: int,
+	live_bridge_count: int,
+	connection_count: int, // includes retired connections with outstanding leases
+	metadata_mutex: sync.Mutex,
+	connection_cond: sync.Cond,
+	limits: Runtime_Registry_Limits,
+	quota_mutex: sync.Mutex,
+	active_instances: int,
+	active_by_owner: map[string]int,
+	edge_event_count: int,
+	command_ids: [1024]string,
+	command_bridge_ids: [1024]string,
+	command_generations: [1024]int,
+	command_results_json: [1024]string,
+	command_results_terminal: [1024]bool,
+	command_result_sequence: [1024]u64,
+	command_count: int,
+	command_slots_used: int,
+	command_mutex: sync.Mutex,
+	command_cond: sync.Cond,
+}
+
+bridge_runtime_registry_command_lock :: proc(r: ^Bridge_Runtime_Registry) { if r != nil do sync.lock(&r.command_mutex) }
+bridge_runtime_registry_command_unlock :: proc(r: ^Bridge_Runtime_Registry) { if r != nil do sync.unlock(&r.command_mutex) }
+
+bridge_runtime_connection_acquire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int = 0) -> ^Bridge_Runtime_Connection {
+	if r == nil do return nil
+	sync.lock(&r.metadata_mutex)
+	defer sync.unlock(&r.metadata_mutex)
+	c, ok := r.connections[bridge_id]
+	if !ok || (generation != 0 && c.generation != generation) do return nil
+	c.references += 1
+	return c
+}
+
+bridge_runtime_connection_release :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection) {
+	if r == nil || c == nil do return
+	sync.lock(&r.metadata_mutex)
+	c.references -= 1
+	destroy := c.references == 0
+	if destroy { r.connection_count -= 1; sync.cond_broadcast(&r.connection_cond) }
+	sync.unlock(&r.metadata_mutex)
+	if !destroy do return
+	// No lease remains, so no writer or state reader can hold either mutex.
+	heap := runtime.default_allocator()
+	for key, state in c.instances {
+		delete(key, heap)
+		delete(state.owner_id, heap)
+		delete(state.runtime_status, heap)
+		delete(state.activity_status, heap)
+	}
+	delete(c.instances)
+	delete(c.bridge_id, heap)
+	delete(c.owner_id, heap)
+	delete(c.path_validation_url, heap)
+	delete(c.public_key, heap)
+	free(c, heap)
+}
+
+runtime_active_change :: proc(r: ^Bridge_Runtime_Registry, owner: string, delta: int) -> bool {
+	sync.lock(&r.quota_mutex)
+	defer sync.unlock(&r.quota_mutex)
+	count := r.active_by_owner[owner]
+	limits := runtime_registry_limits(r)
+	if delta > 0 && (r.active_instances >= limits.active_instances || count >= limits.active_instances_per_owner) do return false
+	if r.active_by_owner == nil do r.active_by_owner = make(map[string]int, runtime.default_allocator())
+	if delta > 0 && count == 0 {
+		r.active_by_owner[strings.clone(owner, runtime.default_allocator())] = delta
+	} else if count + delta <= 0 {
+		for key in r.active_by_owner {
+			if key == owner {
+				delete_key(&r.active_by_owner, key)
+				delete(key, runtime.default_allocator())
+				break
+			}
+		}
+	} else {
+		r.active_by_owner[owner] = count + delta
+	}
+	r.active_instances += delta
+	return true
+}
+
+// Retire state and command observations before releasing the registry reference.
+// Socket shutdown wakes a blocked writer; the reader remains the sole closer.
+// All reader exits pass this barrier before the server closes its descriptor.
+// Serializing shutdown and writer drain prevents a replacement thread from
+// shutting down an fd after the old reader has closed it and it has been reused.
+bridge_runtime_connection_quiesce :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection) {
+	if c == nil do return
+	sync.lock(&c.retire_mutex)
+	defer sync.unlock(&c.retire_mutex)
+	sync.lock(&r.metadata_mutex)
+	socket := c.socket
+	sync.unlock(&r.metadata_mutex)
+	if socket != net.TCP_Socket(0) do _ = net.shutdown(net.Any_Socket(socket), .Both)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	// A socket setter might have been finishing when the first shutdown ran.
+	if c.socket != socket && c.socket != net.TCP_Socket(0) do _ = net.shutdown(net.Any_Socket(c.socket), .Both)
+	sync.lock(&r.metadata_mutex)
+	c.socket = 0
+	sync.unlock(&r.metadata_mutex)
+}
+
+bridge_runtime_connection_retire :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection) {
+	sync.atomic_store(&c.retired, true)
+	bridge_runtime_connection_quiesce(r, c)
+	sync.lock(&c.state_mutex)
+	for key, state in c.instances {
+		if state.active do _ = runtime_active_change(r, state.owner_id, -1)
+		heap := runtime.default_allocator()
+		delete(key, heap)
+		delete(state.owner_id, heap)
+		delete(state.runtime_status, heap)
+		delete(state.activity_status, heap)
+	}
+	delete(c.instances)
+	c.instances = nil
+	c.terminal_count = 0
+	sync.unlock(&c.state_mutex)
+	sync.lock(&r.command_mutex)
+	i := 0
+	for i < r.command_slots_used {
+		if r.command_bridge_ids[i] != c.bridge_id || r.command_generations[i] != c.generation { i += 1; continue }
+		heap := runtime.default_allocator()
+		delete(r.command_ids[i], heap)
+		delete(r.command_bridge_ids[i], heap)
+		delete(r.command_results_json[i], heap)
+		last := r.command_slots_used - 1
+		r.command_ids[i] = r.command_ids[last]
+		r.command_bridge_ids[i] = r.command_bridge_ids[last]
+		r.command_generations[i] = r.command_generations[last]
+		r.command_results_json[i] = r.command_results_json[last]
+		r.command_results_terminal[i] = r.command_results_terminal[last]
+		r.command_result_sequence[i] = r.command_result_sequence[last]
+		r.command_ids[last] = ""
+		r.command_bridge_ids[last] = ""
+		r.command_results_json[last] = ""
+		r.command_slots_used -= 1
+	}
+	sync.cond_broadcast(&r.command_cond)
+	sync.unlock(&r.command_mutex)
+	bridge_runtime_connection_release(r, c)
+}
+
+bridge_runtime_registry_accept_live :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, adapter: bool, url: string, owner: string = "") -> (replaced: bool, generation: int, ok: bool) {
+	if r == nil || bridge_id == "" do return false, 0, false
+	sync.lock(&r.metadata_mutex)
+	old, exists := r.connections[bridge_id]
+	limits := runtime_registry_limits(r)
+	owner_count := 0
+	for _, c in r.connections { if c.owner_id == owner do owner_count += 1 }
+	if (!exists && (r.live_bridge_count >= limits.live_bridges || owner_count >= limits.live_bridges_per_owner)) || (exists && old.owner_id != owner) {
+		sync.unlock(&r.metadata_mutex)
+		return false, 0, false
+	}
+	heap := runtime.default_allocator()
+	c := new(Bridge_Runtime_Connection, heap)
+	r.next_generation += 1 // process-wide epoch; never resets when an ID is removed
+	c^ = Bridge_Runtime_Connection{bridge_id = strings.clone(bridge_id, heap), owner_id = strings.clone(owner, heap), generation = r.next_generation, references = 1, path_validation_adapter_registered = adapter, path_validation_url = strings.clone(url, heap), instances = make(map[string]Runtime_Instance_State, heap)}
+	if r.connections == nil do r.connections = make(map[string]^Bridge_Runtime_Connection, heap)
+	if exists {
+		// Remove the old owned map key before publishing the new generation.
+		delete_key(&r.connections, old.bridge_id)
+		sync.atomic_store(&old.retired, true)
+	} else { r.live_bridge_count += 1 }
+	r.connections[c.bridge_id] = c
+	r.connection_count += 1
+	generation = c.generation
+	sync.unlock(&r.metadata_mutex)
+	if exists do bridge_runtime_connection_retire(r, old)
+	return exists, generation, true
+}
+
+bridge_runtime_registry_mark_live :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, adapter: bool, url: string) -> bool {
+	if bridge_runtime_registry_has_live(r, bridge_id) do return true
+	_, _, ok := bridge_runtime_registry_accept_live(r, bridge_id, adapter, url)
+	return ok
+}
+bridge_runtime_registry_has_live :: proc(r: ^Bridge_Runtime_Registry, id: string) -> bool {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return false
+	bridge_runtime_connection_release(r, c)
+	return true
+}
+bridge_runtime_registry_generation :: proc(r: ^Bridge_Runtime_Registry, id: string) -> int {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return 0
+	defer bridge_runtime_connection_release(r, c)
+	return c.generation
+}
+bridge_runtime_registry_mark_offline :: proc(r: ^Bridge_Runtime_Registry, id: string, generation: int) {
+	if r == nil do return
+	sync.lock(&r.metadata_mutex)
+	c, ok := r.connections[id]
+	if !ok || (generation != 0 && c.generation != generation) { sync.unlock(&r.metadata_mutex); return }
+	delete_key(&r.connections, c.bridge_id)
+	sync.atomic_store(&c.retired, true)
+	r.live_bridge_count -= 1
+	sync.unlock(&r.metadata_mutex)
+	bridge_runtime_connection_retire(r, c)
+}
+bridge_runtime_registry_set_command_socket :: proc(r: ^Bridge_Runtime_Registry, id: string, socket: net.TCP_Socket, generation: int = 0) {
+	c := bridge_runtime_connection_acquire(r, id, generation)
+	if c == nil do return
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	if sync.atomic_load(&c.retired) do return
+	// Bound writer teardown even when a peer stops reading.
+	_ = net.set_option(socket, .Send_Timeout, 5 * time.Second)
+	sync.lock(&r.metadata_mutex)
+	c.socket = socket
+	sync.unlock(&r.metadata_mutex)
+}
+bridge_runtime_registry_set_public_key :: proc(r: ^Bridge_Runtime_Registry, id, public_key: string, generation: int = 0) {
+	c := bridge_runtime_connection_acquire(r, id, generation)
+	if c == nil do return
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	delete(c.public_key, runtime.default_allocator())
+	c.public_key = strings.clone(public_key, runtime.default_allocator())
+}
+// Metadata strings are returned as caller-owned copies, never borrowed across retirement.
+bridge_runtime_registry_public_key :: proc(r: ^Bridge_Runtime_Registry, id: string) -> string {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return ""
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	return strings.clone(c.public_key)
+}
+bridge_runtime_registry_has_path_validation_adapter :: proc(r: ^Bridge_Runtime_Registry, id: string) -> bool {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return false
+	defer bridge_runtime_connection_release(r, c)
+	return c.path_validation_adapter_registered || c.path_validation_url != ""
+}
+bridge_runtime_registry_path_validation_url :: proc(r: ^Bridge_Runtime_Registry, id: string) -> string {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return ""
+	defer bridge_runtime_connection_release(r, c)
+	return strings.clone(c.path_validation_url)
+}
+bridge_runtime_registry_shutdown_command_socket :: proc(r: ^Bridge_Runtime_Registry, id: string) -> bool {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return false
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	if sync.atomic_load(&c.retired) do return false
+	socket := c.socket
+	if socket == net.TCP_Socket(0) do return false
+	_ = net.shutdown(net.Any_Socket(socket), .Both)
+	return true
+}
+bridge_runtime_registry_command_connection :: proc(r: ^Bridge_Runtime_Registry, id: string) -> (net.TCP_Socket, int, bool) {
+	c := bridge_runtime_connection_acquire(r, id)
+	if c == nil do return {}, 0, false
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.writer_mutex)
+	defer sync.unlock(&c.writer_mutex)
+	return c.socket, c.generation, c.socket != net.TCP_Socket(0) && !sync.atomic_load(&c.retired)
+}
+bridge_runtime_registry_command_socket :: proc(r: ^Bridge_Runtime_Registry, id: string) -> (net.TCP_Socket, bool) {
+	socket, _, ok := bridge_runtime_registry_command_connection(r, id)
+	return socket, ok
+}
+
+runtime_state_active :: proc(status: string) -> bool {
+	switch status {
+	case "launching", "starting", "running", "idle", "busy", "blocked", "stopping": return true
+	}
+	return false
+}
+
+runtime_instance_remove_locked :: proc(c: ^Bridge_Runtime_Connection, key: string) {
+	state := c.instances[key]
+	if !state.active do c.terminal_count -= 1
+	delete_key(&c.instances, key)
+	heap := runtime.default_allocator()
+	delete(key, heap)
+	delete(state.owner_id, heap)
+	delete(state.runtime_status, heap)
+	delete(state.activity_status, heap)
+}
+
+runtime_instances_sweep_locked :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection, now_ns: i64) -> int {
+	keys := make([dynamic]string)
+	defer delete(keys)
+	for key, state in c.instances {
+		if (!state.active || state.reserved) && state.expires_ns <= now_ns { append(&keys, key) }
+	}
+	for key in keys {
+		state := c.instances[key]
+		if state.active do _ = runtime_active_change(r, state.owner_id, -1)
+		runtime_instance_remove_locked(c, key)
+	}
+	removed := len(keys)
+	return removed
+}
+
+// Caller supplies a validated durable owner. Reports are scoped to a live generation.
+// reservations consume quota before launch and have a deadline if no report follows.
+bridge_runtime_instance_apply :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, instance_id, owner, status, activity: string, seq: int, reserve: bool = false, now_ns: i64 = 0, recover: bool = false) -> (changed: bool, accepted: bool, err: domain.Domain_Error) {
+	c := bridge_runtime_connection_acquire(r, bridge_id, generation)
+	if c == nil do return false, false, domain.domain_error(.Bridge_Offline, "bridge connection is no longer current")
+	defer bridge_runtime_connection_release(r, c)
+	if instance_id == "" || (c.owner_id != "" && c.owner_id != owner) do return false, false, domain.domain_error(.Forbidden, "instance owner does not match bridge owner")
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	if sync.atomic_load(&c.retired) do return false, false, domain.domain_error(.Bridge_Offline, "bridge connection retired")
+	now := now_ns if now_ns > 0 else time.now()._nsec
+	if now >= c.next_sweep_ns {
+		_ = runtime_instances_sweep_locked(r, c, now)
+		c.next_sweep_ns = now + i64(20 * time.Second)
+	}
+	old, exists := c.instances[instance_id]
+	if exists && !reserve && seq <= old.state_seq && !(recover && old.runtime_status == "unreachable" && runtime_state_active(status)) {
+		if seq == old.state_seq && old.active && status == old.runtime_status {
+			old.last_seen_ns = now
+			c.instances[instance_id] = old
+		}
+		return false, false, domain.Domain_Error{}
+	}
+	if reserve && exists && old.active do return false, true, domain.Domain_Error{}
+	active := runtime_state_active(status)
+	if active && (!exists || !old.active) && !runtime_active_change(r, owner, 1) do return false, false, domain.domain_error(.Bridge_Busy, "active instance quota exhausted")
+	if exists && old.active && !active do _ = runtime_active_change(r, old.owner_id, -1)
+	if !active && (!exists || old.active) do c.terminal_count += 1
+	if active && exists && !old.active do c.terminal_count -= 1
+	heap := runtime.default_allocator()
+	state := Runtime_Instance_State{owner_id = strings.clone(owner, heap), runtime_status = strings.clone(status, heap), activity_status = strings.clone(activity, heap), state_seq = seq, last_seen_ns = now, active = active, reserved = reserve}
+	if !active do state.expires_ns = now + i64(runtime_registry_limits(r).terminal_retention)
+	if reserve {
+		state.expires_ns = now + i64(time.Minute)
+		if exists do state.state_seq = old.state_seq
+	}
+	if exists {
+		changed = old.runtime_status != "" && old.runtime_status != status
+		delete(old.owner_id, heap)
+		delete(old.runtime_status, heap)
+		delete(old.activity_status, heap)
+		c.instances[instance_id] = state
+	} else {
+		c.instances[strings.clone(instance_id, heap)] = state
+	}
+	// Terminal state is bounded independently from active admission. Evict the
+	// oldest terminal entry if necessary; the durable DB still rejects stale seqs.
+	runtime_terminal_prune_locked(r, c)
+	if changed do sync.atomic_add(&r.edge_event_count, 1)
+	return changed, true, domain.Domain_Error{}
+}
+
+bridge_runtime_instance_get :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string) -> (Runtime_Instance_State, bool) {
+	c := bridge_runtime_connection_acquire(r, bridge_id, generation)
+	if c == nil do return {}, false
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	if sync.atomic_load(&c.retired) do return {}, false
+	state, ok := c.instances[id]
+	if !ok do return {}, false
+	state.owner_id = strings.clone(state.owner_id)
+	state.runtime_status = strings.clone(state.runtime_status)
+	state.activity_status = strings.clone(state.activity_status)
+	return state, true
+}
+
+bridge_runtime_registry_sweep :: proc(r: ^Bridge_Runtime_Registry, now_ns: i64 = 0) -> int {
+	if r == nil do return 0
+	now := now_ns if now_ns > 0 else time.now()._nsec
+	connections := make([dynamic]^Bridge_Runtime_Connection)
+	defer delete(connections)
+	sync.lock(&r.metadata_mutex)
+	for _, c in r.connections { c.references += 1; append(&connections, c) }
+	sync.unlock(&r.metadata_mutex)
+	removed := 0
+	for c in connections {
+		sync.lock(&c.state_mutex)
+		removed += runtime_instances_sweep_locked(r, c, now)
+		sync.unlock(&c.state_mutex)
+		bridge_runtime_connection_release(r, c)
+	}
+	return removed
+}
+
+bridge_runtime_registry_destroy :: proc(r: ^Bridge_Runtime_Registry) {
+	if r == nil do return
+	for len(r.connections) > 0 {
+		for key, c in r.connections { bridge_runtime_registry_mark_offline(r, key, c.generation); break }
+	}
+	// The caller must stop accepting work before destroy. Wait for retired
+	// reader/writer leases before the registry itself can leave scope.
+	sync.lock(&r.metadata_mutex)
+	for r.connection_count > 0 { sync.cond_wait(&r.connection_cond, &r.metadata_mutex) }
+	sync.unlock(&r.metadata_mutex)
+	delete(r.connections)
+	r.connections = nil
+	delete(r.active_by_owner)
+	r.active_by_owner = nil
+}
+
+bridge_runtime_instance_cancel_reservation :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string) {
+	c := bridge_runtime_connection_acquire(r, bridge_id, generation)
+	if c == nil do return
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	for key, state in c.instances {
+		if key == id && state.reserved {
+			if state.active do _ = runtime_active_change(r, state.owner_id, -1)
+			runtime_instance_remove_locked(c, key)
+			return
+		}
+	}
+}
+
+// A durable reaper/stop decision frees active quota without discarding the last
+// sequence. Retain a bounded tombstone for delayed reports on this generation.
+bridge_runtime_instance_retire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string, status: string) {
+	c := bridge_runtime_connection_acquire(r, bridge_id, generation)
+	if c == nil do return
+	defer bridge_runtime_connection_release(r, c)
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	state, ok := c.instances[id]
+	if !ok || !state.active do return
+	_ = runtime_active_change(r, state.owner_id, -1)
+	delete(state.runtime_status, runtime.default_allocator())
+	state.runtime_status = strings.clone(status, runtime.default_allocator())
+	state.active = false
+	c.terminal_count += 1
+	state.reserved = false
+	state.expires_ns = time.now()._nsec + i64(runtime_registry_limits(r).terminal_retention)
+	c.instances[id] = state
+	runtime_terminal_prune_locked(r, c)
+}
+
+runtime_terminal_prune_locked :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Runtime_Connection) {
+	for c.terminal_count > runtime_registry_limits(r).terminal_instances_per_bridge {
+		terminals := 0
+		oldest_key := ""
+		oldest := i64(0x7fff_ffff_ffff_ffff)
+		for key, item in c.instances {
+			if item.active do continue
+			terminals += 1
+			if oldest_key == "" || item.last_seen_ns < oldest { oldest = item.last_seen_ns; oldest_key = key }
+		}
+		if terminals <= runtime_registry_limits(r).terminal_instances_per_bridge do return
+		runtime_instance_remove_locked(c, oldest_key)
+	}
+}

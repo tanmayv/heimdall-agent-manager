@@ -1,6 +1,12 @@
 package app
 
 Hub_Config :: struct {
+	runtime_max_live_bridges: int,
+	runtime_max_live_bridges_per_owner: int,
+	runtime_max_active_instances: int,
+	runtime_max_active_instances_per_owner: int,
+	runtime_terminal_entries_per_bridge: int,
+	runtime_terminal_retention_seconds: int,
 	bind_host: string,
 	port: int,
 	database_path: string,

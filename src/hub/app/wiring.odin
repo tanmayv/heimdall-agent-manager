@@ -2,6 +2,7 @@ package app
 
 import "core:fmt"
 import "core:sync"
+import "core:time"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
@@ -103,6 +104,14 @@ App_Graph :: struct {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
+		live_bridges = config.runtime_max_live_bridges,
+		live_bridges_per_owner = config.runtime_max_live_bridges_per_owner,
+		active_instances = config.runtime_max_active_instances,
+		active_instances_per_owner = config.runtime_max_active_instances_per_owner,
+		terminal_instances_per_bridge = config.runtime_terminal_entries_per_bridge,
+		terminal_retention = time.Duration(config.runtime_terminal_retention_seconds) * time.Second,
+	}
 	graph.config = config
 	graph.clock = platform.real_clock()
 	graph.ids = platform.real_id_generator()
@@ -323,6 +332,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	bridge_runtime_service.runtime_command_cache_destroy(&graph.bridge_runtime_registry)
 	http.router_free(&graph.router)
 	http.user_ws_ticket_store_free(&graph.user_handlers.ws_tickets)
 	shell_session_svc.shell_session_service_free(&graph.shell_session_service)

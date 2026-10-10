@@ -114,6 +114,7 @@ reaper_loop :: proc(graph: ^App_Graph) {
 // launch reaper_loop as a thread entry point.
 reaper_sweep_once :: proc(graph: ^App_Graph) {
 	if graph == nil do return
+	_ = project_service.bridge_runtime_registry_sweep(&graph.bridge_runtime_registry)
 
 	// REQ-SHELL-8 item 6: terminal shell_sessions rows past their retention window.
 	// It rides THIS sweep rather than bringing its own timer — the loop already runs
@@ -163,6 +164,7 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	defer domain.agent_instances_destroy(reaped)
 	for inst in reaped {
+		project_service.bridge_runtime_instance_retire(&graph.bridge_runtime_registry, inst.bridge_id, project_service.bridge_runtime_registry_generation(&graph.bridge_runtime_registry, inst.bridge_id), inst.agent_instance_id, string(inst.runtime_status))
 		// REQ-SHELL-2 §9: the staleness sweep is the third and last liveness signal,
 		// and it gets the same rule as the other two — a foreground run whose agent
 		// is gone becomes a background run, so it stays tracked and reapable instead

@@ -236,6 +236,36 @@ parse_args :: proc(config: ^app.Hub_Config) {
 		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.reaper_interval_seconds = int(parsed)
 			i += 1
+		} else if arg == "--runtime-max-live-bridges" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("max-live-bridges must be a positive integer"); os.exit(2) }
+			config.runtime_max_live_bridges = int(parsed)
+			i += 1
+		} else if arg == "--runtime-max-live-bridges-per-owner" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("max-live-bridges-per-owner must be a positive integer"); os.exit(2) }
+			config.runtime_max_live_bridges_per_owner = int(parsed)
+			i += 1
+		} else if arg == "--runtime-max-active-instances" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("max-active-instances must be a positive integer"); os.exit(2) }
+			config.runtime_max_active_instances = int(parsed)
+			i += 1
+		} else if arg == "--runtime-max-active-instances-per-owner" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("max-active-instances-per-owner must be a positive integer"); os.exit(2) }
+			config.runtime_max_active_instances_per_owner = int(parsed)
+			i += 1
+		} else if arg == "--runtime-terminal-entries-per-bridge" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("terminal-entries-per-bridge must be a positive integer"); os.exit(2) }
+			config.runtime_terminal_entries_per_bridge = int(parsed)
+			i += 1
+		} else if arg == "--runtime-terminal-retention-seconds" && i + 1 < len(os.args) {
+			parsed, ok := strconv.parse_int(os.args[i + 1])
+			if !ok || parsed <= 0 { fmt.eprintln("terminal-retention-seconds must be a positive integer"); os.exit(2) }
+			config.runtime_terminal_retention_seconds = int(parsed)
+			i += 1
 		} else if arg == "--title-nudge-cooldown-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.title_nudge_cooldown_seconds = int(parsed)
 			i += 1

@@ -117,6 +117,8 @@ test_bridge_heartbeat_digest_substring_collision_safety :: proc(t: ^testing.T) {
 @(test)
 test_bridge_heartbeat_digest_applies_runtime_registry :: proc(t: ^testing.T) {
 	registry := project_service.Bridge_Runtime_Registry{}
+	_, _, _ = bridge_runtime_service.runtime_accept_hello(&registry, "brg_test", 1, "")
+	defer bridge_runtime_service.runtime_command_cache_destroy(&registry)
 	h := Bridge_Handlers{
 		bridge_runtime_registry = &registry,
 	}
@@ -131,16 +133,15 @@ test_bridge_heartbeat_digest_applies_runtime_registry :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(active), 1)
 	testing.expect_value(t, active[0], "inst_reg")
 
-	runtime_status, activity_status, state_seq, ok := bridge_runtime_service.runtime_instance_status(&registry, "inst_reg")
+	runtime_status, activity_status, state_seq, ok := bridge_runtime_service.runtime_instance_status(&registry, "brg_test", project_service.bridge_runtime_registry_generation(&registry, "brg_test"), "inst_reg")
+	defer delete(runtime_status)
+	defer delete(activity_status)
 	testing.expect(t, ok, "instance registered in registry")
 	testing.expect_value(t, runtime_status, "running")
 	testing.expect_value(t, activity_status, "executing_task")
 	testing.expect_value(t, state_seq, 3)
 
-	// Clean up strings stored in registry
-	for i in 0..<registry.instance_count {
-		delete(registry.instance_ids[i])
-	}
+
 }
 
 // REQ-P1-HEARTBEAT: Zero memory leaks under Odin tracking allocator.

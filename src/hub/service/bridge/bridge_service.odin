@@ -156,23 +156,28 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	if !auth_ok do return domain.Bridge{}, false, auth_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.repo, auth.bridge_id)
 	if !bridge_ok do return domain.Bridge{}, false, bridge_err
-	if bridge.status == .Revoked do return domain.Bridge{}, false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status == .Revoked { domain.bridge_destroy(&bridge); return domain.Bridge{}, false, domain.domain_error(.Bridge_Revoked, "bridge is revoked") }
 	if hostname != "" {
-		bridge.machine_hostname = hostname
-		if !bridge.label_is_user_customized do bridge.label = hostname
+		delete(bridge.machine_hostname)
+		bridge.machine_hostname = strings.clone(hostname)
+		if !bridge.label_is_user_customized { delete(bridge.label); bridge.label = strings.clone(hostname) }
 	}
-	if os_name != "" do bridge.machine_os = os_name
-	if arch != "" do bridge.machine_arch = arch
-	if capabilities_json != "" && strings.contains(capabilities_json, "\"capabilities\"") do bridge.capabilities_json = capabilities_json
-	if version != "" do bridge.version = version
-	if commit_sha != "" do bridge.commit_sha = commit_sha
-	if build_timestamp != "" do bridge.build_timestamp = build_timestamp
-	if bridge.update_status == "updating" do bridge.update_status = "idle"
+	if os_name != "" { delete(bridge.machine_os); bridge.machine_os = strings.clone(os_name) }
+	if arch != "" { delete(bridge.machine_arch); bridge.machine_arch = strings.clone(arch) }
+	if capabilities_json != "" && strings.contains(capabilities_json, "\"capabilities\"") { delete(bridge.capabilities_json); bridge.capabilities_json = strings.clone(capabilities_json) }
+	if version != "" { delete(bridge.version); bridge.version = strings.clone(version) }
+	if commit_sha != "" { delete(bridge.commit_sha); bridge.commit_sha = strings.clone(commit_sha) }
+	if build_timestamp != "" { delete(bridge.build_timestamp); bridge.build_timestamp = strings.clone(build_timestamp) }
+	if bridge.update_status == "updating" { delete(bridge.update_status); bridge.update_status = strings.clone("idle") }
 	now := platform.clock_now(service.clock)
 	bridge.status = .Online
-	bridge.last_seen_at = now
-	bridge.updated_at = now
-	return iface.bridge_save_bridge(service.repo, bridge)
+	delete(bridge.last_seen_at)
+	bridge.last_seen_at = strings.clone(now)
+	delete(bridge.updated_at)
+	bridge.updated_at = strings.clone(now)
+	saved, saved_ok, save_err := iface.bridge_save_bridge(service.repo, bridge)
+	if !saved_ok do domain.bridge_destroy(&bridge)
+	return saved, saved_ok, save_err
 }
 
 // mark_bridge_offline flips a bridge's durable status to .Offline on a WS
@@ -189,9 +194,10 @@ mark_bridge_offline :: proc(service: ^Bridge_Service, bridge_id: string) -> (dom
 	if bridge.status == .Revoked || bridge.status == .Offline do return bridge, false, domain.Domain_Error{}
 	now := platform.clock_now(service.clock)
 	bridge.status = .Offline
-	bridge.updated_at = now
+	delete(bridge.updated_at)
+	bridge.updated_at = strings.clone(now)
 	saved, ok, err := iface.bridge_save_bridge(service.repo, bridge)
-	if !ok do return domain.Bridge{}, false, err
+	if !ok { domain.bridge_destroy(&bridge); return domain.Bridge{}, false, err }
 	return saved, true, domain.Domain_Error{}
 }
 

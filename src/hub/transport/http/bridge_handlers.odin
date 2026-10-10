@@ -11,6 +11,7 @@ import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
@@ -318,8 +319,11 @@ bridge_public_key_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !bridge_ok do return respond_error(bridge_err, req.request_id)
 
 	pub_key := ""
+	owned_key := ""
+	defer delete(owned_key)
 	if h.bridge_runtime_registry != nil {
-		pub_key = project_service.bridge_runtime_registry_public_key(h.bridge_runtime_registry, bridge.bridge_id)
+		owned_key = project_service.bridge_runtime_registry_public_key(h.bridge_runtime_registry, bridge.bridge_id)
+		pub_key = owned_key
 	}
 	if pub_key == "" && bridge.capabilities_json != "" {
 		pub_key = json_string(bridge.capabilities_json, "public_key", context.temp_allocator)
@@ -1189,15 +1193,31 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	defer delete(build_timestamp_str)
 	validation_url := json_string(hello_text, "validation_ws_url"); defer delete(validation_url)
 	body_bridge_id := json_string(hello_text, "bridge_id"); defer delete(body_bridge_id)
-	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text, version_str, commit_sha_str, build_timestamp_str)
-	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
-	if body_bridge_id != "" && body_bridge_id != bridge.bridge_id { _ = write_ws_text_frame(client, bridge_ws_error_payload("bridge_id does not match bearer token")); return }
-	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url)
+	bridge_auth, auth_ok, auth_err := bridge_service.verify_bridge_token(h.bridges, token)
+	if !auth_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(auth_err.message)); return }
+	admitted_bridge, found, lookup_err := iface.bridge_get_bridge(h.bridges.repo, bridge_auth.bridge_id)
+	if !found { _ = write_ws_text_frame(client, bridge_ws_error_payload(lookup_err.message)); return }
+	defer domain.bridge_destroy(&admitted_bridge)
+	if body_bridge_id != "" && body_bridge_id != admitted_bridge.bridge_id { _ = write_ws_text_frame(client, bridge_ws_error_payload("bridge_id does not match bearer token")); return }
+	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, admitted_bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url, string(admitted_bridge.owner_user_id))
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
-	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client)
+	connection := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, admitted_bridge.bridge_id, hello.generation)
+	if connection == nil do return
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, connection)
+	defer project_service.bridge_runtime_connection_quiesce(h.bridge_runtime_registry, connection)
+	defer project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, connection.bridge_id, hello.generation)
+	// Admission and quota checks precede the durable Online transition. State
+	// retirement also gates this write, so an older disconnect finishes first.
+	sync.lock(&connection.state_mutex)
+	if sync.atomic_load(&connection.retired) { sync.unlock(&connection.state_mutex); return }
+	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text, version_str, commit_sha_str, build_timestamp_str)
+	sync.unlock(&connection.state_mutex)
+	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
+	defer domain.bridge_destroy(&bridge)
+	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client, hello.generation)
 	hello_pub_key := json_string(hello_text, "public_key")
 	if hello_pub_key != "" {
-		project_service.bridge_runtime_registry_set_public_key(h.bridge_runtime_registry, bridge.bridge_id, hello_pub_key)
+		project_service.bridge_runtime_registry_set_public_key(h.bridge_runtime_registry, bridge.bridge_id, hello_pub_key, hello.generation)
 	}
 	delete(hello_pub_key)
 	// From here the socket is registered, so other threads (fs/file commands) may
@@ -1229,7 +1249,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// REQ-RECON-FIX-2: Ingest active_instance_ids from bridge_hello on WS connect
 	// and immediately reconcile active instances for the connecting bridge.
 	hello_active := json_string_array(hello_text, "active_instance_ids")
-	_ = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, hello_active)
+	_ = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge.bridge_id, hello.generation, hello_active)
 	if h.agents != nil {
 		gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge.bridge_id, hello_active)
 		defer domain.agent_instances_destroy(gone)
@@ -1291,6 +1311,19 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 // bridge_ws_disconnect clears the durable runtime state of a disconnected
 // bridge's instances (registry offline alone leaves them "running" forever) and
 // fans out resource_changed so the UI updates immediately.
+bridge_disconnect_persist :: proc(h: ^Bridge_Handlers, connection: ^project_service.Bridge_Runtime_Connection) -> (domain.Bridge, bool, []domain.Agent_Instance, bool) {
+	if connection == nil do return {}, false, nil, false
+	sync.lock(&connection.state_mutex)
+	defer sync.unlock(&connection.state_mutex)
+	if sync.atomic_load(&connection.retired) do return {}, false, nil, false
+	bridge: domain.Bridge
+	changed := false
+	if h.bridges != nil { bridge, changed, _ = bridge_service.mark_bridge_offline(h.bridges, connection.bridge_id) }
+	cleared: []domain.Agent_Instance
+	if h.agents != nil { cleared = agent_service.mark_bridge_instances_unreachable(h.agents, connection.bridge_id) }
+	return bridge, changed, cleared, true
+}
+
 bridge_ws_disconnect :: proc(
 	h: ^Bridge_Handlers,
 	bridge_id: string,
@@ -1312,31 +1345,24 @@ bridge_ws_disconnect :: proc(
 	if h.lsp_sessions != nil {
 		_ = lsp_registry_wake_bridge_sessions(h.lsp_sessions, bridge_id)
 	}
-	still_current := project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) == connection_generation
-	// REQ-SHELL-41: log BEFORE the early return below, so a connection retired by a
-	// newer one is still observable. That case (still_current=false) is the one a
-	// reader most needs to see and the one an after-the-cascade log would miss entirely.
-	// connected_at_ns=0 means the caller had no connect timestamp; report -1 rather
-	// than a duration measured from the epoch.
+	connection := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, connection_generation)
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, connection)
+	bridge, changed, cleared, still_current := bridge_disconnect_persist(h, connection)
+	defer domain.bridge_destroy(&bridge)
+	defer domain.agent_instances_destroy(cleared)
 	duration_ms := i64(-1)
 	if connected_at_ns > 0 do duration_ms = (time.now()._nsec - connected_at_ns) / 1_000_000
 	bridge_ws_log_disconnect(bridge_id, reason, connection_generation, duration_ms, still_current)
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
 	if !still_current do return
-	// Mark the durable bridge record offline (bridge_runtime_connect set it .Online
-	// but nothing marked it back down on WS close). Idempotent + skips revoked.
-	if h.bridges != nil {
-		if bridge, changed, _ := bridge_service.mark_bridge_offline(h.bridges, bridge_id); changed {
-			summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
-			events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)
-			delete(summary)
-		}
+	// A replacement already published its newer generation; do not publish old
+	// status summaries after its connection has started.
+	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != 0 do return
+	if changed {
+		summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
+		events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)
+		delete(summary)
 	}
-	if h.agents == nil do return
-	// The bridge is gone; its registry entry was just removed above. The durable DB
-	// is authoritative here, so we only persist the cleared state and notify the UI.
-	cleared := agent_service.mark_bridge_instances_unreachable(h.agents, bridge_id)
-	defer domain.agent_instances_destroy(cleared)
 	for inst in cleared {
 		// REQ-SHELL-2 §9: a FOREGROUND run is bound to its agent's liveness. Its
 		// caller is blocked waiting for a result that will now never be delivered to
@@ -1488,14 +1514,14 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		// clobbered by the capabilities save.
 		bridge_apply_vault_status_report(h, bridge_id, text)
 		active := json_string_array(text, "active_instance_ids")
-		digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text)
+		digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text, connection_generation)
 		used_digest := false
 		if len(active) == 0 && len(digest_active) > 0 {
 			delete(active)
 			active = digest_active
 			used_digest = true
 		}
-		reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, active)
+		reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge_id, connection_generation, active)
 		// H7 cross-bridge reap: any instance this bridge reports active whose
 		// canonical bridge_id is now a DIFFERENT bridge has been relaunched
 		// elsewhere. Tell this bridge to invalidate those instances' local tokens
@@ -1553,21 +1579,31 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		state_seq := json_int(text, "state_seq", 0)
 		runtime_status := json_string(text, "runtime_status")
 		activity_status := json_string(text, "activity_status")
-		_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, instance_id, state_seq, runtime_status, activity_status)
 		if h.agents != nil {
-			if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, instance_id, state_seq, runtime_status, activity_status); applied {
+			if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, connection_generation, instance_id, state_seq, runtime_status, activity_status); applied {
 				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 				delete(summary)
 				domain.agent_instance_destroy(&inst)
 			}
 		}
-		if h.shell_sessions != nil && instance_id != "" && runtime_status != "" {
-			shell_session_svc.shell_session_broadcast_status(h.shell_sessions, instance_id, runtime_status, 0, false)
+		current_runtime, current_activity, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, bridge_id, connection_generation, instance_id)
+		defer delete(current_runtime)
+		defer delete(current_activity)
+		if !got && h.agents != nil {
+			if stored, found, _ := iface.agent_get_instance(h.agents.agents, instance_id); found {
+				if stored.bridge_id == bridge_id {
+					current_runtime = strings.clone(stored.runtime_status)
+					current_activity = strings.clone(stored.activity_status)
+					current_seq = stored.last_applied_seq
+				}
+				domain.agent_instance_destroy(&stored)
+			}
 		}
-		current_runtime, _, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, instance_id)
-		_ = got
 		applied := current_seq == state_seq && current_runtime == runtime_status
+		if applied && h.shell_sessions != nil && instance_id != "" && current_runtime != "" {
+			shell_session_svc.shell_session_broadcast_status(h.shell_sessions, instance_id, current_runtime, 0, false)
+		}
 		ack := bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime)
 		_ = write_ws_text_frame_locked(h, bridge_id, client, ack)
 		delete(ack)
@@ -1576,7 +1612,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(activity_status)
 	case "command_result", "project_path_validation_result", "provider_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
 		command_id := json_string(text, "command_id")
-		_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
 		delete(command_id)
 	case "pane_capture_result":
 		if json_int(text, "protocol_version", 0) != 1 do return true
@@ -1753,7 +1789,30 @@ Bridge_Heartbeat_Message :: struct {
 	instances:           []Bridge_Agent_Status_Report `json:"instances"`,
 }
 
-bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: string) -> []string {
+// Serialize durable status writes with retirement. New connections do not finish
+// admission until the old state writer has drained; a delayed old frame cannot
+// save over the new generation's durable state.
+bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	c := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, generation)
+	if c == nil do return {}, false, domain.domain_error(.Bridge_Offline, "stale bridge generation")
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
+	sync.lock(&c.state_mutex)
+	if sync.atomic_load(&c.retired) {
+		sync.unlock(&c.state_mutex)
+		return {}, false, domain.domain_error(.Bridge_Offline, "retired bridge generation")
+	}
+	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = c.owner_id)
+	sync.unlock(&c.state_mutex)
+	if applied {
+		_, _, tracking_err := project_service.bridge_runtime_instance_apply(h.bridge_runtime_registry, bridge_id, generation, id, string(instance.owner_user_id), string(instance.runtime_status), string(instance.activity_status), seq, recover = true)
+		if tracking_err.code == .Bridge_Busy { fmt.eprintln("bridge runtime instance admission failed", bridge_id, id, tracking_err.message) }
+	}
+	return instance, applied, err
+}
+
+bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: string, generation: int = 0) -> []string {
+	current_generation := generation
+	if h != nil && current_generation == 0 { current_generation = project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) }
 	msg: Bridge_Heartbeat_Message
 	if err := json.unmarshal_string(text, &msg, json.DEFAULT_SPECIFICATION, context.temp_allocator); err != nil {
 		return nil
@@ -1767,9 +1826,11 @@ bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: stri
 	for report in reports {
 		if report.agent_instance_id == "" do continue
 		if h != nil {
-			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status)
+			if h.agents == nil {
+				_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, "")
+			}
 			if h.agents != nil {
-				if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status); applied {
+				if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status); applied {
 					summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 					delete(summary)
@@ -2052,8 +2113,11 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	// "not reported" apart from a real state instead of being told "unlocked".
 	strings.write_string(b, "\",\"vault_status\":\""); write_handler_json_string(b, br.vault_status)
 	pub_key := ""
+	owned_key := ""
+	defer delete(owned_key)
 	if agents != nil && agents.bridge_runtime_registry != nil {
-		pub_key = project_service.bridge_runtime_registry_public_key(agents.bridge_runtime_registry, br.bridge_id)
+		owned_key = project_service.bridge_runtime_registry_public_key(agents.bridge_runtime_registry, br.bridge_id)
+		pub_key = owned_key
 	}
 	if pub_key == "" && br.capabilities_json != "" {
 		pub_key = json_string(br.capabilities_json, "public_key", context.temp_allocator)
@@ -2504,11 +2568,15 @@ write_ws_text_frame_browser :: proc(client: net.TCP_Socket, text: string) -> ws.
 // bytes never interleave into a corrupt frame. Use this for any write AFTER the
 // command socket is registered.
 write_ws_text_frame_locked :: proc(h: ^Bridge_Handlers, bridge_id: string, client: net.TCP_Socket, text: string) -> bool {
-	writer_mu := project_service.bridge_runtime_registry_writer_mutex(h.bridge_runtime_registry, bridge_id)
-	if writer_mu == nil do return false
-	sync.lock(writer_mu)
-	defer sync.unlock(writer_mu)
-	return write_ws_text_frame(client, text)
+	connection := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id)
+	if connection == nil do return false
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, connection)
+	sync.lock(&connection.writer_mutex)
+	defer sync.unlock(&connection.writer_mutex)
+	if sync.atomic_load(&connection.retired) || connection.socket != client do return false
+	result := ws.write_server_text(client, text, false)
+	if result == .Peer_Gone || result == .Desynchronised do _ = net.shutdown(net.Any_Socket(client), .Both)
+	return result == .Ok
 }
 
 json_string_array :: proc(body, key: string, allocator := context.allocator) -> []string {

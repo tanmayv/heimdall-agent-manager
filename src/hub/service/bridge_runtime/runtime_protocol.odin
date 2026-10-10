@@ -22,11 +22,10 @@ Hello_Result :: struct {
 	generation: int,
 }
 
-runtime_accept_hello :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, protocol_version: int, validation_ws_url: string) -> (Hello_Result, bool, domain.Domain_Error) {
+runtime_accept_hello :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, protocol_version: int, validation_ws_url: string, owner_user_id: string = "") -> (Hello_Result, bool, domain.Domain_Error) {
 	if protocol_version != PROTOCOL_VERSION do return Hello_Result{}, false, domain.domain_error(.Validation_Failed, "unsupported bridge protocol_version")
 	if bridge_id == "" do return Hello_Result{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required")
-	if project_service.bridge_runtime_registry_writer_mutex(registry, bridge_id) == nil do return Hello_Result{}, false, domain.domain_error(.Bridge_Busy, "hub bridge writer capacity is exhausted")
-	replaced, generation, admitted := project_service.bridge_runtime_registry_accept_live(registry, bridge_id, validation_ws_url != "", validation_ws_url)
+	replaced, generation, admitted := project_service.bridge_runtime_registry_accept_live(registry, bridge_id, validation_ws_url != "", validation_ws_url, owner_user_id)
 	if !admitted do return Hello_Result{}, false, domain.domain_error(.Bridge_Busy, "hub live bridge capacity is exhausted")
 	return Hello_Result{accepted = true, replaced_existing = replaced, generation = generation}, true, domain.Domain_Error{}
 }
@@ -63,12 +62,16 @@ runtime_command_cached_copy :: proc(registry: ^project_service.Bridge_Runtime_Re
 // Efficiently parks an HTTP/RPC waiter until a terminal result is published.
 // The condition may wake spuriously, so the cache predicate and real deadline are
 // checked in a loop under the same mutex used by result insertion.
-runtime_command_wait_terminal :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string, timeout: time.Duration) -> (string, bool) {
+runtime_command_wait_terminal :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string, timeout: time.Duration, require_connection: bool = false) -> (string, bool) {
 	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" || timeout <= 0 do return "", false
+	connection := project_service.bridge_runtime_connection_acquire(registry, bridge_id, generation)
+	if require_connection && connection == nil do return "", false
+	defer project_service.bridge_runtime_connection_release(registry, connection)
 	deadline := time.time_add(time.now(), timeout)
 	sync.lock(&registry.command_mutex)
 	defer sync.unlock(&registry.command_mutex)
 	for {
+		if connection != nil && sync.atomic_load(&connection.retired) do return "", false
 		for i in 0..<registry.command_slots_used {
 			if registry.command_bridge_ids[i] == bridge_id && registry.command_generations[i] == generation && registry.command_ids[i] == command_id && registry.command_results_terminal[i] {
 				return strings.clone(registry.command_results_json[i], runtime.default_allocator()), true
@@ -154,10 +157,21 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	return registry.command_results_json[slot], false
 }
 
+// Production insertion holds a generation lease and the state retirement gate.
+// An old reader cannot reinsert a result after disconnect cleaned its generation.
+runtime_command_result_for_connection :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id, result_json: string) -> bool {
+	c := project_service.bridge_runtime_connection_acquire(registry, bridge_id, generation)
+	if c == nil do return false
+	defer project_service.bridge_runtime_connection_release(registry, c)
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	if sync.atomic_load(&c.retired) do return false
+	_, _ = runtime_command_result_idempotent(registry, bridge_id, generation, command_id, result_json)
+	return true
+}
+
 runtime_command_cache_destroy :: proc(registry: ^project_service.Bridge_Runtime_Registry) {
 	if registry == nil do return
-	project_service.bridge_runtime_registry_command_lock(registry)
-	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	live := registry.command_slots_used
 	for i in 0..<live {
 		delete(registry.command_ids[i], runtime.default_allocator())
@@ -168,13 +182,10 @@ runtime_command_cache_destroy :: proc(registry: ^project_service.Bridge_Runtime_
 		registry.command_generations[i] = 0
 		registry.command_results_json[i] = ""
 	}
-	for i in 0..<registry.writer_count {
-		delete(registry.writer_bridge_ids[i], runtime.default_allocator())
-		registry.writer_bridge_ids[i] = ""
-	}
 	registry.command_count = 0
 	registry.command_slots_used = 0
-	registry.writer_count = 0
+	project_service.bridge_runtime_registry_command_unlock(registry)
+	project_service.bridge_runtime_registry_destroy(registry)
 }
 
 canonical_runtime_status :: proc(s: string) -> string {
@@ -202,50 +213,42 @@ canonical_activity_status :: proc(s: string) -> string {
 	return s
 }
 
-runtime_apply_state_report :: proc(registry: ^project_service.Bridge_Runtime_Registry, instance_id: string, state_seq: int, runtime_status, activity_status: string) -> bool {
-	if registry == nil || instance_id == "" do return false
-	idx := runtime_instance_index(registry, instance_id)
-	if idx < 0 {
-		if registry.instance_count >= len(registry.instance_ids) do return false
-		idx = registry.instance_count
-		registry.instance_count += 1
-		registry.instance_ids[idx] = strings.clone(instance_id)
-	}
-	if state_seq <= registry.instance_state_seq[idx] do return false
-	old_runtime := registry.instance_runtime_status[idx]
-	registry.instance_state_seq[idx] = state_seq
-	registry.instance_runtime_status[idx] = canonical_runtime_status(runtime_status)
-	registry.instance_activity_status[idx] = canonical_activity_status(activity_status)
-	if old_runtime != "" && old_runtime != runtime_status {
-		registry.edge_event_count += 1
-		return true
-	}
-	return false
-}
-
-runtime_reconcile_digest :: proc(registry: ^project_service.Bridge_Runtime_Registry, active_instance_ids: []string) -> int {
-	if registry == nil do return 0
-	changed := 0
-	for i in 0..<registry.instance_count {
-		if registry.instance_runtime_status[i] == "running" && !string_slice_contains(active_instance_ids, registry.instance_ids[i]) {
-			registry.instance_runtime_status[i] = "unreachable"
-			registry.edge_event_count += 1
-			changed += 1
-		}
-	}
+runtime_apply_state_report :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, instance_id: string, state_seq: int, runtime_status, activity_status, owner_user_id: string) -> bool {
+	changed, _, _ := project_service.bridge_runtime_instance_apply(registry, bridge_id, generation, instance_id, owner_user_id, canonical_runtime_status(runtime_status), canonical_activity_status(activity_status), state_seq)
 	return changed
 }
 
-runtime_instance_status :: proc(registry: ^project_service.Bridge_Runtime_Registry, instance_id: string) -> (runtime_status: string, activity_status: string, state_seq: int, ok: bool) {
-	idx := runtime_instance_index(registry, instance_id)
-	if idx < 0 do return "", "", 0, false
-	return registry.instance_runtime_status[idx], registry.instance_activity_status[idx], registry.instance_state_seq[idx], true
+runtime_reconcile_digest :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, active_instance_ids: []string) -> int {
+	c := project_service.bridge_runtime_connection_acquire(registry, bridge_id, generation)
+	if c == nil do return 0
+	defer project_service.bridge_runtime_connection_release(registry, c)
+	sync.lock(&c.state_mutex)
+	defer sync.unlock(&c.state_mutex)
+	if sync.atomic_load(&c.retired) do return 0
+	changed := 0
+	now := time.now()._nsec
+	for key, &state in c.instances {
+		if state.active && !state.reserved && !string_slice_contains(active_instance_ids, key) {
+			_ = project_service.runtime_active_change(registry, state.owner_id, -1)
+			delete(state.runtime_status, runtime.default_allocator())
+			state.runtime_status = strings.clone("unreachable", runtime.default_allocator())
+			state.active = false
+			c.terminal_count += 1
+			state.expires_ns = now + i64(project_service.runtime_registry_limits(registry).terminal_retention)
+			sync.atomic_add(&registry.edge_event_count, 1)
+			changed += 1
+		}
+	}
+	project_service.runtime_terminal_prune_locked(registry, c)
+	return changed
 }
 
-runtime_instance_index :: proc(registry: ^project_service.Bridge_Runtime_Registry, instance_id: string) -> int {
-	if registry == nil do return -1
-	for i in 0..<registry.instance_count { if registry.instance_ids[i] == instance_id do return i }
-	return -1
+// Caller owns both returned status strings; no lookup borrows storage across eviction.
+runtime_instance_status :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, instance_id: string) -> (runtime_status: string, activity_status: string, state_seq: int, ok: bool) {
+	state, found := project_service.bridge_runtime_instance_get(registry, bridge_id, generation, instance_id)
+	if !found do return "", "", 0, false
+	delete(state.owner_id)
+	return state.runtime_status, state.activity_status, state.state_seq, true
 }
 
 string_slice_contains :: proc(values: []string, needle: string) -> bool {
