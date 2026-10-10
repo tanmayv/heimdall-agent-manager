@@ -125,6 +125,7 @@ export default function VaultOnboardingModal({
   // Setup Wizard State
   const [masterPassword, setMasterPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const passwordsDoNotMatch = confirmPassword.length > 0 && masterPassword !== confirmPassword;
   const [recoveryWords, setRecoveryWords] = useState<string[]>([]);
   const [confirmedBackup, setConfirmedBackup] = useState(false);
   const [isSubmittingSetup, setIsSubmittingSetup] = useState(false);
@@ -380,7 +381,15 @@ export default function VaultOnboardingModal({
                 <Input type="password" data-debug-id="vault-onboarding-confirm-password-input"
                   value={confirmPassword} onChange={setConfirmPassword} placeholder="Repeat password"
                   autoComplete="new-password" minLength={8} width="full" className="mt-1"
+                  invalid={passwordsDoNotMatch}
+                  aria-describedby={passwordsDoNotMatch ? 'vault-password-mismatch' : undefined}
                   disabled={isSubmittingSetup} required />
+                {passwordsDoNotMatch && (
+                  <span id="vault-password-mismatch" data-debug-id="vault-onboarding-password-mismatch"
+                    role="status" className="mt-1 block text-xs font-normal text-danger">
+                    Passwords do not match.
+                  </span>
+                )}
               </label>
             </div>
             <div className="space-y-2 border-t border-subtle pt-3">
@@ -415,7 +424,11 @@ export default function VaultOnboardingModal({
             <Checkbox data-debug-id="vault-onboarding-remember-checkbox"
               checked={rememberSession} onChange={setRememberSession}
               label="Keep unlocked in this browser session" disabled={isSubmittingSetup} />
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="ghost" data-debug-id="vault-onboarding-skip-btn"
+                onClick={handleSkip} disabled={isSubmittingSetup || isSavingVault}>
+                Skip for now
+              </Button>
               <Button type="submit" variant="primary" data-debug-id="vault-onboarding-setup-submit-btn"
                 disabled={isSubmittingSetup || isSavingVault || masterPassword.length < 8 || masterPassword !== confirmPassword || !confirmedBackup}>
                 {isSubmittingSetup ? 'Creating vault…' : 'Create vault'}
@@ -466,11 +479,11 @@ export default function VaultOnboardingModal({
             className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{errorMessage}</div>
         ) : null}
       </Modal.Body>
-      <Modal.Footer>
+      {(isConfigured || isVaultLoading || isVaultError) && <Modal.Footer>
         <Button type="button" variant="ghost" data-debug-id="vault-onboarding-skip-btn" onClick={handleSkip}>
-          {isConfigured ? 'Cancel' : 'Set up later'}
+          {isConfigured ? 'Cancel' : 'Skip for now'}
         </Button>
-      </Modal.Footer>
+      </Modal.Footer>}
     </Modal>
   );
 }
