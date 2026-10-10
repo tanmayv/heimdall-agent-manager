@@ -1604,3 +1604,27 @@ test_bridge_fs_grep_vault_encrypted :: proc(t: ^testing.T) {
 	testing.expect_value(t, decrypted_line, target_line)
 }
 
+@(test)
+bridge_fs_traversals_fail_before_work_when_command_deadline_expired :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "expired_traversal")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "keep.txt", "still here")
+	past := time.to_unix_nanoseconds(time.now()) - i64(time.Millisecond)
+
+	listed := bridge_fs_list_dir("", true, "", 100, root, false, past)
+	defer bridge_fs_list_result_delete(&listed)
+	testing.expect(t, !listed.ok)
+	testing.expect_value(t, listed.error_code, "deadline_exceeded")
+
+	found := bridge_fs_find_files("keep", 100, root, past)
+	defer bridge_fs_find_files_result_delete(&found)
+	testing.expect(t, !found.ok)
+	testing.expect_value(t, found.error_code, "deadline_exceeded")
+
+	deleted := bridge_fs_delete("keep.txt", false, root, past)
+	testing.expect(t, !deleted.ok)
+	testing.expect_value(t, deleted.error_code, "deadline_exceeded")
+	path, _ := filepath.join([]string{root, "keep.txt"}, context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(t, os.exists(path), "expired mutation must not begin")
+}

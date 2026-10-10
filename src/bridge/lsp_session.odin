@@ -65,6 +65,7 @@ Bridge_Lsp_Session :: struct {
 	status:        Bridge_Lsp_Status,
 	stdin_w:       ^os.File,  // write end — bridge sends JSON-RPC to server; nil after close
 	process:       os.Process, // handle for SIGTERM / process_wait
+	process_slot:  bool, // owns one Bridge-wide child-process slot
 }
 
 Bridge_Lsp_Session_Map :: struct {
@@ -141,6 +142,7 @@ bridge_lsp_session_remove :: proc(session_id: string) {
 		delete(s.cmd, lsp_heap())
 		delete(s.cwd, lsp_heap())
 		delete(s.owner_user_id, lsp_heap())
+		if s.process_slot do bridge_process_slot_release()
 	}
 }
 
@@ -690,6 +692,15 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 		}
 	}
 
+	// Long-lived language servers retain a Bridge-wide child-process slot until
+	// the read-loop cleanup removes the session.
+	if !bridge_process_slot_try_acquire() {
+		send_result(conn, session_id, command_id, false, "bridge child-process limit reached")
+		return
+	}
+	process_slot_owned := true
+	defer if process_slot_owned do bridge_process_slot_release()
+
 	// Create stdin/stdout pipes.
 	stdin_r, stdin_w, pipe_err1 := os.pipe()
 	if pipe_err1 != nil {
@@ -742,8 +753,10 @@ bridge_lsp_handle_start :: proc(conn: ^ws.Connection, text: string) {
 		status        = .Running,
 		stdin_w       = stdin_w,
 		process       = process,
+		process_slot  = true,
 	}
 	bridge_lsp_session_register(sess)
+	process_slot_owned = false
 
 	// Launch background read loop.
 	ctx       := new(Bridge_Lsp_Read_Ctx, lsp_heap())

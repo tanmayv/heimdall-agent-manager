@@ -753,7 +753,10 @@ bridge_fs_effective_root :: proc(root_override: string) -> (root: string, ok: bo
 // `root_prevalidated` lets a caller pass a sandbox_root that the caller has ALREADY
 // resolved + contained (e.g. an agent instance run dir that lives OUTSIDE the
 // global bridge_fs_root); the requested path is still re-sandboxed to it below.
-bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, cursor: string = "", limit: int = BRIDGE_FS_DEFAULT_LIMIT, sandbox_root: string = "", root_prevalidated := false) -> Bridge_Fs_List_Result {
+bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, cursor: string = "", limit: int = BRIDGE_FS_DEFAULT_LIMIT, sandbox_root: string = "", root_prevalidated := false, deadline_ns: i64 = 0) -> Bridge_Fs_List_Result {
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_List_Result{ok = false, root = sandbox_root, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 	root, root_ok := bridge_fs_resolve_command_root(sandbox_root, root_prevalidated)
 	if !root_ok {
 		return Bridge_Fs_List_Result{ok = false, root = bridge_fs_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
@@ -773,9 +776,17 @@ bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, curso
 		return Bridge_Fs_List_Result{ok = false, path = canonical, root = root, error_code = "read_failed", message = "Could not read directory"}
 	}
 	defer os.file_info_slice_delete(infos, context.allocator)
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_List_Result{ok = false, path = canonical, root = root, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 	// Build the full filtered set first so sort + cursor operate on a stable order.
 	all := make([dynamic]Bridge_Fs_Entry, context.allocator)
 	for info in infos {
+		if bridge_command_deadline_expired(deadline_ns) {
+			for entry in all do delete(entry.name)
+			delete(all)
+			return Bridge_Fs_List_Result{ok = false, path = canonical, root = root, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+		}
 		name := info.name
 		if name == "" || name == "." || name == ".." do continue
 		hidden := len(name) > 0 && name[0] == '.'
@@ -1155,7 +1166,32 @@ bridge_fs_move :: proc(from_req, to_req: string, sandbox_root: string = "") -> B
 
 // bridge_fs_delete removes a file or directory. Non-empty directories require
 // recursive=true (else dir_not_empty). The sandbox root itself is never deletable.
-bridge_fs_delete :: proc(requested: string, recursive: bool, sandbox_root: string = "") -> Bridge_Fs_Delete_Result {
+bridge_fs_remove_all_with_deadline :: proc(path: string, deadline_ns: i64) -> (ok, timed_out: bool) {
+	if bridge_command_deadline_expired(deadline_ns) do return false, true
+	if !os.is_dir(path) {
+		return os.remove(path) == nil, false
+	}
+	infos, rerr := os.read_directory_by_path(path, -1, context.allocator)
+	if rerr != nil do return false, false
+	defer os.file_info_slice_delete(infos, context.allocator)
+	for info in infos {
+		if info.name == "" || info.name == "." || info.name == ".." do continue
+		if bridge_command_deadline_expired(deadline_ns) do return false, true
+		if info.type == .Directory {
+			child_ok, child_timeout := bridge_fs_remove_all_with_deadline(info.fullpath, deadline_ns)
+			if !child_ok do return false, child_timeout
+		} else if os.remove(info.fullpath) != nil {
+			return false, false
+		}
+	}
+	if bridge_command_deadline_expired(deadline_ns) do return false, true
+	return os.remove(path) == nil, false
+}
+
+bridge_fs_delete :: proc(requested: string, recursive: bool, sandbox_root: string = "", deadline_ns: i64 = 0) -> Bridge_Fs_Delete_Result {
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_Delete_Result{ok = false, path = requested, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 	root, root_ok := bridge_fs_effective_root(sandbox_root)
 	if !root_ok {
 		return Bridge_Fs_Delete_Result{ok = false, path = requested, within_root = false, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
@@ -1187,7 +1223,11 @@ bridge_fs_delete :: proc(requested: string, recursive: bool, sandbox_root: strin
 				return Bridge_Fs_Delete_Result{ok = false, path = canonical, within_root = true, error_code = "dir_not_empty", message = "Directory is not empty"}
 			}
 		}
-		if err := os.remove_all(canonical); err != nil {
+		removed, timed_out := bridge_fs_remove_all_with_deadline(canonical, deadline_ns)
+		if timed_out {
+			return Bridge_Fs_Delete_Result{ok = false, path = canonical, within_root = true, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+		}
+		if !removed {
 			return Bridge_Fs_Delete_Result{ok = false, path = canonical, within_root = true, error_code = "delete_failed", message = "Could not delete directory"}
 		}
 		return Bridge_Fs_Delete_Result{ok = true, path = canonical, deleted = true, within_root = true}
@@ -1285,7 +1325,10 @@ bridge_fs_is_search_ignored_dir :: proc(name: string) -> bool {
 	return name == ".git" || name == "node_modules" || name == "dist" || name == "build" || name == ".build"
 }
 
-bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "") -> Bridge_Fs_Find_Files_Result {
+bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "", deadline_ns: i64 = 0) -> Bridge_Fs_Find_Files_Result {
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_Find_Files_Result{ok = false, root = sandbox_root, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 	root, root_ok := bridge_fs_effective_root(sandbox_root)
 	if !root_ok {
 		return Bridge_Fs_Find_Files_Result{ok = false, root = sandbox_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
@@ -1318,6 +1361,9 @@ bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "
 
 	q_head := 0
 	for q_head < len(dir_queue) {
+		if bridge_command_deadline_expired(deadline_ns) {
+			return Bridge_Fs_Find_Files_Result{ok = false, root = root, files = results[:], truncated = true, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+		}
 		curr_dir := dir_queue[q_head]
 		q_head += 1
 
@@ -1329,6 +1375,10 @@ bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "
 		})
 
 		for info in infos {
+			if bridge_command_deadline_expired(deadline_ns) {
+				truncated = true
+				break
+			}
 			name := info.name
 			if name == "" || name == "." || name == ".." do continue
 			if info.type == .Directory {
@@ -1366,6 +1416,9 @@ bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "
 		os.file_info_slice_delete(infos, context.allocator)
 		if truncated do break
 	}
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_Find_Files_Result{ok = false, root = root, files = results[:], truncated = true, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 
 	return Bridge_Fs_Find_Files_Result{
 		ok = true,
@@ -1375,7 +1428,10 @@ bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "
 	}
 }
 
-bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sandbox_root: string = "") -> Bridge_Fs_Grep_Result {
+bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sandbox_root: string = "", deadline_ns: i64 = 0) -> Bridge_Fs_Grep_Result {
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_Grep_Result{ok = false, root = sandbox_root, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 	root, root_ok := bridge_fs_effective_root(sandbox_root)
 	if !root_ok {
 		return Bridge_Fs_Grep_Result{ok = false, root = sandbox_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
@@ -1415,6 +1471,9 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 
 	q_head := 0
 	for q_head < len(dir_queue) {
+		if bridge_command_deadline_expired(deadline_ns) {
+			return Bridge_Fs_Grep_Result{ok = false, root = root, matches = matches[:], truncated = true, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+		}
 		curr_dir := dir_queue[q_head]
 		q_head += 1
 
@@ -1426,6 +1485,10 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 		})
 
 		for info in infos {
+			if bridge_command_deadline_expired(deadline_ns) {
+				truncated = true
+				break
+			}
 			name := info.name
 			if name == "" || name == "." || name == ".." do continue
 			if info.type == .Directory {
@@ -1482,6 +1545,10 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 				line_number := 1
 				line_start := 0
 				for idx := 0; idx < len(content); idx += 1 {
+					if bridge_command_deadline_expired(deadline_ns) {
+						truncated = true
+						break
+					}
 					if content[idx] == '\n' || idx == len(content) - 1 {
 						line_end := idx
 						if content[idx] != '\n' {
@@ -1526,6 +1593,9 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 		os.file_info_slice_delete(infos, context.allocator)
 		if truncated do break
 	}
+	if bridge_command_deadline_expired(deadline_ns) {
+		return Bridge_Fs_Grep_Result{ok = false, root = root, matches = matches[:], truncated = true, error_code = "deadline_exceeded", message = "Filesystem command deadline exceeded"}
+	}
 
 	if key_hex, ok := bridge_read_vault_key(); ok {
 		defer delete(key_hex)
@@ -1551,6 +1621,7 @@ bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sa
 // Returns true if `type` was an fs command (handled), false otherwise. Results are
 // cached by command_id for idempotent replay, matching the other command handlers.
 bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
+	deadline_ns := bridge_command_worker_deadline_ns(conn)
 	switch type {
 	case "fs_list_dir":
 		cmd: Bridge_Fs_List_Command
@@ -1560,7 +1631,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		include_hidden := cmd.include_hidden.? or_else true
 		limit := cmd.limit if cmd.limit > 0 else BRIDGE_FS_DEFAULT_LIMIT
-		result := bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, cmd.root)
+		result := bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, cmd.root, deadline_ns = deadline_ns)
 		defer bridge_fs_list_result_delete(&result)
 		out := bridge_fs_list_result_json(cmd.command_id, result)
 		defer delete(out)
@@ -1619,7 +1690,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		if !root_ok {
 			result = Bridge_Fs_List_Result{ok = false, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
 		} else {
-			result = bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, root, true)
+			result = bridge_fs_list_dir(cmd.path, include_hidden, cmd.cursor, limit, root, true, deadline_ns)
 		}
 		defer bridge_fs_list_result_delete(&result)
 		out := bridge_fs_list_result_json(cmd.command_id, result)
@@ -1704,7 +1775,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 			return false
 		}
 		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-		result := bridge_fs_delete(cmd.path, cmd.recursive, cmd.root)
+		result := bridge_fs_delete(cmd.path, cmd.recursive, cmd.root, deadline_ns)
 		out := bridge_fs_delete_result_json(cmd.command_id, result)
 		defer delete(out)
 		bridge_runtime_cache_command(cmd.command_id, out)
@@ -1717,7 +1788,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		}
 		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		limit := cmd.limit if cmd.limit > 0 else 100
-		result := bridge_fs_find_files(cmd.query, limit, cmd.root)
+		result := bridge_fs_find_files(cmd.query, limit, cmd.root, deadline_ns)
 		defer bridge_fs_find_files_result_delete(&result)
 		out := bridge_fs_find_files_result_json(cmd.command_id, result)
 		defer delete(out)
@@ -1731,7 +1802,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		}
 		if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		limit := cmd.max_results if cmd.max_results > 0 else (cmd.limit if cmd.limit > 0 else 100)
-		result := bridge_fs_grep(cmd.query, cmd.case_sensitive, limit, cmd.root)
+		result := bridge_fs_grep(cmd.query, cmd.case_sensitive, limit, cmd.root, deadline_ns)
 		defer bridge_fs_grep_result_delete(&result)
 		out := bridge_fs_grep_result_json(cmd.command_id, result)
 		defer delete(out)

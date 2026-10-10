@@ -90,6 +90,7 @@ Bridge_Dispatch_Worker :: struct {
 	last_result: string,
 	output_failed: bool,
 	started_ns: i64,
+	deadline_ns: i64,
 }
 
 Bridge_Dispatch_Metrics :: struct {
@@ -265,6 +266,13 @@ bridge_command_inline_type :: proc(command_type: string) -> bool {
 bridge_command_is_recovery :: proc(command_type: string) -> bool {
 	spec, ok := bridge_command_spec(command_type)
 	return ok && spec.priority == .Recovery
+}
+
+bridge_command_may_spawn_process :: proc(command_type: string) -> bool {
+	return command_type == "provider_discover" ||
+	       command_type == "lsp_start" ||
+	       command_type == "bridge_update" ||
+	       strings.has_prefix(command_type, "vcs_")
 }
 
 bridge_command_ordering_key :: proc(command_type, text: string) -> string {
@@ -460,6 +468,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	}
 
 	scope := bridge_command_dispatch_admission_scope(class, bridge_command_dispatch_total_locked(), bridge_command_dispatch_queue_len_locked(class), bridge_dispatch_owned_bytes, bridge_dispatch_outbox_bytes, owned_bytes, spec.priority == .Recovery, bridge_dispatch_queued_cost, spec.cost_units)
+	if scope == "" && bridge_command_may_spawn_process(command_type) && bridge_process_slot_count() >= BRIDGE_PROCESS_SLOT_LIMIT do scope = "process"
 	if scope == "" && !bridge_command_dispatch_prune_claim_locked() do scope = "global"
 	if scope != "" {
 		bridge_dispatch_metrics.rejected += 1
@@ -587,6 +596,7 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 	worker.output_failed = false
 	worker.current_generation = 0
 	worker.started_ns = 0
+	worker.deadline_ns = 0
 	sync.mutex_unlock(&bridge_dispatch_mu)
 	delete(job.text, runtime.default_allocator())
 	delete(job.command_id, runtime.default_allocator())
@@ -606,6 +616,7 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 		worker.current_generation = job.generation
 		worker.current_command_id = strings.clone(job.command_id, runtime.default_allocator())
 		worker.started_ns = time.to_unix_nanoseconds(time.now())
+		worker.deadline_ns = job.deadline_ns
 		sync.mutex_unlock(&bridge_dispatch_mu)
 		if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
 			sync.mutex_lock(&bridge_dispatch_mu)
@@ -619,6 +630,23 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 		}
 		bridge_command_dispatch_finish(worker, &job)
 	}
+}
+
+// Worker-safe command handlers use this to propagate the dispatch budget into
+// filesystem walks, HTTP retries, and other interruptible work. A real Hub socket
+// is never registered as a worker sink, so reader-local handlers receive zero.
+bridge_command_worker_deadline_ns :: proc(conn: ^ws.Connection) -> i64 {
+	if conn == nil do return 0
+	sync.mutex_lock(&bridge_dispatch_mu)
+	defer sync.mutex_unlock(&bridge_dispatch_mu)
+	for &worker in bridge_dispatch_workers {
+		if rawptr(conn) == rawptr(&worker.sink_conn) do return worker.deadline_ns
+	}
+	return 0
+}
+
+bridge_command_deadline_expired :: proc(deadline_ns: i64) -> bool {
+	return deadline_ns > 0 && time.to_unix_nanoseconds(time.now()) >= deadline_ns
 }
 
 // bridge_hub_send calls this before touching the real socket. Worker handlers get

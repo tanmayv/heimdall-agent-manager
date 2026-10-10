@@ -401,9 +401,75 @@ test_req3_replay_delivers_outstanding_kills_on_reconnect :: proc(t: ^testing.T) 
 	testing.expect_value(t, s3_count(&fx.sink, "shell_kill"), 2)
 	testing.expect_value(t, fx.r.list_bridge, "brg_1")
 	for b in fx.sink.bodies {
+		testing.expect(t, strings.contains(b, `"command_id":"cmd_shell_kill_`), "replayed kills carry a stable idempotency key")
+		testing.expect(t, strings.contains(b, `"timeout_ms":10000`), "replayed kills carry an explicit Bridge command budget")
 		testing.expect(t, !strings.contains(b, "sh_spent"), "a spent intent is never re-delivered")
 		testing.expect(t, !strings.contains(b, "sh_other"), "another bridge's kill is never delivered here")
 	}
+}
+
+@(test)
+test_req3_replay_backoff_is_capped_and_jittered_per_bridge :: proc(t: ^testing.T) {
+	a1 := shell_session_kill_replay_delay_ms(1, 0, "brg_a")
+	a4 := shell_session_kill_replay_delay_ms(4, 0, "brg_a")
+	b4 := shell_session_kill_replay_delay_ms(4, 0, "brg_b")
+	hinted := shell_session_kill_replay_delay_ms(1, 1700, "brg_a")
+	testing.expect(t, a1 >= SHELL_SESSION_KILL_REPLAY_BASE_BACKOFF_MS)
+	testing.expect(t, a4 > a1, "exponential retry delay grows")
+	testing.expect(t, a4 <= 2500 && hinted <= 2500, "reconnect backoff is capped")
+	testing.expect(t, a4 != b4, "different Bridges do not retry in lockstep")
+	testing.expect(t, hinted >= 1700, "Bridge retry_after guidance is honored")
+}
+
+@(test)
+test_req3_paced_replay_waits_for_terminal_feedback :: proc(t: ^testing.T) {
+	fx: Fx3
+	fx3_make(&fx, online = true)
+	defer fx3_free(&fx)
+	append(&fx.r.pending_list, domain.Shell_Session{
+		session_id = "sh_paced", owner_user_id = "owner_a", bridge_id = "brg_1",
+		kind = domain.Shell_Session_Kind_Shell, status = domain.Shell_Session_Status_Running,
+		kill_requested_at = "2026-09-28T09:00:00Z",
+	})
+	delivered, outstanding := shell_session_replay_kill_intents_paced(&fx.svc, "brg_1")
+	testing.expect_value(t, delivered, 1)
+	testing.expect_value(t, outstanding, 1)
+	testing.expect_value(t, len(fx.sink.bodies), 1)
+	testing.expect(t, strings.contains(fx.sink.bodies[0], `"command_id":"cmd_shell_kill_sh_paced_0"`))
+}
+
+@(test)
+test_req3_paced_replay_stops_producing_after_disconnect :: proc(t: ^testing.T) {
+	fx: Fx3
+	fx3_make(&fx, online = true)
+	defer fx3_free(&fx)
+	fx.sink.start_ok = false
+	append(&fx.r.pending_list,
+		domain.Shell_Session{session_id = "sh_first", owner_user_id = "owner_a", bridge_id = "brg_1", kind = domain.Shell_Session_Kind_Shell, status = domain.Shell_Session_Status_Running, kill_requested_at = "2026-09-28T09:00:00Z"},
+		domain.Shell_Session{session_id = "sh_second", owner_user_id = "owner_a", bridge_id = "brg_1", kind = domain.Shell_Session_Kind_Shell, status = domain.Shell_Session_Status_Running, kill_requested_at = "2026-09-28T09:00:01Z"},
+	)
+
+	delivered, outstanding := shell_session_replay_kill_intents_paced(&fx.svc, "brg_1")
+	testing.expect_value(t, delivered, 0)
+	testing.expect_value(t, outstanding, 2)
+	testing.expect_value(t, len(fx.sink.bodies), 1)
+	testing.expect(t, strings.contains(fx.sink.bodies[0], "sh_first"))
+}
+
+@(test)
+test_req3_kill_id_is_stable_per_run_but_changes_after_restart :: proc(t: ^testing.T) {
+	fx: Fx3
+	fx3_make(&fx, online = true)
+	defer fx3_free(&fx)
+
+	_ = _shell_session_dispatch_kill(&fx.svc, "brg_1", "sh_restartable", 2)
+	_ = _shell_session_dispatch_kill(&fx.svc, "brg_1", "sh_restartable", 2)
+	_ = _shell_session_dispatch_kill(&fx.svc, "brg_1", "sh_restartable", 3)
+
+	testing.expect_value(t, len(fx.sink.bodies), 3)
+	testing.expect(t, strings.contains(fx.sink.bodies[0], `"command_id":"cmd_shell_kill_sh_restartable_2"`))
+	testing.expect(t, strings.contains(fx.sink.bodies[1], `"command_id":"cmd_shell_kill_sh_restartable_2"`))
+	testing.expect(t, strings.contains(fx.sink.bodies[2], `"command_id":"cmd_shell_kill_sh_restartable_3"`))
 }
 
 // A reconnect with nothing outstanding sends nothing at all — the replay is an

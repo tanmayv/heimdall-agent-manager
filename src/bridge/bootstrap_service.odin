@@ -32,8 +32,8 @@ bridge_bootstrap_backoff_sleep :: proc(attempt: int) {
 // bridge_bootstrap_http_get_retry issues a GET with retry/backoff. It treats a
 // transport failure OR a 5xx/429 as retriable; any other status is returned to
 // the caller to interpret (200/304/404/...). The final response+ok are returned.
-bridge_bootstrap_http_get_retry :: proc(hub_url, path: string, headers: []http.Header) -> (http.Response, bool) {
-	return bridge_http_request_retry("GET", hub_url, path, "", headers, http.DEFAULT_TIMEOUT_MS)
+bridge_bootstrap_http_get_retry :: proc(hub_url, path: string, headers: []http.Header, deadline_ns: i64 = 0) -> (http.Response, bool) {
+	return bridge_http_request_retry("GET", hub_url, path, "", headers, http.DEFAULT_TIMEOUT_MS, deadline_ns = deadline_ns)
 }
 
 bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string) -> bool {
@@ -354,7 +354,7 @@ bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_
 //
 // All hub calls retry individually with backoff; failures surface the stage +
 // HTTP status via Bridge_Bootstrap_Result.
-bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, Bridge_Bootstrap_Result) {
+bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache, deadline_ns: i64 = 0) -> (string, Bridge_Bootstrap_Result) {
 	auth := strings.concatenate({"Bearer ", bridge_token})
 	defer delete(auth)
 
@@ -380,7 +380,10 @@ bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: s
 		}
 		defer if inm_value != "" do delete(inm_value)
 
-		resp, ok := bridge_bootstrap_http_get_retry(hub_url, path, headers_dyn[:])
+		if bridge_command_deadline_expired(deadline_ns) {
+			return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", detail = "bootstrap command deadline exceeded"}
+		}
+		resp, ok := bridge_bootstrap_http_get_retry(hub_url, path, headers_dyn[:], deadline_ns)
 		if !ok {
 			return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", http_status = resp.status, detail = "conditional manifest GET failed after retries"}
 		}
@@ -416,7 +419,7 @@ bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: s
 
 	// Resolve every fragment/skill hash: served from disk (HIT) or fetched per-hash
 	// from the hub (FETCH). Each fetch is individually retriable.
-	if res := bridge_bootstrap_fetch_missing_blobs(hub_url, auth, manifest_json, cache); !res.ok {
+	if res := bridge_bootstrap_fetch_missing_blobs(hub_url, auth, manifest_json, cache, deadline_ns); !res.ok {
 		delete(manifest_json)
 		return "", res
 	}
@@ -427,17 +430,20 @@ bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: s
 // hashes and ensures each is present in the disk cache, fetching only the missing
 // ones via GET /api/v1/bridge/blobs/{hash} (BRG-2). Logs HIT(disk) vs FETCH(hub)
 // per hash (LOG-1).
-bridge_bootstrap_fetch_missing_blobs :: proc(hub_url, auth, manifest_json: string, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+bridge_bootstrap_fetch_missing_blobs :: proc(hub_url, auth, manifest_json: string, cache: ^Bootstrap_Cache, deadline_ns: i64 = 0) -> Bridge_Bootstrap_Result {
 	hashes := bridge_bootstrap_collect_manifest_hashes(manifest_json)
 	defer { for h in hashes do delete(h); delete(hashes) }
 	headers := [?]http.Header{{name = "Authorization", value = auth}}
 	for h in hashes {
+		if bridge_command_deadline_expired(deadline_ns) {
+			return Bridge_Bootstrap_Result{ok = false, stage = "blob_fetch", detail = "bootstrap command deadline exceeded"}
+		}
 		if cache != nil && bootstrap_cache_has(cache, h) {
 			fmt.println("bridge bootstrap blob HIT (disk)", "hash=", h)
 			continue
 		}
 		blob_path := strings.concatenate({"/api/v1/bridge/blobs/", bridge_bootstrap_url_encode(h)})
-		resp, ok := bridge_bootstrap_http_get_retry(hub_url, blob_path, headers[:])
+		resp, ok := bridge_bootstrap_http_get_retry(hub_url, blob_path, headers[:], deadline_ns)
 		delete(blob_path)
 		if !ok || resp.status != 200 {
 			status := resp.status
@@ -960,7 +966,7 @@ bridge_bootstrap_dir_exists :: proc(path: string) -> bool {
 // fetch, then ASSEMBLE + PUBLISH the finished file set for the wrapper RPCs. It
 // does NOT write the run_dir (the wrapper does that via bootstrap.list/.file).
 // Returns a staged result so callers can log/report WHERE it failed (BRG-4).
-bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache, deadline_ns: i64 = 0) -> Bridge_Bootstrap_Result {
 	_ = run_dir // run_dir is materialized by the wrapper, not the bridge (WRP-1).
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(d.instance_id) == "" {
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
@@ -974,7 +980,7 @@ bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, brid
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch descriptor missing agent_id -- refusing degraded header-only bootstrap (REQ-37)"}
 	}
 	provider := d.provider
-	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
+	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache, deadline_ns)
 	if !res.ok do return res
 	defer delete(manifest_json)
 	return bridge_bootstrap_publish_file_set(manifest_json, d, bridge_endpoint, agent_token, provider, cache)
@@ -985,7 +991,7 @@ bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, brid
 // launch_materialize, but the bridge itself CLEAN-SLATES run_dir and WRITES the
 // assembled file set to disk (no wrapper, no bootstrap.list/.file RPC). Falls back
 // to the legacy manifest/content materializers for a minimal descriptor.
-bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache, deadline_ns: i64 = 0) -> Bridge_Bootstrap_Result {
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(d.instance_id) == "" {
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
 	}
@@ -1004,7 +1010,7 @@ bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_d
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch descriptor missing agent_id -- refusing degraded header-only bootstrap (REQ-37)"}
 	}
 	provider := d.provider
-	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
+	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache, deadline_ns)
 	if !res.ok do return res
 	defer delete(manifest_json)
 	// Also publish for any bootstrap.list/.file readers (harmless under pty-host),

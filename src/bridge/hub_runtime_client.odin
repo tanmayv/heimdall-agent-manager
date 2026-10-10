@@ -590,7 +590,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = bridge_hub_send(conn, accepted)
-		ok, detail := bridge_runtime_launch_agent(command_id, text)
+		ok, detail := bridge_runtime_launch_agent(command_id, text, bridge_command_worker_deadline_ns(conn))
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		st_json := bridge_instance_status_json(instance_id)
@@ -939,6 +939,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "shell_kill" {
 		bridge_hub_handle_shell_kill(text)
+		command_id := extract_json_string(text, "command_id", "")
+		defer delete(command_id)
+		if command_id != "" {
+			final := bridge_command_result_json(command_id, "succeeded", "kill_recorded")
+			defer delete(final)
+			bridge_runtime_cache_command(command_id, final)
+			_ = bridge_hub_send(conn, final)
+		}
 		return
 	}
 	if type == "shell_signal" {
@@ -1745,7 +1753,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
 				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name)
 				defer delete(command_json)
-				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
 				if ok {
 					bridge_runtime_set_launch_role(instance_id, role)
 					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
@@ -1761,7 +1769,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
 				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
 				defer delete(command_json)
-				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
 				if ok {
 					bridge_runtime_set_launch_role(instance_id, role)
 					fmt.println("bridge wake_agent: launched instance", instance_id)
@@ -1827,7 +1835,7 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	return strings.to_string(b)
 }
 
-bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
+bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0) -> (bool, string) {
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.
@@ -1863,7 +1871,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// DEL-1: pty-host is the only agent-launch runtime. The bridge clean-slates the
 	// run_dir and WRITES the assembled file set directly (wrapper-free), then spawns
 	// the agent under the ham-pty-host daemon.
-	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
+	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache, deadline_ns)
 	if !boot_res.ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)

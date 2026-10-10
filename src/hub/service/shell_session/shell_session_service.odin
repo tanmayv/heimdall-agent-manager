@@ -9,6 +9,7 @@ import "core:net"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
 import content_service "odin_test:hub/service/content"
@@ -51,6 +52,10 @@ Shell_Session_Service :: struct {
 	clock:               ^platform.Clock,
 	session_owners:      map[string]string, // session_id → owner_user_id (heap strings)
 	session_bridges:     map[string]string, // session_id → bridge_id (heap strings)
+	kill_replay_bridges: [dynamic]string, // active paced replay, protected by mu
+	kill_replay_workers: int, // detached workers still referencing this service
+	kill_replay_shutdown: bool,
+	kill_replay_cond: sync.Cond,
 	// Tunnel stream registry (T8) — protected by tunnel_mu.
 	tunnel_streams: map[string]^Preview_Tunnel_Stream, // stream_id → live stream
 	tunnel_mu:      sync.Mutex,
@@ -76,6 +81,7 @@ new_shell_session_service :: proc(
 		content         = content,
 		session_owners  = make(map[string]string, heap),
 		session_bridges = make(map[string]string, heap),
+		kill_replay_bridges = make([dynamic]string, heap),
 		tunnel_streams  = make(map[string]^Preview_Tunnel_Stream, heap),
 	}
 }
@@ -85,6 +91,11 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.mu)
 	defer sync.mutex_unlock(&svc.mu)
+	// Replay workers are detached because reconnect must never block the WebSocket
+	// reader. Service teardown is different: it must wait until no worker can still
+	// dereference the maps below.
+	svc.kill_replay_shutdown = true
+	for svc.kill_replay_workers > 0 do sync.cond_wait(&svc.kill_replay_cond, &svc.mu)
 	for k, viewers in svc.viewers {
 		delete(k, heap)
 		delete(viewers)
@@ -111,6 +122,8 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 	delete(svc.session_owners)
 	for k, v in svc.session_bridges { delete(k, heap); delete(v, heap) }
 	delete(svc.session_bridges)
+	for bridge_id in svc.kill_replay_bridges do delete(bridge_id, heap)
+	delete(svc.kill_replay_bridges)
 	sync.mutex_lock(&svc.tunnel_mu)
 	defer sync.mutex_unlock(&svc.tunnel_mu)
 	for k, stream in svc.tunnel_streams {
@@ -809,7 +822,7 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 			session.status           = domain.Shell_Session_Status_Running
 			session.kill_requested_at = current.kill_requested_at
 			_, _ = iface.shell_session_upsert(svc.repo, session)
-			_ = _shell_session_dispatch_kill(svc, session.bridge_id, session_id)
+			_ = _shell_session_dispatch_kill(svc, session.bridge_id, session_id, session.run_seq)
 			return session, true, domain.Domain_Error{}
 		}
 	}
@@ -909,7 +922,7 @@ shell_session_kill :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Con
 	// helper below. A human clicking kill a second time means "try again"; a sweep
 	// running for the 4320th time today means nothing new. Same recording, different
 	// skip rule — see shell_session_reap.odin, which states the other half.
-	return _shell_session_record_and_dispatch_kill(svc, string(owner), session_id, session.bridge_id)
+	return _shell_session_record_and_dispatch_kill(svc, string(owner), session_id, session.bridge_id, session.run_seq)
 }
 
 // _shell_session_record_and_dispatch_kill is the REQ-SHELL-3 sequence itself: make the
@@ -937,12 +950,13 @@ _shell_session_record_and_dispatch_kill :: proc(
 	owner:      string,
 	session_id: string,
 	bridge_id:  string,
+	run_seq:    int,
 ) -> (Shell_Session_Kill_Outcome, bool, domain.Domain_Error) {
 	pending, intent_err := iface.shell_session_set_kill_requested(svc.repo, owner, session_id, platform.clock_now(svc.clock))
 	if intent_err.code != .None do return .Queued, false, intent_err
 	if !pending do return .Queued, false, domain.domain_error(.Not_Found, "session not found")
 
-	outcome := _shell_session_dispatch_kill(svc, bridge_id, session_id)
+	outcome := _shell_session_dispatch_kill(svc, bridge_id, session_id, run_seq)
 	return outcome, true, domain.Domain_Error{}
 }
 
@@ -955,12 +969,18 @@ _shell_session_record_and_dispatch_kill :: proc(
 // Queued describes — the kill has not been delivered and the replay will retry it on
 // the next reconnect. Reporting a transient send failure as delivered would be the
 // one dishonest answer available here.
-_shell_session_dispatch_kill :: proc(svc: ^Shell_Session_Service, bridge_id, session_id: string) -> Shell_Session_Kill_Outcome {
-	cmd_json := _shell_kill_command_json(session_id)
+_shell_session_dispatch_kill :: proc(svc: ^Shell_Session_Service, bridge_id, session_id: string, run_seq: int) -> Shell_Session_Kill_Outcome {
+	// Stable across reconnect replay: the Bridge can deduplicate a kill that was
+	// delivered before the socket dropped without repeating the side effect. The
+	// run sequence prevents an old cached kill from suppressing a later kill after
+	// this durable session has been restarted.
+	cmd_id := fmt.aprintf("cmd_shell_kill_%s_%d", session_id, run_seq)
+	defer delete(cmd_id)
+	cmd_json := _shell_kill_command_json(cmd_id, session_id)
 	defer delete(cmd_json)
 	sent, _ := project_service.bridge_command_send_runtime(
 		svc.bridge_command_sink,
-		project_service.Runtime_Command{bridge_id = bridge_id, body_json = cmd_json},
+		project_service.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = cmd_json},
 	)
 	return sent ? .Delivered : .Queued
 }
@@ -971,6 +991,134 @@ _shell_session_dispatch_kill :: proc(svc: ^Shell_Session_Service, bridge_id, ses
 // ever caps a pathological database. Anything beyond it is picked up by the next
 // reconnect, since the intents stay on their rows until delivered and cleared.
 SHELL_SESSION_KILL_REPLAY_MAX :: 256
+SHELL_SESSION_KILL_REPLAY_WINDOW :: 8
+SHELL_SESSION_KILL_REPLAY_MAX_ATTEMPTS :: 4
+SHELL_SESSION_KILL_REPLAY_BASE_BACKOFF_MS :: 100
+
+Shell_Kill_Replay_Work :: struct {
+	svc: ^Shell_Session_Service,
+	bridge_id: string,
+}
+
+shell_session_kill_replay_delay_ms :: proc(attempt: int, retry_after_ms: int, bridge_id: string) -> int {
+	base := SHELL_SESSION_KILL_REPLAY_BASE_BACKOFF_MS
+	for _ in 1..<attempt do base = min(base * 2, 2000)
+	if retry_after_ms > base do base = min(retry_after_ms, 2000)
+	seed := 0
+	for ch in transmute([]u8)bridge_id do seed = (seed * 33 + int(ch)) % 97
+	return min(base + seed, 2500)
+}
+
+_shell_session_dispatch_kill_wait :: proc(svc: ^Shell_Session_Service, bridge_id, session_id: string, run_seq: int) -> (outcome: Shell_Session_Kill_Outcome, busy: bool, retry_after_ms: int) {
+	if svc.bridge_command_sink.send_runtime_command_wait == nil {
+		return _shell_session_dispatch_kill(svc, bridge_id, session_id, run_seq), false, 0
+	}
+	cmd_id := fmt.aprintf("cmd_shell_kill_%s_%d", session_id, run_seq)
+	defer delete(cmd_id)
+	cmd_json := _shell_kill_command_json(cmd_id, session_id)
+	defer delete(cmd_json)
+	result, sent, err := project_service.bridge_command_send_runtime_wait(
+		svc.bridge_command_sink,
+		project_service.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = cmd_json},
+		5000,
+	)
+	defer if result != "" do delete(result)
+	if sent do return .Delivered, false, 0
+	if err.code == .Bridge_Busy {
+		return .Queued, true, jsonx.extract_int(err.details_json, "retry_after_ms", 1000)
+	}
+	return .Queued, false, 0
+}
+
+shell_session_replay_kill_intents_paced :: proc(svc: ^Shell_Session_Service, bridge_id: string) -> (delivered: int, outstanding: int) {
+	if svc == nil || svc.repo == nil || bridge_id == "" do return 0, 0
+	sessions, list_err := iface.shell_session_list_pending_kills(svc.repo, bridge_id, SHELL_SESSION_KILL_REPLAY_MAX)
+	if list_err.code != .None do return 0, 0
+	defer domain.shell_sessions_destroy(sessions)
+
+	// Count the whole obligation before sending. If replay stops on overload or a
+	// disconnect, callers must still see every intent that remains outstanding,
+	// including rows later in this bounded batch.
+	for session in sessions {
+		if domain.shell_session_kill_intent_pending(session) do outstanding += 1
+	}
+
+	produced := 0
+	for session in sessions {
+		if !domain.shell_session_kill_intent_pending(session) do continue
+		delivered_this := false
+		for attempt in 1..=SHELL_SESSION_KILL_REPLAY_MAX_ATTEMPTS {
+			outcome, busy, retry_after_ms := _shell_session_dispatch_kill_wait(svc, bridge_id, session.session_id, session.run_seq)
+			if outcome == .Delivered {
+				delivered += 1
+				produced += 1
+				delivered_this = true
+				break
+			}
+			if !busy do return delivered, outstanding
+			time.sleep(time.Duration(shell_session_kill_replay_delay_ms(attempt, retry_after_ms, bridge_id)) * time.Millisecond)
+		}
+		// Four consecutive busy responses are a saturation signal, not permission to
+		// move on and enqueue the rest of the reconnect backlog.
+		if !delivered_this do return delivered, outstanding
+		if produced > 0 && produced % SHELL_SESSION_KILL_REPLAY_WINDOW == 0 {
+			time.sleep(time.Duration(shell_session_kill_replay_delay_ms(produced / SHELL_SESSION_KILL_REPLAY_WINDOW, 0, bridge_id)) * time.Millisecond)
+		}
+	}
+	return delivered, outstanding
+}
+
+shell_session_kill_replay_worker :: proc(data: rawptr) {
+	work := (^Shell_Kill_Replay_Work)(data)
+	if work == nil do return
+	delivered, outstanding := shell_session_replay_kill_intents_paced(work.svc, work.bridge_id)
+	if outstanding > 0 {
+		fmt.println("shell kill replay", "bridge=", work.bridge_id, "outstanding=", outstanding, "delivered=", delivered)
+	}
+	if delivered < outstanding {
+		fmt.println("shell kill replay SHORTFALL: outstanding kills were not delivered to the bridge", "bridge=", work.bridge_id, "undelivered=", outstanding - delivered)
+	}
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&work.svc.mu)
+	for bridge_id, i in work.svc.kill_replay_bridges {
+		if bridge_id != work.bridge_id do continue
+		delete(bridge_id, heap)
+		ordered_remove(&work.svc.kill_replay_bridges, i)
+		break
+	}
+	work.svc.kill_replay_workers -= 1
+	sync.cond_broadcast(&work.svc.kill_replay_cond)
+	sync.mutex_unlock(&work.svc.mu)
+	delete(work.bridge_id, heap)
+	free(work, heap)
+}
+
+// Reconnect replay is deliberately detached from the WebSocket accept/reader
+// path. One active producer per Bridge emits bounded windows and honors Bridge
+// overload feedback with capped exponential backoff and deterministic jitter.
+shell_session_schedule_kill_replay :: proc(svc: ^Shell_Session_Service, bridge_id: string) -> bool {
+	if svc == nil || bridge_id == "" do return false
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&svc.mu)
+	if svc.kill_replay_shutdown {
+		sync.mutex_unlock(&svc.mu)
+		return false
+	}
+	for active in svc.kill_replay_bridges {
+		if active == bridge_id {
+			sync.mutex_unlock(&svc.mu)
+			return false
+		}
+	}
+	append(&svc.kill_replay_bridges, strings.clone(bridge_id, heap))
+	svc.kill_replay_workers += 1
+	sync.mutex_unlock(&svc.mu)
+	work := new(Shell_Kill_Replay_Work, heap)
+	work.svc = svc
+	work.bridge_id = strings.clone(bridge_id, heap)
+	_ = thread.create_and_start_with_data(rawptr(work), shell_session_kill_replay_worker)
+	return true
+}
 
 // shell_session_replay_kill_intents delivers this bridge's OUTSTANDING kills. It is
 // called from the bridge-WS accept path once the command socket is registered, and
@@ -1022,7 +1170,7 @@ shell_session_replay_kill_intents :: proc(svc: ^Shell_Session_Service, bridge_id
 		// re-delivered — the pid it named may since have been recycled.
 		if !domain.shell_session_kill_intent_pending(session) do continue
 		outstanding += 1
-		if _shell_session_dispatch_kill(svc, bridge_id, session.session_id) == .Delivered do delivered += 1
+		if _shell_session_dispatch_kill(svc, bridge_id, session.session_id, session.run_seq) == .Delivered do delivered += 1
 	}
 	return delivered, outstanding
 }
@@ -2150,9 +2298,11 @@ _shell_background_command_json :: proc(session_id: string) -> string {
 	return strings.to_string(b)
 }
 
-_shell_kill_command_json :: proc(session_id: string) -> string {
+_shell_kill_command_json :: proc(command_id, session_id: string) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"shell_kill\",\"session_id\":\"")
+	strings.write_string(&b, "{\"type\":\"shell_kill\",\"command_id\":\"")
+	contracts.write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"timeout_ms\":10000,\"session_id\":\"")
 	contracts.write_json_string(&b, session_id)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)

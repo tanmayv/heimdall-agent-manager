@@ -2,9 +2,43 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:time"
 
 BRIDGE_PROCESS_OUTPUT_LIMIT :: 1024 * 1024
+
+// A Bridge-wide budget for child processes started by command workers. Long-lived
+// LSP servers retain their slot until removal; short-lived probes and bounded
+// subprocesses release it after wait/reap. This keeps persistent children from
+// defeating the dispatcher's worker-count bound.
+BRIDGE_PROCESS_SLOT_LIMIT :: 16
+
+bridge_process_slot_mu: sync.Mutex
+bridge_process_slots_active: int
+
+bridge_process_slot_has_capacity :: proc(active: int) -> bool {
+	return active >= 0 && active < BRIDGE_PROCESS_SLOT_LIMIT
+}
+
+bridge_process_slot_try_acquire :: proc() -> bool {
+	sync.mutex_lock(&bridge_process_slot_mu)
+	defer sync.mutex_unlock(&bridge_process_slot_mu)
+	if !bridge_process_slot_has_capacity(bridge_process_slots_active) do return false
+	bridge_process_slots_active += 1
+	return true
+}
+
+bridge_process_slot_release :: proc() {
+	sync.mutex_lock(&bridge_process_slot_mu)
+	defer sync.mutex_unlock(&bridge_process_slot_mu)
+	if bridge_process_slots_active > 0 do bridge_process_slots_active -= 1
+}
+
+bridge_process_slot_count :: proc() -> int {
+	sync.mutex_lock(&bridge_process_slot_mu)
+	defer sync.mutex_unlock(&bridge_process_slot_mu)
+	return bridge_process_slots_active
+}
 
 bridge_process_drain_pipe :: proc(file: ^os.File, output: ^[dynamic]byte) -> (read_any: bool, open: bool) {
 	if file == nil do return false, false
@@ -26,6 +60,8 @@ bridge_process_drain_pipe :: proc(file: ^os.File, output: ^[dynamic]byte) -> (re
 // kills+reaps on deadline. Returned strings belong to context.allocator.
 bridge_process_run_capture :: proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
 	if len(args) == 0 || timeout <= 0 do return "", "", false, false
+	if !bridge_process_slot_try_acquire() do return "", "", false, false
+	defer bridge_process_slot_release()
 	stdout_r, stdout_w, stdout_pipe_err := os.pipe()
 	if stdout_pipe_err != nil do return "", "", false, false
 	defer os.close(stdout_r)

@@ -142,3 +142,14 @@ bridge_dispatch_metrics_are_bounded_and_non_secret :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(json, `"max_execution_ms":`))
 	testing.expect(t, !strings.contains(json, "command_id"), "metrics must not expose command identities")
 }
+
+@(test)
+bridge_child_process_budget_is_explicit_and_bounded :: proc(t: ^testing.T) {
+	testing.expect(t, bridge_process_slot_has_capacity(0))
+	testing.expect(t, bridge_process_slot_has_capacity(BRIDGE_PROCESS_SLOT_LIMIT - 1))
+	testing.expect(t, !bridge_process_slot_has_capacity(BRIDGE_PROCESS_SLOT_LIMIT))
+	testing.expect(t, bridge_command_may_spawn_process("provider_discover"))
+	testing.expect(t, bridge_command_may_spawn_process("vcs_status"))
+	testing.expect(t, bridge_command_may_spawn_process("lsp_start"))
+	testing.expect(t, !bridge_command_may_spawn_process("shell_kill"), "recovery commands retain their reserved lane")
+}

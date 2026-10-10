@@ -1272,25 +1272,14 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// kill riding it would be silently deferred while appearing to work. See
 	// shell_session_replay_kill_intents for the full reasoning.
 	//
-	// Inline, not on a thread, unlike the bridge-side reconcile: this is a repository
-	// read plus N non-blocking sends on an already-registered socket, with no daemon
-	// spawn to wait on.
+	// Scheduled off the accept/reader path. Replay uses bounded producer windows and
+	// terminal feedback, so a large durable backlog cannot fill the Bridge recovery
+	// queue before heartbeats and normal commands begin flowing.
 	//
-	// THE RESULT IS LOGGED, NOT DISCARDED (REQ-SHELL-23 AC3). This call site read
-	// `_ = shell_session_replay_kill_intents(...)`, so a replay that found outstanding
-	// kills and delivered none of them produced no row, no event and no log line
-	// anywhere — which is how REQ-SHELL-3 came to return a 202 promising delivery that
-	// never happened, on a live host, for a day, without leaving a trace. Delivering
-	// nothing when nothing is outstanding is the normal case and stays quiet; a
-	// shortfall is the anomaly and must be loud.
+	// The paced worker logs outstanding, delivered, and shortfall counts after its
+	// bounded retry loop, preserving REQ-SHELL-23 observability.
 	if h.shell_sessions != nil {
-		delivered, outstanding := shell_session_svc.shell_session_replay_kill_intents(h.shell_sessions, bridge.bridge_id)
-		if outstanding > 0 {
-			fmt.println("shell kill replay", "bridge=", bridge.bridge_id, "outstanding=", outstanding, "delivered=", delivered)
-		}
-		if delivered < outstanding {
-			fmt.println("shell kill replay SHORTFALL: outstanding kills were not delivered to the bridge", "bridge=", bridge.bridge_id, "undelivered=", outstanding - delivered)
-		}
+		_ = shell_session_svc.shell_session_schedule_kill_replay(h.shell_sessions, bridge.bridge_id)
 	}
 	// REQ-SHELL-41: the connection is fully established here — authenticated, hello
 	// accepted, command socket registered — so this is the point at which "a bridge

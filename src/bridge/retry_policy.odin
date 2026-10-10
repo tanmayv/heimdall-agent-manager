@@ -41,11 +41,20 @@ bridge_http_request_retry :: proc(
 	timeout_ms: int = http.DEFAULT_TIMEOUT_MS,
 	max_attempts: int = BRIDGE_RETRY_MAX_ATTEMPTS,
 	base_backoff_ms: int = BRIDGE_RETRY_BASE_BACKOFF_MS,
+	deadline_ns: i64 = 0,
 ) -> (http.Response, bool) {
 	resp: http.Response
 	ok := false
 	for attempt in 1..=max_attempts {
-		resp, ok = http.request_with_headers_timeout(method, hub_url, path, body, headers, timeout_ms)
+		attempt_timeout_ms := timeout_ms
+		if deadline_ns > 0 {
+			remaining_ns := deadline_ns - time.to_unix_nanoseconds(time.now())
+			if remaining_ns <= 0 do return resp, false
+			remaining_ms := int(remaining_ns / i64(time.Millisecond))
+			if remaining_ms < 1 do remaining_ms = 1
+			attempt_timeout_ms = min(attempt_timeout_ms, remaining_ms)
+		}
+		resp, ok = http.request_with_headers_timeout(method, hub_url, path, body, headers, attempt_timeout_ms)
 		if bridge_http_is_terminal(resp.status, ok) {
 			// Log the terminal outcome when it followed at least one retry, so a
 			// retried-then-succeeded (or retried-then-failed-hard) sequence is
@@ -61,7 +70,16 @@ bridge_http_request_retry :: proc(
 				delete(resp.body)
 				resp.body = ""
 			}
-			bridge_http_backoff_sleep(attempt, base_backoff_ms)
+			backoff_ms := base_backoff_ms
+			for i in 1..<attempt do backoff_ms *= 2
+			if deadline_ns > 0 {
+				remaining_ns := deadline_ns - time.to_unix_nanoseconds(time.now())
+				if remaining_ns <= 0 do return resp, false
+				remaining_ms := int(remaining_ns / i64(time.Millisecond))
+				if remaining_ms <= 0 do return resp, false
+				backoff_ms = min(backoff_ms, remaining_ms)
+			}
+			time.sleep(time.Duration(backoff_ms) * time.Millisecond)
 		}
 	}
 	// All attempts were retriable and none terminal-succeeded: retries exhausted.

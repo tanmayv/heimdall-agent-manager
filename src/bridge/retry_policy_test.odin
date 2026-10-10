@@ -47,6 +47,19 @@ test_bridge_http_is_retriable_classifier :: proc(t: ^testing.T) {
 }
 
 @(test)
+bridge_http_retry_respects_an_already_expired_command_budget :: proc(t: ^testing.T) {
+	started := time.now()
+	resp, ok := bridge_http_request_retry(
+		"GET", "http://127.0.0.1:1", "/never", "", nil,
+		2000, 4, 150,
+		time.to_unix_nanoseconds(time.now()) - i64(time.Millisecond),
+	)
+	_ = resp
+	testing.expect(t, !ok, "expired work must fail before dialing")
+	testing.expect(t, time.diff(started, time.now()) < 50 * time.Millisecond, "expired work must not consume retry backoff")
+}
+
+@(test)
 test_bridge_http_5xx_then_200_sequence :: proc(t: ^testing.T) {
 	endpoint := net.Endpoint{address = net.IP4_Loopback, port = 0}
 	listener, err := net.listen_tcp(endpoint)

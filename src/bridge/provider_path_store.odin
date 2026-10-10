@@ -93,6 +93,8 @@ bridge_provider_probe_version :: proc(path: string) -> string {
 
 bridge_provider_probe_version_with_timeout :: proc(path: string, timeout: time.Duration) -> (string, bool) {
 	if path == "" do return "", false
+	if !bridge_process_slot_try_acquire() do return "", false
+	defer bridge_process_slot_release()
 	argv := []string{path, "--version"}
 	stdout_r, stdout_w, pipe_err := os.pipe()
 	if pipe_err != nil do return "", false

@@ -199,6 +199,6 @@ _reap_kill_if_eligible :: proc(svc: ^Shell_Session_Service, session: domain.Shel
 	if domain.shell_session_is_terminal(session) do return false
 	if domain.shell_session_kill_intent_pending(session) do return false
 
-	_, ok, _ := _shell_session_record_and_dispatch_kill(svc, session.owner_user_id, session.session_id, session.bridge_id)
+	_, ok, _ := _shell_session_record_and_dispatch_kill(svc, session.owner_user_id, session.session_id, session.bridge_id, session.run_seq)
 	return ok
 }

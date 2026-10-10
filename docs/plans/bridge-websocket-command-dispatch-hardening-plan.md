@@ -2,15 +2,15 @@
 
 **Design & Implementation Plan**
 **Requirement IDs**: `REQ-BDISP-1` … `REQ-BDISP-14`
-**Status**: Implementation in progress — core dispatch and Hub isolation landed in the working tree
+**Status**: Implemented and locally validated
 **Target Subsystems**: `src/bridge/`, `src/hub/service/bridge_runtime/`, `src/hub/transport/http/`, `src/lib/ws/`, `tests/`
 **Backward compatibility**: No compatibility layer is required. Hub and Bridge ship as one protocol release.
 
 ---
 
-## Implementation checkpoint (2026-10-09)
+## Implementation checkpoint (2026-10-10)
 
-Implemented in the first slice:
+Implemented:
 
 - terminal-result state replaces accepted acknowledgements, with event-driven Hub waiters;
 - Hub result/waiter identity includes the Bridge connection generation, preventing
@@ -29,14 +29,38 @@ Implemented in the first slice:
 - provider-probe and PTY-host circuit breakers with one half-open recovery probe;
 - a bounded process runner used by VCS commands and Bridge-update extraction/preflight,
   with output caps plus kill-and-reap deadline handling; and
+- a Bridge-wide 16-child-process budget shared by provider probes, bounded subprocesses,
+  and long-lived LSP sessions, with process-scope load shedding;
 - non-secret heartbeat metrics for saturation, queue/execute latency, stale completions,
-  response backpressure, and dependency-breaker activity.
+  response backpressure, and dependency-breaker activity;
+- command-deadline propagation through recursive filesystem traversal and mutation,
+  bootstrap manifest/blob reads, and retry/backoff sleeps;
+- asynchronously paced shell-kill replay with bounded windows, capped exponential
+  backoff, deterministic jitter, terminal feedback, and teardown-safe worker lifetime;
+  and
+- shell-kill idempotency keys scoped to `(session_id, run_seq)`, so replay deduplicates
+  one run without suppressing a legitimate kill after restart.
 
-Still required before the plan is complete:
+Local validation evidence:
 
-- remaining filesystem traversal and bootstrap/network deadlines;
-- reconnect replay pacing/backoff; and
-- the multi-Bridge and blocked-dependency end-to-end load matrix in Phase 6.
+- a deliberately hung Claude version probe completed at its 2-second provider-local
+  deadline while an agent start returned `202` in 1.68 seconds and an unrelated FS
+  request returned `200` in 54 ms;
+- 50 consecutive discovery requests completed successfully while Bridge
+  `last_seen_at` advanced across multiple 45-second heartbeat periods; FS and stop
+  requests remained responsive during that load;
+- forced Bridge disconnect/reconnect during discovery restored the same Bridge and a
+  repeat discovery completed successfully, with stale-generation behavior covered by
+  deterministic Hub registry tests;
+- per-Bridge writer isolation and result-cache partition tests pass, including a real
+  socket send to Bridge B while Bridge A's writer mutex is held;
+- focused deadline, child reaping, replay pacing, run-sequence idempotency, and
+  process-budget tests pass; and
+- `nix build .#ham-bridge .#ham-hub --no-link` passes.
+
+The destructive self-update/restart smoke test is intentionally left to release
+rollout; update work is isolated in the exclusive lane and heartbeat control remains
+reader-local, both covered by the command-registry regression tests.
 
 ---
 
