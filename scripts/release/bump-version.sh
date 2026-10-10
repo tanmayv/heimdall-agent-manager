@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/release/bump-version.sh
-# Synchronizes application version, git commit, and build timestamp
-# across package.json, flake.nix, and src/contracts/protocol.odin (REQ-REL-VER-SYNC-1).
+# Synchronizes the application version, git commit, and build timestamp across
+# flake.nix and src/contracts/protocol.odin (REQ-REL-VER-SYNC-1).
 set -euo pipefail
 
 usage() {
@@ -94,14 +94,10 @@ if [ -f "src/contracts/protocol.odin" ]; then
   echo "    [ok] Updated src/contracts/protocol.odin"
 fi
 
-# 3. Update package.json
-if [ -f "package.json" ]; then
-  if command -v npm >/dev/null 2>&1; then
-    npm version "$CLEAN_VERSION" --no-git-tag-version --allow-same-version >/dev/null 2>&1 || true
-  else
-    sed_i "s/\"version\": \".*\"/\"version\": \"$CLEAN_VERSION\"/" package.json
-  fi
-  echo "    [ok] Updated package.json (\"version\": \"$CLEAN_VERSION\")"
-fi
+# package.json/package-lock.json deliberately keep their dependency-manifest
+# version. Changing only their root package version changes package-lock.json
+# byte-for-byte without changing any dependency, which makes Nix reject the
+# existing fetchNpmDeps output as stale on every release bump. Runtime binaries
+# receive their version from HAM_APP_VERSION above.
 
 echo "==> Version synchronization complete."

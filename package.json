@@ -1,7 +1,7 @@
 {
   "name": "heimdall",
   "productName": "Heimdall",
-  "version": "0.3.17",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "description": "Electron/Vite React UI prototype for Heimdall Test.",
