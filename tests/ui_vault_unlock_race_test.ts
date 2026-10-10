@@ -165,13 +165,8 @@ test('A7: no production call site dispatches raw hex into either unlock reducer'
     /dispatch\(setVaultUnlocked\(\{ key: vaultKey, rememberSession \}\)\)/,
     'onboarding modal must dispatch the CryptoKey to setVaultUnlocked',
   );
-  assert.match(
-    modal,
-    /dispatch\(importLocalKey\(\{ key, rememberSession \}\)\)/,
-    'onboarding modal must dispatch the CryptoKey to importLocalKey',
-  );
+  assert.doesNotMatch(modal, /importLocalKey|handleDirectKeyImport/, 'onboarding has no raw-key import path');
   assert.doesNotMatch(modal, /rawVaultKeyHex: rawHex/, 'onboarding modal must not dispatch hex');
-  assert.doesNotMatch(modal, /importLocalKey\(clean/, 'onboarding modal must not dispatch the pasted hex');
 
   // The one legitimate survivor: rawHex still feeds the E2EE bridge unseal payload, which
   // needs transportable key material and is not a Redux write.

@@ -1,5 +1,5 @@
 // REQ-VAULT-UI-CLIENT-FLOW-1: Tests for Vault Onboarding Modal,
-// direct 64-hex key import, session persistence, and AppShell integration.
+// password/recovery UI, session persistence, and AppShell integration.
 //
 // RUN: node --test tests/ui_vault_onboarding_test.ts
 
@@ -143,7 +143,7 @@ test('AppShell.tsx mounts VaultOnboardingModal and BottomDock displays vault-hea
 // Test 2: Static verification of VaultOnboardingModal.tsx debug IDs and flows
 // -----------------------------------------------------------------------------
 
-test('VaultOnboardingModal.tsx implements Setup, Unlock, Direct Key Import, and Skip with required debug IDs', () => {
+test('VaultOnboardingModal.tsx implements Setup, Unlock, and Skip without raw key import', () => {
   const modalPath = path.join(REPO_ROOT, 'src/ui/components/settings/VaultOnboardingModal.tsx');
   assert.ok(fs.existsSync(modalPath), 'VaultOnboardingModal.tsx must exist');
 
@@ -151,12 +151,8 @@ test('VaultOnboardingModal.tsx implements Setup, Unlock, Direct Key Import, and 
 
   const requiredDebugIds = [
     'vault-onboarding-modal',
-    'vault-onboarding-tab-setup',
-    'vault-onboarding-tab-unlock',
-    'vault-onboarding-tab-import',
     'vault-onboarding-setup-form',
     'vault-onboarding-unlock-form',
-    'vault-onboarding-import-form',
     'vault-onboarding-master-password-input',
     'vault-onboarding-confirm-password-input',
     'vault-onboarding-recovery-words-grid',
@@ -167,8 +163,6 @@ test('VaultOnboardingModal.tsx implements Setup, Unlock, Direct Key Import, and 
     'vault-onboarding-unlock-password-input',
     'vault-onboarding-unlock-recovery-input',
     'vault-onboarding-unlock-submit-btn',
-    'vault-onboarding-hex-key-input',
-    'vault-onboarding-import-btn',
     'vault-onboarding-remember-checkbox',
     'vault-onboarding-skip-btn',
   ];
@@ -180,29 +174,10 @@ test('VaultOnboardingModal.tsx implements Setup, Unlock, Direct Key Import, and 
     );
   }
 
-  // Verify direct import dispatches importLocalKey with an already-imported CryptoKey.
-  // REQ-RAWKEY-A7b: this assertion stays a source check because this suite has no DOM
-  // harness to mount the component, but it is retargeted from the retired
-  // `importLocalKey(clean, rememberSession)` hex call onto the current shape. Dispatching
-  // the key rather than the hex is what closes the unlock race -- the reducer's hex branch
-  // installs the key in a `.then()`, leaving a tick where isUnlocked is true and
-  // getActiveVaultKey() is still null. The *behavioral* proof of that property lives in
-  // tests/ui_vault_unlock_race_test.ts; this only pins the component's half of the contract.
-  assert.match(
-    content,
-    /const key = await importRawKeyHex\(clean\)/,
-    'VaultOnboardingModal.tsx must await importRawKeyHex at the call site, where the await is legal',
-  );
-  assert.match(
-    content,
-    /dispatch\(importLocalKey\(\{\s*key,\s*rememberSession\s*\}\)\)/,
-    'VaultOnboardingModal.tsx must dispatch importLocalKey with the CryptoKey, not the pasted hex',
-  );
-  assert.doesNotMatch(
-    content,
-    /importLocalKey\(clean/,
-    'VaultOnboardingModal.tsx must not dispatch the raw pasted hex into Redux (REQ-RAWKEY-A7)',
-  );
+  assert.doesNotMatch(content, /Direct Key Import|handleDirectKeyImport|importLocalKey|directHexKey/,
+    'onboarding must offer password and recovery only');
+  assert.match(content, /!isConfigured \?/, 'existing vaults must not offer setup');
+  assert.match(content, /isVaultLoading \?/, 'wait for vault status before offering setup');
 
   // Verify skip button writes dismissal
   assert.match(
