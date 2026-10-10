@@ -22,10 +22,11 @@
   /* ---------------------------------------------------------------- *
    * 1. Color — single dark theme. Public names state role, not hue.  *
    * ---------------------------------------------------------------- */
+  --color-backdrop: rgb(0 0 0 / 0.55);
   --color-canvas: #090909;
   --color-surface: #141414;
   --color-surface-raised: #1c1c1c;
-  --color-surface-overlay: #0d0f14;
+  --color-surface-overlay: var(--color-surface);
 
   --color-border-subtle: #262626;
   --color-border-strong: #3a3a3a;
@@ -207,7 +208,7 @@
   --color-canvas: #090909;
   --color-surface: #141414;
   --color-surface-raised: #1c1c1c;
-  --color-surface-overlay: #0d0f14;
+  --color-surface-overlay: var(--color-surface);
   --color-border-subtle: #262626;
   --color-border-strong: #3a3a3a;
   --color-text-primary: #ffffff;
@@ -233,7 +234,7 @@
   --color-canvas: #181825;
   --color-surface: #1e1e2e;
   --color-surface-raised: #313244;
-  --color-surface-overlay: #11111b;
+  --color-surface-overlay: var(--color-surface);
   --color-border-subtle: #45475a;
   --color-border-strong: #585b70;
   --color-text-primary: #cdd6f4;
@@ -259,7 +260,7 @@
   --color-canvas: #e6e9ef;
   --color-surface: #eff1f5;
   --color-surface-raised: #ccd0da;
-  --color-surface-overlay: #dce0e8;
+  --color-surface-overlay: var(--color-surface);
   --color-border-subtle: #bcc0cc;
   --color-border-strong: #acb0be;
   --color-text-primary: #4c4f69;
@@ -289,7 +290,7 @@
   --color-canvas: #16161e;
   --color-surface: #1a1b26;
   --color-surface-raised: #292e42;
-  --color-surface-overlay: #16161e;
+  --color-surface-overlay: var(--color-surface);
   --color-border-subtle: #414868;
   --color-border-strong: #565f89;
   --color-text-primary: #c0caf5;
@@ -315,7 +316,7 @@
   --color-canvas: #d5d6db;
   --color-surface: #e1e2e7;
   --color-surface-raised: #c4c8da;
-  --color-surface-overlay: #d5d6db;
+  --color-surface-overlay: var(--color-surface);
   --color-border-subtle: #8990b3;
   --color-border-strong: #848cb5;
   --color-text-primary: #3760bf;

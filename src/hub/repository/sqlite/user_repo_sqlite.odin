@@ -11,7 +11,7 @@ User_Repo_SQLite :: struct {
 
 new_user_repository :: proc(impl: ^User_Repo_SQLite, conn: ^Conn) -> iface.User_Repository {
 	impl.conn = conn
-	return iface.User_Repository{ctx = rawptr(impl), get_by_id = user_get_by_id_sqlite, save = user_save_sqlite, save_token = user_token_save_sqlite, get_token_by_id = user_token_get_by_id_sqlite, get_token_by_hash = user_token_get_by_hash_sqlite, list_tokens_by_owner = user_token_list_by_owner_sqlite}
+	return iface.User_Repository{ctx = rawptr(impl), launch_preferences_get = launch_preferences_get_sqlite, launch_preferences_save = launch_preferences_save_sqlite, get_by_id = user_get_by_id_sqlite, save = user_save_sqlite, save_token = user_token_save_sqlite, get_token_by_id = user_token_get_by_id_sqlite, get_token_by_hash = user_token_get_by_hash_sqlite, list_tokens_by_owner = user_token_list_by_owner_sqlite}
 }
 
 user_get_by_id_sqlite :: proc(ctx: rawptr, user_id: domain.User_ID) -> (domain.User, bool, domain.Domain_Error) {

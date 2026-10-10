@@ -65,7 +65,8 @@ import {
   type RightSidebarTab,
 } from '../../utils/clientPersistence';
 import Icon from '../Icon';
-import ProviderIcon from '../providers/ProviderIcon';
+import { MessageComposerInput, MessageComposerActions } from './MessageComposer';
+import RuntimeConfigurationOptions from './RuntimeConfigurationOptions';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { ClubbedRunGroup, PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
@@ -983,7 +984,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [chainSelectorOpen, setChainSelectorOpen] = useState(false);
   const [chainAgentSwitcherOpen, setChainAgentSwitcherOpen] = useState(false);
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const searchOpen = paletteOpen;
   const setSearchOpen = setPaletteOpen;
 
@@ -1208,13 +1208,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const configurationInputBlocked = conversationReadOnly || selectionChangesConfig || runtimeActionBusy || runtimeStopping || isStarting;
   configurationInputBlockedRef.current = Boolean(configurationInputBlocked);
   const sendDisabled = configurationInputBlocked || hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
-  useEffect(() => {
-    const input = textareaRef.current;
-    if (!input) return;
-    input.style.height = isMobile ? 'auto' : '';
-    input.style.overflowY = isMobile && input.scrollHeight > 72 ? 'auto' : '';
-    if (isMobile) input.style.height = `${Math.min(72, Math.max(24, input.scrollHeight))}px`;
-  }, [draft, isMobile, conversationReadOnly, selectionChangesConfig]);
+
 
 
   async function saveConversationTitle() {
@@ -1757,11 +1751,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setStagedBridgeId(null); setProvider(instanceProvider); setModel(instanceModel); setReconfigStatus('');
   }
 
-  const tierMeta: Record<string, { icon: 'rocket' | 'spark' | 'zap'; blurb: string }> = {
-    cheap: { icon: 'rocket', blurb: 'Fast, lower cost' },
-    normal: { icon: 'spark', blurb: 'Balanced' },
-    smart: { icon: 'zap', blurb: 'Best reasoning' },
-  };
   const pendingReconfig = selectionChangesConfig || operation?.phase === 'recovery_required';
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="text-left">
@@ -1773,55 +1762,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </div>
       </div>
       <div className="mb-4 rounded-xl bg-neutral-soft px-3 py-2 text-xs text-muted">Project: {projectId ? <VaultText value={projectName} fallback="Project" /> : 'No project'}</div>
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Bridge</div>
-      <div className="mb-5 grid gap-2 sm:grid-cols-2">
-        {bridges.map((item: any) => {
-          const id = bridgeId(item);
-          const selected = id === destinationBridgeId;
-          const available = item.status === 'online' && item.runtime_connected === true && item.reconfiguration_supported;
-          return <button key={id} type="button" data-debug-id={`conversation-destination-bridge-option-${id}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || !available} onClick={() => { settingsEditedRef.current = true; setStagedBridgeId(id); }} className={`flex min-h-14 min-w-0 items-center justify-between gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
-            <span className="min-w-0"><span className="block break-words text-sm font-medium text-primary">{item.label || item.machine_hostname || id}</span><span className="block text-xs text-muted">{item.status !== 'online' ? item.status : item.runtime_connected !== true ? 'Disconnected' : !item.reconfiguration_supported ? 'Update required' : id === instanceBridgeId ? 'Current bridge' : 'Online'}</span></span>
-            {selected ? <Icon name="check" size={18} className="shrink-0 text-accent" /> : null}
-          </button>;
-        })}
-        {!bridges.some((item: any) => bridgeId(item) === destinationBridgeId) ? <p className="text-xs text-danger">Current bridge is unavailable. Choose an online bridge.</p> : null}
-      </div>
-      <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
-      <input data-debug-id="conversation-model-select" type="hidden" value={model} readOnly />
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Provider</div>
-      {providerOptions.map((p) => {
-        const selected = (provider || instanceProvider) === p;
-        const current = instanceProvider === p;
-        const available = caps.some(cap => cap.provider === p);
-        return (
-          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || isStarting || !available} onClick={() => { settingsEditedRef.current = true; setProvider(p); }} className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><ProviderIcon provider={p} size={16} /></span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-primary">{p}</span>
-              <span className="block truncate text-xs text-muted">{!available ? 'Unavailable on selected bridge' : current ? 'Current provider' : 'Available'}</span>
-            </span>
-            {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
-          </button>
-        );
-      })}
-      <div className="my-1.5 border-t border-subtle" />
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Model</div>
-      {modelOptions.map((t) => {
-        const selected = (model || instanceModel) === t;
-        const current = instanceModel === t;
-        const available = caps.find(cap => cap.provider === (provider || instanceProvider))?.models.includes(t);
-        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Provider model' };
-        return (
-          <button key={t} type="button" data-debug-id={`conversation-model-option-${t}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || isStarting || !available} onClick={() => { settingsEditedRef.current = true; setModel(t); }} className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name={meta.icon} size={16} /></span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-primary">{t}</span>
-              <span className="block truncate text-xs text-muted">{!available ? 'Unavailable for selected provider' : meta.blurb}{current ? ' — current' : ''}</span>
-            </span>
-            {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
-          </button>
-        );
-      })}
+      <RuntimeConfigurationOptions debugPrefix="conversation" bridges={bridges} selection={{ bridgeId: destinationBridgeId, provider, model }} requireReconfiguration disabled={runtimeActionBusy || operationBlocksInput || isStarting} onChange={next => { settingsEditedRef.current = true; setStagedBridgeId(next.bridgeId); setProvider(next.provider); setModel(next.model); }} />
       <div className="mt-1.5 flex items-center gap-2 border-t border-subtle px-2 pt-2 text-[12px] text-muted">
         <Icon name="alert" size={14} className={pendingReconfig ? 'text-warning' : 'text-faint'} />
         <span><span className={`font-semibold ${pendingReconfig ? 'text-warning' : 'text-muted'}`}>Restarts the agent</span> — choose Apply to confirm.</span>
@@ -2004,40 +1945,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   function renderComposer() {
     const activeProvider = instanceProvider || provider;
-    const useCompactModelTrigger = isMobile || isSmallComposer;
-
-    const runtimeMenuTrigger = useCompactModelTrigger ? (
-      <button
-        type="button"
-        data-debug-id="conversation-runtime-menu-btn"
-        aria-label={`Choose bridge, provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
-        title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — click to change runtime`}
-        aria-haspopup="dialog"
-        aria-expanded={runtimeMenuOpen}
-        onClick={() => setRuntimeMenuOpen(true)}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-primary hover:bg-neutral-soft"
-      >
-        <ProviderIcon provider={activeProvider} size={16} />
-      </button>
-    ) : (
-      <button
-        type="button"
-        data-debug-id="conversation-runtime-menu-btn"
-        aria-label={`Choose bridge, provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
-        title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — changing runtime restarts the agent`}
-        aria-haspopup="dialog"
-        aria-expanded={runtimeMenuOpen}
-        onClick={() => setRuntimeMenuOpen(true)}
-        className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
-      >
-        <ProviderIcon provider={activeProvider} size={16} />
-        <span className="font-semibold truncate">{instanceModel || '—'}</span>
-        <Icon name="chevron-down" size={14} className="shrink-0" />
-      </button>
-    );
-    const composerInput = (<textarea
+    const composerInput = (<MessageComposerInput mobile={isMobile} debugId="conversation-composer-input"
               ref={textareaRef}
-              data-debug-id="conversation-composer-input"
               value={draft}
               disabled={configurationInputBlocked}
               onChange={(e) => {
@@ -2063,17 +1972,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); }
               }}
               onPaste={handleComposerPaste}
-              rows={isMobile ? 1 : 2}
               placeholder={isMobile ? 'Message the agent…' : 'Message the agent… (Cmd/Ctrl+Enter to send)'}
-              className={isMobile ? "block min-h-6 max-h-[72px] w-full resize-none bg-transparent p-0 text-base leading-6 text-primary outline-none placeholder:text-muted" : "min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-sm text-primary outline-none placeholder:text-muted"}
             />);
-    const mobileMoreMenu = (
-      <Menu side="top" align="end" label="Composer options" open={mobileMoreOpen} onOpenChange={setMobileMoreOpen} trigger={<button type="button" data-debug-id="conversation-composer-more-btn" aria-label="Composer options" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft"><Icon name="more-horizontal" size={19} /></button>}>
-        <Menu.Item data-debug-id="conversation-mobile-model-btn" onClick={() => { setMobileMoreOpen(false); setRuntimeMenuOpen(true); }}><ProviderIcon provider={activeProvider} size={16} /><span className="min-w-0"><span className="block truncate">{instanceModel || 'Choose model/tier'}</span><span className="block text-xs text-muted">{activeProvider || 'Provider'} · Agent settings</span></span></Menu.Item>
-        <Menu.Item data-debug-id="conversation-mobile-pane-btn" onClick={() => { userManuallyToggledPaneRef.current = true; setIsPaneExpanded(prev => !prev); setMobileMoreOpen(false); }}><Icon name="terminal" size={16} /><span>{isPaneExpanded ? 'Hide terminal pane' : 'Show terminal pane'}</span></Menu.Item>
-        <Menu.Item data-debug-id="conversation-mobile-upload-btn" disabled={configurationInputBlocked} onClick={() => { setMobileMoreOpen(false); openAttachmentPicker(); }}><Icon name="plus" size={16} /><span>Upload attachment</span></Menu.Item>
-      </Menu>
-    );
+    const composerActions = {
+      debugPrefix: 'conversation', mobile: isMobile, compactModel: isSmallComposer, provider: activeProvider, model: instanceModel,
+      onSettings: () => setRuntimeMenuOpen(true), onUpload: openAttachmentPicker,
+      uploadDisabled: configurationInputBlocked, sendDisabled, paneExpanded: isPaneExpanded,
+      onPaneToggle: () => { userManuallyToggledPaneRef.current = true; setIsPaneExpanded(prev => !prev); },
+    };
     return (
       <form
         ref={composerContainerRef as any}
@@ -2107,9 +2013,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-subtle bg-surface px-3 py-2.5 focus-within:border-accent sm:px-4 sm:py-3">
           <div data-debug-id="conversation-composer-context" className="mb-2 hidden min-w-0 items-center gap-x-2 sm:flex text-[12px] text-muted">
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-              <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (current location)`}>
-                <Icon name="lock" size={12} className="shrink-0" /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
-              </span>
+              <button type="button" onClick={() => setRuntimeMenuOpen(true)} aria-haspopup="dialog" aria-label="Change bridge, provider or model" data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (current location)`}>
+                <Icon name="device" size={12} className="shrink-0" /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
+              </button>
               {projectId ? (
                 <>
                   <span className="shrink-0 opacity-40">·</span>
@@ -2194,60 +2100,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted">{configurationIssues.map(issue => <li key={issue}>{issue}</li>)}</ul>
             </div> : (isMobile && !pendingReconfig ? <div className="flex items-end gap-2">
               <div className="min-w-0 flex-1 py-1.5">{composerInput}</div>
-              <button type="submit" data-debug-id="conversation-composer-send-btn" disabled={sendDisabled} aria-label="Send message" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg disabled:opacity-40"><Icon name="arrow-up" size={18} /></button>
-              {mobileMoreMenu}
+              <MessageComposerActions {...composerActions} inline />
             </div> : composerInput)}
           </div>
 
-          {!(isMobile && !pendingReconfig && !conversationReadOnly) ? <div data-debug-id="conversation-composer-toolbar" className="mt-2 flex min-w-0 items-center justify-between gap-2">
-              {!pendingReconfig && !conversationReadOnly ? <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  data-debug-id="conversation-attach-btn"
-                  type="button"
-                  onClick={openAttachmentPicker}
-                  aria-label="Upload attachment"
-                  title="Upload attachment"
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary sm:order-1"
-                >
-                  <Icon name="plus" size={19} />
-                </button>
-                <button
-                  data-debug-id="conversation-request-pane-btn"
-                  type="button"
-                  aria-pressed={isPaneExpanded}
-                  title="Toggle terminal pane panel"
-                  aria-label="Toggle terminal pane panel"
-                  onClick={() => {
-                    userManuallyToggledPaneRef.current = true;
-                    setIsPaneExpanded((prev) => !prev);
-                  }}
-                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors sm:order-2 ${
-                    isPaneExpanded
-                      ? 'bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30'
-                      : 'text-muted hover:bg-neutral-soft hover:text-primary'
-                  }`}
-                >
-                  <Icon name="terminal" size={18} />
-                </button>
-              </div> : <span aria-hidden="true" />}
-              <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
-                {isMobile ? mobileMoreMenu : runtimeMenuTrigger}
-
-              {pendingReconfig ? <div className="flex items-center gap-2">
+          {!(isMobile && !pendingReconfig && !conversationReadOnly) ? <MessageComposerActions {...composerActions} readOnly={conversationReadOnly} pendingActions={pendingReconfig ? <div className="flex items-center gap-2">
                 <button type="button" data-debug-id="conversation-reconfigure-reset-btn" disabled={runtimeActionBusy || operationBlocksInput} onClick={resetRuntimeConfiguration} className="rounded-xl border border-subtle px-4 py-2 text-sm text-primary disabled:opacity-40">Reset</button>
                 <button type="button" data-debug-id="conversation-reconfigure-apply-btn" disabled={runtimeActionBusy || (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) || stagedConfigurationIssues.length > 0} onClick={() => void applyReconfigure()} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40">Apply</button>
-              </div> : !conversationReadOnly ? <button
-                data-debug-id="conversation-composer-send-btn"
-                type="submit"
-                disabled={sendDisabled}
-                aria-label="Send message"
-                title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'}
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:order-7"
-              >
-                <Icon name="arrow-up" size={18} />
-              </button> : null}
-            </div>
-          </div> : null}
+              </div> : undefined} /> : null}
         </div>
       </div>
       </form>

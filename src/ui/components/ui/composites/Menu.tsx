@@ -176,7 +176,7 @@ const MenuRoot: React.FC<MenuProps> = ({
 
   const menuClassName = [
     'absolute z-dropdown min-w-[12rem] rounded-[var(--radius-md)] border border-subtle',
-    'bg-surface-raised py-1 shadow-overlay outline-none',
+    'bg-surface text-primary py-1 shadow-overlay outline-none',
     side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
     align === 'end' ? 'right-0' : 'left-0',
     className ?? '',
@@ -235,7 +235,7 @@ export const MenuItem: React.FC<MenuItemProps> = ({
       }}
       className={[
         'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[length:var(--text-body-sm-size)]',
-        'outline-none focus-visible:bg-surface-overlay hover:bg-surface-overlay',
+        'outline-none focus-visible:bg-neutral-soft hover:bg-neutral-soft',
         'disabled:opacity-50 disabled:cursor-not-allowed',
         danger ? 'text-danger' : 'text-primary',
         className ?? '',

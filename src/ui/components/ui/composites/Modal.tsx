@@ -117,7 +117,7 @@ const ModalBase: React.FC<ModalProps> = ({
     // put a correctly-capped panel back under the keyboard. Both edits are needed; either
     // alone does nothing. This is the generic composite, so every `Modal` consumer inherits it.
     <div
-      className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
+      className="fixed inset-x-0 top-0 app-viewport-height z-modal flex items-center justify-center bg-backdrop p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -131,7 +131,7 @@ const ModalBase: React.FC<ModalProps> = ({
         tabIndex={-1}
         className={[
           'flex max-h-[calc(var(--app-viewport-height)-2rem)] w-full flex-col overflow-hidden rounded-[var(--radius-lg)]',
-          'border border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
+          'border border-subtle bg-surface text-primary shadow-overlay outline-none',
           SIZE_MAX_W[size],
           className,
         ]

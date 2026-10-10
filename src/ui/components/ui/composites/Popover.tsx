@@ -119,7 +119,7 @@ const PopoverRoot: React.FC<PopoverProps> = ({
 
   const panelClassName = [
     'absolute z-dropdown min-w-[16rem] rounded-[var(--radius-md)] border border-subtle',
-    'bg-surface-raised p-3 text-primary shadow-overlay outline-none',
+    'bg-surface p-3 text-primary shadow-overlay outline-none',
     side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
     align === 'end' ? 'right-0' : 'left-0',
     className ?? '',

@@ -2,15 +2,18 @@ package http
 
 import "core:fmt"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
+import user_service "odin_test:hub/service/user"
 import iface "odin_test:hub/repository/iface"
 import shell_session_svc "odin_test:hub/service/shell_session"
 
 Agent_Handlers :: struct {
+ launch_preferences: ^user_service.User_Service,
 	auth:           ^auth_service.Auth_Service,
 	agents:         ^agent_service.Agent_Service,
 	event_bus:      ^events.User_Event_Bus,
@@ -48,8 +51,20 @@ create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// create agents for its own owner.
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
+	if json_bool(req.body, "favorite") && auth_ctx.kind != .User_Token && auth_ctx.kind != .Trusted_Proxy do return respond_error(domain.domain_error(.Forbidden, "user authentication is required for favorites"), req.request_id)
+	if json_bool(req.body, "favorite") {
+		if h.launch_preferences == nil do return respond_error(domain.domain_error(.Internal_Error, "launch preferences are not configured"), req.request_id)
+		sync.lock(&h.launch_preferences.launch_preferences_mutex)
+		defer sync.unlock(&h.launch_preferences.launch_preferences_mutex)
+		prefs, pref_err := user_service.get_launch_preferences(h.launch_preferences, auth_ctx)
+		if pref_err.code != .None do return respond_error(pref_err, req.request_id)
+		if len(prefs.favorite_agent_ids) >= user_service.MAX_FAVORITE_AGENTS do return respond_error(domain.domain_error(.Conflict, "You can have up to 6 favorite agents. Remove a favorite before creating another."), req.request_id)
+	}
 	agent, created, err := agent_service.create_agent(h.agents, auth_ctx, agent_input_from_body(req.body))
 	if !created do return respond_error(err, req.request_id)
+	if json_bool(req.body, "favorite") {
+		if _, saved, save_err := user_service.set_agent_favorite_locked(h.launch_preferences, auth_ctx, agent.agent_id, true); !saved do return respond_error(save_err, req.request_id)
+	}
 	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }

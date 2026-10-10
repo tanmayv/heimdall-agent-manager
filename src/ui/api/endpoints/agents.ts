@@ -350,7 +350,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string }>({
+    createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string; favorite?: boolean }>({
       queryFn: async (arg) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -358,6 +358,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
             name: arg.name,
             // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             slug: arg.slug || arg.name,
+            ...(arg.favorite !== undefined ? { favorite: arg.favorite } : {}),
             template_id: arg.templateId || '',
             instructions: arg.instructions || '',
           };

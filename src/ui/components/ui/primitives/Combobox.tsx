@@ -439,7 +439,7 @@ export function Combobox(props: ComboboxProps) {
         <div
           data-debug-id={debugId ? `${debugId}-popover` : undefined}
           onClick={(e) => e.stopPropagation()}
-          className="absolute left-0 right-0 z-dropdown mt-2 overflow-hidden rounded-[var(--radius-lg)] border border-subtle bg-surface-overlay shadow-overlay"
+          className="absolute left-0 right-0 z-dropdown mt-2 overflow-hidden rounded-[var(--radius-lg)] border border-subtle bg-surface text-primary shadow-overlay"
         >
           <div className="flex items-center gap-2 border-b border-subtle px-3 py-2 text-muted">
             <Icon name="search" size={15} />

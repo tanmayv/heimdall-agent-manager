@@ -238,7 +238,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// minter above: a grant that carried a bridge public key mints a per-machine
 	// `brg_` identity, never a user token with the machine as a label.
 	device_auth_service.with_bridge_token_minter(&graph.device_auth, device_bridge_minter, rawptr(graph))
-	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
+	graph.users.bridges = &graph.repos.bridges
+	graph.user_handlers = http.User_Handlers{launch_preferences = &graph.users, auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
 	graph.user_vault_handlers = http.User_Vault_Handlers{auth = &graph.auth, user_vault = &graph.user_vaults}
 	graph.shell_session_service = shell_session_svc.new_shell_session_service(
 		repo                = &graph.shell_session_repo,
@@ -285,6 +286,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry, providers = &graph.providers}
 	graph.agent_handlers = http.Agent_Handlers{
+ launch_preferences = &graph.users,
 		auth           = &graph.auth,
 		agents         = &graph.agents,
 		event_bus      = &graph.event_bus,
@@ -452,6 +454,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/stop", rawptr(&graph.agent_handlers), http.stop_agent_instance_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/conversation-launch", rawptr(&graph.user_handlers), http.get_conversation_launch_preferences_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/me/conversation-launch", rawptr(&graph.user_handlers), http.patch_conversation_launch_preferences_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/agents/*/favorite", rawptr(&graph.user_handlers), http.set_agent_favorite_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agents", rawptr(&graph.agent_handlers), http.create_agent_handler)
 	// Registered BEFORE the /agents/* wildcard so the literal "live" tree endpoint

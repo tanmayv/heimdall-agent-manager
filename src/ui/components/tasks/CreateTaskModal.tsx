@@ -28,7 +28,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentIdentities = agentIdentitiesQuery.data?.agents || [];
   // REQ-TB-5: the owner's bridges for the optional per-task bridge pin. Skipped
-  // while the modal is closed (same pattern as CreateChainModal).
+  // while the modal is closed.
   const bridgesQuery = useListBridgesQuery(undefined, { skip: !isOpen });
   const bridgeOptions = useMemo(
     () => taskBridgeOptions(bridgesQuery.data?.bridges || []),

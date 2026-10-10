@@ -110,7 +110,7 @@ const DrawerBase: React.FC<DrawerProps> = ({
   return createPortal(
     <div
       // REQ-MODAL-2: `app-viewport-height`, not `inset-0`. See the SIDE_CLASS note above.
-      className={['fixed inset-x-0 top-0 app-viewport-height z-modal flex bg-surface-overlay/80 backdrop-blur-sm', isBottom ? 'items-end' : '']
+      className={['fixed inset-x-0 top-0 app-viewport-height z-modal flex bg-backdrop backdrop-blur-sm', isBottom ? 'items-end' : '']
         .filter(Boolean)
         .join(' ')}
       onMouseDown={(e) => {
@@ -126,7 +126,7 @@ const DrawerBase: React.FC<DrawerProps> = ({
         aria-label={hideHeader ? accessibleLabel : rest['aria-label']}
         tabIndex={-1}
         className={[
-          'flex flex-col overflow-hidden border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
+          'flex flex-col overflow-hidden border-subtle bg-surface text-primary shadow-overlay outline-none',
           isBottom ? '' : SIZE_W[size],
           sideClass,
           className,

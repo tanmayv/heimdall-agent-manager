@@ -8,7 +8,6 @@ import {
 import type { ChainListItem } from '../../api/endpoints/tasks';
 import { showToast } from '../../store/toastSlice';
 import { useArchivedProjectIds } from '../projects/projectModel';
-import CreateChainModal from './CreateChainModal';
 import { StatusDot, Icon, Menu } from '@ui';
 import { VaultText, useDecryptedText } from '../vault/VaultText';
 import { isVaultArmored } from '../../utils/vaultContent';
@@ -196,7 +195,7 @@ function ProjectChainGroup({
   currentPath,
   chainFilter,
   onNavigate,
-  onOpenModal,
+  onNewConversation,
   onTogglePin,
 }: {
   projectId: string;
@@ -204,7 +203,7 @@ function ProjectChainGroup({
   currentPath: string;
   chainFilter: SidebarChainFilter;
   onNavigate: (path: string) => void;
-  onOpenModal: (projectId: string) => void;
+  onNewConversation: (projectId: string) => void;
   onTogglePin: (chain: ChainListItem, e: React.MouseEvent) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -234,8 +233,9 @@ function ProjectChainGroup({
         </button>
         <button
           type="button"
-          aria-label={`New chain for ${projectName}`}
-          onClick={() => onOpenModal(projectId)}
+          data-debug-id={`sidebar-project-new-conversation-${projectId}`}
+          aria-label="New conversation for project"
+          onClick={() => onNewConversation(projectId)}
           className="shrink-0 rounded-md p-0.5 text-faint hover:bg-neutral-soft hover:text-primary transition"
         >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -277,7 +277,6 @@ function ProjectChainGroup({
 }
 
 export default function ProjectChainTree({ projects, currentPath, onNavigate }: Props) {
-  const [modalProjectId, setModalProjectId] = useState<string | null>(null);
   const [chainFilter, setChainFilter] = useState<SidebarChainFilter>(() => readSidebarChainFilter());
   const dispatch = useDispatch();
   const { data: pinnedData } = useListPinnedTaskChainsQuery();
@@ -428,22 +427,12 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
             currentPath={currentPath}
             chainFilter={chainFilter}
             onNavigate={onNavigate}
-            onOpenModal={setModalProjectId}
+            onNewConversation={(projectId) => onNavigate(`/conversations/new?project_id=${encodeURIComponent(projectId)}`)}
             onTogglePin={handleTogglePin}
           />
         ))
       )}
-      {modalProjectId ? (
-        <CreateChainModal
-          projectId={modalProjectId}
-          isOpen={Boolean(modalProjectId)}
-          onClose={() => setModalProjectId(null)}
-          onCreated={(path) => {
-            setModalProjectId(null);
-            onNavigate(path);
-          }}
-        />
-      ) : null}
+
     </section>
   );
 }

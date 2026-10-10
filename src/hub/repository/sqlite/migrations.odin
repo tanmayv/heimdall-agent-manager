@@ -372,7 +372,9 @@ MIGRATION_073_CLAUDE_CURRENT_MODELS :: #load("migrations/073_claude_current_mode
 
 MIGRATION_074_RECONFIGURATION_RECOVERY_STOP :: #load("migrations/074_reconfiguration_recovery_stop.sql", string)
 
-migration_order :: [78]string {
+MIGRATION_075_CONVERSATION_LAUNCH_PREFERENCES :: #load("migrations/075_conversation_launch_preferences.sql", string)
+
+migration_order :: [79]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -451,6 +453,7 @@ migration_order :: [78]string {
 	"072_instance_reconfiguration.sql",
 	"073_claude_current_models.sql",
 	"074_reconfiguration_recovery_stop.sql",
+	"075_conversation_launch_preferences.sql",
 }
 
 run_migrations :: proc(
@@ -871,6 +874,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "066_antigravity_trust_detection.sql" do return strings.clone(MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION)
 	if name == "067_codex_sandbox_and_models.sql" do return strings.clone(MIGRATION_067_CODEX_SANDBOX_AND_MODELS)
 	if name == "070_free_one_bridge.sql" do return strings.clone(MIGRATION_070_FREE_ONE_BRIDGE)
+	if name == "075_conversation_launch_preferences.sql" do return strings.clone(MIGRATION_075_CONVERSATION_LAUNCH_PREFERENCES)
 	if name == "074_reconfiguration_recovery_stop.sql" do return strings.clone(MIGRATION_074_RECONFIGURATION_RECOVERY_STOP)
 	if name == "073_claude_current_models.sql" do return strings.clone(MIGRATION_073_CLAUDE_CURRENT_MODELS)
 	if name == "072_instance_reconfiguration.sql" do return strings.clone(MIGRATION_072_INSTANCE_RECONFIGURATION)

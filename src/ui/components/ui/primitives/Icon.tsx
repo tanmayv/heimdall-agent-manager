@@ -83,6 +83,8 @@ export type IconName =
   | 'git-branch'
   | 'layers'
   | 'pin'
+  | 'star'
+  | 'star-filled'
   | 'filter';
 
 /** Token size scale → px (the `--icon-*` sizes: 14 / 16 / 20 / 24). */
@@ -91,6 +93,8 @@ export type IconSize = 'sm' | 'md' | 'lg' | 'xl';
 const SIZE_PX: Record<IconSize, number> = { sm: 14, md: 16, lg: 20, xl: 24 };
 
 const PATHS: Record<IconName, ReactElement> = {
+  star: <path d="m12 3 2.78 5.63L21 9.54l-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.93 1.06-6.2L3 9.54l6.22-.91L12 3Z" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
+  'star-filled': <path d="m12 3 2.78 5.63L21 9.54l-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.93 1.06-6.2L3 9.54l6.22-.91L12 3Z" fill="currentColor" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" />,
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
   pencil: <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
   gear: (

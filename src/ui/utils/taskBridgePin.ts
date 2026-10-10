@@ -22,7 +22,7 @@ function bridgeLabel(bridge: any): string {
   return String(bridge?.label || bridge?.machine_hostname || bridgeIdOf(bridge) || '');
 }
 
-// GET /bridges is owner-scoped but includes revoked rows (CreateChainModal
+// GET /bridges is owner-scoped but includes revoked rows (launch settings
 // filters them the same way) — a revoked bridge can no longer host a task.
 export function isRevokedBridge(bridge: any): boolean {
   return String(bridge?.status || bridge?.runtime_status || bridge?.state || '').includes('revoke');

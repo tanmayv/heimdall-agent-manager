@@ -1,11 +1,14 @@
 package user
 
 import "core:strings"
+import "core:sync"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 User_Service :: struct {
+ launch_preferences_mutex: sync.Mutex,
+ bridges: ^iface.Bridge_Repository,
 	users:    ^iface.User_Repository,
 	// agents lets provisioning seed canonical durable agents ('coordinator', 'worker', 'reviewer')
 	// for new users so first-time users always have agents to start. Optional (nil in tests that
@@ -126,6 +129,13 @@ ensure_canonical_resources :: proc(service: ^User_Service, owner: domain.User_ID
 			}
 		}
 	}
+	// Persist seeded identities as pinned independently of their editable names.
+	if service.users != nil && service.users.launch_preferences_get != nil {
+		sync.lock(&service.launch_preferences_mutex)
+		if prefs, err := launch_preferences_read(service, string(owner)); err.code == .None { _, _ = launch_preferences_write(service, string(owner), prefs) }
+		sync.unlock(&service.launch_preferences_mutex)
+	}
+
 }
 
 // ensure_coordinator_agent seeds canonical resources for owner. Kept for backwards compatibility.

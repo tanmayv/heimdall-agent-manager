@@ -13,6 +13,7 @@ import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
+import user_service "odin_test:hub/service/user"
 
 User_WS_Ticket :: struct {
 	ticket: string,
@@ -29,6 +30,7 @@ User_WS_Ticket_Store :: struct {
 }
 
 User_Handlers :: struct {
+ launch_preferences: ^user_service.User_Service,
 	auth: ^auth_service.Auth_Service,
 	event_bus: ^events.User_Event_Bus,
 	ws_tickets: User_WS_Ticket_Store,

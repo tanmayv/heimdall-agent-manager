@@ -28,6 +28,7 @@ export default {
       },
       colors: {
         canvas: 'var(--color-canvas)',
+        backdrop: 'var(--color-backdrop)',
         surface: {
           DEFAULT: 'var(--color-surface)',
           raised: 'var(--color-surface-raised)',

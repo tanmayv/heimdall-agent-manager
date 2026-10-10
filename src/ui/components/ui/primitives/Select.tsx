@@ -542,7 +542,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
                 width: coords.width,
                 maxHeight: coords.maxHeight,
               }}
-              className="z-popover overflow-auto rounded-[var(--radius-md)] border border-subtle bg-surface-raised py-1 shadow-overlay"
+              className="z-popover overflow-auto rounded-[var(--radius-md)] border border-subtle bg-surface text-primary py-1 shadow-overlay"
             >
               {rows}
             </ul>,

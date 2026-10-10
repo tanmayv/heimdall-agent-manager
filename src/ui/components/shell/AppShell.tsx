@@ -2,7 +2,7 @@ import TaskChainsPage from '../taskchain/TaskChainsPage';
 import ProjectChainTree, { CollapsedPinnedChains } from '../chains/ProjectChainTree';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
+import NewConversationPage from '../chat/NewConversationPage';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
@@ -159,7 +159,7 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
-  { path: '/home', label: 'Home', icon: 'home', description: 'Recent task chains, issues, and action items', group: 'primary' },
+  { path: '/home', label: 'Home', icon: 'home', description: 'Start conversations and explore recent activity', group: 'primary' },
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts sent to your agents', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
@@ -269,7 +269,7 @@ function routeTitle(path: string): string {
 
 function routeDescription(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Recent task chains, issues, and action items.';
-  if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and model controls belong here in later UI tasks.';
+  if (path === '/conversations/new') return 'Choose a favorite agent and project, then send a message to start a conversation.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Update the prompt or schedule for this action.';
@@ -1155,7 +1155,7 @@ function RouteOutlet({
 
   const isDesktopTwoPaneRoute =
     viewport === 'desktop' &&
-    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory', '/issues'].some(
+    ['/projects', '/actions', '/agents', '/shells', '/memory', '/issues'].some(
       (prefix) => path === prefix || path.startsWith(`${prefix}/`)
     ) &&
     !path.endsWith('/new') &&
@@ -1213,7 +1213,7 @@ function RouteOutlet({
           // short code and confirms the terminal fingerprint before approval.
           <BridgeEnrollmentApprovalPage />
         ) : path === '/conversations/new' ? (
-          <ConversationLaunchComposer />
+          <NewConversationPage />
         ) : path === '/settings' || path === '/settings/bridges' ? (
           <BridgesPanel />
         ) : path === '/settings/appearance' ? (

@@ -217,6 +217,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	if !owner_ok do return domain.Agent_Instance{}, false, owner_err
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
 	if !agent_ok do return domain.Agent_Instance{}, false, agent_err
+	if agent.state != .Active do return {}, false, domain.domain_error(.Conflict, "archived agents cannot be launched")
 	bridge_id := strings.trim_space(input.bridge_id)
 	if bridge_id == "" && auth.bridge_id != "" {
 		bridge_id = auth.bridge_id
@@ -1390,6 +1391,7 @@ resolve_project_path_for_launch :: proc(service: ^Agent_Service, owner: domain.U
 	project, ok, err := iface.project_get(service.projects, project_id)
 	if !ok do return "", false, err
 	if project.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "project not found")
+	if project.state != .Active do return "", false, domain.domain_error(.Conflict, "archived projects cannot be used for launches")
 	path, path_ok, _ := iface.project_get_bridge_path(service.projects, project.project_id, bridge_id)
 	if path_ok do return path.path, true, domain.Domain_Error{}
 	return project.default_path, true, domain.Domain_Error{}
