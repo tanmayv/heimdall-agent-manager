@@ -58,9 +58,9 @@ bridge_enroll_test_rmdir :: proc(path: string) {
 enroll_approval_url_is_stable_and_code_free :: proc(t: ^testing.T) {
 	url := bridge_enroll_approval_url("https://heimdall.example.com")
 	defer delete(url)
-	testing.expect_value(t, url, "https://heimdall.example.com/device/add")
+	testing.expect_value(t, url, "https://heimdall.example.com/#/device/add")
 	testing.expect(t, !strings.contains(url, "?"), "the stable URL must carry no query")
-	testing.expect(t, !strings.contains(url, "#"), "the stable URL must carry no fragment")
+	testing.expect(t, strings.has_suffix(url, "#/device/add"), "the stable URL must use the UI hash route")
 	for forbidden in ([?]string{"user_code", "device_code", "bpk", "state", "callback", "access_token"}) {
 		testing.expectf(t, !strings.contains(url, forbidden), "approval URL leaked %s", forbidden)
 	}
@@ -69,6 +69,7 @@ enroll_approval_url_is_stable_and_code_free :: proc(t: ^testing.T) {
 @(test)
 enroll_automatic_approval_url_uses_a_browser_only_fragment :: proc(t: ^testing.T) {
 	automatic := bridge_enroll_automatic_approval_url("https://heimdall.example.com", "ABCD-2345")
+	defer delete(automatic)
 	testing.expect(t, automatic == "https://heimdall.example.com/#/device/add?code=ABCD-2345")
 	fragment_at := strings.index_byte(automatic, '#')
 	testing.expect(t, fragment_at > 0, "code must be after the fragment marker")

@@ -53,7 +53,7 @@ BRIDGE_ENROLL_AUTHORIZE_PATH :: "/api/v1/device/authorize"
 BRIDGE_ENROLL_TOKEN_PATH :: "/api/v1/device/token"
 // Stable authenticated web route. The UI uses the Hub's stored bridge key only
 // after the operator confirms its fingerprint against this terminal.
-BRIDGE_ENROLL_PAGE_PATH :: "/device/add"
+BRIDGE_ENROLL_PAGE_PATH :: "/#/device/add"
 BRIDGE_ENROLL_REFRESH_PATH :: "/api/v1/device/bridge-refresh"
 
 // 32 bytes for the PKCE verifier (RFC 7636 §4.1 permits 43-128 chars; 32 raw
@@ -246,14 +246,14 @@ bridge_enroll_approval_url :: proc(ui_origin: string, allocator := context.alloc
 
 // The automatic same-machine convenience carries the short code in a fragment.
 // Browsers do not send fragments in HTTP requests or Referer headers, so the Hub
-// and reverse-proxy logs still see only the stable page above. The SPA consumes
-// and removes this fragment immediately. The terminal continues to print the
+// and reverse-proxy logs see only the UI root. The SPA consumes and removes
+// the code query while retaining the route fragment. The terminal prints the
 // stable URL for phone/manual enrollment.
 bridge_enroll_automatic_approval_url :: proc(
 	ui_origin, user_code: string,
 	allocator := context.allocator,
 ) -> string {
-	return strings.concatenate({ui_origin, "/#/device/add?code=", user_code}, allocator)
+	return strings.concatenate({ui_origin, BRIDGE_ENROLL_PAGE_PATH, "?code=", user_code}, allocator)
 }
 
 // ===== The machine descriptor =====
