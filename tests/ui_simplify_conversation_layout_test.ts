@@ -22,6 +22,35 @@ const HUB_CONTENT_SERVICE_FILE = path.join(REPO_ROOT, 'src/hub/service/content/c
 const SHELL_TERMINAL_PANE_FILE = path.join(REPO_ROOT, 'src/ui/components/shells/ShellTerminalPane.tsx');
 const CHAT_ACTION_CARD_FILE = path.join(REPO_ROOT, 'src/ui/components/chat/ChatActionCard.tsx');
 const CARDS_ENDPOINT_FILE = path.join(REPO_ROOT, 'src/ui/api/endpoints/cards.ts');
+const CHAT_COPY_BUTTON_FILE = path.join(REPO_ROOT, 'src/ui/components/ChatHoverCopyButton.tsx');
+
+test('REQ-1/REQ-2/REQ-3: message copy action reserves layout space and centers its touch target', () => {
+  const listContent = fs.readFileSync(CHAT_LIST_FILE, 'utf8');
+  const buttonContent = fs.readFileSync(CHAT_COPY_BUTTON_FILE, 'utf8');
+
+  assert.ok(
+    !listContent.includes('pointer-events-none h-0 overflow-visible'),
+    'copy action must not use a zero-height container that overlaps the following read-status row'
+  );
+  assert.ok(
+    listContent.includes('className="mt-1 flex min-h-11 w-full items-center justify-end gap-1.5 text-[10px] text-faint sm:min-h-8"'),
+    'copy, timestamp, and read status must share an in-flow footer with reserved touch-target height and spacing'
+  );
+  assert.ok(
+    buttonContent.includes('inline-flex h-11 w-11 shrink-0 items-center justify-center leading-none')
+      && buttonContent.includes('sm:h-8 sm:w-8'),
+    'copy button must center its icon in an explicit 44px mobile / 32px desktop square hit target'
+  );
+  assert.ok(
+    buttonContent.includes('<Icon name={icon} size="sm" />'),
+    'copy control must use the canonical SVG icon rather than an offset Unicode glyph'
+  );
+  assert.ok(
+    buttonContent.includes("await copyText(text || '')")
+      && listContent.includes('message.isUser && delivery.glyph'),
+    'clipboard behavior and user-message read-state rendering must remain wired'
+  );
+});
 
 test('REQ-SIMPLIFY-GUTTER-3: AgentActivityBubbles returns null when empty with no reserved empty gutter', () => {
   const content = fs.readFileSync(BUBBLES_FILE, 'utf8');

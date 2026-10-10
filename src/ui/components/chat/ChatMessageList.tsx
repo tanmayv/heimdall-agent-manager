@@ -319,12 +319,8 @@ export default function ChatMessageList({
                     </div>
                   )}
                   {!hideCardChrome && (
-                    <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
-                      <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />
-                    </div>
-                  )}
-                  {!hideCardChrome && (
-                    <div className="mt-1 flex w-full items-center justify-end gap-1.5 text-[10px] text-faint">
+                    <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className="mt-1 flex min-h-11 w-full items-center justify-end gap-1.5 text-[10px] text-faint sm:min-h-8">
+                      <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="rounded-full border border-subtle bg-surface/80 shadow-lg" />
                       {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso}>{timestamp.label}</time> : null}
                       {message.isUser && delivery.glyph ? (
                         <span data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={delivery.tone}>{delivery.glyph} {delivery.label}</span>

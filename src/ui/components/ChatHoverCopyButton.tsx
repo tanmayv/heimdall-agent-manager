@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Icon from './ui/primitives/Icon';
 
 type ChatHoverCopyButtonProps = {
   debugId: string;
@@ -28,6 +29,7 @@ async function copyText(text: string) {
 export default function ChatHoverCopyButton({ debugId, text, className = '' }: ChatHoverCopyButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
   const title = state === 'copied' ? 'Copied' : state === 'error' ? 'Copy failed' : 'Copy message';
+  const icon = state === 'copied' ? 'check' : state === 'error' ? 'alert' : 'copy';
   return (
     <button
       type="button"
@@ -44,9 +46,9 @@ export default function ChatHoverCopyButton({ debugId, text, className = '' }: C
           window.setTimeout(() => setState('idle'), 1400);
         }
       }}
-      className={`opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 ${className}`}
+      className={`inline-flex h-11 w-11 shrink-0 items-center justify-center leading-none opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 sm:h-8 sm:w-8 ${className}`}
     >
-      {state === 'copied' ? '✓' : state === 'error' ? '!' : '⧉'}
+      <Icon name={icon} size="sm" />
     </button>
   );
 }
