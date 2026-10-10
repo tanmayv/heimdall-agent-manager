@@ -45,7 +45,7 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 	if writer_mu == nil do return false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
 	sync.lock(writer_mu)
 	defer sync.unlock(writer_mu)
-	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
+	socket, _, socket_ok := project_service.bridge_runtime_registry_command_connection(registry, command.bridge_id)
 	if !socket_ok do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
 	// The writer lock is per durable Bridge id. A slow socket cannot stall command
 	// delivery or heartbeat acknowledgements for every other connected Bridge.
@@ -60,7 +60,7 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	writer_mu := project_service.bridge_runtime_registry_writer_mutex(registry, command.bridge_id)
 	if writer_mu == nil do return "", false, domain.domain_error(.Bridge_Busy, "bridge writer capacity exhausted")
 	sync.lock(writer_mu)
-	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
+	socket, generation, socket_ok := project_service.bridge_runtime_registry_command_connection(registry, command.bridge_id)
 	if !socket_ok {
 		sync.unlock(writer_mu)
 		return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
@@ -76,7 +76,7 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	// owned copy stable while the condition wait releases this thread.
 	wait_id := strings.clone(command.command_id)
 	defer delete(wait_id)
-	cached, ok := runtime_command_wait_terminal(registry, command.bridge_id, wait_id, time.Duration(timeout_ms) * time.Millisecond)
+	cached, ok := runtime_command_wait_terminal(registry, command.bridge_id, generation, wait_id, time.Duration(timeout_ms) * time.Millisecond)
 	if !ok do return "", false, domain.domain_error(.Bridge_Timeout, "bridge websocket command timed out")
 	error_code := jsonx.extract_string(cached, "error_code")
 	defer delete(error_code)
@@ -101,7 +101,8 @@ validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Pro
 	ws_url := project_service.bridge_runtime_registry_path_validation_url(registry, command.bridge_id)
 	if ws_url == "" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
 	if command.type != "validate_project_path" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Internal_Error, "unexpected bridge command type")
-	if cached, cached_ok := runtime_command_cached_copy(registry, command.bridge_id, command.command_id); cached_ok {
+	generation := project_service.bridge_runtime_registry_generation(registry, command.bridge_id)
+	if cached, cached_ok := runtime_command_cached_copy(registry, command.bridge_id, generation, command.command_id); cached_ok {
 		defer delete(cached, runtime.default_allocator())
 		return parse_validation_result(command, cached), true, domain.Domain_Error{}
 	}
@@ -110,7 +111,7 @@ validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Pro
 		// The cache clones into its process-wide allocator. This caller always retains
 		// and frees its local serialization, regardless of duplicate/replacement state.
 		result_json := validation_result_json(result)
-		_, _ = runtime_command_result_idempotent(registry, command.bridge_id, command.command_id, result_json)
+		_, _ = runtime_command_result_idempotent(registry, command.bridge_id, generation, command.command_id, result_json)
 		delete(result_json)
 	}
 	return result, ok, err

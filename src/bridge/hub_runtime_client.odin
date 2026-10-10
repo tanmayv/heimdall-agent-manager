@@ -429,7 +429,11 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	init_hb := bridge_hub_heartbeat_json()
 	_ = ws.send_text(conn, init_hb)
 	delete(init_hb)
+	last_iteration := time.now()
 	for conn.connected {
+		now_iteration := time.now()
+		bridge_command_dispatch_observe_loop_delay(time.diff(last_iteration, now_iteration))
+		last_iteration = now_iteration
 		inbound_count := 0
 		for inbound_count < BRIDGE_HUB_INBOUND_BUDGET {
 			text, got := ws.poll_text(conn)
@@ -1250,10 +1254,9 @@ bridge_runtime_apply_update :: proc(
 
 	// Extract tarball
 	tar_argv := []string{"tar", "-xzf", tarball_path, "-C", stage_dir}
-	tar_state, tar_out, tar_err, tar_proc_err := os.process_exec(os.Process_Desc{command = tar_argv}, context.allocator)
-	if len(tar_out) > 0 do delete(tar_out)
-	if len(tar_err) > 0 do delete(tar_err)
-	if tar_proc_err != nil || !tar_state.success {
+	tar_out, tar_err, tar_ok, _ := bridge_process_run_capture(tar_argv, 30 * time.Second)
+	defer { delete(tar_out); delete(tar_err) }
+	if !tar_ok {
 		_ = os.remove_all(stage_dir)
 		return false, "tarball extraction failed"
 	}
@@ -1285,10 +1288,9 @@ bridge_runtime_apply_update :: proc(
 
 	_ = os.chmod(bridge_binary, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
 	pf_argv := []string{bridge_binary, "--version"}
-	pf_state, pf_out, pf_err, pf_proc_err := os.process_exec(os.Process_Desc{command = pf_argv}, context.allocator)
-	if len(pf_out) > 0 do delete(pf_out)
-	if len(pf_err) > 0 do delete(pf_err)
-	if pf_proc_err != nil || !pf_state.success {
+	pf_out, pf_err, pf_ok, _ := bridge_process_run_capture(pf_argv, 5 * time.Second)
+	defer { delete(pf_out); delete(pf_err) }
+	if !pf_ok {
 		_ = os.remove_all(stage_dir)
 		return false, fmt.tprintf("preflight execution check failed (%s --version)", bridge_binary)
 	}
@@ -2521,6 +2523,10 @@ bridge_hub_send_vault_status :: proc(conn: ^ws.Connection) {
 bridge_hub_heartbeat_json :: proc() -> string {
 	caps := "[]"
 	features := bridge_runtime_features_json()
+	dispatch_metrics := bridge_command_dispatch_metrics_json()
+	defer delete(dispatch_metrics)
+	breaker_metrics := bridge_dependency_breaker_metrics_json()
+	defer delete(breaker_metrics)
 	// REQ-BVS-1: read the vault tri-state BEFORE taking bridge_runtime_mutex.
 	// bridge_vault_status() touches the kernel keyring and the filesystem, and no
 	// blocking I/O belongs inside a lock the per-instance reporters also contend on.
@@ -2536,6 +2542,10 @@ bridge_hub_heartbeat_json :: proc() -> string {
 	strings.write_string(&b, caps)
 	strings.write_string(&b, ",\"features\":")
 	strings.write_string(&b, features)
+	strings.write_string(&b, ",\"command_dispatch\":")
+	strings.write_string(&b, dispatch_metrics)
+	strings.write_string(&b, ",\"dependency_breakers\":")
+	strings.write_string(&b, breaker_metrics)
 	strings.write_string(&b, ",\"active_instance_ids\":[")
 	first_active := true
 	for inst in bridge_runtime_instances {

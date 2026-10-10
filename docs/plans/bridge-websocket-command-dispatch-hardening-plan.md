@@ -13,20 +13,28 @@
 Implemented in the first slice:
 
 - terminal-result state replaces accepted acknowledgements, with event-driven Hub waiters;
+- Hub result/waiter identity includes the Bridge connection generation, preventing
+  a late result from a replaced connection from satisfying new work;
 - stable per-Bridge writers and synchronized live-Bridge admission/generation state;
 - bounded, per-Bridge-partitioned Hub result retention with owned cache memory;
 - bounded Bridge queues, owned command records, keyed FIFO conflict ordering, dedicated
   lifecycle/interactive/background/exclusive/IO/shell workers, and recovery reserve;
+- one exhaustive command-spec registry declaring priority, ordering, deadline, cost,
+  coalescing, and retry behavior for every accepted reader command;
 - generation-tagged result outbox with explicit backpressure failures;
 - fast `bridge_busy`, deadline, malformed-command, missing-id, and oversized-command failures;
 - bounded inbound frame bursts instead of one frame followed by an unconditional sleep; and
-- provider version-process timeout, termination, and reaping.
+- provider version-process timeout, termination, and reaping;
+- filter-keyed provider-discovery single-flight fanout;
+- provider-probe and PTY-host circuit breakers with one half-open recovery probe;
+- a bounded process runner used by VCS commands and Bridge-update extraction/preflight,
+  with output caps plus kill-and-reap deadline handling; and
+- non-secret heartbeat metrics for saturation, queue/execute latency, stale completions,
+  response backpressure, and dependency-breaker activity.
 
 Still required before the plan is complete:
 
-- provider-discovery single-flight and dependency circuit breakers;
-- complete queue/latency/saturation telemetry;
-- command-specific cost units and remaining external-wait deadlines beyond provider probes;
+- remaining filesystem traversal and bootstrap/network deadlines;
 - reconnect replay pacing/backoff; and
 - the multi-Bridge and blocked-dependency end-to-end load matrix in Phase 6.
 

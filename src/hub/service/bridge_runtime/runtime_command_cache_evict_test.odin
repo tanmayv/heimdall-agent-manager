@@ -23,7 +23,7 @@ runtime_command_cache_evicts_and_keeps_caching :: proc(t: ^testing.T) {
 		id := fmt.aprintf("cmd_%d", i)
 		res := fmt.aprintf("{\"command_id\":\"cmd_%d\"}", i)
 		append(&ids, id); append(&results, res)
-		_, _ = runtime_command_result_idempotent(registry, "brg_x", id, res)
+		_, _ = runtime_command_result_idempotent(registry, "brg_x", 1, id, res)
 	}
 
 	// The cache never stops: count keeps advancing past the capacity.
@@ -31,23 +31,23 @@ runtime_command_cache_evicts_and_keeps_caching :: proc(t: ^testing.T) {
 
 	// The most recent `cap` results are still retrievable (this is what a relay
 	// waiting on a fresh command needs).
-	newest, ok := runtime_command_cached(registry, "brg_x", ids[total - 1])
+	newest, ok := runtime_command_cached(registry, "brg_x", 1, ids[total - 1])
 	testing.expect(t, ok, "the newest command result must still be cached")
 	testing.expect_value(t, newest, results[total - 1])
-	mid, ok_mid := runtime_command_cached(registry, "brg_x", ids[total - cap]) // oldest still-live
+	mid, ok_mid := runtime_command_cached(registry, "brg_x", 1, ids[total - cap]) // oldest still-live
 	testing.expect(t, ok_mid, "the oldest still-live result must be cached")
 	_ = mid
 
 	// The overflowed-out oldest entries are evicted (bounded memory), not corrupt.
-	_, ok_evicted := runtime_command_cached(registry, "brg_x", ids[0])
+	_, ok_evicted := runtime_command_cached(registry, "brg_x", 1, ids[0])
 	testing.expect(t, !ok_evicted, "the oldest overflowed id must be evicted")
 
 	// Idempotent: the first result for an id still wins over a later frame.
 	first := "{\"first\":true}"
 	second := "{\"second\":true}"
-	got1, _ := runtime_command_result_idempotent(registry, "brg_x", "dup_id", first)
+	got1, _ := runtime_command_result_idempotent(registry, "brg_x", 1, "dup_id", first)
 	testing.expect_value(t, got1, first)
-	got2, existed := runtime_command_result_idempotent(registry, "brg_x", "dup_id", second)
+	got2, existed := runtime_command_result_idempotent(registry, "brg_x", 1, "dup_id", second)
 	testing.expect(t, existed, "second frame for a cached id must report a hit")
 	testing.expect_value(t, got2, first)
 }
@@ -58,15 +58,15 @@ runtime_command_cache_is_partitioned_by_bridge :: proc(t: ^testing.T) {
 	defer { runtime_command_cache_destroy(registry); free(registry) }
 	quiet_result := strings.clone("{\"type\":\"provider_discovery_report\",\"command_id\":\"quiet\"}")
 	defer delete(quiet_result)
-	_, _ = runtime_command_result_idempotent(registry, "brg_quiet", "quiet", quiet_result)
+	_, _ = runtime_command_result_idempotent(registry, "brg_quiet", 1, "quiet", quiet_result)
 	for i in 0 ..< RUNTIME_COMMAND_RESULTS_PER_BRIDGE * 4 {
 		id := fmt.aprintf("noisy_%d", i)
 		result := fmt.aprintf("{\"type\":\"command_result\",\"command_id\":\"noisy_%d\",\"payload\":{\"status\":\"succeeded\"}}", i)
-		_, _ = runtime_command_result_idempotent(registry, "brg_noisy", id, result)
+		_, _ = runtime_command_result_idempotent(registry, "brg_noisy", 1, id, result)
 		delete(id)
 		delete(result)
 	}
-	quiet, quiet_ok := runtime_command_cached(registry, "brg_quiet", "quiet")
+	quiet, quiet_ok := runtime_command_cached(registry, "brg_quiet", 1, "quiet")
 	testing.expect(t, quiet_ok, "a noisy Bridge must not evict another Bridge's pending result")
 	testing.expect_value(t, quiet, quiet_result)
 }
@@ -80,4 +80,19 @@ runtime_writer_mutexes_are_isolated_by_bridge :: proc(t: ^testing.T) {
 	b := project_service.bridge_runtime_registry_writer_mutex(registry, "brg_b")
 	testing.expect(t, a1 != nil && a1 == a2, "one Bridge must retain one stable writer lock")
 	testing.expect(t, b != nil && a1 != b, "different Bridges must never share a socket writer lock")
+}
+
+@(test)
+runtime_command_cache_isolated_by_connection_generation :: proc(t: ^testing.T) {
+	registry := new(project_service.Bridge_Runtime_Registry)
+	defer { runtime_command_cache_destroy(registry); free(registry) }
+	old_result := `{"type":"command_result","payload":{"status":"succeeded","result":"old"}}`
+	new_result := `{"type":"command_result","payload":{"status":"succeeded","result":"new"}}`
+	_, _ = runtime_command_result_idempotent(registry, "brg_a", 1, "cmd_same", old_result)
+	_, _ = runtime_command_result_idempotent(registry, "brg_a", 2, "cmd_same", new_result)
+	old_cached, old_ok := runtime_command_cached(registry, "brg_a", 1, "cmd_same")
+	new_cached, new_ok := runtime_command_cached(registry, "brg_a", 2, "cmd_same")
+	testing.expect(t, old_ok && new_ok, "both generations retain their own terminal observation")
+	testing.expect_value(t, old_cached, old_result)
+	testing.expect_value(t, new_cached, new_result)
 }

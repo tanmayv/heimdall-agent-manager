@@ -20,7 +20,7 @@ Writer_Job :: struct {
 writer_entry :: proc(th: ^thread.Thread) {
 	j := (^Writer_Job)(th.data)
 	for i in j.lo ..< j.hi {
-		_, _ = runtime_command_result_idempotent(j.registry, j.bridge_id, j.ids[i], j.results[i])
+		_, _ = runtime_command_result_idempotent(j.registry, j.bridge_id, 1, j.ids[i], j.results[i])
 	}
 }
 
@@ -30,7 +30,7 @@ reader_entry :: proc(th: ^thread.Thread) {
 	// Hammer the cache read path concurrently with the writers to shake out any
 	// unsynchronized read-vs-write on command_ids/command_count.
 	for _ in 0 ..< 2000 {
-		_, _ = runtime_command_cached(j.registry, "brg_0", j.ids[0])
+		_, _ = runtime_command_cached(j.registry, "brg_0", 1, j.ids[0])
 	}
 }
 
@@ -44,7 +44,7 @@ Terminal_Wait_Job :: struct {
 @(private = "file")
 terminal_wait_entry :: proc(th: ^thread.Thread) {
 	j := (^Terminal_Wait_Job)(th.data)
-	j.result, j.ok = runtime_command_wait_terminal(j.registry, "brg_wait", "cmd_wait", time.Second)
+	j.result, j.ok = runtime_command_wait_terminal(j.registry, "brg_wait", 1, "cmd_wait", time.Second)
 }
 
 @(test)
@@ -93,7 +93,7 @@ runtime_command_cache_is_thread_safe :: proc(t: ^testing.T) {
 	testing.expect_value(t, registry.command_count, N)
 	for i in 0 ..< N {
 		bridge_id := fmt.aprintf("brg_%d", i / per)
-		cached, ok := runtime_command_cached(registry, bridge_id, ids[i])
+		cached, ok := runtime_command_cached(registry, bridge_id, 1, ids[i])
 		delete(bridge_id)
 		testing.expect(t, ok, "each written command id must be retrievable")
 		testing.expect_value(t, cached, results[i])
@@ -111,7 +111,7 @@ runtime_terminal_waiter_is_signalled_without_polling :: proc(t: ^testing.T) {
 	thread.start(waiter)
 	time.sleep(10 * time.Millisecond)
 	terminal := `{"type":"command_result","command_id":"cmd_wait","payload":{"status":"succeeded"}}`
-	_, _ = runtime_command_result_idempotent(registry, "brg_wait", "cmd_wait", terminal)
+	_, _ = runtime_command_result_idempotent(registry, "brg_wait", 1, "cmd_wait", terminal)
 	thread.join(waiter)
 	thread.destroy(waiter)
 	defer delete(job.result, runtime.default_allocator())

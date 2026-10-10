@@ -91,12 +91,19 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 		pty_host_daemon_socket = pty_host_socket_path()
 	}
 	socket := pty_host_daemon_socket
+	breaker_key := strings.concatenate({"pty-host:", socket})
+	defer delete(breaker_key)
+	if !bridge_dependency_breaker_allow(breaker_key) do return "", false
 
 	// Already up on this bridge's own socket (this process started it, or a prior
 	// instance of THIS bridge left it running across a restart)?
-	if pty_host_daemon_started && bridge_pty_host_ping(socket) do return socket, true
+	if pty_host_daemon_started && bridge_pty_host_ping(socket) {
+		bridge_dependency_breaker_record(breaker_key, true)
+		return socket, true
+	}
 	if bridge_pty_host_ping(socket) {
 		pty_host_daemon_started = true
+		bridge_dependency_breaker_record(breaker_key, true)
 		return socket, true
 	}
 
@@ -109,6 +116,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	proc_handle, err := os.process_start(os.Process_Desc{command = cmd})
 	if err != nil {
 		fmt.eprintln("bridge pty-host: failed to start daemon:", bin, err)
+		bridge_dependency_breaker_record(breaker_key, false)
 		return "", false
 	}
 	// Detach — the daemon outlives this call and is reaped by the OS on exit.
@@ -119,11 +127,13 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	for time.now()._nsec < deadline._nsec {
 		if bridge_pty_host_ping(socket) {
 			pty_host_daemon_started = true
+			bridge_dependency_breaker_record(breaker_key, true)
 			return socket, true
 		}
 		time.sleep(50 * time.Millisecond)
 	}
 	fmt.eprintln("bridge pty-host: daemon did not become ready on", socket)
+	bridge_dependency_breaker_record(breaker_key, false)
 	return "", false
 }
 

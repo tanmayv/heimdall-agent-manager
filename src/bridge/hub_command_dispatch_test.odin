@@ -4,6 +4,32 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+bridge_dispatch_queue_take_transfers_job_ownership :: proc(t: ^testing.T) {
+	queue := make([dynamic]Bridge_Dispatch_Job)
+	defer delete(queue)
+	append(&queue, Bridge_Dispatch_Job{
+		text = strings.clone(`{"type":"provider_discover"}`),
+		command_id = strings.clone("cmd_take"),
+		command_type = strings.clone("provider_discover"),
+		generation = 7,
+		owned_bytes = 64,
+		cost_units = 16,
+	})
+
+	job, ok := bridge_command_dispatch_take_queue_locked(&queue)
+	testing.expect(t, ok, "queued job is available")
+	testing.expect_value(t, len(queue), 0)
+	testing.expect_value(t, job.command_id, "cmd_take")
+	testing.expect_value(t, job.command_type, "provider_discover")
+	testing.expect_value(t, job.generation, i64(7))
+	testing.expect(t, strings.contains(job.text, "provider_discover"), "worker retains the owned command body")
+	delete(job.text)
+	delete(job.command_id)
+	delete(job.command_type)
+	delete(job.ordering_key)
+}
+
+@(test)
 bridge_dispatch_classifies_blocking_incident_paths :: proc(t: ^testing.T) {
 	lifecycle, lifecycle_ok := bridge_command_dispatch_class("launch_agent")
 	background, background_ok := bridge_command_dispatch_class("provider_discover")
@@ -77,4 +103,42 @@ bridge_dispatch_ordering_keys_serialize_conflicting_mutations :: proc(t: ^testin
 	testing.expect(t, a1 != b, "independent agents may execute in parallel")
 	testing.expect_value(t, s1, s2)
 	testing.expect_value(t, fs1, fs2)
+}
+
+@(test)
+bridge_command_registry_covers_every_reader_command :: proc(t: ^testing.T) {
+	types := []string{
+		"bridge_heartbeat_ack", "provider_catalog_version", "provider_catalog", "lsp_send", "tunnel_open", "tunnel_data", "tunnel_close", "proxy_data", "proxy_close",
+		"launch_agent", "launch_provider_test", "stop_agent", "wake_agent", "agent_pty_input", "agent_pty_resize", "bridge_unseal", "bridge_lock", "set_telemetry", "lsp_start", "lsp_stop",
+		"notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "task_status_changed_notify", "capture_agent_pane", "get_agent_pane",
+		"provider_discover", "shell_stream_attach", "bridge_update",
+		"fs_list_dir", "fs_stat", "fs_make_dir", "fs_read_file", "agent_run_dir_list", "agent_run_dir_read", "fs_create_file", "fs_write_file", "fs_batch_write", "fs_move", "fs_delete", "fs_find_files", "fs_grep",
+		"vcs_capabilities", "vcs_status", "vcs_files", "vcs_diff", "vcs_stage", "vcs_unstage", "vcs_revert", "vcs_save_file", "vcs_commit", "vcs_upload", "vcs_push", "vcs_sync", "vcs_pull", "vcs_log", "vcs_commit_diff", "vcs_workspaces",
+		"get_shell_output", "shell_pty_input", "shell_pty_resize", "shell_stream_detach", "shell_start", "shell_background", "shell_kill", "shell_signal", "shell_restart", "shell_set_port", "shell_list", "shell_logs", "shell_capture", "shell_get_pane",
+	}
+	for command_type in types {
+		spec, ok := bridge_command_spec(command_type)
+		testing.expect(t, ok, "every reader command must have a dispatch spec")
+		testing.expect(t, spec.timeout_ms > 0 && spec.cost_units > 0, "every command spec must declare bounded time and cost")
+		if spec.queued do testing.expect(t, spec.requires_id, "queued commands require stable command ids")
+	}
+	_, unknown := bridge_command_spec("unknown_reader_command")
+	testing.expect(t, !unknown, "unknown commands fail closed")
+}
+
+@(test)
+bridge_dispatch_cost_budget_preserves_recovery_reserve :: proc(t: ^testing.T) {
+	normal_cost := BRIDGE_DISPATCH_COST_LIMIT - BRIDGE_DISPATCH_RECOVERY_COST_RESERVE
+	testing.expect_value(t, bridge_command_dispatch_admission_scope(.General_IO, 0, 0, 0, 0, 10, false, normal_cost, 1), "global")
+	testing.expect_value(t, bridge_command_dispatch_admission_scope(.Lifecycle, 0, 0, 0, 0, 10, true, normal_cost, 1), "")
+}
+
+@(test)
+bridge_dispatch_metrics_are_bounded_and_non_secret :: proc(t: ^testing.T) {
+	json := bridge_command_dispatch_metrics_json()
+	defer delete(json)
+	testing.expect(t, strings.contains(json, `"queued":`))
+	testing.expect(t, strings.contains(json, `"queue_high_water":`))
+	testing.expect(t, strings.contains(json, `"max_execution_ms":`))
+	testing.expect(t, !strings.contains(json, "command_id"), "metrics must not expose command identities")
 }

@@ -21,6 +21,36 @@ Bridge_Command_Class :: enum {
 	Shell,
 }
 
+Bridge_Command_Priority :: enum {
+	Control,
+	Recovery,
+	Interactive,
+	Background,
+}
+
+Bridge_Command_Key_Kind :: enum {
+	None,
+	Agent,
+	Shell,
+	Filesystem,
+	VCS,
+	Provider_Discovery,
+	Bridge,
+	LSP,
+}
+
+Bridge_Command_Spec :: struct {
+	class: Bridge_Command_Class,
+	priority: Bridge_Command_Priority,
+	key_kind: Bridge_Command_Key_Kind,
+	queued: bool,
+	requires_id: bool,
+	timeout_ms: int,
+	cost_units: int,
+	coalescible: bool,
+	retry_safe: bool,
+}
+
 Bridge_Dispatch_Claim_State :: enum {
 	Queued,
 	Running,
@@ -35,7 +65,9 @@ Bridge_Dispatch_Job :: struct {
 	class: Bridge_Command_Class,
 	generation: i64,
 	deadline_ns: i64,
+	enqueued_ns: i64,
 	owned_bytes: int,
+	cost_units: int,
 }
 
 Bridge_Dispatch_Output :: struct {
@@ -57,6 +89,20 @@ Bridge_Dispatch_Worker :: struct {
 	current_command_id: string,
 	last_result: string,
 	output_failed: bool,
+	started_ns: i64,
+}
+
+Bridge_Dispatch_Metrics :: struct {
+	accepted: u64,
+	rejected: u64,
+	completed: u64,
+	deadline_expired: u64,
+	stale_completions: u64,
+	response_backpressure: u64,
+	queue_high_water: int,
+	max_queue_wait_ms: i64,
+	max_execution_ms: i64,
+	max_loop_delay_ms: i64,
 }
 
 BRIDGE_DISPATCH_TOTAL_LIMIT :: 128
@@ -73,6 +119,8 @@ BRIDGE_DISPATCH_COMMAND_BYTES_LIMIT :: 1024 * 1024
 BRIDGE_DISPATCH_OUTBOX_BYTES_LIMIT :: 8 * 1024 * 1024
 BRIDGE_DISPATCH_DEFAULT_TIMEOUT_MS :: 30_000
 BRIDGE_DISPATCH_CLAIM_LIMIT :: 256
+BRIDGE_DISPATCH_COST_LIMIT :: 256
+BRIDGE_DISPATCH_RECOVERY_COST_RESERVE :: 32
 
 bridge_dispatch_mu: sync.Mutex
 bridge_dispatch_lifecycle: [dynamic]Bridge_Dispatch_Job
@@ -83,12 +131,14 @@ bridge_dispatch_general_io: [dynamic]Bridge_Dispatch_Job
 bridge_dispatch_shell: [dynamic]Bridge_Dispatch_Job
 bridge_dispatch_outputs: [dynamic]Bridge_Dispatch_Output
 bridge_dispatch_claims: [dynamic]Bridge_Dispatch_Claim
-bridge_dispatch_workers: [12]Bridge_Dispatch_Worker
+bridge_dispatch_workers: [13]Bridge_Dispatch_Worker
 bridge_dispatch_active_keys: [dynamic]string
 bridge_dispatch_owned_bytes: int
+bridge_dispatch_queued_cost: int
 bridge_dispatch_outbox_bytes: int
 bridge_dispatch_generation: i64
 bridge_dispatch_initialized: bool
+bridge_dispatch_metrics: Bridge_Dispatch_Metrics
 
 bridge_command_dispatch_init :: proc() {
 	sync.mutex_lock(&bridge_dispatch_mu)
@@ -105,7 +155,7 @@ bridge_command_dispatch_init :: proc() {
 	bridge_dispatch_outputs = make([dynamic]Bridge_Dispatch_Output, runtime.default_allocator())
 	bridge_dispatch_claims = make([dynamic]Bridge_Dispatch_Claim, runtime.default_allocator())
 	bridge_dispatch_active_keys = make([dynamic]string, runtime.default_allocator())
-	classes := [12]Bridge_Command_Class{.Lifecycle, .Lifecycle, .Interactive, .Interactive, .Background, .Exclusive, .General_IO, .General_IO, .General_IO, .General_IO, .Shell, .Shell}
+	classes := [13]Bridge_Command_Class{.Lifecycle, .Lifecycle, .Interactive, .Interactive, .Background, .Background, .Exclusive, .General_IO, .General_IO, .General_IO, .General_IO, .Shell, .Shell}
 	for class, i in classes {
 		bridge_dispatch_workers[i].index = i
 		bridge_dispatch_workers[i].class = class
@@ -141,6 +191,7 @@ bridge_command_dispatch_drop_stale_queue_locked :: proc(queue: ^[dynamic]Bridge_
 			ordered_remove(&bridge_dispatch_claims, claim_i)
 		}
 		bridge_dispatch_owned_bytes -= job.owned_bytes
+		bridge_dispatch_queued_cost -= job.cost_units
 		delete(job.text, runtime.default_allocator())
 		delete(job.command_id, runtime.default_allocator())
 		delete(job.command_type, runtime.default_allocator())
@@ -149,43 +200,78 @@ bridge_command_dispatch_drop_stale_queue_locked :: proc(queue: ^[dynamic]Bridge_
 	}
 }
 
-bridge_command_dispatch_class :: proc(command_type: string) -> (Bridge_Command_Class, bool) {
+// One exhaustive registry is the protocol audit surface. Every accepted Hub frame
+// declares whether it runs on the reader or a worker, plus its priority, ordering,
+// deadline, cost, coalescing, and retry contract.
+bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool) {
 	switch command_type {
-	case "launch_agent", "launch_provider_test", "stop_agent", "wake_agent", "agent_pty_input", "agent_pty_resize", "bridge_unseal", "bridge_lock", "set_telemetry", "lsp_start", "lsp_stop":
-		return .Lifecycle, true
+	case "bridge_heartbeat_ack", "provider_catalog_version":
+		return Bridge_Command_Spec{priority = .Control, queued = false, timeout_ms = 1000, cost_units = 1}, true
+	case "provider_catalog":
+		return Bridge_Command_Spec{priority = .Control, key_kind = .Provider_Discovery, queued = false, timeout_ms = 5000, cost_units = 2}, true
+	case "lsp_send":
+		return Bridge_Command_Spec{priority = .Control, key_kind = .LSP, queued = false, timeout_ms = 1000, cost_units = 1}, true
+	case "tunnel_open", "tunnel_data", "tunnel_close", "proxy_data", "proxy_close":
+		return Bridge_Command_Spec{priority = .Control, queued = false, timeout_ms = 1000, cost_units = 1}, true
+	case "stop_agent":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Recovery, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 4}, true
+	case "bridge_lock":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Recovery, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
+	case "lsp_stop":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Recovery, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
+	case "shell_kill", "shell_signal", "shell_stream_detach":
+		return Bridge_Command_Spec{class = .Shell, priority = .Recovery, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
+	case "launch_agent", "launch_provider_test", "wake_agent":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 8}, true
+	case "agent_pty_input", "agent_pty_resize":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 1}, true
+	case "bridge_unseal", "set_telemetry":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
+	case "lsp_start":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 4}, true
 	case "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "task_status_changed_notify", "capture_agent_pane", "get_agent_pane":
-		return .Interactive, true
-	case "provider_discover", "shell_stream_attach":
-		return .Background, true
+		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
+	case "provider_discover":
+		return Bridge_Command_Spec{class = .Background, priority = .Background, key_kind = .Provider_Discovery, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 16, coalescible = true, retry_safe = true}, true
+	case "shell_stream_attach":
+		return Bridge_Command_Spec{class = .Background, priority = .Background, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 4, retry_safe = true}, true
 	case "bridge_update":
-		return .Exclusive, true
-	case "fs_list_dir", "fs_stat", "fs_make_dir", "fs_read_file", "agent_run_dir_list", "agent_run_dir_read", "fs_create_file", "fs_write_file", "fs_batch_write", "fs_move", "fs_delete", "fs_find_files", "fs_grep", "vcs_capabilities", "vcs_status", "vcs_files", "vcs_diff", "vcs_stage", "vcs_unstage", "vcs_revert", "vcs_save_file", "vcs_commit", "vcs_upload", "vcs_push", "vcs_sync", "vcs_pull", "vcs_log", "vcs_commit_diff", "vcs_workspaces":
-		return .General_IO, true
-	case "get_shell_output", "shell_pty_input", "shell_pty_resize", "shell_stream_detach", "shell_start", "shell_background", "shell_kill", "shell_signal", "shell_restart", "shell_set_port", "shell_list", "shell_logs", "shell_capture", "shell_get_pane":
-		return .Shell, true
+		return Bridge_Command_Spec{class = .Exclusive, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 64}, true
+	case "fs_list_dir", "fs_stat", "fs_read_file", "agent_run_dir_list", "agent_run_dir_read", "fs_find_files", "fs_grep":
+		return Bridge_Command_Spec{class = .General_IO, priority = .Background, key_kind = .None, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 4, retry_safe = true}, true
+	case "fs_make_dir", "fs_create_file", "fs_write_file", "fs_batch_write", "fs_move", "fs_delete":
+		return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, key_kind = .Filesystem, queued = true, requires_id = true, timeout_ms = 20_000, cost_units = 8}, true
+	case "vcs_capabilities", "vcs_status", "vcs_files", "vcs_diff", "vcs_log", "vcs_commit_diff", "vcs_workspaces":
+		return Bridge_Command_Spec{class = .General_IO, priority = .Background, key_kind = .VCS, queued = true, requires_id = true, timeout_ms = 20_000, cost_units = 8, retry_safe = true}, true
+	case "vcs_stage", "vcs_unstage", "vcs_revert", "vcs_save_file", "vcs_commit", "vcs_upload", "vcs_push", "vcs_sync", "vcs_pull":
+		return Bridge_Command_Spec{class = .General_IO, priority = .Interactive, key_kind = .VCS, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 16}, true
+	case "get_shell_output", "shell_pty_input", "shell_pty_resize", "shell_start", "shell_background", "shell_restart", "shell_set_port", "shell_list", "shell_logs", "shell_capture", "shell_get_pane":
+		return Bridge_Command_Spec{class = .Shell, priority = .Interactive, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 4}, true
 	}
-	return .Interactive, false
+	return Bridge_Command_Spec{}, false
+}
+
+bridge_command_dispatch_class :: proc(command_type: string) -> (Bridge_Command_Class, bool) {
+	spec, ok := bridge_command_spec(command_type)
+	if !ok || !spec.queued do return .Interactive, false
+	return spec.class, true
 }
 
 bridge_command_inline_type :: proc(command_type: string) -> bool {
-	switch command_type {
-	case "bridge_heartbeat_ack", "provider_catalog_version", "provider_catalog", "lsp_send", "tunnel_open", "tunnel_data", "tunnel_close", "proxy_data", "proxy_close":
-		return true
-	}
-	return false
+	spec, ok := bridge_command_spec(command_type)
+	return ok && !spec.queued
 }
 
 bridge_command_is_recovery :: proc(command_type: string) -> bool {
-	switch command_type {
-	case "stop_agent", "bridge_lock", "shell_kill", "shell_signal", "shell_stream_detach", "lsp_stop":
-		return true
-	}
-	return false
+	spec, ok := bridge_command_spec(command_type)
+	return ok && spec.priority == .Recovery
 }
 
 bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 	switch command_type {
-	case "provider_discover": return strings.clone("provider-discovery")
+	// Provider discovery has its own filter-keyed single-flight registry. Leaving
+	// the scheduler key empty lets the second background worker join that flight.
+	case "provider_discover": return ""
 	case "bridge_update": return strings.clone("bridge-update")
 	case "bridge_unseal", "bridge_lock", "set_telemetry": return strings.clone("bridge-control")
 	case "fs_make_dir", "fs_create_file", "fs_write_file", "fs_batch_write", "fs_move", "fs_delete":
@@ -256,11 +342,12 @@ bridge_command_dispatch_total_locked :: proc() -> int {
 	return len(bridge_dispatch_lifecycle) + len(bridge_dispatch_interactive) + len(bridge_dispatch_background) + len(bridge_dispatch_exclusive) + len(bridge_dispatch_general_io) + len(bridge_dispatch_shell)
 }
 
-bridge_command_dispatch_admission_scope :: proc(class: Bridge_Command_Class, total, class_depth, owned_bytes, outbox_bytes, incoming_bytes: int, recovery: bool = false) -> string {
+bridge_command_dispatch_admission_scope :: proc(class: Bridge_Command_Class, total, class_depth, owned_bytes, outbox_bytes, incoming_bytes: int, recovery: bool = false, queued_cost: int = 0, incoming_cost: int = 1) -> string {
 	normal_limit := BRIDGE_DISPATCH_TOTAL_LIMIT - BRIDGE_DISPATCH_RECOVERY_RESERVE
 	owned_limit := BRIDGE_DISPATCH_OWNED_BYTES_LIMIT if recovery else BRIDGE_DISPATCH_OWNED_BYTES_LIMIT - BRIDGE_DISPATCH_RECOVERY_BYTES_RESERVE
 	outbox_limit := BRIDGE_DISPATCH_OUTBOX_BYTES_LIMIT if recovery else BRIDGE_DISPATCH_OUTBOX_BYTES_LIMIT * 3 / 4
-	if total >= (BRIDGE_DISPATCH_TOTAL_LIMIT if recovery else normal_limit) || owned_bytes + incoming_bytes > owned_limit || outbox_bytes > outbox_limit do return "global"
+	cost_limit := BRIDGE_DISPATCH_COST_LIMIT if recovery else BRIDGE_DISPATCH_COST_LIMIT - BRIDGE_DISPATCH_RECOVERY_COST_RESERVE
+	if total >= (BRIDGE_DISPATCH_TOTAL_LIMIT if recovery else normal_limit) || owned_bytes + incoming_bytes > owned_limit || outbox_bytes > outbox_limit || queued_cost + incoming_cost > cost_limit do return "global"
 	if class_depth >= bridge_command_dispatch_class_limit(class) + (BRIDGE_DISPATCH_RECOVERY_RESERVE if recovery else 0) {
 		return "background" if class == .Background else ("lifecycle" if class == .Lifecycle else ("exclusive" if class == .Exclusive else "interactive"))
 	}
@@ -319,14 +406,15 @@ bridge_command_dispatch_protocol_error_json :: proc(command_id, error_code: stri
 bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: i64) -> bool {
 	command_type := extract_json_string(text, "type", "")
 	defer delete(command_type)
-	class, asynchronous := bridge_command_dispatch_class(command_type)
-	if !asynchronous {
-		if bridge_command_inline_type(command_type) do return false
+	spec, known := bridge_command_spec(command_type)
+	if !known {
 		protocol_error := bridge_command_dispatch_protocol_error_json("", "unknown_command")
 		defer delete(protocol_error)
 		_ = bridge_hub_send(conn, protocol_error)
 		return true
 	}
+	if !spec.queued do return false
+	class := spec.class
 	command_id := extract_json_string(text, "command_id", "")
 	if command_id == "" {
 		delete(command_id)
@@ -348,9 +436,10 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	ordering_key := bridge_command_ordering_key(command_type, text)
 	defer delete(ordering_key)
 
-	timeout_ms := extract_json_int(text, "timeout_ms", BRIDGE_DISPATCH_DEFAULT_TIMEOUT_MS)
-	if timeout_ms <= 0 || timeout_ms > BRIDGE_DISPATCH_DEFAULT_TIMEOUT_MS do timeout_ms = BRIDGE_DISPATCH_DEFAULT_TIMEOUT_MS
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms) * time.Millisecond)
+	timeout_ms := extract_json_int(text, "timeout_ms", spec.timeout_ms)
+	if timeout_ms <= 0 || timeout_ms > spec.timeout_ms do timeout_ms = spec.timeout_ms
+	now_ns := time.to_unix_nanoseconds(time.now())
+	deadline := now_ns + i64(time.Duration(timeout_ms) * time.Millisecond)
 	owned_bytes := len(text) + len(command_id) + len(command_type)
 
 	sync.mutex_lock(&bridge_dispatch_mu)
@@ -370,9 +459,10 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		return true
 	}
 
-	scope := bridge_command_dispatch_admission_scope(class, bridge_command_dispatch_total_locked(), bridge_command_dispatch_queue_len_locked(class), bridge_dispatch_owned_bytes, bridge_dispatch_outbox_bytes, owned_bytes, bridge_command_is_recovery(command_type))
+	scope := bridge_command_dispatch_admission_scope(class, bridge_command_dispatch_total_locked(), bridge_command_dispatch_queue_len_locked(class), bridge_dispatch_owned_bytes, bridge_dispatch_outbox_bytes, owned_bytes, spec.priority == .Recovery, bridge_dispatch_queued_cost, spec.cost_units)
 	if scope == "" && !bridge_command_dispatch_prune_claim_locked() do scope = "global"
 	if scope != "" {
+		bridge_dispatch_metrics.rejected += 1
 		sync.mutex_unlock(&bridge_dispatch_mu)
 		busy := bridge_command_dispatch_busy_json(command_id, scope)
 		defer delete(busy)
@@ -388,7 +478,9 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		class = class,
 		generation = generation,
 		deadline_ns = deadline,
+		enqueued_ns = now_ns,
 		owned_bytes = owned_bytes,
+		cost_units = spec.cost_units,
 	}
 	switch class {
 	case .Lifecycle: append(&bridge_dispatch_lifecycle, job)
@@ -400,8 +492,10 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	}
 	append(&bridge_dispatch_claims, Bridge_Dispatch_Claim{command_id = strings.clone(command_id, runtime.default_allocator()), state = .Queued})
 	bridge_dispatch_owned_bytes += owned_bytes
+	bridge_dispatch_queued_cost += spec.cost_units
+	bridge_dispatch_metrics.accepted += 1
+	bridge_dispatch_metrics.queue_high_water = max(bridge_dispatch_metrics.queue_high_water, bridge_command_dispatch_total_locked())
 	sync.mutex_unlock(&bridge_dispatch_mu)
-
 	accepted := bridge_command_result_json(command_id, "accepted", "")
 	defer delete(accepted)
 	_ = bridge_hub_send(conn, accepted)
@@ -411,28 +505,22 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dispatch_Job, bool) {
 	sync.mutex_lock(&bridge_dispatch_mu)
 	defer sync.mutex_unlock(&bridge_dispatch_mu)
-	job: Bridge_Dispatch_Job
+	queue: ^[dynamic]Bridge_Dispatch_Job
 	switch class {
-	case .Lifecycle:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_lifecycle)
-		if !ok do return job, false
-	case .Interactive:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_interactive)
-		if !ok do return job, false
-	case .Background:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_background)
-		if !ok do return job, false
-	case .Exclusive:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_exclusive)
-		if !ok do return job, false
-	case .General_IO:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_general_io)
-		if !ok do return job, false
-	case .Shell:
-		job, ok := bridge_command_dispatch_take_queue_locked(&bridge_dispatch_shell)
-		if !ok do return job, false
+	case .Lifecycle: queue = &bridge_dispatch_lifecycle
+	case .Interactive: queue = &bridge_dispatch_interactive
+	case .Background: queue = &bridge_dispatch_background
+	case .Exclusive: queue = &bridge_dispatch_exclusive
+	case .General_IO: queue = &bridge_dispatch_general_io
+	case .Shell: queue = &bridge_dispatch_shell
 	}
+	if queue == nil do return Bridge_Dispatch_Job{}, false
+	job, ok := bridge_command_dispatch_take_queue_locked(queue)
+	if !ok do return job, false
 	if i := bridge_command_dispatch_claim_index_locked(job.command_id); i >= 0 do bridge_dispatch_claims[i].state = .Running
+	now_ns := time.to_unix_nanoseconds(time.now())
+	wait_ms := (now_ns - job.enqueued_ns) / i64(time.Millisecond)
+	bridge_dispatch_metrics.max_queue_wait_ms = max(bridge_dispatch_metrics.max_queue_wait_ms, wait_ms)
 	return job, true
 }
 
@@ -445,7 +533,24 @@ bridge_command_dispatch_take_queue_locked :: proc(queue: ^[dynamic]Bridge_Dispat
 			}
 		}
 		if blocked do continue
-		selected := job
+		// Range iteration aliases the backing element. ordered_remove zeroes the
+		// removed slot, so returning that alias used to erase generation, ids, and
+		// payload from the worker's job. The worker then published generation zero
+		// and the runtime loop correctly discarded every completion as stale.
+		// Build an explicit value and clear the queue's ownership before removal.
+		selected := Bridge_Dispatch_Job{
+			text = queue[i].text,
+			command_id = queue[i].command_id,
+			command_type = queue[i].command_type,
+			ordering_key = queue[i].ordering_key,
+			class = queue[i].class,
+			generation = queue[i].generation,
+			deadline_ns = queue[i].deadline_ns,
+			enqueued_ns = queue[i].enqueued_ns,
+			owned_bytes = queue[i].owned_bytes,
+			cost_units = queue[i].cost_units,
+		}
+		queue[i] = {}
 		ordered_remove(queue, i)
 		if selected.ordering_key != "" do append(&bridge_dispatch_active_keys, strings.clone(selected.ordering_key, runtime.default_allocator()))
 		return selected, true
@@ -469,12 +574,19 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 		bridge_dispatch_claims[i].result_json = strings.clone(worker.last_result, runtime.default_allocator())
 	}
 	bridge_dispatch_owned_bytes -= job.owned_bytes
+	bridge_dispatch_queued_cost -= job.cost_units
+	bridge_dispatch_metrics.completed += 1
+	if worker.started_ns > 0 {
+		execution_ms := (time.to_unix_nanoseconds(time.now()) - worker.started_ns) / i64(time.Millisecond)
+		bridge_dispatch_metrics.max_execution_ms = max(bridge_dispatch_metrics.max_execution_ms, execution_ms)
+	}
 	delete(worker.current_command_id, runtime.default_allocator())
 	worker.current_command_id = ""
 	delete(worker.last_result, runtime.default_allocator())
 	worker.last_result = ""
 	worker.output_failed = false
 	worker.current_generation = 0
+	worker.started_ns = 0
 	sync.mutex_unlock(&bridge_dispatch_mu)
 	delete(job.text, runtime.default_allocator())
 	delete(job.command_id, runtime.default_allocator())
@@ -493,8 +605,12 @@ bridge_command_dispatch_worker :: proc(data: rawptr) {
 		sync.mutex_lock(&bridge_dispatch_mu)
 		worker.current_generation = job.generation
 		worker.current_command_id = strings.clone(job.command_id, runtime.default_allocator())
+		worker.started_ns = time.to_unix_nanoseconds(time.now())
 		sync.mutex_unlock(&bridge_dispatch_mu)
 		if time.to_unix_nanoseconds(time.now()) >= job.deadline_ns {
+			sync.mutex_lock(&bridge_dispatch_mu)
+			bridge_dispatch_metrics.deadline_expired += 1
+			sync.mutex_unlock(&bridge_dispatch_mu)
 			result := bridge_command_dispatch_deadline_json(job.command_id)
 			_ = bridge_command_worker_capture_send(&worker.sink_conn, result)
 			delete(result)
@@ -524,6 +640,7 @@ bridge_command_worker_capture_send :: proc(conn: ^ws.Connection, text: string) -
 			fallback = bridge_command_dispatch_protocol_error_json(worker.current_command_id, "response_backpressure")
 			captured = fallback
 			worker.output_failed = true
+			bridge_dispatch_metrics.response_backpressure += 1
 		}
 		defer delete(fallback)
 		append(&bridge_dispatch_outputs, Bridge_Dispatch_Output{text = strings.clone(captured, runtime.default_allocator()), generation = worker.current_generation})
@@ -554,7 +671,58 @@ bridge_command_dispatch_drain :: proc(conn: ^ws.Connection, generation: i64) {
 				conn.connected = false
 				return
 			}
+		} else {
+			sync.mutex_lock(&bridge_dispatch_mu)
+			bridge_dispatch_metrics.stale_completions += 1
+			sync.mutex_unlock(&bridge_dispatch_mu)
 		}
 		delete(output.text, runtime.default_allocator())
 	}
+}
+
+bridge_command_dispatch_observe_loop_delay :: proc(delay: time.Duration) {
+	ms := i64(delay / time.Millisecond)
+	sync.mutex_lock(&bridge_dispatch_mu)
+	bridge_dispatch_metrics.max_loop_delay_ms = max(bridge_dispatch_metrics.max_loop_delay_ms, ms)
+	sync.mutex_unlock(&bridge_dispatch_mu)
+}
+
+bridge_command_dispatch_metrics_json :: proc() -> string {
+	sync.mutex_lock(&bridge_dispatch_mu)
+	defer sync.mutex_unlock(&bridge_dispatch_mu)
+	active := 0
+	for worker in bridge_dispatch_workers do if worker.current_command_id != "" do active += 1
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"queued\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_command_dispatch_total_locked()))
+	strings.write_string(&b, ",\"active_workers\":")
+	strings.write_string(&b, fmt.tprintf("%d", active))
+	strings.write_string(&b, ",\"owned_bytes\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_owned_bytes))
+	strings.write_string(&b, ",\"outbox_bytes\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_outbox_bytes))
+	strings.write_string(&b, ",\"queued_cost\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_queued_cost))
+	strings.write_string(&b, ",\"accepted\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.accepted))
+	strings.write_string(&b, ",\"rejected\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.rejected))
+	strings.write_string(&b, ",\"completed\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.completed))
+	strings.write_string(&b, ",\"deadline_expired\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.deadline_expired))
+	strings.write_string(&b, ",\"stale_completions\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.stale_completions))
+	strings.write_string(&b, ",\"response_backpressure\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.response_backpressure))
+	strings.write_string(&b, ",\"queue_high_water\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.queue_high_water))
+	strings.write_string(&b, ",\"max_queue_wait_ms\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.max_queue_wait_ms))
+	strings.write_string(&b, ",\"max_execution_ms\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.max_execution_ms))
+	strings.write_string(&b, ",\"max_loop_delay_ms\":")
+	strings.write_string(&b, fmt.tprintf("%d", bridge_dispatch_metrics.max_loop_delay_ms))
+	strings.write_byte(&b, '}')
+	return strings.to_string(b)
 }

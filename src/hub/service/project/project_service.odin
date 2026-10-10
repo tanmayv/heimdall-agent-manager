@@ -43,6 +43,7 @@ Bridge_Runtime_Registry :: struct {
 	// preventing one Bridge from consuming another Bridge's retention share.
 	command_ids: [1024]string,
 	command_bridge_ids: [1024]string,
+	command_generations: [1024]int,
 	command_results_json: [1024]string,
 	command_results_terminal: [1024]bool,
 	command_result_sequence: [1024]u64,
@@ -285,11 +286,18 @@ bridge_runtime_registry_shutdown_command_socket :: proc(registry: ^Bridge_Runtim
 }
 
 bridge_runtime_registry_command_socket :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> (net.TCP_Socket, bool) {
-	if registry == nil || bridge_id == "" do return {}, false
+	socket, _, ok := bridge_runtime_registry_command_connection(registry, bridge_id)
+	return socket, ok
+}
+
+bridge_runtime_registry_command_connection :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string) -> (net.TCP_Socket, int, bool) {
+	if registry == nil || bridge_id == "" do return {}, 0, false
 	sync.lock(&registry.metadata_mutex)
 	defer sync.unlock(&registry.metadata_mutex)
-	for i in 0..<registry.live_bridge_count { if registry.live_bridge_ids[i] == bridge_id && registry.command_sockets[i] != net.TCP_Socket(0) do return registry.command_sockets[i], true }
-	return {}, false
+	for i in 0..<registry.live_bridge_count {
+		if registry.live_bridge_ids[i] == bridge_id && registry.command_sockets[i] != net.TCP_Socket(0) do return registry.command_sockets[i], registry.connection_generations[i], true
+	}
+	return {}, 0, false
 }
 
 Runtime_Command :: struct {

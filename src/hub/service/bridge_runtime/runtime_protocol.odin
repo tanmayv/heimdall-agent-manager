@@ -33,13 +33,13 @@ runtime_accept_hello :: proc(registry: ^project_service.Bridge_Runtime_Registry,
 
 RUNTIME_COMMAND_RESULTS_PER_BRIDGE :: 8
 
-runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id, command_id: string) -> (string, bool) {
-	if registry == nil || bridge_id == "" || command_id == "" do return "", false
+runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string) -> (string, bool) {
+	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" do return "", false
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	live := registry.command_slots_used
 	for i in 0..<live {
-		if registry.command_bridge_ids[i] == bridge_id && registry.command_ids[i] == command_id && registry.command_results_terminal[i] do return registry.command_results_json[i], true
+		if registry.command_bridge_ids[i] == bridge_id && registry.command_generations[i] == generation && registry.command_ids[i] == command_id && registry.command_results_terminal[i] do return registry.command_results_json[i], true
 	}
 	return "", false
 }
@@ -48,12 +48,12 @@ runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registr
 // releasing the cache lock. The borrowed lookup above remains useful for
 // immediate assertions/internal inspection, but must never cross a concurrent
 // eviction point.
-runtime_command_cached_copy :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id, command_id: string) -> (string, bool) {
-	if registry == nil || bridge_id == "" || command_id == "" do return "", false
+runtime_command_cached_copy :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string) -> (string, bool) {
+	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" do return "", false
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	for i in 0..<registry.command_slots_used {
-		if registry.command_bridge_ids[i] == bridge_id && registry.command_ids[i] == command_id && registry.command_results_terminal[i] {
+		if registry.command_bridge_ids[i] == bridge_id && registry.command_generations[i] == generation && registry.command_ids[i] == command_id && registry.command_results_terminal[i] {
 			return strings.clone(registry.command_results_json[i], runtime.default_allocator()), true
 		}
 	}
@@ -63,14 +63,14 @@ runtime_command_cached_copy :: proc(registry: ^project_service.Bridge_Runtime_Re
 // Efficiently parks an HTTP/RPC waiter until a terminal result is published.
 // The condition may wake spuriously, so the cache predicate and real deadline are
 // checked in a loop under the same mutex used by result insertion.
-runtime_command_wait_terminal :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id, command_id: string, timeout: time.Duration) -> (string, bool) {
-	if registry == nil || bridge_id == "" || command_id == "" || timeout <= 0 do return "", false
+runtime_command_wait_terminal :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id: string, timeout: time.Duration) -> (string, bool) {
+	if registry == nil || bridge_id == "" || generation <= 0 || command_id == "" || timeout <= 0 do return "", false
 	deadline := time.time_add(time.now(), timeout)
 	sync.lock(&registry.command_mutex)
 	defer sync.unlock(&registry.command_mutex)
 	for {
 		for i in 0..<registry.command_slots_used {
-			if registry.command_bridge_ids[i] == bridge_id && registry.command_ids[i] == command_id && registry.command_results_terminal[i] {
+			if registry.command_bridge_ids[i] == bridge_id && registry.command_generations[i] == generation && registry.command_ids[i] == command_id && registry.command_results_terminal[i] {
 				return strings.clone(registry.command_results_json[i], runtime.default_allocator()), true
 			}
 		}
@@ -93,8 +93,8 @@ runtime_command_result_is_terminal :: proc(result_json: string) -> bool {
 	return status != "accepted"
 }
 
-runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id, command_id, result_json: string) -> (string, bool) {
-	if registry == nil || command_id == "" do return "", false
+runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id: string, generation: int, command_id, result_json: string) -> (string, bool) {
+	if registry == nil || generation <= 0 || command_id == "" do return "", false
 	terminal := runtime_command_result_is_terminal(result_json)
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
@@ -104,7 +104,7 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	// the acknowledgement as the operation result.
 	live := registry.command_slots_used
 	for i in 0..<live {
-		if registry.command_ids[i] != command_id || registry.command_bridge_ids[i] != bridge_id do continue
+		if registry.command_ids[i] != command_id || registry.command_bridge_ids[i] != bridge_id || registry.command_generations[i] != generation do continue
 		if registry.command_results_terminal[i] || !terminal do return registry.command_results_json[i], true
 		delete(registry.command_results_json[i], runtime.default_allocator())
 		registry.command_results_json[i] = strings.clone(result_json, runtime.default_allocator())
@@ -145,6 +145,7 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	}
 	registry.command_ids[slot] = strings.clone(command_id, runtime.default_allocator())
 	registry.command_bridge_ids[slot] = strings.clone(bridge_id, runtime.default_allocator())
+	registry.command_generations[slot] = generation
 	registry.command_results_json[slot] = strings.clone(result_json, runtime.default_allocator())
 	registry.command_results_terminal[slot] = terminal
 	registry.command_count += 1
@@ -164,6 +165,7 @@ runtime_command_cache_destroy :: proc(registry: ^project_service.Bridge_Runtime_
 		delete(registry.command_results_json[i], runtime.default_allocator())
 		registry.command_ids[i] = ""
 		registry.command_bridge_ids[i] = ""
+		registry.command_generations[i] = 0
 		registry.command_results_json[i] = ""
 	}
 	for i in 0..<registry.writer_count {

@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -27,6 +28,20 @@ Bridge_Provider_Probe_Target :: struct { provider, binary: string }
 bridge_provider_paths_mutex: sync.RW_Mutex
 bridge_provider_paths_loaded: bool
 bridge_provider_paths: [dynamic]Bridge_Provider_Path
+
+Bridge_Provider_Discovery_Group :: struct {
+	key: string,
+	done: bool,
+	refs: int,
+	results: [dynamic]Bridge_Provider_Path,
+}
+
+bridge_provider_discovery_mutex: sync.Mutex
+bridge_provider_discovery_cond: sync.Cond
+bridge_provider_discovery_current: ^Bridge_Provider_Discovery_Group
+bridge_provider_discovery_scan_count: u64
+// Deterministic test seam; production leaves this at zero.
+bridge_provider_discovery_test_delay: time.Duration
 
 bridge_provider_paths_path :: proc() -> string {
 	data_dir := strings.trim_space(bridge_config.data_dir)
@@ -101,12 +116,25 @@ bridge_provider_probe_version_with_timeout :: proc(path: string, timeout: time.D
 }
 
 bridge_provider_probe_one :: proc(provider, binary: string) -> Bridge_Provider_Path {
+	return bridge_provider_probe_one_with_timeout(provider, binary, 2 * time.Second)
+}
+
+bridge_provider_probe_one_with_timeout :: proc(provider, binary: string, timeout: time.Duration) -> Bridge_Provider_Path {
 	path := bridge_runtime_find_on_path(binary)
 	if path != "" && !bridge_provider_path_executable(path) {
 		delete(path)
 		path = ""
 	}
-	version := bridge_provider_probe_version(path)
+	version := ""
+	if path != "" && timeout > 0 {
+		breaker_key := strings.concatenate({"provider-probe:", path})
+		defer delete(breaker_key)
+		if bridge_dependency_breaker_allow(breaker_key) {
+			probe_ok := false
+			version, probe_ok = bridge_provider_probe_version_with_timeout(path, timeout)
+			bridge_dependency_breaker_record(breaker_key, probe_ok)
+		}
+	}
 	return Bridge_Provider_Path{
 		provider = strings.clone(provider),
 		resolved_path = path,
@@ -185,21 +213,103 @@ bridge_provider_paths_upsert_unlocked :: proc(value: Bridge_Provider_Path) {
 	append(&bridge_provider_paths, value)
 }
 
-bridge_provider_discover :: proc(filter: []string) -> [dynamic]Bridge_Provider_Path {
+bridge_provider_discovery_key :: proc(filter: []string) -> string {
+	if len(filter) == 0 do return strings.clone("*")
+	canonical := make([dynamic]string)
+	defer { for item in canonical do delete(item); delete(canonical) }
+	for item in filter do append(&canonical, strings.clone(strings.trim_space(item)))
+	slice.sort_by(canonical[:], proc(a, b: string) -> bool { return strings.compare(a, b) < 0 })
+	b := strings.builder_make()
+	for item, i in canonical {
+		if i > 0 do strings.write_byte(&b, 0x1f)
+		strings.write_string(&b, item)
+	}
+	return strings.to_string(b)
+}
+
+bridge_provider_discovery_results_clone :: proc(results: []Bridge_Provider_Path, allocator := context.allocator) -> [dynamic]Bridge_Provider_Path {
+	out := make([dynamic]Bridge_Provider_Path, 0, len(results), allocator)
+	for result in results do append(&out, bridge_provider_path_clone(result, allocator))
+	return out
+}
+
+bridge_provider_discovery_group_destroy :: proc(group: ^Bridge_Provider_Discovery_Group) {
+	if group == nil do return
+	alloc := runtime.default_allocator()
+	delete(group.key, alloc)
+	for &result in group.results do bridge_provider_path_destroy(&result, alloc)
+	delete(group.results)
+	free(group, alloc)
+}
+
+bridge_provider_discover_execute :: proc(filter: []string) -> [dynamic]Bridge_Provider_Path {
 	bridge_provider_paths_init()
+	if bridge_provider_discovery_test_delay > 0 do time.sleep(bridge_provider_discovery_test_delay)
 	targets := bridge_provider_probe_targets(filter)
 	defer {
 		for target in targets { delete(target.provider); delete(target.binary) }
 		delete(targets)
 	}
 	results := make([dynamic]Bridge_Provider_Path)
-	for target in targets do append(&results, bridge_provider_probe_one(target.provider, target.binary))
+	discovery_deadline := time.time_add(time.now(), 8 * time.Second)
+	for target in targets {
+		remaining := time.diff(time.now(), discovery_deadline)
+		probe_timeout := min(2 * time.Second, remaining)
+		if probe_timeout < 0 do probe_timeout = 0
+		append(&results, bridge_provider_probe_one_with_timeout(target.provider, target.binary, probe_timeout))
+	}
 
 	sync.rw_mutex_lock(&bridge_provider_paths_mutex)
 	for result in results do bridge_provider_paths_upsert_unlocked(bridge_provider_path_clone(result, runtime.default_allocator()))
 	_ = bridge_provider_paths_save_unlocked()
 	sync.rw_mutex_unlock(&bridge_provider_paths_mutex)
 	return results
+}
+
+bridge_provider_discover :: proc(filter: []string) -> [dynamic]Bridge_Provider_Path {
+	key := bridge_provider_discovery_key(filter)
+	defer delete(key)
+	for {
+		sync.mutex_lock(&bridge_provider_discovery_mutex)
+		group := bridge_provider_discovery_current
+		if group == nil {
+			alloc := runtime.default_allocator()
+			group = new(Bridge_Provider_Discovery_Group, alloc)
+			group.key = strings.clone(key, alloc)
+			group.refs = 1
+			group.results = make([dynamic]Bridge_Provider_Path, alloc)
+			bridge_provider_discovery_current = group
+			bridge_provider_discovery_scan_count += 1
+			sync.mutex_unlock(&bridge_provider_discovery_mutex)
+
+			results := bridge_provider_discover_execute(filter)
+			sync.mutex_lock(&bridge_provider_discovery_mutex)
+			group.results = bridge_provider_discovery_results_clone(results[:], alloc)
+			group.done = true
+			if bridge_provider_discovery_current == group do bridge_provider_discovery_current = nil
+			sync.cond_broadcast(&bridge_provider_discovery_cond)
+			group.refs -= 1
+			free_group := group.refs == 0
+			sync.mutex_unlock(&bridge_provider_discovery_mutex)
+			if free_group do bridge_provider_discovery_group_destroy(group)
+			return results
+		}
+
+		if group.key != key {
+			sync.cond_wait(&bridge_provider_discovery_cond, &bridge_provider_discovery_mutex)
+			sync.mutex_unlock(&bridge_provider_discovery_mutex)
+			continue
+		}
+
+		group.refs += 1
+		for !group.done do sync.cond_wait(&bridge_provider_discovery_cond, &bridge_provider_discovery_mutex)
+		results := bridge_provider_discovery_results_clone(group.results[:])
+		group.refs -= 1
+		free_group := group.refs == 0
+		sync.mutex_unlock(&bridge_provider_discovery_mutex)
+		if free_group do bridge_provider_discovery_group_destroy(group)
+		return results
+	}
 }
 
 bridge_provider_discovery_report_json :: proc(request_id: string, results: [dynamic]Bridge_Provider_Path) -> string {

@@ -18,6 +18,7 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:time"
 import "core:path/filepath"
 
 // --- shared value types --------------------------------------------------
@@ -168,13 +169,8 @@ vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
 // strings are owned by context.allocator; the caller must delete them.
 vcs_run_capture :: proc(args: []string) -> (out: string, err_out: string, ok: bool) {
 	if len(args) == 0 do return "", "", false
-	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = args}, context.allocator)
-	if err != nil {
-		if len(stdout) > 0 do delete(stdout, context.allocator)
-		if len(stderr) > 0 do delete(stderr, context.allocator)
-		return "", "", false
-	}
-	return string(stdout), string(stderr), state.success
+	out, err_out, ok, _ = bridge_process_run_capture(args, 20 * time.Second)
+	return
 }
 
 // vcs_run executes an argv (no shell) and returns its stdout plus whether the
