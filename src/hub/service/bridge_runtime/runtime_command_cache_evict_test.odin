@@ -102,19 +102,21 @@ runtime_stalled_bridge_writer_does_not_block_another_bridge_send :: proc(t: ^tes
 	b_peer, _ := net.dial_tcp(net.Endpoint{address = net.IP4_Loopback, port = bound.port})
 	b_hub, _, _ := net.accept_tcp(listener)
 	defer { net.close(a_peer); net.close(a_hub); net.close(b_peer); net.close(b_hub); net.close(listener) }
-	_, _, _ = project_service.bridge_runtime_registry_accept_live(registry, "brg_stalled", false, "")
-	_, _, _ = project_service.bridge_runtime_registry_accept_live(registry, "brg_healthy", false, "")
-	project_service.bridge_runtime_registry_set_command_socket(registry, "brg_stalled", a_hub)
-	project_service.bridge_runtime_registry_set_command_socket(registry, "brg_healthy", b_hub)
+	stalled_hello, _, _ := runtime_accept_hello(registry, "brg_stalled", 1, "")
+	healthy_hello, _, _ := runtime_accept_hello(registry, "brg_healthy", 1, "")
+	project_service.bridge_runtime_registry_set_command_socket(registry, "brg_stalled", a_hub, stalled_hello.generation)
+	project_service.bridge_runtime_registry_set_command_socket(registry, "brg_healthy", b_hub, healthy_hello.generation)
 
-	stalled_mu := project_service.bridge_runtime_registry_writer_mutex(registry, "brg_stalled")
-	sync.lock(stalled_mu)
+	stalled := project_service.bridge_runtime_connection_acquire(registry, "brg_stalled", stalled_hello.generation)
+	defer project_service.bridge_runtime_connection_release(registry, stalled)
+	if !testing.expect(t, stalled != nil, "stalled Bridge connection lease is available") do return
+	sync.lock(&stalled.writer_mutex)
 	started := time.now()
 	sent, err := send_runtime_command(rawptr(registry), project_service.Runtime_Command{
 		bridge_id = "brg_healthy", command_id = "cmd_healthy", body_json = `{"type":"bridge_heartbeat_ack"}`,
 	})
 	elapsed := time.diff(started, time.now())
-	sync.unlock(stalled_mu)
+	sync.unlock(&stalled.writer_mutex)
 	testing.expect(t, sent, err.message)
 	testing.expect(t, elapsed < 100 * time.Millisecond, "a held writer for Bridge A must not delay Bridge B")
 	buf: [256]byte
