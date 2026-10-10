@@ -57,25 +57,28 @@ bridge_process_drain_pipe :: proc(file: ^os.File, output: ^[dynamic]byte) -> (re
 }
 
 // Executes argv without a shell, drains stdout/stderr while it runs, and always
-// kills+reaps on deadline. Returned strings belong to context.allocator.
-bridge_process_run_capture :: proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
-	if len(args) == 0 || timeout <= 0 do return "", "", false, false
-	if !bridge_process_slot_try_acquire() do return "", "", false, false
+// kills+reaps on deadline. Returned strings belong to context.allocator. An exit
+// code of -1 means the child could not be started or did not produce an exit
+// status before it was killed.
+bridge_process_run_capture_status :: proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, exit_code: int, ok, timed_out: bool) {
+	exit_code = -1
+	if len(args) == 0 || timeout <= 0 do return "", "", exit_code, false, false
+	if !bridge_process_slot_try_acquire() do return "", "", exit_code, false, false
 	defer bridge_process_slot_release()
 	stdout_r, stdout_w, stdout_pipe_err := os.pipe()
-	if stdout_pipe_err != nil do return "", "", false, false
+	if stdout_pipe_err != nil do return "", "", exit_code, false, false
 	defer os.close(stdout_r)
 	stderr_r, stderr_w, stderr_pipe_err := os.pipe()
 	if stderr_pipe_err != nil {
 		_ = os.close(stdout_w)
-		return "", "", false, false
+		return "", "", exit_code, false, false
 	}
 	defer os.close(stderr_r)
 
 	process, start_err := os.process_start(os.Process_Desc{command = args, stdout = stdout_w, stderr = stderr_w})
 	_ = os.close(stdout_w)
 	_ = os.close(stderr_w)
-	if start_err != nil do return "", "", false, false
+	if start_err != nil do return "", "", exit_code, false, false
 
 	out_bytes := make([dynamic]byte, 0, 8192)
 	err_bytes := make([dynamic]byte, 0, 4096)
@@ -109,5 +112,11 @@ bridge_process_run_capture :: proc(args: []string, timeout: time.Duration) -> (s
 	}
 	stdout = strings.clone(string(out_bytes[:]), context.allocator)
 	stderr = strings.clone(string(err_bytes[:]), context.allocator)
-	return stdout, stderr, !timed_out && state.exited && state.success, timed_out
+	if state.exited do exit_code = state.exit_code
+	return stdout, stderr, exit_code, !timed_out && state.exited && state.success, timed_out
+}
+
+bridge_process_run_capture :: proc(args: []string, timeout: time.Duration) -> (stdout, stderr: string, ok, timed_out: bool) {
+	stdout, stderr, _, ok, timed_out = bridge_process_run_capture_status(args, timeout)
+	return
 }

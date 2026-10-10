@@ -257,8 +257,9 @@
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
           # SOCAT-1: socat is the DEFAULT bridge->hub TLS transport (HAM_TLS_BACKEND),
           # openssl stays for the s_client fallback (and socat's own OpenSSL engine).
-          # Both are runtimeInputs so wrapProgram puts them on the bridge's PATH.
-          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.socat ];
+          # curl handles release downloads; all three are runtimeInputs so the
+          # wrapped bridge has deterministic tools on PATH.
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.curl pkgs.openssl pkgs.socat ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
