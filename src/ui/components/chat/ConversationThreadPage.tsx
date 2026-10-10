@@ -1,3 +1,5 @@
+import { conversationConfigurationIssues } from '../../utils/conversationConfigurationValidity';
+import InstanceReconfigurationProgress from './InstanceReconfigurationProgress';
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import { TaskChainSelectorModal } from '../chains/TaskChainSelectorModal';
 import ChainOverviewPanel from './ChainOverviewPanel';
@@ -18,7 +20,10 @@ import {
 import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
-  useReconfigureAgentInstanceMutation,
+  useApplyInstanceConfigurationMutation,
+  useRetryInstanceConfigurationMutation,
+  useListInstanceReconfigurationsQuery,
+  type InstanceReconfiguration,
   useRestartAgentInstanceMutation,
   useStopAgentInstanceMutation,
 } from '../../api/endpoints/agents';
@@ -43,7 +48,7 @@ import {
 } from '../../utils/vaultContent';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import ChatMessageList from './ChatMessageList';
-import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { CommandPalette, Drawer, Icon as UiIcon, Menu, Modal, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import {
   CHAT_VIEW_MIN_WIDTH,
@@ -495,7 +500,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
   const [sendMessage] = useSendConversationMessageMutation();
   const [markRead] = useMarkConversationReadMutation();
-  const [reconfigureInstance, reconfigureState] = useReconfigureAgentInstanceMutation();
+  const [reconfigureInstance, reconfigureState] = useApplyInstanceConfigurationMutation();
+  const [retryConfiguration, retryConfigurationState] = useRetryInstanceConfigurationMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
   const [createArtifact] = useCreateArtifactMutation();
@@ -506,12 +512,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
   const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
 
+  const configurationInputBlockedRef = useRef(false);
+
   // Publish the Files panel's collected line comments as a single chat message to
   // this conversation's agent. Returns true on success so the panel clears its
   // in-memory store.
   const publishFileComments = useCallback(
     async (markdown: string): Promise<boolean> => {
-      if (!conversationId || !markdown.trim()) return false;
+      if (configurationInputBlockedRef.current || !conversationId || !markdown.trim()) return false;
       try {
         const res: any = await sendMessage({ conversationId, body: markdown }).unwrap();
         return !(res?.error);
@@ -579,7 +587,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
   // Project the conversation/instance is scoped to — powers the Files (project
   // directory browser) tab. Prefer the live instance, fall back to conversation.
-  const projectId = String(instance?.project_id || instance?.projectId || conversation?.project_id || conversation?.projectId || '');
+  const projectId = String(instance ? (instance.project_id ?? instance.projectId ?? '') : (conversation?.project_id || conversation?.projectId || ''));
   // Project display name for the composer chip (falls back to the id).
   const projectQuery = useFetchProjectQuery({ projectId }, { skip: !projectId });
   const projectName = String(projectQuery.data?.project?.name || projectQuery.data?.project?.display_name || projectId || '').trim();
@@ -591,10 +599,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
 
 
-  // Bridges are near-static (label + provider/model caps); no refetch on every
-  // conversation switch. The Bridges LIST tag invalidates on bridge mutations,
-  // and the slow poll is a backstop.
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
+  const [stagedBridgeId, setStagedBridgeId] = useState<string | null>(null);
+  const [provider, setProvider] = useState('');
+  const [model, setModel] = useState('');
+  const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  // Connectivity is live: refresh promptly while editing and on settings open.
+  const editingRuntime = runtimeMenuOpen || stagedBridgeId !== null || Boolean(provider && provider !== instanceProvider) || Boolean(model && model !== instanceModel);
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: editingRuntime ? 5000 : 30000, skipPollingIfUnfocused: true });
+  useEffect(() => { if (runtimeMenuOpen) void bridgesQuery.refetch(); }, [runtimeMenuOpen]);
   const bridges = bridgesQuery.data?.bridges || [];
   const instanceBridge = useMemo(() => bridges.find((b: any) => bridgeId(b) === instanceBridgeId), [bridges, instanceBridgeId]);
 
@@ -678,8 +690,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [error, setError] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
-  const [provider, setProvider] = useState('');
-  const [model, setModel] = useState('');
+  const settingsEditedRef = useRef(false);
+  const [acceptedOperation, setAcceptedOperation] = useState<InstanceReconfiguration | null>(null);
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [isSmallComposer, setIsSmallComposer] = useState(false);
   // Flatten the live projects->chains->agents tree into a single @-mention list
@@ -966,12 +978,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     window.addEventListener('resize', handleWindowResize);
     return () => window.removeEventListener('resize', handleWindowResize);
   }, []);
-  const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [chainSelectorOpen, setChainSelectorOpen] = useState(false);
+  const [chainAgentSwitcherOpen, setChainAgentSwitcherOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const searchOpen = paletteOpen;
   const setSearchOpen = setPaletteOpen;
 
@@ -1011,10 +1023,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
 
-  // Bridge (device) is fixed per-instance. Provider/model options follow
-  // the instance bridge's capability matrix.
+  const destinationBridgeId = stagedBridgeId ?? instanceBridgeId;
+  const destinationProjectId = projectId;
+  const destinationBridge = bridges.find((item: any) => bridgeId(item) === destinationBridgeId);
+  const destinationProjectQuery = projectQuery;
+  const operationQuery = useListInstanceReconfigurationsQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: acceptedOperation && !['ready', 'failed', 'recovery_required'].includes(acceptedOperation.phase) ? 2000 : 8000 });
+  const serverOperation = operationQuery.data?.operations?.[0];
+  const operation = acceptedOperation && (!serverOperation || (serverOperation.operation_id === acceptedOperation.operation_id && serverOperation.revision < acceptedOperation.revision)) ? acceptedOperation : serverOperation;
+  const operationInFlight = Boolean(operation && ['prepared', 'stopping', 'source_stopped', 'launching'].includes(operation.phase));
+  const operationBlocksInput = Boolean(operation && operation.phase !== 'ready' && !(operation.phase === 'failed' && (operation.failure_code === 'recovery_stopped' || (!operation.source_stopped && !operation.destination_committed))));
   const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
-  const caps = useMemo(() => normalizeBridgeCapabilities(instanceBridge), [instanceBridge]);
+  const currentCaps = useMemo(() => normalizeBridgeCapabilities(instanceBridge), [instanceBridge]);
+  const caps = useMemo(() => normalizeBridgeCapabilities(destinationBridge), [destinationBridge]);
 
   const providerOptions = useMemo(() => {
     const list = caps.map((c) => c.provider).filter(Boolean);
@@ -1095,21 +1115,45 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
-  const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
+  const runtimeActionBusy = operationInFlight || retryConfigurationState.isLoading || reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
-  const sendDisabled = hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
+
   const pendingPaneCapture = chatMessages.some((message) => message.messageType === 'pane_capture' && message.messageStatus === 'pending');
   const paneCaptureDisabled = !agentInstanceId || needsStart || runtimeStopping || pendingPaneCapture || requestPaneCaptureState.isLoading;
 
   useEffect(() => { if (!renaming) setTitleDraft(editableTitle); }, [editableTitle, renaming]);
   useEffect(() => { if (agentInstanceId && (conversation?.unread_count || conversation?.unreadCount)) void markRead({ conversationId }); }, [conversationId, agentInstanceId]);
-  // Seed the selects from the instance's ACTUAL provider/model (no empty/"default").
-  useEffect(() => { if (instanceProvider) setProvider(instanceProvider); }, [instanceProvider]);
-  useEffect(() => { if (instanceModel) setModel(instanceModel); }, [instanceModel]);
-  useEffect(() => { setProvider((p) => (p && providerOptions.includes(p) ? p : (instanceProvider || providerOptions[0] || p))); }, [providerOptions.join('|')]);
-  useEffect(() => { setModel((t) => (t && modelOptions.includes(t) ? t : (instanceModel || modelOptions[0] || t))); }, [modelOptions.join('|')]);
+  // Polling must not overwrite edits or substitute an incompatible model.
+  useEffect(() => {
+    if (settingsEditedRef.current) return;
+    setProvider(instanceProvider); setModel(instanceModel);
+  }, [instanceProvider, instanceModel]);
+  useEffect(() => {
+    settingsEditedRef.current = false;
+    setStagedBridgeId(null); setAcceptedOperation(null);
+    setProvider(instanceProvider); setModel(instanceModel); setReconfigStatus('');
+  }, [agentInstanceId]);
+  useEffect(() => {
+    if (!operation || !operationBlocksInput || operation.failure_code === 'force_stopping') return;
+    settingsEditedRef.current = true;
+    setStagedBridgeId(operation.destination.bridge_id);
+    setProvider(operation.destination.provider); setModel(operation.destination.model);
+  }, [operation?.operation_id, operation?.phase]);
+  useEffect(() => {
+    if (!operation || operation.phase !== 'ready') return;
+    settingsEditedRef.current = false;
+    setStagedBridgeId(null);
+    setProvider(operation.destination.provider); setModel(operation.destination.model);
+    setAcceptedOperation(null); setReconfigStatus('');
+    void instanceQuery.refetch(); void convQuery.refetch(); void messagesQuery.refetch();
+  }, [operation?.operation_id, operation?.phase]);
+  useEffect(() => {
+    if (operation?.failure_code !== 'recovery_stopped' || operation.phase !== 'failed') return;
+    setAcceptedOperation(null); setReconfigStatus('');
+    void instanceQuery.refetch(); void messagesQuery.refetch();
+  }, [operation?.operation_id, operation?.phase, operation?.failure_code]);
   useEffect(() => {
     setOlderMessages([]);
     setOlderCursor('');
@@ -1137,7 +1181,41 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
   const effectiveModel = model || instanceModel;
-  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveModel && effectiveModel !== instanceModel));
+  const selectionChangesConfig = Boolean(agentInstanceId) && (destinationBridgeId !== instanceBridgeId || (effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveModel && effectiveModel !== instanceModel));
+  const validityInput = {
+    instanceLoaded: Boolean(instance), instanceError: instanceQuery.isError,
+    bridgeId: instanceBridgeId, bridge: instanceBridge,
+    bridgesLoaded: Boolean(bridgesQuery.data), bridgesError: bridgesQuery.isError,
+    projectId, project: projectQuery.data?.project,
+    projectLoaded: Boolean(projectQuery.data), projectError: projectQuery.isError,
+    provider: instanceProvider, model: instanceModel, capabilities: currentCaps,
+  };
+  const configurationIssues = conversationConfigurationIssues(validityInput);
+  const stagedConfigurationIssues = conversationConfigurationIssues({
+    ...validityInput, bridgeId: destinationBridgeId, bridge: destinationBridge,
+    projectId: destinationProjectId, project: destinationProjectQuery.data?.project,
+    projectLoaded: Boolean(destinationProjectQuery.data), projectError: destinationProjectQuery.isError,
+    provider: effectiveProvider, model: effectiveModel, capabilities: caps,
+  });
+  if (destinationBridge && destinationBridge.runtime_connected !== true && !stagedConfigurationIssues.some(issue => issue.includes('connection is disconnected'))) stagedConfigurationIssues.push('Destination bridge is not connected. Reconnect it or choose a connected bridge before Apply.');
+  if (destinationBridge && !destinationBridge.reconfiguration_supported) stagedConfigurationIssues.push('Update the destination bridge before applying configuration changes.');
+  if (instanceBridge && !instanceBridge.reconfiguration_supported) stagedConfigurationIssues.push('Update the source bridge before applying configuration changes.');
+  if (operation?.failure_code === 'force_stopping') stagedConfigurationIssues.push('Waiting for Force stop confirmation before allowing Apply.');
+  if (operationBlocksInput) configurationIssues.push(operation?.failure_message || 'Configuration change is in progress. Messages are disabled until the destination is ready.');
+  if (operationQuery.isLoading) configurationIssues.push('Checking for an in-progress configuration change before allowing messages.');
+  if (operationQuery.isError) configurationIssues.push('Configuration operation state could not be verified. Refresh before sending.');
+  const conversationReadOnly = configurationIssues.length > 0;
+  const configurationInputBlocked = conversationReadOnly || selectionChangesConfig || runtimeActionBusy || runtimeStopping || isStarting;
+  configurationInputBlockedRef.current = Boolean(configurationInputBlocked);
+  const sendDisabled = configurationInputBlocked || hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
+  useEffect(() => {
+    const input = textareaRef.current;
+    if (!input) return;
+    input.style.height = isMobile ? 'auto' : '';
+    input.style.overflowY = isMobile && input.scrollHeight > 72 ? 'auto' : '';
+    if (isMobile) input.style.height = `${Math.min(72, Math.max(24, input.scrollHeight))}px`;
+  }, [draft, isMobile, conversationReadOnly, selectionChangesConfig]);
+
 
   async function saveConversationTitle() {
     const next = titleDraft.trim();
@@ -1177,6 +1255,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   async function uploadAttachment(file: File, existingLocalId = '') {
+    if (configurationInputBlocked) return;
     const localId = existingLocalId || `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const name = artifactUploadName(file, 'conversation-attachment');
     const tooLarge = file.size > MAX_UPLOAD_BYTES;
@@ -1209,16 +1288,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function handleAttachmentInput(event: any) {
+    if (configurationInputBlocked) return;
     const files = Array.from(event.target.files || []) as File[];
     event.target.value = '';
     files.forEach((file) => void uploadAttachment(file));
   }
 
   function openAttachmentPicker() {
-    fileInputRef.current?.click();
+    if (!configurationInputBlocked) fileInputRef.current?.click();
   }
 
   function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (configurationInputBlocked) return;
     const files = clipboardFilesFromEvent(event);
     if (files.length === 0) return;
     event.preventDefault();
@@ -1228,11 +1309,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (sendDisabled) return;
-    // A staged provider/model change from the model switcher applies on the next
-    // send: reconfigure + relaunch this instance before delivering the message.
-    if (selectionChangesConfig && !runtimeActionBusy) {
-      try { await applyReconfigure(); } catch (_err) { /* status surfaced via reconfigStatus */ }
-    }
     const body = draft.trim();
     const attachmentIds = uploadedAttachments.map(a => a.id);
     const sendBody = body || (attachmentIds.length ? 'Uploaded file' : '');
@@ -1259,6 +1335,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   async function handleSendReply(text: string) {
+    if (configurationInputBlocked) return;
     const sendBody = text.trim();
     if (!sendBody || !conversationId) return;
     const local = optimisticUserMessage(conversationId, sendBody);
@@ -1514,6 +1591,22 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       );
     }
     // REQ-SUBTLE-AGENT-START-14: Consecutive agent start messages clubbed together
+    if (message.messageType === 'configuration_change') {
+      const metadata = message.metadata || {};
+      const source = metadata.source || {};
+      const destination = metadata.destination || {};
+      const fields = [
+        { name: 'Bridge', key: 'bridge_id', label: 'bridge_label' },
+        { name: 'Project', key: 'project_id', label: 'project_label' },
+        { name: 'Provider', key: 'provider', label: 'provider' },
+        { name: 'Model', key: 'model', label: 'model' },
+      ].filter(field => source[field.key] !== destination[field.key]);
+      return <div data-debug-id={`conversation-configuration-event-${message.messageId}`} className="py-2 text-xs text-muted">
+        <span className="font-medium">{message.body}</span>
+        {fields.map(field => <span key={field.key}> · {field.name}: <VaultText value={source[field.label] || source[field.key] || 'None'} fallback={source[field.key] || 'None'} /> → <VaultText value={destination[field.label] || destination[field.key] || 'None'} fallback={destination[field.key] || 'None'} /></span>)}
+        {metadata.failure_message ? <div className="mt-1 text-danger">{metadata.failure_message}</div> : null}
+      </div>;
+    }
     if (message.messageType === 'agent_start_clubbed') {
       const count = message.metadata?.count || 2;
       const startMs = message.metadata?.startUnixMs || message.createdUnixMs;
@@ -1617,21 +1710,51 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   async function applyReconfigure() {
-    if (!agentInstanceId) return;
+    if (!agentInstanceId || runtimeActionBusy || stagedConfigurationIssues.length > 0) return;
+    if (operation?.phase === 'recovery_required') {
+      setReconfigStatus('Retrying configuration change…');
+      try {
+        const retried = await retryConfiguration({ instanceId: agentInstanceId, idempotency_key: operation.idempotency_key, expected_operation_revision: operation.revision }).unwrap();
+        setAcceptedOperation(retried); setReconfigStatus(''); void operationQuery.refetch();
+      } catch (error: any) { setReconfigStatus(errMsg(error, 'Recovery retry failed')); void operationQuery.refetch(); }
+      return;
+    }
     const nextProvider = provider || providerOptions[0] || '';
     const nextModel = model || modelOptions[0] || '';
     if (!nextProvider || !nextModel) { setReconfigStatus('Choose a provider and model first.'); return; }
-    setReconfigStatus('Applying selected runtime config…');
+    setRuntimeMenuOpen(false);
+    setReconfigStatus(`Applying configuration on ${bridgeLabel || instanceBridgeId || 'this bridge'}…`);
     try {
-      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, model: nextModel }).unwrap();
-      setReconfigStatus(`Applied ${nextProvider}/${nextModel} — restarting…`);
-      await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      setReconfigStatus(`Restart requested with ${nextProvider}/${nextModel}.`);
+      const applied = await reconfigureInstance({
+        instanceId: agentInstanceId, bridge_id: destinationBridgeId,
+        project_id: destinationProjectId, provider: nextProvider, model: nextModel,
+        expected_revision: Number(instance?.configuration_revision || 0),
+        idempotency_key: globalThis.crypto?.randomUUID?.() || `apply-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      }).unwrap();
+      setAcceptedOperation(applied);
+      setReconfigStatus('');
+      void operationQuery.refetch();
       void instanceQuery.refetch();
       void messagesQuery.refetch();
     } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Reconfigure/restart failed'));
+      setReconfigStatus(errMsg(err, 'Configuration change failed'));
+      void operationQuery.refetch();
     }
+  }
+
+  async function forceStopRuntime() {
+    if (!agentId || !agentInstanceId || (needsStart && !operationBlocksInput) || stopState.isLoading || reconfigureState.isLoading || retryConfigurationState.isLoading) return;
+    setReconfigStatus('Force stopping…');
+    try {
+      await stopInstance({ agentId, instanceId: agentInstanceId, force: true }).unwrap();
+      setReconfigStatus('Force stop requested. Waiting for confirmed termination…');
+      void instanceQuery.refetch(); void operationQuery.refetch();
+    } catch (err: any) { setReconfigStatus(errMsg(err, 'Force stop failed')); }
+  }
+
+  function resetRuntimeConfiguration() {
+    settingsEditedRef.current = false;
+    setStagedBridgeId(null); setProvider(instanceProvider); setModel(instanceModel); setReconfigStatus('');
   }
 
   const tierMeta: Record<string, { icon: 'rocket' | 'spark' | 'zap'; blurb: string }> = {
@@ -1639,38 +1762,61 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     normal: { icon: 'spark', blurb: 'Balanced' },
     smart: { icon: 'zap', blurb: 'Best reasoning' },
   };
-  const pendingReconfig = selectionChangesConfig;
+  const pendingReconfig = selectionChangesConfig || operation?.phase === 'recovery_required';
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="text-left">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle p-3">
+        <span className="inline-flex items-center gap-2 text-sm text-primary"><StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : 'Running'} />{needsStart ? 'Stopped' : runtimeStopping ? 'Stopping…' : isStarting ? 'Starting…' : 'Running'}</span>
+        <div className="flex gap-2">
+          <button type="button" data-debug-id="conversation-runtime-modal-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping || operationBlocksInput || (needsStart && conversationReadOnly)} onClick={() => void toggleRuntime()} className="min-h-11 rounded-xl border border-subtle px-3 text-sm text-primary disabled:opacity-40">{needsStart ? 'Start agent' : 'Stop agent'}</button>
+          <button type="button" data-debug-id="conversation-runtime-force-stop-btn" disabled={!agentInstanceId || (needsStart && !operationBlocksInput) || stopState.isLoading || reconfigureState.isLoading || retryConfigurationState.isLoading || instanceBridge?.runtime_connected !== true} onClick={() => void forceStopRuntime()} className="min-h-11 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40">Force stop</button>
+        </div>
+      </div>
+      <div className="mb-4 rounded-xl bg-neutral-soft px-3 py-2 text-xs text-muted">Project: {projectId ? <VaultText value={projectName} fallback="Project" /> : 'No project'}</div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Bridge</div>
+      <div className="mb-5 grid gap-2 sm:grid-cols-2">
+        {bridges.map((item: any) => {
+          const id = bridgeId(item);
+          const selected = id === destinationBridgeId;
+          const available = item.status === 'online' && item.runtime_connected === true && item.reconfiguration_supported;
+          return <button key={id} type="button" data-debug-id={`conversation-destination-bridge-option-${id}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || !available} onClick={() => { settingsEditedRef.current = true; setStagedBridgeId(id); }} className={`flex min-h-14 min-w-0 items-center justify-between gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
+            <span className="min-w-0"><span className="block break-words text-sm font-medium text-primary">{item.label || item.machine_hostname || id}</span><span className="block text-xs text-muted">{item.status !== 'online' ? item.status : item.runtime_connected !== true ? 'Disconnected' : !item.reconfiguration_supported ? 'Update required' : id === instanceBridgeId ? 'Current bridge' : 'Online'}</span></span>
+            {selected ? <Icon name="check" size={18} className="shrink-0 text-accent" /> : null}
+          </button>;
+        })}
+        {!bridges.some((item: any) => bridgeId(item) === destinationBridgeId) ? <p className="text-xs text-danger">Current bridge is unavailable. Choose an online bridge.</p> : null}
+      </div>
       <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
       <input data-debug-id="conversation-model-select" type="hidden" value={model} readOnly />
-      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Provider</div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Provider</div>
       {providerOptions.map((p) => {
         const selected = (provider || instanceProvider) === p;
         const current = instanceProvider === p;
+        const available = caps.some(cap => cap.provider === p);
         return (
-          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} onClick={() => setProvider(p)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
+          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || isStarting || !available} onClick={() => { settingsEditedRef.current = true; setProvider(p); }} className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><ProviderIcon provider={p} size={16} /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-primary">{p}</span>
-              <span className="block truncate text-xs text-muted">{current ? 'current' : 'Provider'}</span>
+              <span className="block truncate text-xs text-muted">{!available ? 'Unavailable on selected bridge' : current ? 'Current provider' : 'Available'}</span>
             </span>
             {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
           </button>
         );
       })}
       <div className="my-1.5 border-t border-subtle" />
-      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Model</div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Model</div>
       {modelOptions.map((t) => {
         const selected = (model || instanceModel) === t;
         const current = instanceModel === t;
-        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Model model' };
+        const available = caps.find(cap => cap.provider === (provider || instanceProvider))?.models.includes(t);
+        const meta = tierMeta[t] || { icon: 'spark' as const, blurb: 'Provider model' };
         return (
-          <button key={t} type="button" data-debug-id={`conversation-model-option-${t}`} onClick={() => setModel(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
+          <button key={t} type="button" data-debug-id={`conversation-model-option-${t}`} aria-pressed={selected} disabled={runtimeActionBusy || operationBlocksInput || isStarting || !available} onClick={() => { settingsEditedRef.current = true; setModel(t); }} className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left disabled:opacity-50 ${selected ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name={meta.icon} size={16} /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-primary">{t}</span>
-              <span className="block truncate text-xs text-muted">{meta.blurb}{current ? ' — current' : ''}</span>
+              <span className="block truncate text-xs text-muted">{!available ? 'Unavailable for selected provider' : meta.blurb}{current ? ' — current' : ''}</span>
             </span>
             {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
           </button>
@@ -1678,8 +1824,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       })}
       <div className="mt-1.5 flex items-center gap-2 border-t border-subtle px-2 pt-2 text-[12px] text-muted">
         <Icon name="alert" size={14} className={pendingReconfig ? 'text-warning' : 'text-faint'} />
-        <span><span className={`font-semibold ${pendingReconfig ? 'text-warning' : 'text-muted'}`}>Restarts the agent</span> — applies on next send.</span>
+        <span><span className={`font-semibold ${pendingReconfig ? 'text-warning' : 'text-muted'}`}>Restarts the agent</span> — choose Apply to confirm.</span>
       </div>
+      {pendingReconfig && stagedConfigurationIssues.length ? <ul data-debug-id="conversation-destination-validation" className="mt-2 list-disc space-y-1 pl-5 text-xs text-danger">{stagedConfigurationIssues.map(issue => <li key={issue}>{issue}</li>)}</ul> : null}
       {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-caption text-muted">{reconfigStatus}</div> : null}
     </div>
   );
@@ -1856,78 +2003,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function renderComposer() {
-    // Group running agents by project → chain, mirroring the sidebar: project
-    // header labels, a subtle divider before every chain group except the first,
-    // and amber-300 coordinators. The current agent keeps sky-400 + check and
-    // always wins over the coordinator color.
-    const pickerProjects = (liveProjects ?? []).filter((p) =>
-      p.chains.some((c) => c.liveAgents.length > 0)
-    );
-    let pickerChainsRendered = 0;
-    const agentPickerList = (
-      <div className="max-h-64 overflow-y-auto py-1">
-        {pickerProjects.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-muted">No running agents</p>
-        ) : (
-          pickerProjects.map((project) => (
-            <div key={project.projectId}>
-              <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
-                <VaultText value={project.name || project.projectId} fallback={project.projectId} />
-              </div>
-              {project.chains
-                .filter((chain) => chain.liveAgents.length > 0)
-                .map((chain) => {
-                  const showDivider = pickerChainsRendered > 0;
-                  pickerChainsRendered += 1;
-                  return (
-                    <div key={chain.chainId}>
-                      {showDivider && <div className="mx-3 my-1 border-t border-subtle" />}
-                      {chain.liveAgents.map((agent) => {
-                        const isCurrent = agent.agentInstanceId === agentInstanceId;
-                        const textClass = isCurrent
-                          ? 'text-accent font-semibold'
-                          : agent.isCoordinator
-                          ? 'text-warning'
-                          : 'text-primary';
-                        return (
-                          <button
-                            key={agent.agentInstanceId}
-                            type="button"
-                            data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
-                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-neutral-soft ${textClass}`}
-                            onClick={() => {
-                              setAgentPickerOpen(false);
-                              window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
-                            }}
-                          >
-                            <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
-                            {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-accent" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-            </div>
-          ))
-        )}
-      </div>
-    );
-    const agentPickerTrigger = (
-      <button
-        type="button"
-        data-debug-id="conversation-agent-picker-btn"
-        aria-label="Current agent — click to switch"
-        title={agentDisplayName || agentInstanceId || 'Agent'}
-        aria-haspopup={isMobile ? 'dialog' : undefined}
-        aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
-        onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
-        className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[200px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised sm:border-transparent sm:bg-transparent px-2.5 text-[13px] text-primary sm:text-muted hover:bg-neutral-soft hover:text-primary"
-      >
-        <span className="truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
-        <Icon name="chevron-down" size={13} className="shrink-0" />
-      </button>
-    );
     const activeProvider = instanceProvider || provider;
     const useCompactModelTrigger = isMobile || isSmallComposer;
 
@@ -1935,11 +2010,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label={`Change provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
+        aria-label={`Choose bridge, provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
         title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — click to change runtime`}
-        aria-haspopup={isMobile ? 'dialog' : undefined}
-        aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
-        onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
+        aria-haspopup="dialog"
+        aria-expanded={runtimeMenuOpen}
+        onClick={() => setRuntimeMenuOpen(true)}
         className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-primary hover:bg-neutral-soft"
       >
         <ProviderIcon provider={activeProvider} size={16} />
@@ -1948,17 +2023,56 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label={`Change provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
+        aria-label={`Choose bridge, provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
         title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — changing runtime restarts the agent`}
-        aria-haspopup={isMobile ? 'dialog' : undefined}
-        aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
-        onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
+        aria-haspopup="dialog"
+        aria-expanded={runtimeMenuOpen}
+        onClick={() => setRuntimeMenuOpen(true)}
         className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
       >
         <ProviderIcon provider={activeProvider} size={16} />
         <span className="font-semibold truncate">{instanceModel || '—'}</span>
         <Icon name="chevron-down" size={14} className="shrink-0" />
       </button>
+    );
+    const composerInput = (<textarea
+              ref={textareaRef}
+              data-debug-id="conversation-composer-input"
+              value={draft}
+              disabled={configurationInputBlocked}
+              onChange={(e) => {
+                updateDraft(e.target.value);
+                const val = e.target.value;
+                const pos = e.target.selectionStart ?? val.length;
+                const before = val.slice(0, pos);
+                const match = before.match(/@([^\s@]*)$/);
+                if (match) {
+                  setMentionQuery(match[1]);
+                  setMentionIndex(0);
+                } else {
+                  setMentionQuery(null);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (mentionQuery !== null && filteredMentions.length > 0) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
+                  if (e.key === 'Enter') { e.preventDefault(); handleMentionSelect(filteredMentions[mentionIndex]); return; }
+                  if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
+                }
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); }
+              }}
+              onPaste={handleComposerPaste}
+              rows={isMobile ? 1 : 2}
+              placeholder={isMobile ? 'Message the agent…' : 'Message the agent… (Cmd/Ctrl+Enter to send)'}
+              className={isMobile ? "block min-h-6 max-h-[72px] w-full resize-none bg-transparent p-0 text-base leading-6 text-primary outline-none placeholder:text-muted" : "min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-sm text-primary outline-none placeholder:text-muted"}
+            />);
+    const mobileMoreMenu = (
+      <Menu side="top" align="end" label="Composer options" open={mobileMoreOpen} onOpenChange={setMobileMoreOpen} trigger={<button type="button" data-debug-id="conversation-composer-more-btn" aria-label="Composer options" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft"><Icon name="more-horizontal" size={19} /></button>}>
+        <Menu.Item data-debug-id="conversation-mobile-model-btn" onClick={() => { setMobileMoreOpen(false); setRuntimeMenuOpen(true); }}><ProviderIcon provider={activeProvider} size={16} /><span className="min-w-0"><span className="block truncate">{instanceModel || 'Choose model/tier'}</span><span className="block text-xs text-muted">{activeProvider || 'Provider'} · Agent settings</span></span></Menu.Item>
+        <Menu.Item data-debug-id="conversation-mobile-pane-btn" onClick={() => { userManuallyToggledPaneRef.current = true; setIsPaneExpanded(prev => !prev); setMobileMoreOpen(false); }}><Icon name="terminal" size={16} /><span>{isPaneExpanded ? 'Hide terminal pane' : 'Show terminal pane'}</span></Menu.Item>
+        <Menu.Item data-debug-id="conversation-mobile-upload-btn" disabled={configurationInputBlocked} onClick={() => { setMobileMoreOpen(false); openAttachmentPicker(); }}><Icon name="plus" size={16} /><span>Upload attachment</span></Menu.Item>
+      </Menu>
     );
     return (
       <form
@@ -1989,13 +2103,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             </div>
           )}
           <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
-          {/* Composer card: immutable context row (bridge · project + status) on top,
-              input in the middle, action toolbar (attach/terminal · model switcher ·
-              send) on the bottom. */}
+          {/* Desktop context and toolbar; mobile keeps input, send and options in one row. */}
           <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-subtle bg-surface px-3 py-2.5 focus-within:border-accent sm:px-4 sm:py-3">
-          <div data-debug-id="conversation-composer-context" className="mb-2 flex min-w-0 items-center gap-x-2 text-[12px] text-muted">
+          <div data-debug-id="conversation-composer-context" className="mb-2 hidden min-w-0 items-center gap-x-2 sm:flex text-[12px] text-muted">
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-              <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
+              <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[50%] shrink items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (current location)`}>
                 <Icon name="lock" size={12} className="shrink-0" /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
               </span>
               {projectId ? (
@@ -2065,96 +2177,30 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 onClose={() => setMentionQuery(null)}
               />
             )}
-            <textarea
-              ref={textareaRef}
-              data-debug-id="conversation-composer-input"
-              value={draft}
-              onChange={(e) => {
-                updateDraft(e.target.value);
-                const val = e.target.value;
-                const pos = e.target.selectionStart ?? val.length;
-                const before = val.slice(0, pos);
-                const match = before.match(/@([^\s@]*)$/);
-                if (match) {
-                  setMentionQuery(match[1]);
-                  setMentionIndex(0);
-                } else {
-                  setMentionQuery(null);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (mentionQuery !== null && filteredMentions.length > 0) {
-                  if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
-                  if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
-                  if (e.key === 'Enter') { e.preventDefault(); handleMentionSelect(filteredMentions[mentionIndex]); return; }
-                  if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
-                }
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); }
-              }}
-              onPaste={handleComposerPaste}
-              rows={2}
-              placeholder={isMobile ? 'Message the agent…' : 'Message the agent… (Cmd/Ctrl+Enter to send)'}
-              className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-primary outline-none placeholder:text-muted sm:text-sm"
-            />
+            {pendingReconfig && stagedConfigurationIssues.length > 0 ? <div data-debug-id="conversation-apply-blocked-reasons" role="status" className="mb-2 rounded-xl border border-subtle px-3 py-2 text-xs text-muted"><div className="font-medium text-primary">Changes cannot be applied yet</div><ul className="mt-1 list-disc pl-4">{stagedConfigurationIssues.map(issue => <li key={issue}>{issue}</li>)}</ul></div> : null}
+            {operation ? <InstanceReconfigurationProgress operation={operation} /> : null}
+            {operationBlocksInput ? <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle px-3 py-2">
+              <p className="min-w-0 flex-1 text-xs text-muted">{operation?.failure_code === 'force_stopping' ? 'Waiting for confirmed termination. Settings will unlock once the agent is stopped.' : 'To change the model or bridge, force stop this run first. Settings unlock after the bridge confirms termination.'}</p>
+              <button type="button" data-debug-id="conversation-recovery-force-stop-btn" disabled={stopState.isLoading || reconfigureState.isLoading || retryConfigurationState.isLoading || instanceBridge?.runtime_connected !== true} onClick={() => void forceStopRuntime()} className="min-h-10 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40">Force stop</button>
+            </div> : null}
+            {(!operationInFlight && (runtimeStopping || isStarting || reconfigStatus)) ? <div data-debug-id="conversation-runtime-transition" role="status" aria-live="polite" className="mb-2 rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm">
+              <div className="font-medium text-primary">{runtimeStopping ? 'Stopping agent' : isStarting ? 'Starting agent' : 'Runtime configuration'}</div>
+              <div className="mt-0.5 truncate text-xs text-muted">{bridgeLabel || instanceBridgeId || 'Current bridge'}{projectId ? <> · <VaultText value={projectName} fallback="Project" /></> : null}</div>
+              {reconfigStatus ? <div className="mt-1 text-xs text-muted">{reconfigStatus}</div> : null}
+            </div> : null}
+            {conversationReadOnly ? <div data-debug-id="conversation-configuration-read-only" role="status" aria-live="polite" className="rounded-xl border border-subtle bg-neutral-soft px-4 py-3 text-sm">
+              <div className="font-semibold text-primary">This conversation is read-only</div>
+              <p className="mt-1 text-xs text-muted">Messages are disabled until the following configuration issues are resolved.</p>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted">{configurationIssues.map(issue => <li key={issue}>{issue}</li>)}</ul>
+            </div> : (isMobile && !pendingReconfig ? <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1 py-1.5">{composerInput}</div>
+              <button type="submit" data-debug-id="conversation-composer-send-btn" disabled={sendDisabled} aria-label="Send message" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg disabled:opacity-40"><Icon name="arrow-up" size={18} /></button>
+              {mobileMoreMenu}
+            </div> : composerInput)}
           </div>
 
-          <div className="mt-2 flex flex-col gap-2 sm:mt-1 sm:flex-row sm:items-center sm:gap-1.5 min-w-0">
-            {/* Mobile Row 1: Agent chip and Model switcher side-by-side with full width under the textarea */}
-            <div className="flex w-full min-w-0 items-center gap-1.5 sm:contents">
-              <div className="flex-1 min-w-0 sm:flex-initial sm:order-4">
-                {!isMobile ? (
-                  <Popover
-                    side="top"
-                    align="start"
-                    label="Switch agent"
-                    open={agentPickerOpen}
-                    onOpenChange={setAgentPickerOpen}
-                    className="w-[min(92vw,320px)]"
-                    trigger={agentPickerTrigger}
-                  >
-                    {agentPickerList}
-                  </Popover>
-                ) : (
-                  <>
-                    {agentPickerTrigger}
-                    <Drawer side="bottom" title="Switch agent" open={agentPickerOpen} onOpenChange={setAgentPickerOpen} data-debug-id="conversation-agent-picker-mobile-sheet">
-                      <Drawer.Body>{agentPickerList}</Drawer.Body>
-                    </Drawer>
-                  </>
-                )}
-              </div>
-
-              <div className={useCompactModelTrigger ? "shrink-0 sm:flex-initial sm:order-6" : "flex-1 min-w-0 sm:flex-initial sm:order-6"}>
-                {!isMobile ? (
-                  <Popover
-                    side="top"
-                    align="end"
-                    label="Runtime controls"
-                    open={runtimeMenuOpen}
-                    onOpenChange={setRuntimeMenuOpen}
-                    className="w-[min(92vw,430px)]"
-                    trigger={runtimeMenuTrigger}
-                  >
-                    {runtimeControls}
-                  </Popover>
-                ) : (
-                  <>
-                    {runtimeMenuTrigger}
-                    <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
-                      <Drawer.Body>{runtimeControls}</Drawer.Body>
-                    </Drawer>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Desktop Spacers */}
-            <div className="hidden sm:block flex-1 min-w-[8px] sm:order-3" />
-            <div className="hidden sm:block flex-1 min-w-[8px] sm:order-5" />
-
-            {/* Mobile Row 2: Left: [+] attach and [>_] terminal; Right: Send button anchored to bottom-right corner */}
-            <div className="flex w-full min-w-0 items-center justify-between sm:contents">
-              <div className="flex items-center gap-1.5 sm:contents">
+          {!(isMobile && !pendingReconfig && !conversationReadOnly) ? <div data-debug-id="conversation-composer-toolbar" className="mt-2 flex min-w-0 items-center justify-between gap-2">
+              {!pendingReconfig && !conversationReadOnly ? <div className="flex shrink-0 items-center gap-1.5">
                 <button
                   data-debug-id="conversation-attach-btn"
                   type="button"
@@ -2183,9 +2229,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 >
                   <Icon name="terminal" size={18} />
                 </button>
-              </div>
+              </div> : <span aria-hidden="true" />}
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+                {isMobile ? mobileMoreMenu : runtimeMenuTrigger}
 
-              <button
+              {pendingReconfig ? <div className="flex items-center gap-2">
+                <button type="button" data-debug-id="conversation-reconfigure-reset-btn" disabled={runtimeActionBusy || operationBlocksInput} onClick={resetRuntimeConfiguration} className="rounded-xl border border-subtle px-4 py-2 text-sm text-primary disabled:opacity-40">Reset</button>
+                <button type="button" data-debug-id="conversation-reconfigure-apply-btn" disabled={runtimeActionBusy || (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) || stagedConfigurationIssues.length > 0} onClick={() => void applyReconfigure()} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40">Apply</button>
+              </div> : !conversationReadOnly ? <button
                 data-debug-id="conversation-composer-send-btn"
                 type="submit"
                 disabled={sendDisabled}
@@ -2194,9 +2245,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:order-7"
               >
                 <Icon name="arrow-up" size={18} />
-              </button>
+              </button> : null}
             </div>
-          </div>
+          </div> : null}
         </div>
       </div>
       </form>
@@ -2344,6 +2395,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                   </span>
                   <Icon name="chevron-down" size={13} className="shrink-0 text-muted group-hover:text-accent" />
                 </button>
+                <span className="shrink-0 text-faint">/</span>
+                <button type="button" data-debug-id="conversation-chain-agent-switcher-btn" aria-label="Switch agent in this task chain" aria-haspopup="dialog" aria-expanded={chainAgentSwitcherOpen} onClick={() => { setChainAgentSwitcherOpen(true); void chainDetailQuery.refetch(); }} className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-primary hover:bg-neutral-soft">
+                  <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : isStarting ? 'Starting' : 'Running'} />
+                  <span className="truncate"><VaultText value={chainAgentGroups[0]?.conversations.find(member => member.agentInstanceId === agentInstanceId)?.title || agentDisplayName || agentId} fallback="Agent" /></span>
+                  <Icon name="chevron-down" size={13} className="shrink-0 text-muted" />
+                </button>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-danger">{titleError}</div> : null}
@@ -2479,6 +2536,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </div>
       ) : null}
 
+
+      <Modal open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} title="Agent settings" size="lg" data-debug-id="conversation-runtime-modal">
+        <Modal.Body>{runtimeControls}</Modal.Body>
+        <Modal.Footer>
+          <button type="button" data-debug-id="conversation-runtime-modal-reset-btn" disabled={!pendingReconfig || runtimeActionBusy || operationBlocksInput} onClick={resetRuntimeConfiguration} className="min-h-11 rounded-xl border border-subtle px-4 py-2 text-sm text-primary disabled:opacity-40">Reset</button>
+          <button type="button" data-debug-id="conversation-runtime-modal-apply-btn" disabled={!pendingReconfig || runtimeActionBusy || (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) || stagedConfigurationIssues.length > 0} onClick={() => void applyReconfigure()} className="min-h-11 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40">Apply</button>
+        </Modal.Footer>
+      </Modal>
+
+      <Modal open={chainAgentSwitcherOpen} onOpenChange={setChainAgentSwitcherOpen} title="Agents in this task chain" size="md" data-debug-id="conversation-chain-agent-modal">
+        <Modal.Body>
+          <div className="space-y-2">
+            {(chainAgentGroups[0]?.conversations || []).map(member => <button key={member.agentInstanceId} type="button" data-debug-id={`conversation-chain-agent-option-${member.agentInstanceId}`} aria-pressed={member.agentInstanceId === agentInstanceId} onClick={() => { setChainAgentSwitcherOpen(false); window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(member.agentInstanceId)}`, ''); }} className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${member.agentInstanceId === agentInstanceId ? 'border-accent bg-accent/10' : 'border-subtle hover:bg-neutral-soft'}`}>
+              <StatusDot size="sm" tone={runtimeStatusToTone(member.runtimeStatus)} label={runtimeStateLabel(runtimeStateFromStatus(member.runtimeStatus))} />
+              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-primary"><VaultText value={member.title} fallback="Agent" /></span>{member.isCoordinator ? <span className="text-xs text-muted">Coordinator</span> : null}</span>
+              {member.agentInstanceId === agentInstanceId ? <Icon name="check" size={18} className="text-accent" /> : null}
+            </button>)}
+            {!chainAgentGroups[0]?.conversations.length ? <p className="text-sm text-muted">No agents are available in this task chain.</p> : null}
+          </div>
+        </Modal.Body>
+      </Modal>
 
       <TaskChainSelectorModal
         open={chainSelectorOpen}

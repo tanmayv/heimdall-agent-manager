@@ -327,3 +327,30 @@ bridge_local_hex_digit :: proc(n: byte) -> byte {
 bridge_local_now_unix_ms :: proc() -> i64 {
 	return time.to_unix_nanoseconds(time.now()) / 1_000_000
 }
+
+// Return an owned assertion snapshot. Local tokens persist across Bridge restart,
+// so the launch epoch survives loss of the in-memory status projection.
+bridge_agent_instance_assertion :: proc(instance_id: string) -> string {
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		rec := bridge_local_token_records[i]
+		if rec.agent_instance_id == instance_id && rec.invalidated_at_unix_ms == 0 do return strings.clone(rec.instance_token)
+	}
+	return ""
+}
+bridge_agent_instance_last_assertion :: proc(instance_id: string) -> string {
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		rec := bridge_local_token_records[i]
+		if rec.agent_instance_id == instance_id do return strings.clone(rec.instance_token)
+	}
+	return ""
+}
+bridge_agent_instance_launch_epoch :: proc(instance_id: string) -> string {
+	assertion := bridge_agent_instance_last_assertion(instance_id)
+	defer delete(assertion)
+	if separator := strings.index(assertion, "~"); separator >= 0 do return strings.clone(assertion[separator + 1:])
+	return ""
+}

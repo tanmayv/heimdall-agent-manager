@@ -582,6 +582,12 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		}
 		return
 	}
+	if type == "validate_project_path" {
+		result := bridge_project_path_validation_result_json(text, use_cache = false)
+		defer delete(result)
+		_ = bridge_hub_send(conn, result)
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
@@ -637,7 +643,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = bridge_hub_send(conn, accepted)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
-		ok := bridge_runtime_stop_agent(instance_id)
+		ok := bridge_runtime_stop_agent(instance_id, force = extract_json_bool(text, "force", false))
 		st_json := bridge_instance_status_json(instance_id)
 		defer delete(st_json)
 		_ = bridge_hub_send(conn, st_json)
@@ -1905,6 +1911,33 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0) -> (bool, string) {
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
+	launch_epoch := extract_json_string(command_json, "launch_epoch", "")
+	defer delete(launch_epoch)
+	instance_token := extract_json_string(command_json, "instance_token", "")
+	defer delete(instance_token)
+	if instance_token == "" {
+		instance_token = bridge_agent_instance_last_assertion(instance_id)
+		if instance_token == "" do instance_token = strings.concatenate({"hit_", instance_id})
+	}
+	if launch_epoch != "" {
+		socket, daemon_ok := bridge_pty_host_ensure_daemon()
+		if !daemon_ok do return false, "ham-pty-host daemon unavailable"
+		existing, listed := bridge_pty_host_list(socket)
+		if !listed do return false, "cannot inspect existing destination runtime"
+		registered, alive := false, false
+		for agent in existing.agents do if agent.instance_id == instance_id { registered = true; alive = agent.alive; break }
+		pty_host_reply_delete(existing)
+		if registered {
+			assertion := bridge_agent_instance_assertion(instance_id)
+			defer delete(assertion)
+			if assertion == instance_token {
+				if alive do return true, ""
+				if !bridge_pty_host_close(socket, instance_id) do return false, "cannot close exited destination runtime"
+			} else {
+				return false, "destination has an unrelated or unconfirmed runtime; refusing duplicate launch"
+			}
+		}
+	}
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.
 	bridge_runtime_clear_stop_intent(instance_id)
 	// Agents always run in their own managed run dir (never the project path).
@@ -1924,7 +1957,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	// cryptographically distinct from the old one.
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
 	if invalidated > 0 do fmt.println("bridge launch: invalidated prior local tokens for instance", instance_id, "count", invalidated)
-	instance_token := strings.concatenate({"hit_", instance_id})
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
 	provider, model := bridge_runtime_provider_model(command_json)
 	// Conditional, per-hash bootstrap (BRG-1..BRG-4): build the per-instance
@@ -2012,7 +2044,8 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	if bridge_pty_host_is_registered(socket, instance_id) {
 		if !bridge_pty_host_close(socket, instance_id) {
-			fmt.eprintln("bridge launch: failed to close registered instance before respawn", instance_id)
+			bridge_runtime_set_status(instance_id, "failed", "idle")
+			return false, "failed to close existing instance before respawn"
 		}
 	}
 	pid, ok = bridge_pty_host_spawn(socket, req)
@@ -2032,18 +2065,9 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	return true, ""
 }
 
-// bridge_runtime_stop_agent stops a running agent by INVALIDATING its local token
-// only — ZERO tmux involvement. The bridge never runs kill/pane commands. Instead
-// it relies on the wrapper's H7 self-reap: the ham-wrapper pings the bridge every
-// ~1s (wrapper.liveness.ping); once the token is invalid the bridge answers with
-// an auth failure, and the wrapper kills its own child agent and exits within ~1s
-// (src/wrapper/bridge_runtime.odin). Because the local-token store is persisted to
-// disk on invalidate (agent_token_store.odin -> local-tokens.jsonl), this survives
-// a bridge restart: after relaunch the reissued/invalid token still makes the
-// superseded wrapper self-terminate, with no in-memory launch record needed. A
-// stopped agent then sends no further heartbeats, so heartbeat presence is the
-// source of truth for runtime_status.
-bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
+// Stop the PTY child before invalidating credentials and declaring it stopped.
+// A failed close leaves stop intent active and must never acknowledge success.
+bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
 	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
 	// races the ~1s self-reap window cannot resurrect the instance back to
@@ -2053,9 +2077,21 @@ bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
 	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
 	// done for defense-in-depth.
-	if socket, ok := bridge_pty_host_ensure_daemon(); ok {
-		if bridge_pty_host_close(socket, instance_id) do fmt.println("bridge stop: closed instance on ham-pty-host", instance_id)
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok do return false
+	// An absent instance is an idempotent stop only after a successful list.
+	// is_registered alone cannot distinguish absence from transport failure.
+	reply, list_ok := bridge_pty_host_list(socket)
+	if !list_ok do return false
+	registered, alive := false, false
+	for agent in reply.agents do if agent.instance_id == instance_id { registered = true; alive = agent.alive; break }
+	pty_host_reply_delete(reply)
+	if force && registered && alive {
+		client := Pty_Host_Client{socket = socket}
+		if !bridge_pty_host_signal(&client, instance_id, 9) do return false
 	}
+	if registered && !bridge_pty_host_close(socket, instance_id) do return false
+
 	// Invalidate every local token for this instance (persisted to disk).
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
 	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
@@ -2551,6 +2587,8 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"agent_instance_status\",\"protocol_version\":1,\"agent_instance_id\":\"")
 	bridge_runtime_write_json_string(&b, inst.agent_instance_id)
+	epoch := bridge_agent_instance_launch_epoch(inst.agent_instance_id)
+	strings.write_string(&b, "\",\"launch_epoch\":\""); bridge_runtime_write_json_string(&b, epoch); delete(epoch)
 	strings.write_string(&b, "\",\"state_seq\":")
 	strings.write_string(&b, fmt.tprintf("%d", inst.state_seq))
 	strings.write_string(&b, ",\"runtime_status\":\"")
@@ -2639,6 +2677,8 @@ bridge_hub_heartbeat_json :: proc() -> string {
 		first = false
 		strings.write_string(&b, "{\"agent_instance_id\":\"")
 		bridge_runtime_write_json_string(&b, inst.agent_instance_id)
+		epoch := bridge_agent_instance_launch_epoch(inst.agent_instance_id)
+		strings.write_string(&b, "\",\"launch_epoch\":\""); bridge_runtime_write_json_string(&b, epoch); delete(epoch)
 		strings.write_string(&b, "\",\"state_seq\":")
 		strings.write_string(&b, fmt.tprintf("%d", inst.state_seq))
 		strings.write_string(&b, ",\"runtime_status\":\"")
@@ -3068,7 +3108,7 @@ bridge_hub_hello_json :: proc() -> string {
 	return strings.to_string(b)
 }
 
-bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\",\"get_agent_pane\"]" }
+bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\",\"get_agent_pane\",\"instance_reconfiguration_v1\"]" }
 
 bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 	logged_ctrl := false

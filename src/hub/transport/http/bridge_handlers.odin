@@ -1527,6 +1527,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			active = digest_active
 			used_digest = true
 		}
+		if h.agents != nil do agent_service.reconcile_instance_reconfigurations(h.agents, bridge_id)
 		reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge_id, connection_generation, active)
 		// H7 cross-bridge reap: any instance this bridge reports active whose
 		// canonical bridge_id is now a DIFFERENT bridge has been relaunched
@@ -1586,13 +1587,14 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		runtime_status := json_string(text, "runtime_status")
 		activity_status := json_string(text, "activity_status")
 		if h.agents != nil {
-			if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, connection_generation, instance_id, state_seq, runtime_status, activity_status); applied {
+			if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, connection_generation, instance_id, state_seq, runtime_status, activity_status, json_string(text, "launch_epoch", context.temp_allocator)); applied {
 				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 				delete(summary)
 				domain.agent_instance_destroy(&inst)
 			}
 		}
+		if h.agents != nil do agent_service.reconcile_instance_reconfigurations(h.agents, bridge_id)
 		current_runtime, current_activity, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, bridge_id, connection_generation, instance_id)
 		defer delete(current_runtime)
 		defer delete(current_activity)
@@ -1635,6 +1637,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	case "command_result", "project_path_validation_result", "provider_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
 		command_id := json_string(text, "command_id")
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		if type == "command_result" && h.agents != nil do agent_service.apply_reconfiguration_command_result(h.agents, bridge_id, command_id, text)
 		delete(command_id)
 	case "pane_capture_result":
 		if json_int(text, "protocol_version", 0) != 1 do return true
@@ -1807,6 +1810,7 @@ Bridge_Agent_Status_Report :: struct {
 	state_seq:         int    `json:"state_seq"`,
 	runtime_status:    string `json:"runtime_status"`,
 	activity_status:   string `json:"activity_status"`,
+	launch_epoch: string `json:"launch_epoch"`,
 }
 
 Bridge_Heartbeat_Message :: struct {
@@ -1819,7 +1823,7 @@ Bridge_Heartbeat_Message :: struct {
 // Serialize durable status writes with retirement. New connections do not finish
 // admission until the old state writer has drained; a delayed old frame cannot
 // save over the new generation's durable state.
-bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	c := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, generation)
 	if c == nil do return {}, false, domain.domain_error(.Bridge_Offline, "stale bridge generation")
 	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
@@ -1828,7 +1832,7 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 		sync.unlock(&c.state_mutex)
 		return {}, false, domain.domain_error(.Bridge_Offline, "retired bridge generation")
 	}
-	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = c.owner_id)
+	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = c.owner_id, launch_epoch = launch_epoch)
 	sync.unlock(&c.state_mutex)
 	if applied {
 		_, _, tracking_err := project_service.bridge_runtime_instance_apply(h.bridge_runtime_registry, bridge_id, generation, id, string(instance.owner_user_id), string(instance.runtime_status), string(instance.activity_status), seq, recover = true)
@@ -1857,7 +1861,7 @@ bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: stri
 				_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, "")
 			}
 			if h.agents != nil {
-				if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status); applied {
+				if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, report.launch_epoch); applied {
 					summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
 					delete(summary)
@@ -2119,6 +2123,9 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\",\"hub_url\":\""); write_handler_json_string(b, br.hub_url)
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, domain.bridge_status_string(br.status))
 	strings.write_string(b, "\",\"capabilities\":"); strings.write_string(b, bridge_capabilities_json(br))
+	connected := agents != nil && project_service.bridge_runtime_registry_has_live(agents.bridge_runtime_registry, br.bridge_id)
+	strings.write_string(b, ",\"runtime_connected\":"); strings.write_string(b, "true" if connected else "false")
+	strings.write_string(b, ",\"reconfiguration_supported\":"); strings.write_string(b, "true" if agent_service.reconfiguration_bridge_supported(br) else "false")
 	strings.write_string(b, ",\"active_instance_count\":"); strings.write_string(b, fmt.tprintf("%d", agent_service.active_instance_count_for_bridge(agents, br.bridge_id)))
 	strings.write_string(b, ",\"version\":\""); write_handler_json_string(b, br.version)
 	strings.write_string(b, "\",\"commit_sha\":\""); write_handler_json_string(b, br.commit_sha)

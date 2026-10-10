@@ -142,7 +142,7 @@ const ModalBase: React.FC<ModalProps> = ({
           <h2 id={titleId} className="text-title text-primary">
             {title}
           </h2>
-          <IconButton icon="close" label="Close dialog" size="sm" onClick={close} className="-mr-1.5 -mt-0.5" />
+          <IconButton data-debug-id={`${(rest as Record<string, unknown>)['data-debug-id'] || 'modal'}-close-btn`} icon="close" label="Close dialog" size="sm" onClick={close} className="-mr-1.5 -mt-0.5" />
         </div>
         <div className="min-h-0 flex-1 overflow-auto">{body}</div>
         {footer.length ? <div className="shrink-0">{footer}</div> : null}

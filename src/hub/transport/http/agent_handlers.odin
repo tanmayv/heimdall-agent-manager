@@ -249,7 +249,7 @@ stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// the same-owner boundary (an instance token for another owner gets Not_Found).
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	inst, stopped, err := agent_service.stop_instance(h.agents, auth_ctx, path_part(req.path, 4), agent_service.Stop_Instance_Input{reason = json_string(req.body, "reason")})
+	inst, stopped, err := agent_service.stop_instance(h.agents, auth_ctx, path_part(req.path, 4), agent_service.Stop_Instance_Input{reason = json_string(req.body, "reason"), force = json_bool(req.body, "force")})
 	if !stopped do return respond_error(err, req.request_id)
 	events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_summary_json(inst))
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
@@ -381,6 +381,7 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"startup_status\":\""); write_handler_json_string(b, inst.startup_status)
 	strings.write_string(b, "\",\"activity_status\":\""); write_handler_json_string(b, inst.activity_status)
 	strings.write_string(b, "\",\"last_applied_seq\":"); strings.write_string(b, i32_to_string_http(inst.last_applied_seq))
+	strings.write_string(b, ",\"configuration_revision\":"); strings.write_string(b, i32_to_string_http(inst.configuration_revision))
 	strings.write_string(b, ",\"run_count\":"); strings.write_string(b, i32_to_string_http(inst.run_count))
 	strings.write_string(b, ",\"started_at\":\""); write_handler_json_string(b, inst.started_at)
 	strings.write_string(b, "\",\"stopped_at\":\""); write_handler_json_string(b, inst.stopped_at)

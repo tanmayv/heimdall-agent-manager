@@ -146,7 +146,7 @@ resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) 
 	instance_id := ""
 	relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
 	if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
-		instance_id = relay_token[len("hit_"):]
+		instance_id = agent_service.instance_id_from_assertion(relay_token)
 	}
 	if instance_id == "" {
 		instance_id = extract_body_instance_id(req.body)
@@ -161,8 +161,9 @@ resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) 
 		return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge cannot act for an instance it does not own")
 	}
 
+	if inst.launch_epoch != "" && relay_token == "" do return {}, false, domain.domain_error(.Forbidden, "launch assertion is required for this instance")
 	if relay_token != "" {
-		expected_relay_token := strings.concatenate({"hit_", inst.agent_instance_id})
+		expected_relay_token := agent_service.instance_assertion_token(inst)
 		defer delete(expected_relay_token)
 		if relay_token != expected_relay_token {
 			return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge instance assertion token is invalid")
@@ -212,7 +213,7 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 			instance_id := ""
 			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
 			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
-				instance_id = relay_token[len("hit_"):]
+				instance_id = agent_service.instance_id_from_assertion(relay_token)
 			}
 			if instance_id == "" {
 				instance_id = extract_body_instance_id(req.body)
@@ -251,7 +252,7 @@ resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) 
 			instance_id := ""
 			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
 			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
-				instance_id = relay_token[len("hit_"):]
+				instance_id = agent_service.instance_id_from_assertion(relay_token)
 			}
 			if instance_id == "" {
 				instance_id = extract_body_instance_id(req.body)

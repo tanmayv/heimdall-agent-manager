@@ -17,6 +17,7 @@ import platform "odin_test:hub/platform"
 import jsonx "odin_test:lib/jsonx"
 
 Agent_Service :: struct {
+	reconfiguration_mutex: sync.Mutex,
 	agents: ^iface.Agent_Repository,
 	bridges: ^iface.Bridge_Repository,
 	projects: ^iface.Project_Repository,
@@ -66,7 +67,7 @@ Create_Instance_Input :: struct {
 	display_name: string,
 }
 
-Stop_Instance_Input :: struct { reason: string }
+Stop_Instance_Input :: struct { reason: string, force: bool }
 Reconfigure_Instance_Input :: struct { provider, model, agent_id, bridge_id, chain_id, conversation_id, display_name: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id, has_display_name: bool }
 
 new_agent_service :: proc(agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Agent_Service {
@@ -389,10 +390,12 @@ get_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst
 verify_instance_token :: proc(service: ^Agent_Service, token: string) -> (contracts.Auth_Context, domain.Agent_Instance, bool, domain.Domain_Error) {
 	if service == nil || service.agents == nil do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
 	if !strings.has_prefix(token, "hit_") do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Unauthenticated, "instance bearer token is required")
-	instance_id := strings.trim_space(token[len("hit_"):])
+	instance_id := instance_id_from_assertion(strings.trim_space(token))
 	if instance_id == "" do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Unauthenticated, "instance bearer token is invalid")
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, err
+	expected := instance_assertion_token(inst); defer delete(expected)
+	if token != expected do return {}, {}, false, domain.domain_error(.Unauthenticated, "superseded launch token")
 	return contracts.Auth_Context{kind = .Instance_Token, user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id}, inst, true, domain.Domain_Error{}
 }
 
@@ -660,12 +663,18 @@ write_bootstrap_messages :: proc(b: ^strings.Builder, service: ^Agent_Service, i
 }
 
 stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Stop_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	sync.lock(&service.reconfiguration_mutex)
+	defer sync.unlock(&service.reconfiguration_mutex)
+	if input.force {
+		if inst, handled, err := force_stop_instance_reconfiguration_locked(service, auth, instance_id); handled do return inst, err.code == .None, err
+	}
+	if idle, err := reconfiguration_require_idle(service, instance_id); !idle do return {}, false, err
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
 	reason := input.reason; if reason == "" do reason = "user_requested"
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_stop_"), "_", inst.agent_instance_id})
-	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = stop_command_json(command_id, inst.agent_instance_id, reason)}
+	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = stop_command_json(command_id, inst.agent_instance_id, reason, force = input.force)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
 	inst.runtime_status = "stopping"
 	inst.updated_at = platform.clock_now(service.clock)
@@ -673,6 +682,7 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 }
 
 restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	if idle, err := reconfiguration_require_idle(service, instance_id); !idle do return {}, false, err
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	return relaunch_instance(service, auth, inst, inst.provider, inst.model)
@@ -850,6 +860,9 @@ agent_service_send_pty_resize :: proc(service: ^Agent_Service, auth: contracts.A
 send_pty_resize :: agent_service_send_pty_resize
 
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	sync.lock(&service.reconfiguration_mutex)
+	defer sync.unlock(&service.reconfiguration_mutex)
+	if idle, err := reconfiguration_require_idle(service, instance_id); !idle do return {}, false, err
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	if input.has_agent_id || input.has_bridge_id || input.has_project_id || input.has_chain_id || input.has_conversation_id do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent_id, bridge_id, project_id, chain_id, and conversation_id are immutable for an instance; changing them requires a new instance")
@@ -860,12 +873,23 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	inst.provider = resolved.provider
 	inst.model = resolved.model
 	if input.has_display_name do inst.display_name = input.display_name
-	if runtime_expected_active(inst.runtime_status) do return relaunch_instance(service, auth, inst, resolved.provider, resolved.model)
+	if runtime_expected_active(inst.runtime_status) do return relaunch_instance_locked(service, auth, inst, resolved.provider, resolved.model)
 	inst.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save_instance(service.agents, inst)
 }
 
 relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	sync.lock(&service.reconfiguration_mutex)
+	defer sync.unlock(&service.reconfiguration_mutex)
+	return relaunch_instance_locked(service, auth, inst, provider, model)
+}
+
+relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	if idle, err := reconfiguration_require_idle(service, inst.agent_instance_id); !idle do return {}, false, err
+	current, found, read_err := iface.agent_get_instance(service.agents, inst.agent_instance_id)
+	if !found do return {}, false, read_err
+	defer domain.agent_instance_destroy(&current)
+	if current.configuration_revision != inst.configuration_revision || current.launch_epoch != inst.launch_epoch || current.bridge_id != inst.bridge_id do return {}, false, domain.domain_error(.Conflict, "instance configuration changed before runtime action")
 	_, auth_ok, auth_err := validate_pinned_provider_model(service, auth, inst, provider, model)
 	if !auth_ok do return domain.Agent_Instance{}, false, auth_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
@@ -895,12 +919,16 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 	return iface.agent_save_instance(service.agents, next)
 }
 
-apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	if inst.bridge_id != bridge_id || (owner_user_id != "" && string(inst.owner_user_id) != owner_user_id) {
 		domain.agent_instance_destroy(&inst)
 		return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found on bridge")
+	}
+	if inst.launch_epoch != launch_epoch {
+		domain.agent_instance_destroy(&inst)
+		return {}, false, domain.domain_error(.Conflict, "superseded launch status report")
 	}
 	effective_state_seq := state_seq
 	if effective_state_seq <= inst.last_applied_seq {
@@ -1467,18 +1495,22 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	strings.write_string(&b, "\",\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, inst.provider)
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
+	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, inst.launch_epoch)
+	token := instance_assertion_token(inst); defer delete(token)
+	strings.write_string(&b, "\",\"instance_token\":\""); write_service_json_string(&b, token)
 	strings.write_string(&b, "\",\"bootstrap_url\":\"/api/v1/bridge/agent-instances/"); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "/bootstrap\"}}")
 	return strings.to_string(b)
 }
 
-stop_command_json :: proc(command_id, instance_id, reason: string) -> string {
+stop_command_json :: proc(command_id, instance_id, reason: string, force: bool = false) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"stop_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"reason\":\""); write_service_json_string(&b, reason)
-	strings.write_string(&b, "\",\"grace_seconds\":10,\"force\":false}}")
+	strings.write_string(&b, "\",\"grace_seconds\":"); strings.write_string(&b, "0" if force else "10")
+	strings.write_string(&b, ",\"force\":"); strings.write_string(&b, "true" if force else "false"); strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 
@@ -1872,7 +1904,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 			project_repo = project.repo_url
 			project_vcs = project.vcs_kind
 			project_desc = project.description
-			if strings.trim_space(project_path) == "" do project_path = project.default_path
+			// Keep the instance's resolved bridge path, including an intentionally empty path.
 		}
 	}
 	chain := domain.Task_Chain{}
@@ -1929,7 +1961,8 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, chain.coordinator_agent_instance_id)
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
 	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)
-	strings.write_string(&b, "\",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
+	token := instance_assertion_token(inst); defer delete(token)
+	strings.write_string(&b, "\",\"instance_token\":\""); write_service_json_string(&b, token)
 	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url)
 	strings.write_string(&b, "\"},\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
 

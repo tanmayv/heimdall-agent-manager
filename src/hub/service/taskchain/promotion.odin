@@ -1317,6 +1317,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
 			if task_ok do notify_current_task_changed(service, inst, task, cf.new_role)
 		}
+		if service.agent_service != nil { if idle, _ := agent.reconfiguration_require_idle(service.agent_service, cf.instance_id); !idle do continue }
 		// Emit runtime wake/stop (coordinators exempt).
 		if cf.instance_id == coordinator_id do continue
 		if cf.new_task_id != "" {

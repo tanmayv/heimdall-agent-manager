@@ -553,13 +553,14 @@ bridge_handle_validate_project_path :: proc(client: net.TCP_Socket, body: string
 	write_response(client, 200, "OK", bridge_project_path_validation_result_json(body))
 }
 
-bridge_project_path_validation_result_json :: proc(body: string) -> string {
+bridge_project_path_validation_result_json :: proc(body: string, use_cache: bool = true) -> string {
 	command_id := extract_json_string(body, "command_id", "")
-	if cached, cached_ok := bridge_validation_command_cached(command_id); cached_ok do return cached
+	if use_cache { if cached, cached_ok := bridge_validation_command_cached(command_id); cached_ok do return cached }
 	project_id := extract_json_string(body, "project_id", "")
 	path := extract_json_string(body, "path", "")
 	vcs_kind := extract_json_string(body, "vcs_kind", "")
 	repo_url := extract_json_string(body, "repo_url", "")
+	defer if !use_cache { delete(command_id); delete(project_id); delete(path); delete(vcs_kind); delete(repo_url) }
 	result := bridge_validate_project_path_local(path, vcs_kind, repo_url)
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"project_path_validation_result\",\"command_id\":\""); json_write_string(&b, command_id)
@@ -571,7 +572,7 @@ bridge_project_path_validation_result_json :: proc(body: string) -> string {
 	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, result.message)
 	strings.write_string(&b, "\"}}")
 	result_json := strings.to_string(b)
-	bridge_validation_command_store(command_id, result_json)
+	if use_cache do bridge_validation_command_store(command_id, result_json)
 	return result_json
 }
 

@@ -149,8 +149,8 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
               const capabilities = providers
                 .filter((entry: any) => entry?.enabled && entry?.state === 'present' && entry?.catalog_state === 'active')
                 .map((entry: any) => ({ provider: String(entry.provider), models: (entry.models || []).filter((model: any) => model?.state === 'active').map((model: any) => String(model.model_id)) }));
-              return { ...bridge, capabilities };
-            } catch { return { ...bridge, capabilities: [] }; }
+              return { ...bridge, capabilities, provider_status_error: false };
+            } catch { return { ...bridge, capabilities: [], provider_status_error: true }; }
           }));
           return { data: { bridges: enriched } };
         } catch (error: any) {

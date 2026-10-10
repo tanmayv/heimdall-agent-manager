@@ -289,7 +289,7 @@ export default function ChatMessageList({
           ) : messages.map((message, index) => {
             const timestamp = formatTimestamp(message.createdUnixMs);
             const delivery = getDeliveryStatus(message);
-            const isDivider = message.messageType === 'agent_start_clubbed' || message.messageType === 'agent_start' || (message.messageType === 'system' && (
+            const isDivider = message.messageType === 'configuration_change' || message.messageType === 'agent_start_clubbed' || message.messageType === 'agent_start' || (message.messageType === 'system' && (
               !message.body || message.body.toLowerCase().includes('started') || message.body.toLowerCase().includes('ready') || message.body.toLowerCase().includes('restart')
             ));
             const isClubbedGroup = message.messageType === 'shell_run_group';

@@ -443,10 +443,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string }>({
-      queryFn: async ({ instanceId }) => {
+    stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string; force?: boolean }>({
+      queryFn: async ({ instanceId, force = false }) => {
         try {
-          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', {});
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', { force, reason: force ? 'user_force_stop' : 'user_requested' });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -482,13 +482,39 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'AgentInstances' as const, id: instanceId },
       ],
     }),
+    listInstanceReconfigurations: build.query<{ operations: InstanceReconfiguration[] }, { instanceId: string }>({
+      queryFn: async ({ instanceId }) => {
+        try {
+          const data = await cookieJsonFetch(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations`);
+          return { data: { operations: (data?.operations || []).map(normalizeInstanceReconfiguration) } };
+        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+      },
+      providesTags: (_data, _error, { instanceId }) => [{ type: 'AgentInstances' as const, id: instanceId }],
+    }),
+    retryInstanceConfiguration: build.mutation<InstanceReconfiguration, { instanceId: string; idempotency_key: string; expected_operation_revision: number }>({
+      queryFn: async ({ instanceId, ...body }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations/retry`, 'POST', body);
+          return { data: normalizeInstanceReconfiguration(data) };
+        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+      },
+      invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'AgentInstances' as const, id: instanceId }],
+    }),
+    applyInstanceConfiguration: build.mutation<InstanceReconfiguration, ApplyInstanceConfigurationInput>({
+      queryFn: async ({ instanceId, ...body }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations`, 'POST', body);
+          return { data: normalizeInstanceReconfiguration(data) };
+        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+      },
+      invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'AgentInstances' as const, id: instanceId }, { type: 'Agents' as const, id: 'LIST' }],
+    }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; model?: string; bridgeId?: string }>({
       queryFn: async ({ instanceId, provider, model, bridgeId }) => {
         try {
-          // The hub reconfigure endpoint accepts an optional bridge_id to move the
-          // instance to another device (bridge); only send it when set so we don't
-          // clobber the current bridge with an empty value.
+          // Legacy PATCH supports provider/model only. Location changes use the
+          // explicit durable reconfiguration operation endpoint above.
           const body: Record<string, string> = { provider: provider || '', model: model || '' };
           if (bridgeId) body.bridge_id = bridgeId;
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', body);
@@ -675,7 +701,7 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery, useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } = agentsApi;
+export const { useRetryInstanceConfigurationMutation, useListInstanceReconfigurationsQuery, useApplyInstanceConfigurationMutation, useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery, useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } = agentsApi;
 
 export function useStartInstanceMutation() {
   const [mutate, result] = useStartAgentInstanceMutation();
@@ -813,4 +839,25 @@ export async function searchAgentPage(
 /** Human-readable text for anything an agent mutation rejects with. */
 export function agentErrorText(err: unknown, fallback = 'Something went wrong'): string {
   return apiErrorText(err, fallback);
+}
+
+export type InstanceConfiguration = {
+  bridge_id: string; bridge_label: string; project_id: string; project_label: string;
+  project_path: string; provider: string; model: string;
+};
+export type InstanceReconfiguration = {
+  operation_id: string; agent_instance_id: string; conversation_id: string; idempotency_key: string;
+  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required';
+  source: InstanceConfiguration; destination: InstanceConfiguration;
+  source_stopped: boolean; destination_committed: boolean;
+  failure_code: string; failure_message: string; revision: number; updated_at?: string;
+};
+export type ApplyInstanceConfigurationInput = {
+  instanceId: string; bridge_id: string; project_id: string; provider: string; model: string;
+  idempotency_key: string; expected_revision: number;
+};
+function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
+  const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required'];
+  const phase = typeof raw?.phase === 'number' ? phases[raw.phase] : String(raw?.phase || '').toLowerCase();
+  return { ...raw, phase: phases.includes(phase) ? phase : 'recovery_required' };
 }

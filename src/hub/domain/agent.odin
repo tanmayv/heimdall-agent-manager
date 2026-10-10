@@ -63,6 +63,8 @@ Agent_Instance :: struct {
 	status_message: string,
 	last_applied_seq: int,
 	run_count: int,
+	configuration_revision: int,
+	launch_epoch: string,
 	// current_task_id is the single task this instance is actively focused on
 	// (either working or reviewing). Empty when the instance has no current task.
 	current_task_id: string,
@@ -115,6 +117,7 @@ agent_instance_destroy :: proc(inst: ^Agent_Instance) {
 	if len(inst.startup_status) > 0 do delete(inst.startup_status)
 	if len(inst.activity_status) > 0 do delete(inst.activity_status)
 	if len(inst.status_message) > 0 do delete(inst.status_message)
+	if len(inst.launch_epoch) > 0 do delete(inst.launch_epoch)
 	if len(inst.current_task_id) > 0 do delete(inst.current_task_id)
 	if len(inst.created_at) > 0 do delete(inst.created_at)
 	if len(inst.updated_at) > 0 do delete(inst.updated_at)

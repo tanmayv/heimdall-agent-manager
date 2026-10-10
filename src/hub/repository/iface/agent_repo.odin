@@ -24,6 +24,10 @@ Agent_Next_Title_Counter_Proc :: proc(ctx: rawptr, agent_id: string, owner_user_
 
 Agent_Repository :: struct {
 	ctx: rawptr,
+	reconfiguration_begin: Instance_Reconfiguration_Begin_Proc,
+	reconfiguration_get: Instance_Reconfiguration_Get_Proc,
+	reconfiguration_advance: Instance_Reconfiguration_Advance_Proc,
+	reconfiguration_list: Instance_Reconfiguration_List_Proc,
 	save: Agent_Save_Proc,
 	get: Agent_Get_Proc,
 	list_by_owner: Agent_List_By_Owner_Proc,

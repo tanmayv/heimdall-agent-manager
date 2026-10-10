@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import "core:encoding/json"
 import domain "odin_test:hub/domain"
 import bridge_service "odin_test:hub/service/bridge"
 import project_service "odin_test:hub/service/project"
@@ -107,26 +108,14 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 }
 
 validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Project_Path_Command) -> (project_service.Project_Path_Validation_Result, bool, domain.Domain_Error) {
-	registry := (^project_service.Bridge_Runtime_Registry)(ctx)
-	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
-	ws_url := project_service.bridge_runtime_registry_path_validation_url(registry, command.bridge_id)
-	defer delete(ws_url)
-	if ws_url == "" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
-	if command.type != "validate_project_path" do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Internal_Error, "unexpected bridge command type")
-	generation := project_service.bridge_runtime_registry_generation(registry, command.bridge_id)
-	if cached, cached_ok := runtime_command_cached_copy(registry, command.bridge_id, generation, command.command_id); cached_ok {
-		defer delete(cached, runtime.default_allocator())
-		return parse_validation_result(command, cached), true, domain.Domain_Error{}
-	}
-	result, ok, err := send_validate_project_path_command(ws_url, command)
-	if ok {
-		// The cache clones into its process-wide allocator. This caller always retains
-		// and frees its local serialization, regardless of duplicate/replacement state.
-		result_json := validation_result_json(result)
-		_, _ = runtime_command_result_idempotent(registry, command.bridge_id, generation, command.command_id, result_json)
-		delete(result_json)
-	}
-	return result, ok, err
+	if command.type != "validate_project_path" do return {}, false, domain.domain_error(.Internal_Error, "unexpected bridge command type")
+	data, encode_err := json.marshal(command)
+	if encode_err != nil do return {}, false, domain.domain_error(.Internal_Error, "failed to encode path validation")
+	defer delete(data)
+	reply, received, err := send_runtime_command_wait(ctx, project_service.Runtime_Command{bridge_id = command.bridge_id, command_id = command.command_id, body_json = string(data)}, 15000)
+	if !received do return {}, false, err
+	defer delete(reply)
+	return parse_validation_result(command, reply), true, {}
 }
 
 send_validate_project_path_command :: proc(ws_url: string, command: project_service.Validate_Project_Path_Command) -> (project_service.Project_Path_Validation_Result, bool, domain.Domain_Error) {
