@@ -27,7 +27,7 @@ test_billing_persists_effective_parameters_and_custom_overrides :: proc(t: ^test
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	first, first_err := repo.get_account(repo.ctx, "alice", "2026-10-10T10:00:00Z")
 	testing.expect_value(t, first_err.code, domain.Error_Code.None)
-	testing.expect_value(t, first.entitlements.max_bridges, 2)
+	testing.expect_value(t, first.entitlements.max_bridges, 1)
 	testing.expect(t, !first.entitlements.terminal_streaming_enabled)
 	testing.expect(t, exec(&conn, `INSERT INTO billing_plans VALUES ('bespoke', 'Custom agreement', NULL, 9, 1);
 		UPDATE account_billing SET plan_id = 'bespoke', status = 'custom' WHERE user_id = 'alice';
@@ -42,7 +42,7 @@ test_billing_persists_effective_parameters_and_custom_overrides :: proc(t: ^test
 	testing.expect(t, !custom.entitlements.terminal_streaming_enabled, "false override survives restart")
 	bob, bob_err := repo.get_account(repo.ctx, "bob", "2026-10-10T10:01:00Z")
 	testing.expect_value(t, bob_err.code, domain.Error_Code.None)
-	testing.expect_value(t, bob.entitlements.max_bridges, 2)
+	testing.expect_value(t, bob.entitlements.max_bridges, 1)
 	testing.expect(t, !bob.entitlements.terminal_streaming_enabled)
 	testing.expect(t, exec(&conn, "UPDATE account_entitlements SET override_terminal_streaming_enabled = 1, override_reason = 'custom streaming grant', override_updated_by = 'operator' WHERE user_id = 'bob';"))
 	granted, _ := repo.get_account(repo.ctx, "bob", "2026-10-10T10:02:00Z")
@@ -138,4 +138,26 @@ test_billing_checkout_reservations_and_environment_guard :: proc(t: ^testing.T) 
 	other: Billing_Repo_SQLite
 	_, environment_err := new_billing_repository(&other, path, "live", "pri_live", true)
 	testing.expect_value(t, environment_err.code, domain.Error_Code.Validation_Failed)
+}
+
+@(test)
+test_free_one_bridge_migration_updates_existing_accounts_preserves_paid_and_custom :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    conn, path := billing_test_database(t, "free_limit_migration")
+    defer _ = os.remove(path); defer close(&conn)
+    testing.expect(t, exec(&conn, `UPDATE billing_plans SET max_bridges = 2 WHERE plan_id = 'free';
+        UPDATE account_entitlements SET max_bridges = 2;
+        UPDATE account_entitlements SET override_max_bridges = 5 WHERE user_id = 'bob';
+        INSERT INTO users VALUES ('carol', 'carol', 'Carol', '', 'active', '2026-10-10T10:00:00Z', '2026-10-10T10:00:00Z');
+        UPDATE account_billing SET plan_id = 'hobbyist', status = 'active' WHERE user_id = 'carol';`))
+    testing.expect(t, exec(&conn, MIGRATION_070_FREE_ONE_BRIDGE))
+    impl: Billing_Repo_SQLite
+    repo, _ := new_billing_repository(&impl, path, "sandbox", "pri_hobbyist", true)
+    defer close(&impl.conn)
+    alice, _ := repo.get_account(repo.ctx, "alice", "2026-10-10T10:00:00Z")
+    bob, _ := repo.get_account(repo.ctx, "bob", "2026-10-10T10:00:00Z")
+    carol, _ := repo.get_account(repo.ctx, "carol", "2026-10-10T10:00:00Z")
+    testing.expect_value(t, alice.entitlements.max_bridges, 1)
+    testing.expect_value(t, bob.entitlements.max_bridges, 5)
+    testing.expect_value(t, carol.entitlements.max_bridges, 2)
 }

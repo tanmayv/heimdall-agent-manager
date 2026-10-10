@@ -28,7 +28,7 @@ Authentik remains responsible for authentication and login sessions. Paddle mana
 
 | Account tier | Enrolled bridges | Streaming terminals |
 | --- | --- | --- |
-| Free | 2 | Disabled |
+| Free | 1 | Disabled |
 | Hobbyist | 2 | Enabled |
 
 Limits belong to the authenticated account, across its projects and devices. Count enrolled, non-revoked bridges, including offline bridges. Reconnecting or re-enrolling the same bridge identity does not consume another slot. Revoking a bridge frees its slot. Runtime registry capacity limits remain separate infrastructure safeguards.
@@ -41,7 +41,7 @@ Streaming includes both shell and agent terminal panes, including interactive in
 - [ ] Decide whether to offer a trial; otherwise start with no trial.
 - [ ] Approve payment-failure policy: suggested initial policy is a bounded, explicitly configured grace period for `past_due`, with a payment-update banner; after grace, revert entitlements to Free.
 - [ ] Keep Hobbyist access through a scheduled cancellation until cancellation takes effect. Paused/canceled subscriptions revert to Free; active/trialing subscriptions receive Hobbyist access.
-- [ ] Define migration policy for existing accounts with more than two bridges: require selecting two permitted bridges or grant an explicit temporary exception. Preserve records and local running agents.
+- [ ] Define migration policy for existing accounts with more bridges than their plan allows: require selecting permitted bridges or grant an explicit temporary exception. Preserve records and local running agents.
 - [ ] Define scope for self-hosted hubs separately; do not accidentally require every private/local hub to purchase a hosted-service subscription.
 
 ## 2. Configure Paddle
@@ -82,9 +82,9 @@ Architecture requirement: subscription identifiers and Paddle price mappings bel
 
 ## 5. Enforce bridge and streaming entitlements
 
-- [ ] Enforce the user's effective `max_bridges` during enrollment approval/bridge creation in one atomic transaction, preventing concurrent enrollments from exceeding the limit (initial catalog defaults are two for both plans).
+- [ ] Enforce the user's effective `max_bridges` during enrollment approval/bridge creation in one atomic transaction, preventing concurrent enrollments from exceeding the limit (catalog defaults are one for Free and two for Hobbyist).
 - [ ] Allow existing permitted bridges to reconnect without consuming a slot; ensure token renewal and re-enrollment cannot bypass identity counting.
-- [ ] Return a stable limit error with current usage and explain how to revoke a bridge. Both tiers have the same bridge limit, so do not suggest Hobbyist increases it.
+- [ ] Return a stable limit error with current usage and explain how to revoke a bridge. Suggest an eligible offer only when its bridge allowance exceeds the current effective allowance.
 - [ ] Gate shell and agent pane subscription, input, resize, screen/snapshot, and alternate HTTP/tunnel routes at the hub before forwarding commands or allocating viewers. Audit routes to distinguish terminal access from unrelated editor/preview tunnels.
 - [ ] Replace entitlement reliance on the user-toggleable `streaming_terminal_pane` experiment. If retained for rollout, require both the entitlement and rollout flag; an experiment cannot grant paid access.
 - [ ] On an effective downgrade, notify clients and terminate existing terminal viewer subscriptions using the established safe socket ownership rules. Prevent subsequent input and pane delivery, while preserving agent processes and conversation data.
@@ -101,7 +101,7 @@ Architecture requirement: subscription identifiers and Paddle price mappings bel
 
 ## 7. Acceptance tests and rollout
 
-- [ ] Free: enroll two bridges successfully; reject a third, including simultaneous enrollment attempts; offline bridges still count.
+- [ ] Free: enroll one bridge successfully; reject a second, including simultaneous enrollment attempts; offline bridges still count.
 - [ ] Reconnect/renew/re-enroll an existing bridge without using another slot; revoke one and enroll a replacement.
 - [ ] Free: reject shell and agent streaming through UI and direct API/WS requests, including snapshots/input; user-controlled experiment settings cannot bypass the gate.
 - [ ] Hobbyist: two bridges and working shell/agent pane rendering, colors, encryption, input, resize, and reconnect.

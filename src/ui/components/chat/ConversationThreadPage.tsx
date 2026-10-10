@@ -60,6 +60,7 @@ import {
   type RightSidebarTab,
 } from '../../utils/clientPersistence';
 import Icon from '../Icon';
+import ProviderIcon from '../providers/ProviderIcon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { ClubbedRunGroup, PinnedShellRuns, pinnedRunSessions, ShellRunRow, useConversationRuns, type ShellRunMarker } from '../shells/ShellRunIndicator';
@@ -1649,7 +1650,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         const current = instanceProvider === p;
         return (
           <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} onClick={() => setProvider(p)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name="spark" size={16} /></span>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><ProviderIcon provider={p} size={16} /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-primary">{p}</span>
               <span className="block truncate text-xs text-muted">{current ? 'current' : 'Provider'}</span>
@@ -1927,38 +1928,35 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <Icon name="chevron-down" size={13} className="shrink-0" />
       </button>
     );
-    const activeModel = model || instanceModel || 'normal';
-    const activeModelMeta = tierMeta[activeModel] || { icon: 'spark' as const, blurb: 'Model model' };
-    const activeModelIcon = activeModelMeta.icon;
+    const activeProvider = instanceProvider || provider;
     const useCompactModelTrigger = isMobile || isSmallComposer;
 
     const runtimeMenuTrigger = useCompactModelTrigger ? (
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label="Change provider and model"
-        title={`${instanceProvider || 'model'} · ${instanceModel || '—'} — click to change runtime`}
+        aria-label={`Change provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
+        title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — click to change runtime`}
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
         className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-primary hover:bg-neutral-soft"
       >
-        <Icon name={activeModelIcon} size={16} />
+        <ProviderIcon provider={activeProvider} size={16} />
       </button>
     ) : (
       <button
         type="button"
         data-debug-id="conversation-runtime-menu-btn"
-        aria-label="Change provider and model"
-        title="Change provider / model — restarts the agent"
+        aria-label={`Change provider and model: ${activeProvider || 'Provider'} · ${instanceModel || '—'}`}
+        title={`${activeProvider || 'Provider'} · ${instanceModel || '—'} — changing runtime restarts the agent`}
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (runtimeMenuOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setRuntimeMenuOpen((open) => !open) : undefined}
         className="inline-flex h-9 w-full sm:w-auto min-w-0 sm:max-w-[160px] items-center justify-between sm:justify-start gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft"
       >
-        <Icon name={activeModelIcon} size={14} className="shrink-0 text-muted" />
-        <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
-        <span className="hidden text-muted sm:inline truncate">· {instanceModel || '—'}</span>
+        <ProviderIcon provider={activeProvider} size={16} />
+        <span className="font-semibold truncate">{instanceModel || '—'}</span>
         <Icon name="chevron-down" size={14} className="shrink-0" />
       </button>
     );

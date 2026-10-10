@@ -1,5 +1,5 @@
 // REQ-COMPOSER-MODEL-ICON-33:
-// Unit and regression tests for model/provider selector icon button on mobile & small composer width with distinct model icons.
+// Regression tests for provider icons in compact/wide composer triggers and distinct model option icons.
 //
 // RUN: npx tsx tests/ui_composer_model_icon_test.ts
 //  OR: node --test tests/ui_composer_model_icon_test.ts
@@ -89,50 +89,15 @@ test('REQ-COMPOSER-MODEL-ICON-33: useCompactModelTrigger activates on mobile or 
   );
 });
 
-test('REQ-COMPOSER-MODEL-ICON-33: compact model trigger renders as an h-9 w-9 icon button with activeModelIcon', () => {
+test('composer uses the provider catalog icon in compact and wide runtime triggers', () => {
   const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
-
-  // Active model icon resolution
-  assert.match(
-    content,
-    /const\s+activeModel\s*=\s*model\s*\|\|\s*instanceModel\s*\|\|\s*['"]normal['"];?/,
-    'activeModel must resolve from model, instanceModel, or default to normal'
-  );
-  assert.match(
-    content,
-    /const\s+activeModelIcon\s*=\s*activeModelMeta\.icon;?/,
-    'activeModelIcon must resolve from activeModelMeta.icon'
-  );
-
-  // Compact button rendering
-  assert.match(
-    content,
-    /grid\s+h-9\s+w-9\s+shrink-0\s+place-items-center\s+rounded-xl\s+border\s+border-subtle\s+bg-surface-raised\s+text-primary\s+hover:bg-neutral-soft/,
-    'Compact trigger must have h-9 w-9 shrink-0 place-items-center styling'
-  );
-  assert.match(
-    content,
-    /<Icon\s+name=\{activeModelIcon\}\s+size=\{16\}\s*\/>/,
-    'Compact trigger must render <Icon name={activeModelIcon} size={16} />'
-  );
-});
-
-test('REQ-COMPOSER-MODEL-ICON-33: wide model trigger renders active model icon with text labels and chevron', () => {
-  const content = fs.readFileSync(THREAD_PAGE_FILE, 'utf8');
-
-  assert.match(
-    content,
-    /<Icon\s+name=\{activeModelIcon\}\s+size=\{14\}\s+className="shrink-0\s+text-muted"\s*\/>/,
-    'Wide trigger must render activeModelIcon prefix'
-  );
-  assert.ok(
-    content.includes('instanceProvider || \'model\''),
-    'Wide trigger must display instanceProvider'
-  );
-  assert.ok(
-    content.includes('instanceModel || \'—\''),
-    'Wide trigger must display instanceModel'
-  );
+  assert.ok(content.includes('const activeProvider = instanceProvider || provider;'));
+  const triggers = content.slice(content.indexOf('const runtimeMenuTrigger ='), content.indexOf('return (', content.indexOf('const runtimeMenuTrigger =')));
+  assert.equal((triggers.match(/<ProviderIcon provider=\{activeProvider\} size=\{16\} \/>/g) || []).length, 2);
+  assert.ok(!triggers.includes("{instanceProvider || 'model'}"), 'provider name is not shown in the composer chip');
+  assert.ok(triggers.includes("{instanceModel || '—'}"), 'model name remains visible');
+  assert.ok(triggers.includes('title={`${activeProvider'), 'provider name remains in the tooltip');
+  assert.ok(triggers.includes('aria-label={`Change provider and model: ${activeProvider'), 'provider name remains accessible');
 });
 
 test('REQ-COMPOSER-MODEL-ICON-33: mobile Row 1 pairs flex-1 agent chip with shrink-0 model button', () => {
@@ -162,8 +127,8 @@ test('REQ-COMPOSER-MODEL-ICON-33: all required debug IDs and accessibility attri
     'Must preserve data-debug-id="conversation-runtime-menu-btn"'
   );
   assert.ok(
-    content.includes('aria-label="Change provider and model"'),
-    'Must preserve aria-label="Change provider and model"'
+    content.includes('aria-label={`Change provider and model: ${activeProvider'),
+    'Must label the runtime selector with its provider and model'
   );
   assert.ok(
     content.includes('data-debug-id="conversation-runtime-mobile-sheet"'),

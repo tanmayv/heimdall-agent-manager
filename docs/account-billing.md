@@ -44,7 +44,7 @@ The Account page polls pending checkout state and refreshes on focus. Browser co
 
 ## Persistence and custom plans
 
-Migration `069_account_billing.sql` creates:
+Migration `069_account_billing.sql` creates these tables; `070_free_one_bridge.sql` changes the Free default to one bridge and updates existing snapshots while preserving overrides:
 
 - `billing_plans`: arbitrary plan IDs, display names, current checkout price, and default parameters.
 - `billing_plan_prices`: retained approved historical price mappings.
@@ -56,7 +56,7 @@ Migration `069_account_billing.sql` creates:
 
 Only billing resolution maps plans to parameters. Feature code will consume effective parameters when enforcement is implemented. Custom `false` and `0` overrides are valid and survive webhook updates. Overrides currently have no expiry and survive cancellation; they are explicit operator agreements, not subscription data.
 
-Initial defaults are Free: two bridges, streaming excluded; Hobbyist: two bridges, streaming included. Active/trialing subscriptions receive their catalog defaults. Paused/canceled subscriptions receive Free defaults. Past-due subscriptions retain their catalog defaults until the configured grace deadline; repeated past-due updates do not extend it. Reads refresh and persist expired-grace parameters, without contacting Paddle.
+Initial defaults are Free: one bridge, streaming excluded; Hobbyist: two bridges, streaming included. Active/trialing subscriptions receive their catalog defaults. Paused/canceled subscriptions receive Free defaults. Past-due subscriptions retain their catalog defaults until the configured grace deadline; repeated past-due updates do not extend it. Reads refresh and persist expired-grace parameters, without contacting Paddle.
 
 No public entitlement-editing endpoint exists. Trusted operators can manage custom plans and overrides in the database during this phase. For example, after an account row exists:
 

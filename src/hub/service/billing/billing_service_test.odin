@@ -23,7 +23,7 @@ fixture_get :: proc(ctx: rawptr, user_id, now: string) -> (domain.Account_Billin
 }
 fixture_plans :: proc(ctx: rawptr) -> ([]domain.Billing_Plan, domain.Domain_Error) {
 	plans := new([3]domain.Billing_Plan, context.temp_allocator)
-	plans^ = {{plan_id = "free", plan_label = "Free", entitlements = {2, false}}, {plan_id = "hobbyist", plan_label = "Hobbyist", price_id = "pri_approved", entitlements = {2, true}}, {plan_id = "third", plan_label = "Third plan", price_id = "pri_third", entitlements = {8, true}}}
+	plans^ = {{plan_id = "free", plan_label = "Free", entitlements = {1, false}}, {plan_id = "hobbyist", plan_label = "Hobbyist", price_id = "pri_approved", entitlements = {2, true}}, {plan_id = "third", plan_label = "Third plan", price_id = "pri_third", entitlements = {8, true}}}
 	return plans[:], {}
 }
 fixture_reserve :: proc(ctx: rawptr, checkout: domain.Billing_Checkout, now: string) -> (domain.Billing_Checkout, bool, domain.Domain_Error) {
@@ -49,7 +49,7 @@ fixture_api :: proc(config: Config, method, path, body: string) -> (string, doma
 	return "", domain.domain_error(.Validation_Failed, "wrong account or endpoint")
 }
 fixture_setup :: proc(fixture: ^Fixture, repo: ^iface.Billing_Repository, clock: ^platform.Clock) -> Service {
-	fixture.account = domain.Account_Billing{user_id = "alice", plan_id = "free", plan_label = "Free", status = "free", entitlements = {2, false}}
+	fixture.account = domain.Account_Billing{user_id = "alice", plan_id = "free", plan_label = "Free", status = "free", entitlements = {1, false}}
 	repo^ = iface.Billing_Repository{ctx = fixture, get_account = fixture_get, list_plans = fixture_plans, reserve_checkout = fixture_reserve, finish_checkout = fixture_finish, apply_event = fixture_apply}
 	clock^ = platform.Clock{now = fixture_clock}
 	return Service{repo = repo, clock = clock, config = Config{environment = "sandbox", api_key = "test_key", client_token = "test_token", webhook_secret = "test_secret", past_due_grace_seconds = 86400}, request = fixture_api}

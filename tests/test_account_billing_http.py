@@ -77,10 +77,10 @@ class AccountBillingHTTPTest(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/v1/account/billing')[0], 401)
         # Authentik provisioning persists defaults before opening Account.
         with sqlite3.connect(self.database) as conn:
-            self.assertEqual(conn.execute("SELECT max_bridges, terminal_streaming_enabled FROM account_entitlements WHERE user_id = 'alice'").fetchone(), (2, 0))
+            self.assertEqual(conn.execute("SELECT max_bridges, terminal_streaming_enabled FROM account_entitlements WHERE user_id = 'alice'").fetchone(), (1, 0))
         status, body = self.request('GET', '/api/v1/account/billing', user='alice')
         self.assertEqual(status, 200)
-        self.assertEqual(body['data']['entitlements'], {'max_bridges': 2, 'terminal_streaming_enabled': False})
+        self.assertEqual(body['data']['entitlements'], {'max_bridges': 1, 'terminal_streaming_enabled': False})
         self.assertFalse(body['data']['checkout_enabled'])
         self.assertNotIn('api_key', body['data'])
         self.assertEqual(self.request('POST', '/api/v1/account/billing/checkout', {'offer_id': 'hobbyist'}, user='alice', extra={'Origin': 'https://evil.example'})[0], 403)
