@@ -88,7 +88,7 @@ test_bridge_update_catalog_manifest_key_reordering :: proc(t: ^testing.T) {
 	testing.expect_value(t, info.sha256, "hash_reordered")
 }
 
-// REQ-P2-CATALOG: Missing target handling and fallback URL preservation
+// REQ-P2-CATALOG: Missing target handling fails closed without inventing a route
 @(test)
 test_bridge_update_catalog_missing_target_fallback :: proc(t: ^testing.T) {
 	manifest_path := fmt.tprintf("/tmp/test_catalog_missing_%d_%d.json", os.get_pid(), time.now()._nsec)
@@ -110,8 +110,9 @@ test_bridge_update_catalog_missing_target_fallback :: proc(t: ^testing.T) {
 	testing.expect(t, info.update_available, "update available")
 	testing.expect_value(t, info.latest_version, "1.8.0")
 	testing.expect_value(t, info.latest_commit_sha, "sha_missing_target")
-	// Must fallback to default download_url and empty sha256
-	testing.expect_value(t, info.download_url, "/api/v1/updates/bundle/heimdall-local-linux-amd64.tar.gz")
+	// A catalog miss must remain empty. send_bridge_update rejects it before a
+	// command reaches the Bridge, instead of dispatching a guaranteed 404.
+	testing.expect_value(t, info.download_url, "")
 	testing.expect_value(t, info.sha256, "")
 }
 

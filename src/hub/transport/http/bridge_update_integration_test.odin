@@ -462,6 +462,8 @@ test_bridge_update_integration_active_tasks_drain_and_force_gating :: proc(t: ^t
 	catalog := bridge_service.Bridge_Update_Catalog{
 		override_version = "0.2.0",
 		override_commit_sha = "v2_hash",
+		override_download_url = "https://example.com/heimdall-local-linux-amd64.tar.gz",
+		override_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}
 	f.br_svc.catalog = &catalog
 

@@ -364,8 +364,9 @@ MIGRATION_069_ACCOUNT_BILLING :: #load("migrations/069_account_billing.sql", str
 MIGRATION_070_FREE_ONE_BRIDGE :: #load("migrations/070_free_one_bridge.sql", string)
 
 MIGRATION_071_CODEX_FOLDER_ACCESS_TRUST :: #load("migrations/071_codex_folder_access_trust.sql", string)
+MIGRATION_072_BRIDGE_UPDATE_PROGRESS :: #load("migrations/072_bridge_update_progress.sql", string)
 
-migration_order :: [74]string {
+migration_order :: [75]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -440,6 +441,7 @@ migration_order :: [74]string {
 	"069_account_billing.sql",
 	"070_free_one_bridge.sql",
 	"071_codex_folder_access_trust.sql",
+	"072_bridge_update_progress.sql",
 }
 
 run_migrations :: proc(
@@ -776,6 +778,7 @@ run_migrations :: proc(
 	if !upgrade_shell_sessions_kill_intent_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions kill intent schema upgrade failed")
 	if !upgrade_shell_sessions_run_seq_schema(conn) do return false, domain.domain_error(.Internal_Error, "shell_sessions run_seq schema upgrade failed")
 	if !upgrade_bridge_version_and_updates_schema(conn) do return false, domain.domain_error(.Internal_Error, "bridge version and updates schema upgrade failed")
+	if !upgrade_bridge_update_progress_schema(conn) do return false, domain.domain_error(.Internal_Error, "bridge update progress schema upgrade failed")
 	if !upgrade_memory_action_expiry_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory action expiry schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
@@ -860,6 +863,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "067_codex_sandbox_and_models.sql" do return strings.clone(MIGRATION_067_CODEX_SANDBOX_AND_MODELS)
 	if name == "070_free_one_bridge.sql" do return strings.clone(MIGRATION_070_FREE_ONE_BRIDGE)
 	if name == "071_codex_folder_access_trust.sql" do return strings.clone(MIGRATION_071_CODEX_FOLDER_ACCESS_TRUST)
+	if name == "072_bridge_update_progress.sql" do return strings.clone(MIGRATION_072_BRIDGE_UPDATE_PROGRESS)
 	if name == "069_account_billing.sql" do return strings.clone(MIGRATION_069_ACCOUNT_BILLING)
 	if name == "068_repair_provider_catalog_etag.sql" do return strings.clone(MIGRATION_068_REPAIR_PROVIDER_CATALOG_ETAG)
 	return ""
@@ -1392,6 +1396,13 @@ upgrade_bridge_version_and_updates_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "bridges", "build_timestamp") && !exec(conn, "ALTER TABLE bridges ADD COLUMN build_timestamp TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "bridges", "update_status") && !exec(conn, "ALTER TABLE bridges ADD COLUMN update_status TEXT NOT NULL DEFAULT 'idle';") do return false
 	if !table_column_exists(conn, "bridges", "update_error") && !exec(conn, "ALTER TABLE bridges ADD COLUMN update_error TEXT NOT NULL DEFAULT '';") do return false
+	return true
+}
+
+upgrade_bridge_update_progress_schema :: proc(conn: ^Conn) -> bool {
+	if !sqlite_object_exists(conn, "bridges") do return true
+	if !table_column_exists(conn, "bridges", "update_message") && !exec(conn, "ALTER TABLE bridges ADD COLUMN update_message TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "bridges", "update_progress") && !exec(conn, "ALTER TABLE bridges ADD COLUMN update_progress INTEGER NOT NULL DEFAULT 0;") do return false
 	return true
 }
 

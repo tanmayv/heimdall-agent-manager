@@ -28,6 +28,7 @@ Bridge_Update_Info :: struct {
 	update_available:  bool,
 	latest_version:    string,
 	latest_commit_sha: string,
+	target:            string,
 	download_url:      string,
 	sha256:            string,
 }
@@ -48,6 +49,29 @@ normalize_bridge_target :: proc(os_name, arch_name: string) -> string {
 	if os_clean == "" do os_clean = "linux"
 	if arch_clean == "" do arch_clean = "amd64"
 	return fmt.tprintf("%s-%s", os_clean, arch_clean)
+}
+
+// canonical_bridge_platform makes the bridge hello's `target` field the
+// authoritative machine identity. Released bridges already send this field,
+// while older clients may still send separate os/arch values. Only targets for
+// which release artifacts exist are accepted; display strings such as
+// "Linux 6.18.49 amd64" must never become artifact lookup keys.
+canonical_bridge_platform :: proc(os_name, arch_name, target: string) -> (canonical_os, canonical_arch: string, ok: bool) {
+	candidate := strings.to_lower(strings.trim_space(target), context.temp_allocator)
+	if candidate == "" {
+		candidate = normalize_bridge_target(os_name, arch_name)
+	}
+	switch candidate {
+	case "linux-amd64", "linux-x86_64":
+		return "linux", "amd64", true
+	case "linux-arm64", "linux-aarch64":
+		return "linux", "arm64", true
+	case "darwin-amd64", "darwin-x86_64":
+		return "darwin", "amd64", true
+	case "darwin-arm64", "darwin-aarch64":
+		return "darwin", "arm64", true
+	}
+	return "", "", false
 }
 
 parse_semver_part :: proc(s: string) -> (int, bool) {
@@ -124,7 +148,11 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 	target := normalize_bridge_target(bridge.machine_os, bridge.machine_arch)
 	latest_version := contracts.APP_VERSION
 	latest_commit_sha := contracts.GIT_COMMIT
-	download_url := fmt.tprintf("/api/v1/updates/bundle/heimdall-local-%s.tar.gz", target)
+	// There is deliberately no synthetic fallback URL. The Hub has never served
+	// /api/v1/updates/bundle/*, so inventing that path turns missing target
+	// metadata into a late Bridge-side 404. A catalog miss stays empty and is
+	// rejected before dispatch by send_bridge_update.
+	download_url := ""
 	sha256 := ""
 
 	manifest_path := ""
@@ -172,6 +200,7 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 		update_available = avail,
 		latest_version = latest_version,
 		latest_commit_sha = latest_commit_sha,
+		target = target,
 		download_url = download_url,
 		sha256 = sha256,
 	}

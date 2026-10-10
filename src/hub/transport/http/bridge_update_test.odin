@@ -29,6 +29,20 @@ test_bridge_update_catalog_helpers :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_service.normalize_bridge_target("Darwin", "arm64"), "darwin-arm64")
 	testing.expect_value(t, bridge_service.normalize_bridge_target("darwin", "aarch64"), "darwin-arm64")
 
+	// Released v0.3.17 Bridges send canonical `target` but no separate os/arch
+	// fields. The target repairs the combined enrollment display string stored in
+	// machine_os and is authoritative when both forms are present.
+	os_name, arch_name, target_ok := bridge_service.canonical_bridge_platform("", "", "linux-amd64")
+	testing.expect(t, target_ok, "v0.3.17 target accepted")
+	testing.expect_value(t, os_name, "linux")
+	testing.expect_value(t, arch_name, "amd64")
+	os_name, arch_name, target_ok = bridge_service.canonical_bridge_platform("Linux 6.18.49 amd64", "", "linux-amd64")
+	testing.expect(t, target_ok, "canonical target overrides enrollment display string")
+	testing.expect_value(t, os_name, "linux")
+	testing.expect_value(t, arch_name, "amd64")
+	_, _, target_ok = bridge_service.canonical_bridge_platform("", "", "plan9-mips")
+	testing.expect(t, !target_ok, "unsupported target rejected")
+
 	testing.expect_value(t, bridge_service.compare_semver("0.1.0", "0.2.0"), -1)
 	testing.expect_value(t, bridge_service.compare_semver("0.2.0", "0.1.0"), 1)
 	testing.expect_value(t, bridge_service.compare_semver("0.2.0", "0.2.0"), 0)
@@ -119,6 +133,8 @@ test_write_bridge_json_update_available_output :: proc(t: ^testing.T) {
 
 	testing.expect(t, strings.contains(out, "\"target\":\"linux-amd64\""), "target serialized")
 	testing.expect(t, strings.contains(out, "\"update_available\":true"), "update_available:true serialized")
+	testing.expect(t, strings.contains(out, "\"update_message\":\"\""), "update_message serialized")
+	testing.expect(t, strings.contains(out, "\"update_progress\":0"), "update_progress serialized")
 	testing.expect(t, strings.contains(out, "\"latest_version\":\"0.2.0\""), "latest_version serialized")
 	testing.expect(t, strings.contains(out, "\"latest_commit_sha\":\"796bfb57\""), "latest_commit_sha serialized")
 }
@@ -310,6 +326,13 @@ test_bridge_update_handler_online_dispatches_ws_command_and_returns_202 :: proc(
 	bridge.commit_sha = "old_commit"
 	_, save_ok, _ := iface.bridge_save_bridge(&f.br_repo, bridge)
 	testing.expect(t, save_ok, "saved online bridge")
+	catalog := bridge_service.Bridge_Update_Catalog{
+		override_version = "0.2.0",
+		override_commit_sha = "new_commit",
+		override_download_url = "https://example.com/heimdall-local-linux-amd64.tar.gz",
+		override_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+	f.br_svc.catalog = &catalog
 
 	// Register bridge in live runtime registry
 	_, accept_ok, _ := bridge_runtime_service.runtime_accept_hello(&f.registry, f.bridge_id, 1, "")
@@ -342,4 +365,63 @@ test_bridge_update_handler_online_dispatches_ws_command_and_returns_202 :: proc(
 	updated_bridge, u_ok, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
 	testing.expect(t, u_ok, "got updated bridge")
 	testing.expect_value(t, updated_bridge.update_status, "updating")
+}
+
+// A target/catalog mismatch is rejected by the Hub before a command can send a
+// Bridge to an endpoint that does not exist.
+@(test)
+test_bridge_update_handler_missing_artifact_fails_before_dispatch :: proc(t: ^testing.T) {
+	f := setup_update_test_fixture(t, "missing_artifact")
+	defer teardown_update_test_fixture(f)
+
+	bridge, ok, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+	testing.expect(t, ok, "got bridge")
+	bridge.status = .Online
+	bridge.machine_os = "linux"
+	bridge.machine_arch = "amd64"
+	_, save_ok, _ := iface.bridge_save_bridge(&f.br_repo, bridge)
+	testing.expect(t, save_ok, "saved online bridge")
+	_, accept_ok, _ := bridge_runtime_service.runtime_accept_hello(&f.registry, f.bridge_id, 1, "")
+	testing.expect(t, accept_ok, "accepted bridge in registry")
+
+	catalog := bridge_service.Bridge_Update_Catalog{
+		override_version = "0.2.0",
+		override_commit_sha = "new_commit",
+	}
+	f.br_svc.catalog = &catalog
+	req := Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridges/%s/update", f.bridge_id),
+		body = `{"target_version":"latest","force":true}`,
+		request_id = "req_missing_artifact",
+		remote_addr = "127.0.0.1:4444",
+		headers = UPDATE_TEST_HEADERS[:],
+	}
+	resp := bridge_update_handler(rawptr(&f.bh), req)
+	testing.expect_value(t, resp.status, 400)
+	testing.expect(t, strings.contains(resp.body, "no verified update artifact"), "explicit artifact error returned")
+	testing.expect(t, !f.sink_rec.sent, "no update command dispatched")
+}
+
+@(test)
+test_bridge_update_failure_progress_is_persisted :: proc(t: ^testing.T) {
+	f := setup_update_test_fixture(t, "failed_progress")
+	defer teardown_update_test_fixture(f)
+
+	saved, save_err := bridge_service.record_bridge_update_progress(
+		&f.br_svc,
+		f.bridge_id,
+		"failed",
+		"tarball download failed (HTTP 404)",
+		20,
+	)
+	testing.expect(t, saved, "failure progress persisted")
+	testing.expect_value(t, save_err.code, domain.Error_Code.None)
+	bridge, found, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+	testing.expect(t, found, "bridge reloaded")
+	defer if found do domain.bridge_destroy(&bridge)
+	testing.expect_value(t, bridge.update_status, "failed")
+	testing.expect_value(t, bridge.update_message, "tarball download failed (HTTP 404)")
+	testing.expect_value(t, bridge.update_progress, 20)
+	testing.expect_value(t, bridge.update_error, "tarball download failed (HTTP 404)")
 }

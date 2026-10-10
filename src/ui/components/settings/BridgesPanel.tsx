@@ -21,6 +21,7 @@ import {
   formatBridgeVersion,
   formatLatestVersion,
   isBridgeUpdating,
+  bridgeUpdateStatusLabel,
   getActiveTaskCount,
 } from './bridgeUpdate';
 import BridgeSettingsPanel from './BridgeSettingsPanel';
@@ -222,7 +223,7 @@ export default function BridgesPanel() {
                             className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent animate-pulse whitespace-nowrap"
                           >
                             <Spinner size="sm" />
-                            <span>Updating ({bridge.update_status}…)</span>
+                            <span>{bridgeUpdateStatusLabel(bridge)}{typeof bridge.update_progress === 'number' && bridge.update_progress > 0 ? ` (${bridge.update_progress}%)` : ''}</span>
                           </span>
                         ) : bridge?.update_status === 'failed' ? (
                           <span

@@ -1074,6 +1074,13 @@ bridge_update_progress_json :: proc(command_id, bridge_id, stage: string, progre
 	return strings.to_string(b)
 }
 
+bridge_update_send_progress :: proc(conn: ^ws.Connection, command_id, stage: string, progress_percent: int, message: string) -> bool {
+	frame := bridge_update_progress_json(command_id, bridge_config.daemon_id, stage, progress_percent, message)
+	defer delete(frame)
+	if conn == nil do return false
+	return bridge_hub_send(conn, frame)
+}
+
 bridge_update_copy_file :: proc(src, dest: string) -> bool {
 	src_file, open_err := os.open(src, os.File_Flags{.Read})
 	if open_err != nil do return false
@@ -1180,6 +1187,7 @@ bridge_runtime_apply_update :: proc(
 
 	// 1. Drain active tasks if not forced
 	if !force && drain_timeout_seconds > 0 {
+		_ = bridge_update_send_progress(conn, command_id, "draining", 5, "Waiting for active agent tasks to finish...")
 		deadline := time.to_unix_nanoseconds(time.now()) + i64(drain_timeout_seconds) * 1_000_000_000
 		for time.to_unix_nanoseconds(time.now()) < deadline {
 			sync.mutex_lock(&bridge_runtime_mutex)
@@ -1189,6 +1197,7 @@ bridge_runtime_apply_update :: proc(
 			time.sleep(1000 * time.Millisecond)
 		}
 	}
+	_ = bridge_update_send_progress(conn, command_id, "preparing", 10, "Preparing update staging directory...")
 
 	// 2. Resolve data and staging directories
 	data_dir := bridge_expand_home(bridge_config.data_dir)
@@ -1202,10 +1211,9 @@ bridge_runtime_apply_update :: proc(
 		return false, fmt.tprintf("cannot create staging directory %s", stage_dir)
 	}
 
-	// 3. Send downloading progress frame
-	p_dl := bridge_update_progress_json(command_id, bridge_config.daemon_id, "downloading", 20, "Downloading update bundle...")
-	defer delete(p_dl)
-	if conn != nil do _ = bridge_hub_send(conn, p_dl)
+	// 3. Download the release artifact. Each milestone is persisted by the Hub
+	// before the next destructive phase begins, so the UI can show live progress.
+	_ = bridge_update_send_progress(conn, command_id, "downloading", 20, "Downloading update tarball...")
 
 	tarball_path := fmt.tprintf("%s/bundle.tar.gz", stage_dir)
 
@@ -1232,8 +1240,10 @@ bridge_runtime_apply_update :: proc(
 			return false, fmt.tprintf("tarball download failed (HTTP %d)", status)
 		}
 	}
+	_ = bridge_update_send_progress(conn, command_id, "downloaded", 40, "Update tarball downloaded.")
 
 	// 4. Verify SHA-256 hash before extraction
+	_ = bridge_update_send_progress(conn, command_id, "verifying", 45, "Verifying update tarball checksum...")
 	tarball_bytes, rerr := os.read_entire_file(tarball_path, context.allocator)
 	if rerr != nil {
 		_ = os.remove_all(stage_dir)
@@ -1258,13 +1268,10 @@ bridge_runtime_apply_update :: proc(
 			return false, fmt.tprintf("SHA-256 mismatch for bundle (expected %s, got %s)", expected_sha256, actual_sha256)
 		}
 	}
+	_ = bridge_update_send_progress(conn, command_id, "verified", 55, "Update tarball checksum verified.")
 
-	// 5. Send validating progress frame
-	p_val := bridge_update_progress_json(command_id, bridge_config.daemon_id, "validating", 60, "Checksum verified. Extracting and validating binaries...")
-	defer delete(p_val)
-	if conn != nil do _ = bridge_hub_send(conn, p_val)
-
-	// Extract tarball
+	// 5. Extract tarball.
+	_ = bridge_update_send_progress(conn, command_id, "extracting", 60, "Extracting update tarball...")
 	tar_argv := []string{"tar", "-xzf", tarball_path, "-C", stage_dir}
 	tar_out, tar_err, tar_ok, _ := bridge_process_run_capture(tar_argv, 30 * time.Second)
 	defer { delete(tar_out); delete(tar_err) }
@@ -1274,6 +1281,7 @@ bridge_runtime_apply_update :: proc(
 	}
 
 	// 6. In-situ preflight check: locate ham-bridge and run `./stage/bin/ham-bridge --version`
+	_ = bridge_update_send_progress(conn, command_id, "preflight", 70, "Validating staged bridge binaries...")
 	stage_bin_dir := fmt.tprintf("%s/bin", stage_dir)
 	bridge_binary := fmt.tprintf("%s/ham-bridge", stage_bin_dir)
 	if !os.exists(bridge_binary) {
@@ -1333,14 +1341,30 @@ bridge_runtime_apply_update :: proc(
 		return false, "supervisor script apply-bridge-update.sh not found"
 	}
 	_ = os.chmod(supervisor_target, os.Permissions{.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other})
+	_ = bridge_update_send_progress(conn, command_id, "staged", 78, "Update bundle staged and validated.")
 
-	// 8. Spawn the out-of-process supervisor through the injectable argv seam.
+	// 8. Stop the bridge-owned PTY host while this control connection can still
+	// report both the attempt and its result. The supervisor repeats this cleanup
+	// after bridge shutdown, making the operation idempotent across races.
+	pty_socket := pty_host_socket_path()
+	defer delete(pty_socket)
+	_ = bridge_update_send_progress(conn, command_id, "stopping_pty_host", 82, "Stopping bridge-owned PTY host and agent processes...")
+	stop_pty_argv := []string{"bash", supervisor_target, "--data-dir", data_dir, "--stop-pty-hosts-only", "--pty-host-socket", pty_socket}
+	stop_pty_out, stop_pty_err, stop_pty_ok, _ := bridge_process_run_capture(stop_pty_argv, 15 * time.Second)
+	defer { delete(stop_pty_out); delete(stop_pty_err) }
+	if !stop_pty_ok {
+		return false, "failed to stop bridge-owned PTY host; update aborted before restart"
+	}
+	_ = bridge_update_send_progress(conn, command_id, "pty_host_stopped", 88, "Bridge-owned PTY host and agent processes stopped.")
+
+	// 9. Spawn the out-of-process supervisor through the injectable argv seam.
 	// No shell command string is involved, so paths and URLs remain data and the
 	// exact bridge PID can be stopped without host-wide process matching.
 	port_str := fmt.tprintf("%d", bridge_config.port)
 	pid_str := fmt.tprintf("%d", os.get_pid())
-	pty_socket := pty_host_socket_path()
-	defer delete(pty_socket)
+	// Send before spawning: the supervisor may stop this process immediately once
+	// started, so a post-spawn write races the final shutdown.
+	_ = bridge_update_send_progress(conn, command_id, "restarting", 95, "PTY host stopped. Handing off to the update supervisor...")
 	if !bridge_update_launch_supervisor(
 		supervisor_target,
 		data_dir,
@@ -1353,11 +1377,6 @@ bridge_runtime_apply_update :: proc(
 		_ = os.remove_all(stage_dir)
 		return false, "failed to spawn detached supervisor script"
 	}
-
-	// 9. Send restarting progress frame
-	p_rst := bridge_update_progress_json(command_id, bridge_config.daemon_id, "restarting", 90, "Supervisor spawned. Preparing clean bridge shutdown...")
-	defer delete(p_rst)
-	if conn != nil do _ = bridge_hub_send(conn, p_rst)
 
 	// 10. Prepare clean shutdown
 	when !ODIN_TEST {

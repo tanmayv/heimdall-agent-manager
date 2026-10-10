@@ -20,6 +20,8 @@ test_write_bridge_json_version_fields :: proc(t: ^testing.T) {
 		commit_sha = "796bfb57",
 		build_timestamp = "2026-10-01T12:00:00Z",
 		update_status = "idle",
+		update_message = "",
+		update_progress = 0,
 		update_error = "",
 		last_seen_at = "2026-10-01T12:01:00Z",
 		updated_at = "2026-10-01T12:01:00Z",
@@ -36,6 +38,7 @@ test_write_bridge_json_version_fields :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, "\"commit_sha\":\"796bfb57\""), "commit_sha serialized")
 	testing.expect(t, strings.contains(out, "\"build_timestamp\":\"2026-10-01T12:00:00Z\""), "build_timestamp serialized")
 	testing.expect(t, strings.contains(out, "\"update_status\":\"idle\""), "update_status serialized")
+	testing.expect(t, strings.contains(out, "\"update_progress\":0"), "update_progress serialized")
 	testing.expect(t, strings.contains(out, "\"update_error\":\"\""), "update_error serialized")
 	testing.expect(t, strings.contains(out, "\"target\":\"linux-amd64\""), "target serialized")
 	testing.expect(t, strings.contains(out, "\"update_available\":"), "update_available serialized")

@@ -27,6 +27,8 @@ Bridge :: struct {
 	commit_sha: string,
 	build_timestamp: string,
 	update_status: string,
+	update_message: string,
+	update_progress: int,
 	update_error: string,
 	telemetry_enabled: string,
 	// vault_status is the bridge's SELF-REPORTED vault tri-state (REQ-BVS-1):
@@ -67,6 +69,7 @@ bridge_destroy :: proc(b: ^Bridge) {
 	if len(b.commit_sha) > 0 do delete(b.commit_sha)
 	if len(b.build_timestamp) > 0 do delete(b.build_timestamp)
 	if len(b.update_status) > 0 do delete(b.update_status)
+	if len(b.update_message) > 0 do delete(b.update_message)
 	if len(b.update_error) > 0 do delete(b.update_error)
 	if len(b.telemetry_enabled) > 0 do delete(b.telemetry_enabled)
 	if len(b.vault_status) > 0 do delete(b.vault_status)

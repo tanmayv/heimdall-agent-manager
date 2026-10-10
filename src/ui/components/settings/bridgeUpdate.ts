@@ -32,7 +32,28 @@ export function formatLatestVersion(bridge: Partial<Bridge> | null | undefined):
  */
 export function isBridgeUpdating(bridge: Partial<Bridge> | null | undefined): boolean {
   if (!bridge?.update_status) return false;
-  return ['updating', 'downloading', 'validating', 'restarting'].includes(bridge.update_status);
+  return ['updating', 'draining', 'preparing', 'downloading', 'downloaded', 'validating', 'verifying', 'verified', 'extracting', 'preflight', 'staged', 'stopping_pty_host', 'pty_host_stopped', 'restarting'].includes(bridge.update_status);
+}
+
+export function bridgeUpdateStatusLabel(bridge: Partial<Bridge> | null | undefined): string {
+  if (bridge?.update_message) return bridge.update_message;
+  const labels: Record<string, string> = {
+    updating: 'Starting update…',
+    draining: 'Waiting for active tasks…',
+    preparing: 'Preparing update…',
+    downloading: 'Downloading update tarball…',
+    downloaded: 'Download completed.',
+    validating: 'Validating update…',
+    verifying: 'Verifying checksum…',
+    verified: 'Checksum verified.',
+    extracting: 'Extracting update…',
+    preflight: 'Validating staged binaries…',
+    staged: 'Update staged.',
+    stopping_pty_host: 'Stopping PTY host and agents…',
+    pty_host_stopped: 'PTY host and agents stopped.',
+    restarting: 'Restarting bridge…',
+  };
+  return labels[String(bridge?.update_status || '')] || 'Updating…';
 }
 
 /**

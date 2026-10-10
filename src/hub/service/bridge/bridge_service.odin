@@ -169,7 +169,13 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	if version != "" { delete(bridge.version); bridge.version = strings.clone(version) }
 	if commit_sha != "" { delete(bridge.commit_sha); bridge.commit_sha = strings.clone(commit_sha) }
 	if build_timestamp != "" { delete(bridge.build_timestamp); bridge.build_timestamp = strings.clone(build_timestamp) }
-	if bridge.update_status == "updating" { delete(bridge.update_status); bridge.update_status = strings.clone("idle") }
+	if bridge_update_status_active(bridge.update_status) {
+		delete(bridge.update_status)
+		bridge.update_status = strings.clone("idle")
+		delete(bridge.update_message)
+		bridge.update_message = strings.clone("")
+		bridge.update_progress = 0
+	}
 	now := platform.clock_now(service.clock)
 	bridge.status = .Online
 	delete(bridge.last_seen_at)
@@ -720,6 +726,12 @@ send_bridge_update :: proc(
 	}
 
 	info := resolve_bridge_update_info(service.catalog, bridge)
+	if strings.trim_space(info.download_url) == "" || strings.trim_space(info.sha256) == "" {
+		return "", false, domain.domain_error(
+			.Validation_Failed,
+			fmt.tprintf("no verified update artifact is available for bridge target %s", info.target),
+		)
+	}
 	effective_version := target_version
 	if effective_version == "" || effective_version == "latest" {
 		effective_version = info.latest_version
@@ -753,8 +765,59 @@ send_bridge_update :: proc(
 	if !sent do return "", false, send_err
 
 	bridge.update_status = "updating"
+	bridge.update_message = "Update command dispatched"
+	bridge.update_progress = 0
 	bridge.updated_at = platform.clock_now(service.clock)
 	iface.bridge_save_bridge(service.repo, bridge)
 
 	return strings.clone(cmd_id), true, domain.Domain_Error{}
+}
+
+// record_bridge_update_progress persists terminal failures (and useful
+// in-flight stages) reported by the Bridge so the UI cannot remain stuck on
+// `updating` after the command has already failed.
+bridge_update_status_active :: proc(stage: string) -> bool {
+	switch stage {
+	case "updating", "draining", "preparing", "downloading", "downloaded", "validating", "verifying", "verified", "extracting", "preflight", "staged", "stopping_pty_host", "pty_host_stopped", "restarting":
+		return true
+	}
+	return false
+}
+
+record_bridge_update_progress :: proc(service: ^Bridge_Service, bridge_id, stage, message: string, progress_percent: int = 0) -> (bool, domain.Domain_Error) {
+	if service == nil || strings.trim_space(bridge_id) == "" {
+		return false, domain.domain_error(.Validation_Failed, "bridge_id is required")
+	}
+	bridge, found, err := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !found do return false, err
+
+	if !bridge_update_status_active(stage) && stage != "failed" && stage != "succeeded" {
+		domain.bridge_destroy(&bridge)
+		return false, domain.domain_error(.Validation_Failed, "invalid bridge update progress stage")
+	}
+	status := stage
+	if stage == "succeeded" do status = "idle"
+	delete(bridge.update_status)
+	bridge.update_status = strings.clone(status)
+	delete(bridge.update_message)
+	bridge.update_message = strings.clone(message)
+	if stage != "failed" || progress_percent != 0 {
+		bridge.update_progress = progress_percent
+		if bridge.update_progress < 0 do bridge.update_progress = 0
+		if bridge.update_progress > 100 do bridge.update_progress = 100
+	}
+	delete(bridge.update_error)
+	bridge.update_error = strings.clone(message if stage == "failed" else "")
+	delete(bridge.updated_at)
+	bridge.updated_at = strings.clone(platform.clock_now(service.clock))
+
+	saved, saved_ok, save_err := iface.bridge_save_bridge(service.repo, bridge)
+	if saved_ok {
+		// The repository returns the same owned Bridge value on a successful
+		// save, so destroy exactly once through the returned alias.
+		domain.bridge_destroy(&saved)
+	} else {
+		domain.bridge_destroy(&bridge)
+	}
+	return saved_ok, save_err
 }

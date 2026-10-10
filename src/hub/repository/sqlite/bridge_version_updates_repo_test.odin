@@ -30,6 +30,8 @@ test_bridge_version_and_updates_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, table_column_exists(&conn, "bridges", "build_timestamp"), "bridges.build_timestamp column exists")
 	testing.expect(t, table_column_exists(&conn, "bridges", "update_status"), "bridges.update_status column exists")
 	testing.expect(t, table_column_exists(&conn, "bridges", "update_error"), "bridges.update_error column exists")
+	testing.expect(t, table_column_exists(&conn, "bridges", "update_message"), "bridges.update_message column exists")
+	testing.expect(t, table_column_exists(&conn, "bridges", "update_progress"), "bridges.update_progress column exists")
 
 	repo_impl := Bridge_Repo_SQLite{conn = &conn}
 	repo := new_bridge_repository(&repo_impl, &conn)
@@ -56,7 +58,9 @@ test_bridge_version_and_updates_roundtrip :: proc(t: ^testing.T) {
 		version = "0.1.0",
 		commit_sha = "a57c83d9",
 		build_timestamp = "2026-10-01T10:13:00Z",
-		update_status = "idle",
+		update_status = "downloading",
+		update_message = "Downloading update tarball...",
+		update_progress = 20,
 		update_error = "",
 	}
 
@@ -73,12 +77,17 @@ test_bridge_version_and_updates_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, got.version, "0.1.0")
 	testing.expect_value(t, got.commit_sha, "a57c83d9")
 	testing.expect_value(t, got.build_timestamp, "2026-10-01T10:13:00Z")
-	testing.expect_value(t, got.update_status, "idle")
+	testing.expect_value(t, got.update_status, "downloading")
+	testing.expect_value(t, got.update_message, "Downloading update tarball...")
+	testing.expect_value(t, got.update_progress, 20)
 	testing.expect_value(t, got.update_error, "")
 
 	// Update with new status/error
 	delete(got.update_status)
 	got.update_status = strings.clone("failed")
+	delete(got.update_message)
+	got.update_message = strings.clone("tarball download failed")
+	got.update_progress = 20
 	delete(got.update_error)
 	got.update_error = strings.clone("network timeout")
 	_, update_ok, update_err := iface.bridge_save_bridge(&repo, got)
@@ -91,6 +100,8 @@ test_bridge_version_and_updates_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(list), 1)
 	if len(list) > 0 {
 		testing.expect_value(t, list[0].update_status, "failed")
+		testing.expect_value(t, list[0].update_message, "tarball download failed")
+		testing.expect_value(t, list[0].update_progress, 20)
 		testing.expect_value(t, list[0].update_error, "network timeout")
 	}
 

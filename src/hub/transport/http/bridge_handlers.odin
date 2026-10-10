@@ -1185,6 +1185,17 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	hostname := json_string(hello_text, "hostname"); defer delete(hostname)
 	os_str := json_string(hello_text, "os"); defer delete(os_str)
 	arch_str := json_string(hello_text, "arch"); defer delete(arch_str)
+	target_str := json_string(hello_text, "target"); defer delete(target_str)
+	platform_os := os_str
+	platform_arch := arch_str
+	if target_str != "" || os_str != "" || arch_str != "" {
+		platform_ok := false
+		platform_os, platform_arch, platform_ok = bridge_service.canonical_bridge_platform(os_str, arch_str, target_str)
+		if !platform_ok {
+			_ = write_ws_text_frame(client, bridge_ws_error_payload("unsupported bridge target"))
+			return
+		}
+	}
 	version_str := json_string(hello_text, "version"); defer delete(version_str)
 	commit_sha_str := json_string(hello_text, "commit_sha"); defer delete(commit_sha_str)
 	build_timestamp_str := json_string(hello_text, "built_at")
@@ -1214,7 +1225,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// retirement also gates this write, so an older disconnect finishes first.
 	sync.lock(&connection.state_mutex)
 	if sync.atomic_load(&connection.retired) { sync.unlock(&connection.state_mutex); return }
-	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text, version_str, commit_sha_str, build_timestamp_str)
+	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, platform_os, platform_arch, hello_text, version_str, commit_sha_str, build_timestamp_str)
 	sync.unlock(&connection.state_mutex)
 	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
 	defer domain.bridge_destroy(&bridge)
@@ -1605,6 +1616,22 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
+	case "bridge_update_progress":
+		stage := json_string(text, "stage")
+		message := json_string(text, "message")
+		progress := json_int(text, "progress_percent", 0)
+		persisted, _ := bridge_service.record_bridge_update_progress(h.bridges, bridge_id, stage, message, progress)
+		if persisted {
+			bridge, found, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id)
+			if found {
+				summary := bridge_update_summary_json(bridge.update_status, bridge.update_message, bridge.update_progress, bridge.update_error)
+				events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "update_progress", summary)
+				delete(summary)
+				domain.bridge_destroy(&bridge)
+			}
+		}
+		delete(stage)
+		delete(message)
 	case "command_result", "project_path_validation_result", "provider_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "bridge_lock_result":
 		command_id := json_string(text, "command_id")
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
@@ -2097,7 +2124,9 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	strings.write_string(b, "\",\"commit_sha\":\""); write_handler_json_string(b, br.commit_sha)
 	strings.write_string(b, "\",\"build_timestamp\":\""); write_handler_json_string(b, br.build_timestamp)
 	strings.write_string(b, "\",\"update_status\":\""); write_handler_json_string(b, br.update_status if br.update_status != "" else "idle")
-	strings.write_string(b, "\",\"update_error\":\""); write_handler_json_string(b, br.update_error)
+	strings.write_string(b, "\",\"update_message\":\""); write_handler_json_string(b, br.update_message)
+	strings.write_string(b, "\",\"update_progress\":"); strings.write_string(b, fmt.tprintf("%d", br.update_progress))
+	strings.write_string(b, ",\"update_error\":\""); write_handler_json_string(b, br.update_error)
 	strings.write_string(b, "\",\"last_seen_at\":\""); write_handler_json_string(b, br.last_seen_at)
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, br.updated_at)
 	strings.write_string(b, "\",\"revoked_at\":\""); write_handler_json_string(b, br.revoked_at)
@@ -2284,6 +2313,16 @@ bridge_vault_status_summary_json :: proc(vault_status: string) -> string {
 bridge_status_summary_json :: proc(status: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"status\":\""); write_handler_json_string(&b, status)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+bridge_update_summary_json :: proc(status, message: string, progress: int, update_error: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"update_status\":\""); write_handler_json_string(&b, status)
+	strings.write_string(&b, "\",\"update_message\":\""); write_handler_json_string(&b, message)
+	strings.write_string(&b, "\",\"update_progress\":"); strings.write_string(&b, fmt.tprintf("%d", progress))
+	strings.write_string(&b, ",\"update_error\":\""); write_handler_json_string(&b, update_error)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }

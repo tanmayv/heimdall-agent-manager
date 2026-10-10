@@ -32,6 +32,8 @@ export interface Bridge {
   latest_version?: string;
   latest_commit_sha?: string;
   update_status?: 'idle' | 'downloading' | 'validating' | 'restarting' | 'healthy' | 'complete' | 'failed' | string;
+  update_message?: string;
+  update_progress?: number;
   update_error?: string;
   active_instance_count?: number;
   instance_count?: number;

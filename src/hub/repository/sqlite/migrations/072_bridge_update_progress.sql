@@ -1,0 +1,2 @@
+ALTER TABLE bridges ADD COLUMN update_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE bridges ADD COLUMN update_progress INTEGER NOT NULL DEFAULT 0;

@@ -5,6 +5,7 @@ import { chatEndpoints } from './endpoints/chats';
 import { patchAgentCachesFromWs } from './endpoints/agents';
 import { patchChatApprovalCachesFromWs, patchMergeDecisionCachesFromWs } from './endpoints/attention';
 import { patchMemoryCachesFromWs } from './endpoints/memory';
+import { bridgeSupportApi } from './endpoints/bridgeSupport';
 import { upsertTaskInList, upsertTaskLogEvent } from './taskCache';
 import { attentionEventReceived } from '../store/attentionSlice';
 import { GUIDE_AGENT_ID, appendMessage, chatEventReceived, patchChatMessageStatus } from '../store/chatSlice';
@@ -725,6 +726,21 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       // Forward the summary (runtime/startup/activity) so the caches can be patched
       // IN PLACE without refetching the whole /agents list on every status change.
       handleAgentEvent(dispatch, { ...payload, type: 'agent_update', agent_instance_id: resourceId, summary }, ctx);
+      return;
+    }
+    case 'bridge': {
+      // Update progress is frequent and short-lived. Patch the mounted bridge
+      // list immediately from the event, then invalidate detail/list tags so a
+      // reconnect or dropped event still converges on the durable Hub state.
+      dispatch(bridgeSupportApi.util.updateQueryData('listBridges', undefined, (draft: any) => {
+        const rows = Array.isArray(draft?.bridges) ? draft.bridges : [];
+        const bridge = rows.find((row: any) => String(row?.bridge_id || row?.id || '') === resourceId);
+        if (bridge) Object.assign(bridge, summary);
+      }));
+      dispatch(heimdallApi.util.invalidateTags([
+        { type: 'Bridges', id: 'LIST' },
+        { type: 'Bridges', id: resourceId },
+      ]));
       return;
     }
     default:
