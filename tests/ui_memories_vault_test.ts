@@ -154,7 +154,7 @@ test('VaultText helper renders locked placeholder with data-debug-id for armored
   assert.equal(resolvedLocked.isArmored, true);
   assert.equal(resolvedLocked.isLocked, true);
   assert.equal(resolvedLocked.dataDebugId, 'vault-locked-placeholder');
-  assert.equal(resolvedLocked.displayText, '[🔒 Encrypted content - click to unlock]');
+  assert.equal(resolvedLocked.displayText, 'Encrypted content');
 });
 
 // -----------------------------------------------------------------------------

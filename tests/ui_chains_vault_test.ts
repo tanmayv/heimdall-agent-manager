@@ -285,7 +285,7 @@ test('Vault locked state displays interactive placeholder and triggers unlock mo
   assert.equal(lockedResolved.mode, 'locked');
   assert.equal(lockedResolved.isLocked, true);
   assert.equal(lockedResolved.dataDebugId, 'vault-locked-placeholder');
-  assert.equal(lockedResolved.displayText, '[🔒 Encrypted content - click to unlock]');
+  assert.equal(lockedResolved.displayText, 'Encrypted content');
 
   // Unlocked resolution
   const unlockedResolved = resolveVaultText(armoredTitle, true);

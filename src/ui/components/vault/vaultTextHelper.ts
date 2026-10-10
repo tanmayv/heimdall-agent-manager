@@ -48,7 +48,7 @@ export function resolveVaultText(
     return {
       mode: 'locked',
       isArmored: true,
-      displayText: '[🔒 Encrypted content - click to unlock]',
+      displayText: 'Encrypted content',
       dataDebugId: 'vault-locked-placeholder',
       isLocked: true,
     };

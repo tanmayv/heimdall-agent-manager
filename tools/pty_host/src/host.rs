@@ -35,6 +35,7 @@ fn build_child_env() -> HashMap<String, String> {
         "TMUX",
         "TMUX_PANE",
         "STY",          // screen
+        "NO_COLOR",     // service/automation preference; interactive panes support color
     ];
     let mut env: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| !DROP.contains(&k.as_str()))
@@ -104,6 +105,8 @@ impl PtyHost {
             .context("openpty failed")?;
 
         let mut cmd = CommandBuilder::new(&config.program);
+        // CommandBuilder otherwise inherits even variables removed by our filter.
+        cmd.env_clear();
         // Login shell: many shells treat argv[0] starting with '-' as login.
         let is_shellish = config.program.ends_with("sh");
         if config.login_shell && is_shellish && config.args.is_empty() {
@@ -471,6 +474,30 @@ pub(crate) mod tests {
         assert!(host.is_alive());
         host.write_input(b"exit\n").unwrap();
         host.wait_timeout(Duration::from_secs(3));
+    }
+
+    #[test]
+    fn interactive_child_drops_inherited_no_color_but_allows_explicit_override() {
+        if !pty_available() {
+            return;
+        }
+        let sh = skip_if_none!(shell(), "sh");
+        for (extra_env, expected) in [
+            (Vec::new(), "color-default=unset"),
+            (vec![("NO_COLOR".into(), "1".into())], "color-default=1"),
+        ] {
+            let mut config = SpawnConfig::new(
+                sh.clone(),
+                vec!["-c".into(), "printf 'color-default=%s' \"${NO_COLOR-unset}\"".into()],
+            );
+            config.login_shell = false;
+            config.extra_env = extra_env;
+            let host = PtyHost::spawn(config).unwrap();
+            assert!(wait_for(
+                || host.capture().lines.iter().any(|line| line.contains(expected)),
+                Duration::from_secs(3),
+            ), "child environment did not match {expected}: {:?}", host.capture().lines);
+        }
     }
 
     #[test]

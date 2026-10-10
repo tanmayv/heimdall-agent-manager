@@ -168,7 +168,7 @@ test('<VaultText /> renders interactive placeholder when vault is locked with da
   assert.equal(resolvedLocked.isArmored, true);
   assert.equal(resolvedLocked.isLocked, true);
   assert.equal(resolvedLocked.dataDebugId, 'vault-locked-placeholder');
-  assert.equal(resolvedLocked.displayText, '[🔒 Encrypted content - click to unlock]');
+  assert.equal(resolvedLocked.displayText, 'Encrypted content');
 
   // Verify VaultText component implementation
   const vaultTextSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/vault/VaultText.tsx'), 'utf8');

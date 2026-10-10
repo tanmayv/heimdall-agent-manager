@@ -217,7 +217,7 @@ test('VaultText helper renders locked placeholder with data-debug-id for armored
   assert.equal(resolvedLocked.isArmored, true);
   assert.equal(resolvedLocked.isLocked, true);
   assert.equal(resolvedLocked.dataDebugId, 'vault-locked-placeholder');
-  assert.equal(resolvedLocked.displayText, '[🔒 Encrypted content - click to unlock]');
+  assert.equal(resolvedLocked.displayText, 'Encrypted content');
 });
 
 // -----------------------------------------------------------------------------
@@ -476,7 +476,7 @@ test('Agent card task titles resolve through VaultText and raw ciphertext never 
   const lockedResolution = resolveVaultText(armoredTitle, false);
   assert.equal(lockedResolution.isLocked, true);
   assert.equal(lockedResolution.mode, 'locked');
-  assert.equal(lockedResolution.displayText, '[🔒 Encrypted content - click to unlock]');
+  assert.equal(lockedResolution.displayText, 'Encrypted content');
   assert.equal(lockedResolution.dataDebugId, 'vault-locked-placeholder');
   assert.ok(!lockedResolution.displayText.includes('vault:v1:'), 'Raw ciphertext must never leak when locked');
 

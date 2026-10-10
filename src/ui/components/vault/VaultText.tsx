@@ -17,6 +17,7 @@ import {
   maskVaultArmored,
 } from '../../utils/vaultContent';
 import Markdown from '../Markdown';
+import Icon from '../Icon';
 
 /**
  * Mask the vault-armored fields of a list of records. Returns the input array
@@ -146,12 +147,12 @@ export function VaultText({
               dispatch(openUnlockModal());
             }
           }}
-          title={title || 'Encrypted content — click to unlock vault'}
-          aria-label="Encrypted content — click to unlock vault"
-          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-medium bg-neutral-soft hover:bg-neutral-raised text-accent border border-subtle cursor-pointer transition-colors select-none ${className || ''}`}
+          title={title || 'Unlock vault to view encrypted content'}
+          aria-label="Unlock vault to view encrypted content"
+          className={`inline-flex max-w-full items-center gap-1.5 rounded text-xs font-medium text-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent cursor-pointer transition-colors ${className || ''}`}
         >
-          <span aria-hidden="true">🔒</span>
-          <span>[🔒 Encrypted content - click to unlock]</span>
+          <Icon name="lock" size={12} />
+          <span className="truncate">Encrypted content</span>
         </button>
       );
     }
