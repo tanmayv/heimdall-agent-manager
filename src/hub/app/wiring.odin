@@ -20,6 +20,7 @@ import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
+import billing_service "odin_test:hub/service/billing"
 import user_vault_service "odin_test:hub/service/user_vault"
 import card_service "odin_test:hub/service/card"
 import issue_service "odin_test:hub/service/issue"
@@ -33,6 +34,10 @@ App_Graph :: struct {
 	bridge_runtime_registry: project_service.Bridge_Runtime_Registry,
 	event_bus: events.User_Event_Bus,
 	db: sqlite.Conn,
+	sqlite_billing: sqlite.Billing_Repo_SQLite,
+	billing_repo: iface.Billing_Repository,
+	billing: billing_service.Service,
+	billing_handlers: http.Billing_Handlers,
 	sqlite_users: sqlite.User_Repo_SQLite,
 	sqlite_bridges: sqlite.Bridge_Repo_SQLite,
 	sqlite_agents: sqlite.Agent_Repo_SQLite,
@@ -119,6 +124,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	db, db_ok, db_err := sqlite.open(config.database_path)
 	if !db_ok do return false, db_err.message
 	graph.db = db
+	// Billing uses its own transactional connection; tolerate brief writer contention.
+	if !sqlite.exec(&graph.db, "PRAGMA busy_timeout = 5000;") do return false, "failed to configure database busy timeout"
 
 	migrations_ok, migration_err := sqlite.run_migrations(&graph.db, config.migrations_dir)
 	if !migrations_ok do return false, migration_err.message
@@ -134,6 +141,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else if rebuilt > 0 {
 		fmt.printfln("ham-hub FTS reconcile: re-synced %d drifted search index(es)", rebuilt)
 	}
+
+	if config.paddle_past_due_grace_seconds < 0 do return false, "Paddle grace period must be a nonnegative number of seconds"
+	if config.paddle_environment != "sandbox" && config.paddle_environment != "live" do return false, "Paddle environment must be sandbox or live"
+	billing_config := billing_service.Config{environment = config.paddle_environment, api_key = config.paddle_api_key, client_token = config.paddle_client_token, webhook_secret = config.paddle_webhook_secret, past_due_grace_seconds = config.paddle_past_due_grace_seconds}
+	billing_repo, billing_err := sqlite.new_billing_repository(&graph.sqlite_billing, config.database_path, config.paddle_environment, config.paddle_hobbyist_price_id, config.paddle_api_key != "" || config.paddle_webhook_secret != "")
+	if billing_err.code != .None do return false, billing_err.message
+	graph.billing_repo = billing_repo
+	graph.billing = billing_service.Service{repo = &graph.billing_repo, clock = &graph.clock, config = billing_config}
+	graph.billing_handlers = http.Billing_Handlers{auth = &graph.auth, billing = &graph.billing, ui_origin = config.ui_origin}
 
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	graph.repos.bridges = sqlite.new_bridge_repository(&graph.sqlite_bridges, &graph.db)
@@ -338,10 +354,15 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	shell_session_svc.shell_session_service_free(&graph.shell_session_service)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
 	delete(graph.action_bridge_versions)
+	sqlite.close(&graph.sqlite_billing.conn)
 	sqlite.close(&graph.db)
 }
 
 register_routes :: proc(graph: ^App_Graph) {
+	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/account/billing/portal", rawptr(&graph.billing_handlers), http.account_portal_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/billing/paddle/webhook", rawptr(&graph.billing_handlers), http.paddle_webhook_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/health", rawptr(graph), health_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/authorize", rawptr(&graph.device_auth_handlers), http.device_authorize_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/device", rawptr(&graph.device_auth_handlers), http.device_page_handler)

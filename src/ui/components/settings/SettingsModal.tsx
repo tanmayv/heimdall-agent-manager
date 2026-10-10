@@ -22,6 +22,7 @@ import VaultPanel from './VaultPanel';
 import LspPanel from './LspPanel';
 import UserTokensPanel from './UserTokensPanel';
 import TemplatesPanel from './TemplatesPanel';
+import AccountPanel from './AccountPanel';
 
 export interface SettingsCategory {
   id: string;
@@ -31,6 +32,12 @@ export interface SettingsCategory {
 }
 
 export const SETTINGS_CATEGORIES: SettingsCategory[] = [
+  {
+    id: 'account',
+    label: 'Account',
+    title: 'Account',
+    description: 'Your profile and subscription.',
+  },
   {
     id: 'appearance',
     label: 'Appearance',
@@ -345,8 +352,8 @@ export function SettingsModal({
   }, [user]);
 
   // User display helpers
-  const userDisplayName = currentUser?.display_name || currentUser?.name || 'Tanmay Vijayvargiya';
-  const userEmail = currentUser?.email || 'tanmayvijay@google.com';
+  const userDisplayName = currentUser?.display_name || currentUser?.name || currentUser?.user_id || 'Current user';
+  const userEmail = currentUser?.email || '';
   const avatarInitial = (userDisplayName || 'U')[0].toUpperCase();
 
   // Find info for current tab
@@ -377,6 +384,8 @@ export function SettingsModal({
   function renderTabContent(tabId: string) {
     const effectiveTab = normalizeSettingsTab(tabId);
     switch (effectiveTab) {
+      case 'account':
+        return <AccountPanel user={currentUser} />;
       case 'appearance':
         return (
           <div className="[&>div>div:first-child]:hidden">

@@ -359,7 +359,9 @@ MIGRATION_068_REPAIR_PROVIDER_CATALOG_ETAG :: #load(
 	string,
 )
 
-migration_order :: [71]string {
+MIGRATION_069_ACCOUNT_BILLING :: #load("migrations/069_account_billing.sql", string)
+
+migration_order :: [72]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -431,6 +433,7 @@ migration_order :: [71]string {
 	"066_antigravity_trust_detection.sql",
 	"067_codex_sandbox_and_models.sql",
 	"068_repair_provider_catalog_etag.sql",
+	"069_account_billing.sql",
 }
 
 run_migrations :: proc(
@@ -849,6 +852,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "065_antigravity_launch_recipe.sql" do return strings.clone(MIGRATION_065_ANTIGRAVITY_LAUNCH_RECIPE)
 	if name == "066_antigravity_trust_detection.sql" do return strings.clone(MIGRATION_066_ANTIGRAVITY_TRUST_DETECTION)
 	if name == "067_codex_sandbox_and_models.sql" do return strings.clone(MIGRATION_067_CODEX_SANDBOX_AND_MODELS)
+	if name == "069_account_billing.sql" do return strings.clone(MIGRATION_069_ACCOUNT_BILLING)
 	if name == "068_repair_provider_catalog_etag.sql" do return strings.clone(MIGRATION_068_REPAIR_PROVIDER_CATALOG_ETAG)
 	return ""
 }

@@ -1,6 +1,12 @@
 package app
 
 Hub_Config :: struct {
+	paddle_environment: string,
+	paddle_api_key: string,
+	paddle_client_token: string,
+	paddle_webhook_secret: string,
+	paddle_hobbyist_price_id: string,
+	paddle_past_due_grace_seconds: int,
 	runtime_max_live_bridges: int,
 	runtime_max_live_bridges_per_owner: int,
 	runtime_max_active_instances: int,
@@ -61,6 +67,8 @@ default_config :: proc() -> Hub_Config {
 	cidrs := make([]string, 1)
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
+		paddle_environment = "sandbox",
+		paddle_past_due_grace_seconds = 3 * 86400,
 		bind_host = "127.0.0.1",
 		port = 8081,
 		database_path = "./hub.db",

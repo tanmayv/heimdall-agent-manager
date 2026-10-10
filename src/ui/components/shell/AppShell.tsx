@@ -1819,10 +1819,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
               </span>
             </span>
             {!isEffectiveCollapsed && (
-              <div className="min-w-0 flex-1">
+              <button type="button" data-debug-id="shell-open-account" aria-label="Open account settings" onClick={() => { if (isMobile) setDrawerOpen(false); setSettingsModalTab('account'); setSettingsModalOpen(true); }} className="min-w-0 flex-1 rounded-lg text-left focus-visible:outline-none focus-visible:shadow-focus hover:bg-neutral-soft">
                 <div data-debug-id="shell-current-user-owner" className="truncate text-[12px] font-semibold text-primary">{displayName}</div>
                 <div className="truncate text-[10.5px] text-muted">{user.email || user.user_id || ''}</div>
-              </div>
+              </button>
             )}
             {logoutUrl && !isEffectiveCollapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="close" size={14} /></a>}
           </div>

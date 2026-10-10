@@ -192,6 +192,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
 	apply_vapid_env(config)
+	apply_paddle_env(config)
 
 	// public_app_origin resolves default -> env -> flag, same shape as the above.
 	//
@@ -316,4 +317,17 @@ split_host_port :: proc(value: string) -> (string, int, bool) {
 	port_i, ok := strconv.parse_int(value[colon + 1:])
 	if !ok do return "", 0, false
 	return strings.clone(value[:colon]), int(port_i), true
+}
+
+// Paddle secrets stay on the server and are never printed.
+apply_paddle_env :: proc(config: ^app.Hub_Config) {
+	if v := os.get_env_alloc("HEIMDALL_PADDLE_ENVIRONMENT", context.allocator); v != "" do config.paddle_environment = v
+	config.paddle_api_key = os.get_env_alloc("HEIMDALL_PADDLE_API_KEY", context.allocator)
+	config.paddle_client_token = os.get_env_alloc("HEIMDALL_PADDLE_CLIENT_TOKEN", context.allocator)
+	config.paddle_webhook_secret = os.get_env_alloc("HEIMDALL_PADDLE_WEBHOOK_SECRET", context.allocator)
+	config.paddle_hobbyist_price_id = os.get_env_alloc("HEIMDALL_PADDLE_HOBBYIST_PRICE_ID", context.allocator)
+	if v := os.get_env_alloc("HEIMDALL_PADDLE_PAST_DUE_GRACE_SECONDS", context.allocator); v != "" {
+		parsed, ok := strconv.parse_int(v)
+		config.paddle_past_due_grace_seconds = int(parsed) if ok && parsed >= 0 else -1
+	}
 }
