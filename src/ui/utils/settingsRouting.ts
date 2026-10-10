@@ -16,5 +16,6 @@ export function normalizeSettingsTab(tab?: string): string {
   if (tab === 'bridges') return 'workspace';
   if (tab === 'providers') return 'models';
   if (tab === 'labs') return 'experimental';
+  if (tab === 'browser' || tab === 'shortcuts' || tab === 'feedback') return 'appearance';
   return tab;
 }

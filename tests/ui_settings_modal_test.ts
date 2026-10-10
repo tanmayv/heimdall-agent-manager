@@ -195,7 +195,6 @@ test('SettingsModal desktop sidebar renders canonical categories and footer', ()
     'Appearance',
     'Notifications',
     'Models',
-    'Browser',
     'Workspace Settings',
     'User Vault',
     'Language Servers',
@@ -278,9 +277,13 @@ test('SettingsModal desktop sidebar renders canonical categories and footer', ()
   assert.ok(!content.includes('ConversationsSettingsPlaceholder'), 'Must not include ConversationsSettingsPlaceholder');
   assert.ok(!content.includes('settings-nav-item-conversations'), 'Must not include conversations nav item');
 
-  // Footer: Shortcuts, Provide Feedback, User Profile Card
-  assert.ok(content.includes('Shortcuts'), 'Must include Shortcuts in footer');
-  assert.ok(content.includes('Provide Feedback'), 'Must include Provide Feedback in footer');
+  // Removed placeholders must not remain in desktop/mobile navigation or page code.
+  for (const removed of ['BrowserSettingsPlaceholder', 'ShortcutsSettingsPlaceholder', 'FeedbackSettingsPlaceholder']) {
+    assert.ok(!content.includes(removed), `Must remove placeholder page: ${removed}`);
+  }
+  for (const debugId of ['settings-nav-item-shortcuts', 'settings-nav-item-feedback', 'mobile-nav-item-shortcuts', 'mobile-nav-item-feedback']) {
+    assert.ok(!content.includes(debugId), `Must remove settings navigation item: ${debugId}`);
+  }
   assert.ok(
     content.includes('settings-user-profile-card'),
     'Must include user profile card',
@@ -461,8 +464,8 @@ test('SettingsModal embeds all required panels', () => {
 test('SettingsModal defaults activeTab to appearance when initialTab is not provided', () => {
   const content = fs.readFileSync(SETTINGS_MODAL_PATH, 'utf-8');
   assert.ok(
-    content.includes("initialTab || 'appearance'"),
-    "activeTab state must default to initialTab || 'appearance'",
+    content.includes('normalizeSettingsTab(initialTab)'),
+    'activeTab state must normalize missing, aliased, and retired tabs to appearance',
   );
 });
 

@@ -208,7 +208,7 @@ test('resolveSettingsTab extracts corresponding tabs from deep link routes', () 
   assert.equal(resolveSettingsTab('#/settings/experimental'), 'experimental');
 });
 
-test('normalizeSettingsTab aliases bridge, provider, and experimental routes cleanly', () => {
+test('normalizeSettingsTab aliases active routes and retires removed placeholder pages', () => {
   assert.equal(normalizeSettingsTab('bridges'), 'workspace');
   assert.equal(normalizeSettingsTab('workspace'), 'workspace');
   assert.equal(normalizeSettingsTab('providers'), 'models');
@@ -225,6 +225,9 @@ test('normalizeSettingsTab aliases bridge, provider, and experimental routes cle
   assert.equal(normalizeSettingsTab('user-tokens'), 'user-tokens');
   assert.equal(normalizeSettingsTab('templates'), 'templates');
   assert.equal(normalizeSettingsTab('projects'), 'projects');
+  assert.equal(normalizeSettingsTab('browser'), 'appearance');
+  assert.equal(normalizeSettingsTab('shortcuts'), 'appearance');
+  assert.equal(normalizeSettingsTab('feedback'), 'appearance');
 });
 
 test('SettingsModal renders BridgesPanel for bridges tab and AppearanceSettings for appearance tab', () => {

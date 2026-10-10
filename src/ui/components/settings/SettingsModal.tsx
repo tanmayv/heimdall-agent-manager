@@ -1,14 +1,6 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  Badge,
-  Button,
-  Icon,
-  Kbd,
-  Select,
-  type SelectOption,
-  Textarea,
-} from '@ui';
+import { Icon } from '@ui';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { withApiBase } from '../../api/apiBase';
@@ -57,12 +49,6 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     description: 'Configure AI model providers, API endpoints, tokens, and active reasoning models.',
   },
   {
-    id: 'browser',
-    label: 'Browser',
-    title: 'Browser',
-    description: 'Configure the browser automation subagent, Chrome execution policy, and actuation rules.',
-  },
-  {
     id: 'workspace',
     label: 'Workspace Settings',
     title: 'Workspace Settings',
@@ -104,22 +90,12 @@ export function getVisibleSettingsCategories(lspEnabled: boolean): SettingsCateg
   return SETTINGS_CATEGORIES.filter((category) => category.id !== 'lsp' || lspEnabled);
 }
 
-export const EXTRA_SECTIONS: Record<string, { title: string; description: string }> = {
-  shortcuts: {
-    title: 'Shortcuts',
-    description: 'Keyboard shortcuts and global navigation hotkeys.',
-  },
-  feedback: {
-    title: 'Provide Feedback',
-    description: 'Send diagnostics, report bugs, or submit suggestions to the Heimdall engineering team.',
-  },
-};
-
 export function normalizeSettingsTab(tab?: string): string {
   if (!tab || tab === 'general') return 'appearance';
   if (tab === 'bridges') return 'workspace';
   if (tab === 'providers') return 'models';
   if (tab === 'labs') return 'experimental';
+  if (tab === 'browser' || tab === 'shortcuts' || tab === 'feedback') return 'appearance';
   return tab;
 }
 
@@ -140,161 +116,6 @@ export interface SettingsModalProps {
 }
 
 // ---------------------------------------------------------------------------
-// Structured Placeholder Panels for Secondary Tabs
-// ---------------------------------------------------------------------------
-
-function BrowserSettingsPlaceholder() {
-  const [headless, setHeadless] = useState(true);
-  const [timeoutSec, setTimeoutSec] = useState('30');
-  const [policy, setPolicy] = useState('request_review');
-
-  const policyOptions: SelectOption[] = [
-    { value: 'request_review', label: 'Request Review' },
-    { value: 'automatic', label: 'Automatic' },
-    { value: 'disabled', label: 'Disabled' },
-  ];
-
-  return (
-    <div data-debug-id="browser-settings-panel" className="space-y-6 text-left">
-      <div className="rounded-xl border border-subtle bg-surface p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-primary">Google Chrome Integration</div>
-          <Badge tone="success">Ready</Badge>
-        </div>
-        <p className="text-xs text-muted">
-          The browser subagent uses your local Chrome instance for web extraction and testing.
-          Invoke anytime with <Kbd>/browser</Kbd> in chat.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium text-primary">Automation Policies</h3>
-        <div className="rounded-xl border border-subtle bg-surface p-4 space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-medium text-primary">JavaScript Execution Policy</div>
-              <div className="text-xs text-muted">Controls whether the agent can run custom JavaScript.</div>
-            </div>
-            <div className="w-48">
-              <Select options={policyOptions} value={policy} onChange={setPolicy} />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between border-t border-subtle pt-3">
-            <div>
-              <div className="text-sm font-medium text-primary">Headless Mode</div>
-              <div className="text-xs text-muted">Run browser sessions in background without opening window.</div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setHeadless(!headless)}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${
-                headless ? 'bg-accent' : 'bg-surface-raised'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-primary shadow ring-0 transition duration-200 ease-in-out ${
-                  headless ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between border-t border-subtle pt-3">
-            <div>
-              <div className="text-sm font-medium text-primary">Page Load Timeout (seconds)</div>
-              <div className="text-xs text-muted">Maximum time allowed before aborting navigation.</div>
-            </div>
-            <input
-              type="number"
-              min="5"
-              max="120"
-              value={timeoutSec}
-              onChange={(e) => setTimeoutSec(e.target.value)}
-              className="w-20 rounded-lg border border-subtle bg-surface-raised px-2.5 py-1 text-sm text-primary text-right focus:outline-none focus:border-accent"
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-function ShortcutsSettingsPlaceholder() {
-  const shortcuts = [
-    { key: 'Cmd/Ctrl + K', action: 'Open Command Palette' },
-    { key: 'Cmd/Ctrl + ,', action: 'Open Settings Modal' },
-    { key: 'Esc', action: 'Close Modal or Drawer' },
-    { key: 'Cmd/Ctrl + /', action: 'Toggle Sidebar' },
-    { key: 'Cmd/Ctrl + Shift + F', action: 'Global Search' },
-    { key: 'Enter', action: 'Send Chat Message' },
-    { key: 'Shift + Enter', action: 'Insert Newline in Chat' },
-  ];
-
-  return (
-    <div data-debug-id="shortcuts-settings-panel" className="space-y-4 text-left">
-      <div className="rounded-xl border border-subtle bg-surface overflow-hidden">
-        <div className="divide-y divide-subtle">
-          {shortcuts.map((sc) => (
-            <div key={sc.key} className="flex items-center justify-between px-4 py-3">
-              <span className="text-sm text-primary">{sc.action}</span>
-              <Kbd>{sc.key}</Kbd>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FeedbackSettingsPlaceholder() {
-  const [feedbackText, setFeedbackText] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-
-  return (
-    <div data-debug-id="feedback-settings-panel" className="space-y-4 text-left">
-      <div className="rounded-xl border border-subtle bg-surface p-4 space-y-4">
-        {submitted ? (
-          <div className="p-4 text-center space-y-2">
-            <div className="text-sm font-semibold text-primary">Thank you for your feedback!</div>
-            <p className="text-xs text-muted">Your report has been recorded.</p>
-            <Button size="sm" variant="ghost" onClick={() => setSubmitted(false)}>
-              Send another note
-            </Button>
-          </div>
-        ) : (
-          <>
-            <div>
-              <label className="block text-sm font-medium text-primary mb-1">
-                Share your feedback or bug report
-              </label>
-              <Textarea
-                rows={4}
-                value={feedbackText}
-                onChange={(val) => setFeedbackText(val)}
-                placeholder="Describe your issue or suggestion..."
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted">Includes anonymized diagnostic logs.</span>
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!feedbackText.trim()}
-                onClick={() => setSubmitted(true)}
-              >
-                Submit Feedback
-              </Button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main SettingsModal Component
 // ---------------------------------------------------------------------------
 
@@ -306,8 +127,8 @@ export function SettingsModal({
   className,
 }: SettingsModalProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [activeTab, setActiveTab] = useState<string>(() => initialTab || 'appearance');
-  const [mobileSection, setMobileSection] = useState<string | null>(() => initialTab || null);
+  const [activeTab, setActiveTab] = useState<string>(() => normalizeSettingsTab(initialTab));
+  const [mobileSection, setMobileSection] = useState<string | null>(() => initialTab ? normalizeSettingsTab(initialTab) : null);
   const [currentUser, setCurrentUser] = useState<SettingsUser | null>(() => user || null);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
@@ -324,8 +145,9 @@ export function SettingsModal({
   // Sync initialTab when opening
   useEffect(() => {
     if (initialTab) {
-      setActiveTab(initialTab);
-      setMobileSection(initialTab);
+      const normalizedTab = normalizeSettingsTab(initialTab);
+      setActiveTab(normalizedTab);
+      setMobileSection(normalizedTab);
     } else {
       setMobileSection(null);
     }
@@ -362,15 +184,6 @@ export function SettingsModal({
     const category = categories.find((c) => c.id === activeTab || c.id === effectiveTab)
       || SETTINGS_CATEGORIES.find((c) => c.id === activeTab || c.id === effectiveTab);
     if (category) return category;
-    if (EXTRA_SECTIONS[activeTab] || EXTRA_SECTIONS[effectiveTab]) {
-      const extra = EXTRA_SECTIONS[activeTab] || EXTRA_SECTIONS[effectiveTab];
-      return {
-        id: activeTab,
-        label: extra.title,
-        title: extra.title,
-        description: extra.description,
-      };
-    }
     return {
       id: activeTab,
       label: activeTab,
@@ -397,8 +210,6 @@ export function SettingsModal({
       case 'models':
       case 'providers':
         return <ProvidersPanel />;
-      case 'browser':
-        return <BrowserSettingsPlaceholder />;
       case 'workspace':
       case 'bridges':
         return <BridgesPanel />;
@@ -419,10 +230,6 @@ export function SettingsModal({
       case 'experimental':
       case 'labs':
         return <ExperimentalPanel />;
-      case 'shortcuts':
-        return <ShortcutsSettingsPlaceholder />;
-      case 'feedback':
-        return <FeedbackSettingsPlaceholder />;
       default:
         return (
           <div className="[&>div>div:first-child]:hidden">
@@ -495,34 +302,8 @@ export function SettingsModal({
               </nav>
             </div>
 
-            {/* Footer: Shortcuts, Provide Feedback, User Profile Card */}
+            {/* User Profile Card */}
             <div className="shrink-0 border-t border-subtle p-3 space-y-1 bg-surface-raised/30">
-              <button
-                type="button"
-                data-debug-id="settings-nav-item-shortcuts"
-                onClick={() => setActiveTab('shortcuts')}
-                className={`w-full flex items-center px-3 py-1.5 rounded-lg text-sm text-left transition-colors ${
-                  activeTab === 'shortcuts'
-                    ? 'bg-surface-raised text-primary font-medium'
-                    : 'text-muted hover:text-primary hover:bg-surface-raised/60'
-                }`}
-              >
-                <span className="truncate">Shortcuts</span>
-              </button>
-              <button
-                type="button"
-                data-debug-id="settings-nav-item-feedback"
-                onClick={() => setActiveTab('feedback')}
-                className={`w-full flex items-center px-3 py-1.5 rounded-lg text-sm text-left transition-colors ${
-                  activeTab === 'feedback'
-                    ? 'bg-surface-raised text-primary font-medium'
-                    : 'text-muted hover:text-primary hover:bg-surface-raised/60'
-                }`}
-              >
-                <span className="truncate">Provide Feedback</span>
-              </button>
-
-              {/* User Profile Card */}
               <div
                 data-debug-id="settings-user-profile-card"
                 className="flex items-center gap-2.5 rounded-xl p-2 bg-surface/60 border border-subtle/60 mt-2"
@@ -635,35 +416,6 @@ export function SettingsModal({
                       <Icon name="chevron-right" size="sm" className="text-muted shrink-0" />
                     </button>
                   ))}
-                </div>
-
-
-                {/* Footer secondary items */}
-                <div className="space-y-1 pt-2 border-t border-subtle">
-                  <button
-                    type="button"
-                    data-debug-id="mobile-nav-item-shortcuts"
-                    onClick={() => {
-                      setActiveTab('shortcuts');
-                      setMobileSection('shortcuts');
-                    }}
-                    className="flex min-h-[44px] w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-medium text-primary hover:bg-surface-raised active:bg-surface-raised transition-colors"
-                  >
-                    <span>Shortcuts</span>
-                    <Icon name="chevron-right" size="sm" className="text-muted shrink-0" />
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id="mobile-nav-item-feedback"
-                    onClick={() => {
-                      setActiveTab('feedback');
-                      setMobileSection('feedback');
-                    }}
-                    className="flex min-h-[44px] w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-medium text-primary hover:bg-surface-raised active:bg-surface-raised transition-colors"
-                  >
-                    <span>Provide Feedback</span>
-                    <Icon name="chevron-right" size="sm" className="text-muted shrink-0" />
-                  </button>
                 </div>
 
                 {/* User profile card at bottom */}
