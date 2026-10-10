@@ -108,7 +108,10 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	}
 
 	// Ensure the socket's parent dir exists, then spawn the daemon detached.
-	if slash := strings.last_index_byte(socket, '/'); slash > 0 do _ = os.make_directory_all(socket[:slash])
+	if !bridge_unix_socket_prepare_parent(socket) {
+		fmt.eprintln("bridge pty-host: cannot prepare socket directory", socket)
+		return "", false
+	}
 	bin := bridge_pty_host_bin()
 	cmd := []string{bin, "daemon", "--socket", socket}
 	// env = nil => the daemon inherits the bridge's environment. The per-agent

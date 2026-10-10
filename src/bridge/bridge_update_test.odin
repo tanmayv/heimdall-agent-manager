@@ -44,10 +44,11 @@ test_bridge_update_supervisor_launch_uses_structured_argv_and_exact_pid :: proc(
 		"https://hub.example.test/path?value=one&next=two",
 		"424242",
 		bridge_update_test_capture_spawn,
+		"/tmp/bridge with spaces/pty-host.sock",
 	)
 	testing.expect(t, ok, "injected supervisor launcher succeeds")
-	testing.expect_value(t, len(bridge_update_test_spawn_args), 12)
-	if len(bridge_update_test_spawn_args) != 12 do return
+	testing.expect_value(t, len(bridge_update_test_spawn_args), 14)
+	if len(bridge_update_test_spawn_args) != 14 do return
 	testing.expect_value(t, bridge_update_test_spawn_args[0], "bash")
 	testing.expect_value(t, bridge_update_test_spawn_args[1], "/tmp/update scripts/apply-bridge-update.sh")
 	testing.expect_value(t, bridge_update_test_spawn_args[3], "/tmp/data dir")
@@ -56,4 +57,6 @@ test_bridge_update_supervisor_launch_uses_structured_argv_and_exact_pid :: proc(
 	testing.expect_value(t, bridge_update_test_spawn_args[9], "https://hub.example.test/path?value=one&next=two")
 	testing.expect_value(t, bridge_update_test_spawn_args[10], "--bridge-pid")
 	testing.expect_value(t, bridge_update_test_spawn_args[11], "424242")
+	testing.expect_value(t, bridge_update_test_spawn_args[12], "--pty-host-socket")
+	testing.expect_value(t, bridge_update_test_spawn_args[13], "/tmp/bridge with spaces/pty-host.sock")
 }

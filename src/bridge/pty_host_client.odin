@@ -532,18 +532,25 @@ pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
 // ---- socket round-trip --------------------------------------------------
 
 // pty_host_socket_path resolves the daemon's unix socket path for this bridge.
-// Keyed on the bridge's local endpoint port so multiple bridges on one host do
-// not share a daemon (mirrors bridge_runtime_tmux_session's per-bridge scoping).
+// A bridge-specific directory already scopes the daemon; shared directories
+// retain an identity suffix so multiple bridges never share a daemon.
 pty_host_socket_path :: proc() -> string {
 	base := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
 	if base == "" do base = "/tmp/heimdall-bridge-local"
-	// BR-2a: a daemon serves exactly ONE bridge, so the socket name embeds a stable
-	// per-bridge identity. This makes the path unique even when two bridges on one
-	// host share the DEFAULT local_endpoint_run_dir (/tmp/heimdall-bridge-local):
-	// distinct ids => distinct sockets => distinct daemons => disjoint agent sets.
+	// A daemon serves exactly one bridge. Use the directory identity when
+	// available; otherwise put the identity in the name for shared run dirs.
 	id := pty_host_bridge_identity()
 	defer delete(id)
-	return strings.concatenate({base, "/pty-host-", id, ".sock"})
+	scoped := strings.concatenate({"/", id, "/"})
+	defer delete(scoped)
+	if strings.contains(base, scoped) || strings.has_suffix(base, scoped[:len(scoped)-1]) {
+		path := strings.concatenate({base, "/pty-host.sock"})
+		defer delete(path)
+		return bridge_unix_socket_bounded_path(path)
+	}
+	path := strings.concatenate({base, "/pty-host-", id, ".sock"})
+	defer delete(path)
+	return bridge_unix_socket_bounded_path(path)
 }
 
 // pty_host_bridge_identity returns a stable, filesystem-safe token identifying

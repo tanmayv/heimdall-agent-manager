@@ -239,6 +239,10 @@ with tarfile.open(root/name) as t:
         members = [m for m in t.getmembers() if m.name.removeprefix('./') == 'bin/'+binary]
         if len(members)!=1 or not members[0].isfile(): sys.exit('Missing/unsafe binary: '+binary)
         (root/binary).write_bytes(t.extractfile(members[0]).read())
+    scripts = [m for m in t.getmembers() if m.name.removeprefix('./') == 'scripts/apply-bridge-update.sh']
+    if scripts:
+        if len(scripts)!=1 or not scripts[0].isfile(): sys.exit('Unsafe update supervisor')
+        (root/'apply-bridge-update.sh').write_bytes(t.extractfile(scripts[0]).read())
 PY
   log OK 'Release checksum and bundle verified'
   step '3 / 6 · Replace this Hub’s service'
@@ -255,6 +259,10 @@ PY
   for file in heimdall ham-bridge ham-pty-host ham-ctl; do
     install -m 0755 "$work_dir/$file" "$bin_dir/$file"
   done
+  if [ -f "$work_dir/apply-bridge-update.sh" ]; then
+    mkdir -p "$data_dir/updates"
+    install -m 0755 "$work_dir/apply-bridge-update.sh" "$data_dir/updates/apply-bridge-update.sh"
+  fi
   printf '%s\n' "$hub_url" > "$state_dir/hub-url"
   [ ! -d "$bin_dir" ] || chmod 700 "$bin_dir"
   step '4 / 6 · Ports and ham-ctl routing'
@@ -295,7 +303,7 @@ config = pathlib.Path(state)/'config.toml'
 if not config.exists():
     config.write_text('[daemon]\ndaemon_url = '+json.dumps(hub)+'\ndata_dir = '+json.dumps(data)+'\n\n[wrapper]\ndaemon_url = '+json.dumps(hub)+'\n')
 config.chmod(0o600)
-env={'PATH':bin_dir+':'+path,'HEIMDALL_HAM_PTY_HOST_BIN':bin_dir+'/ham-pty-host','HEIMDALL_BRIDGE_PTY_HOST':'true','HEIMDALL_HAM_CTL_BIN':bin_dir+'/ham-ctl','HEIMDALL_BRIDGE_ENDPOINT':'tcp:127.0.0.1:'+endpoint}
+env={'PATH':bin_dir+':'+path,'HEIMDALL_HAM_PTY_HOST_BIN':bin_dir+'/ham-pty-host','HEIMDALL_BRIDGE_PTY_HOST':'true','HEIMDALL_HAM_CTL_BIN':bin_dir+'/ham-ctl','HEIMDALL_BRIDGE_ENDPOINT':'tcp:127.0.0.1:'+endpoint,'HEIMDALL_BRIDGE_SERVICE_NAME':name+('.service' if osname=='linux' else '')}
 # Do not override the endpoint injected into agent run directories.
 wrapper=pathlib.Path(bin_dir)/('ham-ctl-'+name)
 wrapper.write_text('#!/bin/sh\n: "${HEIMDALL_BRIDGE_ENDPOINT:='+env['HEIMDALL_BRIDGE_ENDPOINT']+'}"\nexport HEIMDALL_BRIDGE_ENDPOINT\nexec '+shlex.quote(bin_dir+'/ham-ctl')+' --config '+shlex.quote(state+'/config.toml')+' "$@"\n')
@@ -309,6 +317,10 @@ else:
     command=' '.join(quote(a).replace('$','$$') for a in args)
     text='[Unit]\nDescription=Heimdall Bridge '+hub+'\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart='+command+'\n'
     text+=''.join('Environment='+quote(k+'='+v)+'\n' for k,v in env.items())
+    supervisor = pathlib.Path(data)/'updates/apply-bridge-update.sh'
+    if supervisor.is_file():
+        stop_args = ['bash', str(supervisor), '--data-dir', data, '--stop-pty-hosts-only']
+        text+='ExecStopPost='+' '.join(quote(a).replace('$','$$') for a in stop_args)+'\n'
     text+='Restart=on-failure\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n'
     pathlib.Path(file).write_text(text)
 PY

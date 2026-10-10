@@ -11,8 +11,10 @@ STAGE_DIR="${STAGE_DIR:-}"
 BRIDGE_PORT="${BRIDGE_PORT:-49323}"
 HUB_URL="${HUB_URL:-http://127.0.0.1:8989}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
-SERVICE_NAME="${SERVICE_NAME:-heimdall-bridge.service}"
+SERVICE_NAME="${SERVICE_NAME:-${HEIMDALL_BRIDGE_SERVICE_NAME:-}}"
 BRIDGE_PID="${BRIDGE_PID:-}"
+PTY_HOST_SOCKET="${PTY_HOST_SOCKET:-}"
+STOP_PTY_HOSTS_ONLY=false
 RESTART_HOOK="${RESTART_HOOK:-}"
 STOP_HOOK="${STOP_HOOK:-}"
 HEALTH_URL="${HEALTH_URL:-}"
@@ -48,6 +50,14 @@ while [[ $# -gt 0 ]]; do
       BRIDGE_PID="$2"
       shift 2
       ;;
+    --stop-pty-hosts-only)
+      STOP_PTY_HOSTS_ONLY=true
+      shift
+      ;;
+    --pty-host-socket)
+      PTY_HOST_SOCKET="$2"
+      shift 2
+      ;;
     --restart-hook)
       RESTART_HOOK="$2"
       shift 2
@@ -67,8 +77,10 @@ while [[ $# -gt 0 ]]; do
       echo "  --bridge-port PORT    Port bridge listens on for health check (default: 49323)"
       echo "  --hub-url URL         Central Hub URL"
       echo "  --health-timeout SEC  Healthcheck probe timeout in seconds (default: 30)"
-      echo "  --service-name NAME   Systemd user unit (default: heimdall-bridge.service)"
+      echo "  --service-name NAME   Systemd unit or launchd label (auto-detected by default)"
       echo "  --bridge-pid PID      Exact bridge process to stop"
+      echo "  --pty-host-socket PATH  Bridge-owned PTY daemon socket"
+      echo "  --stop-pty-hosts-only   Only clean up this bridge’s PTY hosts"
       echo "  --restart-hook PATH   Executable restart hook for isolated tests"
       echo "  --stop-hook PATH      Executable stop hook for isolated tests"
       echo "  --health-url URL      Explicit health URL override (optional)"
@@ -100,6 +112,117 @@ log_err() {
   printf '[apply-bridge-update] [%s] ERROR: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
 }
 
+# Stop only this bridge's hosts, including old unlinked binaries, and their
+# descendants. Capture process identities before asking a daemon to shut down:
+# its children may otherwise be reparented and become invisible to cleanup.
+stop_pty_hosts() {
+  python3 - "$DATA_DIR" "$PTY_HOST_SOCKET" <<'PY_PTY_CLEANUP'
+import os, pathlib, re, shlex, signal, subprocess, sys, time
+
+data = pathlib.Path(sys.argv[1]).resolve()
+expected_socket = os.path.realpath(sys.argv[2]) if sys.argv[2] else ''
+private_install = data.parent.name == 'bridges'
+uid = os.geteuid()
+
+def read_process(pid):
+    try:
+        proc = pathlib.Path('/proc')/str(pid)
+        if pathlib.Path('/proc').exists():
+            if proc.stat().st_uid != uid: return None
+            fields = (proc/'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] == 'Z': return None
+            argv = [os.fsdecode(arg) for arg in (proc/'cmdline').read_bytes().split(b'\0') if arg]
+            try: exe = os.readlink(proc/'exe').removesuffix(' (deleted)')
+            except OSError: exe = ''
+            return (int(fields[1]), fields[19], argv, exe)
+        line = subprocess.check_output(['ps','-p',str(pid),'-o','ppid=,uid=,lstart=,command='], text=True).strip()
+        parts = line.split(None, 7)
+        if len(parts) != 8 or int(parts[1]) != uid: return None
+        command = parts[7]
+        # ps on macOS does not quote argv paths containing spaces. The native
+        # daemon's final --socket argument can be recovered without splitting it.
+        host = re.match(r'^(.*?/ham-pty-host) (?=daemon |run |--socket )', command)
+        if host:
+            exe = host.group(1)
+            tail = command[len(exe)+1:]
+            if tail.startswith('daemon --socket '):
+                argv = [exe, 'daemon', '--socket', tail[len('daemon --socket '):]]
+            elif tail.startswith('--socket ') and tail.endswith(' daemon'):
+                argv = [exe, '--socket', tail[len('--socket '):-len(' daemon')], 'daemon']
+            else: argv = [exe] + shlex.split(tail)
+        else: exe, argv = '', shlex.split(command)
+        return (int(parts[0]), ' '.join(parts[2:7]), argv, exe)
+    except (OSError, ValueError, IndexError, subprocess.CalledProcessError): return None
+
+def processes():
+    if pathlib.Path('/proc').exists():
+        ids = [int(p.name) for p in pathlib.Path('/proc').iterdir() if p.name.isdigit()]
+    else:
+        ids = [int(p) for p in subprocess.check_output(['ps','-axo','pid='], text=True).split()]
+    return {pid: info for pid in ids if (info := read_process(pid)) is not None}
+
+snapshot = processes()
+roots = {}
+for pid, (parent, born, argv, exe) in snapshot.items():
+    # An interpreter can run a test/script host; real release binaries use argv[0].
+    candidates = [exe] + argv[:2]
+    hosts = [p for p in candidates if pathlib.Path(p).name == 'ham-pty-host']
+    if not hosts or not any(command in argv for command in ('daemon', 'run')): continue
+    socket = ''
+    for index, arg in enumerate(argv):
+        if arg == '--socket' and index+1 < len(argv): socket = argv[index+1]
+        elif arg.startswith('--socket='): socket = arg.split('=', 1)[1]
+    owned_binary = private_install and any(pathlib.Path(os.path.realpath(p)).parent.parent == data and pathlib.Path(p).parent.name in ('bin','bin.old','bin.bak','bin.failed') for p in hosts)
+    owned_socket = bool(expected_socket and socket and os.path.realpath(socket) == expected_socket)
+    if owned_binary or owned_socket: roots[pid] = socket
+
+owned = set(roots)
+while True:
+    children = {pid for pid, info in snapshot.items() if info[0] in owned}
+    expanded = owned | children
+    if expanded == owned: break
+    owned = expanded
+
+def alive(pid):
+    info = read_process(pid)
+    return info is not None and info[1] == snapshot[pid][1]
+
+def send(pid, sig):
+    if not alive(pid): return
+    try:
+        if hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'):
+            fd = os.pidfd_open(pid)
+            try:
+                if alive(pid): signal.pidfd_send_signal(fd, sig)
+            finally: os.close(fd)
+        elif alive(pid): os.kill(pid, sig)
+    except ProcessLookupError: pass
+
+# Best effort protocol shutdown lets the PTY host terminate/reap its own agents.
+client = data/'bin/ham-pty-host'
+if client.is_file() and os.access(client, os.X_OK):
+    for socket in set(roots.values())- {''}:
+        try:
+            subprocess.run([str(client),'--socket',socket,'stop'], timeout=3,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired): pass
+
+if owned: print('[apply-bridge-update] stopping bridge-owned PTY processes:', ', '.join(map(str, sorted(owned))), flush=True)
+for pid in owned: send(pid, signal.SIGTERM)
+deadline = time.monotonic()+3
+while any(alive(pid) for pid in owned) and time.monotonic() < deadline: time.sleep(0.05)
+for pid in owned: send(pid, signal.SIGKILL)
+deadline = time.monotonic()+2
+while any(alive(pid) for pid in owned) and time.monotonic() < deadline: time.sleep(0.05)
+if any(alive(pid) for pid in owned): sys.exit('Bridge-owned PTY processes did not stop; refusing binary swap.')
+PY_PTY_CLEANUP
+}
+
+if "$STOP_PTY_HOSTS_ONLY"; then
+  stop_pty_hosts
+  exit 0
+fi
+
 log "Starting supervisor execution"
 log "  DATA_DIR:       $DATA_DIR"
 log "  STAGE_DIR:      $STAGE_DIR"
@@ -124,6 +247,54 @@ else
 fi
 
 log "Located staged binaries at: $STAGE_BIN"
+for binary in ham-bridge ham-ctl heimdall ham-pty-host; do
+  if [ -f "$DATA_DIR/bin/$binary" ] && [ ! -f "$STAGE_BIN/$binary" ]; then
+    log_err "Update bundle is missing installed binary: $binary"; exit 1;
+  fi
+done
+
+# Resolve the owning service before stopping the bridge. Older installations do
+# not export HEIMDALL_BRIDGE_SERVICE_NAME; match the installed executable instead
+# of assuming the legacy unit name. A renamed bridge-id service works unchanged.
+if [ -z "$SERVICE_NAME" ] && [ -z "$RESTART_HOOK" ]; then
+  SERVICE_NAME="$(python3 - "$DATA_DIR" <<'PY_SERVICE'
+import pathlib, plistlib, shlex, sys
+home = pathlib.Path.home()
+exe = str(pathlib.Path(sys.argv[1])/'bin/ham-bridge')
+matches = []
+for unit in (home/'.config/systemd/user').glob('*.service'):
+    text = unit.read_text()
+    for line in text.splitlines():
+        if not line.startswith('ExecStart='): continue
+        try: args = shlex.split(line[len('ExecStart='):])
+        except ValueError: continue
+        if args and args[0].replace('%%', '%').replace('$$', '$') == exe:
+            matches.append(unit.name)
+            break
+for file in (home/'Library/LaunchAgents').glob('*.plist'):
+    try:
+        plist = plistlib.loads(file.read_bytes())
+        args = plist.get('ProgramArguments', [])
+        if args and args[0] == exe: matches.append(plist['Label'])
+    except (ValueError, OSError): pass
+if len(matches) > 1: sys.exit('Multiple services reference this bridge; specify --service-name.')
+print(matches[0] if matches else '')
+PY_SERVICE
+)"
+fi
+log "  SERVICE_NAME:   ${SERVICE_NAME:-standalone}"
+
+# Fail before stopping or replacing anything if an explicitly managed service
+# cannot be found. Never relaunch its binary without its config and credentials.
+if [ -n "$SERVICE_NAME" ] && [ -z "$RESTART_HOOK" ]; then
+  if [[ "$(uname -s)" = Darwin ]]; then
+    launchctl print "gui/$(id -u)/$SERVICE_NAME" >/dev/null
+  else
+    systemctl --user show "$SERVICE_NAME" -p LoadState --value | grep -Fxq loaded || {
+      log_err "Managed service not found: $SERVICE_NAME"; exit 1;
+    }
+  fi
+fi
 
 # Helper to stop service
 bridge_pid_running() {
@@ -151,7 +322,9 @@ stop_service() {
       log_err "Bridge PID $BRIDGE_PID did not exit after SIGTERM"
       return 1
     fi
-  elif command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/$SERVICE_NAME" ]; then
+  elif [ -n "$SERVICE_NAME" ] && [[ "$(uname -s)" = Darwin ]]; then
+    launchctl kill SIGTERM "gui/$(id -u)/$SERVICE_NAME"
+  elif [ -n "$SERVICE_NAME" ]; then
     systemctl --user stop "$SERVICE_NAME"
   else
     log_err "No scoped bridge stop mechanism is available"
@@ -165,7 +338,9 @@ start_service() {
   if [ -n "$RESTART_HOOK" ]; then
     [ -x "$RESTART_HOOK" ] || { log_err "Restart hook is not executable: $RESTART_HOOK"; return 1; }
     "$RESTART_HOOK"
-  elif command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/$SERVICE_NAME" ]; then
+  elif [ -n "$SERVICE_NAME" ] && [[ "$(uname -s)" = Darwin ]]; then
+    launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME"
+  elif [ -n "$SERVICE_NAME" ]; then
     systemctl --user daemon-reload || true
     systemctl --user restart "$SERVICE_NAME" || systemctl --user start "$SERVICE_NAME"
   elif [ -f "$DATA_DIR/start.sh" ]; then
@@ -186,6 +361,8 @@ if ! stop_service; then
   exit 1
 fi
 
+stop_pty_hosts
+
 # 2. Backup existing binaries
 log "Backing up current bin to $DATA_DIR/bin.bak"
 rm -rf "$DATA_DIR/bin.bak"
@@ -198,6 +375,12 @@ log "Staging new binaries into $DATA_DIR/bin.new"
 rm -rf "$DATA_DIR/bin.new"
 mkdir -p "$DATA_DIR/bin.new"
 cp -R -p "$STAGE_BIN/"* "$DATA_DIR/bin.new/"
+# Installer-created CLI shims are installation-specific, not release binaries.
+# Keep them across the directory swap (and in bin.bak for rollback).
+for shim in "$DATA_DIR/bin"/ham-ctl-*; do
+  [ -f "$shim" ] && [ ! -L "$shim" ] || continue
+  cp -p "$shim" "$DATA_DIR/bin.new/"
+done
 chmod +x "$DATA_DIR/bin.new/"* 2>/dev/null || true
 
 # Copy migrations or assets if staged
@@ -243,6 +426,7 @@ if [ "$healthy" = true ]; then
 else
   log_err "Health check timed out or failed after ${HEALTH_TIMEOUT}s! Initiating automatic rollback..."
   stop_service
+  stop_pty_hosts
 
   if [ -d "$DATA_DIR/bin.bak" ]; then
     log "Restoring binaries from $DATA_DIR/bin.bak..."

@@ -33,8 +33,10 @@ bridge_wrapper_push_mutex: sync.Mutex
 bridge_wrapper_push_conns: [dynamic]Bridge_Wrapper_Push_Conn
 
 bridge_local_endpoint_config_default :: proc(run_dir: string, loopback_port: u16) -> Bridge_Local_Endpoint_Config {
+	path := strings.concatenate({strings.trim_right(run_dir, "/"), "/bridge.sock"})
+	defer delete(path)
 	return Bridge_Local_Endpoint_Config{
-		unix_socket_path = strings.concatenate({strings.trim_right(run_dir, "/"), "/bridge.sock"}),
+		unix_socket_path = bridge_unix_socket_bounded_path(path),
 		loopback_host = "127.0.0.1",
 		loopback_port = loopback_port,
 	}
@@ -48,8 +50,7 @@ bridge_local_endpoint_env_value :: proc(config: Bridge_Local_Endpoint_Config, pr
 bridge_local_endpoint_prepare_unix_socket_path :: proc(config: Bridge_Local_Endpoint_Config) -> bool {
 	// Unix socket file mode invariant: 0600 owner-only before wrapper/agent env handoff.
 	if strings.trim_space(config.unix_socket_path) == "" do return false
-	if slash := strings.last_index_byte(config.unix_socket_path, '/'); slash > 0 { _ = os.make_directory_all(config.unix_socket_path[:slash]) }
-	return true
+	return bridge_unix_socket_prepare_parent(config.unix_socket_path)
 }
 
 bridge_local_endpoint_start_unix :: proc(config: Bridge_Local_Endpoint_Config) -> bool {

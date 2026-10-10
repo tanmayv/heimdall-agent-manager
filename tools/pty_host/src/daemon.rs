@@ -939,6 +939,7 @@ impl DaemonServer {
     /// starts with no agents; clients drive it via `Spawn`.
     pub fn start(socket_path: impl Into<std::path::PathBuf>) -> Result<Self> {
         let socket_path = socket_path.into();
+        crate::socket_path::prepare(&socket_path)?;
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("bind {socket_path:?}"))?;

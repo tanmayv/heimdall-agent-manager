@@ -51,7 +51,8 @@ struct Cli {
 /// (`pty_host_socket_path` / `pty_host_bridge_identity` in
 /// `src/bridge/pty_host_client.odin`):
 ///
-///     <local_run_dir>/pty-host-<identity>.sock
+///     <local_run_dir>/pty-host.sock when a directory component is <identity>;
+///     otherwise <local_run_dir>/pty-host-<identity>.sock
 ///     identity = daemon_id (if set & != "local-daemon")
 ///              | port-<local_endpoint_port>
 ///              | default
@@ -60,6 +61,8 @@ struct Cli {
 /// (run_dir=/tmp/heimdall-bridge-local, local_endpoint_port=49334):
 ///
 ///     /tmp/heimdall-bridge-local/pty-host-port-49334.sock
+///
+/// Generated paths over 103 bytes use /tmp/heimdall-<uid>/<path-hash>.sock.
 ///
 /// Env overrides (match the bridge's `--local-run-dir` / `--local-endpoint-port`
 /// / `--daemon-id`): HAM_LOCAL_RUN_DIR, HAM_LOCAL_ENDPOINT_PORT, HAM_DAEMON_ID.
@@ -94,7 +97,12 @@ fn default_socket() -> String {
         "default".to_string()
     };
 
-    format!("{run_dir}/pty-host-{identity}.sock")
+    let path = if run_dir.split('/').any(|part| part == identity) {
+        format!("{run_dir}/pty-host.sock")
+    } else {
+        format!("{run_dir}/pty-host-{identity}.sock")
+    };
+    ham_pty_host::socket_path::bounded(&path, unsafe { libc::geteuid() })
 }
 
 #[derive(Subcommand)]
@@ -196,6 +204,7 @@ fn main() -> Result<()> {
     // `--socket` is a single command-level (global) flag shared by every
     // subcommand, so it is resolved once here rather than per-variant.
     let socket = cli.socket;
+    ham_pty_host::socket_path::validate(std::path::Path::new(&socket))?;
     match cli.command {
         Command::Run {
             rows,

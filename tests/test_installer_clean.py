@@ -95,6 +95,9 @@ pathlib.Path(os.environ['MOCK_ROOT']+'/ctl.json').write_text(json.dumps({'args':
                 content = bridge if name=='ham-bridge' else ctl if name=='ham-ctl' else b'#!/bin/sh\nexit 0\n'
                 m=tarfile.TarInfo('bin/'+name); m.size=len(content); m.mode=0o755
                 t.addfile(m, io.BytesIO(content))
+            content = (ROOT/'scripts/apply-bridge-update.sh').read_bytes()
+            m=tarfile.TarInfo('scripts/apply-bridge-update.sh'); m.size=len(content); m.mode=0o755
+            t.addfile(m, io.BytesIO(content))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -138,6 +141,18 @@ pathlib.Path(os.environ['MOCK_ROOT']+'/ctl.json').write_text(json.dumps({'args':
                 self.assertIn('Service: heimdall-bridge-'+name+' (',out)
         self.assertFalse(self.state('heimdall-bridge-hub-mundus-in').exists())
         self.assertFalse(self.log.exists())
+
+    def test_installs_update_supervisor_and_managed_service_identity(self):
+        name='heimdall-bridge-hub-mundus-in'
+        self.run_install('--hub','https://hub.mundus.in')
+        data=self.home/'.local/share/heimdall/bridges'/name
+        supervisor=data/'updates/apply-bridge-update.sh'
+        self.assertEqual(supervisor.read_bytes(),(ROOT/'scripts/apply-bridge-update.sh').read_bytes())
+        self.assertTrue(os.access(supervisor,os.X_OK))
+        unit=self.home/'.config/systemd/user'/f'{name}.service'
+        self.assertIn('HEIMDALL_BRIDGE_SERVICE_NAME='+name+'.service',unit.read_text())
+        self.assertIn('ExecStopPost=',unit.read_text())
+        self.assertIn('--stop-pty-hosts-only',unit.read_text())
 
     def test_bad_origins(self):
         for hub in ('https://hub/a','https://u:p@hub','http://hub:99999','https://hub?q=x','https://hub/#f','garbage'):
@@ -205,6 +220,7 @@ pathlib.Path(os.environ['MOCK_ROOT']+'/ctl.json').write_text(json.dumps({'args':
         self.run_install('--hub','http://127.0.0.1:8081',answers=[])
         plist=plistlib.loads((self.home/'Library/LaunchAgents'/f'{name}.plist').read_bytes())
         self.assertEqual(plist['Label'],name)
+        self.assertEqual(plist['EnvironmentVariables']['HEIMDALL_BRIDGE_SERVICE_NAME'],name)
         args=plist['ProgramArguments']; port=args[args.index('--local-endpoint-port')+1]
         self.assertEqual(plist['EnvironmentVariables']['HEIMDALL_BRIDGE_ENDPOINT'],'tcp:127.0.0.1:'+port)
         self.assertIn(['launchctl','kickstart','-k','gui/1000/'+name],self.commands())

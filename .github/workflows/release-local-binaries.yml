@@ -321,6 +321,7 @@ jobs:
             grep -Fxq bin/ham-ctl "$RUNNER_TEMP/$tarball.entries"
             grep -Fxq bin/heimdall "$RUNNER_TEMP/$tarball.entries"
             grep -Fxq bin/ham-pty-host "$RUNNER_TEMP/$tarball.entries"
+            grep -Fxq scripts/apply-bridge-update.sh "$RUNNER_TEMP/$tarball.entries"
             grep -Fxq README.md "$RUNNER_TEMP/$tarball.entries"
             grep -Fxq LICENSE "$RUNNER_TEMP/$tarball.entries"
             target="${tarball#heimdall-local-}"

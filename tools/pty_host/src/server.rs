@@ -45,6 +45,7 @@ impl HostServer {
     /// fan-out loops. Returns once the server is listening.
     pub fn start(socket_path: impl Into<std::path::PathBuf>, config: SpawnConfig) -> Result<Self> {
         let socket_path = socket_path.into();
+        crate::socket_path::prepare(&socket_path)?;
         // Remove any stale socket.
         let _ = std::fs::remove_file(&socket_path);
 

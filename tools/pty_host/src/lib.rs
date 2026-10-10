@@ -28,6 +28,7 @@ pub mod host;
 pub mod proto;
 pub mod selector;
 pub mod server;
+pub mod socket_path;
 pub mod termios;
 pub mod vt;
 

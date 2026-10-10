@@ -4,7 +4,9 @@
 # The socket path a bridge uses is DETERMINISTIC (see pty_host_socket_path /
 # pty_host_bridge_identity in src/bridge/pty_host_client.odin):
 #
-#     <local_run_dir>/pty-host-<identity>.sock
+#     <local_run_dir>/pty-host.sock when a directory component is <identity>;
+#     otherwise <local_run_dir>/pty-host-<identity>.sock
+#     Paths over 103 bytes use /tmp/heimdall-<uid>/<path-hash>.sock.
 #     identity = daemon_id (if set & != local-daemon)
 #              | port-<local_endpoint_port>
 #              | default
@@ -29,7 +31,20 @@ else
   IDENTITY="default"
 fi
 
-SOCKET="${RUN_DIR%/}/pty-host-${IDENTITY}.sock"
+# Match the bridge and Rust client, including byte limits (not character counts).
+SOCKET="$(python3 - "$RUN_DIR" "$IDENTITY" <<'PY_SOCKET'
+import os, sys
+base, identity = sys.argv[1:]
+base = base.rstrip('/') or '/tmp/heimdall-bridge-local'
+name = 'pty-host.sock' if identity in base.split('/') else 'pty-host-'+identity+'.sock'
+path = base+'/'+name
+if len(path.encode()) > 103:
+    h = 14695981039346656037
+    for b in path.encode(): h = ((h ^ b) * 1099511628211) & ((1 << 64)-1)
+    path = f'/tmp/heimdall-{os.geteuid()}/{h:016x}.sock'
+print(path)
+PY_SOCKET
+)"
 echo "[attach-main] target socket: $SOCKET"
 
 # --- IMPORTANT: use the SAME ham-pty-host build the bridge launched -----------

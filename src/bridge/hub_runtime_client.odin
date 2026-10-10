@@ -1109,6 +1109,7 @@ bridge_update_spawn_supervisor :: proc(argv: []string) -> bool {
 bridge_update_launch_supervisor :: proc(
 	supervisor_path, data_dir, stage_dir, bridge_port, hub_url, bridge_pid: string,
 	spawn: Bridge_Update_Supervisor_Spawn = bridge_update_spawn_supervisor,
+	pty_host_socket: string = "",
 ) -> bool {
 	if spawn == nil do return false
 	argv := []string{
@@ -1118,6 +1119,7 @@ bridge_update_launch_supervisor :: proc(
 		"--bridge-port", bridge_port,
 		"--hub-url", hub_url,
 		"--bridge-pid", bridge_pid,
+		"--pty-host-socket", pty_host_socket,
 	}
 	return spawn(argv)
 }
@@ -1337,6 +1339,8 @@ bridge_runtime_apply_update :: proc(
 	// exact bridge PID can be stopped without host-wide process matching.
 	port_str := fmt.tprintf("%d", bridge_config.port)
 	pid_str := fmt.tprintf("%d", os.get_pid())
+	pty_socket := pty_host_socket_path()
+	defer delete(pty_socket)
 	if !bridge_update_launch_supervisor(
 		supervisor_target,
 		data_dir,
@@ -1344,6 +1348,7 @@ bridge_runtime_apply_update :: proc(
 		port_str,
 		bridge_config.daemon_url,
 		pid_str,
+		pty_host_socket = pty_socket,
 	) {
 		_ = os.remove_all(stage_dir)
 		return false, "failed to spawn detached supervisor script"

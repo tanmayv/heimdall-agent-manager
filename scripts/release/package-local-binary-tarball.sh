@@ -40,7 +40,8 @@ for spec in \
   "$ham_ctl_out/bin/ham-ctl" \
   "$heimdall_out/bin/heimdall" \
   "README.md" \
-  "LICENSE"
+  "LICENSE" \
+  "scripts/apply-bridge-update.sh"
 do
   if [ ! -f "$spec" ]; then
     echo "missing required release input: $spec" >&2
@@ -54,7 +55,8 @@ cleanup() { rm -rf "$work_dir"; }
 trap cleanup EXIT
 
 stage="$work_dir/stage"
-mkdir -p "$stage/bin"
+mkdir -p "$stage/bin" "$stage/scripts"
+install -m 0755 scripts/apply-bridge-update.sh "$stage/scripts/apply-bridge-update.sh"
 install -m 0755 "$ham_bridge_out/bin/ham-bridge" "$stage/bin/ham-bridge"
 if [ -f "$ham_bridge_out/bin/openssl" ]; then
   install -m 0755 "$ham_bridge_out/bin/openssl" "$stage/bin/openssl"
@@ -193,12 +195,13 @@ cat > "$stage/METADATA.json" <<META
 META
 
 tarball="$out_dir/heimdall-local-$target.tar.gz"
-tar -C "$stage" -czf "$tarball" bin README.md LICENSE METADATA.json
+tar -C "$stage" -czf "$tarball" bin scripts README.md LICENSE METADATA.json
 
 required_entries=(
   "bin/ham-bridge"
   "bin/ham-ctl"
   "bin/heimdall"
+  "scripts/apply-bridge-update.sh"
   "README.md"
   "LICENSE"
 )

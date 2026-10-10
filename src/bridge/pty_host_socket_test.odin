@@ -116,3 +116,23 @@ pty_host_socket_respects_custom_run_dir :: proc(t: ^testing.T) {
 	defer delete(p)
 	testing.expect_value(t, p, "/var/run/heimdall-b1/pty-host-brg_x.sock")
 }
+
+@(test)
+pty_host_socket_bridge_directory_avoids_duplicate_identity :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	save := pty_host_socket_test_snapshot()
+	defer pty_host_socket_test_restore(save)
+
+	bridge_config.daemon_id = "brg_18d03379a7d6d47b"
+	bridge_config.local_endpoint_run_dir = "/home/tanmay/.local/share/heimdall/bridges/brg_18d03379a7d6d47b/run/"
+	p := pty_host_socket_path()
+	defer delete(p)
+	testing.expect_value(t, p, "/home/tanmay/.local/share/heimdall/bridges/brg_18d03379a7d6d47b/run/pty-host.sock")
+	testing.expect(t, len(p) < 104, "installed socket must fit Linux and macOS limits")
+
+	bridge_config.daemon_id = "brg_other"
+	other := pty_host_socket_path()
+	defer delete(other)
+	testing.expect(t, other != p, "another bridge cannot adopt this directory's daemon")
+}

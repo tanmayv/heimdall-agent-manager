@@ -1,0 +1,70 @@
+//! Portable generated Unix socket paths. Mirrors bridge/unix_socket_path.odin.
+use anyhow::{bail, Result};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
+
+pub const MAX_BYTES: usize = 103;
+
+pub fn bounded(path: &str, uid: u32) -> String {
+    if path.len() <= MAX_BYTES {
+        return path.to_owned();
+    }
+    let mut hash = 14695981039346656037u64;
+    for byte in path.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(1099511628211);
+    }
+    format!("/tmp/heimdall-{uid}/{hash:016x}.sock")
+}
+
+pub fn validate(path: &Path) -> Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) || bytes.len() > MAX_BYTES {
+        bail!("Unix socket path must be nonempty, contain no NUL, and fit {MAX_BYTES} bytes (got {}): {}", bytes.len(), path.display());
+    }
+    Ok(())
+}
+
+pub fn prepare(path: &Path) -> Result<()> {
+    validate(path)?;
+    let uid = unsafe { libc::geteuid() };
+    let fallback = format!("/tmp/heimdall-{uid}");
+    if path.parent() == Some(Path::new(&fallback)) {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&fallback) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+        let metadata = std::fs::symlink_metadata(&fallback)?;
+        if !metadata.is_dir() || metadata.uid() != uid {
+            bail!("Unix socket directory must be owned by the current user: {fallback}");
+        }
+        std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn portable_byte_limit_and_isolation() {
+        assert_eq!(bounded(&"a".repeat(103), 1000), "a".repeat(103));
+        assert_eq!(
+            bounded(&"a".repeat(104), 1000),
+            "/tmp/heimdall-1000/ddf64bd8caea7ded.sock"
+        );
+        let long = format!("/{}/bridge.sock", "a".repeat(150));
+        let short = bounded(&long, 1000);
+        assert!(short.len() <= MAX_BYTES);
+        assert_eq!(short, bounded(&long, 1000));
+        assert_ne!(
+            short,
+            bounded(&long.replace("bridge.sock", "pty-host.sock"), 1000)
+        );
+        assert_ne!(short, bounded(&long, 1001));
+        assert!(bounded(&"é".repeat(52), 1000).starts_with("/tmp/heimdall-1000/"));
+        assert!(validate(Path::new(&"a".repeat(104))).is_err());
+    }
+}
