@@ -222,7 +222,7 @@ export default function NewConversationPage({ footer }: { embedded?: boolean; fo
         <span data-debug-id="new-convo-favorite-count" className="text-xs text-muted">{favoriteIds.length} / 6 favorites</span>
         <button type="button" data-debug-id="new-convo-edit-favorites-btn" disabled={!hydrated || sending} onClick={() => { setManagementError(''); setFavoritesOpen(true); }} aria-label="Manage favorite agents" title="Manage favorite agents" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40"><Icon name="pencil" size={19} /></button>
       </div>
-      <div data-debug-id="new-convo-favorite-agents" className="grid grid-cols-3 gap-2 sm:gap-3">{Array.from({ length: 6 }, (_, index) => {
+      <div data-debug-id="new-convo-favorite-agents" className="grid grid-cols-3 gap-2 sm:gap-3">{Array.from({ length: favoriteIds.length >= 4 ? 6 : 3 }, (_, index) => {
         const id = favoriteIds[index];
         if (!id) return <button key={`empty-${index}`} type="button" data-debug-id={`new-convo-empty-favorite-${index}`} aria-label="Choose a favorite agent" disabled={!hydrated || sending} onClick={() => { setManagementError(''); setFavoritesOpen(true); }} className="flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-subtle px-2 py-3 text-xs text-muted hover:bg-neutral-soft disabled:opacity-40"><Icon name="star" size={20} /><span>Choose agent</span></button>;
         const agent = agents.find(a => a.agent_id === id); const selected = id === agentId;
