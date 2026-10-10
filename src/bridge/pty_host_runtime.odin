@@ -20,6 +20,7 @@ package main
 // is layered on in BR-3; BR-2 wires the control plane + a ChildExited-to-status
 // mapping helper the subscriber will call.
 
+import "base:runtime"
 import crypto_hash "core:crypto/hash"
 import "core:encoding/hex"
 import "core:fmt"
@@ -64,6 +65,59 @@ bridge_pty_host_truthy :: proc(v: string) -> bool {
 pty_host_daemon_started: bool
 pty_host_daemon_socket:  string
 pty_host_daemon_lock:    sync.Mutex
+
+// The delivery path receives only an instance id, so retain the provider chosen
+// while assembling that instance's spawn request. This store uses the process
+// heap explicitly: both strings outlive the request allocator (which is a
+// per-test tracking allocator in the test suite).
+pty_host_instance_provider_lock: sync.Mutex
+pty_host_instance_providers:     map[string]string
+
+bridge_pty_host_track_instance_provider :: proc(instance, provider: string) {
+	if strings.trim_space(instance) == "" do return
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&pty_host_instance_provider_lock)
+	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
+	if pty_host_instance_providers == nil {
+		pty_host_instance_providers = make(map[string]string, allocator = heap)
+	}
+	if old_provider, exists := pty_host_instance_providers[instance]; exists {
+		for old_key in pty_host_instance_providers {
+			if old_key == instance {
+				delete_key(&pty_host_instance_providers, old_key)
+				delete(old_key, heap)
+				break
+			}
+		}
+		delete(old_provider, heap)
+	}
+	pty_host_instance_providers[strings.clone(instance, heap)] = strings.clone(provider, heap)
+}
+
+bridge_pty_host_untrack_instance_provider :: proc(instance: string) {
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&pty_host_instance_provider_lock)
+	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
+	if pty_host_instance_providers == nil do return
+	provider, exists := pty_host_instance_providers[instance]
+	if !exists do return
+	for key in pty_host_instance_providers {
+		if key == instance {
+			delete_key(&pty_host_instance_providers, key)
+			delete(key, heap)
+			break
+		}
+	}
+	delete(provider, heap)
+}
+
+bridge_pty_host_instance_wants_bracketed_paste :: proc(instance: string) -> bool {
+	sync.mutex_lock(&pty_host_instance_provider_lock)
+	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
+	if pty_host_instance_providers == nil do return false
+	provider, exists := pty_host_instance_providers[instance]
+	return exists && provider == "codex"
+}
 
 // bridge_pty_host_bin resolves the ham-pty-host binary: the HEIMDALL_HAM_PTY_HOST_BIN
 // env override (set by the flake app to the matching build) wins, else PATH.
@@ -190,6 +244,7 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		rows                = PTY_HOST_DEFAULT_ROWS,
 		cols                = PTY_HOST_DEFAULT_COLS,
 	}
+	bridge_pty_host_track_instance_provider(instance_id, provider)
 	return req, true
 }
 
@@ -262,7 +317,9 @@ bridge_pty_host_close :: proc(socket, instance: string) -> bool {
 	reply, ok := pty_host_request(socket, frame)
 	if !ok do return false
 	defer pty_host_reply_delete(reply)
-	return reply.kind == .Closed
+	closed := reply.kind == .Closed
+	if closed do bridge_pty_host_untrack_instance_provider(instance)
+	return closed
 }
 
 // bridge_pty_host_list enumerates registered agents. Caller owns the reply.
@@ -304,10 +361,29 @@ bridge_pty_host_backoff :: proc(attempt: int) {
 // bridge_pty_host_deliver_line types text into the instance then presses Enter,
 // mirroring tmux.send_text(pane, text, enter=true). Returns false if either the
 // input or the key send fails.
+bridge_pty_host_paste_wrap :: proc(text: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "\x1b[200~")
+	for i in 0..<len(text) {
+		c := text[i]
+		if c == '\x1b' || c == '\r' || c == '\n' do continue
+		strings.write_byte(&b, c)
+	}
+	strings.write_string(&b, "\x1b[201~")
+	return strings.to_string(b)
+}
+
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
 	decrypted := bridge_decrypt_embedded_vault_tokens(text)
 	defer delete(decrypted)
-	input := pty_host_encode_input(instance, transmute([]byte)decrypted)
+	delivery_text := decrypted
+	wrapped := ""
+	if bridge_pty_host_instance_wants_bracketed_paste(instance) {
+		wrapped = bridge_pty_host_paste_wrap(decrypted)
+		delivery_text = wrapped
+	}
+	defer if wrapped != "" do delete(wrapped)
+	input := pty_host_encode_input(instance, transmute([]byte)delivery_text)
 	defer delete(input)
 	if !bridge_pty_host_send_oneway(socket, input) do return false
 	// Small settle delay before Enter, matching the wrapper's 300ms pane pause so a

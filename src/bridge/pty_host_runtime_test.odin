@@ -150,6 +150,109 @@ pty_host_task_nudge_line_prefers_human_message :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(blank, "nudged on task_9 (reviewer)"), "whitespace human_message falls back to legacy notice")
 }
 
+@(test)
+pty_host_paste_wrap_sanitizes_notice :: proc(t: ^testing.T) {
+	plain := bridge_pty_host_paste_wrap("hello")
+	defer delete(plain)
+	testing.expect_value(t, plain, "\x1b[200~hello\x1b[201~")
+
+	sanitized := bridge_pty_host_paste_wrap("a\x1bb\rc\nd\r\ne")
+	defer delete(sanitized)
+	testing.expect_value(t, sanitized, "\x1b[200~abcde\x1b[201~")
+
+	terminator := bridge_pty_host_paste_wrap("before\x1b[201~after")
+	defer delete(terminator)
+	testing.expect_value(t, terminator, "\x1b[200~before[201~after\x1b[201~")
+
+	empty := bridge_pty_host_paste_wrap("")
+	defer delete(empty)
+	testing.expect_value(t, empty, "\x1b[200~\x1b[201~")
+}
+
+@(test)
+pty_host_provider_gate_codex_only :: proc(t: ^testing.T) {
+	instances := []string{"inst_codex_gate", "inst_claude_gate", "inst_copilot_gate", "inst_antigravity_gate", "inst_unknown_provider_gate"}
+	defer for instance in instances do bridge_pty_host_untrack_instance_provider(instance)
+
+	bridge_pty_host_track_instance_provider(instances[0], "codex")
+	bridge_pty_host_track_instance_provider(instances[1], "claude")
+	bridge_pty_host_track_instance_provider(instances[2], "copilot")
+	bridge_pty_host_track_instance_provider(instances[3], "antigravity")
+	bridge_pty_host_track_instance_provider(instances[4], "unknown")
+
+	testing.expect(t, bridge_pty_host_instance_wants_bracketed_paste(instances[0]), "codex uses bracketed paste")
+	for instance in instances[1:] {
+		testing.expect(t, !bridge_pty_host_instance_wants_bracketed_paste(instance), "non-codex provider keeps raw delivery")
+	}
+	testing.expect(t, !bridge_pty_host_instance_wants_bracketed_paste("inst_not_tracked"), "unknown instance keeps raw delivery")
+}
+
+@(test)
+pty_host_deliver_line_gates_bracketed_paste :: proc(t: ^testing.T) {
+	sock_path := fmt.tprintf("/tmp/test_deliver_line_paste_%d.sock", os.get_pid())
+	_ = posix.unlink(cstring(raw_data(sock_path)))
+	defer _ = posix.unlink(cstring(raw_data(sock_path)))
+
+	listener_fd := posix.socket(.UNIX, .STREAM)
+	testing.expect(t, listener_fd >= 0, "socket create failed")
+	defer posix.close(listener_fd)
+
+	addr: posix.sockaddr_un
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
+		addr.sun_len = c.uchar(size_of(addr))
+	}
+	addr.sun_family = .UNIX
+	for ch, i in sock_path do addr.sun_path[i] = c.char(ch)
+	addr.sun_path[len(sock_path)] = 0
+	testing.expect_value(t, posix.bind(listener_fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))), posix.result.OK)
+	testing.expect_value(t, posix.listen(listener_fd, 8), posix.result.OK)
+
+	Server_Ctx :: struct {
+		listener_fd: posix.FD,
+		payloads:    [4][]byte,
+		count:       int,
+		allocator:   runtime.Allocator,
+	}
+	ctx := Server_Ctx{listener_fd = listener_fd, allocator = runtime.heap_allocator()}
+	defer for payload in ctx.payloads do if len(payload) > 0 do delete(payload, ctx.allocator)
+	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
+		s := (^Server_Ctx)(data)
+		context.allocator = s.allocator
+		for s.count < len(s.payloads) {
+			client := posix.accept(s.listener_fd, nil, nil)
+			if client < 0 do break
+			payload, ok := pty_host_read_frame(client)
+			if ok {
+				s.payloads[s.count] = payload
+				s.count += 1
+			}
+			posix.close(client)
+		}
+	})
+	defer thread.destroy(th)
+
+	bridge_pty_host_track_instance_provider("inst_codex_line", "codex")
+	defer bridge_pty_host_untrack_instance_provider("inst_codex_line")
+	bridge_pty_host_track_instance_provider("inst_claude_line", "claude")
+	defer bridge_pty_host_untrack_instance_provider("inst_claude_line")
+
+	testing.expect(t, bridge_pty_host_deliver_line(sock_path, "inst_codex_line", "line\r\n\x1b[201~tail"), "codex delivery succeeds")
+	testing.expect(t, bridge_pty_host_deliver_line(sock_path, "inst_claude_line", "raw\r\n\x1bbytes"), "non-codex delivery succeeds")
+	thread.join(th)
+
+	testing.expect_value(t, ctx.count, 4)
+	if ctx.count == 4 {
+		codex_data_offset := 1 + 4 + len("inst_codex_line")
+		raw_data_offset := 1 + 4 + len("inst_claude_line")
+		testing.expect_value(t, string(ctx.payloads[0][codex_data_offset:]), "\x1b[200~line[201~tail\x1b[201~")
+		testing.expect_value(t, ctx.payloads[1][0], u8(PTY_HOST_T_KEY))
+		testing.expect_value(t, ctx.payloads[1][len(ctx.payloads[1]) - 1], u8(1))
+		testing.expect_value(t, string(ctx.payloads[2][raw_data_offset:]), "raw\r\n\x1bbytes")
+		testing.expect_value(t, ctx.payloads[3][0], u8(PTY_HOST_T_KEY))
+		testing.expect_value(t, ctx.payloads[3][len(ctx.payloads[3]) - 1], u8(1))
+	}
+}
+
 // pty_host_delivery_maps_push_to_input_enter proves the delivery primitive's wire
 // shape: a notice becomes Input(instance, text) followed by Key(instance, Enter) —
 // the host analog of tmux.send_text(pane, text, enter=true).
