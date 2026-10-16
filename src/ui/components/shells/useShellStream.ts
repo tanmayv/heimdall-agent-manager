@@ -1,5 +1,5 @@
 import { PTY_COLOR_RESET, PaneDeliveryQueue, PaneWriteBatcher, normalizeSnapshotText, repaintCapturedScreenText } from './paneDeliveryQueue.ts';
-import { PTY_WIRE_FLAG_ENCRYPTED, PTY_WIRE_KIND_INPUT, PTY_WIRE_KIND_OUTPUT, PTY_WIRE_KIND_SCREEN, PTY_WIRE_VIEWER_HEADER_BYTES, PtyTextDecoder, decodePtyViewerFrame, decryptPtyPayload, encodePtyViewerFrame, encryptPtyPayload, type PtyViewerFrame } from './ptyWire.ts';
+import { PTY_WIRE_FLAG_ENCRYPTED, PTY_WIRE_KIND_INPUT, PTY_WIRE_KIND_OUTPUT, PTY_WIRE_KIND_SCREEN, PTY_WIRE_VIEWER_HEADER_BYTES, PtyTextDecoder, PtyBandwidthTracker, decodePtyViewerFrame, decryptPtyPayload, encodePtyViewerFrame, encryptPtyPayload, type PtyViewerFrame, type PtyBandwidthTelemetry } from './ptyWire.ts';
 import { createInputCoalescer, type InputCoalescer } from './ptyInputCoalescer.ts';
 import { createVisibilityGate } from './paneVisibilityGate.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -17,6 +17,15 @@ const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 
 // Control frames only (REQ-PTY-NET-2): pty output/screen bytes are binary frames, see ptyWire.ts.
+declare global {
+  interface Window {
+    __heimdallPtyStreamStats?: PtyBandwidthTelemetry & {
+      sessionId?: string;
+      sessions?: Record<string, PtyBandwidthTelemetry>;
+    };
+  }
+}
+
 type ShellStreamMsg =
   | { type: 'ready'; session_id?: string }
   | { type: 'stream_ready'; session_id?: string; [key: string]: any }
@@ -407,6 +416,7 @@ export function useShellStream({
         let previousWasSnapshot = false;
         // REQ-PTY-NET-7: one term.write per animation frame; a repaint always leads its own write.
         const writeBatcher = new PaneWriteBatcher((text) => onOutputRef.current?.(text));
+        const bandwidthTracker = new PtyBandwidthTracker();
 
         const showVaultLockedNoticeOnce = () => {
           console.warn('[useShellStream] vault is locked; cannot decrypt encrypted pane frame');
@@ -449,6 +459,9 @@ export function useShellStream({
           // preamble (if any) re-applies the bridge machine's colours right after.
           if (startsRepaint) text = PTY_COLOR_RESET + text;
           if (text.length > 0) writeBatcher.push(text, startsRepaint);
+          console.log(
+            `[useShellStream] handleBinaryFrame rendered: kind=${isScreen ? 'SCREEN' : 'OUTPUT'} payloadBytes=${frame.payload.byteLength} snapshot=${frame.snapshot} encrypted=${frame.encrypted} charsDecoded=${text.length}`
+          );
         };
 
         const handleControlMessage = (msg: ShellStreamMsg) => {
@@ -495,9 +508,34 @@ export function useShellStream({
           if (event.data instanceof ArrayBuffer) {
             const frame = decodePtyViewerFrame(event.data);
             if (!frame) { socket.close(4007, 'invalid pane frame'); return; }
+            const stats = bandwidthTracker.recordBinary(
+              event.data.byteLength,
+              frame.payload.byteLength,
+              frame.kind,
+              frame.snapshot,
+              frame.encrypted
+            );
+            if (typeof window !== 'undefined') {
+              const currentWindow = window as any;
+              if (!currentWindow.__heimdallPtyStreamStats) {
+                currentWindow.__heimdallPtyStreamStats = { ...stats, sessionId, sessions: {} };
+              } else {
+                Object.assign(currentWindow.__heimdallPtyStreamStats, stats, { sessionId });
+              }
+              if (!currentWindow.__heimdallPtyStreamStats.sessions) {
+                currentWindow.__heimdallPtyStreamStats.sessions = {};
+              }
+              currentWindow.__heimdallPtyStreamStats.sessions[sessionId] = { ...stats };
+            }
+            console.log(
+              `[useShellStream] [PTY binary frame #${stats.binaryFramesReceived}] kind=${stats.lastFrameKind} wireBytes=${event.data.byteLength} payloadBytes=${frame.payload.byteLength} snapshot=${frame.snapshot} encrypted=${frame.encrypted} | saved ~${stats.bytesSaved}B (${stats.savingsPercent}% bandwidth reduction vs legacy JSON+base64)`
+            );
             // Decoded text is UTF-16 in memory; the payload length bounds it at 2x.
             paneQueue.enqueue(frame.payload.length * 2 + PTY_WIRE_VIEWER_HEADER_BYTES, () => handleBinaryFrame(frame));
             return;
+          }
+          if (typeof event.data === 'string') {
+            bandwidthTracker.recordText(event.data.length);
           }
           let msg: ShellStreamMsg;
           try { msg = JSON.parse(event.data); } catch {
@@ -635,6 +673,7 @@ export function useShellStream({
     const activeKey = getActiveVaultKey();
     const isUnlocked = isVaultUnlockedRef.current || Boolean(activeKey);
     const bytes = new TextEncoder().encode(data);
+    console.log(`[useShellStream] [PTY binary input] sending ${bytes.byteLength} bytes (encrypted=${isUnlocked && Boolean(activeKey)})`);
     if (isUnlocked && activeKey) {
       inputQueueRef.current = inputQueueRef.current.then(async () => {
         if (s.readyState !== WebSocket.OPEN) return;

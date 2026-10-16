@@ -15,6 +15,7 @@ import {
   PTY_WIRE_KIND_OUTPUT,
   PTY_WIRE_KIND_SCREEN,
   PtyTextDecoder,
+  PtyBandwidthTracker,
   decodePtyViewerFrame,
   decryptPtyPayload,
   encodePtyViewerFrame,
@@ -119,3 +120,41 @@ test('snapshot text helpers produce absolute repaints without a byte round-trip'
   assert.equal(term.buffer.active.getLine(1).translateToString(true), 'row β two');
   term.dispose();
 });
+
+test('PtyBandwidthTracker tracks frame metrics and bandwidth savings vs legacy base64+JSON', () => {
+  const tracker = new PtyBandwidthTracker();
+  assert.equal(tracker.getStats().binaryFramesReceived, 0);
+
+  // 100 bytes binary output payload (2 byte header + 100 bytes payload = 102 wire bytes)
+  const stats1 = tracker.recordBinary(102, 100, PTY_WIRE_KIND_OUTPUT, false, false);
+  assert.equal(stats1.binaryFramesReceived, 1);
+  assert.equal(stats1.binaryBytesReceived, 102);
+  assert.equal(stats1.lastFrameKind, 'output');
+  assert.equal(stats1.lastFrameBytes, 102);
+  // Legacy: Math.ceil(100/3)*4 = 136 + 36 = 172
+  assert.equal(stats1.estimatedLegacyBytes, 172);
+  assert.equal(stats1.bytesSaved, 70);
+  assert.equal(stats1.savingsPercent, 40.7);
+
+  // Screen snapshot frame of 500 bytes (header 6 bytes + 500 bytes payload = 506 wire bytes)
+  const stats2 = tracker.recordBinary(506, 500, PTY_WIRE_KIND_SCREEN, true, false);
+  assert.equal(stats2.binaryFramesReceived, 2);
+  assert.equal(stats2.binaryBytesReceived, 608);
+  assert.equal(stats2.lastFrameKind, 'screen');
+  // Legacy: 172 + (Math.ceil(500/3)*4 + 36) = 172 + (167*4 + 36) = 172 + 704 = 876
+  assert.equal(stats2.estimatedLegacyBytes, 876);
+  assert.equal(stats2.bytesSaved, 876 - 608);
+  assert.equal(stats2.savingsPercent, Math.round(((876 - 608) / 876) * 1000) / 10);
+
+  // Text control frame
+  tracker.recordText(50);
+  assert.equal(tracker.getStats().textFramesReceived, 1);
+
+  // Reset
+  tracker.reset();
+  assert.equal(tracker.getStats().binaryFramesReceived, 0);
+  assert.equal(tracker.getStats().binaryBytesReceived, 0);
+  assert.equal(tracker.getStats().bytesSaved, 0);
+  assert.equal(tracker.getStats().textFramesReceived, 0);
+});
+

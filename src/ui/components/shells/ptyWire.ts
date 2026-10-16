@@ -137,3 +137,77 @@ export class PtyTextDecoder {
     this.decoder = new TextDecoder('utf-8', { stream: true } as TextDecoderOptions);
   }
 }
+
+/**
+ * Telemetry tracking for binary PTY streams (REQ-PTY-NET-2).
+ * Compares wire binary frame sizes against estimated legacy JSON + base64 framing:
+ * Legacy format sent each chunk inside JSON: `{"type":"output","data_b64":"<base64>"}`.
+ * Base64 encoding expands bytes by 4/3 rounded up: `Math.ceil(payloadBytes / 3) * 4`.
+ * JSON framing overhead is ~36 bytes per chunk.
+ */
+export interface PtyBandwidthTelemetry {
+  binaryFramesReceived: number;
+  binaryBytesReceived: number;
+  textFramesReceived: number;
+  estimatedLegacyBytes: number;
+  bytesSaved: number;
+  savingsPercent: number;
+  lastFrameBytes: number;
+  lastFrameKind: string;
+}
+
+export class PtyBandwidthTracker {
+  private stats: PtyBandwidthTelemetry = {
+    binaryFramesReceived: 0,
+    binaryBytesReceived: 0,
+    textFramesReceived: 0,
+    estimatedLegacyBytes: 0,
+    bytesSaved: 0,
+    savingsPercent: 0,
+    lastFrameBytes: 0,
+    lastFrameKind: 'none',
+  };
+
+  recordBinary(wireBytes: number, payloadBytes: number, kind: number, snapshot: boolean, encrypted: boolean): PtyBandwidthTelemetry {
+    this.stats.binaryFramesReceived++;
+    this.stats.binaryBytesReceived += wireBytes;
+    this.stats.lastFrameBytes = wireBytes;
+    const kindStr = kind === PTY_WIRE_KIND_OUTPUT ? 'output' : kind === PTY_WIRE_KIND_SCREEN ? 'screen' : kind === PTY_WIRE_KIND_INPUT ? 'input' : `kind_${kind}`;
+    this.stats.lastFrameKind = kindStr;
+
+    const legacyPayload = Math.ceil(payloadBytes / 3) * 4;
+    const legacyEnvelope = 36;
+    const legacyFrameBytes = legacyPayload + legacyEnvelope;
+    this.stats.estimatedLegacyBytes += legacyFrameBytes;
+
+    this.stats.bytesSaved = Math.max(0, this.stats.estimatedLegacyBytes - this.stats.binaryBytesReceived);
+    this.stats.savingsPercent = this.stats.estimatedLegacyBytes > 0
+      ? Math.round((this.stats.bytesSaved / this.stats.estimatedLegacyBytes) * 1000) / 10
+      : 0;
+
+    return { ...this.stats };
+  }
+
+  recordText(textBytes: number): PtyBandwidthTelemetry {
+    this.stats.textFramesReceived++;
+    return { ...this.stats };
+  }
+
+  getStats(): PtyBandwidthTelemetry {
+    return { ...this.stats };
+  }
+
+  reset(): void {
+    this.stats = {
+      binaryFramesReceived: 0,
+      binaryBytesReceived: 0,
+      textFramesReceived: 0,
+      estimatedLegacyBytes: 0,
+      bytesSaved: 0,
+      savingsPercent: 0,
+      lastFrameBytes: 0,
+      lastFrameKind: 'none',
+    };
+  }
+}
+
