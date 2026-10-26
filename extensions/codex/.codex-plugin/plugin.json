@@ -1,6 +1,6 @@
 {
   "name": "heimdall",
-  "version": "0.5.4-staticcurl.1",
+  "version": "0.5.4-staticcurl.2",
   "description": "Heimdall Codex lifecycle and permission hooks",
   "hooks": "./hooks/hooks.json"
 }
