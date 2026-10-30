@@ -154,7 +154,16 @@ BD="$HEIMDALL_LOCAL_STATE_ROOT/bridges/smoke"
 grep -q 'bridge hub runtime ready' "$BD/logs/bridge.log" || fail "bridge not connected"
 grep -q 'approver bridge: approved and unsealed' "$TMP/bridge.log" || fail "seed approver did not approve the bridge"
 grep -q 'bridge enroll SUCCESS' "$BD/logs/enroll.log" || fail "ham-bridge enroll did not report SUCCESS"
-grep -q 'skipped installed-service call: systemctl --user restart heimdall-bridge' "$BD/logs/enroll-shims.log" || fail "installed service restart was not intercepted"
+# An isolated provider home (the default) hides the installed service unit from
+# enroll, so it restarts nothing; a shared-home bridge tries, and the shim catches it.
+if [ "$(grep '^ISOLATED_HOME=' "$BD/instance.env" | cut -d= -f2)" = 1 ]; then
+  grep -q 'no registered bridge service was found' "$BD/logs/enroll.log" || fail "isolated enroll looked for the installed service"
+  [ ! -s "$BD/logs/enroll-shims.log" ] || fail "isolated enroll called the service manager: $(cat "$BD/logs/enroll-shims.log")"
+  [ -f "$BD/home/.heimdall-home-manifest.json" ] || fail "isolated provider home was not seeded"
+  ok "bridge runs with an isolated, seeded provider home"
+else
+  grep -q 'skipped installed-service call: systemctl --user restart heimdall-bridge' "$BD/logs/enroll-shims.log" || fail "installed service restart was not intercepted"
+fi
 ok "bridge enrolled via pairing code + seed approver, connected, installed service untouched"
 "$BRIDGE" stop --name smoke >/dev/null; "$HUB" stop --name smoke >/dev/null
 for p in 1 2 3 4 5; do (exec 3<>"/dev/tcp/127.0.0.1/$((PB + p))") 2>/dev/null && fail "port $((PB + p)) still bound after stop"; done

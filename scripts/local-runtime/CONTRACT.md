@@ -34,6 +34,8 @@ The state root is `$HEIMDALL_LOCAL_STATE_ROOT`. When that is unset, it is `${XDG
   data/             bridge data_dir (provider_paths.json, caches, artifacts)
   agent-runs/       agent working directories
   endpoint/         --local-run-dir (local endpoint sockets)
+  home/             isolated provider home (HOME of the bridge and its agents);
+                    .heimdall-home-manifest.json lists every seeded file
   bin/ logs/ run/bridge.pid enroll-bin/ (logs/enroll-shims.log records intercepted service calls)
 ```
 
@@ -43,8 +45,8 @@ Instance names match `^[a-z0-9][a-z0-9-]{0,39}$`.
 
 The file has one `KEY=VALUE` per line with no quoting. Write it atomically: write a temporary file, then rename it.
 
-- **Hub:** `KIND=hub NAME HUB_PORT PROXY_PORT UI_PORT HUB_URL PROXY_URL UI_URL UI_ORIGIN PUBLIC_ORIGIN DEV_USER APPROVER_KEY CHECKOUT`. `UI_URL` is always the local Vite URL; `UI_ORIGIN` is the origin the hub trusts for CSRF (`PUBLIC_ORIGIN` when set, else `UI_URL`).
-- **Bridge:** `KIND=bridge NAME HUB_URL HUB_NAME BRIDGE_PORT LOCAL_ENDPOINT_PORT CONFIG TOKEN_FILE CHECKOUT`
+- **Hub:** `KIND=hub NAME HUB_PORT PROXY_PORT UI_PORT HUB_URL PROXY_URL UI_URL UI_ORIGIN PUBLIC_ORIGIN DEV_USER APPROVER_KEY CHECKOUT`. `UI_URL` is always the local Vite URL, and `UI_ORIGIN` (the origin the hub trusts for CSRF) equals it; `PUBLIC_ORIGIN` is trusted by the dev proxy only (see Public origin).
+- **Bridge:** `KIND=bridge NAME HUB_URL HUB_NAME BRIDGE_PORT LOCAL_ENDPOINT_PORT CONFIG TOKEN_FILE CHECKOUT ISOLATED_HOME PROVIDERS HOME_DIR`. `ISOLATED_HOME` is `1` (provider home under `home/`) or `0` (real `HOME`); a record without it was made before isolation existed and means `0`. `HOME_DIR` is the HOME the bridge runs with.
 
 The preview integration finds a hub's UI, proxy and API URLs here. Ports are recorded on the first start and reused after that. An explicit port that differs from the recorded one is refused, and so is a bridge `--hub-url` that differs from the one it was enrolled with.
 
@@ -112,14 +114,22 @@ The dev proxy's default user (`--user`) stays on the free plan. Each seeded paid
   - **`ham-bridge enroll` ends by restarting the installed bridge service** (`systemctl --user restart heimdall-bridge`, `sv`, or `launchctl`). Launchers must put no-op `systemctl`/`sv`/`launchctl` shims first on `PATH`, and unset `PREFIX`, for the enroll process only. Windows has no such call.
 - **Seed approver (`approver.mjs`, shared).** Run with `node --import <checkout>/tests/helpers/vaultEndpointHarness.ts scripts/local-runtime/approver.mjs <init|bridge|device> --api <proxy-url> --key <hub>/approver/device.json [--code C] [--label L] [--user U]` (`--user` signs in as that account through the mock OIDC provider, so it acts for that account and needs that account's key; requests carry `Origin: $HEIMDALL_LOCAL_UI_ORIGIN`) from the checkout (needs `node_modules`, for esbuild). It uses the UI's vault modules and the public API only (`/vault/directory/genesis`, `/device/pair-salts`, `/device/verify`, `/device/approve`, `/bridges/<id>/unseal`, `/vault/devices/<id>/approve`); it never writes the database. `init` creates the vault genesis once and is idempotent (`kept`). `device` approves a browser's pairing code from the UI, because on a seeded hub the browser joins the vault as a second device rather than being its root. Exit 0 success, 3 vault rooted by another device, 1 anything else. The key file is the local hub's account root: keep it in the instance directory, never copy it.
 - **Run.** `HEIMDALL_HAM_CTL_BIN=<ham-ctl> HEIMDALL_BRIDGE_PTY_HOST=1 HEIMDALL_HAM_PTY_HOST_BIN=<pty-host> ham-bridge --config <cfg> --bind-host 127.0.0.1 --port <p> --hub <url> --bridge-token-file <tok> --local-endpoint-port <ep> --local-run-dir <dir>/endpoint`. It is ready when `bridge hub runtime ready` appears in its log.
-- **Providers.** Providers are real installed CLIs, discovered by the bridge's own probe when the hub requests it, and recorded in `data/bridge/provider_paths.json`. The bridge keeps the real `HOME` so provider logins work. Never copy installed bridge credentials, keyrings or provider tokens.
+- **Providers.** Providers are real installed CLIs on `PATH`, discovered by the bridge's own probe when the hub requests it, and recorded in `data/bridge/provider_paths.json`.
+- **Provider home (Linux, macOS).** A new instance is isolated (`ISOLATED_HOME=1`) unless `--shared-home` is passed; the mode is fixed when the instance is created, and an explicit flag that contradicts the record is refused (use a new `--name`): the bridge's identity file lives under the HOME it ran with. An isolated bridge, its `enroll` and everything it starts (agents, model discovery, extension installs) run with `HOME=<dir>/home`, `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` inside it, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CONFIG_DIR`, `HEIMDALL_HOME` unset; `PATH`, `SSH_AUTH_SOCK` and credential env (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`) pass through. `bridge-config.mjs --fs-root <real HOME>` keeps the directory picker on the real home. Before the first start, `node scripts/local-runtime/provider-home.mjs seed --real-home <HOME> --home <dir>/home --providers <list> --trust-root <dir>/endpoint --trust-root <dir>/agent-runs` copies (0600) the providers' sign-in, onboarding/consent state and project trust, and nothing else:
+  - claude: `.claude/.credentials.json`; `.claude.json` filtered to account/onboarding/consent keys plus `projects[<path>].hasTrustDialogAccepted`; `.claude/settings.json` without `enabledPlugins`/`extraKnownMarketplaces` (which keeps `skipDangerousModePermissionPrompt`); `.claude/CLAUDE.md`.
+  - codex: `.codex/auth.json`; `.codex/config.toml` without `[plugins.*]`, `[marketplaces.*]`, `[hooks.state.*]` (which keeps `[projects."<path>"] trust_level`); `.codex/AGENTS.md`.
+  - gemini / antigravity: `.gemini/{oauth_creds.json,google_accounts.json,settings.json,config/config.json,hooks.json,*.md}`, `.gemini/antigravity-cli/{antigravity-oauth-token,settings.json}` (`trustedWorkspaces`).
+  - pi: `.pi/agent/{auth.json,settings.json}` (not `extensions/`).
+  - git: `.gitconfig`, `.config/git/{config,ignore}`, `.git-credentials`, `.config/gh/{hosts.yml,config.yml}`.
+  Files that are symlinks into a read-only store (home-manager) are recreated as the same symlink. Every file is listed with source path and both SHA-256s in `home/.heimdall-home-manifest.json`. `local-bridge.sh reseed-auth` re-runs the seed: real values are applied again and the instance's own plugin entries and project trust are kept. The real home is only read. This copy is the one sanctioned exception to "never copy provider tokens": local instances only, opt-out with `--shared-home`. A provider that rotates its OAuth refresh token on use can end the real session (or the copy's); sign in again and reseed. Never copy installed bridge credentials or keyrings.
 
 ## Known shared paths
 
 These paths are keyed, so separate instances do not collide in them:
 
-- `~/.config/heimdall/locks/` holds bridge instance locks, keyed by config path and by hub plus bridge id.
-- `~/.config/heimdall/bridges/<bridge-id>/` holds the keystore, keyed by the bridge id that enrollment mints.
+- `~/.config/heimdall/locks/` holds bridge instance locks, keyed by config path and by hub plus bridge id (under `home/` for an isolated instance).
+- `~/.config/heimdall/bridges/<bridge-id>/` holds the bridge identity, keyed by the bridge id that enrollment mints (under `home/` for an isolated instance).
+- The vault keyring is per OS user, not per HOME: the Linux `@u` key `heimdall:vault_keyring:<bridge-id>` and the macOS login Keychain. It is keyed by bridge id.
 - `<checkout>/node_modules/.vite` is the Vite dependency cache, shared by UIs from the same checkout. It is only a cache.
 
 ### Approval links through a preview

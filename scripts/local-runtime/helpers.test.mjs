@@ -2,13 +2,14 @@
 // Run: node --test scripts/local-runtime/helpers.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seed, FIXTURES } from './seed.mjs';
 import { renderBridgeConfig } from './bridge-config.mjs';
+import { seed as seedHome, mergeCodexToml, MANIFEST } from './provider-home.mjs';
 import { setPlan, parseArgs as parsePlanArgs } from './plans.mjs';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -120,6 +121,116 @@ test('bridge config keeps the daemon_id that enrollment wrote', () => {
   const existing = 'daemon_id = "brg_abc"\n';
   const out = renderBridgeConfig(template, { dir: '/s', hubUrl: 'http://h:1', port: 2000, name: 'x', existing });
   assert.match(out, /^daemon_id = "brg_abc"$/m);
+});
+
+test('bridge config pins fs_root only when asked', () => {
+  const template = readFileSync(join(ROOT, 'config.toml'), 'utf8');
+  const pinned = renderBridgeConfig(template, { dir: '/s', hubUrl: 'http://h:1', port: 2, name: 'x', fsRoot: '/home/dev' });
+  assert.match(pinned, /\[bridge\][^[]*^fs_root = "\/home\/dev"$/m);
+  const plain = renderBridgeConfig(template, { dir: '/s', hubUrl: 'http://h:1', port: 2, name: 'x' });
+  assert.doesNotMatch(plain, /^fs_root/m);
+});
+
+// A fake real home: never the developer's.
+function fakeRealHome() {
+  const root = mkdtempSync(join(tmpdir(), 'lr-home-'));
+  const real = join(root, 'real');
+  const put = (p, body) => { mkdirSync(dirname(join(real, p)), { recursive: true }); writeFileSync(join(real, p), body); };
+  put('.claude/.credentials.json', '{"claudeAiOauth":{"refreshToken":"r1"}}');
+  put('.claude.json', JSON.stringify({
+    oauthAccount: { emailAddress: 'dev@example.com' }, userID: 'u1', hasCompletedOnboarding: true,
+    mcpServers: { secret: {} }, tipsHistory: { a: 1 },
+    projects: { '/work/a': { hasTrustDialogAccepted: true, lastCost: 3, mcpServers: { x: {} } }, '/work/b': { hasTrustDialogAccepted: false } },
+  }));
+  put('.claude/settings.json', JSON.stringify({ model: 'opus', skipDangerousModePermissionPrompt: true, enabledPlugins: { 'real@m': true } }));
+  put('.claude/plugins/installed_plugins.json', '{}');
+  put('.claude/history.jsonl', 'secret history');
+  put('.codex/auth.json', '{"tokens":{"refresh_token":"r2"}}');
+  put('.codex/config.toml', 'model = "gpt"\n\n[projects."/work/a"]\ntrust_level = "trusted"\n\n[marketplaces.real]\nsource = "/real"\n\n[plugins."real@m"]\nenabled = true\n\n[hooks.state."real@m:x"]\nok = 1\n\n[tui]\nx = 1\n');
+  put('.pi/agent/auth.json', '{}');
+  put('.pi/agent/extensions/watch.ts', 'x');
+  mkdirSync(join(root, 'store'));
+  writeFileSync(join(root, 'store', 'AGENTS.md'), 'managed');
+  symlinkSync(join(root, 'store', 'AGENTS.md'), join(real, '.codex/AGENTS.md'));
+  return { root, real, home: join(root, 'instance', 'home') };
+}
+
+function snapshot(dir) {
+  const out = spawnSync('sh', ['-c', 'cd "$1" && find . -print0 | sort -z | xargs -0 ls -ld --time-style=+%s; find . -type f -print0 | sort -z | xargs -0 sha256sum', 'sh', dir], { encoding: 'utf8' });
+  return out.stdout;
+}
+
+test('provider home seeds auth and trust only, and never writes the real home', () => {
+  const { root, real, home } = fakeRealHome();
+  try {
+    const before = snapshot(real);
+    const m = seedHome({ realHome: real, home, providers: ['claude', 'codex', 'pi', 'gemini', 'git'], trustRoots: ['/work/c'] });
+    assert.equal(snapshot(real), before);
+    assert.deepEqual(m.providers.sort(), ['claude', 'codex', 'pi']);
+    assert.equal(readFileSync(join(home, '.claude/.credentials.json'), 'utf8'), '{"claudeAiOauth":{"refreshToken":"r1"}}');
+    const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    assert.equal(cj.userID, 'u1');
+    assert.equal(cj.mcpServers, undefined);
+    assert.equal(cj.tipsHistory, undefined);
+    assert.deepEqual(cj.projects, { '/work/a': { hasTrustDialogAccepted: true }, '/work/c': { hasTrustDialogAccepted: true } });
+    const settings = JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8'));
+    assert.equal(settings.skipDangerousModePermissionPrompt, true);
+    assert.equal(settings.enabledPlugins, undefined);
+    const toml = readFileSync(join(home, '.codex/config.toml'), 'utf8');
+    assert.match(toml, /\[projects."\/work\/a"\]\ntrust_level = "trusted"/);
+    assert.match(toml, /\[projects."\/work\/c"\]\ntrust_level = "trusted"/);
+    assert.doesNotMatch(toml, /marketplaces|plugins|hooks\.state/);
+    for (const p of ['.claude/plugins', '.claude/history.jsonl', '.pi/agent/extensions']) assert.equal(existsSync(join(home, p)), false, p);
+    assert.equal(readlinkSync(join(home, '.codex/AGENTS.md')), join(root, 'store', 'AGENTS.md'));
+    assert.equal(statSync(join(home, '.codex/auth.json')).mode & 0o777, 0o600);
+    const recorded = JSON.parse(readFileSync(join(home, MANIFEST), 'utf8'));
+    assert.equal(recorded.real_home, real);
+    assert.ok(recorded.files.every((f) => f.source.startsWith(real) && /^[0-9a-f]{64}$/.test(f.source_sha256)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('reseeding keeps what the instance installed itself', () => {
+  const { root, real, home } = fakeRealHome();
+  try {
+    seedHome({ realHome: real, home, providers: ['claude', 'codex'] });
+    // The instance installs its own extension and trusts its own run dir.
+    const settingsPath = join(home, '.claude/settings.json');
+    const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    writeFileSync(settingsPath, JSON.stringify({ ...s, enabledPlugins: { 'heimdall@heimdall': true } }));
+    const tomlPath = join(home, '.codex/config.toml');
+    writeFileSync(tomlPath, `${readFileSync(tomlPath, 'utf8')}\n[plugins."heimdall@heimdall-codex"]\nenabled = true\n\n[projects."/run/x"]\ntrust_level = "trusted"\n`);
+    writeFileSync(join(real, '.codex/auth.json'), '{"tokens":{"refresh_token":"r3"}}');
+    seedHome({ realHome: real, home, providers: ['claude', 'codex'] });
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).enabledPlugins, { 'heimdall@heimdall': true });
+    const toml = readFileSync(tomlPath, 'utf8');
+    assert.match(toml, /\[plugins."heimdall@heimdall-codex"\]/);
+    assert.match(toml, /\[projects."\/run\/x"\]/);
+    assert.doesNotMatch(toml, /real@m/);
+    assert.equal(readFileSync(join(home, '.codex/auth.json'), 'utf8'), '{"tokens":{"refresh_token":"r3"}}');
+    seedHome({ realHome: real, home, providers: ['codex'] });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, MANIFEST), 'utf8')).providers.sort(), ['claude', 'codex']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('provider home refuses to seed into the real home', () => {
+  const { root, real } = fakeRealHome();
+  try {
+    assert.throws(() => seedHome({ realHome: real, home: real }), /refusing/);
+    assert.throws(() => seedHome({ realHome: real, home: root }), /refusing/);
+    assert.throws(() => seedHome({ realHome: real, home: join(root, 'h'), providers: ['nope'] }), /unknown provider/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('codex toml merge is idempotent', () => {
+  const real = 'a = 1\n\n[projects."/p"]\ntrust_level = "trusted"\n';
+  const once = mergeCodexToml(real, '', ['/q']);
+  assert.equal(mergeCodexToml(real, once, ['/q']), once);
 });
 
 test('CLI entry points run when the checkout is reached through a symlink', () => {
