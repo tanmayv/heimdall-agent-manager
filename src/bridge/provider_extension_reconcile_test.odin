@@ -429,6 +429,19 @@ test_bridge_extension_remove_uninstalls_and_verifies :: proc(t: ^testing.T) {
 	testing.expectf(t, result.ok, "%v", result)
 	if len(test_install_calls) > 0 do testing.expect_value(t, test_install_verb(test_install_calls[0]), "uninstall")
 
+	// Another Ninjy account's profile on this OS user still uses the shared
+	// registration: nothing is removed. A per-account provider profile's own
+	// config dir is not shared and is cleaned up.
+	test_install_reset(t, "remove-other-profile")
+	test_install_other_profiles = 1
+	result = bridge_extension_remove("codex", "/fake/provider", time.time_add(time.now(), 30 * time.Second), {})
+	testing.expectf(t, result.ok && result.action == "left", "%v", result)
+	testing.expect_value(t, len(test_install_calls), 0)
+	pp := Provider_Profile{}
+	result = bridge_extension_remove("codex", "/fake/provider", time.time_add(time.now(), 30 * time.Second), {profile = &pp})
+	testing.expectf(t, result.action != "left", "%v", result)
+	test_install_other_profiles = 0
+
 	// A marketplace that survives removal is named, not reported as success.
 	test_install_reset(t, "remove-marketplace-stuck")
 	test_install_pre_state = "absent"

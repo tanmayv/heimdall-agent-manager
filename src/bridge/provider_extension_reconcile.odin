@@ -409,9 +409,10 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 			fmt.tprintf("another Ninjy extension install for %s is still running for this OS user; retry when it finishes", prov))
 	}
 	defer bridge_extension_unlock(prov, lock_path)
-	// The registration is shared by every profile of this OS user; removing it
-	// for one Ninjy account would break the others' agents.
-	if others := bridge_extension_other_profiles(); others > 0 {
+	// The OS user's registration is shared by every profile of this OS user;
+	// removing it for one Ninjy account would break the others' agents. A
+	// per-account provider profile registers in its own config dir instead.
+	if others := bridge_extension_other_profiles(); sink.profile == nil && others > 0 {
 		return {ok = true, condition = .Unknown, action = "left",
 			message = fmt.tprintf("Provider extension for %s left installed: %d other Ninjy Bridge profile(s) on this OS user still use it", prov, others)}
 	}
