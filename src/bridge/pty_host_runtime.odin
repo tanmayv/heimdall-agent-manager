@@ -26,7 +26,6 @@ import crypto_hash "core:crypto/hash"
 import "core:encoding/hex"
 import "core:fmt"
 import "core:os"
-import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -321,7 +320,9 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // env layer goes before env (so the HEIMDALL_* variables always win).
 bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", pp: ^Provider_Profile = nil) -> (Pty_Host_Spawn_Request, bool) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
-	if !bridge_provider_catalog_has_model(provider, model) && !(pp != nil && slice.contains(pp.config.custom_models, model)) do return {}, false
+	if pp != nil {
+		if !profile_has_model(pp,provider,model) do return {},false
+	} else if !bridge_provider_catalog_has_model(provider,model) { return {},false }
 	profile, profile_ok := bridge_provider_catalog_profile(provider)
 	if !profile_ok do return {}, false
 	resolved_path: string
@@ -343,7 +344,7 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		append(&layered, ..env)
 		full_env = layered[:]
 	}
-	profile.extension_expected = bridge_provider_launch_extension_expected(profile)
+	profile.extension_expected = bridge_provider_launch_extension_expected(profile,pp.profile_id if pp != nil else "")
 	bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
 	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode)
 }

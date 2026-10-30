@@ -25,6 +25,8 @@
 #   --isolated-home             the default for a new instance on Linux (macOS: opt
 #                               in, not yet verified there); refused for an instance
 #                               recorded as shared, like --shared-home the other way
+#   --purge-home                with stop: purge this isolated instance's vault,
+#                               profiles/secrets and provider home
 #   --providers LIST            providers whose auth is seeded into an isolated home
 #                               (default: claude,codex,gemini,pi,git)
 #
@@ -63,7 +65,7 @@ usage() { sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 CMD="${1:-help}"; [ $# -gt 0 ] && shift
 NAME=default HUB_URL="" HUB_NAME="" PORT="" EP_PORT="" AUTO=0 APPROVE_URL="" APPROVER_KEY="" APPROVE_USER="" APPROVAL_BASE_URL=""
-BUILD="${HEIMDALL_LOCAL_BUILD:-nix}" BIN_DIR="" PTY_BIN="" HOME_MODE="" PROVIDERS=""
+BUILD="${HEIMDALL_LOCAL_BUILD:-nix}" BIN_DIR="" PTY_BIN="" HOME_MODE="" PROVIDERS="" PURGE_HOME=0
 # Captured before anything can change HOME: the developer's real home, which seeds
 # an isolated provider home and stays the directory picker's root.
 REAL_HOME="$HOME"
@@ -83,10 +85,12 @@ while [ $# -gt 0 ]; do
     --shared-home) HOME_MODE=0; shift ;;
     --isolated-home) HOME_MODE=1; shift ;;
     --providers) PROVIDERS="$2"; shift 2 ;;
+    --purge-home) PURGE_HOME=1; shift ;;
     -h|--help) CMD=help; shift ;;
     *) lr_die "unknown option $1 (see: $0 help)" ;;
   esac
 done
+[ "$PURGE_HOME" = 0 ] || [ "$CMD" = stop ] || lr_die "--purge-home is only valid with stop"
 lr_valid_name "$NAME" || lr_die "invalid --name '$NAME' (lowercase letters, digits, dashes)"
 [ -z "$APPROVE_USER" ] || lr_valid_name "$APPROVE_USER" || lr_die "invalid --user '$APPROVE_USER'"
 DIR="$(lr_instance_dir bridge "$NAME")"
@@ -160,9 +164,12 @@ seed_home() {
 prepare() {
   mkdir -p "$DIR"/{bin,logs,run,data,credentials,agent-runs,endpoint,enroll-bin}
   chmod 700 "$DIR/credentials"
+  if [ "$ISOLATED" = 1 ]; then
+    node "$LR_HELPERS/profile-state.mjs" sync --instance "$DIR" --checkout "$LR_ROOT" || lr_die "extension sync failed"
+  fi
   lr_env_write "$ENV_FILE" "KIND=bridge" "NAME=$NAME" "HUB_URL=$HUB_URL" "HUB_NAME=$HUB_NAME" \
     "BRIDGE_PORT=$PORT" "APPROVAL_BASE_URL=$APPROVAL_BASE_URL" "LOCAL_ENDPOINT_PORT=$EP_PORT" "CONFIG=$CFG" "TOKEN_FILE=$TOKEN" "CHECKOUT=$LR_ROOT" \
-    "ISOLATED_HOME=$ISOLATED" "PROVIDERS=$PROVIDERS" "HOME_DIR=$([ "$ISOLATED" = 1 ] && echo "$PHOME" || echo "$REAL_HOME")"
+    "BIN_DIR=${BIN_DIR:-$DIR/bin}" "ISOLATED_HOME=$ISOLATED" "PROVIDERS=$PROVIDERS" "HOME_DIR=$([ "$ISOLATED" = 1 ] && echo "$PHOME" || echo "$REAL_HOME")"
   local fs_args=()
   [ "$ISOLATED" = 1 ] && fs_args=(--fs-root "$REAL_HOME")
   node "$LR_HELPERS/bridge-config.mjs" --template "$LR_ROOT/config.toml" --out "$CFG" \
@@ -298,7 +305,26 @@ reseed_auth() {
 stop() {
   [ -d "$DIR" ] || { lr_log "no instance '$NAME'"; return 0; }
   lr_lock "$DIR"
+  if [ "$PURGE_HOME" = 1 ] && [ "$(lr_env_get "$ENV_FILE" ISOLATED_HOME)" != 1 ]; then
+    lr_die "--purge-home requires a recorded isolated-home instance"
+  fi
   lr_stop_svc "$DIR" bridge
+  if [ "$PURGE_HOME" = 1 ]; then
+    resolve
+    local id bridge_bin stored_bin
+    id="$(sed -n 's/^daemon_id = "\(brg_[0-9a-f]*\)"$/\1/p' "$CFG" | head -1)"
+    if [ -n "$id" ]; then
+      stored_bin="$(lr_env_get "$ENV_FILE" BIN_DIR)"
+      bridge_bin="$(lr_bin "${BIN_DIR:-${stored_bin:-$DIR/bin}}" ham-bridge)"
+      env ${ISO_ENV[@]+"${ISO_ENV[@]}"} "$bridge_bin" vault prune --remove-scope "$id" --hub "$HUB_URL" \
+        || lr_die "vault purge failed; provider home kept"
+    fi
+    node "$LR_HELPERS/profile-state.mjs" purge --instance "$DIR" || lr_die "profile purge failed; provider home kept"
+    rm -rf "$PHOME"
+    # The home held this enrollment's identity. Require enrollment again.
+    rm -rf "$DIR/credentials"
+    lr_log "isolated vault, profiles, secrets and provider home purged"
+  fi
   lr_log "bridge '$NAME' stopped (state kept in $DIR)"
 }
 

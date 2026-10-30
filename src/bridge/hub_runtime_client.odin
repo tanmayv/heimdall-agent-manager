@@ -2539,7 +2539,11 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	defer delete(instance_id)
 	provider, model := bridge_runtime_provider_model(command_json)
 	defer { delete(provider); delete(model) }
-	if strings.trim_space(instance_id) == "" || !bridge_provider_catalog_has_model(provider, model) do return false, "invalid provider test request", bridge_error(.agent_launch_failed, .unsupported)
+	provider_profile := extract_json_string(command_json, "provider_profile", "")
+	defer delete(provider_profile)
+	pp,profile_error := profile_lookup(provider,provider_profile)
+	if profile_error != .None do return false,profile_error_code(profile_error),bridge_error(.agent_launch_failed,.unsupported)
+	if strings.trim_space(instance_id) == "" || !profile_has_model(&pp,provider,model) do return false,"invalid provider test request",bridge_error(.agent_launch_failed,.unsupported)
 	defer if !ok do bridge_runtime_record_failure(instance_id, err)
 	bridge_runtime_clear_stop_intent(instance_id)
 	run_dir := bridge_runtime_default_run_dir(instance_id)
@@ -2558,8 +2562,6 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider test bootstrap failed", bridge_error(.agent_bootstrap_invalid)
 	}
-	provider_profile := extract_json_string(command_json, "provider_profile", "")
-	defer delete(provider_profile)
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS, provider_profile = provider_profile)
 }
 

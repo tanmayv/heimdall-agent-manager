@@ -273,6 +273,8 @@ bridge_uninstall_run :: proc(data: rawptr, step: bridgesvc.Uninstall_Step) -> (b
 bridge_uninstall_secrets :: proc(u: ^Bridge_Uninstall) -> (bool, bridgesvc.Uninstall_Failure, string) {
 	still := make([dynamic]string, context.temp_allocator)
 	removed := 0
+	profiles := bridgesvc.pjoin(u.layout.data_dir,"bridge","provider_profiles.json")
+	if !profile_purge_path(profiles) do append(&still,profiles)
 	for tf in u.token_files {
 		existed := os.exists(tf)
 		for p in bridge_enroll_wipe_bridge(u.config_path, tf, u.bridge_id) do append(&still, p)

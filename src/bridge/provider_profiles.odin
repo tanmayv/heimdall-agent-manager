@@ -87,6 +87,7 @@ Profile_Error :: enum {
 	Unknown,
 	Disabled,
 	Slug_Clash,
+	Shadow_Home_Invalid,
 }
 profile_error_code :: proc(e: Profile_Error) -> string {
 	switch e {
@@ -132,6 +133,8 @@ profile_error_code :: proc(e: Profile_Error) -> string {
 		return "profile_disabled"
 	case .Slug_Clash:
 		return "profile_slug_clash"
+	case .Shadow_Home_Invalid:
+		return "profile_shadow_home_invalid"
 	}
 	return "profile_error"
 }
@@ -328,7 +331,7 @@ profile_validate :: proc(p: ^Provider_Profile) -> Profile_Error {
 	for a in args do if len(a) > PROFILE_ARG_MAX do return .Args_Invalid
 	if len(c.custom_models) > PROFILE_STORE_MAX do return .Config_Invalid
 	for model in c.custom_models {
-		if strings.trim_space(model) == "" || len(model) > PROFILE_ARG_MAX || profile_has_nul(model) do return .Config_Invalid
+		if !bridge_model_id_valid(model) do return .Config_Invalid
 	}
 	return .None
 }
@@ -592,6 +595,7 @@ profile_lookup :: proc(
 		if !rec.enabled do return {}, .Disabled
 		p = rec
 		if !profile_materialize(&p) do return {}, .Store_Unavailable
+		if e := profile_prepare_runtime(&p); e != .None do return {}, e
 		return p, .None
 	}
 	if id == provider do return Provider_Profile{profile_id = provider, provider = provider, enabled = true}, .None
@@ -749,8 +753,12 @@ profile_reset :: proc(provider: string) -> Profile_Error {
 profile_purge :: proc() -> bool {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
-	path := profile_store_path()
-	dir := profile_secrets_dir()
+	return profile_purge_path(profile_store_path())
+}
+
+// Lifecycle commands select their own layout, not the daemon's global config.
+profile_purge_path :: proc(path: string) -> bool {
+	dir := profile_join(filepath.dir(path),"profile-secrets")
 	if os.exists(dir) && os.remove_all(dir) != nil do return false
 	return !os.exists(path) || os.remove(path) == nil
 }

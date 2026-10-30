@@ -58,6 +58,8 @@ BRIDGE_EXTENSION_CONDITION_NAMES := [Bridge_Extension_Condition]string {
 
 // Where progress and discovery reports go: Hub frames, or setup events.
 Bridge_Extension_Sink :: struct {
+	profile: ^Provider_Profile,
+	env: []string,
 	data:     rawptr,
 	progress: proc(data: rawptr, stage: string, pct: int, message: string),
 	report:   proc(data: rawptr, results: []Bridge_Provider_Path),
@@ -237,7 +239,7 @@ bridge_extension_unlock :: proc(prov, lock_path: string) {
 }
 
 bridge_extension_sink_progress :: proc(sink: Bridge_Extension_Sink, stage: string, pct: int, message: string) {
-	if sink.progress != nil do sink.progress(sink.data, stage, pct, message)
+	if sink.progress != nil do sink.progress(sink.data, stage, pct, profile_redact_text(message,sink.profile))
 }
 
 bridge_extension_fail_result :: proc(cond: Bridge_Extension_Condition, code, message: string) -> Bridge_Extension_Result {
@@ -272,7 +274,7 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 
 	// Inspect what is registered now.
 	pre_state, pre_version := "absent", ""
-	pre := bridge_extension_discover({prov})
+	pre := bridge_extension_discover_scoped(prov,sink)
 	for r in pre {
 		if r.provider != prov do continue
 		pre_state = strings.clone(r.extension_state, context.temp_allocator)
@@ -281,7 +283,7 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 	}
 	mp_path, mp_registered := "", false
 	if mp_name := bridge_extension_marketplace_name(prov); mp_name != "" {
-		out, _, listed := bridge_extension_install_step({bin_path, "plugin", "marketplace", "list", "--json"}, install_deadline)
+		out, _, listed := bridge_extension_install_step({bin_path, "plugin", "marketplace", "list", "--json"}, install_deadline, sink.env)
 		if listed do mp_path, mp_registered, _ = bridge_extension_parse_marketplace(out, mp_name)
 	}
 	cond := bridge_extension_classify(pre_state, pre_version, expected_version, mp_registered, mp_path, mp_root)
@@ -317,7 +319,7 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 			bridge_extension_sink_progress(sink, "installing", 20,
 				fmt.tprintf("Removing the existing %s extension registration (%s) before reinstalling from the bundle...", prov,
 					BRIDGE_EXTENSION_CONDITION_NAMES[cond] if attempt == 0 else last_code))
-			for argv in bridge_extension_cleanup_argvs(prov, bin_path) do _, _, _ = bridge_extension_install_step(argv, install_deadline)
+			for argv in bridge_extension_cleanup_argvs(prov, bin_path) do _, _, _ = bridge_extension_install_step(argv, install_deadline, sink.env)
 		}
 		code, message, installed := bridge_extension_install_once(prov, ext_path, bin_path, mp_root, install_deadline, sink)
 		if !installed {
@@ -326,7 +328,7 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 			return bridge_extension_fail_result(cond, code, message)
 		}
 		bridge_extension_sink_progress(sink, "installing", 80, "Verifying installed extension status...")
-		results := bridge_extension_discover({prov})
+		results := bridge_extension_discover_scoped(prov,sink)
 		if sink.report != nil do sink.report(sink.data, results[:])
 		verified := false
 		actual_state, actual_version := "absent", ""
@@ -369,13 +371,13 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 	}
 	defer bridge_extension_unlock(prov, lock_path)
 	bridge_extension_sink_progress(sink, "uninstalling", 20, fmt.tprintf("Removing the %s extension and its marketplace registration...", prov))
-	for argv in bridge_extension_cleanup_argvs(prov, bin_path) do _, _, _ = bridge_extension_install_step(argv, install_deadline)
+	for argv in bridge_extension_cleanup_argvs(prov, bin_path) do _, _, _ = bridge_extension_install_step(argv, install_deadline, sink.env)
 	bridge_extension_sink_progress(sink, "uninstalling", 80, "Verifying the extension is gone...")
 	// A marketplace source that survives `marketplace remove` (another config
 	// layer, a CLI that refused) would make the next install fail with "already
 	// added from a different source": name it instead of reporting success.
 	if mp_name := bridge_extension_marketplace_name(prov); mp_name != "" {
-		out, _, listed := bridge_extension_install_step({bin_path, "plugin", "marketplace", "list", "--json"}, install_deadline)
+		out, _, listed := bridge_extension_install_step({bin_path, "plugin", "marketplace", "list", "--json"}, install_deadline, sink.env)
 		if listed {
 			if mp_path, still, _ := bridge_extension_parse_marketplace(out, mp_name); still {
 				return bridge_extension_fail_result(.Unknown, "marketplace_remove_failed",
@@ -384,7 +386,7 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 			}
 		}
 	}
-	results := bridge_extension_discover({prov})
+	results := bridge_extension_discover_scoped(prov,sink)
 	if sink.report != nil do sink.report(sink.data, results[:])
 	state := "absent"
 	for r in results do if r.provider == prov do state = strings.clone(r.extension_state, context.temp_allocator)
@@ -402,23 +404,23 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 bridge_extension_install_once :: proc(prov, ext_path, bin_path, mp_root: string, install_deadline: time.Time, sink: Bridge_Extension_Sink) -> (code, message: string, ok: bool) {
 	if prov == "claude" || prov == "codex" {
 		bridge_extension_sink_progress(sink, "installing", 25, fmt.tprintf("Registering %s local plugin marketplace...", "Claude" if prov == "claude" else "Codex"))
-		_, msg, registered := bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline)
+		_, msg, registered := bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline, sink.env)
 		// Another source holds the name (e.g. an older Bridge's bundle): replace it
 		// here instead of depending on a second, possibly time-starved attempt.
 		if !registered && strings.contains(strings.to_lower(msg, context.temp_allocator), "different source") {
 			bridge_extension_sink_progress(sink, "installing", 30, "Replacing a marketplace registered from another source...")
-			_, _, _ = bridge_extension_install_step({bin_path, "plugin", "marketplace", "remove", bridge_extension_marketplace_name(prov)}, install_deadline)
-			_, msg, registered = bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline)
+			_, _, _ = bridge_extension_install_step({bin_path, "plugin", "marketplace", "remove", bridge_extension_marketplace_name(prov)}, install_deadline, sink.env)
+			_, msg, registered = bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline, sink.env)
 		}
 		if !registered do return "marketplace_add_failed", msg, false
 	}
 	bridge_extension_sink_progress(sink, "installing", 50, "Executing provider extension installation...")
 	argv := bridge_provider_extension_build_install_args(prov, bin_path, ext_path)
-	output, install_error, installed := bridge_extension_install_step(argv, install_deadline)
+	output, install_error, installed := bridge_extension_install_step(argv, install_deadline, sink.env)
 	if !installed do return "install_failed", install_error, false
 	if prov == "claude" && strings.contains(strings.to_lower(output, context.temp_allocator), "already installed") {
 		bridge_extension_sink_progress(sink, "installing", 65, "Updating existing Claude extension...")
-		_, msg, updated := bridge_extension_install_step({bin_path, "plugin", "update", BRIDGE_CLAUDE_PLUGIN_ID}, install_deadline)
+		_, msg, updated := bridge_extension_install_step({bin_path, "plugin", "update", BRIDGE_CLAUDE_PLUGIN_ID}, install_deadline, sink.env)
 		if !updated do return "update_failed", msg, false
 	}
 	return "", "", true
@@ -428,4 +430,9 @@ bridge_provider_paths_destroy_all :: proc(results: ^[dynamic]Bridge_Provider_Pat
 	for &result in results do bridge_provider_path_destroy(&result)
 	delete(results^)
 	results^ = nil
+}
+
+bridge_extension_discover_scoped :: proc(prov: string, sink: Bridge_Extension_Sink) -> [dynamic]Bridge_Provider_Path {
+	if sink.profile == nil do return bridge_extension_discover({prov})
+	return bridge_provider_discover_execute_profile({prov},sink.profile.profile_id)
 }
