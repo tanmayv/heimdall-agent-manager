@@ -1,6 +1,7 @@
 package main
 
 import "core:testing"
+import bridgesvc "odin_test:lib/bridgesvc"
 
 @(test)
 test_bridge_setup_enroll_needed :: proc(t: ^testing.T) {
@@ -41,4 +42,20 @@ test_bridge_setup_windows_user :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_setup_windows_user("CORP", "ann"), "CORP\\ann")
 	testing.expect_value(t, bridge_setup_windows_user("", "ann"), "ann")
 	testing.expect_value(t, bridge_setup_windows_user("CORP", " "), "")
+}
+
+// --separate-account always asks for a profile of its own; without it a
+// non-interactive setup (installers, --headless) never prompts and keeps the
+// requested profile, and --replace-other-account keeps it too.
+@(test)
+test_bridge_setup_wants_separate_account :: proc(t: ^testing.T) {
+	host := bridgesvc.Host{os = .Linux, home = "/nonexistent-ham-home", uid = 1000}
+	profile, ok := bridgesvc.profile_from("https://hub.example.com", "", context.temp_allocator)
+	testing.expect(t, ok)
+	testing.expect(t, bridge_setup_wants_separate_account(host, []string{"setup", "--separate-account"}, profile))
+	testing.expect(t, !bridge_setup_wants_separate_account(host, []string{"setup", "--headless", "--new-bridge"}, profile))
+	testing.expect(t, !bridge_setup_wants_separate_account(host, []string{"setup", "--replace-other-account"}, profile))
+	// Nothing enrolled: the requested profile is used as is.
+	testing.expect_value(t, bridgesvc.separate_account_profile(host, profile.hub_name, ""), "")
+	testing.expect_value(t, bridgesvc.separate_account_profile(host, profile.hub_name, "work"), "work")
 }

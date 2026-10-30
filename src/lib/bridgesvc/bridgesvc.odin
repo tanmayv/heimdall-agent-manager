@@ -190,6 +190,27 @@ service_name :: proc(hub_name, profile: string, allocator := context.allocator) 
 	return strings.concatenate({SERVICE_PREFIX, hub_name, "_", profile}, allocator)
 }
 
+SEPARATE_ACCOUNT_PROFILE_PREFIX :: "account-"
+
+// profile_enrolled: the profile's state dir holds a bridge credential, i.e. it
+// is bound to the Ninjy account that approved that bridge.
+profile_enrolled :: proc(host: Host, name: string) -> bool {
+	return credential_bridge_id(read_first_line(pjoin(layout_for(host, name).state_dir, TOKEN_FILE))) != ""
+}
+
+// separate_account_profile is the profile a NEW Ninjy account installs into on
+// this hub, so it never replaces the account that owns `requested`: requested
+// itself while it is not enrolled, else the first account-N (N >= 2) whose
+// profile is not enrolled. Temp-allocated; "" when none is left.
+separate_account_profile :: proc(host: Host, hub_name, requested: string) -> string {
+	if !profile_enrolled(host, service_name(hub_name, requested, context.temp_allocator)) do return requested
+	for n in 2 ..< 100 {
+		p := fmt.tprintf("%s%d", SEPARATE_ACCOUNT_PROFILE_PREFIX, n)
+		if !profile_enrolled(host, service_name(hub_name, p, context.temp_allocator)) do return p
+	}
+	return ""
+}
+
 // layout_for gives the on-disk layout of a service (temp-allocated strings).
 layout_for :: proc(host: Host, name: string) -> Layout {
 	j :: proc(parts: ..string) -> string {return pjoin(..parts)}

@@ -33,8 +33,12 @@ place.
 
 ```bash
 ham-bridge setup --hub https://hub.example.com [--profile work] \
-  [--new-bridge | --reuse-bridge brg_...] [--reenroll] [--replace-other-account] [--headless] [--no-tray] [--json-progress]
+  [--new-bridge | --reuse-bridge brg_...] [--reenroll] [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]
 ```
+
+`--separate-account` installs a second Ninjy account next to the one that owns the
+requested profile instead of replacing it (see
+[bridge-multi-account.md](bridge-multi-account.md)).
 
 Installs from the bundle the running `ham-bridge` ships in (the directory of the
 executable). Steps, in order:

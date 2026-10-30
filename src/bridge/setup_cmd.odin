@@ -1,12 +1,17 @@
 package main
 
 // `ham-bridge setup --hub <url> [--profile P] [--new-bridge|--reuse-bridge ID] [--reenroll]
-// [--replace-other-account] [--headless] [--no-tray] [--json-progress]`: install this bridge from the bundle the running
+// [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]`: install this bridge from the bundle the running
 // binary ships in, transactionally (F6, F9). The step order, retry/remediation and
 // rollback live in bridgesvc.run_setup; this file supplies the real side effects.
 // Every run re-renders the service file and adopts an existing per-Hub install
 // (same service name, state and data dirs as install.sh / install.ps1) in place.
 // Progress protocol: docs/bridge-setup-progress.md.
+// Several Ninjy accounts share a machine with one profile each: --separate-account
+// installs into a profile no account has enrolled yet (account-2, account-3, ...)
+// when the requested one already belongs to an account; an interactive setup that
+// would re-enroll an enrolled profile offers the same. Multi-account installs:
+// docs/bridge-multi-account.md.
 
 import "core:fmt"
 import "core:net"
@@ -50,7 +55,7 @@ bridge_setup_command :: proc(args: []string) -> bool {
 	hub := strings.trim_space(option_value(args, "--hub", ""))
 	profile_name := strings.trim_space(option_value(args, "--profile", ""))
 	if hub == "" {
-		fmt.eprintln("usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--replace-other-account] [--headless] [--no-tray] [--json-progress]")
+		fmt.eprintln("usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]")
 		return false
 	}
 	profile, ok := bridgesvc.profile_from(hub, profile_name, context.temp_allocator)
@@ -58,8 +63,24 @@ bridge_setup_command :: proc(args: []string) -> bool {
 		fmt.eprintfln("ham-bridge setup: invalid --hub %q or --profile %q (profile: [a-z0-9][a-z0-9-]{{0,30}})", hub, profile_name)
 		return false
 	}
+	host := bridge_service_host()
+	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) && has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) {
+		fmt.eprintln("ham-bridge setup: --separate-account and --replace-other-account are mutually exclusive")
+		return false
+	}
+	if bridge_setup_wants_separate_account(host, args, profile) {
+		separate := bridgesvc.separate_account_profile(host, profile.hub_name, profile.profile)
+		if separate == "" {
+			fmt.eprintfln("ham-bridge setup: every account profile for %s is enrolled; pass --profile P for a new one", profile.hub_url)
+			return false
+		}
+		if separate != profile.profile {
+			profile, _ = bridgesvc.profile_from(hub, separate, context.temp_allocator)
+			if !has_flag(args, "--json-progress") do fmt.printfln("Installing this Ninjy account as a separate profile %q (service %s); the existing one is left as is.", separate, profile.service_name)
+		}
+	}
 	s := Bridge_Setup {
-		host          = bridge_service_host(),
+		host          = host,
 		profile       = profile,
 		args          = args,
 		json_progress = has_flag(args, "--json-progress"),
@@ -91,6 +112,28 @@ bridge_setup_command :: proc(args: []string) -> bool {
 		fmt.eprintfln("ham-bridge setup FAILED at step %q; the previous install was restored%s.", bridgesvc.STEP_NAMES[failed], " and restarted" if s.was_running else "")
 	}
 	return done
+}
+
+// bridge_setup_wants_separate_account: --separate-account, or (on a terminal, with
+// neither account flag) the user's yes to a profile owned by an account that
+// this run would re-enroll. Updates of an enrolled profile never ask.
+bridge_setup_wants_separate_account :: proc(host: bridgesvc.Host, args: []string, profile: bridgesvc.Profile) -> bool {
+	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) do return true
+	if has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) || !bridge_stdin_is_terminal(args) do return false
+	l := bridgesvc.layout_for(host, profile.service_name)
+	current := bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)))
+	if current == "" || !bridge_setup_enroll_needed(args, current) do return false
+	fmt.printfln("Profile %s is enrolled as bridge %s.", profile.service_name, current)
+	fmt.print("  Are you enrolling a DIFFERENT Ninjy account? Install it as a separate profile (the existing one keeps running) [y/N] ")
+	if !bridge_stdin_wait_readable(BRIDGE_ENROLL_PROMPT_TIMEOUT_MS) {
+		fmt.println("")
+		return false
+	}
+	buf: [64]byte
+	n, rerr := os.read(os.stdin, buf[:])
+	if rerr != nil || n <= 0 do return false
+	answer := strings.to_lower(strings.trim_space(string(buf[:n])), context.temp_allocator)
+	return answer == "y" || answer == "yes"
 }
 
 // bridge_setup_enroll_needed: an enrolled profile skips the enroll step, unless
@@ -390,10 +433,10 @@ bridge_setup_extensions :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 		bridge_setup_emit(data, bridgesvc.Event{step = "extensions", state = "progress",
 			pct = bridgesvc.step_pct(.Extensions, false), message = line.line, attempt = 1})
 	}
-	lines, failures := bridge_extensions_sync_providers(ext_root, on_line, s)
+	lines, failures, registered_from := bridge_extensions_sync_installed(l.data_dir, on_line, s)
 	installed := 0
 	for line in lines do if line.ok && !line.skipped do installed += 1
-	msg := fmt.tprintf("%d provider extension(s) ready, %d failed (bundle: %s)", installed, failures, copied)
+	msg := fmt.tprintf("%d provider extension(s) ready, %d failed (bundle: %s; registered from %s)", installed, failures, copied, registered_from)
 	return {ok = true, message = msg}
 }
 

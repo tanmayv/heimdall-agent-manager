@@ -11,7 +11,12 @@ package main
 // Before installing it classifies what is registered now:
 //   current        installed, usable, >= expected version, from this bundle
 //   other_bridge   installed, usable, >= expected, from another Heimdall Bridge's
-//                  bundle under this OS user (REQ-MB-5: left alone, no ping-pong)
+//                  bundle under this OS user (REQ-MB-5: left alone, no ping-pong);
+//                  when ours is the shared bundle, only a strictly newer one
+//   ninjy_bundle   installed, usable, from another Heimdall Bridge's bundle (a
+//                  profile's own copy or an older shared one) at most as new as
+//                  our shared bundle: moved to the shared root, so that no single
+//                  profile's uninstall can break it
 //   absent         nothing registered: plain install
 //   outdated       registered below the expected version
 //   broken         disabled, errored, unknown version, or half-installed
@@ -35,10 +40,12 @@ import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import bridgesvc "odin_test:lib/bridgesvc"
 
 Bridge_Extension_Condition :: enum {
 	Current,
 	Other_Bridge,
+	Ninjy_Bundle,
 	Absent,
 	Outdated,
 	Broken,
@@ -49,6 +56,7 @@ Bridge_Extension_Condition :: enum {
 BRIDGE_EXTENSION_CONDITION_NAMES := [Bridge_Extension_Condition]string {
 	.Current      = "current",
 	.Other_Bridge = "other_bridge",
+	.Ninjy_Bundle = "ninjy_bundle",
 	.Absent       = "absent",
 	.Outdated     = "outdated",
 	.Broken       = "broken",
@@ -77,9 +85,22 @@ Bridge_Extension_Result :: struct {
 Bridge_Extension_Bundle_Resolver :: proc(provider: string, allocator := context.allocator) -> string
 Bridge_Extension_Binary_Resolver :: proc(provider: string) -> (string, bool)
 
+Bridge_Extension_Other_Profiles :: proc() -> int
+
 // Local resolution only (F12); tests replace these.
 bridge_extension_bundle_resolver: Bridge_Extension_Bundle_Resolver = bridge_get_bundled_extension_path
 bridge_extension_binary_resolver: Bridge_Extension_Binary_Resolver = bridge_provider_resolve_path
+bridge_extension_other_profiles: Bridge_Extension_Other_Profiles = bridge_extension_count_other_profiles
+
+// bridge_extension_count_other_profiles counts the bridge profiles of this OS
+// user other than this bridge's own (its data dir is <data root>/<service>).
+// They share the provider registration, so it must outlive this profile.
+bridge_extension_count_other_profiles :: proc() -> int {
+	own := bridgesvc.pbase(strings.trim_space(bridge_config.data_dir))
+	n := 0
+	for name in bridgesvc.list_services(bridge_service_host()) do if name != own do n += 1
+	return n
+}
 
 BRIDGE_CLAUDE_MARKETPLACE :: "heimdall"
 BRIDGE_CODEX_MARKETPLACE :: "heimdall-codex"
@@ -162,13 +183,31 @@ bridge_extension_is_bridge_bundle :: proc(path: string) -> bool {
 	return strings.contains(strings.to_lower(p, context.temp_allocator), "/heimdall/bridges/")
 }
 
+// Every bridge profile (Ninjy account) of this OS user registers the provider
+// extensions from one profile-neutral root with one directory per release:
+// <data root>/.shared-extensions/<version>/extensions, next to the profiles'
+// data dirs (<data root>/<service>). The path still matches
+// bridge_extension_is_bridge_bundle, so bridges released before the shared root
+// leave a usable registration there alone.
+BRIDGE_SHARED_EXTENSIONS_DIR :: ".shared-extensions"
+
+bridge_extension_is_shared_bundle :: proc(path: string) -> bool {
+	p := strings.to_lower(bridge_extension_normalize_path(path), context.temp_allocator)
+	return strings.contains(p, "/heimdall/bridges/" + BRIDGE_SHARED_EXTENSIONS_DIR + "/")
+}
+
 // bridge_extension_classify is pure: discovery state/version, the expected
 // version, and where the provider's Heimdall marketplace points (if anywhere).
 bridge_extension_classify :: proc(state, version, expected: string, mp_registered: bool, mp_path, our_root: string) -> Bridge_Extension_Condition {
 	usable := state == "present" && version != "" && expected != "" &&
 		bridge_provider_extension_version_compare(version, expected) >= 0
 	if mp_registered && mp_path != "" && our_root != "" && !bridge_extension_same_path(mp_path, our_root) {
-		if usable && bridge_extension_is_bridge_bundle(mp_path) do return .Other_Bridge
+		if usable && bridge_extension_is_bridge_bundle(mp_path) {
+			// Newest wins: a strictly newer bundle is left alone, anything else
+			// moves to the shared root ours lives in.
+			if bridge_extension_is_shared_bundle(our_root) && bridge_provider_extension_version_compare(version, expected) <= 0 do return .Ninjy_Bundle
+			return .Other_Bridge
+		}
 		return .Foreign
 	}
 	if usable do return .Current
@@ -370,6 +409,13 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 			fmt.tprintf("another Ninjy extension install for %s is still running for this OS user; retry when it finishes", prov))
 	}
 	defer bridge_extension_unlock(prov, lock_path)
+	// The OS user's registration is shared by every profile of this OS user;
+	// removing it for one Ninjy account would break the others' agents. A
+	// per-account provider profile registers in its own config dir instead.
+	if others := bridge_extension_other_profiles(); sink.profile == nil && others > 0 {
+		return {ok = true, condition = .Unknown, action = "left",
+			message = fmt.tprintf("Provider extension for %s left installed: %d other Ninjy Bridge profile(s) on this OS user still use it", prov, others)}
+	}
 	bridge_extension_sink_progress(sink, "uninstalling", 20, fmt.tprintf("Removing the %s extension and its marketplace registration...", prov))
 	for argv in bridge_extension_cleanup_argvs(prov, bin_path) do _, _, _ = bridge_extension_install_step(argv, install_deadline, sink.env)
 	bridge_extension_sink_progress(sink, "uninstalling", 80, "Verifying the extension is gone...")
