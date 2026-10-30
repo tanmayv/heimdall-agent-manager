@@ -1047,3 +1047,29 @@ test_profiles_relay_auth_private_plaintext_and_offline_refused :: proc(t:^testin
 profile_test_fixed_now :: proc(ctx:rawptr) -> string {
  return strings.clone((^string)(ctx)^)
 }
+
+@(test)
+test_profiles_extension_actions_and_update_reports_cannot_cross_accounts :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ f:=extension_test_setup(t,"profiles_extension_scope",fixed_now="2026-10-30T12:00:00Z")
+ defer extension_test_teardown(f)
+ defer project_service.bridge_runtime_registry_destroy(&f.registry)
+ testing.expect_value(t,provider_service.apply_profiles_report(&f.pr_svc,f.bridge_id,[]domain.Bridge_Provider_Profile{{profile_id="claude_one",provider="claude",enabled=true,state="ok"},{profile_id="claude_two",provider="claude",enabled=true,state="ok"}}).code,domain.Error_Code.None)
+ for id in ([]string{"claude_one","claude_two"}) {
+  testing.expect_value(t,provider_service.apply_discovery_report(&f.pr_svc,f.bridge_id,[]domain.Bridge_Provider_Status{{bridge_id=f.bridge_id,provider="claude",profile_id=id,state="present",extension_state="outdated",extension_version="0.0.0"}}).code,domain.Error_Code.None)
+  body:=fmt.tprintf("{{\"profile_id\":\"%s\"}}",id)
+  req:=extension_test_request(f,fmt.tprintf("/api/v1/bridges/%s/providers/claude/extension-install",f.bridge_id),body)
+  response:=bridge_provider_extension_install_handler(rawptr(&f.ph),req)
+  testing.expect_value(t,response.status,202)
+  testing.expect_value(t,json_string(f.sink_rec.last_cmd.body_json,"profile_id"),id)
+ }
+ testing.expect_value(t,f.sink_rec.count,2)
+ // A default-account report cannot schedule an install into either custom
+ // account, even though both have cached outdated extension observations.
+ command:=domain.Provider_Extension_Command{command_id="cmd_ext_profiles_scan",bridge_id=f.bridge_id,kind="discovery",parent_id="profile-update",state="dispatched"}
+ report:="{\"request_id\":\"cmd_ext_profiles_scan\",\"providers\":[{\"provider\":\"claude\",\"profile_id\":\"claude\",\"state\":\"present\",\"extension_state\":\"outdated\",\"extension_version\":\"0.0.0\"}]}"
+ testing.expect_value(t,extension_apply_report(&f.bh,&command,report).code,domain.Error_Code.None)
+ testing.expect_value(t,f.sink_rec.count,2)
+ commands,_:=iface.provider_extension_command_list(&f.pr_repo,f.bridge_id)
+ for c in commands do testing.expect(t,c.parent_id!="profile-update","default report must not queue custom-profile followups")
+}

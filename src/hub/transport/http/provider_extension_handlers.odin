@@ -421,12 +421,16 @@ extension_apply_report :: proc(
 	defer domain.provider_extension_commands_destroy(commands)
 	ph := extension_frame_handlers(h)
 	for view in views {
-		if !view.enabled || !extension_install_supported(view) do continue
+        if !view.enabled || !extension_install_supported(view) do continue
+        reported:=false
+        for item in report.providers do if item.provider==view.catalog.provider && domain.profile_effective_id(item.provider,item.profile_id)==view.profile_id do reported=true
+        if !reported do continue
+
 		// A deferred report only resumes the provider whose install it waited on.
 		if command.provider != "" {
 			matches := false
 			for prior in commands {
-				if prior.command_id == command.provider && prior.provider == view.catalog.provider do matches = true
+				if prior.command_id == command.provider && prior.provider == view.catalog.provider && domain.profile_effective_id(prior.provider,prior.profile_id)==view.profile_id do matches = true
 			}
 			if !matches do continue
 		}
@@ -435,7 +439,7 @@ extension_apply_report :: proc(
 		after_discovery := false
 		for prior in commands {
 			if prior.command_id == command.command_id do after_discovery = true
-			if !extension_action_kind(prior.kind) || prior.provider != view.catalog.provider do continue
+			if !extension_action_kind(prior.kind) || prior.provider != view.catalog.provider || domain.profile_effective_id(prior.provider,prior.profile_id)!=view.profile_id do continue
 			if prior.parent_id == command.parent_id do already_scheduled = true
 			// Even a completed install invalidates a report requested before it.
 			if after_discovery || !extension_command_terminal(prior.state) do blocker_id = prior.command_id
@@ -447,6 +451,7 @@ extension_apply_report :: proc(
 				bridge_id = command.bridge_id,
 				kind = "discovery",
 				provider = blocker_id,
+				profile_id = view.profile_id,
 				parent_id = command.parent_id,
 				state = "waiting",
 			}
@@ -457,7 +462,7 @@ extension_apply_report :: proc(
 		// Eligibility comes from THIS response, never stale rows from an earlier scan.
 		eligible := false
 		for item in report.providers {
-			if item.provider == view.catalog.provider &&
+			if item.provider == view.catalog.provider && domain.profile_effective_id(item.provider,item.profile_id)==view.profile_id &&
 			   item.state == "present" &&
 			   item.extension_state == "outdated" &&
 			   item.extension_version != "" {eligible = true}
@@ -473,7 +478,7 @@ extension_apply_report :: proc(
 				context.temp_allocator,
 			); decode_err == nil && descriptor.min_version != "" {
 				for item in report.providers {
-					if item.provider == view.catalog.provider &&
+					if item.provider == view.catalog.provider && domain.profile_effective_id(item.provider,item.profile_id)==view.profile_id &&
 					   item.state == "present" &&
 					   item.extension_state == "present" &&
 					   item.extension_version != "" &&
@@ -488,12 +493,13 @@ extension_apply_report :: proc(
 			}
 		}
 		if !eligible do continue
-		id := fmt.tprintf("%s_ext_%s", command.parent_id, view.catalog.provider)
+		id := fmt.tprintf("%s_ext_%s", command.parent_id, view.profile_id)
 		install := domain.Provider_Extension_Command {
 			command_id = id,
 			bridge_id  = command.bridge_id,
 			kind       = "install",
 			provider   = view.catalog.provider,
+			profile_id = view.profile_id,
 			parent_id  = command.parent_id,
 			state      = "queued",
 		}

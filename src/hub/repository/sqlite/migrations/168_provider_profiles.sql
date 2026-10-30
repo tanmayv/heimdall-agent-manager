@@ -52,6 +52,9 @@ UPDATE task_chain_fleets SET provider_profile=provider;
 
 ALTER TABLE provider_extension_commands ADD COLUMN profile_id TEXT NOT NULL DEFAULT '';
 UPDATE provider_extension_commands SET profile_id=provider WHERE kind IN ('install','uninstall');
+DROP INDEX IF EXISTS provider_extension_commands_followup;
+CREATE UNIQUE INDEX provider_extension_commands_followup
+ ON provider_extension_commands(parent_id,kind,provider,profile_id) WHERE parent_id<>'';
 
 DROP TRIGGER IF EXISTS instance_reconfiguration_commit;
 CREATE TRIGGER instance_reconfiguration_commit

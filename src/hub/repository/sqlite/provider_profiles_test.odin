@@ -484,6 +484,27 @@ test_profiles_instance_fleet_lease_roundtrip_and_references :: proc(t: ^testing.
 		lease_found,
 		le.message,
 	); testing.expect_value(t, lease.provider_profile, "codex_two")
+	// Followups for two accounts of one driver remain separately durable.
+	for id in ([]string{"claude_one", "claude_two"}) {
+		created, create_err := iface.provider_extension_command_create(
+			&pr,
+			domain.Provider_Extension_Command {
+				command_id = id,
+				bridge_id = "profile-runtime",
+				provider = "claude",
+				profile_id = id,
+				kind = "install",
+				parent_id = "profile-update",
+				state = "queued",
+			},
+		)
+		testing.expect(t, created, create_err.message)
+	}
+	commands, ce := iface.provider_extension_command_list(&pr, "profile-runtime")
+	testing.expect_value(t, ce.code, domain.Error_Code.None)
+	testing.expect_value(t, len(commands), 2)
+	if len(commands) == 2 do testing.expect(t, commands[0].profile_id != commands[1].profile_id)
+
 }
 
 @(test)
