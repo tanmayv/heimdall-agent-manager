@@ -21,6 +21,7 @@ package main
 // mapping helper the subscriber will call.
 
 import local_socket "odin_test:lib/local_socket"
+import agent_runtime "odin_test:lib/agent_runtime"
 import "base:runtime"
 import crypto_hash "core:crypto/hash"
 import "core:encoding/hex"
@@ -647,7 +648,7 @@ bridge_pty_host_deliver_shell_resize :: proc{
 bridge_pty_host_message_notice :: proc(sender: string, sender_display_name: string = "") -> string {
 	s := sender_display_name if strings.trim_space(sender_display_name) != "" else sender
 	if strings.trim_space(s) == "" do s = "user"
-	return strings.concatenate({"New message from ", s, " \u2014 run './.heimdall/bin/ham-ctl chat read' to view."})
+	return strings.concatenate({"New message from ", s, " \u2014 run '" + agent_runtime.CTL_SHIM_INVOCATION + " chat read' to view."})
 }
 
 // bridge_pty_host_task_nudge_notice renders the task-nudge notice text (pure).
@@ -658,9 +659,9 @@ bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string, task_tit
 	if strings.trim_space(role) == "" do role = "participant"
 	title := strings.trim_space(task_title)
 	if title != "" {
-		return strings.concatenate({"Nudge: you have been nudged on \"", title, "\" (", tid, ") (", role, "). Run './.heimdall/bin/ham-ctl task list' and complete your assignment."})
+		return strings.concatenate({"Nudge: you have been nudged on \"", title, "\" (", tid, ") (", role, "). Run '" + agent_runtime.CTL_SHIM_INVOCATION + " task list' and complete your assignment."})
 	}
-	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run './.heimdall/bin/ham-ctl task list' and complete your assignment."})
+	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run '" + agent_runtime.CTL_SHIM_INVOCATION + " task list' and complete your assignment."})
 }
 
 // bridge_shell_run_notice renders the line an agent sees when one of its BACKGROUND
@@ -684,9 +685,9 @@ bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string
 	if st == "" do st = "exited"
 	code := strings.trim_space(exit_code)
 	if code != "" {
-		return strings.concatenate({"Shell run ", sid, " ", st, " (exit ", code, "). Run './.heimdall/bin/ham-ctl shell log ", sid, "' to read its output."})
+		return strings.concatenate({"Shell run ", sid, " ", st, " (exit ", code, "). Run '" + agent_runtime.CTL_SHIM_INVOCATION + " shell log ", sid, "' to read its output."})
 	}
-	return strings.concatenate({"Shell run ", sid, " ", st, ". Run './.heimdall/bin/ham-ctl shell log ", sid, "' to read its output."})
+	return strings.concatenate({"Shell run ", sid, " ", st, ". Run '" + agent_runtime.CTL_SHIM_INVOCATION + " shell log ", sid, "' to read its output."})
 }
 
 // bridge_pty_host_deliver_message renders the same notice the wrapper produced for
