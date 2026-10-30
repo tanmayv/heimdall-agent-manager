@@ -6,9 +6,11 @@ package main
 // read it: `sealed` is a vault:v2 token under the account keyring's CURRENT epoch,
 // made by the user's browser. Its plaintext is
 //
-//   {op, profile_id, provider, bridge_id, boot_id, ts, nonce, body?, keep?}
+//   {op, profile_id, body, bridge_id, boot_id, ts, nonce}
 //
-// with op one of upsert | remove | reset | get | list. Before acting, the bridge
+// with op one of upsert | remove | reset | get | list. The provider is named only
+// in an upsert body; remove/get take it from the stored record and reset from
+// profile_id, which for a default profile is the provider slug. Before acting, the bridge
 // requires: unsealed vault; a current-epoch token that opens (older epochs are
 // refused, which is how device revocation is enforced); bridge_id and boot_id equal
 // to its own; ts within the enc_spec window and a nonce not seen this boot. Every
@@ -35,6 +37,7 @@ Provider_Profile_Env_Wire :: struct {
 }
 
 Provider_Profile_Body_Wire :: struct {
+	provider:   string `json:"provider"`, // upsert only
 	label_enc:  string `json:"label_enc"`,
 	accent:     string `json:"accent"`,
 	enabled:    bool `json:"enabled"`,
@@ -48,7 +51,6 @@ Provider_Profile_Body_Wire :: struct {
 Provider_Profile_Op_Wire :: struct {
 	op:         string `json:"op"`,
 	profile_id: string `json:"profile_id"`,
-	provider:   string `json:"provider"`,
 	bridge_id:  string `json:"bridge_id"`,
 	boot_id:    string `json:"boot_id"`,
 	ts:         i64 `json:"ts"`,
@@ -115,17 +117,18 @@ profile_op_apply :: proc(op: ^Provider_Profile_Op_Wire, now_ms: i64) -> Profile_
 			if e.keep && e.sensitive && e.value == "" do append(&keep, e.name)
 		}
 		p := Provider_Profile{
-			profile_id = op.profile_id, provider = op.provider, label_enc = body.label_enc, accent = body.accent, enabled = body.enabled,
+			profile_id = op.profile_id, provider = body.provider, label_enc = body.label_enc, accent = body.accent, enabled = body.enabled,
 			secret = Provider_Profile_Secret{binary = body.binary, config_dir = body.config_dir, home_dir = body.home_dir, env = env, args = body.args},
 		}
 		if e := profile_upsert(&p, keep[:], now_ms); e != .None do return {error = profile_error_code(e)}
 		return {changed = true}
 	case "remove":
-		if e := profile_remove(op.provider, op.profile_id); e != .None do return {error = profile_error_code(e)}
+		if e := profile_remove(op.profile_id); e != .None do return {error = profile_error_code(e)}
 		return {changed = true}
 	case "reset":
-		if op.profile_id != op.provider do return {error = profile_error_code(.Invalid_Id)}
-		if e := profile_reset(op.provider); e != .None do return {error = profile_error_code(e)}
+		// Only a default profile resets, and its id is its provider slug.
+		if !profile_catalog_has(op.profile_id) do return {error = profile_error_code(.Invalid_Id)}
+		if e := profile_reset(op.profile_id); e != .None do return {error = profile_error_code(e)}
 		return {changed = true}
 	case "get", "list":
 		profiles, err := profile_list()
@@ -137,8 +140,8 @@ profile_op_apply :: proc(op: ^Provider_Profile_Op_Wire, now_ms: i64) -> Profile_
 		}
 		if op.op == "get" && len(views) == 0 {
 			// An unedited default profile exists without a record.
-			if op.profile_id != "" && op.profile_id == op.provider && profile_catalog_has(op.provider) {
-				def := Provider_Profile{profile_id = op.provider, provider = op.provider, enabled = true}
+			if op.profile_id != "" && profile_catalog_has(op.profile_id) {
+				def := Provider_Profile{profile_id = op.profile_id, provider = op.profile_id, enabled = true}
 				append(&views, profile_view(&def))
 			} else {
 				return {error = profile_error_code(.Not_Found)}

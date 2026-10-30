@@ -110,6 +110,7 @@ Profile_Error :: enum {
 	Store_Unavailable,
 	Unknown,
 	Disabled,
+	Slug_Clash,
 }
 
 profile_error_code :: proc(e: Profile_Error) -> string {
@@ -133,6 +134,7 @@ profile_error_code :: proc(e: Profile_Error) -> string {
 	case .Store_Unavailable:      return "profile_store_unavailable"
 	case .Unknown:                return "profile_unknown"
 	case .Disabled:               return "profile_disabled"
+	case .Slug_Clash:             return "profile_slug_clash"
 	}
 	return "profile_error"
 }
@@ -198,16 +200,40 @@ profile_has_nul :: proc(s: string) -> bool {
 	return strings.index_byte(s, 0) >= 0
 }
 
-// profile_path_absolute checks an override path: absolute, bounded, no NUL, no
-// "." / ".." components (it is used verbatim, never normalised through symlinks).
+// profile_path_absolute checks an override path after profile_normalize_path:
+// absolute, bounded, no NUL.
 profile_path_absolute :: proc(p: string) -> bool {
 	if p == "" || len(p) > PROFILE_PATH_MAX || profile_has_nul(p) do return false
-	if !filepath.is_abs(p) do return false
-	rest := p
-	for part in strings.split_iterator(&rest, "/") {
-		if part == "." || part == ".." do return false
+	return filepath.is_abs(p)
+}
+
+// profile_normalize_path expands a leading `~` against the bridge's HOME (the
+// browser cannot know it) and cleans "." / ".." lexically; symlinks are never
+// resolved. "" stays "". The result is what gets stored.
+profile_normalize_path :: proc(p: string, allocator := context.temp_allocator) -> string {
+	s := strings.trim_space(p)
+	if s == "" do return ""
+	if s == "~" do s = "~/"
+	if strings.has_prefix(s, "~/") {
+		expanded := bridge_expand_home(s)
+		if raw_data(expanded) != raw_data(s) {
+			defer delete(expanded)
+			s = strings.clone(expanded, allocator)
+		}
 	}
-	return true
+	if !filepath.is_abs(s) do return s // refused by validation
+	cleaned, _ := filepath.clean(s, allocator)
+	return cleaned
+}
+
+// profile_normalize_secret normalises paths and drops empty args (amendment 4 §3).
+profile_normalize_secret :: proc(s: ^Provider_Profile_Secret, allocator := context.temp_allocator) {
+	s.binary = profile_normalize_path(s.binary, allocator)
+	s.config_dir = profile_normalize_path(s.config_dir, allocator)
+	s.home_dir = profile_normalize_path(s.home_dir, allocator)
+	args := make([dynamic]string, allocator)
+	for a in s.args do if a != "" do append(&args, a)
+	s.args = args[:]
 }
 
 // profile_catalog_has is the catalog lookup used by validation; a test seam lets
@@ -476,16 +502,28 @@ profile_list :: proc(allocator := context.temp_allocator) -> (profiles: []Provid
 // profile_lookup resolves a profile id for a launch or probe of `provider`.
 // "" or the provider slug with no stored record is the implicit default profile.
 // A stored profile must be enabled and belong to `provider`. Never falls back.
+// Only the matching record is decrypted, so one damaged record cannot break the
+// launches of other profiles.
 profile_lookup :: proc(provider, profile_id: string, allocator := context.temp_allocator) -> (p: Provider_Profile, err: Profile_Error) {
 	id := strings.trim_space(profile_id)
 	if id == "" do id = provider
-	profiles, lerr := profile_list(allocator)
-	if lerr != .None do return {}, lerr
-	for candidate in profiles {
-		if candidate.profile_id != id do continue
-		if candidate.provider != provider do return {}, .Provider_Mismatch
-		if !candidate.enabled do return {}, .Disabled
-		return candidate, .None
+	sync.mutex_lock(&g_profile_store_mu)
+	defer sync.mutex_unlock(&g_profile_store_mu)
+	records, ok := profile_store_read_locked(allocator)
+	if !ok do return {}, .Store_Unavailable
+	for rec in records {
+		if rec.profile_id != id do continue
+		if rec.provider != provider {
+			// A later catalog added `provider` with the slug of an existing custom
+			// profile of another driver: the new default is unavailable here.
+			return {}, .Slug_Clash if id == provider else .Provider_Mismatch
+		}
+		if !rec.enabled do return {}, .Disabled
+		key, kok := profile_store_key()
+		if !kok do return {}, .Store_Unavailable
+		defer crypto.zero_explicit(&key, size_of(key))
+		if !profile_record_open(key[:], rec, &p, allocator) do return {}, .Store_Unavailable
+		return p, .None
 	}
 	if id == provider do return Provider_Profile{profile_id = provider, provider = provider, enabled = true}, .None
 	return {}, .Unknown
@@ -519,6 +557,7 @@ profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> 
 		p.created_at = now
 	}
 	p.updated_at = now
+	profile_normalize_secret(&p.secret)
 	if e := profile_validate_secret(p.provider, &p.secret); e != .None do return e
 	if e := profile_prepare_dirs(&p.secret); e != .None do return e
 	sealed, sok := profile_seal_secret(key[:], profile_bridge_id(), p.profile_id, &p.secret)
@@ -534,10 +573,10 @@ profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> 
 	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
 }
 
-// profile_remove deletes a custom profile. A default profile cannot be removed (it
-// can only be reset). The hub refuses removal while agents reference the profile.
-profile_remove :: proc(provider, profile_id: string) -> Profile_Error {
-	if profile_id == provider do return .Default_Not_Removable
+// profile_remove deletes a custom profile; its provider comes from the stored
+// record. A default profile (id = a catalog slug it belongs to) cannot be removed,
+// only reset. The hub refuses removal while agents reference the profile.
+profile_remove :: proc(profile_id: string) -> Profile_Error {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
@@ -546,27 +585,43 @@ profile_remove :: proc(provider, profile_id: string) -> Profile_Error {
 	found := false
 	for rec in records {
 		if rec.profile_id == profile_id {
-			if rec.provider != provider do return .Provider_Mismatch
+			if rec.provider == profile_id do return .Default_Not_Removable
 			found = true
 			continue
 		}
 		append(&next, rec)
 	}
-	if !found do return .Not_Found
+	if !found {
+		if profile_catalog_has(profile_id) do return .Default_Not_Removable
+		return .Not_Found
+	}
 	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
 }
 
-// profile_reset drops a default profile's stored overrides, label and accent; the
-// default then behaves as before profiles existed. enabled is kept by the hub's
-// bridge_provider_settings row, which is independent of the stored record.
+// profile_reset clears a default profile's overrides, label and accent and keeps
+// `enabled` (amendment 1 §3). An enabled default with nothing left is dropped, so
+// it is again the implicit default; a disabled one stays as a bare record.
 profile_reset :: proc(provider: string) -> Profile_Error {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	if !ok do return .Store_Unavailable
 	next := make([dynamic]Provider_Profile_Record_Wire, context.temp_allocator)
-	for rec in records do if rec.profile_id != provider do append(&next, rec)
-	if len(next) == len(records) do return .None
+	changed := false
+	for rec in records {
+		if rec.profile_id != provider || rec.provider != provider {
+			append(&next, rec)
+			continue
+		}
+		changed = true
+		if !rec.enabled {
+			append(&next, Provider_Profile_Record_Wire{
+				profile_id = rec.profile_id, provider = rec.provider, enabled = false,
+				created_at = rec.created_at, updated_at = profile_now_ms(),
+			})
+		}
+	}
+	if !changed do return .None
 	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
 }
 
