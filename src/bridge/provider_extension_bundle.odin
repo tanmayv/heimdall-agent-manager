@@ -101,9 +101,13 @@ bridge_bundled_extension_base_candidates :: proc(allocator := context.allocator)
 		}
 	}
 
-	// 2. bridge_config.data_dir
+	// 2. bridge_config.data_dir: the newest shared release every profile of this
+	// OS user registers from, then the profile's own copy.
 	if data_dir := strings.trim_space(bridge_config.data_dir); data_dir != "" {
 		expanded := expand_home_temp(data_dir, allocator)
+		if shared := bridge_extensions_newest_shared(bridge_extensions_shared_root(expanded)); shared != "" {
+			append(&candidates, strings.clone(shared, allocator))
+		}
 		append(&candidates, path_join({expanded, "extensions"}, allocator))
 	}
 

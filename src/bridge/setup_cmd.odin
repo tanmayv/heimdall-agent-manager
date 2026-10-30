@@ -390,10 +390,10 @@ bridge_setup_extensions :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 		bridge_setup_emit(data, bridgesvc.Event{step = "extensions", state = "progress",
 			pct = bridgesvc.step_pct(.Extensions, false), message = line.line, attempt = 1})
 	}
-	lines, failures := bridge_extensions_sync_providers(ext_root, on_line, s)
+	lines, failures, registered_from := bridge_extensions_sync_installed(l.data_dir, on_line, s)
 	installed := 0
 	for line in lines do if line.ok && !line.skipped do installed += 1
-	msg := fmt.tprintf("%d provider extension(s) ready, %d failed (bundle: %s)", installed, failures, copied)
+	msg := fmt.tprintf("%d provider extension(s) ready, %d failed (bundle: %s; registered from %s)", installed, failures, copied, registered_from)
 	return {ok = true, message = msg}
 }
 
