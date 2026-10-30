@@ -13,7 +13,7 @@ test_profiles_migration_preserves_default_provider_meaning :: proc(t: ^testing.T
 	conn, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&conn)
-	ok, err := run_migrations(&conn, stop_before = "168_provider_profiles.sql")
+	ok, err := run_migrations(&conn, stop_before = "169_provider_profiles.sql")
 	if !testing.expect(t, ok, err.message) do return
 	testing.expect(t, upgrade_task_chain_fleets_schema(&conn))
 	testing.expect(
@@ -47,13 +47,13 @@ test_profiles_migration_preserves_default_provider_meaning :: proc(t: ^testing.T
 	testing.expect(t, ok, err.message)
 	testing.expect(
 		t,
-		exec(&conn, "DELETE FROM schema_migrations WHERE version='168_provider_profiles.sql';"),
+		exec(&conn, "DELETE FROM schema_migrations WHERE version='169_provider_profiles.sql';"),
 	)
 	ok, err = run_migrations(&conn)
 	testing.expect(t, ok, err.message)
 	testing.expect(
 		t,
-		migration_applied(&conn, "168_provider_profiles.sql"),
+		migration_applied(&conn, "169_provider_profiles.sql"),
 		"schema/ledger crash recovery restores the ledger",
 	)
 	// Exact allowlist: no config object, executable/path, argument or environment.

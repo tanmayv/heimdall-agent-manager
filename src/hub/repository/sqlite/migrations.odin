@@ -587,9 +587,11 @@ MIGRATION_166_EXTENSION_VERSION_SYNC :: #load("migrations/166_extension_version_
 
 MIGRATION_167_EXTENSION_VERSION_SYNC :: #load("migrations/167_extension_version_sync_0_5_26.sql", string)
 
-MIGRATION_168_PROVIDER_PROFILES :: #load("migrations/168_provider_profiles.sql", string)
+MIGRATION_168_EXTENSION_VERSION_SYNC :: #load("migrations/168_extension_version_sync_0_5_27.sql", string)
 
-migration_order :: [172]string {
+MIGRATION_169_PROVIDER_PROFILES :: #load("migrations/169_provider_profiles.sql", string)
+
+migration_order :: [173]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -761,7 +763,8 @@ migration_order :: [172]string {
 	"165_provider_extension_uninstall.sql",
 	"166_extension_version_sync_0_5_25.sql",
 	"167_extension_version_sync_0_5_26.sql",
-	"168_provider_profiles.sql",
+	"168_extension_version_sync_0_5_27.sql",
+	"169_provider_profiles.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -800,7 +803,7 @@ run_migrations :: proc(
 		}
         // The profile migration commits atomically. Its final index also lets
         // startup repair a crash between schema commit and ledger insertion.
-        if name=="168_provider_profiles.sql" && sqlite_object_exists(conn,"idx_bridge_provider_profiles_driver") {
+        if name=="169_provider_profiles.sql" && sqlite_object_exists(conn,"idx_bridge_provider_profiles_driver") {
          mark_migration_applied(conn,name)
          continue
         }
@@ -1192,7 +1195,7 @@ run_migrations :: proc(
 		}
         // Fleet provider/model historically arrive via a post-loop upgrade.
         // Ensure that prerequisite before migrating their default profile IDs.
-        if name=="168_provider_profiles.sql" && !upgrade_task_chain_fleets_schema(conn) do return false,domain.domain_error(.Internal_Error,"fleet profile migration prerequisite failed")
+        if name=="169_provider_profiles.sql" && !upgrade_task_chain_fleets_schema(conn) do return false,domain.domain_error(.Internal_Error,"fleet profile migration prerequisite failed")
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(
@@ -1201,7 +1204,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name=="168_provider_profiles.sql" do _=exec(conn,"ROLLBACK;")
+			if name=="169_provider_profiles.sql" do _=exec(conn,"ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1251,6 +1254,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "168_extension_version_sync_0_5_27.sql" do return strings.clone(MIGRATION_168_EXTENSION_VERSION_SYNC)
 	if name == "167_extension_version_sync_0_5_26.sql" do return strings.clone(MIGRATION_167_EXTENSION_VERSION_SYNC)
 	if name == "166_extension_version_sync_0_5_25.sql" do return strings.clone(MIGRATION_166_EXTENSION_VERSION_SYNC)
 	if name == "165_provider_extension_uninstall.sql" do return strings.clone(MIGRATION_165_PROVIDER_EXTENSION_UNINSTALL)
@@ -1270,7 +1274,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "151_extension_version_sync_0_5_11.sql" do return strings.clone(MIGRATION_151_EXTENSION_VERSION_SYNC)
 	if name == "150_extension_version_sync_0_5_10.sql" do return strings.clone(MIGRATION_150_EXTENSION_VERSION_SYNC)
 	if name == "149_extension_version_sync_0_5_9.sql" do return strings.clone(MIGRATION_149_EXTENSION_VERSION_SYNC)
-	if name == "168_provider_profiles.sql" do return strings.clone(MIGRATION_168_PROVIDER_PROFILES)
+	if name == "169_provider_profiles.sql" do return strings.clone(MIGRATION_169_PROVIDER_PROFILES)
 	if name == "148_bridge_provider_models.sql" do return strings.clone(MIGRATION_148_BRIDGE_PROVIDER_MODELS)
 	if name == "147_extension_version_sync_0_5_8.sql" do return strings.clone(MIGRATION_147_EXTENSION_VERSION_SYNC)
 	if name == "146_extension_version_sync_0_5_7.sql" do return strings.clone(MIGRATION_146_EXTENSION_VERSION_SYNC)
