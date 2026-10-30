@@ -66,10 +66,13 @@ export function ProviderTestRunModal({ setup, target, onClose }: ProviderTestRun
             : state === 'stopped' ? <StatusPill tone="neutral">Stopped</StatusPill>
             : <StatusPill tone="danger">{state}</StatusPill>}
         </div>
+        <p className="text-sm text-muted" data-debug-id="provider-test-input-help">
+          Click the terminal to type, sign in, or configure this profile. Input is available when your plan permits terminal input and the bridge vault is unlocked. Configuration changes belong to this profile’s runtime directory.
+        </p>
         {run?.agent_instance_id ? (
           <div data-debug-id="provider-test-run-output" className="h-80 overflow-hidden rounded-xl border border-subtle bg-black">
             <Suspense fallback={null}>
-              <AgentPaneComposerPanel agentInstanceId={run.agent_instance_id} isExpanded isActiveTab runtimeStatus={state === 'detecting' ? 'running' : state} hideHeader className="h-full" />
+              <AgentPaneComposerPanel agentInstanceId={run.agent_instance_id} isExpanded isActiveTab runtimeStatus={state === 'detecting' || state === 'awaiting_validation' ? 'running' : state} hideHeader className="h-full" />
             </Suspense>
           </div>
         ) : <div className="flex h-80 items-center justify-center rounded-xl border border-subtle bg-black text-sm text-muted"><Spinner size="sm" />&nbsp; Waiting for bridge…</div>}

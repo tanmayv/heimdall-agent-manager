@@ -395,6 +395,9 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
   const [error, setError] = useState('');
   const [runtimeError, setRuntimeError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [savedDraft, setSavedDraft] = useState('');
+  const [savedLabel, setSavedLabel] = useState('');
+  const [testModelId, setTestModelId] = useState('');
   const [testTarget, setTestTarget] = useState<ProviderTestTarget | null>(null);
   const [revision, setRevision] = useState(0);
   const refresh = () => {
@@ -459,16 +462,20 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
     setDraft(null);
     setConfirmDelete(false);
     setSelected(p.profile_id);
+    setTestModelId('');
     setStep(null);
     try {
       const full = await providerProfilesApi.operate(bridgeId, p.profile_id, 'get');
       if (full) {
-        setDraft({
+        const loadedProfile = {
           ...full,
           enabled:
             statuses.find((s) => (s.profile_id || s.provider) === p.profile_id)?.enabled ??
             p.enabled,
-        });
+        };
+        setDraft(loadedProfile);
+        setSavedDraft(JSON.stringify(loadedProfile));
+        setSavedLabel(labels[p.profile_id] || p.profile_id);
         setLabel(labels[p.profile_id] || p.profile_id);
       }
     } catch (e) {
@@ -548,7 +555,10 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
       const full = await providerProfilesApi.operate(bridgeId, id, 'get');
       if (full) {
         setDraft(full);
-        setLabel(await profileLabel(full));
+        setSavedDraft(JSON.stringify(full));
+        const savedName = await profileLabel(full);
+        setLabel(savedName);
+        setSavedLabel(savedName);
         setSelected(id);
       }
     } catch (e) {
@@ -602,6 +612,11 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
   const drivers = Array.from(new Set(statuses.map((s) => s.provider))).sort();
   const currentStatus = statuses.find(
     (s) => s.provider === draft?.provider && (s.profile_id || s.provider) === draft?.profile_id,
+  );
+  const testModels = (currentStatus?.models || []).filter((m) => m.state === 'active');
+  const testModel = testModels.find((m) => m.model_id === testModelId) || testModels[0];
+  const draftChanged = Boolean(
+    draft && (JSON.stringify(draft) !== savedDraft || label !== savedLabel),
   );
   return (
     <div data-debug-id="provider-profiles" className="space-y-4">
@@ -819,29 +834,58 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
                           Refresh models
                         </Button>
                       </div>
-                      {currentStatus?.models.map((m) => (
-                        <button
-                          key={m.model_id}
-                          type="button"
-                          data-debug-id={'profile-model-test-' + m.model_id}
-                          className="mr-2 text-xs text-accent"
+                      <div className="space-y-2 border-t border-subtle pt-3">
+                        <label className="block space-y-1 text-sm">
+                          <span>Test model</span>
+                          <select
+                            className={fieldClass}
+                            data-debug-id="profile-test-model"
+                            disabled={busy || !testModels.length}
+                            value={testModel?.model_id || ''}
+                            onChange={(e) => setTestModelId(e.target.value)}
+                          >
+                            {!testModels.length ? (
+                              <option value="">Check provider or refresh models first</option>
+                            ) : null}
+                            {testModels.map((m) => (
+                              <option key={m.model_id} value={m.model_id}>
+                                {m.label || m.model_id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          data-debug-id="profile-test"
                           disabled={
-                            busy || !currentStatus.enabled || currentStatus.state !== 'present'
+                            busy ||
+                            draftChanged ||
+                            !draft.enabled ||
+                            !currentStatus?.enabled ||
+                            currentStatus.state !== 'present' ||
+                            !testModel
                           }
-                          onClick={() =>
+                          onClick={() => {
+                            if (!testModel || draftChanged) return;
                             setTestTarget({
                               provider: draft.provider,
                               profileId: draft.profile_id,
                               providerLabel: label,
-                              modelId: m.model_id,
-                              modelLabel: m.label,
+                              modelId: testModel.model_id,
+                              modelLabel: testModel.label || testModel.model_id,
                               binaryPath: '',
-                            })
-                          }
+                            });
+                          }}
                         >
-                          {m.label} · Test
-                        </button>
-                      ))}
+                          Test profile
+                        </Button>
+                        <p className="text-xs text-muted">
+                          {draftChanged
+                            ? 'Save your changes before testing this profile.'
+                            : 'Run the saved profile in a live terminal. You can sign in or configure it there when your plan allows terminal input.'}
+                        </p>
+                      </div>
                       <ProviderExtensionInstallAction
                         bridgeId={bridgeId}
                         provider={draft.provider}

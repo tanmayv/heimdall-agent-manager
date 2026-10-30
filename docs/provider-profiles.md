@@ -48,6 +48,14 @@ Claude profiles offer **Inherit**, **Random**, and **Custom** in both the add wi
 
 A new Random directory has no copied authentication: sign in once for that profile using the provider CLI. Switching modes or deleting a profile leaves previous runtime directories intact; remove those manually when no longer needed. If the bridge has no home directory or cannot create the path, saving reports the bridge error.
 
+## Test a saved profile
+
+After saving, check the provider and refresh its models if needed. Choose an active **Test model**, then **Test profile** to run that exact account in a live terminal. Unsaved changes must be saved first.
+
+Click the terminal to type, complete sign-in or configure the provider. Interactive input requires terminal input in your account plan and an unlocked bridge vault; read-only plans retain their restrictions. The run uses the profile's stored environment and runtime directory on the bridge. New random directories start signed out.
+
+The terminal stays live after `start-success` until you mark the run validated. Validation stops it; closing/cancelling also stops it, with expiry as a fallback. Validation is session-only. Provider configuration written to its runtime directory remains for later launches.
+
 ## Environment and secrets
 
 Environment rows are sensitive by default. Sensitive values are blank on every read; the editor shows **Stored secret, enter a new value to replace**.

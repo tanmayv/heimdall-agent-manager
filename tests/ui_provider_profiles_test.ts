@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { registerHooks } from 'node:module';
 import React from 'react';
 import { makeVaultStore, unlockVault, lockVaultFully } from './helpers/vaultEndpointHarness.ts';
 const {
@@ -218,6 +219,20 @@ test('mounted wizard validates identity, environment never reveals stored secret
   const { createRoot } = await import('react-dom/client');
   const { Simulate } = await import('react-dom/test-utils');
   const { act } = await import('react');
+  // Keep real modal/API/lifecycle behavior; isolate the already-covered xterm
+  // transport so this test can observe the runtime phase passed to the pane.
+  const paneHook = registerHooks({
+    load(url: string, context: any, next: any) {
+      if (url.endsWith('/chat/AgentPaneComposerPanel.tsx'))
+        return {
+          format: 'module',
+          shortCircuit: true,
+          source:
+            "import React from 'react'; export default function Pane(p) { return React.createElement('div', {'data-debug-id':'test-terminal-pane','data-runtime':p.runtimeStatus}); }",
+        };
+      return next(url, context);
+    },
+  });
   const { default: Surface, ProfileRuntimeEditor } =
     await import('../src/ui/components/providers/ProviderProfilesSurface.tsx');
   const { default: Picker } =
@@ -230,6 +245,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
     'window',
     'document',
     'HTMLElement',
+    'Element',
     'Node',
     'KeyboardEvent',
     'MutationObserver',
@@ -243,6 +259,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
     window: dom.window,
     document: dom.window.document,
     HTMLElement: dom.window.HTMLElement,
+    Element: dom.window.Element,
     Node: dom.window.Node,
     KeyboardEvent: dom.window.KeyboardEvent,
     MutationObserver: dom.window.MutationObserver,
@@ -266,11 +283,32 @@ test('mounted wizard validates identity, environment never reveals stored secret
     enabled: true,
     state: 'present',
     catalog_state: 'active',
-    models: [{ model_id: 'same', state: 'active' }],
+    models: [
+      { model_id: 'same', state: 'active', label: 'Default' },
+      { model_id: 'alternate', state: 'active', label: 'Alternate' },
+      { model_id: 'retired', state: 'deprecated', label: 'Retired' },
+    ],
   }));
   let savedProfile: any;
   const discoveryRequests: any[] = [];
+  const testRequests: any[] = [];
+  let testState = 'awaiting_validation';
   globalThis.fetch = async (url: any, init: any = {}) => {
+    if (String(url).includes('/provider-tests')) {
+      testRequests.push({
+        url: String(url),
+        method: init.method || 'GET',
+        body: init.body ? JSON.parse(init.body) : undefined,
+      });
+      if (init.method === 'POST' && String(url).endsWith('/provider-tests'))
+        testState = 'awaiting_validation';
+      if (String(url).endsWith('/validate')) testState = 'stopped';
+      return response({
+        run_id: 'run_profile',
+        agent_instance_id: 'inst_profile',
+        state: testState,
+      });
+    }
     if (String(url).endsWith('/providers/discover')) discoveryRequests.push(JSON.parse(init.body));
     if (String(url).endsWith('/public-key')) return response({ unseal_boot_id: 'boot_mounted' });
     if (init.body && String(url).includes('/provider-profiles/')) {
@@ -278,7 +316,12 @@ test('mounted wizard validates identity, environment never reveals stored secret
       if (wire.op === 'upsert') {
         assert.ok(!init.body.includes('secret-after-save'));
         savedProfile = { ...wire.body, profile_id: wire.profile_id };
-        savedProfile.config.config_dir = (savedProfile.config.config_dir || '').replace(/^~/, '/bridge/home');
+        if (!status.some((p) => p.profile_id === wire.profile_id))
+          status.push({ ...status[0], profile_id: wire.profile_id });
+        savedProfile.config.config_dir = (savedProfile.config.config_dir || '').replace(
+          /^~/,
+          '/bridge/home',
+        );
         savedProfile.environment = savedProfile.environment.map((e: any) => ({
           ...e,
           value: '',
@@ -354,7 +397,11 @@ test('mounted wizard validates identity, environment never reveals stored secret
     await act(tick);
     assert.ok(savedProfile, 'wizard saved through the real sealed API');
     assert.equal(savedProfile.config.config_dir, wizardRandomPath.replace(/^~/, '/bridge/home'));
-    assert.equal(q('profile-config-dir-mode').value, 'random', 'resolved saved path reopens without generating');
+    assert.equal(
+      q('profile-config-dir-mode').value,
+      'random',
+      'resolved saved path reopens without generating',
+    );
     assert.equal(q('profile-config-config_dir').value, savedProfile.config.config_dir);
 
     assert.equal(
@@ -365,7 +412,9 @@ test('mounted wizard validates identity, environment never reveals stored secret
     assert.match(q('profile-env-value-0').placeholder, /Stored secret/);
     assert.ok(!dom.window.document.body.innerHTML.includes('secret-after-save'));
     await click('profile-discover');
-    assert.deepEqual(discoveryRequests, [{ stage: 'providers', providers: ['claude'], profile_id: savedProfile.profile_id }]);
+    assert.deepEqual(discoveryRequests, [
+      { stage: 'providers', providers: ['claude'], profile_id: savedProfile.profile_id },
+    ]);
     await change('profile-config-dir-mode', 'custom');
     await change('profile-config-config_dir', '/private/custom');
     await click('profile-save');
@@ -374,7 +423,46 @@ test('mounted wizard validates identity, environment never reveals stored secret
     await change('profile-config-dir-mode', 'inherit');
     await click('profile-save');
     await act(tick);
-    assert.equal(savedProfile.config.config_dir, '', 'inherit clears stored override through sealed save');
+    assert.equal(
+      savedProfile.config.config_dir,
+      '',
+      'inherit clears stored override through sealed save',
+    );
+    assert.equal(q('profile-test').disabled, false);
+    assert.equal(q('profile-test-model').options.length, 2, 'only active models are testable');
+    await change('profile-config-dir-mode', 'custom');
+    await change('profile-config-config_dir', '/unsaved');
+    assert.equal(q('profile-test').disabled, true, 'must save profile edits before testing');
+    await click('profile-test');
+    assert.equal(testRequests.length, 0);
+    await change('profile-config-dir-mode', 'inherit');
+    await change('profile-test-model', 'alternate');
+    await click('profile-test');
+    await act(tick);
+    assert.equal(testRequests[0].method, 'POST');
+    assert.deepEqual(testRequests[0].body, {
+      provider: 'claude',
+      model: 'alternate',
+      profile_id: savedProfile.profile_id,
+    });
+    assert.equal(
+      q('test-terminal-pane').getAttribute('data-runtime'),
+      'running',
+      'awaiting validation keeps terminal live',
+    );
+    assert.match(q('provider-test-input-help').textContent, /plan permits terminal input/);
+    await click('provider-test-validate-btn');
+    assert.ok(
+      testRequests.some((r) => r.url.endsWith('/run_profile/validate') && r.method === 'POST'),
+    );
+    assert.equal(q('test-terminal-pane').getAttribute('data-runtime'), 'stopped');
+    await click('provider-test-done-btn');
+    assert.equal(q('provider-test-run-modal'), null);
+    await click('profile-test');
+    await act(tick);
+    await click('provider-test-run-modal-close-btn');
+    assert.ok(testRequests.some((r) => r.url.endsWith('/run_profile') && r.method === 'DELETE'));
+    assert.equal(q('provider-test-run-modal'), null);
     let latest = profile();
     function EnvHarness() {
       const [p, setP] = React.useState(latest);
@@ -421,7 +509,15 @@ test('mounted wizard validates identity, environment never reveals stored secret
       'two words',
       'space literal',
     ]);
-    await act(async () => root.render(React.createElement(ProfileRuntimeEditor, { profile: latest, onChange() {}, disabled: true })));
+    await act(async () =>
+      root.render(
+        React.createElement(ProfileRuntimeEditor, {
+          profile: latest,
+          onChange() {},
+          disabled: true,
+        }),
+      ),
+    );
     assert.equal(q('profile-config-dir-mode').matches(':disabled'), true);
     assert.equal(q('profile-config-config_dir').matches(':disabled'), true);
     const picks: any[] = [];
@@ -458,6 +554,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
       await new Promise((r) => setTimeout(r, 600));
     });
     globalThis.fetch = previousFetch;
+    paneHook.deregister();
     for (const key of keys) (globalThis as any)[key] = old[key];
     dom.window.close();
   }
@@ -533,7 +630,16 @@ test('new conversations, reconfiguration and extension commands carry the chosen
 
 test('random directory recognition handles resolved Windows and Unix paths without reinterpreting custom paths', () => {
   const leaf = '.heimdall-claude-12345678-1234-1234-1234-123456789abc';
-  for (const base of ['~/', '/home/bridge/', 'C:' + String.fromCharCode(92) + 'Users' + String.fromCharCode(92) + 'bridge' + String.fromCharCode(92)]) {
+  for (const base of [
+    '~/',
+    '/home/bridge/',
+    'C:' +
+      String.fromCharCode(92) +
+      'Users' +
+      String.fromCharCode(92) +
+      'bridge' +
+      String.fromCharCode(92),
+  ]) {
     assert.equal(configDirectoryMode(base + leaf), 'random');
     assert.equal(configDirectoryMode(base + leaf + '/nested'), 'custom');
   }
