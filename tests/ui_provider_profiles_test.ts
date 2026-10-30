@@ -268,7 +268,9 @@ test('mounted wizard validates identity, environment never reveals stored secret
     models: [{ model_id: 'same', state: 'active' }],
   }));
   let savedProfile: any;
+  const discoveryRequests: any[] = [];
   globalThis.fetch = async (url: any, init: any = {}) => {
+    if (String(url).endsWith('/providers/discover')) discoveryRequests.push(JSON.parse(init.body));
     if (String(url).endsWith('/public-key')) return response({ unseal_boot_id: 'boot_mounted' });
     if (init.body && String(url).includes('/provider-profiles/')) {
       const wire = JSON.parse(await decryptVaultText(JSON.parse(init.body).sealed));
@@ -347,6 +349,8 @@ test('mounted wizard validates identity, environment never reveals stored secret
     );
     assert.match(q('profile-env-value-0').placeholder, /Stored secret/);
     assert.ok(!dom.window.document.body.innerHTML.includes('secret-after-save'));
+    await click('profile-discover');
+    assert.deepEqual(discoveryRequests, [{ stage: 'providers', providers: ['claude'], profile_id: savedProfile.profile_id }]);
     let latest = profile();
     function EnvHarness() {
       const [p, setP] = React.useState(latest);

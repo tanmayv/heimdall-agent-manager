@@ -1377,3 +1377,7 @@ cannot restart.
   On a failed health check it rolls back and runs `sv up` again.
 - **`ham-bridge update --version`.** Resolves the `termux-arm64` asset of the release
   and refuses a release that has none, or whose `SHA256SUMS` does not list it.
+
+## Provider accounts and local isolation
+
+See [Provider profiles and isolated local homes](docs/provider-profiles.md) for per-bridge account configuration, redacted secret editing, storage/trust boundaries, and the end-to-end isolation smoke.

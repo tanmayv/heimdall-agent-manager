@@ -93,6 +93,8 @@ test('stop --purge-home removes vault scope before profiles/home and requires re
     assert.equal(existsSync(join(dir, 'data/bridge/provider_profiles.json')), false);
     assert.equal(existsSync(join(dir, 'credentials/bridge-token')), false);
     assert.equal(existsSync(join(dir, 'credentials/bridge-token.refresh')), false);
+    assert.match(readFileSync(join(dir, 'config.toml'), 'utf8'), /daemon_id = \"\"/);
+    assert.doesNotMatch(readFileSync(join(dir, 'config.toml'), 'utf8'), /brg_abcdef/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

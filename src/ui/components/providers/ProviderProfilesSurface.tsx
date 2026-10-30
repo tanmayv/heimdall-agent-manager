@@ -443,7 +443,7 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
             await cookieMutation(
               '/bridges/' + encodeURIComponent(bridgeId) + '/providers/discover',
               'POST',
-              { stage: 'providers', provider: saved.provider, profile_id: saved.profile_id },
+              { stage: 'providers', providers: [saved.provider], profile_id: saved.profile_id },
             );
           await cookieMutation(
             '/bridges/' +
@@ -505,7 +505,7 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
       await cookieMutation(
         '/bridges/' + encodeURIComponent(bridgeId) + '/providers/discover',
         'POST',
-        { stage, ...(draft ? { provider: draft.provider, profile_id: draft.profile_id } : {}) },
+        { stage, ...(draft ? { providers: [draft.provider], profile_id: draft.profile_id } : {}) },
       );
       refresh();
     } catch (e) {

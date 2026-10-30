@@ -1,5 +1,5 @@
 // Instance-local snapshots/cleanup. ham-bridge vault prune removes OS keys first.
-import { cpSync, existsSync, mkdirSync, renameSync, rmSync, realpathSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, realpathSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,21 @@ export function purgeProfiles(instance) {
   }
   for (const name of ['provider_profiles.json', 'provider_profiles.json.tmp', 'profile-secrets', 'provider_paths.json', 'provider_models.json']) {
     rmSync(join(data, name), { recursive: true, force: true });
+  }
+  // Vault scope is already pruned. The saved enrolled ID must not survive
+  // deletion of its identity/credential pair, or enrollment treats this managed
+  // config as an existing bridge instead of creating a fresh one.
+  const config = join(instance, 'config.toml');
+  if (existsSync(config)) {
+    const before = readFileSync(config, 'utf8');
+    const after = before.replace(/^(\s*daemon_id\s*=\s*)"brg_[^"]*"/m, (_match, prefix) => prefix + '""');
+    if (after !== before) {
+      const temp = config + '.purge-' + process.pid;
+      try {
+        writeFileSync(temp, after, { mode: 0o600, flag: 'wx' });
+        renameSync(temp, config);
+      } finally { rmSync(temp, { force: true }); }
+    }
   }
 }
 
