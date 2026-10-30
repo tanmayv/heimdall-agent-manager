@@ -131,14 +131,15 @@ grep -q 'approver init: created' "$TMP/hub1.log" || { cat "$TMP/hub1.log"; fail 
 ok "seed approver rooted the hub vault (key 0600 in the instance dir)"
 curl -s -m 5 "$api/api/v1/agents?limit=200" | grep -q '"active_instance_count":[1-9]' && fail "a seeded agent was launched"
 ok "no seeded agent was launched"
-# A state-changing request through the UI as the preview proxy forwards it: the
-# public Origin and no Sec-Fetch-Site. It must pass CSRF; a foreign origin must not.
+# A state-changing request through the UI as a reverse proxy forwards it: the
+# public Origin, no Sec-Fetch-Site, no cookie. The dev proxy trusts --public-origin,
+# so it signs in and sends the hub its UI origin; a foreign origin gets neither.
 csrf() { curl -s -m 5 -X POST -H "Origin: $1" -H 'Content-Type: application/json' -d '{}' "http://127.0.0.1:$((PB + 3))/api/v1/device/pair-salts"; }
 out="$(csrf "$PUB")"; grep -q csrf_rejected <<<"$out" && fail "public origin rejected: $out"
 grep -q candidates <<<"$out" || fail "public-origin request did not reach the hub: $out"
 grep -q csrf_rejected <<<"$(csrf https://evil.test)" || fail "foreign origin accepted"
 grep -q "public  : $PUB" <<<"$("$HUB" status --name smoke)" || fail "status does not show the public origin"
-ok "hub trusts --public-origin (preview) for CSRF and still refuses foreign origins"
+ok "dev proxy trusts --public-origin and the hub still refuses foreign origins"
 "$HUB" stop --name smoke >/dev/null
 timeout 300 "$HUB" start --name smoke "${src[@]}" > "$TMP/hub2.log" 2>&1 || { cat "$TMP/hub2.log"; fail "hub restart"; }
 grep -q 'seed: 0 created' "$TMP/hub2.log" || fail "restart re-seeded"
