@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Button, Spinner } from '@ui';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -7,6 +7,9 @@ import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptVaultText } from '../../utils/vaultCrypto';
 import { providerSetupApi, type BridgeProviderStatus } from './providerSetupApi';
 import {
+  configDirectoryMode,
+  generateConfigDirectory,
+  type ConfigDirectoryMode,
   decodeProfileArgs,
   encodeProfileArgs,
   environmentForSave,
@@ -37,10 +40,12 @@ export function ProfileRuntimeEditor({
   profile,
   onChange,
   disabled = false,
+  onValidationChange,
 }: {
   profile: ProviderProfile;
   onChange: (p: ProviderProfile) => void;
   disabled?: boolean;
+  onValidationChange?: (error: string) => void;
 }) {
   const config = (key: keyof ProviderProfile['config'], value: unknown) =>
     onChange({ ...profile, config: { ...profile.config, [key]: value } });
@@ -96,6 +101,34 @@ export function ProfileRuntimeEditor({
       ) : null}
     </label>
   );
+  const [directoryMode, setDirectoryMode] = useState(() =>
+    configDirectoryMode(profile.config.config_dir),
+  );
+  const randomDirectory = useRef(directoryMode === 'random' ? profile.config.config_dir || '' : '');
+  const customDirectory = useRef(directoryMode === 'custom' ? profile.config.config_dir || '' : '');
+  const directoryError =
+    profile.provider === 'claude' &&
+    directoryMode === 'custom' &&
+    !profile.config.config_dir?.trim()
+      ? 'Enter a custom config directory.'
+      : '';
+  useEffect(() => {
+    onValidationChange?.(directoryError);
+  }, [directoryError, onValidationChange]);
+  const changeDirectoryMode = (mode: ConfigDirectoryMode) => {
+    if (directoryMode === 'custom') customDirectory.current = profile.config.config_dir || '';
+    if (mode === 'random' && !randomDirectory.current)
+      randomDirectory.current = generateConfigDirectory();
+    setDirectoryMode(mode);
+    config(
+      'config_dir',
+      mode === 'inherit'
+        ? ''
+        : mode === 'random'
+          ? randomDirectory.current
+          : customDirectory.current,
+    );
+  };
   const [args, setArgs] = useState(() => decodeProfileArgs(profile.config.launch_args));
   const changeArgs = (next: string[]) => {
     setArgs(next);
@@ -111,13 +144,60 @@ export function ProfileRuntimeEditor({
       <section className="space-y-3">
         <h3 className="font-semibold">Runtime</h3>
         {row('binary_path', 'Binary', 'Optional executable name or absolute path on this bridge.')}
-        {profile.provider === 'claude'
-          ? row(
-              'config_dir',
-              'Config directory',
-              'Sets CLAUDE_CONFIG_DIR for this profile. Leave blank to inherit.',
-            )
-          : null}
+        {profile.provider === 'claude' ? (
+          <div className="space-y-2">
+            <label className="block space-y-1">
+              <span className="text-sm font-medium">Config directory</span>
+              <select
+                className={fieldClass}
+                data-debug-id="profile-config-dir-mode"
+                value={directoryMode}
+                onChange={(e) => changeDirectoryMode(e.target.value as ConfigDirectoryMode)}
+              >
+                <option data-debug-id="profile-config-dir-mode-inherit" value="inherit">
+                  Inherit
+                </option>
+                <option data-debug-id="profile-config-dir-mode-random" value="random">
+                  Random
+                </option>
+                <option data-debug-id="profile-config-dir-mode-custom" value="custom">
+                  Custom
+                </option>
+              </select>
+            </label>
+            {directoryMode !== 'inherit' ? (
+              <label className="block space-y-1">
+                <span className="text-xs text-muted">
+                  {directoryMode === 'random'
+                    ? 'Directory on bridge'
+                    : 'Custom directory on bridge'}
+                </span>
+                <input
+                  className={fieldClass}
+                  data-debug-id="profile-config-config_dir"
+                  autoComplete="off"
+                  readOnly={directoryMode === 'random'}
+                  value={profile.config.config_dir || ''}
+                  required={directoryMode === 'custom'}
+                  aria-invalid={Boolean(directoryError)}
+                  onChange={(e) => config('config_dir', e.target.value)}
+                />
+              </label>
+            ) : null}
+            <p className="text-xs text-muted">
+              {directoryMode === 'inherit'
+                ? 'Use the bridge’s default Claude configuration.'
+                : directoryMode === 'random'
+                  ? 'A new private directory is created on save. Sign in once for this profile. The directory stays the same when reopened.'
+                  : 'Sets CLAUDE_CONFIG_DIR. Use an absolute path or ~ for the bridge home.'}
+            </p>
+            {directoryError ? (
+              <p role="alert" className="text-xs text-danger">
+                {directoryError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {profile.provider === 'codex' ? (
           <>
             {row('home_path', 'Codex home', 'Sets CODEX_HOME. Leave blank to inherit.')}
@@ -313,6 +393,7 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  const [runtimeError, setRuntimeError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [testTarget, setTestTarget] = useState<ProviderTestTarget | null>(null);
   const [revision, setRevision] = useState(0);
@@ -398,6 +479,10 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
   }
   async function save() {
     if (!draft) return;
+    if (runtimeError) {
+      setError(runtimeError);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -700,6 +785,7 @@ export default function ProviderProfilesSurface({ bridge }: { bridge: any }) {
                     key={draft.profile_id}
                     profile={draft}
                     onChange={setDraft}
+                    onValidationChange={setRuntimeError}
                     disabled={busy}
                   />
                   {step === null ? (

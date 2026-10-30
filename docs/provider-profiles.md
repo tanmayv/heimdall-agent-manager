@@ -38,6 +38,16 @@ Arguments follow the catalog/permission/model arguments and precede prompt argum
 
 Codex shadow and shared homes must not overlap, including through symlink aliases. Shadow authentication is private and cannot be an `auth.json` symlink. Allowed shared entries are linked; auth, locks and other private entries stay local. Sign in using the provider’s normal authentication flow in the intended directory.
 
+## Config directory choices
+
+Claude profiles offer **Inherit**, **Random**, and **Custom** in both the add wizard and editor.
+
+- **Inherit** clears the override and uses the bridge's default Claude configuration.
+- **Random** chooses a unique private directory under the bridge HOME. Saving creates it with private permissions. The displayed path remains stable across mode switches, saves and reopening; the bridge resolves `~`, including USERPROFILE on Windows.
+- **Custom** uses a nonempty path you enter on the bridge.
+
+A new Random directory has no copied authentication: sign in once for that profile using the provider CLI. Switching modes or deleting a profile leaves previous runtime directories intact; remove those manually when no longer needed. If the bridge has no home directory or cannot create the path, saving reports the bridge error.
+
 ## Environment and secrets
 
 Environment rows are sensitive by default. Sensitive values are blank on every read; the editor shows **Stored secret, enter a new value to replace**.

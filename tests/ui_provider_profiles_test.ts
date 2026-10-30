@@ -7,6 +7,7 @@ const {
   providerProfilesApi,
   profileEnvelope,
   generateProfileId,
+  configDirectoryMode,
   profileIdentityError,
   encodeProfileArgs,
   decodeProfileArgs,
@@ -277,6 +278,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
       if (wire.op === 'upsert') {
         assert.ok(!init.body.includes('secret-after-save'));
         savedProfile = { ...wire.body, profile_id: wire.profile_id };
+        savedProfile.config.config_dir = (savedProfile.config.config_dir || '').replace(/^~/, '/bridge/home');
         savedProfile.environment = savedProfile.environment.map((e: any) => ({
           ...e,
           value: '',
@@ -336,12 +338,25 @@ test('mounted wizard validates identity, environment never reveals stored secret
     await change('profile-label', 'Work account');
     await click('profile-next');
     assert.ok(q('profile-env-add'));
+    assert.equal(q('profile-config-dir-mode').value, 'inherit');
+    await change('profile-config-dir-mode', 'custom');
+    await click('profile-save');
+    assert.equal(savedProfile, undefined, 'empty custom directory cannot be saved as inherit');
+    await change('profile-config-dir-mode', 'random');
+    const wizardRandomPath = q('profile-config-config_dir').value;
+    assert.equal(configDirectoryMode(wizardRandomPath), 'random');
+    assert.equal(q('profile-config-config_dir').readOnly, true);
+
     await click('profile-env-add');
     await change('profile-env-name-0', 'WORK_TOKEN');
     await change('profile-env-value-0', 'secret-after-save');
     await click('profile-save');
     await act(tick);
     assert.ok(savedProfile, 'wizard saved through the real sealed API');
+    assert.equal(savedProfile.config.config_dir, wizardRandomPath.replace(/^~/, '/bridge/home'));
+    assert.equal(q('profile-config-dir-mode').value, 'random', 'resolved saved path reopens without generating');
+    assert.equal(q('profile-config-config_dir').value, savedProfile.config.config_dir);
+
     assert.equal(
       q('profile-env-value-0').value,
       '',
@@ -351,6 +366,15 @@ test('mounted wizard validates identity, environment never reveals stored secret
     assert.ok(!dom.window.document.body.innerHTML.includes('secret-after-save'));
     await click('profile-discover');
     assert.deepEqual(discoveryRequests, [{ stage: 'providers', providers: ['claude'], profile_id: savedProfile.profile_id }]);
+    await change('profile-config-dir-mode', 'custom');
+    await change('profile-config-config_dir', '/private/custom');
+    await click('profile-save');
+    await act(tick);
+    assert.equal(savedProfile.config.config_dir, '/private/custom');
+    await change('profile-config-dir-mode', 'inherit');
+    await click('profile-save');
+    await act(tick);
+    assert.equal(savedProfile.config.config_dir, '', 'inherit clears stored override through sealed save');
     let latest = profile();
     function EnvHarness() {
       const [p, setP] = React.useState(latest);
@@ -363,6 +387,21 @@ test('mounted wizard validates identity, environment never reveals stored secret
       });
     }
     await act(async () => root.render(React.createElement(EnvHarness)));
+    assert.equal(q('profile-config-dir-mode').value, 'custom');
+    await change('profile-config-dir-mode', 'random');
+    const stableRandomPath = latest.config.config_dir;
+    await change('profile-env-value-0', 'rerender');
+    assert.equal(latest.config.config_dir, stableRandomPath, 'other edits do not reroll');
+    await change('profile-env-value-0', '');
+    await change('profile-config-dir-mode', 'custom');
+    assert.equal(latest.config.config_dir, '/private/account', 'custom draft is retained');
+    await change('profile-config-config_dir', '/private/other');
+    await change('profile-config-dir-mode', 'inherit');
+    assert.equal(latest.config.config_dir, '');
+    await change('profile-config-dir-mode', 'random');
+    assert.equal(latest.config.config_dir, stableRandomPath, 'mode switches do not reroll');
+    await change('profile-config-dir-mode', 'custom');
+    assert.equal(latest.config.config_dir, '/private/other');
     assert.equal(q('profile-env-value-0').value, '');
     assert.match(q('profile-env-value-0').placeholder, /Stored secret/);
     assert.equal(q('profile-env-sensitive-0').disabled, true);
@@ -382,6 +421,9 @@ test('mounted wizard validates identity, environment never reveals stored secret
       'two words',
       'space literal',
     ]);
+    await act(async () => root.render(React.createElement(ProfileRuntimeEditor, { profile: latest, onChange() {}, disabled: true })));
+    assert.equal(q('profile-config-dir-mode').matches(':disabled'), true);
+    assert.equal(q('profile-config-config_dir').matches(':disabled'), true);
     const picks: any[] = [];
     await act(async () => {
       root.render(
@@ -487,4 +529,14 @@ test('new conversations, reconfiguration and extension commands carry the chosen
     await lockVaultFully(store);
     store.dispatch(heimdallApi.util.resetApiState());
   }
+});
+
+test('random directory recognition handles resolved Windows and Unix paths without reinterpreting custom paths', () => {
+  const leaf = '.heimdall-claude-12345678-1234-1234-1234-123456789abc';
+  for (const base of ['~/', '/home/bridge/', 'C:' + String.fromCharCode(92) + 'Users' + String.fromCharCode(92) + 'bridge' + String.fromCharCode(92)]) {
+    assert.equal(configDirectoryMode(base + leaf), 'random');
+    assert.equal(configDirectoryMode(base + leaf + '/nested'), 'custom');
+  }
+  assert.equal(configDirectoryMode(''), 'inherit');
+  assert.equal(configDirectoryMode('/private/account'), 'custom');
 });

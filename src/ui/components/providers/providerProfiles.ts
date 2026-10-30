@@ -240,3 +240,16 @@ export const providerProfilesApi = {
     }
   },
 };
+
+export type ConfigDirectoryMode = 'inherit' | 'random' | 'custom';
+
+export function configDirectoryMode(value = ''): ConfigDirectoryMode {
+  if (!value.trim()) return 'inherit';
+  return /(?:^|[\\/])\.heimdall-claude-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
+    ? 'random'
+    : 'custom';
+}
+
+export function generateConfigDirectory(): string {
+  return '~/.heimdall-claude-' + crypto.randomUUID();
+}
