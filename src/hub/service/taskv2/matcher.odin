@@ -168,6 +168,7 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 	return Placement{
 		bridge_id    = bridge_id,
 		directory_id = resolve_directory_for_bridge(ctx.dirs, bridge_id),
+		provider_profile=fleet_profile_on_bridge(fleet,bridge_id),
 		provider     = provider,
 		model        = model,
 	}, true
@@ -214,10 +215,10 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			continue
 		}
 		if svc.agent_service != nil && svc.agent_service.providers != nil {
-			provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model)
+			provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
 			defer delete(provider)
 			defer delete(model)
-			if _, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model); !valid {
+			if _, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model,placement.provider_profile); !valid {
 				failure, failed_agent, failed_placement, failure_cause = err.message, fleet.agent_id, placement, ""
 				continue
 			}
@@ -421,7 +422,7 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 @(private = "file")
 jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, placement: Placement, role: string) -> (domain.Agent_Instance, bool, string) {
 	if svc.agent_service == nil do return {}, false, "agent launch service is unavailable"
-	provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model)
+	provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
 	defer delete(provider)
 	defer delete(model)
 	project_id := domain.Project_ID("")
@@ -429,7 +430,7 @@ jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T
 	auth := contracts.Auth_Context{user_id = string(ctx.chain.owner_user_id), kind = .Internal_User, bridge_id = placement.bridge_id}
 	input := agent.Create_Instance_Input{
 		agent_id = fleet.agent_id, bridge_id = placement.bridge_id,
-		provider = provider, model = model,
+		provider = provider, model = model,provider_profile=placement.provider_profile,
 		chain_id = string(ctx.chain.chain_id), project_id = project_id,
 		member_role = "worker",
 	}
@@ -707,8 +708,8 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 			continue
 		}
 		if svc.agent_service != nil && svc.agent_service.providers != nil {
-			provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model)
-			_, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model)
+			provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
+			_, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model,placement.provider_profile)
 			delete(provider)
 			delete(model)
 			if !valid {

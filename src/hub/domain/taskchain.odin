@@ -263,6 +263,7 @@ Task_Chain_Directory :: struct {
 }
 
 Fleet_Bridge_Model :: struct {
+	provider_profile: string,
 	provider: string,
 	model: string,
 }
@@ -293,6 +294,7 @@ fleet_role_name_valid :: proc(role: string) -> bool {
 }
 
 Task_Chain_Fleet :: struct {
+	provider_profile: string,
 	task_chain_id:    Task_Chain_ID,
 	agent_id:         string,
 	capacity:         int,

@@ -297,6 +297,7 @@ Fleet_Restart_Failure :: struct {
 }
 
 Task_Chain_Fleet_Wire :: struct {
+	provider_profile: string `json:"provider_profile"`,
 	bridge_models: map[string]domain.Fleet_Bridge_Model `json:"bridge_models"`,
 	task_chain_id:          string                         `json:"task_chain_id"`,
 	agent_id:               string                         `json:"agent_id"`,
@@ -694,6 +695,7 @@ make_chain_fleet_wire :: proc(
 		idle_ttl_seconds       = f.idle_ttl_seconds,
 		created_at             = f.created_at,
 		updated_at             = f.updated_at,
+		provider_profile=domain.profile_effective_id(f.provider,f.provider_profile),
 		provider               = f.provider,
 		model                   = f.model,
 		roles                  = json_value_or_empty_array(f.roles_json if f.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON),
@@ -1389,7 +1391,7 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !created do return respond_error(err, req.request_id)
 	if coord_agent_id := json_string(req.body, "coordinator_agent_id"); coord_agent_id != "" {
 		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
-		inst, inst_created, inst_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id")), chain_id = string(chain.chain_id)})
+		inst, inst_created, inst_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"),provider_profile=json_string(req.body,"provider_profile"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id")), chain_id = string(chain.chain_id)})
 		if !inst_created do return respond_error(inst_err, req.request_id)
 		publish_instance_created(h.event_bus, inst)
 		chain, created, err = taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
@@ -2198,6 +2200,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	min_warm := json_int_field(req.body, "min_warm", 0)
 	idle_ttl_seconds := json_int_field(req.body, "idle_ttl_seconds", 600)
 	provider := json_string(req.body, "provider")
+	provider_profile:=json_string(req.body,"provider_profile");defer delete(provider_profile)
 	model := json_string(req.body, "model")
 	bridge_models, bridge_models_present := jsonx.extract_raw_object(req.body, "bridge_models", top_level_only = true, allocator = context.temp_allocator)
 	if jsonx.has_key(req.body, "bridge_models", top_level_only = true) && !bridge_models_present do return respond_error(domain.domain_error(.Validation_Failed, "bridge_models must be an object"), req.request_id)
@@ -2213,7 +2216,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		defer if prior_err.code == .None do delete(prior_fleets)
 		for prior in prior_fleets {
 			if prior.agent_id == role {
-				restart_role_instances = fleet_provider_model_changed(prior.provider, prior.model, provider, model) || (bridge_models_present && prior.bridge_models_json != bridge_models)
+				restart_role_instances = fleet_provider_model_changed(prior.provider, prior.model, provider, model) || domain.profile_effective_id(prior.provider,prior.provider_profile)!=domain.profile_effective_id(provider,provider_profile) || (bridge_models_present && prior.bridge_models_json != bridge_models)
 				break
 			}
 		}
@@ -2229,6 +2232,8 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		capacity         = capacity,
 		min_warm         = min_warm,
 		idle_ttl_seconds = idle_ttl_seconds,
+		provider_profile = provider_profile,
+		has_provider_profile=jsonx.has_key(req.body,"provider_profile",true),
 		provider         = provider,
 		model             = model,
 		bridge_models_json = bridge_models,
@@ -2259,11 +2264,13 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 				// verbatim on the same instance id ("" resolves through the standard
 				// inheritance order) and re-sends the launch command.
 				selected_provider, selected_model := taskchain_service.fleet_model_on_bridge(fleet, inst.bridge_id)
-				launch_provider, launch_model := taskchain_service.resolve_fleet_launch_model(h.taskchains, inst.bridge_id, selected_provider, selected_model)
+				launch_provider, launch_model := taskchain_service.resolve_fleet_launch_model(h.taskchains, inst.bridge_id, selected_provider, selected_model,taskchain_service.fleet_profile_on_bridge(fleet,inst.bridge_id))
 				defer delete(launch_provider)
 				defer delete(launch_model)
-				if inst.provider == launch_provider && inst.model == launch_model do continue
-				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model); relaunched {
+				selected_profile:=domain.profile_effective_id(launch_provider,taskchain_service.fleet_profile_on_bridge(fleet,inst.bridge_id))
+				if inst.provider == launch_provider && inst.model == launch_model && domain.profile_effective_id(inst.provider,inst.provider_profile)==selected_profile do continue
+				inst.provider_profile=selected_profile
+				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model,selected_profile); relaunched {
 					append(&restarted_ids, inst.agent_instance_id)
 					// New provider/model and run state are persisted: refresh the instance.
 					publish_instance_changed(h.event_bus, relaunched_inst, "config_changed")

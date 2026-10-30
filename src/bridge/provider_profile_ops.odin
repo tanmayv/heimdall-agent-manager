@@ -240,6 +240,11 @@ bridge_hub_handle_provider_profile_op :: proc(conn: ^ws.Connection, text: string
 		reply(conn, command_id, err, "")
 		return
 	}
+ route_op:=extract_json_string(text,"op","");defer delete(route_op)
+ route_id:=extract_json_string(text,"profile_id","");defer delete(route_id)
+ if !profile_op_route_matches(&op,route_op,route_id) {
+  reply(conn,command_id,"profile_route_mismatch","");return
+ }
 	outcome := profile_op_apply(&op, bridge_now_unix_ms())
 	if outcome.error != "" {
 		reply(conn, command_id, outcome.error, "")
@@ -265,4 +270,9 @@ bridge_send_provider_profiles_report :: proc(conn: ^ws.Connection) {
 	frame := profile_report_json()
 	defer delete(frame)
 	_ = bridge_hub_send(conn, frame)
+}
+
+// Route metadata cannot authorize a different operation from the sealed body.
+profile_op_route_matches :: proc(op:^Provider_Profile_Op_Wire,route_op,route_id:string) -> bool {
+ return op!=nil && route_op!="" && route_id!="" && route_op==op.op && route_id==op.profile_id
 }

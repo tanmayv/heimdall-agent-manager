@@ -1,5 +1,7 @@
 package main
 
+import "core:encoding/json"
+
 import "base:runtime"
 import "core:fmt"
 import "core:os"
@@ -514,4 +516,19 @@ test_profile_uninstall_purges_selected_profile_store_only :: proc(t: ^testing.T)
 p1c_test_bundle_path: string
 p1c_test_bundle_resolver :: proc(provider: string, allocator := context.allocator) -> string {
 	return strings.clone(p1c_test_bundle_path, allocator)
+}
+
+@(test)
+test_profile_model_report_custom_view_keeps_observed_provenance :: proc(t:^testing.T) {
+ observed:=Bridge_Provider_Models{provider=strings.clone("codex"),profile_id=strings.clone("codex_one"),has_snapshot=true}
+ observed.models=make([]Bridge_Discovered_Model,1)
+ observed.models[0]={model_id=strings.clone("observed"),label=strings.clone("Observed")}
+ view:=bridge_models_with_custom(observed,[]string{"custom","observed"})
+ defer bridge_models_destroy(&view)
+ testing.expect_value(t,len(view.models),2)
+ testing.expect_value(t,len(view.custom_models),2)
+ decoded:[]Bridge_Discovered_Model
+ testing.expect(t,json.unmarshal_string(view.observed_models_json,&decoded,allocator=context.temp_allocator)==nil)
+ testing.expect_value(t,len(decoded),1)
+ if len(decoded)==1 do testing.expect_value(t,decoded[0].model_id,"observed")
 }

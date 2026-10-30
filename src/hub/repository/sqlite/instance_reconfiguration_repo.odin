@@ -41,7 +41,7 @@ instance_reconfiguration_begin_sqlite :: proc(ctx: rawptr, op: domain.Instance_R
 	defer delete(data)
 	// One INSERT both compares the configuration snapshot and acquires the unique
 	// per-instance active slot. No shared-connection BEGIN/COMMIT window is needed.
-	query := "INSERT INTO instance_reconfigurations (operation_id, owner_user_id, agent_instance_id, idempotency_key, revision, phase, blocks_input, payload_json, created_at, updated_at) SELECT ?, ?, ?, ?, 1, 'prepared', 1, ?, ?, ? FROM agent_instances WHERE agent_instance_id=? AND owner_user_id=? AND bridge_id=? AND project_id=? AND project_path=? AND provider=? AND model=? AND configuration_revision=? AND conversation_id=? RETURNING payload_json;"
+	query := "INSERT INTO instance_reconfigurations (operation_id, owner_user_id, agent_instance_id, idempotency_key, revision, phase, blocks_input, payload_json, created_at, updated_at) SELECT ?, ?, ?, ?, 1, 'prepared', 1, ?, ?, ? FROM agent_instances WHERE agent_instance_id=? AND owner_user_id=? AND bridge_id=? AND project_id=? AND project_path=? AND provider=? AND model=? AND configuration_revision=? AND conversation_id=? AND provider_profile=? RETURNING payload_json;"
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return {}, false, domain.domain_error(.Internal_Error, "failed reconfiguration prepare")
 	defer sqlite3_finalize(stmt)
@@ -50,6 +50,7 @@ instance_reconfiguration_begin_sqlite :: proc(ctx: rawptr, op: domain.Instance_R
 	bind_text(stmt, 8, op.agent_instance_id); bind_text(stmt, 9, op.owner_user_id); bind_text(stmt, 10, op.source.bridge_id)
 	bind_text(stmt, 11, op.source.project_id); bind_text(stmt, 12, op.source.project_path); bind_text(stmt, 13, op.source.provider); bind_text(stmt, 14, op.source.model)
 	bind_text(stmt, 15, i32_to_string(op.expected_revision)); bind_text(stmt, 16, op.conversation_id)
+	bind_text(stmt,17,domain.profile_effective_id(op.source.provider,op.source.provider_profile))
 	if sqlite3_step(stmt) != SQLITE_ROW do return {}, false, domain.domain_error(.Conflict, "configuration changed or another reconfiguration requires recovery")
 	return instance_reconfiguration_decode(stmt)
 }

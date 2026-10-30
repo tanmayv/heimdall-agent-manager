@@ -26,6 +26,8 @@ Bridge_Discovered_Model :: struct {
 }
 
 Bridge_Provider_Models :: struct {
+	observed_models_json: string `json:"observed_models_json"`,
+	custom_models: []string `json:"custom_models"`,
 	profile_id: string `json:"profile_id"`,
 	provider: string `json:"provider"`,
 	// Snapshot provenance belongs to the last successful result.
@@ -48,6 +50,9 @@ bridge_models_last_key: string
 bridge_models_last_completed: i64
 
 bridge_models_destroy :: proc(value: ^Bridge_Provider_Models, allocator := context.allocator) {
+	for id in value.custom_models do delete(id,allocator)
+	delete(value.custom_models,allocator)
+	delete(value.observed_models_json,allocator)
 	delete(value.profile_id,allocator)
 	delete(value.provider, allocator); delete(value.binary_path, allocator); delete(value.version_text, allocator)
 	delete(value.models_source, allocator); delete(value.models_checked_at, allocator)
@@ -61,6 +66,9 @@ bridge_models_destroy :: proc(value: ^Bridge_Provider_Models, allocator := conte
 
 bridge_models_clone :: proc(value: Bridge_Provider_Models, allocator := context.allocator) -> Bridge_Provider_Models {
 	out := value
+	out.observed_models_json=strings.clone(value.observed_models_json,allocator)
+	out.custom_models=make([]string,len(value.custom_models),allocator)
+	for id,i in value.custom_models do out.custom_models[i]=strings.clone(id,allocator)
 	out.profile_id = strings.clone(profile_effective_id(value.provider,value.profile_id),allocator)
 	out.provider = strings.clone(value.provider, allocator)
 	out.binary_path = strings.clone(value.binary_path, allocator)
@@ -508,6 +516,13 @@ bridge_provider_handle_models_frame :: proc(conn: ^ws.Connection, frame_type, te
 // Merge owned outbound models without persisting custom settings into probe provenance.
 bridge_models_with_custom :: proc(value: Bridge_Provider_Models, custom: []string) -> Bridge_Provider_Models {
 	out := value
+	delete(out.observed_models_json)
+	observed,err:=json.marshal(value.models)
+	out.observed_models_json=string(observed) if err==nil else ""
+	for id in out.custom_models do delete(id)
+	delete(out.custom_models)
+	out.custom_models=make([]string,len(custom))
+	for id,i in custom do out.custom_models[i]=strings.clone(id)
 	models := make([dynamic]Bridge_Discovered_Model)
 	append(&models,..out.models)
 	delete(out.models)

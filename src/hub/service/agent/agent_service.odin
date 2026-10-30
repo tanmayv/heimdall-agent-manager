@@ -138,6 +138,7 @@ Support_Input :: struct {
 }
 
 Run_Request :: struct {
+	provider_profile: string,
 	provider: string,
 	model: string,
 }
@@ -150,6 +151,7 @@ List_Instances_Filter :: struct {
 }
 
 Create_Instance_Input :: struct {
+	provider_profile: string,
 	agent_id: string,
 	bridge_id: string,
 	provider: string,
@@ -161,7 +163,7 @@ Create_Instance_Input :: struct {
 }
 
 Stop_Instance_Input :: struct { reason: string, force: bool }
-Reconfigure_Instance_Input :: struct { provider, model, agent_id, bridge_id, chain_id, conversation_id, display_name: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id, has_display_name: bool }
+Reconfigure_Instance_Input :: struct { provider_profile, provider, model, agent_id, bridge_id, chain_id, conversation_id, display_name: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id, has_display_name: bool }
 
 new_agent_service :: proc(agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Agent_Service {
 	s := Agent_Service{agents = agents, bridges = bridges, clock = clock, ids = ids}
@@ -348,7 +350,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	if bridge.owner_user_id != owner || bridge.owner_user_id != agent.owner_user_id do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Not_Found, "bridge not found")
 	if plan_err := require_launch_bridge_enabled(service, bridge); plan_err.code != .None do return {}, 0, false, plan_err
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
-	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model})
+	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model,provider_profile=input.provider_profile})
 	if !resolved_ok do return domain.Agent_Instance{}, 0, false, resolved_err
 	// Mint one per-agent global counter for this run and derive the default title
 	// "<agent-name> #<n>". The same default title is used for the (new) chain and
@@ -367,7 +369,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	conversation_id := platform.generate_id(service.ids, "chat_")
 	display_name := strings.trim_space(input.display_name)
 	if display_name == "" do display_name = default_title
-	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
+	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
 	admitted: bool
 	quota_err: domain.Domain_Error
 	generation, admitted, quota_err = reserve_runtime_launch(service, instance)
@@ -405,7 +407,7 @@ send_instance_launch :: proc(service: ^Agent_Service, saved: domain.Agent_Instan
 
 launch_agent :: create_instance
 
-create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, bridge_id, provider, model: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, bridge_id, provider, model: string,provider_profile: string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return {}, false, owner_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
@@ -416,7 +418,7 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "provider-test-")
-	inst := domain.Agent_Instance{agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,model=model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
+	inst := domain.Agent_Instance{agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if !saved_ok do return {}, false, save_err
 	return saved, true, {}
@@ -433,6 +435,7 @@ launch_provider_test_instance :: proc(service: ^Agent_Service, saved: domain.Age
 	strings.write_string(&b, "{\"type\":\"launch_provider_test\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"agent_instance_id\":\""); write_service_json_string(&b, saved.agent_instance_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, saved.provider)
+	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(saved.provider,saved.provider_profile))
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, saved.model)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", saved.run_count))
 	strings.write_string(&b, "}")
@@ -1066,6 +1069,8 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	if !ok do return domain.Agent_Instance{}, false, err
 	if input.has_agent_id || input.has_bridge_id || input.has_project_id || input.has_chain_id || input.has_conversation_id do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent_id, bridge_id, project_id, chain_id, and conversation_id are immutable for an instance; changing them requires a new instance")
 	provider := input.provider; if provider == "" do provider = inst.provider
+	if input.provider_profile!="" {inst.provider_profile=input.provider_profile} else if provider!=inst.provider {inst.provider_profile=provider}
+	inst.provider=provider
 	model := input.model; if model == "" do model = inst.model
 	resolved, resolved_ok, resolved_err := validate_pinned_provider_model(service, auth, inst, provider, model)
 	if !resolved_ok do return domain.Agent_Instance{}, false, resolved_err
@@ -1077,7 +1082,9 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string,provider_profile:string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	inst:=inst
+	if provider_profile!="" {inst.provider=provider;inst.provider_profile=provider_profile}
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	return relaunch_instance_locked(service, auth, inst, provider, model)
@@ -1098,6 +1105,7 @@ relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "pinned bridge is offline")
 	now := platform.clock_now(service.clock)
 	next := inst
+	if next.provider!=provider do next.provider_profile=provider
 	next.provider = provider
 	next.model = model
 	next.runtime_status = "launching"
@@ -1559,7 +1567,7 @@ resolve_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Con
 		support = stored
 	}
 	if !support.enabled do return {}, false, domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
-	return validate_provider_model_intersection(service, bridge_id, req.provider, req.model)
+	return validate_provider_model_intersection(service, bridge_id, req.provider, req.model,req.provider_profile)
 }
 
 validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
@@ -1574,17 +1582,18 @@ validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.
 	if !support.enabled do return {}, false, domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
 	resolved_provider := provider if strings.trim_space(provider) != "" else inst.provider
 	resolved_model := model if strings.trim_space(model) != "" else inst.model
-	return validate_provider_model_intersection(service, inst.bridge_id, resolved_provider, resolved_model)
+	return validate_provider_model_intersection(service, inst.bridge_id, resolved_provider, resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
 }
 
-validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id, provider, model: string) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
+validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id, provider, model: string,profile_id: string = "") -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false, domain.domain_error(.Unprocessable_Entity, "provider and model are required")
 	if service.providers == nil do return {}, false, domain.domain_error(.Internal_Error, "provider repository is not configured")
+	if e:=provider_service.validate_profile(service.providers,bridge_id,provider,profile_id);e.code!=.None do return {},false,e
 	entry, found, entry_err := iface.provider_catalog_get(service.providers, provider)
 	if entry_err.code != .None do return {}, false, entry_err
 	if !found || entry.state != "active" do return {}, false, domain.domain_error(.Unprocessable_Entity, "provider is unknown or deprecated")
 	defer domain.provider_catalog_entry_destroy(entry)
-	if err := provider_service.apply_effective_models(service.providers, bridge_id, &entry); err.code != .None do return {}, false, err
+	if err := provider_service.apply_effective_models(service.providers, bridge_id, &entry,profile_id); err.code != .None do return {}, false, err
 	model_ok := false
 	for candidate in entry.models { if candidate.model_id == model && candidate.state == "active" { model_ok = true; break } }
 	if !model_ok do return {}, false, domain.domain_error(.Unprocessable_Entity, "model is unknown or deprecated for provider")
@@ -1594,9 +1603,9 @@ validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id,
 	settings, settings_err := iface.bridge_provider_setting_list(service.providers, bridge_id)
 	if settings_err.code != .None do return {}, false, settings_err
 	defer domain.bridge_provider_settings_destroy(settings)
-	present, enabled := false, false
-	for status in statuses { if status.provider == provider && status.state == "present" { present = true; break } }
-	for setting in settings { if setting.provider == provider && setting.enabled { enabled = true; break } }
+	present, enabled := false, domain.profile_effective_id(provider,profile_id)!=provider
+	for status in statuses { if status.provider == provider && domain.profile_effective_id(provider,status.profile_id)==domain.profile_effective_id(provider,profile_id) && status.state == "present" { present = true; break } }
+	for setting in settings { if setting.provider == provider && domain.profile_effective_id(provider,setting.profile_id)==domain.profile_effective_id(provider,profile_id) { enabled = setting.enabled; break } }
 	if !present || !enabled do return {}, false, domain.domain_error(.Provider_Unavailable, "provider is not enabled and present on bridge")
 	return domain.Resolved_Provider_Model{provider = provider, model = model}, true, domain.Domain_Error{}
 }
@@ -1620,7 +1629,7 @@ select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		model := req.model
 		last_provider = provider
 		last_model = model
-		if _, valid, _ := validate_provider_model_intersection(service, bridge.bridge_id, provider, model); !valid do continue
+		if _, valid, _ := validate_provider_model_intersection(service, bridge.bridge_id, provider, model,req.provider_profile); !valid do continue
 		if !found || support.priority > best_priority {
 			best = bridge
 			best_priority = support.priority
@@ -1747,6 +1756,7 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
 	strings.write_string(&b, "\",\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, inst.provider)
+	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(inst.provider,inst.provider_profile))
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, inst.launch_epoch)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", inst.run_count))
@@ -1774,6 +1784,7 @@ stop_command_json :: proc(command_id, instance_id, reason: string, force: bool =
 // the agent instance, the task it is focused on, and its action role ("worker" or
 // "reviewer"). Coordinators are never emitted (the reconcile pass excludes them).
 Wake_Agent_Run_Entry :: struct {
+	provider_profile:string,
 	run_count:         int,
 	agent_instance_id: string,
 	task_id:           string,
@@ -1827,6 +1838,9 @@ wake_agent_command_json :: proc(command_id, chain_id: string, run: []Wake_Agent_
 		// both keep the previous "fall back to bridge defaults" behavior.
 		if entry.provider != "" {
 			strings.write_string(&b, ",\"provider\":\""); write_service_json_string(&b, entry.provider); strings.write_string(&b, "\"")
+		}
+		if entry.provider_profile!="" {
+			strings.write_string(&b,",\"provider_profile\":\"");write_service_json_string(&b,entry.provider_profile);strings.write_byte(&b,'"')
 		}
 		if entry.model != "" {
 			strings.write_string(&b, ",\"model\":\""); write_service_json_string(&b, entry.model); strings.write_string(&b, "\"")
@@ -2245,6 +2259,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	// carry the instance's provider/model; without them every wake failed at spawn
 	// with provider_missing (REQ-ERR-6).
 	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, inst.provider)
+	strings.write_string(&b, "\",\"provider_profile\":\""); write_service_json_string(&b, domain.profile_effective_id(inst.provider,inst.provider_profile))
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"permission_mode\":\""); write_service_json_string(&b, domain.effective_permission_mode(inst.permission_mode, agent.permission_mode))
 	token := instance_assertion_token(inst); defer delete(token)

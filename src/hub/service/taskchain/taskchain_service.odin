@@ -1,5 +1,7 @@
 package taskchain
 
+import provider_service "odin_test:hub/service/provider"
+
 import "core:fmt"
 import "core:log"
 import "core:os"
@@ -1820,6 +1822,8 @@ remove_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 // --- Fleet Management (REQ-FLEET-SCHEMA-1, REQ-FLEET-API-CLI-1, Task System v2 §4a) ---
 
 Upsert_Fleet_Input :: struct {
+	provider_profile: string,
+	has_provider_profile:bool,
 	bridge_models_json: string,
 	chain_id:         domain.Task_Chain_ID,
 	agent_id:         string,
@@ -1881,7 +1885,7 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 			bridge, found, _ := iface.bridge_get_bridge(service.agent_service.bridges, bridge_id)
 			if !found || bridge.owner_user_id != chain.owner_user_id do return {}, domain.domain_error(.Not_Found, "bridge not found")
 			if selection.provider == "" || selection.model == "" do return {}, domain.domain_error(.Validation_Failed, "bridge provider and model are required")
-			_, valid, validation_err := agent.validate_provider_model_intersection(service.agent_service, bridge_id, selection.provider, selection.model)
+			_, valid, validation_err := agent.validate_provider_model_intersection(service.agent_service, bridge_id, selection.provider, selection.model,selection.provider_profile)
 			if !valid do return {}, validation_err
 		}
 	}
@@ -1910,6 +1914,12 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		if br_err := validate_task_bridge(service, chain.owner_user_id, input.bridge_id^); br_err.code != .None do return {}, br_err
 		bridge_id = input.bridge_id^
 	}
+ profile_id:=input.provider_profile
+ if profile_id=="" && !input.has_provider_profile && input.provider==existing.provider do profile_id=existing.provider_profile
+ if profile_id!="" && input.provider=="" do return {},domain.domain_error(.Validation_Failed,"profile requires a provider")
+ if profile_id!="" && profile_id!=input.provider && bridge_id!="" && service.agent_service!=nil {
+  if e:=provider_service.validate_profile(service.agent_service.providers,bridge_id,input.provider,profile_id);e.code!=.None do return {},e
+ }
 	now := platform.clock_now(service.clock)
 	fleet := domain.Task_Chain_Fleet{
 		bridge_models_json = bridge_models,
@@ -1918,6 +1928,7 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		capacity         = capacity,
 		min_warm         = min_warm,
 		idle_ttl_seconds = idle_ttl,
+		provider_profile = domain.profile_effective_id(input.provider,profile_id),
 		provider         = input.provider,
 		model             = input.model,
 		roles_json       = roles_json,
@@ -2065,10 +2076,10 @@ fleet_model_on_bridge :: proc(fleet: domain.Task_Chain_Fleet, bridge_id: string)
 // Catalog order is rank then id, matching the bridge provider-status UI.
 // Explicit selections are preserved: an unavailable selection must fail rather
 // than silently launch a different provider or model.
-resolve_fleet_launch_model :: proc(service: ^Taskchain_Service, bridge_id, provider, model: string) -> (string, string) {
+resolve_fleet_launch_model :: proc(service: ^Taskchain_Service, bridge_id, provider, model: string,provider_profile:string = "") -> (string, string) {
 	if provider != "" && model != "" do return strings.clone(provider), strings.clone(model)
 	if service == nil || service.agent_service == nil do return strings.clone(provider), strings.clone(model)
-	return taskv2.resolve_launch_model(service.agent_service, bridge_id, provider, model)
+	return taskv2.resolve_launch_model(service.agent_service, bridge_id, provider, model,provider_profile)
 }
 
 // Effective_Placement is the bridge / provider / model the matcher would apply
@@ -2076,6 +2087,7 @@ resolve_fleet_launch_model :: proc(service: ^Taskchain_Service, bridge_id, provi
 // the UI shows real values instead of "inherit" / "default". Strings are
 // temp-allocated.
 Effective_Placement :: struct {
+	provider_profile:string `json:"provider_profile"`,
 	bridge_id:     string `json:"bridge_id"`,
 	// task_pin | fleet | chain_directory | coordinator | none
 	bridge_source: string `json:"bridge_source"`,
@@ -2111,15 +2123,17 @@ effective_placement :: proc(service: ^Taskchain_Service, chain: domain.Task_Chai
 	}
 	if out.bridge_id == "" do return out
 	provider, model := fleet_model_on_bridge(fleet, out.bridge_id)
+	out.provider_profile=domain.profile_effective_id(provider,fleet_profile_on_bridge(fleet,out.bridge_id))
 	if provider != "" && model != "" {
 		out.provider, out.model = strings.clone(provider, context.temp_allocator), strings.clone(model, context.temp_allocator)
 		out.model_source = "fleet" if provider == fleet.provider && model == fleet.model else "bridge_override"
 		return out
 	}
-	rp, rm := resolve_fleet_launch_model(service, out.bridge_id, provider, model)
+	rp, rm := resolve_fleet_launch_model(service, out.bridge_id, provider, model,out.provider_profile)
 	defer delete(rp)
 	defer delete(rm)
 	if rp != "" && rm != "" {
+		out.provider_profile=domain.profile_effective_id(rp,out.provider_profile)
 		out.provider, out.model, out.model_source = strings.clone(rp, context.temp_allocator), strings.clone(rm, context.temp_allocator), "catalog_default"
 	}
 	return out
@@ -2243,3 +2257,5 @@ complete_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context
 	broadcast_chain_closed(service,auth,chain,.Completed)
 	return chain,true,domain.Domain_Error{}
 }
+
+fleet_profile_on_bridge :: taskv2.fleet_profile_on_bridge

@@ -649,6 +649,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/providers", rawptr(&graph.provider_handlers), http.provider_catalog_list_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/providers/*/icon", rawptr(&graph.provider_handlers), http.provider_icon_handler)
+ for route in ([]struct{method,path:string}{{"GET","/api/v1/bridges/*/provider-profiles"},{"PUT","/api/v1/bridges/*/provider-profiles/*"},{"DELETE","/api/v1/bridges/*/provider-profiles/*"},{"POST","/api/v1/bridges/*/provider-profiles/*/get"},{"POST","/api/v1/bridges/*/provider-profiles/*/reset"}}) {
+ http.router_add(&graph.router,route.method,route.path,rawptr(&graph.provider_handlers),http.bridge_provider_profiles_handler)
+ }
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/provider-status", rawptr(&graph.provider_handlers), http.bridge_provider_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/discover", rawptr(&graph.provider_handlers), http.bridge_provider_discover_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/*/extension-install", rawptr(&graph.provider_handlers), http.bridge_provider_extension_install_handler)

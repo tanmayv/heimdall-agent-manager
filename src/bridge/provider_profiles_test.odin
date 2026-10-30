@@ -916,3 +916,13 @@ test_profile_spawn_binary_custom_model_args_and_env :: proc(t: ^testing.T) {
 	testing.expect_value(t, token, "local-secret")
 	testing.expect_value(t, launch_token, "forced-token")
 }
+
+@(test)
+test_profile_op_relay_route_binding :: proc(t:^testing.T) {
+ op:=Provider_Profile_Op_Wire{op="remove",profile_id="claude_one"}
+ testing.expect(t,profile_op_route_matches(&op,"remove","claude_one"))
+ testing.expect(t,!profile_op_route_matches(&op,"get","claude_one"),"sealed remove cannot use the get route")
+ testing.expect(t,!profile_op_route_matches(&op,"upsert","claude_one"),"sealed remove cannot use PUT")
+ testing.expect(t,!profile_op_route_matches(&op,"remove","claude_two"),"sealed profile cannot substitute a different route ID")
+ testing.expect(t,!profile_op_route_matches(&op,"",""),"route binding is required")
+}
