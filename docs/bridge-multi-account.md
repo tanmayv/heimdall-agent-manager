@@ -92,7 +92,11 @@ profile's own marketplace, plugin table and install cache, before its
 `codex-marketplace` copy is deleted. Every ensure also drops any
 `heimdall-codex-*` marketplace whose source directory is gone (a bridge removed
 by hand), because Codex fails every `codex plugin list` while one is
-registered. Hook trust is per plugin: the own plugin is a different plugin id
+registered. These `config.toml` edits change only the bridge's own two tables
+and keep every other byte, comments included; when the file has a line that
+cannot be read for certain (an escaped quote in a table name, or invalid TOML),
+the bridge leaves the file unchanged and reports it. Uninstall makes its edit
+under the same per-OS-user lock as the bridges' extension installs. Hook trust is per plugin: the own plugin is a different plugin id
 from `heimdall@heimdall-codex`, so hook trust granted to the shared plugin in
 the Codex TUI does not carry over. Claude keeps the shared registration.
 

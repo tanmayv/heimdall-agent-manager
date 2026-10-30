@@ -109,55 +109,251 @@ bridge_codex_own_launch_args :: proc(allocator := context.temp_allocator) -> []s
 	return bridge_codex_own_launch_args_for(bridge_codex_default_home(), bridge_codex_own_marketplace_name(), allocator)
 }
 
+// config.toml is the user's own file and Codex has no CLI to edit it, so the
+// bridge edits it as text. codex_toml_scan finds table headers the way a TOML
+// parser would (never inside a multi-line string or array; trailing comments,
+// quoted keys and [[array]] tables understood), every edit changes only the lines
+// of the table it owns, and a line the scan cannot classify for sure makes the
+// edit refuse (ok = false) rather than guess.
+
+Codex_Toml_Line_Kind :: enum {
+	Content,
+	Header,
+	Unclear,
+}
+
+Codex_Toml_Line :: struct {
+	start, end: int, // byte range in the config; end includes the '\n'
+	kind:       Codex_Toml_Line_Kind,
+	array:      bool,     // a [[array]] header
+	name:       []string, // a header's decoded key segments
+	top:        bool,     // starts outside any multi-line string or array
+	blank:      bool,
+	comment:    bool,
+}
+
+Codex_Toml_Scan :: struct {
+	lines: [dynamic]Codex_Toml_Line,
+	clean: bool, // no Unclear line and nothing left open at the end
+}
+
+@(private = "file")
+codex_toml_scan :: proc(config: string) -> (scan: Codex_Toml_Scan) {
+	scan.lines = make([dynamic]Codex_Toml_Line, context.temp_allocator)
+	scan.clean = true
+	ml: u8 // the quote of an open multi-line string, else 0
+	depth := 0 // open '[' / '{' of a value
+	for start := 0; start < len(config); {
+		end := len(config)
+		if nl := strings.index_byte(config[start:], '\n'); nl >= 0 do end = start + nl + 1
+		text := strings.trim_space(config[start:end])
+		line := Codex_Toml_Line{start = start, end = end, top = ml == 0 && depth == 0, blank = text == ""}
+		line.comment = line.top && strings.has_prefix(text, "#")
+		if line.top && strings.has_prefix(text, "[") {
+			if name, array, ok := codex_toml_parse_header(text); ok {
+				line.kind, line.name, line.array = .Header, name, array
+			} else {
+				line.kind = .Unclear
+			}
+		} else if !codex_toml_scan_values(text, &ml, &depth) {
+			line.kind = .Unclear
+		}
+		if line.kind == .Unclear do scan.clean = false
+		append(&scan.lines, line)
+		start = end
+	}
+	if ml != 0 || depth != 0 do scan.clean = false
+	return
+}
+
+// codex_toml_scan_values follows strings, comments and brackets of one non-header
+// line, carrying an open multi-line string or array to the next line. false for
+// a line that is not valid TOML.
+@(private = "file")
+codex_toml_scan_values :: proc(text: string, ml: ^u8, depth: ^int) -> bool {
+	for i := 0; i < len(text); {
+		ch := text[i]
+		if ml^ != 0 {
+			if ml^ == '"' && ch == '\\' {
+				i += 2
+				continue
+			}
+			if ch != ml^ {
+				i += 1
+				continue
+			}
+			run := 0
+			for i + run < len(text) && text[i + run] == ml^ do run += 1
+			// Up to two quotes of content may come right before the closing three.
+			if run > 5 do return false
+			if run >= 3 do ml^ = 0
+			i += run
+			continue
+		}
+		switch ch {
+		case '#':
+			return true
+		case '"', '\'':
+			if strings.has_prefix(text[i:], `"""`) || strings.has_prefix(text[i:], "'''") {
+				ml^ = ch
+				i += 3
+				continue
+			}
+			j := i + 1
+			for j < len(text) && text[j] != ch {
+				if ch == '"' && text[j] == '\\' do j += 1
+				j += 1
+			}
+			if j >= len(text) do return false
+			i = j
+		case '[', '{':
+			depth^ += 1
+		case ']', '}':
+			depth^ -= 1
+			if depth^ < 0 do return false
+		}
+		i += 1
+	}
+	return true
+}
+
+// codex_toml_parse_header parses a `[a."b".c]` or `[[a]]` line, optionally
+// followed by a comment.
+@(private = "file")
+codex_toml_parse_header :: proc(text: string) -> (name: []string, array, ok: bool) {
+	array = strings.has_prefix(text, "[[")
+	key, next, key_ok := codex_toml_parse_key(text, 2 if array else 1)
+	if !key_ok do return nil, false, false
+	close := "]]" if array else "]"
+	if !strings.has_prefix(text[next:], close) do return nil, false, false
+	rest := strings.trim_space(text[next + len(close):])
+	if rest != "" && rest[0] != '#' do return nil, false, false
+	return key, array, true
+}
+
+// codex_toml_parse_key reads a dotted key from text[from:]; next is the first
+// byte after it and its trailing whitespace.
+@(private = "file")
+codex_toml_parse_key :: proc(text: string, from: int) -> (key: []string, next: int, ok: bool) {
+	segs := make([dynamic]string, context.temp_allocator)
+	i := from
+	for {
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t') do i += 1
+		if i >= len(text) do return nil, 0, false
+		switch text[i] {
+		case '"', '\'':
+			j := strings.index_byte(text[i + 1:], text[i])
+			if j < 0 do return nil, 0, false
+			seg := text[i + 1:i + 1 + j]
+			// Escapes would need decoding; Heimdall never writes them in a key.
+			if text[i] == '"' && strings.contains_rune(seg, '\\') do return nil, 0, false
+			append(&segs, seg)
+			i += j + 2
+		case:
+			j := i
+			for j < len(text) && codex_toml_is_bare(text[j]) do j += 1
+			if j == i do return nil, 0, false
+			append(&segs, text[i:j])
+			i = j
+		}
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t') do i += 1
+		if i < len(text) && text[i] == '.' {
+			i += 1
+			continue
+		}
+		return segs[:], i, true
+	}
+}
+
+@(private = "file")
+codex_toml_is_bare :: proc(ch: u8) -> bool {
+	switch ch {
+	case 'A' ..= 'Z', 'a' ..= 'z', '0' ..= '9', '_', '-':
+		return true
+	}
+	return false
+}
+
+// codex_toml_key_value splits a top-level `key = value` line.
+@(private = "file")
+codex_toml_key_value :: proc(text: string) -> (key: []string, value: string, ok: bool) {
+	k, next, key_ok := codex_toml_parse_key(text, 0)
+	if !key_ok || next >= len(text) || text[next] != '=' do return nil, "", false
+	return k, text[next + 1:], true
+}
+
+// codex_toml_scalar decodes a one-line value: a string without escapes, or a bare
+// value (a bool, a number) up to a comment.
+@(private = "file")
+codex_toml_scalar :: proc(value: string) -> (s: string, ok: bool) {
+	v := strings.trim_space(value)
+	if v == "" do return "", false
+	if v[0] == '"' || v[0] == '\'' {
+		if strings.has_prefix(v, `"""`) || strings.has_prefix(v, "'''") do return "", false
+		j := strings.index_byte(v[1:], v[0])
+		if j < 0 do return "", false
+		s = v[1:1 + j]
+		if v[0] == '"' && strings.contains_rune(s, '\\') do return "", false
+		rest := strings.trim_space(v[j + 2:])
+		return s, rest == "" || rest[0] == '#'
+	}
+	if hash := strings.index_byte(v, '#'); hash >= 0 do v = strings.trim_space(v[:hash])
+	return v, v != ""
+}
+
+@(private = "file")
+codex_toml_name_is :: proc(name: []string, table, key: string) -> bool {
+	return len(name) == 2 && name[0] == table && name[1] == key
+}
+
+// codex_toml_table_end is the index of the line after header h's table.
+@(private = "file")
+codex_toml_table_end :: proc(lines: []Codex_Toml_Line, h: int) -> int {
+	next := h + 1
+	for next < len(lines) && lines[next].kind != .Header do next += 1
+	return next
+}
+
 // bridge_codex_config_set_plugin_disabled returns config (config.toml text) with
 // `enabled = false` in the `[plugins."<plugin_id>"]` table, adding the key or the
-// table when missing. changed is false when it already says so.
-bridge_codex_config_set_plugin_disabled :: proc(config, plugin_id: string, allocator := context.temp_allocator) -> (out: string, changed: bool) {
-	header := fmt.tprintf("[plugins.\"%s\"]", plugin_id)
-	lines := strings.split_lines(config, context.temp_allocator)
-	b := strings.builder_make(allocator)
-	in_table, found, done := false, false, false
-	write_line :: proc(b: ^strings.Builder, line: string, first: bool) {
-		if !first do strings.write_byte(b, '\n')
-		strings.write_string(b, line)
+// table when missing; nothing else changes. changed is false when it already
+// says so; ok is false (config returned as is) when config cannot be edited
+// safely.
+bridge_codex_config_set_plugin_disabled :: proc(config, plugin_id: string, allocator := context.temp_allocator) -> (out: string, changed, ok: bool) {
+	scan := codex_toml_scan(config)
+	if !scan.clean do return config, false, false
+	lines := scan.lines[:]
+	header := -1
+	for line, h in lines {
+		if line.kind != .Header || line.array || !codex_toml_name_is(line.name, "plugins", plugin_id) do continue
+		// Defined twice is not valid TOML.
+		if header >= 0 do return config, false, false
+		header = h
 	}
-	for line, i in lines {
-		trimmed := strings.trim_space(line)
-		if codex_toml_is_table_header(trimmed) {
-			if in_table && !done {
-				// The table ended without an enabled key.
-				write_line(&b, "enabled = false", i == 0)
-				done, changed = true, true
-			}
-			in_table = trimmed == header
-			if in_table do found = true
-		} else if in_table && !done {
-			key := strings.trim_space(trimmed[:strings.index_byte(trimmed, '=')]) if strings.contains(trimmed, "=") else ""
-			if key == "enabled" {
-				done = true
-				if strings.trim_space(trimmed[strings.index_byte(trimmed, '=') + 1:]) != "false" {
-					write_line(&b, "enabled = false", i == 0)
-					changed = true
-					continue
-				}
-			}
-		}
-		write_line(&b, line, i == 0)
+	if header < 0 {
+		sep := "" if config == "" || strings.has_suffix(config, "\n\n") else ("\n" if strings.has_suffix(config, "\n") else "\n\n")
+		return strings.concatenate({config, sep, "[plugins.\"", plugin_id, "\"]\nenabled = false\n"}, allocator), true, true
 	}
-	if in_table && !done {
-		// The table is last in the file; keep a trailing newline at the end.
-		text := strings.trim_right(strings.to_string(b), "\n")
-		b2 := strings.builder_make(allocator)
-		strings.write_string(&b2, text)
-		strings.write_string(&b2, "\nenabled = false\n")
-		return strings.to_string(b2), true
+	// Without an enabled key it goes after the table's last value line.
+	insert_at := lines[header].end
+	for line in lines[header + 1:codex_toml_table_end(lines, header)] {
+		if line.blank || line.comment do continue
+		insert_at = line.end
+		if !line.top do continue
+		key, value, kv := codex_toml_key_value(strings.trim_space(config[line.start:line.end]))
+		if !kv do return config, false, false
+		if len(key) != 1 || key[0] != "enabled" do continue
+		v, scalar := codex_toml_scalar(value)
+		if !scalar do return config, false, false
+		if v == "false" do return config, false, true
+		// Replace the line, keeping its line ending.
+		text_end := line.end
+		if text_end > line.start && config[text_end - 1] == '\n' do text_end -= 1
+		if text_end > line.start && config[text_end - 1] == '\r' do text_end -= 1
+		return strings.concatenate({config[:line.start], "enabled = false", config[text_end:]}, allocator), true, true
 	}
-	if !found {
-		text := strings.to_string(b)
-		sep := "" if text == "" || strings.has_suffix(text, "\n\n") else ("\n" if strings.has_suffix(text, "\n") else "\n\n")
-		return strings.concatenate({text, sep, header, "\nenabled = false\n"}, allocator), true
-	}
-	return strings.to_string(b), changed
+	nl := "" if insert_at > 0 && config[insert_at - 1] == '\n' else "\n"
+	return strings.concatenate({config[:insert_at], nl, "enabled = false\n", config[insert_at:]}, allocator), true, true
 }
 
 bridge_codex_config_disable_plugin :: proc(codex_home, plugin_id: string) -> (ok: bool, msg: string) {
@@ -166,62 +362,48 @@ bridge_codex_config_disable_plugin :: proc(codex_home, plugin_id: string) -> (ok
 	return bridge_codex_config_rewrite(codex_home, bridge_codex_config_set_plugin_disabled, plugin_id)
 }
 
-// codex_toml_is_table_header reports whether a trimmed config.toml line is a
-// `[table]` or `[[array]]` header rather than a line of a multi-line array value
-// such as `["x"],` (which ends with ',', holds a ',' or starts with a string).
-@(private = "file")
-codex_toml_is_table_header :: proc(trimmed: string) -> bool {
-	line := trimmed
-	if hash := strings.index(line, "]#"); hash >= 0 do line = line[:hash + 1]
-	line = strings.trim_space(line)
-	if !strings.has_prefix(line, "[") || !strings.has_suffix(line, "]") do return false
-	inner := strings.trim(line, "[]")
-	inner = strings.trim_space(inner)
-	if inner == "" || inner[0] == '"' || inner[0] == '\'' do return false
-	quoted := false
-	for ch in inner {
-		switch ch {
-		case '"':      quoted = !quoted
-		case ',', '=': if !quoted do return false
-		}
-	}
-	return true
-}
-
-// codex_toml_table_name is the dotted name of a header line, quotes kept
-// (`[plugins."a@b"]` -> `plugins."a@b"`).
-@(private = "file")
-codex_toml_table_name :: proc(trimmed: string) -> string {
-	return strings.trim_space(strings.trim(strings.trim_space(trimmed), "[]"))
-}
-
 // bridge_codex_config_remove_own returns config without the
 // `[marketplaces.<marketplace>]` and `[plugins."heimdall@<marketplace>"]` tables
-// (each up to the next header) of a `heimdall-codex-*` marketplace only. changed
-// is false when neither is there.
-bridge_codex_config_remove_own :: proc(config, marketplace: string, allocator := context.temp_allocator) -> (out: string, changed: bool) {
+// of a `heimdall-codex-*` marketplace only; every other byte is kept. A table
+// goes from its header through its last value line plus the blank lines after
+// it (its separator); a comment after its last value may belong to the next
+// table and stays. changed is false when neither is there; ok is false (config
+// returned as is) when config cannot be edited safely.
+bridge_codex_config_remove_own :: proc(config, marketplace: string, allocator := context.temp_allocator) -> (out: string, changed, ok: bool) {
 	// Only ever a bridge's own marketplace, never the shared heimdall-codex.
-	if !strings.has_prefix(marketplace, BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX) do return config, false
-	mp_table := strings.concatenate({"marketplaces.", marketplace}, context.temp_allocator)
-	plugin_table := strings.concatenate({"plugins.\"", bridge_codex_own_plugin_id(marketplace), "\""}, context.temp_allocator)
-	lines := strings.split_lines(config, context.temp_allocator)
-	kept := make([dynamic]string, 0, len(lines), context.temp_allocator)
-	dropping := false
-	for line in lines {
-		trimmed := strings.trim_space(line)
-		if codex_toml_is_table_header(trimmed) {
-			name := codex_toml_table_name(trimmed)
-			dropping = name == mp_table || name == plugin_table
-			if dropping do changed = true
+	if !strings.has_prefix(marketplace, BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX) do return config, false, true
+	plugin_id := bridge_codex_own_plugin_id(marketplace)
+	scan := codex_toml_scan(config)
+	lines := scan.lines[:]
+	drop := make([]bool, len(lines), context.temp_allocator)
+	for line, h in lines {
+		if line.kind != .Header || line.array do continue
+		if !codex_toml_name_is(line.name, "marketplaces", marketplace) && !codex_toml_name_is(line.name, "plugins", plugin_id) do continue
+		if !scan.clean do return config, false, false
+		changed = true
+		end := codex_toml_table_end(lines, h)
+		last := h
+		for k in h + 1 ..< end {
+			if !lines[k].blank && !lines[k].comment do last = k
 		}
-		// A dropped table takes its trailing blank lines with it; the blank line
-		// before it then separates its neighbours.
-		if !dropping do append(&kept, line)
+		for last + 1 < end && lines[last + 1].blank do last += 1
+		for k in h ..= last do drop[k] = true
 	}
-	if !changed do return config, false
-	for len(kept) > 0 && strings.trim_space(kept[len(kept) - 1]) == "" do pop(&kept)
-	if len(kept) == 0 do return "", true
-	return strings.concatenate({strings.join(kept[:], "\n", context.temp_allocator), "\n"}, allocator), true
+	if !changed do return config, false, true
+	// A table dropped at the end of the file takes the blank lines before it.
+	if drop[len(drop) - 1] {
+		k := len(drop) - 1
+		for k >= 0 && drop[k] do k -= 1
+		for k >= 0 && lines[k].blank {
+			drop[k] = true
+			k -= 1
+		}
+	}
+	b := strings.builder_make(allocator)
+	for line, k in lines {
+		if !drop[k] do strings.write_string(&b, config[line.start:line.end])
+	}
+	return strings.to_string(b), true, true
 }
 
 // bridge_codex_config_own_marketplaces lists every `heimdall-codex-*` marketplace
@@ -229,39 +411,42 @@ bridge_codex_config_remove_own :: proc(config, marketplace: string, allocator :=
 bridge_codex_config_own_marketplaces :: proc(config: string, allocator := context.temp_allocator) -> (names, sources: [dynamic]string) {
 	names = make([dynamic]string, allocator)
 	sources = make([dynamic]string, allocator)
-	prefix := strings.concatenate({"marketplaces.", BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX}, context.temp_allocator)
 	current := -1
-	for line in strings.split_lines(config, context.temp_allocator) {
-		trimmed := strings.trim_space(line)
-		if codex_toml_is_table_header(trimmed) {
+	for line in codex_toml_scan(config).lines {
+		switch line.kind {
+		case .Header:
 			current = -1
-			name := codex_toml_table_name(trimmed)
-			if strings.has_prefix(name, prefix) {
-				append(&names, strings.clone(name[len("marketplaces."):], allocator))
+			if !line.array && len(line.name) == 2 && line.name[0] == "marketplaces" && strings.has_prefix(line.name[1], BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX) {
+				append(&names, strings.clone(line.name[1], allocator))
 				append(&sources, "")
 				current = len(names) - 1
 			}
 			continue
+		case .Unclear:
+			// Possibly a header: the table it would end is no longer known.
+			current = -1
+			continue
+		case .Content:
 		}
-		if current < 0 do continue
-		eq := strings.index_byte(trimmed, '=')
-		if eq < 0 || strings.trim_space(trimmed[:eq]) != "source" do continue
-		value := strings.trim_space(trimmed[eq + 1:])
-		if len(value) >= 2 && value[0] == '"' && value[len(value) - 1] == '"' do value = value[1:len(value) - 1]
-		sources[current] = strings.clone(value, allocator)
+		if current < 0 || !line.top || line.blank || line.comment do continue
+		key, value, kv := codex_toml_key_value(strings.trim_space(config[line.start:line.end]))
+		if !kv || len(key) != 1 || key[0] != "source" do continue
+		if source, scalar := codex_toml_scalar(value); scalar do sources[current] = strings.clone(source, allocator)
 	}
 	return
 }
 
 // bridge_codex_config_rewrite applies edit to $codex_home/config.toml atomically
-// (tmp + rename). A missing config is nothing to do.
+// (tmp + rename). A missing config is nothing to do; one edit cannot change
+// safely is left as it is and reported.
 @(private = "file")
-bridge_codex_config_rewrite :: proc(codex_home: string, edit: proc(config, arg: string, allocator := context.temp_allocator) -> (string, bool), arg: string) -> (ok: bool, msg: string) {
+bridge_codex_config_rewrite :: proc(codex_home: string, edit: proc(config, arg: string, allocator := context.temp_allocator) -> (string, bool, bool), arg: string) -> (ok: bool, msg: string) {
 	path := bridgesvc.pjoin(codex_home, "config.toml")
 	if !os.exists(path) do return true, ""
 	raw, err := os.read_entire_file(path, context.temp_allocator)
 	if err != nil do return false, fmt.tprintf("cannot read %s: %v", path, err)
-	out, changed := edit(string(raw), arg)
+	out, changed, safe := edit(string(raw), arg)
+	if !safe do return false, fmt.tprintf("left %s unchanged: cannot tell its tables apart for sure", path)
 	if !changed do return true, ""
 	tmp := strings.concatenate({path, ".heimdall.tmp"}, context.temp_allocator)
 	if werr := os.write_entire_file(tmp, transmute([]byte)out); werr != nil do return false, fmt.tprintf("cannot write %s: %v", tmp, werr)
@@ -348,7 +533,7 @@ bridge_codex_own_ensure :: proc(bin_path: string, deadline: time.Time, env: []st
 	cached := bridgesvc.pjoin(bridgesvc.pjoin(bridgesvc.pjoin(bridgesvc.pjoin(codex_home, "plugins"), "cache"), marketplace), bridgesvc.pjoin(BRIDGE_CODEX_PLUGIN_NAME, version))
 	if version != "" && os.is_dir(cached) {
 		if raw, err := os.read_entire_file(bridgesvc.pjoin(codex_home, "config.toml"), context.temp_allocator); err == nil {
-			if _, changed := bridge_codex_config_set_plugin_disabled(string(raw), plugin_id); !changed {
+			if _, changed, safe := bridge_codex_config_set_plugin_disabled(string(raw), plugin_id); safe && !changed {
 				return true, fmt.tprintf("%s %s is already registered (enabled per launch)", plugin_id, version)
 			}
 		}

@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -70,7 +71,8 @@ test_codex_config_set_plugin_disabled :: proc(t: ^testing.T) {
 			true},
 	}
 	for c in cases {
-		got, changed := bridge_codex_config_set_plugin_disabled(c.input, id)
+		got, changed, ok := bridge_codex_config_set_plugin_disabled(c.input, id)
+		testing.expectf(t, ok, "%s: refused", c.name)
 		testing.expectf(t, got == c.want, "%s: got %q want %q", c.name, got, c.want)
 		testing.expectf(t, changed == c.changed, "%s: changed %v", c.name, changed)
 	}
@@ -145,22 +147,22 @@ test_codex_config_set_plugin_disabled_skips_array_lines :: proc(t: ^testing.T) {
 	// A multi-line array value inside the table is not a header.
 	input := "[plugins.\"heimdall@heimdall-codex-a\"]\ntags = [\n  [\"x\"],\n  [\"y\"]\n]\nenabled = true\n"
 	want := "[plugins.\"heimdall@heimdall-codex-a\"]\ntags = [\n  [\"x\"],\n  [\"y\"]\n]\nenabled = false\n"
-	got, changed := bridge_codex_config_set_plugin_disabled(input, "heimdall@heimdall-codex-a")
+	got, changed, ok := bridge_codex_config_set_plugin_disabled(input, "heimdall@heimdall-codex-a")
 	testing.expectf(t, got == want, "got %q", got)
-	testing.expect(t, changed)
+	testing.expect(t, changed && ok)
 }
 
 @(test)
 test_codex_config_remove_own_keeps_everything_else :: proc(t: ^testing.T) {
 	input := "model = \"o3\"\n\n[marketplaces.heimdall-codex]\nsource = \"/shared\"\n\n[marketplaces.heimdall-codex-a]\nsource_type = \"local\"\nsource = \"/a\"\n\n[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n\n[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = false\n\n[marketplaces.heimdall-codex-b]\nsource = \"/b\"\n"
 	want := "model = \"o3\"\n\n[marketplaces.heimdall-codex]\nsource = \"/shared\"\n\n[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n\n[marketplaces.heimdall-codex-b]\nsource = \"/b\"\n"
-	got, changed := bridge_codex_config_remove_own(input, "heimdall-codex-a")
+	got, changed, ok := bridge_codex_config_remove_own(input, "heimdall-codex-a")
 	testing.expectf(t, got == want, "got %q", got)
-	testing.expect(t, changed)
-	_, again := bridge_codex_config_remove_own(got, "heimdall-codex-a")
+	testing.expect(t, changed && ok)
+	_, again, _ := bridge_codex_config_remove_own(got, "heimdall-codex-a")
 	testing.expect(t, !again, "nothing left to remove")
 	// The shared marketplace is never an own one.
-	same, shared := bridge_codex_config_remove_own(input, "heimdall-codex")
+	same, shared, _ := bridge_codex_config_remove_own(input, "heimdall-codex")
 	testing.expect(t, !shared && same == input)
 }
 
@@ -230,4 +232,140 @@ test_codex_own_unregister_for_uninstall :: proc(t: ^testing.T) {
 	testing.expect(t, again)
 	missing, _ := bridge_codex_own_unregister_in(fmt.tprintf("%s/none", root), data_dir)
 	testing.expect(t, missing)
+}
+
+// Header detection: each shape that must (or must not) end an owned table.
+@(test)
+test_codex_config_remove_own_header_shapes :: proc(t: ^testing.T) {
+	Case :: struct { name, input, want: string }
+	cases := []Case{
+		{"spaced-trailing-comment",
+			"[marketplaces.heimdall-codex-a]\nsource = \"/x\"\n\n[mcp_servers.mine] # my server\ncommand = \"foo\"\n",
+			"[mcp_servers.mine] # my server\ncommand = \"foo\"\n"},
+		{"array-table",
+			"[marketplaces.heimdall-codex-a]\nsource = \"/x\"\n\n[[profiles.list]] # first\nname = \"x\"\n",
+			"[[profiles.list]] # first\nname = \"x\"\n"},
+		{"quoted-key-with-bracket-and-hash",
+			"[marketplaces.heimdall-codex-a]\nsource = \"/x\"\n\n[projects.\"/home/u/a]b # c\"]\ntrust_level = \"trusted\"\n[projects.'/x]#y'] # z\ntrust_level = \"trusted\"\n",
+			"[projects.\"/home/u/a]b # c\"]\ntrust_level = \"trusted\"\n[projects.'/x]#y'] # z\ntrust_level = \"trusted\"\n"},
+		{"whitespace",
+			"  [ marketplaces . heimdall-codex-a ]  \t# mine\nsource = \"/x\"\n\n\t[ mcp_servers . mine ]\t\ncommand = \"foo\"\n",
+			"\t[ mcp_servers . mine ]\t\ncommand = \"foo\"\n"},
+	}
+	for c in cases {
+		got, changed, ok := bridge_codex_config_remove_own(c.input, "heimdall-codex-a")
+		testing.expectf(t, ok && changed, "%s: ok %v changed %v", c.name, ok, changed)
+		testing.expectf(t, got == c.want, "%s: got %q want %q", c.name, got, c.want)
+	}
+	// An [[array]] of the same name is not the owned table.
+	arr := "[[marketplaces.heimdall-codex-a]]\nsource = \"/x\"\n"
+	same, changed, ok := bridge_codex_config_remove_own(arr, "heimdall-codex-a")
+	testing.expect(t, ok && !changed && same == arr)
+}
+
+// Round trip: removing the own tables from a config that has them gives back the
+// config without them byte for byte, and a config without them is left as is.
+@(test)
+test_codex_config_remove_own_round_trip_corpus :: proc(t: ^testing.T) {
+	MP :: "[marketplaces.heimdall-codex-a]\nsource_type = \"local\"\nsource = \"/a\"\n\n"
+	PL :: "[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = false\n\n"
+	Case :: struct { name, with_own, base: string }
+	cases := []Case{
+		// The round-3 review repro.
+		{"reviewer-repro",
+			"[marketplaces.heimdall-codex-a]\nsource = \"/x\"\n\n[mcp_servers.mine] # my server\ncommand = \"foo\"\n",
+			"[mcp_servers.mine] # my server\ncommand = \"foo\"\n"},
+		{"realistic",
+			"model = \"gpt-5\"\napproval_policy = \"on-request\"   # comment\n\n[mcp_servers.mine] # my server\ncommand = \"foo\"\nargs = [\n  \"--flag\",\n  [\"nested\"],\n]\n\n" + MP + "# my notes about profiles\n[[profiles.list]]\nname = \"x\"\n\n" + PL + "[projects.\"/home/u/a]b # c\"]\ntrust_level = \"trusted\"\n",
+			"model = \"gpt-5\"\napproval_policy = \"on-request\"   # comment\n\n[mcp_servers.mine] # my server\ncommand = \"foo\"\nargs = [\n  \"--flag\",\n  [\"nested\"],\n]\n\n# my notes about profiles\n[[profiles.list]]\nname = \"x\"\n\n[projects.\"/home/u/a]b # c\"]\ntrust_level = \"trusted\"\n"},
+		// A header-looking line inside a multi-line string is text, not a table.
+		{"multi-line-string",
+			"developer_instructions = \"\"\"\n[marketplaces.heimdall-codex-a]\nsource = \"/fake\"\n\"\"\"\nnotes = '''\n[plugins.\"heimdall@heimdall-codex-a\"]\n'''\n\n" + MP + PL,
+			"developer_instructions = \"\"\"\n[marketplaces.heimdall-codex-a]\nsource = \"/fake\"\n\"\"\"\nnotes = '''\n[plugins.\"heimdall@heimdall-codex-a\"]\n'''\n"},
+		{"crlf",
+			"model = \"o3\"\r\n\r\n[marketplaces.heimdall-codex-a]\r\nsource = \"/a\"\r\n\r\n[tui]\r\nnotifications = true\r\n",
+			"model = \"o3\"\r\n\r\n[tui]\r\nnotifications = true\r\n"},
+		{"no-final-newline",
+			"[marketplaces.heimdall-codex-a]\nsource = \"/a\"\n\n[tui]\nnotifications = true",
+			"[tui]\nnotifications = true"},
+		{"comment-after-own-table-stays",
+			MP + "# about mcp\n[mcp_servers.mine]\ncommand = \"foo\"\n",
+			"# about mcp\n[mcp_servers.mine]\ncommand = \"foo\"\n"},
+		{"only-own", MP + PL, ""},
+	}
+	for c in cases {
+		got, changed, ok := bridge_codex_config_remove_own(c.with_own, "heimdall-codex-a")
+		testing.expectf(t, ok && changed, "%s: ok %v changed %v", c.name, ok, changed)
+		testing.expectf(t, got == c.base, "%s: got %q want %q", c.name, got, c.base)
+		kept, again, again_ok := bridge_codex_config_remove_own(c.base, "heimdall-codex-a")
+		testing.expectf(t, again_ok && !again && kept == c.base, "%s: base changed: %q", c.name, kept)
+		// Adding the own plugin table only ever appends; every byte before stays.
+		added, _, added_ok := bridge_codex_config_set_plugin_disabled(c.base, "heimdall@heimdall-codex-a")
+		testing.expectf(t, added_ok && strings.has_prefix(added, c.base), "%s: set_plugin_disabled rewrote other bytes: %q", c.name, added)
+	}
+}
+
+@(test)
+test_codex_config_set_plugin_disabled_stops_at_commented_header :: proc(t: ^testing.T) {
+	id := "heimdall@heimdall-codex-a"
+	input := "[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = true\n[mcp_servers.mine] # my server\nenabled = true\n"
+	got, changed, ok := bridge_codex_config_set_plugin_disabled(input, id)
+	testing.expect(t, ok && changed)
+	testing.expect_value(t, got, "[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = false\n[mcp_servers.mine] # my server\nenabled = true\n")
+	// No enabled key: it goes into the owned table, not the next one.
+	input = "[plugins.\"heimdall@heimdall-codex-a\"] # own\n\n[mcp_servers.mine] # my server\nenabled = true\n"
+	got, changed, ok = bridge_codex_config_set_plugin_disabled(input, id)
+	testing.expect(t, ok && changed)
+	testing.expect_value(t, got, "[plugins.\"heimdall@heimdall-codex-a\"] # own\nenabled = false\n\n[mcp_servers.mine] # my server\nenabled = true\n")
+	// Already disabled, with a comment: nothing to do.
+	input = "[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = false # per launch\n"
+	got, changed, ok = bridge_codex_config_set_plugin_disabled(input, id)
+	testing.expect(t, ok && !changed && got == input)
+}
+
+@(test)
+test_codex_config_own_marketplaces_stop_at_commented_header :: proc(t: ^testing.T) {
+	config := "[marketplaces.heimdall-codex-a] # own\nsource = \"/a\" # src\n[mcp_servers.x] # not a marketplace\nsource = \"/evil\"\n[marketplaces.heimdall-codex-b]\nsource = '/b'\n"
+	names, sources := bridge_codex_config_own_marketplaces(config)
+	testing.expect_value(t, len(names), 2)
+	if len(names) == 2 {
+		testing.expect_value(t, names[0], "heimdall-codex-a")
+		testing.expect_value(t, sources[0], "/a")
+		testing.expect_value(t, names[1], "heimdall-codex-b")
+		testing.expect_value(t, sources[1], "/b")
+	}
+}
+
+// When a line cannot be classified for sure, every edit refuses and the file on
+// disk keeps every byte.
+@(test)
+test_codex_config_edits_refuse_when_unsure :: proc(t: ^testing.T) {
+	unsure := []string{
+		// An escaped quote in a header key (not decoded).
+		"[plugins.\"a\\\"]b\"]\nx = 1\n",
+		// Not valid TOML: an unterminated string, an unclosed array.
+		"name = \"open\n",
+		"args = [\n  \"a\",\n",
+	}
+	for prefix in unsure {
+		input := strings.concatenate({prefix, "\n[marketplaces.heimdall-codex-a]\nsource = \"/a\"\n\n[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = true\n"}, context.temp_allocator)
+		got, changed, ok := bridge_codex_config_remove_own(input, "heimdall-codex-a")
+		testing.expectf(t, !changed && got == input, "remove_own %q: changed %v", prefix, changed)
+		// Inside an unclosed array nothing is a header, so nothing is dropped
+		// either way; elsewhere the owned header is found and the edit refuses.
+		if prefix != unsure[2] do testing.expectf(t, !ok, "remove_own %q should refuse", prefix)
+		got, changed, ok = bridge_codex_config_set_plugin_disabled(input, "heimdall@heimdall-codex-a")
+		testing.expectf(t, !ok && !changed && got == input, "set_plugin_disabled %q: ok %v changed %v", prefix, ok, changed)
+	}
+
+	root := fmt.tprintf("/tmp/heimdall-codex-own-unsure-%d", time.now()._nsec)
+	defer _ = os.remove_all(root)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/plugins/cache/heimdall-codex-a/heimdall/1", root)) == nil)
+	config := "[plugins.\"a\\\"]b\"]\nx = 1\n\n[marketplaces.heimdall-codex-a]\nsource = \"/a\"\n"
+	codex_own_test_write(t, fmt.tprintf("%s/config.toml", root), config)
+	ok, msg := bridge_codex_own_unregister_files(root, "heimdall-codex-a")
+	testing.expectf(t, !ok && msg != "", "unregister should refuse: %s", msg)
+	raw, _ := os.read_entire_file(fmt.tprintf("%s/config.toml", root), context.temp_allocator)
+	testing.expect_value(t, string(raw), config)
+	testing.expect(t, !os.exists(fmt.tprintf("%s/config.toml.heimdall.tmp", root)), "no tmp left")
 }
