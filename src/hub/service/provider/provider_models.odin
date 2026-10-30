@@ -81,7 +81,6 @@ apply_model_discovery_report :: proc(service: ^Provider_Service, bridge_id: stri
 		if domain.profile_effective_id(item.provider,item.profile_id)!=domain.profile_effective_id(item.provider,profile_id) do return domain.domain_error(.Forbidden,"model report profile mismatch")
 		permitted := false
 		for p in allowed do if p==item.provider do permitted=true
-		if e:=validate_report_profile(service.repo,bridge_id,item.provider,profile_id);e.code!=.None do return e
 		if len(item.custom_models)>256 do return domain.domain_error(.Validation_Failed,"too many custom models")
 		for id in item.custom_models do if !model_id_valid(id) do return domain.domain_error(.Validation_Failed,"invalid custom model")
 		if !permitted do return domain.domain_error(.Forbidden,"model report contains an unrequested provider")
@@ -103,6 +102,8 @@ apply_model_discovery_report :: proc(service: ^Provider_Service, bridge_id: stri
 			for k in 0..<j do if item.models[k].model_id==m.model_id do return domain.domain_error(.Validation_Failed,"duplicate model ID")
 		}
 	}
+	// Keep malformed/unrequested reports independent of repository availability.
+	for item in items do if e:=validate_report_profile(service.repo,bridge_id,item.provider,profile_id);e.code!=.None do return e
 	for item in items {
         observed:=item.models
         if item.observed_models_json!="" {
