@@ -5,7 +5,7 @@ import { type ProviderSetupResponse, type ProviderTestRunResponse, providerSetup
 // xterm stays out of the entry chunk until the test-run terminal mounts.
 const AgentPaneComposerPanel = lazy(() => import('../chat/AgentPaneComposerPanel'));
 
-export interface ProviderTestTarget { provider: string; providerLabel: string; modelId: string; modelLabel: string; binaryPath: string }
+export interface ProviderTestTarget { profileId?: string; provider: string; providerLabel: string; modelId: string; modelLabel: string; binaryPath: string }
 export interface ProviderTestRunModalProps { setup: ProviderSetupResponse; target: ProviderTestTarget; onClose: () => void }
 
 export function ProviderTestRunModal({ setup, target, onClose }: ProviderTestRunModalProps) {
@@ -15,11 +15,11 @@ export function ProviderTestRunModal({ setup, target, onClose }: ProviderTestRun
 
   useEffect(() => {
     let cancelled = false;
-    const key = `${setup.bridge.bridge_id}\u0000${target.provider}\u0000${target.modelId}`;
+    const key = `${setup.bridge.bridge_id}\u0000${target.provider}\u0000${target.profileId || target.provider}\u0000${target.modelId}`;
     if (!startRequestRef.current || startRequestRef.current.key !== key) {
       startRequestRef.current = {
         key,
-        promise: providerSetupApi.startTestRun(setup, target.provider, target.modelId),
+        promise: providerSetupApi.startTestRun(setup, target.provider, target.modelId, target.profileId),
       };
     }
     // React Strict Mode deliberately replays effects in development. Reuse the
@@ -30,7 +30,7 @@ export function ProviderTestRunModal({ setup, target, onClose }: ProviderTestRun
       (reason) => { if (!cancelled) setError(String(reason?.message || reason)); },
     );
     return () => { cancelled = true; };
-  }, [setup.bridge.bridge_id, target.modelId, target.provider]);
+  }, [setup.bridge.bridge_id, target.modelId, target.provider, target.profileId]);
 
   useEffect(() => {
     if (!run || ['stopped', 'failed', 'cancelled', 'expired'].includes(run.state)) return;

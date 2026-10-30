@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Select, Spinner } from '@ui';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import ProviderSetupSurface from '../providers/ProviderSetupSurface';
+import ProviderProfilesSurface from '../providers/ProviderProfilesSurface';
 
 export function ProvidersPanel() {
   const query = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = useMemo(() => (query.data?.bridges || []).filter(
     (bridge: any) => String(bridge?.status || '').toLowerCase() !== 'revoked' && !bridge?.revoked_at,
   ), [query.data]);
-  const [bridgeId, setBridgeId] = useState('');
+  const [bridgeId, setBridgeId] = useState(() => new URLSearchParams(window.location.hash.split('?')[1] || '').get('bridge') || '');
 
   useEffect(() => {
+    if (!query.data) return;
     if (!bridgeId && bridges.length) setBridgeId(String(bridges[0]?.bridge_id || bridges[0]?.id || ''));
     if (bridgeId && !bridges.some((bridge: any) => String(bridge?.bridge_id || bridge?.id || '') === bridgeId)) {
       setBridgeId(String(bridges[0]?.bridge_id || bridges[0]?.id || ''));
     }
-  }, [bridgeId, bridges]);
+  }, [bridgeId, bridges, query.data]);
 
   if (query.isLoading) return <div className="flex min-h-64 items-center justify-center gap-2 text-sm text-muted"><Spinner size="sm" /> Loading bridges…</div>;
   if (query.isError) return <div role="alert" className="rounded-xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger">Could not load bridges.</div>;
@@ -32,7 +33,7 @@ export function ProvidersPanel() {
           })}
         </Select>
       </div>
-      {bridgeId ? <ProviderSetupSurface mode="settings" bridgeId={bridgeId} /> : null}
+      {bridgeId ? <ProviderProfilesSurface key={bridgeId} bridge={bridges.find((b: any) => String(b.bridge_id || b.id) === bridgeId)} /> : null}
     </div>
   );
 }

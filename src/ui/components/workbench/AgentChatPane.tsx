@@ -916,12 +916,14 @@ export function AgentChatPane({
 
   const [stagedBridgeId, setStagedBridgeId] = useState<string | null>(null);
   const [provider, setProvider] = useState('');
+  const [providerProfile, setProviderProfile] = useState('');
   const [model, setModel] = useState('');
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const editingRuntime =
     runtimeMenuOpen ||
     stagedBridgeId !== null ||
     Boolean(provider && provider !== instanceProvider) ||
+    Boolean(providerProfile && providerProfile !== (instance?.provider_profile || instanceProvider)) ||
     Boolean(model && model !== instanceModel);
   // Bridge status/update/revoke events patch or invalidate this list; opening the
   // runtime picker fetches only the selected bridge's provider status.
@@ -1300,14 +1302,14 @@ export function AgentChatPane({
   }, [caps, instanceProvider]);
   const modelOptions = useMemo(() => {
     const selectedProvider = provider || instanceProvider || providerOptions[0] || '';
-    const cap = caps.find((c) => c.provider === selectedProvider);
+    const cap = caps.find((c) => c.provider === selectedProvider && (c.profile_id || c.provider) === (providerProfile || instance?.provider_profile || selectedProvider));
     const t = capModels(cap);
     const ordered = modelOrder
       .filter((x) => t.includes(x))
       .concat(t.filter((x) => !modelOrder.includes(x)));
     if (instanceModel && !ordered.includes(instanceModel)) ordered.unshift(instanceModel);
     return ordered;
-  }, [caps, provider, providerOptions, instanceProvider, instanceModel]);
+  }, [caps, provider, providerProfile, providerOptions, instanceProvider, instanceModel, instance?.provider_profile]);
 
   const chatMessages = useMemo(
     () =>
@@ -1358,9 +1360,9 @@ export function AgentChatPane({
   const instanceCatalogExtension = useMemo(
     () =>
       (instanceProvidersQuery.data?.providers || []).find(
-        (entry: any) => entry?.provider === instanceProvider,
+        (entry: any) => entry?.provider === instanceProvider && (entry?.profile_id || entry?.provider) === (instance?.provider_profile || instanceProvider),
       )?.extension ?? null,
-    [instanceProvidersQuery.data, instanceProvider],
+    [instanceProvidersQuery.data, instanceProvider, instance?.provider_profile],
   );
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
@@ -1396,8 +1398,9 @@ export function AgentChatPane({
   useEffect(() => {
     if (settingsEditedRef.current) return;
     setProvider(instanceProvider);
+    setProviderProfile(String(instance?.provider_profile || instanceProvider));
     setModel(instanceModel);
-  }, [instanceProvider, instanceModel]);
+  }, [instanceProvider, instanceModel, instance?.provider_profile]);
   const observedOperationRef = useRef<InstanceReconfiguration | undefined>(undefined);
   useEffect(() => {
     observedOperationRef.current = undefined;
@@ -1405,6 +1408,7 @@ export function AgentChatPane({
     setStagedBridgeId(null);
     setAcceptedOperation(null);
     setProvider(instanceProvider);
+    setProviderProfile(String(instance?.provider_profile || instanceProvider));
     setModel(instanceModel);
     setReconfigStatus('');
   }, [agentInstanceId]);
@@ -1418,6 +1422,7 @@ export function AgentChatPane({
     settingsEditedRef.current = true;
     setStagedBridgeId(operation.destination.bridge_id);
     setProvider(operation.destination.provider);
+    setProviderProfile(operation.destination.provider_profile || operation.destination.provider);
     setModel(operation.destination.model);
   }, [operation?.operation_id, operation?.phase]);
   // React to an operation settling WHILE this pane watches it, never to a settled
@@ -1434,6 +1439,7 @@ export function AgentChatPane({
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
     setProvider(operation.destination.provider);
+    setProviderProfile(operation.destination.provider_profile || operation.destination.provider);
     setModel(operation.destination.model);
   }, [operation?.operation_id, operation?.phase, operation?.failure_code]);
   useEffect(() => {
@@ -1488,12 +1494,15 @@ export function AgentChatPane({
     return () => window.removeEventListener(CONVERSATION_MESSAGES_READ_EVENT, onRead);
   }, [conversationId]);
 
+  const instanceProfile = String(instance?.provider_profile || instanceProvider);
+  const effectiveProfile = providerProfile || instanceProfile;
   const effectiveProvider = provider || instanceProvider;
   const effectiveModel = model || instanceModel;
   const selectionChangesConfig =
     Boolean(agentInstanceId) &&
     (destinationBridgeId !== instanceBridgeId ||
       (effectiveProvider && effectiveProvider !== instanceProvider) ||
+      effectiveProfile !== instanceProfile ||
       (effectiveModel && effectiveModel !== instanceModel));
   const validityInput = {
     instanceLoaded: Boolean(instance),
@@ -1507,6 +1516,7 @@ export function AgentChatPane({
     projectLoaded: Boolean(projectQuery.data),
     projectError: projectQuery.isError,
     provider: instanceProvider,
+    providerProfile: instanceProfile,
     model: instanceModel,
     capabilities: currentCaps,
     capabilitiesLoaded: !instanceBridge || instanceProviders.loaded,
@@ -1521,6 +1531,7 @@ export function AgentChatPane({
     projectLoaded: Boolean(destinationProjectQuery.data),
     projectError: destinationProjectQuery.isError,
     provider: effectiveProvider,
+    providerProfile: effectiveProfile,
     model: effectiveModel,
     capabilities: caps,
     capabilitiesLoaded: !destinationBridge || destination.loaded,
@@ -2152,6 +2163,7 @@ export function AgentChatPane({
         bridge_id: destinationBridgeId,
         project_id: destinationProjectId,
         provider: nextProvider,
+        provider_profile: effectiveProfile,
         model: nextModel,
         expected_revision: Number(instance?.configuration_revision || 0),
         idempotency_key:
@@ -2216,6 +2228,7 @@ export function AgentChatPane({
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
     setProvider(instanceProvider);
+    setProviderProfile(String(instance?.provider_profile || instanceProvider));
     setModel(instanceModel);
     setReconfigStatus('');
   }
@@ -2328,13 +2341,14 @@ export function AgentChatPane({
       <RuntimeConfigurationOptions
         debugPrefix="conversation"
         bridges={bridges}
-        selection={{ bridgeId: destinationBridgeId, provider, model }}
+        selection={{ bridgeId: destinationBridgeId, provider, providerProfile: effectiveProfile, model }}
         requireReconfiguration
         disabled={runtimeActionBusy || operationBlocksInput || isStarting}
         onChange={(next) => {
           settingsEditedRef.current = true;
           setStagedBridgeId(next.bridgeId);
           setProvider(next.provider);
+          setProviderProfile(next.providerProfile || next.provider);
           setModel(next.model);
         }}
       />

@@ -281,7 +281,7 @@ export default function BridgesPanel() {
                           </span>
                         ) : null}
 
-                        <BridgeNoProvidersBadge bridge={bridge} id={id} />
+                        <BridgeNoProvidersBadge bridge={bridge} id={id} /><a data-debug-id={`settings-bridge-profiles-${id}`} className="text-xs text-accent underline" href={`#/settings/providers?bridge=${encodeURIComponent(id)}`}>Provider profiles</a>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-caption text-muted">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-primary">{statusLabel(bridge)}</span></span>
