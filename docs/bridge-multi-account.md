@@ -73,6 +73,10 @@ copy or an older shared release moves to the shared root; a strictly newer one,
 from a profile already updated, is left alone. Older shared releases are pruned
 once every provider uses the newest.
 
+A per-account provider profile (its own config dir) is not shared, so its
+extension registers from that profile's own `<data dir>/extensions` copy. That
+path stays the same across updates and no other profile's prune touches it.
+
 Uninstalling a profile removes only that profile's own copy; the shared root and
 the provider registration stay. Removing a provider's extension from the hub
 (Settings) is left undone, with a message, while another profile of this OS user

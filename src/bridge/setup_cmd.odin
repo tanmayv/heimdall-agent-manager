@@ -64,7 +64,7 @@ bridge_setup_command :: proc(args: []string) -> bool {
 		return false
 	}
 	host := bridge_service_host()
-	if has_flag(args, "--separate-account") && has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) {
+	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) && has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) {
 		fmt.eprintln("ham-bridge setup: --separate-account and --replace-other-account are mutually exclusive")
 		return false
 	}
@@ -118,7 +118,7 @@ bridge_setup_command :: proc(args: []string) -> bool {
 // neither account flag) the user's yes to a profile owned by an account that
 // this run would re-enroll. Updates of an enrolled profile never ask.
 bridge_setup_wants_separate_account :: proc(host: bridgesvc.Host, args: []string, profile: bridgesvc.Profile) -> bool {
-	if has_flag(args, "--separate-account") do return true
+	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) do return true
 	if has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) || !bridge_stdin_is_terminal(args) do return false
 	l := bridgesvc.layout_for(host, profile.service_name)
 	current := bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)))

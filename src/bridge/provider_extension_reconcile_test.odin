@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import contracts "odin_test:contracts"
+import bridgesvc "odin_test:lib/bridgesvc"
 import "core:os"
 import "core:strings"
 import "base:runtime"
@@ -98,6 +99,42 @@ test_bridge_extensions_shared_root_publish :: proc(t: ^testing.T) {
 	// Uninstalling profile a (its whole data dir) leaves the shared root intact.
 	_ = os.remove_all(a)
 	testing.expect_value(t, bridge_extensions_newest_shared(root), newer)
+}
+
+// A per-account provider profile registers from its profile's own copy, so
+// another profile publishing a newer shared release and pruning the older one
+// leaves that registration's directory in place.
+@(test)
+test_bridge_extensions_profile_registration_survives_prune :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	base := test_install_path({os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp",
+		fmt.tprintf("ham-shared-ext-pp-%d-%d", os.get_pid(), time.to_unix_nanoseconds(time.now()))})
+	defer _ = os.remove_all(base)
+	data_root := test_install_path({base, "heimdall", "bridges"})
+	a := test_install_path({data_root, "heimdall-bridge-hub"})
+	testing.expect(t, os.make_directory_all(test_install_path({a, "extensions", "claude-code"})) == nil)
+	saved_data := bridge_config.data_dir
+	defer bridge_config.data_dir = saved_data
+	bridge_config.data_dir = a
+
+	// Release N is the newest shared release when the provider profile installs.
+	shared, ok, msg := bridge_extensions_publish_shared(test_install_path({a, "extensions"}), a)
+	testing.expectf(t, ok, "publish: %s", msg)
+	got := bridge_get_profile_extension_path("claude", context.temp_allocator)
+	testing.expect_value(t, got, test_install_path({a, "extensions", "claude-code"}))
+	testing.expect(t, !strings.has_prefix(got, bridgesvc.pdir(shared)), "provider profile must not register from a shared release")
+
+	// Another profile publishes N+1 and prunes N.
+	newer := test_install_path({bridge_extensions_shared_root(a), "999.0.0", "extensions"})
+	testing.expect(t, os.make_directory_all(newer) == nil)
+	bridge_extensions_prune_shared(newer)
+	testing.expect(t, !os.is_dir(shared), "release N pruned")
+	testing.expect(t, os.is_dir(got), "provider-profile registration still resolves after prune")
+
+	// Without its own copy a profile falls back to the general resolver.
+	_ = os.remove_all(test_install_path({a, "extensions"}))
+	testing.expect(t, !strings.has_prefix(bridge_get_profile_extension_path("claude", context.temp_allocator), a))
 }
 
 @(test)

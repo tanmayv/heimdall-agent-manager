@@ -226,7 +226,8 @@ bridge_hub_handle_extension_install_command :: proc(conn: ^ws.Connection, text: 
 	}
 
 	_ = bridge_provider_extension_install_send_progress(conn, command_id, prov, "installing", 10, "Resolving provider extension assets...",profile_id)
-	ext_path := bridge_extension_bundle_resolver(canonical)
+	// A provider profile registers from this profile's own copy, which no other profile prunes.
+	ext_path := bridge_get_profile_extension_path(canonical) if pp_ref != nil else bridge_extension_bundle_resolver(canonical)
 	defer delete(ext_path)
 	if ext_path == "" || !bridge_os_dir_exists(ext_path) {
 		bridge_extension_install_fail(conn, command_id, prov, "extension_not_found",
