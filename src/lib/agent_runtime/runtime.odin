@@ -78,6 +78,8 @@ render_starter_prompt_for_agent :: proc(profile: Agent_Profile, daemon_url, agen
 		// Strip only the known instruction sentence, never a line containing other
 		// bootstrap instructions or arbitrary occurrences of a command in prose.
 		out, _ = strings.replace_all(out, "First, run: {ctl_bin} agent start-success. ", "")
+		out, _ = strings.replace_all(out, "First, run: " + CTL_SHIM_INVOCATION + " agent start-success. ", "")
+		// A Hub older than this bridge still renders the pre-bin/ shim path.
 		out, _ = strings.replace_all(out, "First, run: ./.heimdall/bin/ham-ctl agent start-success. ", "")
 	}
 	out, _ = strings.replace_all(out, "{token}", agent_token)

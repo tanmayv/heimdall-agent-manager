@@ -172,7 +172,7 @@ access to another.
    a provider process starts.
 3. [Bootstrap assembly](src/bridge/bootstrap_service.odin) writes provider-specific instructions
    (`AGENTS.md` or `CLAUDE.md`), applicable memory/skills, `heimdall-bootstrap-manifest.json`,
-   and `./.heimdall/bin/ham-ctl`. The Bridge also supplies the local endpoint, instance identity,
+   and `./bin/ham-ctl`. The Bridge also supplies the local endpoint, instance identity,
    and agent credential.
 4. The Bridge spawns the agent through the local `ham-pty-host` daemon. The daemon owns child
    processes, terminal I/O, and terminal state; the Bridge forwards runtime observations to
@@ -233,7 +233,7 @@ See [lease release and solo rules](src/hub/service/taskv2/lease.odin).
 
 ### CLI and Communication
 
-From an agent run directory, use the generated `./.heimdall/bin/ham-ctl` wrapper.
+From an agent run directory, use the generated `./bin/ham-ctl` wrapper.
 It authenticates to the local Bridge, which routes authorized operations to the Hub.
 User/operator commands have a separate `ham-ctl hub` surface; inspect `ham-ctl help hub`
 rather than copying retired `--as user`/`--as agent` examples.

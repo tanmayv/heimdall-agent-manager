@@ -38,8 +38,8 @@ PORT="${HEIMDALL_PREVIEW_PORT:-5173}"
 VITE_PORT="${HEIMDALL_VITE_PORT:-5174}"
 if [[ -z "${HAM_CTL:-}" ]]; then
   for candidate in \
-    "$REPO/.heimdall/bin/ham-ctl" \
-    /tmp/heimdall-bridge-local/instances/*/.heimdall/bin/ham-ctl \
+    "$REPO/bin/ham-ctl" \
+    /tmp/heimdall-bridge-local/instances/*/bin/ham-ctl \
     "$HOME/.nix-profile/bin/ham-ctl"; do
     if [[ -x "$candidate" ]]; then
       HAM_CTL="$candidate"

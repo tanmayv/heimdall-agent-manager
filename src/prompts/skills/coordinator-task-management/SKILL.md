@@ -7,7 +7,7 @@ description: How a task-chain COORDINATOR runs a chain of tickets with ham-ctl �
 
 You plan, triage, publish and steer. Leased **workers** and **reviewers** do the work, unless the chain runs in **Solo mode** (§8), where you are also the worker and the user reviews.
 
-The Hub owns task state: leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./.heimdall/bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
+The Hub owns task state: leases make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
 ## 1. Choose the next work item, not a chain type
 Every task chain is `mixed_work`. You remain coordinator of the same chain, team,
@@ -20,17 +20,17 @@ inspect their run and use whole-run retry/cancel rather than editing stage ident
 Configure shared fleet roles before starting a recipe; runs never widen the fleet.
 
 ```bash
-./.heimdall/bin/ham-ctl workflow templates
-./.heimdall/bin/ham-ctl workflow run fix_flaky_tests --chain <chain-id> --request-id <stable-key> \
+./bin/ham-ctl workflow templates
+./bin/ham-ctl workflow run fix_flaky_tests --chain <chain-id> --request-id <stable-key> \
   --input suite=src/auth --input test_command="make test-auth" \
   --after task:<investigation-id>
-./.heimdall/bin/ham-ctl workflow list --chain <chain-id>
-./.heimdall/bin/ham-ctl workflow status <run-id>
-./.heimdall/bin/ham-ctl workflow output <run-id> <stage-key> [--execution <n>]
-./.heimdall/bin/ham-ctl workflow history <run-id>
-./.heimdall/bin/ham-ctl workflow retry <run-id> --expected-revision <revision> --reason "<why>"
-./.heimdall/bin/ham-ctl workflow cancel <run-id> --execution <number> --reason "<why>"
-./.heimdall/bin/ham-ctl task-chain depend --chain <chain-id> --item task:<validation-id> --on workflow_run:<run-id>
+./bin/ham-ctl workflow list --chain <chain-id>
+./bin/ham-ctl workflow status <run-id>
+./bin/ham-ctl workflow output <run-id> <stage-key> [--execution <n>]
+./bin/ham-ctl workflow history <run-id>
+./bin/ham-ctl workflow retry <run-id> --expected-revision <revision> --reason "<why>"
+./bin/ham-ctl workflow cancel <run-id> --execution <number> --reason "<why>"
+./bin/ham-ctl task-chain depend --chain <chain-id> --item task:<validation-id> --on workflow_run:<run-id>
 ```
 
 To fan out over a list you already know, define a stage with
@@ -73,8 +73,8 @@ cat > proposal.json <<'EOF'
   ]
 }
 EOF
-./.heimdall/bin/ham-ctl task-chain propose --file proposal.json [--auto-approve]
-./.heimdall/bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
+./bin/ham-ctl task-chain propose --file proposal.json [--auto-approve]
+./bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
 ```
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
 - Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
@@ -86,8 +86,8 @@ EOF
 ## 3. Fleet and review roles
 Assign work to durable identities (`agt_…`), never `inst_…`.
 ```bash
-./.heimdall/bin/ham-ctl task-chain fleet list [<chain-id>]
-./.heimdall/bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
+./bin/ham-ctl task-chain fleet list [<chain-id>]
+./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
   --capacity 2 --roles worker,reviewer [--min-warm 1] [--idle-ttl 300] \
   [--bridge brg_main] [--provider claude --model claude-sonnet-5-5]
 ```
@@ -107,7 +107,7 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 
 The Hub keeps a mechanical chain summary (done tasks with their commit, open tasks, every dead end) and appends your curated notes. Keep yours short and current; compact it when you get `summary_overflow`.
 ```bash
-./.heimdall/bin/ham-ctl task-chain summary set --stdin <<'EOF'
+./bin/ham-ctl task-chain summary set --stdin <<'EOF'
 Conventions: tests with `pytest -q`; never edit legacy/.
 Decided: token hashes are sha256 (t_api).
 EOF
@@ -150,8 +150,8 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 - Workflow gates with approver `user_or_coordinator`: your own `review post --verdict approve|request_changes` decides.
 - Tasks with `requires_user_approval` and gates with approver `user`: retain the explicit review gate and use the existing task review UI. When the user explicitly decides in chat, record that verdict for them:
   ```bash
-  ./.heimdall/bin/ham-ctl review post <task-id> --verdict approve --on-behalf-of user
-  ./.heimdall/bin/ham-ctl review post <task-id> --verdict request_changes --on-behalf-of user \
+  ./bin/ham-ctl review post <task-id> --verdict approve --on-behalf-of user
+  ./bin/ham-ctl review post <task-id> --verdict request_changes --on-behalf-of user \
     --summary "<the user's reason>"
   ```
   The user can also approve directly from their attention deck. Do not create or attach a `task.review` action card as a required step. Never infer task approval from a question-answer selection or silence; wait for an explicit review decision. Unrelated action-card operations, such as memory approval, remain available.

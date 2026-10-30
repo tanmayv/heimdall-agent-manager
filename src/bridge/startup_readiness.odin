@@ -9,6 +9,7 @@ import "core:time"
 import "core:encoding/json"
 import httpc "odin_test:lib/httpc"
 import contracts "odin_test:contracts"
+import agent_runtime "odin_test:lib/agent_runtime"
 
 // All state belongs to one token issuance/launch, not to an extension session
 // (SessionStart can also occur after /clear). bridge_runtime_mutex owns it.
@@ -56,7 +57,7 @@ bridge_startup_worker_ensure_started :: proc() {
 }
 
 BRIDGE_STARTUP_RETRY_MS :: 1_000
-BRIDGE_STARTUP_INSTRUCTION :: "Run `./.heimdall/bin/ham-ctl agent start-success` now to confirm that this agent is ready."
+BRIDGE_STARTUP_INSTRUCTION :: "Run `" + agent_runtime.CTL_SHIM_INVOCATION + " agent start-success` now to confirm that this agent is ready."
 
 bridge_startup_event :: proc(ev: contracts.Ext_Event) -> bool {
 	// Unknown agent types and subagent identities cannot establish main readiness.
