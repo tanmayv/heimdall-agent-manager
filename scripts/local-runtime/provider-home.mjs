@@ -9,8 +9,9 @@
 // developer's real ~/.claude, ~/.codex, ... This copies in what a provider needs to
 // start already signed in and without first-run dialogs: auth files, account and
 // onboarding state, the consent to skip permission prompts, and per-project trust.
-// Plugins, marketplaces, hooks, history and sessions are NOT copied, so the instance
-// starts with no extensions.
+// Plugins, marketplaces, hooks, MCP servers, status-line commands, history and
+// sessions are NOT copied: nothing that runs code on the real side follows the
+// agents into the instance, and the instance starts with no extensions.
 //
 // The real home is only ever read. Re-running (`local-bridge.sh reseed-auth`)
 // re-applies the real values on top of the instance's files and keeps what the
@@ -25,7 +26,7 @@
 // avoid the problem entirely.
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
+  accessSync, chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
   rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -39,10 +40,11 @@ const CLAUDE_JSON_KEYS = [
   'customApiKeyResponses', 'bypassPermissionsModeAccepted', 'migrationVersion',
   'opusProMigrationComplete', 'sonnet1m45MigrationComplete', 'firstStartTime',
 ];
-// claude: settings.json keys that select plugins; the instance keeps its own.
-const CLAUDE_PLUGIN_SETTINGS = ['enabledPlugins', 'extraKnownMarketplaces'];
-// codex: config.toml tables that belong to installed plugins.
-const CODEX_PLUGIN_TABLE = /^\[(plugins|marketplaces|hooks\.state)([.\]])/;
+// claude: settings.json keys that install or run code (plugins, hooks, MCP servers,
+// the status-line command). The real values are dropped; the instance keeps its own.
+const CLAUDE_PLUGIN_SETTINGS = ['enabledPlugins', 'extraKnownMarketplaces', 'hooks', 'mcpServers', 'statusLine'];
+// codex: config.toml tables that install or run code, with the same rule.
+const CODEX_PLUGIN_TABLE = /^\[\[?(plugins|marketplaces|hooks|mcp_servers)([.\]])/;
 
 // Per provider: the files seeded. kind copy = verbatim (symlinks into a read-only
 // store, e.g. home-manager's /nix/store files, are recreated as symlinks); the
@@ -67,7 +69,6 @@ export const PROVIDERS = {
     { path: '.gemini/config/config.json', kind: 'copy' },
     { path: '.gemini/antigravity-cli/antigravity-oauth-token', kind: 'copy' },
     { path: '.gemini/antigravity-cli/settings.json', kind: 'copy' },
-    { path: '.gemini/hooks.json', kind: 'copy' },
     { path: '.gemini/GEMINI.md', kind: 'copy' },
     { path: '.gemini/CLAUDE.md', kind: 'copy' },
     { path: '.gemini/CODEX.md', kind: 'copy' },
@@ -124,11 +125,32 @@ export function mergeClaudeSettings(real, current) {
   return out;
 }
 
+/** Remove `key = ...` (including a multi-line array value) from top-level lines. */
+function dropTomlKey(lines, key) {
+  const out = [];
+  let depth = 0;
+  let skipping = false;
+  for (const line of lines) {
+    if (!skipping && new RegExp(`^${key}\\s*=`).test(line)) skipping = true;
+    if (skipping) {
+      for (const ch of line.replace(/"(?:[^"\\]|\\.)*"/g, '')) {
+        if (ch === '[') depth += 1;
+        else if (ch === ']') depth -= 1;
+      }
+      if (depth <= 0) { skipping = false; depth = 0; }
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
 /** Split TOML text into a preamble and [table] blocks (header line + body). */
 function tomlBlocks(text) {
   const blocks = [{ header: '', lines: [] }];
   for (const line of text.split('\n')) {
-    if (/^\s*\[/.test(line)) blocks.push({ header: line.trim(), lines: [line] });
+    // A header starts in column 0; an indented `[` continues a multi-line array.
+    if (/^\[/.test(line)) blocks.push({ header: line.trim(), lines: [line] });
     else blocks[blocks.length - 1].lines.push(line);
   }
   return blocks;
@@ -141,6 +163,8 @@ function tomlBlocks(text) {
  */
 export function mergeCodexToml(realText, currentText = '', trustRoots = []) {
   const real = tomlBlocks(realText).filter((b) => !CODEX_PLUGIN_TABLE.test(b.header));
+  // Top-level `notify` runs a program on every turn: the real one stays real-side.
+  if (real[0] && !real[0].header) real[0] = { ...real[0], lines: dropTomlKey(real[0].lines, 'notify') };
   const headers = new Set(real.map((b) => b.header));
   const kept = tomlBlocks(currentText).filter((b) => b.header
     && (CODEX_PLUGIN_TABLE.test(b.header) || (/^\[projects\./.test(b.header) && !headers.has(b.header))));
@@ -154,12 +178,17 @@ export function mergeCodexToml(realText, currentText = '', trustRoots = []) {
 }
 
 /** A symlink whose target is outside the real home (e.g. /nix/store) is immutable. */
-function storeLinkTarget(src, realHome) {
+/**
+ * A symlink into a read-only store (home-manager's /nix/store files) is recreated as
+ * the same symlink. Any other link is copied: a writable target outside the real
+ * home (a dotfiles checkout, /etc) would let the instance write back through it.
+ */
+export function storeLinkTarget(src) {
   if (!lstatSync(src).isSymbolicLink()) return '';
-  const raw = readlinkSync(src);
-  const target = isAbsolute(raw) ? raw : resolve(dirname(src), raw);
-  const rel = relative(realHome, target);
-  return rel.startsWith('..') || isAbsolute(rel) ? target : '';
+  let target;
+  try { target = realpathSync(src); } catch { return ''; }
+  if (target.startsWith('/nix/store/')) return target;
+  try { accessSync(target, fsConstants.W_OK); return ''; } catch { return target; }
 }
 
 /**
@@ -180,7 +209,7 @@ export function seed({ realHome, home, providers = ALL_PROVIDERS, trustRoots = [
       const dst = join(homeAbs, path);
       if (!existsSync(src)) continue;
       const srcBytes = readFileSync(src);
-      const link = kind === 'copy' ? storeLinkTarget(src, realAbs) : '';
+      const link = kind === 'copy' ? storeLinkTarget(src) : '';
       mkdirSync(dirname(dst), { recursive: true, mode: 0o700 });
       if (link) {
         rmSync(dst, { force: true });

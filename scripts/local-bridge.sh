@@ -22,7 +22,8 @@
 #   --bin-dir DIR               take ham-bridge/ham-ctl/ham-pty-host from DIR
 #   --pty-host-bin PATH         ham-pty-host to run agents with (default: built, else PATH)
 #   --shared-home               run providers with your real HOME (see "Provider home")
-#   --isolated-home             the default for a new instance; refused for one
+#   --isolated-home             the default for a new instance on Linux (macOS: opt
+#                               in, not yet verified there); refused for an instance
 #                               recorded as shared, like --shared-home the other way
 #   --providers LIST            providers whose auth is seeded into an isolated home
 #                               (default: claude,codex,gemini,pi,git)
@@ -36,13 +37,16 @@
 # credential starts nothing unless --auto-enroll is given.
 #
 # Provider home. Providers (claude, codex, ...) are the real installed CLIs, found
-# on your PATH. By default a new instance runs the bridge and everything it starts
+# on your PATH. By default (Linux; on macOS only with --isolated-home, since the
+# Keychain-backed sign-ins have not been verified with a moved HOME) a new instance
+# runs the bridge and everything it starts
 # with HOME=<instance>/home (XDG dirs inside it; CLAUDE_CONFIG_DIR, CODEX_HOME,
 # GEMINI_CONFIG_DIR and HEIMDALL_HOME unset), so an extension installed from this
 # bridge's hub lands there, never in your ~/.claude or ~/.codex. On first use your
 # provider sign-in, onboarding/consent state and project trust are COPIED in
 # (scripts/local-runtime/provider-home.mjs; listed with checksums in
-# home/.heimdall-home-manifest.json); plugins, hooks and history are not. Your real
+# home/.heimdall-home-manifest.json); plugins, hooks, MCP servers, status-line and
+# notify commands, and history are not. Your real
 # home is only read. A copied OAuth session can expire or be rotated by either
 # side: sign in again normally and run `reseed-auth`. API keys and
 # CLAUDE_CODE_OAUTH_TOKEN in your environment pass through unchanged. The directory
@@ -55,7 +59,7 @@ LR_TAG=local-bridge
 # shellcheck source=local-runtime/lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/local-runtime/lib.sh"
 
-usage() { sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 CMD="${1:-help}"; [ $# -gt 0 ] && shift
 NAME=default HUB_URL="" HUB_NAME="" PORT="" EP_PORT="" AUTO=0 APPROVE_URL="" APPROVER_KEY="" APPROVE_USER="" APPROVAL_BASE_URL=""
@@ -127,7 +131,14 @@ resolve() {
   if [ -n "$rec" ] && [ -n "$HOME_MODE" ] && [ "$HOME_MODE" != "$rec" ]; then
     lr_die "bridge '$NAME' uses $([ "$rec" = 1 ] && echo "an isolated provider home" || echo "your real HOME (shared)"); use a new --name to change it"
   fi
-  ISOLATED="${rec:-${HOME_MODE:-1}}"
+  # macOS keeps sign-ins (the vault keyring, Claude OAuth) in the login Keychain;
+  # isolation stays opt-in there until it is verified with a moved HOME.
+  local default_mode=1
+  [ "$(uname -s)" = Darwin ] && default_mode=0
+  ISOLATED="${rec:-${HOME_MODE:-$default_mode}}"
+  if [ -z "$rec" ] && [ "$ISOLATED" = 1 ] && [ "$(uname -s)" = Darwin ]; then
+    lr_log "WARN: --isolated-home on macOS is not verified yet (Keychain sign-ins); use --shared-home if providers or enroll misbehave"
+  fi
   PROVIDERS="${PROVIDERS:-$(lr_env_get "$ENV_FILE" PROVIDERS)}"
   PROVIDERS="${PROVIDERS:-claude,codex,gemini,pi,git}"
   ISO_ENV=()

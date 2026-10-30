@@ -2,7 +2,7 @@
 // Run: node --test scripts/local-runtime/helpers.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -142,16 +142,27 @@ function fakeRealHome() {
     mcpServers: { secret: {} }, tipsHistory: { a: 1 },
     projects: { '/work/a': { hasTrustDialogAccepted: true, lastCost: 3, mcpServers: { x: {} } }, '/work/b': { hasTrustDialogAccepted: false } },
   }));
-  put('.claude/settings.json', JSON.stringify({ model: 'opus', skipDangerousModePermissionPrompt: true, enabledPlugins: { 'real@m': true } }));
+  put('.claude/settings.json', JSON.stringify({
+    model: 'opus', skipDangerousModePermissionPrompt: true, enabledPlugins: { 'real@m': true },
+    hooks: { Stop: [{ command: 'real-hook' }] }, mcpServers: { real: {} }, statusLine: { command: 'real-status' },
+  }));
   put('.claude/plugins/installed_plugins.json', '{}');
   put('.claude/history.jsonl', 'secret history');
   put('.codex/auth.json', '{"tokens":{"refresh_token":"r2"}}');
-  put('.codex/config.toml', 'model = "gpt"\n\n[projects."/work/a"]\ntrust_level = "trusted"\n\n[marketplaces.real]\nsource = "/real"\n\n[plugins."real@m"]\nenabled = true\n\n[hooks.state."real@m:x"]\nok = 1\n\n[tui]\nx = 1\n');
+  put('.gemini/hooks.json', '{"real":"hook"}');
+  put('.gitconfig', '[user]\n  name = dev\n');
+  put('.codex/config.toml', 'model = "gpt"\nnotify = [\n  "real-notify",\n  ["x"],\n]\nargs = [\n  ["a"],\n]\n\n[hooks]\nx = 1\n\n[mcp_servers.real]\ncommand = "real-mcp"\n\n[projects."/work/a"]\ntrust_level = "trusted"\n\n[marketplaces.real]\nsource = "/real"\n\n[plugins."real@m"]\nenabled = true\n\n[hooks.state."real@m:x"]\nok = 1\n\n[tui]\nx = 1\n');
   put('.pi/agent/auth.json', '{}');
   put('.pi/agent/extensions/watch.ts', 'x');
+  // A read-only store file (like /nix/store) and a writable dotfiles checkout, both
+  // outside the real home.
   mkdirSync(join(root, 'store'));
   writeFileSync(join(root, 'store', 'AGENTS.md'), 'managed');
+  chmodSync(join(root, 'store', 'AGENTS.md'), 0o444);
   symlinkSync(join(root, 'store', 'AGENTS.md'), join(real, '.codex/AGENTS.md'));
+  mkdirSync(join(root, 'dotfiles'));
+  writeFileSync(join(root, 'dotfiles', 'CLAUDE.md'), 'mine');
+  symlinkSync(join(root, 'dotfiles', 'CLAUDE.md'), join(real, '.claude/CLAUDE.md'));
   return { root, real, home: join(root, 'instance', 'home') };
 }
 
@@ -166,7 +177,7 @@ test('provider home seeds auth and trust only, and never writes the real home', 
     const before = snapshot(real);
     const m = seedHome({ realHome: real, home, providers: ['claude', 'codex', 'pi', 'gemini', 'git'], trustRoots: ['/work/c'] });
     assert.equal(snapshot(real), before);
-    assert.deepEqual(m.providers.sort(), ['claude', 'codex', 'pi']);
+    assert.deepEqual(m.providers.sort(), ['claude', 'codex', 'git', 'pi']);
     assert.equal(readFileSync(join(home, '.claude/.credentials.json'), 'utf8'), '{"claudeAiOauth":{"refreshToken":"r1"}}');
     const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
     assert.equal(cj.userID, 'u1');
@@ -175,11 +186,16 @@ test('provider home seeds auth and trust only, and never writes the real home', 
     assert.deepEqual(cj.projects, { '/work/a': { hasTrustDialogAccepted: true }, '/work/c': { hasTrustDialogAccepted: true } });
     const settings = JSON.parse(readFileSync(join(home, '.claude/settings.json'), 'utf8'));
     assert.equal(settings.skipDangerousModePermissionPrompt, true);
-    assert.equal(settings.enabledPlugins, undefined);
+    for (const key of ['enabledPlugins', 'hooks', 'mcpServers', 'statusLine']) assert.equal(settings[key], undefined, key);
     const toml = readFileSync(join(home, '.codex/config.toml'), 'utf8');
     assert.match(toml, /\[projects."\/work\/a"\]\ntrust_level = "trusted"/);
     assert.match(toml, /\[projects."\/work\/c"\]\ntrust_level = "trusted"/);
-    assert.doesNotMatch(toml, /marketplaces|plugins|hooks\.state/);
+    assert.doesNotMatch(toml, /marketplaces|plugins|hooks|mcp_servers|real-mcp|real-notify|notify/);
+    assert.match(toml, /^model = "gpt"\nargs = \[\n  \["a"\],\n\]$/m);
+    assert.equal(existsSync(join(home, '.gemini/hooks.json')), false);
+    // Writable link target: copied, so the instance cannot write through it.
+    assert.equal(lstatSync(join(home, '.claude/CLAUDE.md')).isSymbolicLink(), false);
+    assert.equal(readFileSync(join(home, '.claude/CLAUDE.md'), 'utf8'), 'mine');
     for (const p of ['.claude/plugins', '.claude/history.jsonl', '.pi/agent/extensions']) assert.equal(existsSync(join(home, p)), false, p);
     assert.equal(readlinkSync(join(home, '.codex/AGENTS.md')), join(root, 'store', 'AGENTS.md'));
     assert.equal(statSync(join(home, '.codex/auth.json')).mode & 0o777, 0o600);
@@ -198,14 +214,17 @@ test('reseeding keeps what the instance installed itself', () => {
     // The instance installs its own extension and trusts its own run dir.
     const settingsPath = join(home, '.claude/settings.json');
     const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    writeFileSync(settingsPath, JSON.stringify({ ...s, enabledPlugins: { 'heimdall@heimdall': true } }));
+    writeFileSync(settingsPath, JSON.stringify({ ...s, enabledPlugins: { 'heimdall@heimdall': true }, hooks: { Stop: [{ command: 'instance-hook' }] } }));
     const tomlPath = join(home, '.codex/config.toml');
-    writeFileSync(tomlPath, `${readFileSync(tomlPath, 'utf8')}\n[plugins."heimdall@heimdall-codex"]\nenabled = true\n\n[projects."/run/x"]\ntrust_level = "trusted"\n`);
+    writeFileSync(tomlPath, `${readFileSync(tomlPath, 'utf8')}\n[plugins."heimdall@heimdall-codex"]\nenabled = true\n\n[mcp_servers.heimdall]\ncommand = "ham-ctl"\n\n[projects."/run/x"]\ntrust_level = "trusted"\n`);
     writeFileSync(join(real, '.codex/auth.json'), '{"tokens":{"refresh_token":"r3"}}');
     seedHome({ realHome: real, home, providers: ['claude', 'codex'] });
-    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).enabledPlugins, { 'heimdall@heimdall': true });
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(after.enabledPlugins, { 'heimdall@heimdall': true });
+    assert.deepEqual(after.hooks, { Stop: [{ command: 'instance-hook' }] });
     const toml = readFileSync(tomlPath, 'utf8');
     assert.match(toml, /\[plugins."heimdall@heimdall-codex"\]/);
+    assert.match(toml, /\[mcp_servers.heimdall\]/);
     assert.match(toml, /\[projects."\/run\/x"\]/);
     assert.doesNotMatch(toml, /real@m/);
     assert.equal(readFileSync(join(home, '.codex/auth.json'), 'utf8'), '{"tokens":{"refresh_token":"r3"}}');
