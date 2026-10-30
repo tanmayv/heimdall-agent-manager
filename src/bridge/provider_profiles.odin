@@ -8,19 +8,16 @@ package main
 // Every provider has an implicit default profile whose id is its slug and that has no
 // overrides; it behaves exactly like the provider did before profiles existed.
 //
-// Storage: <data_dir>/bridge/provider_profiles.json (0600). The overrides of each
-// profile ("secret") are AES-256-GCM encrypted under the bridge's persistent
-// Profile_Key keystore slot (keystore_common.odin), with AAD binding them to this
-// bridge and profile id. The hub knows only the metadata provider_profiles_report
-// carries (ids, provider, the UI-encrypted label, accent, enabled, has/count flags).
-//
-// Threat note (Linux): the key is a 0600 file beside the store, so at-rest
-// encryption protects copied, synced or backed-up stores and other OS users, not a
-// process of the same user. macOS/Windows/Android keep the key in the OS keystore.
+// Storage: <data_dir>/bridge/provider_profiles.json (0600). The host is trusted
+// (user decision 2026-10-30), so the store is plain JSON: binary, config_dir,
+// home_dir, args and non-sensitive env are stored as they are. Only SECRETS, the
+// values of env variables marked sensitive, are sealed, under the account vault
+// keyring (the keys that protect messages), each bound to this bridge, the
+// profile id and the variable name. While the bridge is locked a profile with
+// sensitive env cannot be opened (profile_locked); every other profile, the
+// defaults and the metadata report keep working. The hub learns only ids, the
+// provider, the UI-encrypted label, accent, enabled, has-flags and counts.
 
-import "core:crypto"
-import "core:crypto/aes"
-import "core:encoding/base64"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
@@ -42,9 +39,6 @@ PROFILE_PATH_MAX :: 4096
 PROFILE_LABEL_ENC_MAX :: 4096
 PROFILE_STORE_MAX :: 256
 PROFILE_STORE_VERSION :: 1
-PROFILE_SECRET_AAD :: "heimdall-provider-profile-v1"
-PROFILE_IV_BYTES :: 12
-PROFILE_TAG_BYTES :: 16
 
 Provider_Profile_Env :: struct {
 	name:      string `json:"name"`,
@@ -72,7 +66,7 @@ Provider_Profile :: struct {
 	secret:     Provider_Profile_Secret,
 }
 
-// On-disk record: metadata in clear, secret sealed.
+// On-disk record. secret.env[i].value is a vault:v2 token when env[i].sensitive.
 Provider_Profile_Record_Wire :: struct {
 	profile_id: string `json:"profile_id"`,
 	provider:   string `json:"provider"`,
@@ -81,7 +75,7 @@ Provider_Profile_Record_Wire :: struct {
 	enabled:    bool `json:"enabled"`,
 	created_at: i64 `json:"created_at"`,
 	updated_at: i64 `json:"updated_at"`,
-	sealed:     string `json:"sealed"`,
+	secret:     Provider_Profile_Secret `json:"secret"`,
 }
 
 Provider_Profile_Store_Wire :: struct {
@@ -111,6 +105,7 @@ Profile_Error :: enum {
 	Unknown,
 	Disabled,
 	Slug_Clash,
+	Locked,
 }
 
 profile_error_code :: proc(e: Profile_Error) -> string {
@@ -135,6 +130,7 @@ profile_error_code :: proc(e: Profile_Error) -> string {
 	case .Unknown:                return "profile_unknown"
 	case .Disabled:               return "profile_disabled"
 	case .Slug_Clash:             return "profile_slug_clash"
+	case .Locked:                 return "profile_locked"
 	}
 	return "profile_error"
 }
@@ -361,55 +357,49 @@ profile_apply_env_plan :: proc(base: []string, plan: Profile_Env_Plan, allocator
 	return out[:]
 }
 
-// ── At-rest sealing ─────────────────────────────────────────────────────────
+// ── Secret sealing (vault keyring, sensitive env values only) ───────────────
 
-profile_secret_aad :: proc(bridge_id, profile_id: string, allocator := context.temp_allocator) -> string {
-	return strings.concatenate({PROFILE_SECRET_AAD, "|", bridge_id, "|", profile_id}, allocator)
+Provider_Profile_Sealed_Value :: struct {
+	v:          int `json:"v"`,
+	bridge_id:  string `json:"bridge_id"`,
+	profile_id: string `json:"profile_id"`,
+	name:       string `json:"name"`,
+	value:      string `json:"value"`,
 }
 
-profile_seal_secret :: proc(key: []byte, bridge_id, profile_id: string, s: ^Provider_Profile_Secret, allocator := context.temp_allocator) -> (sealed: string, ok: bool) {
-	plain, merr := json.marshal(s^, allocator = context.temp_allocator)
+profile_seal_value :: proc(kr: ^vault.Vault_Keyring, bridge_id, profile_id, name, value: string, allocator := context.temp_allocator) -> (token: string, ok: bool) {
+	plain, merr := json.marshal(Provider_Profile_Sealed_Value{v = 1, bridge_id = bridge_id, profile_id = profile_id, name = name, value = value}, allocator = context.temp_allocator)
 	if merr != nil do return "", false
 	defer mem.zero_explicit(raw_data(plain), len(plain))
-	buf := make([]byte, PROFILE_IV_BYTES + len(plain) + PROFILE_TAG_BYTES, context.temp_allocator)
-	iv := buf[:PROFILE_IV_BYTES]
-	crypto.rand_bytes(iv)
-	ct := buf[PROFILE_IV_BYTES:PROFILE_IV_BYTES + len(plain)]
-	tag := buf[PROFILE_IV_BYTES + len(plain):]
-	gcm: aes.Context_GCM
-	aes.init_gcm(&gcm, key)
-	defer aes.reset_gcm(&gcm)
-	aad := profile_secret_aad(bridge_id, profile_id)
-	aes.seal_gcm(&gcm, ct, tag, iv, transmute([]byte)aad, plain)
-	enc, eerr := base64.encode(buf, allocator = allocator)
-	if eerr != nil do return "", false
-	return enc, true
+	return bridge_encrypt_vault_text(string(plain), kr, allocator)
 }
 
-profile_open_secret :: proc(key: []byte, bridge_id, profile_id, sealed: string, out: ^Provider_Profile_Secret, allocator := context.temp_allocator) -> bool {
-	buf, derr := base64.decode(sealed, allocator = context.temp_allocator)
-	if derr != nil || len(buf) < PROFILE_IV_BYTES + PROFILE_TAG_BYTES do return false
-	iv := buf[:PROFILE_IV_BYTES]
-	ct := buf[PROFILE_IV_BYTES:len(buf) - PROFILE_TAG_BYTES]
-	tag := buf[len(buf) - PROFILE_TAG_BYTES:]
-	plain := make([]byte, len(ct), context.temp_allocator)
+// profile_open_value opens a sealed value under any epoch the keyring holds (values
+// sealed before a rotation stay readable) and checks its binding.
+profile_open_value :: proc(kr: ^vault.Vault_Keyring, bridge_id, profile_id, name, token: string, allocator := context.temp_allocator) -> (value: string, ok: bool) {
+	if !vault.is_armored(token) do return "", false
+	plain, dok := bridge_decrypt_vault_token(token, kr, context.temp_allocator)
+	if !dok do return "", false
 	defer mem.zero_explicit(raw_data(plain), len(plain))
-	gcm: aes.Context_GCM
-	aes.init_gcm(&gcm, key)
-	defer aes.reset_gcm(&gcm)
-	aad := profile_secret_aad(bridge_id, profile_id)
-	if !aes.open_gcm(&gcm, plain, iv, transmute([]byte)aad, ct, tag) do return false
-	return json.unmarshal(plain, out, json.Specification.JSON, allocator) == nil
+	wire: Provider_Profile_Sealed_Value
+	if json.unmarshal_string(plain, &wire, json.Specification.JSON, allocator) != nil do return "", false
+	if wire.v != 1 || wire.bridge_id != bridge_id || wire.profile_id != profile_id || wire.name != name do return "", false
+	return wire.value, true
+}
+
+profile_record_has_sensitive :: proc(rec: Provider_Profile_Record_Wire) -> bool {
+	for e in rec.secret.env do if e.sensitive do return true
+	return false
 }
 
 // ── Store ───────────────────────────────────────────────────────────────────
 
 g_profile_store_mu: sync.Mutex
 
-// Tests point the store somewhere private and skip the keystore.
+// Tests point the store somewhere private and supply a keyring (nil = locked).
 g_profile_test_store_path: string
-g_profile_test_key: [PROFILE_KEY_BYTES]byte
-g_profile_test_key_set: bool
+g_profile_test_keyring: ^vault.Vault_Keyring
+g_profile_test_use_keyring: bool
 
 profile_store_path :: proc(allocator := context.temp_allocator) -> string {
 	when ODIN_TEST {
@@ -422,11 +412,21 @@ profile_store_path :: proc(allocator := context.temp_allocator) -> string {
 	return strings.concatenate({strings.trim_right(expanded, "/"), "/bridge/provider_profiles.json"}, allocator)
 }
 
-profile_store_key :: proc() -> (key: [PROFILE_KEY_BYTES]byte, ok: bool) {
+// profile_store_keyring returns the unsealed vault keyring, or ok=false while the
+// bridge is locked. The caller wipes it.
+profile_store_keyring :: proc() -> (kr: vault.Vault_Keyring, ok: bool) {
 	when ODIN_TEST {
-		if g_profile_test_key_set do return g_profile_test_key, true
+		if g_profile_test_use_keyring {
+			if g_profile_test_keyring == nil do return {}, false
+			return g_profile_test_keyring^, true
+		}
 	}
-	return keystore_profile_key(bridge_config.daemon_id)
+	status, key := bridge_vault_status_and_key()
+	if status != .Unlocked {
+		vault.keyring_wipe(&key)
+		return {}, false
+	}
+	return key, true
 }
 
 profile_bridge_id :: proc() -> string {
@@ -471,13 +471,25 @@ profile_store_write_locked :: proc(records: []Provider_Profile_Record_Wire) -> b
 	return true
 }
 
-profile_record_open :: proc(key: []byte, rec: Provider_Profile_Record_Wire, out: ^Provider_Profile, allocator := context.temp_allocator) -> bool {
+// profile_record_open copies a record, opening its sensitive values with kr
+// (nil = locked: .Locked when the record has any).
+profile_record_open :: proc(kr: ^vault.Vault_Keyring, rec: Provider_Profile_Record_Wire, out: ^Provider_Profile, allocator := context.temp_allocator) -> Profile_Error {
 	out^ = Provider_Profile{
 		profile_id = rec.profile_id, provider = rec.provider, label_enc = rec.label_enc, accent = rec.accent,
-		enabled = rec.enabled, created_at = rec.created_at, updated_at = rec.updated_at,
+		enabled = rec.enabled, created_at = rec.created_at, updated_at = rec.updated_at, secret = rec.secret,
 	}
-	if rec.sealed == "" do return true
-	return profile_open_secret(key, profile_bridge_id(), rec.profile_id, rec.sealed, &out.secret, allocator)
+	if !profile_record_has_sensitive(rec) do return .None
+	if kr == nil do return .Locked
+	env := make([]Provider_Profile_Env, len(rec.secret.env), allocator)
+	for e, i in rec.secret.env {
+		env[i] = e
+		if !e.sensitive do continue
+		v, ok := profile_open_value(kr, profile_bridge_id(), rec.profile_id, e.name, e.value, allocator)
+		if !ok do return .Store_Unavailable
+		env[i].value = v
+	}
+	out.secret.env = env
+	return .None
 }
 
 // profile_list returns every stored profile, decrypted, in temp memory.
@@ -487,13 +499,12 @@ profile_list :: proc(allocator := context.temp_allocator) -> (profiles: []Provid
 	records, ok := profile_store_read_locked(allocator)
 	if !ok do return nil, .Store_Unavailable
 	if len(records) == 0 do return nil, .None
-	key, kok := profile_store_key()
-	if !kok do return nil, .Store_Unavailable
-	defer crypto.zero_explicit(&key, size_of(key))
+	kr, kok := profile_store_keyring()
+	defer if kok do vault.keyring_wipe(&kr)
 	out := make([dynamic]Provider_Profile, allocator)
 	for rec in records {
 		p: Provider_Profile
-		if !profile_record_open(key[:], rec, &p, allocator) do return nil, .Store_Unavailable
+		if e := profile_record_open(&kr if kok else nil, rec, &p, allocator); e != .None do return nil, e
 		append(&out, p)
 	}
 	return out[:], .None
@@ -519,10 +530,14 @@ profile_lookup :: proc(provider, profile_id: string, allocator := context.temp_a
 			return {}, .Slug_Clash if id == provider else .Provider_Mismatch
 		}
 		if !rec.enabled do return {}, .Disabled
-		key, kok := profile_store_key()
-		if !kok do return {}, .Store_Unavailable
-		defer crypto.zero_explicit(&key, size_of(key))
-		if !profile_record_open(key[:], rec, &p, allocator) do return {}, .Store_Unavailable
+		if !profile_record_has_sensitive(rec) {
+			_ = profile_record_open(nil, rec, &p, allocator)
+			return p, .None
+		}
+		kr, kok := profile_store_keyring()
+		if !kok do return {}, .Locked
+		defer vault.keyring_wipe(&kr)
+		if e := profile_record_open(&kr, rec, &p, allocator); e != .None do return {}, e
 		return p, .None
 	}
 	if id == provider do return Provider_Profile{profile_id = provider, provider = provider, enabled = true}, .None
@@ -537,19 +552,19 @@ profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> 
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	if !ok do return .Store_Unavailable
-	key, kok := profile_store_key()
-	if !kok do return .Store_Unavailable
-	defer crypto.zero_explicit(&key, size_of(key))
 	idx := -1
 	for rec, i in records do if rec.profile_id == p.profile_id do idx = i
+	// kept[i]: env[i] is a redacted sensitive value whose stored token is reused as is.
+	kept := make([]bool, len(p.secret.env), context.temp_allocator)
 	if idx >= 0 {
-		existing: Provider_Profile
-		if !profile_record_open(key[:], records[idx], &existing) do return .Store_Unavailable
+		existing := records[idx]
 		if existing.provider != p.provider do return .Provider_Mismatch
-		// Redacted sensitive values: an entry the UI marks keep retains the stored value.
-		for &e in p.secret.env {
-			if !slice.contains(keep_names, e.name) do continue
-			for old in existing.secret.env do if old.name == e.name && old.sensitive do e.value = old.value
+		for &e, i in p.secret.env {
+			if !e.sensitive || !slice.contains(keep_names, e.name) do continue
+			for old in existing.secret.env do if old.name == e.name && old.sensitive {
+				e.value = old.value
+				kept[i] = true
+			}
 		}
 		p.created_at = records[idx].created_at
 	} else {
@@ -560,11 +575,26 @@ profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> 
 	profile_normalize_secret(&p.secret)
 	if e := profile_validate_secret(p.provider, &p.secret); e != .None do return e
 	if e := profile_prepare_dirs(&p.secret); e != .None do return e
-	sealed, sok := profile_seal_secret(key[:], profile_bridge_id(), p.profile_id, &p.secret)
-	if !sok do return .Store_Unavailable
+	// Seal new sensitive values; only this needs the unsealed keyring.
+	stored := p.secret
+	stored.env = make([]Provider_Profile_Env, len(p.secret.env), context.temp_allocator)
+	kr: vault.Vault_Keyring
+	have_kr := false
+	defer if have_kr do vault.keyring_wipe(&kr)
+	for e, i in p.secret.env {
+		stored.env[i] = e
+		if !e.sensitive || kept[i] do continue
+		if !have_kr {
+			kr, have_kr = profile_store_keyring()
+			if !have_kr do return .Locked
+		}
+		tok, sok := profile_seal_value(&kr, profile_bridge_id(), p.profile_id, e.name, e.value)
+		if !sok do return .Store_Unavailable
+		stored.env[i].value = tok
+	}
 	rec := Provider_Profile_Record_Wire{
 		profile_id = p.profile_id, provider = p.provider, label_enc = p.label_enc, accent = p.accent,
-		enabled = p.enabled, created_at = p.created_at, updated_at = p.updated_at, sealed = sealed,
+		enabled = p.enabled, created_at = p.created_at, updated_at = p.updated_at, secret = stored,
 	}
 	next := make([dynamic]Provider_Profile_Record_Wire, context.temp_allocator)
 	append(&next, ..records)
@@ -625,13 +655,13 @@ profile_reset :: proc(provider: string) -> Profile_Error {
 	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
 }
 
-// profile_purge removes the store and its key (uninstall --purge, purge-home).
-profile_purge :: proc(bridge_id: string) -> bool {
+// profile_purge removes the store (uninstall --purge, purge-home). There is no
+// separate key: secrets are sealed under the vault keyring.
+profile_purge :: proc() -> bool {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	path := profile_store_path()
-	file_ok := !os.exists(path) || os.remove(path) == nil
-	return keystore_delete_profile_key(bridge_id) && file_ok
+	return !os.exists(path) || os.remove(path) == nil
 }
 
 profile_now_ms :: proc() -> i64 {
@@ -667,19 +697,22 @@ Provider_Profiles_Report_Wire :: struct {
 // value, path, env name or argument. state is "slug_clash" when a later catalog
 // added a provider whose slug equals this custom profile's id.
 profile_report_json :: proc(allocator := context.allocator) -> string {
-	profiles, err := profile_list()
+	sync.mutex_lock(&g_profile_store_mu)
+	records, ok := profile_store_read_locked()
+	sync.mutex_unlock(&g_profile_store_mu)
 	entries := make([dynamic]Provider_Profile_Report_Entry, context.temp_allocator)
-	for &p in profiles {
+	for rec in records {
 		state := "ok"
-		if p.profile_id != p.provider && profile_catalog_has(p.profile_id) do state = "slug_clash"
+		if rec.profile_id != rec.provider && profile_catalog_has(rec.profile_id) do state = "slug_clash"
 		append(&entries, Provider_Profile_Report_Entry{
-			profile_id = p.profile_id, provider = p.provider, label_enc = p.label_enc, accent = p.accent,
-			enabled = p.enabled, has_config_dir = p.secret.config_dir != "", has_home_dir = p.secret.home_dir != "",
-			has_binary = p.secret.binary != "", env_count = len(p.secret.env), args_count = len(p.secret.args),
-			state = state, created_at = p.created_at, updated_at = p.updated_at,
+			profile_id = rec.profile_id, provider = rec.provider, label_enc = rec.label_enc, accent = rec.accent,
+			enabled = rec.enabled, has_config_dir = rec.secret.config_dir != "", has_home_dir = rec.secret.home_dir != "",
+			has_binary = rec.secret.binary != "", env_count = len(rec.secret.env), args_count = len(rec.secret.args),
+			state = state, created_at = rec.created_at, updated_at = rec.updated_at,
 		})
 	}
-	wire := Provider_Profiles_Report_Wire{type = "provider_profiles_report", ok = err == .None, error = profile_error_code(err), profiles = entries[:]}
+	err: Profile_Error = .None if ok else .Store_Unavailable
+	wire := Provider_Profiles_Report_Wire{type = "provider_profiles_report", ok = ok, error = profile_error_code(err), profiles = entries[:]}
 	data, merr := json.marshal(wire, allocator = allocator)
 	if merr != nil do return strings.clone(`{"type":"provider_profiles_report","ok":false,"error":"profile_store_unavailable","profiles":[]}`, allocator)
 	return string(data)

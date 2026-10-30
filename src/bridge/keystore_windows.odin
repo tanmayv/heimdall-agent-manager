@@ -23,7 +23,6 @@ CREDENTIAL_TARGET_IDENTITY_PREFIX :: "works.earendil.heimdall-bridge.vault-ident
 CREDENTIAL_TARGET_FLOOR_PREFIX    :: "works.earendil.heimdall-bridge.vault-epoch-floor.test:" when ODIN_TEST else "works.earendil.heimdall-bridge.vault-epoch-floor:"
 CREDENTIAL_TARGET_IDENTITY_PREVIOUS_PREFIX :: "works.earendil.heimdall-bridge.vault-identity-previous.test:" when ODIN_TEST else "works.earendil.heimdall-bridge.vault-identity-previous:"
 CREDENTIAL_TARGET_FLOOR_PREVIOUS_PREFIX    :: "works.earendil.heimdall-bridge.vault-epoch-floor-previous.test:" when ODIN_TEST else "works.earendil.heimdall-bridge.vault-epoch-floor-previous:"
-CREDENTIAL_TARGET_PROFILE_KEY_PREFIX       :: "works.earendil.heimdall-bridge.provider-profile-key.test:" when ODIN_TEST else "works.earendil.heimdall-bridge.provider-profile-key:"
 CREDENTIAL_MAX_BLOB_BYTES         :: 2560
 
 // Testing hooks for simulation: a non-zero value makes every Credential Manager
@@ -43,7 +42,6 @@ credential_target :: proc(slot: Keystore_Slot, bridge_id: string) -> win.wstring
 	case .Epoch_Floor: prefix = CREDENTIAL_TARGET_FLOOR_PREFIX
 	case .Identity_Previous:    prefix = CREDENTIAL_TARGET_IDENTITY_PREVIOUS_PREFIX
 	case .Epoch_Floor_Previous: prefix = CREDENTIAL_TARGET_FLOOR_PREVIOUS_PREFIX
-	case .Profile_Key:          prefix = CREDENTIAL_TARGET_PROFILE_KEY_PREFIX
 	}
 	return win.utf8_to_wstring(strings.concatenate({prefix, bridge_id}, context.temp_allocator), context.temp_allocator)
 }

@@ -36,10 +36,6 @@ Keystore_Slot :: enum {
 	// restored if it rolls back, dropped once it commits.
 	Identity_Previous,
 	Epoch_Floor_Previous,
-	// 32-byte AES key that encrypts the provider profile store at rest
-	// (provider_profiles.odin). Persistent like .Identity so profile secrets survive
-	// a reboot and launches work while the vault is locked; independent of vault epochs.
-	Profile_Key,
 }
 
 KEYSTORE_IDENTITY_KEY_BYTES :: vault.P256_PRIVATE_KEY_BYTES
@@ -263,43 +259,6 @@ keystore_delete_identity_key :: proc(bridge_id: string) -> bool {
 	if !keystore_bridge_id_ok(bridge_id) do return true
 	floor_ok := keystore_delete_epoch_floor(bridge_id)
 	return keystore_backend_delete(.Identity, bridge_id) && floor_ok
-}
-
-// ── Provider profile store key ──────────────────────────────────────────────
-
-PROFILE_KEY_BYTES :: 32
-
-// keystore_profile_key returns this bridge's provider-profile store key, creating
-// and persisting a random one on first use. Unlike the keyring it never depends on
-// the vault being unsealed. ok=false when it cannot be read or persisted: callers
-// then refuse to store or open profile secrets (fail closed, no memory-only key,
-// which would make stored secrets unreadable after a restart).
-keystore_profile_key :: proc(bridge_id: string) -> (key: [PROFILE_KEY_BYTES]byte, ok: bool) {
-	if !keystore_bridge_id_ok(bridge_id) do return {}, false
-	buf: [PROFILE_KEY_BYTES + 1]byte
-	defer crypto.zero_explicit(&buf, size_of(buf))
-	n, status := keystore_backend_read(.Profile_Key, bridge_id, buf[:])
-	switch status {
-	case .Found:
-		if n != PROFILE_KEY_BYTES do return {}, false
-		copy(key[:], buf[:n])
-		return key, true
-	case .Error:
-		return {}, false
-	case .Not_Found:
-	}
-	crypto.rand_bytes(key[:])
-	if keystore_backend_write(.Profile_Key, bridge_id, key[:]) != 0 {
-		crypto.zero_explicit(&key, size_of(key))
-		return {}, false
-	}
-	return key, true
-}
-
-// keystore_delete_profile_key removes the profile store key (purge/uninstall).
-keystore_delete_profile_key :: proc(bridge_id: string) -> bool {
-	if !keystore_bridge_id_ok(bridge_id) do return true
-	return keystore_backend_delete(.Profile_Key, bridge_id)
 }
 
 // ── Backend dispatch ────────────────────────────────────────────────────────

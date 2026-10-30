@@ -13,6 +13,8 @@ import vault "odin_test:lib/vault"
 
 g_profile_test_mu: sync.Mutex
 @(private = "file")
+g_profile_test_kr_storage: vault.Vault_Keyring
+@(private = "file")
 g_profile_test_seq: int
 // Package-level so the slice outlives profile_test_setup (a slice literal would not).
 @(private = "file")
@@ -28,8 +30,9 @@ profile_test_setup :: proc(t: ^testing.T) -> string {
 	_ = os.remove_all(dir)
 	testing.expect(t, os.make_directory(dir, {.Read_User, .Write_User, .Execute_User}) == nil)
 	g_profile_test_store_path = strings.concatenate({dir, "/provider_profiles.json"}, context.temp_allocator)
-	for i in 0 ..< PROFILE_KEY_BYTES do g_profile_test_key[i] = u8(i * 7 + 1)
-	g_profile_test_key_set = true
+	g_profile_test_kr_storage = test_keyring_from_hex(PROFILE_OP_KEY1, 1)
+	g_profile_test_keyring = &g_profile_test_kr_storage
+	g_profile_test_use_keyring = true
 	g_profile_test_catalog = PROFILE_TEST_CATALOG[:]
 	return dir
 }
@@ -38,7 +41,9 @@ profile_test_setup :: proc(t: ^testing.T) -> string {
 profile_test_teardown :: proc(dir: string) {
 	_ = os.remove_all(dir)
 	g_profile_test_store_path = ""
-	g_profile_test_key_set = false
+	vault.keyring_wipe(&g_profile_test_kr_storage)
+	g_profile_test_keyring = nil
+	g_profile_test_use_keyring = false
 	g_profile_test_catalog = nil
 	sync.mutex_unlock(&g_profile_test_mu)
 }
@@ -137,8 +142,10 @@ test_profile_store_roundtrip_encrypted_and_keep :: proc(t: ^testing.T) {
 	testing.expect(t, os.is_dir(cfg))
 	raw, _ := os.read_entire_file(g_profile_test_store_path, context.temp_allocator)
 	text := string(raw)
-	for leak in ([]string{"s3cret-value", "API_KEY", "PLAIN", "--chrome", "cfg-work"}) {
-		testing.expectf(t, !strings.contains(text, leak), "store leaks %q", leak)
+	// Trusted host: only the secret value is sealed; the rest is plain.
+	testing.expect(t, !strings.contains(text, "s3cret-value"))
+	for plain in ([]string{"API_KEY", "PLAIN", "--chrome", "cfg-work"}) {
+		testing.expectf(t, strings.contains(text, plain), "store should keep %q in clear", plain)
 	}
 	info, _ := os.stat(g_profile_test_store_path, context.temp_allocator)
 	testing.expect(t, info.mode & os.Permissions{.Read_Group, .Read_Other, .Write_Group, .Write_Other} == {})
@@ -164,11 +171,19 @@ test_profile_store_roundtrip_encrypted_and_keep :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, Profile_Error.None)
 	testing.expect_value(t, def.profile_id, "claude")
 
-	// A wrong key cannot open the store.
-	g_profile_test_key[0] ~= 0xff
+	// Another account's keyring cannot open the store; a locked bridge reports Locked.
+	other := test_keyring_from_hex(PROFILE_OP_KEY2, 1)
+	defer vault.keyring_wipe(&other)
+	g_profile_test_keyring = &other
 	_, kerr := profile_list()
 	testing.expect_value(t, kerr, Profile_Error.Store_Unavailable)
-	g_profile_test_key[0] ~= 0xff
+	g_profile_test_keyring = nil
+	_, lerr := profile_lookup("claude", "claude_w")
+	testing.expect_value(t, lerr, Profile_Error.Locked)
+	_, derr2 := profile_lookup("claude", "")
+	testing.expect_value(t, derr2, Profile_Error.None) // defaults launch while locked
+	testing.expect(t, strings.contains(profile_report_json(context.temp_allocator), `"env_count":1`))
+	g_profile_test_keyring = &g_profile_test_kr_storage
 
 	// Disabled and removed.
 	upd.enabled = false
@@ -412,3 +427,36 @@ test_profile_op_golden_vector :: proc(t: ^testing.T) {
 }
 
 PROFILE_GOLDEN_TOKEN :: "vault:v2:c8f193e678e762f9:e1:AAECAwQFBgcICQoLi2nHThjS0rcGWWappqMgpWjB2WNZmReBZMu27bCN2wS5028OfBk3cMCEnUXfIw9PAtYs6yc2EKZUozSZ6yd3gEWqWgTL6XiCF49+9U1uUjeiRQnwZp0F0JL/UYahpN6Y0m22UlMtJ0EN/Ghjz0Y0kNrFSUyPAnZeyvaiVdkgxt87D1Yh5RfckkDdswxvGbs9V5FoB3Ozq4eTE2RnwOdTjuiBVPnSQEAxhAJ+2gu0NmxlpdQfZbnKciCy+afzu70ZvRIiSw9heX+apVft7crUPBTcZfQlcePmE2GoQXytKQlzMuXcympR1Qf/FsN7TT/BY0dkmuARC/dMgLI2wvD+zEuHhDR45K/DF3dEv7gSiijBG6AiNzDbaXMtBr8UkVjqS/n0dJFTa6DvlV19gxWCYuqkWdSdxjCDAji+XCR0Uyhci1DY3ebMXt2Aui7rwOSqy2sFslIuqf1DIX3EOkclfsAYhB5kjKwvwsSzyLlhUoAdzk9BVVKHEQj9lRkUosfhBVFH2eREuRAwSJQ/bO9LLXpLcc6QEy7KUN7kOfNNx16I62Wvkd0Gr8Avjjg="
+
+@(test)
+test_profile_record_bound_to_profile_id :: proc(t: ^testing.T) {
+	dir := profile_test_setup(t)
+	defer profile_test_teardown(dir)
+	p := Provider_Profile{profile_id = "claude_a", provider = "claude", enabled = true, secret = Provider_Profile_Secret{env = []Provider_Profile_Env{{name = "K", value = "v-secret", sensitive = true}}}}
+	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
+	// Move the sealed blob to another profile id: the embedded binding refuses it.
+	raw, _ := os.read_entire_file(g_profile_test_store_path, context.temp_allocator)
+	moved, _ := strings.replace_all(string(raw), `"profile_id":"claude_a"`, `"profile_id":"claude_b"`, context.temp_allocator)
+	_ = os.write_entire_file(g_profile_test_store_path, transmute([]byte)moved)
+	_, err := profile_lookup("claude", "claude_b")
+	testing.expect_value(t, err, Profile_Error.Store_Unavailable)
+}
+
+@(test)
+test_profile_without_secrets_launches_while_locked :: proc(t: ^testing.T) {
+	dir := profile_test_setup(t)
+	defer profile_test_teardown(dir)
+	p := Provider_Profile{profile_id = "codex_p", provider = "codex", enabled = true, secret = Provider_Profile_Secret{
+		args = []string{"--x"}, env = []Provider_Profile_Env{{name = "MODE", value = "fast"}},
+	}}
+	g_profile_test_keyring = nil // no keyring needed without sensitive values
+	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
+	got, err := profile_lookup("codex", "codex_p")
+	testing.expect_value(t, err, Profile_Error.None)
+	testing.expect(t, len(got.secret.args) == 1 && got.secret.env[0].value == "fast")
+	s := Provider_Profile{profile_id = "codex_s", provider = "codex", enabled = true, secret = Provider_Profile_Secret{
+		env = []Provider_Profile_Env{{name = "TOKEN", value = "t", sensitive = true}},
+	}}
+	testing.expect_value(t, profile_upsert(&s, nil, 2), Profile_Error.Locked)
+	g_profile_test_keyring = &g_profile_test_kr_storage
+}
