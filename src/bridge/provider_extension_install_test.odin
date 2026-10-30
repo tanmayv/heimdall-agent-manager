@@ -207,6 +207,7 @@ Test_Install_Hooks :: struct {
 	others:   Bridge_Extension_Other_Profiles,
 	own_ensure: Bridge_Codex_Own_Ensure,
 	own_remove: Bridge_Codex_Own_Remove,
+	own_heal:   Bridge_Codex_Own_Heal,
 }
 
 // The machine running the tests may have real bridge profiles installed.
@@ -216,9 +217,10 @@ test_install_other_profiles := 0
 test_install_hook :: proc() -> Test_Install_Hooks {
 	saved := Test_Install_Hooks{bridge_extension_install_runner, bridge_extension_discover, bridge_extension_required_version,
 		bridge_extension_bundle_resolver, bridge_extension_binary_resolver, bridge_extension_other_profiles,
-		bridge_codex_own_ensure_hook, bridge_codex_own_remove_hook}
+		bridge_codex_own_ensure_hook, bridge_codex_own_remove_hook, bridge_codex_own_heal_hook}
 	bridge_codex_own_ensure_hook = proc(bin_path: string, deadline: time.Time, env: []string) -> (bool, string) { return false, "disabled in tests" }
 	bridge_codex_own_remove_hook = proc(bin_path: string, deadline: time.Time, env: []string) {}
+	bridge_codex_own_heal_hook = proc() -> (int, string) { return 0, "" }
 	test_install_other_profiles = 0
 	bridge_extension_other_profiles = test_install_no_other_profiles
 	bridge_extension_install_runner = test_install_runner
@@ -238,6 +240,7 @@ test_install_restore :: proc(saved: Test_Install_Hooks) {
 	bridge_extension_other_profiles = saved.others
 	bridge_codex_own_ensure_hook = saved.own_ensure
 	bridge_codex_own_remove_hook = saved.own_remove
+	bridge_codex_own_heal_hook = saved.own_heal
 }
 
 // Claude Code before 2.1.295 rejects `--marketplace`, and releases such as

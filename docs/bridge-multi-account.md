@@ -86,9 +86,15 @@ agents don't load it. Agents launch with
 `-c plugins.heimdall@heimdall-codex.enabled=false -c plugins.heimdall@heimdall-codex-<service>.enabled=true`,
 so exactly one Heimdall plugin loads, with the shared `CODEX_HOME` and login.
 Without that registration (for example when the copy is missing), the launch
-adds no override and uses the shared release. Uninstalling the extension or the
-profile removes only that profile's own marketplace. Claude keeps the shared
-registration.
+adds no override and uses the shared release. Removing the extension from the
+hub, or `ham-bridge uninstall` (with or without `--purge`), removes only that
+profile's own marketplace, plugin table and install cache, before its
+`codex-marketplace` copy is deleted. Every ensure also drops any
+`heimdall-codex-*` marketplace whose source directory is gone (a bridge removed
+by hand), because Codex fails every `codex plugin list` while one is
+registered. Hook trust is per plugin: the own plugin is a different plugin id
+from `heimdall@heimdall-codex`, so hook trust granted to the shared plugin in
+the Codex TUI does not carry over. Claude keeps the shared registration.
 
 Uninstalling a profile removes only that profile's own copy; the shared root and
 the provider registration stay. Removing a provider's extension from the hub

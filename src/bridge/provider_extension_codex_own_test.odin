@@ -139,3 +139,95 @@ test_codex_own_launch_args_only_for_default_codex :: proc(t: ^testing.T) {
 	bridge_config.data_dir = fmt.tprintf("%s/bridges/bridge-y", root)
 	testing.expect(t, bridge_pty_host_default_profile_args("codex") == nil)
 }
+
+@(test)
+test_codex_config_set_plugin_disabled_skips_array_lines :: proc(t: ^testing.T) {
+	// A multi-line array value inside the table is not a header.
+	input := "[plugins.\"heimdall@heimdall-codex-a\"]\ntags = [\n  [\"x\"],\n  [\"y\"]\n]\nenabled = true\n"
+	want := "[plugins.\"heimdall@heimdall-codex-a\"]\ntags = [\n  [\"x\"],\n  [\"y\"]\n]\nenabled = false\n"
+	got, changed := bridge_codex_config_set_plugin_disabled(input, "heimdall@heimdall-codex-a")
+	testing.expectf(t, got == want, "got %q", got)
+	testing.expect(t, changed)
+}
+
+@(test)
+test_codex_config_remove_own_keeps_everything_else :: proc(t: ^testing.T) {
+	input := "model = \"o3\"\n\n[marketplaces.heimdall-codex]\nsource = \"/shared\"\n\n[marketplaces.heimdall-codex-a]\nsource_type = \"local\"\nsource = \"/a\"\n\n[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n\n[plugins.\"heimdall@heimdall-codex-a\"]\nenabled = false\n\n[marketplaces.heimdall-codex-b]\nsource = \"/b\"\n"
+	want := "model = \"o3\"\n\n[marketplaces.heimdall-codex]\nsource = \"/shared\"\n\n[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n\n[marketplaces.heimdall-codex-b]\nsource = \"/b\"\n"
+	got, changed := bridge_codex_config_remove_own(input, "heimdall-codex-a")
+	testing.expectf(t, got == want, "got %q", got)
+	testing.expect(t, changed)
+	_, again := bridge_codex_config_remove_own(got, "heimdall-codex-a")
+	testing.expect(t, !again, "nothing left to remove")
+	// The shared marketplace is never an own one.
+	same, shared := bridge_codex_config_remove_own(input, "heimdall-codex")
+	testing.expect(t, !shared && same == input)
+}
+
+@(private = "file")
+codex_own_test_write :: proc(t: ^testing.T, path, text: string) {
+	testing.expect(t, os.write_entire_file(path, transmute([]byte)text) == nil, path)
+}
+
+@(test)
+test_codex_own_heal_drops_only_marketplaces_with_a_deleted_source :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/heimdall-codex-own-heal-%d", time.now()._nsec)
+	defer _ = os.remove_all(root)
+	home := fmt.tprintf("%s/codex-home", root)
+	live := fmt.tprintf("%s/bridge-a/codex-marketplace", root)
+	gone := fmt.tprintf("%s/bridge-b/codex-marketplace", root)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/.agents/plugins", live)) == nil)
+	codex_own_test_write(t, fmt.tprintf("%s/.agents/plugins/marketplace.json", live), "{}")
+	for mp in ([]string{"heimdall-codex-bridge-a", "heimdall-codex-bridge-b"}) {
+		testing.expect(t, os.make_directory_all(fmt.tprintf("%s/plugins/cache/%s/heimdall/0.5.30", home, mp)) == nil)
+	}
+	config := fmt.tprintf("[marketplaces.heimdall-codex]\nsource = \"/missing-shared\"\n\n[marketplaces.heimdall-codex-bridge-a]\nsource_type = \"local\"\nsource = \"%s\"\n\n[marketplaces.heimdall-codex-bridge-b]\nsource_type = \"local\"\nsource = \"%s\"\n\n[plugins.\"heimdall@heimdall-codex-bridge-a\"]\nenabled = false\n\n[plugins.\"heimdall@heimdall-codex-bridge-b\"]\nenabled = false\n", live, gone)
+	codex_own_test_write(t, fmt.tprintf("%s/config.toml", home), config)
+
+	names, sources := bridge_codex_config_own_marketplaces(config)
+	testing.expect_value(t, len(names), 2)
+	if len(names) == 2 {
+		testing.expect_value(t, names[1], "heimdall-codex-bridge-b")
+		testing.expect_value(t, sources[1], gone)
+	}
+
+	removed, msg := bridge_codex_own_heal(home)
+	testing.expect_value(t, removed, 1)
+	testing.expect_value(t, msg, "")
+	raw, _ := os.read_entire_file(fmt.tprintf("%s/config.toml", home), context.temp_allocator)
+	want := fmt.tprintf("[marketplaces.heimdall-codex]\nsource = \"/missing-shared\"\n\n[marketplaces.heimdall-codex-bridge-a]\nsource_type = \"local\"\nsource = \"%s\"\n\n[plugins.\"heimdall@heimdall-codex-bridge-a\"]\nenabled = false\n", live)
+	testing.expectf(t, string(raw) == want, "config %q", string(raw))
+	testing.expect(t, os.is_dir(fmt.tprintf("%s/plugins/cache/heimdall-codex-bridge-a", home)), "live cache kept")
+	testing.expect(t, !os.exists(fmt.tprintf("%s/plugins/cache/heimdall-codex-bridge-b", home)), "stale cache removed")
+	again, _ := bridge_codex_own_heal(home)
+	testing.expect_value(t, again, 0)
+	// No config at all is nothing to heal.
+	none, none_msg := bridge_codex_own_heal(fmt.tprintf("%s/no-home", root))
+	testing.expect(t, none == 0 && none_msg == "")
+}
+
+@(test)
+test_codex_own_unregister_for_uninstall :: proc(t: ^testing.T) {
+	root := fmt.tprintf("/tmp/heimdall-codex-own-unreg-%d", time.now()._nsec)
+	defer _ = os.remove_all(root)
+	home := fmt.tprintf("%s/codex-home", root)
+	data_dir := fmt.tprintf("%s/heimdall-bridge-b", root)
+	own := fmt.tprintf("%s/codex-marketplace", data_dir)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/.agents/plugins", own)) == nil)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/plugins/cache/heimdall-codex-heimdall-bridge-b/heimdall/1", home)) == nil)
+	testing.expect(t, os.make_directory_all(fmt.tprintf("%s/plugins/cache/heimdall-codex/heimdall/1", home)) == nil)
+	codex_own_test_write(t, fmt.tprintf("%s/config.toml", home), fmt.tprintf("[marketplaces.heimdall-codex-heimdall-bridge-b]\nsource = \"%s\"\n\n[plugins.\"heimdall@heimdall-codex-heimdall-bridge-b\"]\nenabled = false\n\n[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n", own))
+
+	ok, msg := bridge_codex_own_unregister_in(home, data_dir)
+	testing.expectf(t, ok, "unregister: %s", msg)
+	raw, _ := os.read_entire_file(fmt.tprintf("%s/config.toml", home), context.temp_allocator)
+	testing.expect_value(t, string(raw), "[plugins.\"heimdall@heimdall-codex\"]\nenabled = true\n")
+	testing.expect(t, !os.exists(own), "own marketplace copy removed")
+	testing.expect(t, !os.exists(fmt.tprintf("%s/plugins/cache/heimdall-codex-heimdall-bridge-b", home)), "own cache removed")
+	testing.expect(t, os.is_dir(fmt.tprintf("%s/plugins/cache/heimdall-codex", home)), "shared cache kept")
+	// Nothing registered (a second uninstall run, or no CODEX_HOME) is fine.
+	again, _ := bridge_codex_own_unregister_in(home, data_dir)
+	testing.expect(t, again)
+	missing, _ := bridge_codex_own_unregister_in(fmt.tprintf("%s/none", root), data_dir)
+	testing.expect(t, missing)
+}

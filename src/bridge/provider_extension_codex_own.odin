@@ -34,11 +34,16 @@ BRIDGE_CODEX_PLUGIN_NAME :: "heimdall"
 
 Bridge_Codex_Own_Ensure :: proc(bin_path: string, deadline: time.Time, env: []string) -> (ok: bool, msg: string)
 Bridge_Codex_Own_Remove :: proc(bin_path: string, deadline: time.Time, env: []string)
+Bridge_Codex_Own_Heal :: proc() -> (removed: int, msg: string)
+Bridge_Codex_Own_Unregister :: proc(data_dir: string) -> (ok: bool, msg: string)
 
-// Called by bridge_extension_ensure/remove for the default Codex profile; tests
-// replace these (they would touch the real ~/.codex/config.toml).
+// Called by bridge_extension_ensure/remove for the default Codex profile and by
+// `ham-bridge uninstall`; tests replace these (they would touch the real
+// ~/.codex/config.toml).
 bridge_codex_own_ensure_hook: Bridge_Codex_Own_Ensure = bridge_codex_own_ensure
 bridge_codex_own_remove_hook: Bridge_Codex_Own_Remove = bridge_codex_own_remove
+bridge_codex_own_heal_hook: Bridge_Codex_Own_Heal = proc() -> (int, string) { return bridge_codex_own_heal(bridge_codex_default_home()) }
+bridge_codex_own_unregister_hook: Bridge_Codex_Own_Unregister = bridge_codex_own_unregister
 
 // bridge_codex_own_marketplace_name_for maps a bridge service name to its
 // marketplace name: lower-case letters, digits and '-' only (it is also a TOML
@@ -64,7 +69,12 @@ bridge_codex_own_data_dir :: proc() -> string {
 
 // This bridge's own marketplace name; "" without a data dir.
 bridge_codex_own_marketplace_name :: proc() -> string {
-	data_dir := bridge_codex_own_data_dir()
+	return bridge_codex_own_marketplace_name_for_data_dir(bridge_codex_own_data_dir())
+}
+
+// The marketplace name of the profile whose data dir is data_dir (its basename is
+// the service name); also used by uninstall, which has no bridge config loaded.
+bridge_codex_own_marketplace_name_for_data_dir :: proc(data_dir: string) -> string {
 	if data_dir == "" do return ""
 	return bridge_codex_own_marketplace_name_for(bridgesvc.pbase(strings.trim_right(data_dir, "/\\")))
 }
@@ -113,7 +123,7 @@ bridge_codex_config_set_plugin_disabled :: proc(config, plugin_id: string, alloc
 	}
 	for line, i in lines {
 		trimmed := strings.trim_space(line)
-		if strings.has_prefix(trimmed, "[") {
+		if codex_toml_is_table_header(trimmed) {
 			if in_table && !done {
 				// The table ended without an enabled key.
 				write_line(&b, "enabled = false", i == 0)
@@ -152,9 +162,106 @@ bridge_codex_config_set_plugin_disabled :: proc(config, plugin_id: string, alloc
 
 bridge_codex_config_disable_plugin :: proc(codex_home, plugin_id: string) -> (ok: bool, msg: string) {
 	path := bridgesvc.pjoin(codex_home, "config.toml")
+	if !os.exists(path) do return false, fmt.tprintf("cannot read %s: missing", path)
+	return bridge_codex_config_rewrite(codex_home, bridge_codex_config_set_plugin_disabled, plugin_id)
+}
+
+// codex_toml_is_table_header reports whether a trimmed config.toml line is a
+// `[table]` or `[[array]]` header rather than a line of a multi-line array value
+// such as `["x"],` (which ends with ',', holds a ',' or starts with a string).
+@(private = "file")
+codex_toml_is_table_header :: proc(trimmed: string) -> bool {
+	line := trimmed
+	if hash := strings.index(line, "]#"); hash >= 0 do line = line[:hash + 1]
+	line = strings.trim_space(line)
+	if !strings.has_prefix(line, "[") || !strings.has_suffix(line, "]") do return false
+	inner := strings.trim(line, "[]")
+	inner = strings.trim_space(inner)
+	if inner == "" || inner[0] == '"' || inner[0] == '\'' do return false
+	quoted := false
+	for ch in inner {
+		switch ch {
+		case '"':      quoted = !quoted
+		case ',', '=': if !quoted do return false
+		}
+	}
+	return true
+}
+
+// codex_toml_table_name is the dotted name of a header line, quotes kept
+// (`[plugins."a@b"]` -> `plugins."a@b"`).
+@(private = "file")
+codex_toml_table_name :: proc(trimmed: string) -> string {
+	return strings.trim_space(strings.trim(strings.trim_space(trimmed), "[]"))
+}
+
+// bridge_codex_config_remove_own returns config without the
+// `[marketplaces.<marketplace>]` and `[plugins."heimdall@<marketplace>"]` tables
+// (each up to the next header) of a `heimdall-codex-*` marketplace only. changed
+// is false when neither is there.
+bridge_codex_config_remove_own :: proc(config, marketplace: string, allocator := context.temp_allocator) -> (out: string, changed: bool) {
+	// Only ever a bridge's own marketplace, never the shared heimdall-codex.
+	if !strings.has_prefix(marketplace, BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX) do return config, false
+	mp_table := strings.concatenate({"marketplaces.", marketplace}, context.temp_allocator)
+	plugin_table := strings.concatenate({"plugins.\"", bridge_codex_own_plugin_id(marketplace), "\""}, context.temp_allocator)
+	lines := strings.split_lines(config, context.temp_allocator)
+	kept := make([dynamic]string, 0, len(lines), context.temp_allocator)
+	dropping := false
+	for line in lines {
+		trimmed := strings.trim_space(line)
+		if codex_toml_is_table_header(trimmed) {
+			name := codex_toml_table_name(trimmed)
+			dropping = name == mp_table || name == plugin_table
+			if dropping do changed = true
+		}
+		// A dropped table takes its trailing blank lines with it; the blank line
+		// before it then separates its neighbours.
+		if !dropping do append(&kept, line)
+	}
+	if !changed do return config, false
+	for len(kept) > 0 && strings.trim_space(kept[len(kept) - 1]) == "" do pop(&kept)
+	if len(kept) == 0 do return "", true
+	return strings.concatenate({strings.join(kept[:], "\n", context.temp_allocator), "\n"}, allocator), true
+}
+
+// bridge_codex_config_own_marketplaces lists every `heimdall-codex-*` marketplace
+// (any bridge's own) in config with its `source`.
+bridge_codex_config_own_marketplaces :: proc(config: string, allocator := context.temp_allocator) -> (names, sources: [dynamic]string) {
+	names = make([dynamic]string, allocator)
+	sources = make([dynamic]string, allocator)
+	prefix := strings.concatenate({"marketplaces.", BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX}, context.temp_allocator)
+	current := -1
+	for line in strings.split_lines(config, context.temp_allocator) {
+		trimmed := strings.trim_space(line)
+		if codex_toml_is_table_header(trimmed) {
+			current = -1
+			name := codex_toml_table_name(trimmed)
+			if strings.has_prefix(name, prefix) {
+				append(&names, strings.clone(name[len("marketplaces."):], allocator))
+				append(&sources, "")
+				current = len(names) - 1
+			}
+			continue
+		}
+		if current < 0 do continue
+		eq := strings.index_byte(trimmed, '=')
+		if eq < 0 || strings.trim_space(trimmed[:eq]) != "source" do continue
+		value := strings.trim_space(trimmed[eq + 1:])
+		if len(value) >= 2 && value[0] == '"' && value[len(value) - 1] == '"' do value = value[1:len(value) - 1]
+		sources[current] = strings.clone(value, allocator)
+	}
+	return
+}
+
+// bridge_codex_config_rewrite applies edit to $codex_home/config.toml atomically
+// (tmp + rename). A missing config is nothing to do.
+@(private = "file")
+bridge_codex_config_rewrite :: proc(codex_home: string, edit: proc(config, arg: string, allocator := context.temp_allocator) -> (string, bool), arg: string) -> (ok: bool, msg: string) {
+	path := bridgesvc.pjoin(codex_home, "config.toml")
+	if !os.exists(path) do return true, ""
 	raw, err := os.read_entire_file(path, context.temp_allocator)
 	if err != nil do return false, fmt.tprintf("cannot read %s: %v", path, err)
-	out, changed := bridge_codex_config_set_plugin_disabled(string(raw), plugin_id)
+	out, changed := edit(string(raw), arg)
 	if !changed do return true, ""
 	tmp := strings.concatenate({path, ".heimdall.tmp"}, context.temp_allocator)
 	if werr := os.write_entire_file(tmp, transmute([]byte)out); werr != nil do return false, fmt.tprintf("cannot write %s: %v", tmp, werr)
@@ -163,6 +270,41 @@ bridge_codex_config_disable_plugin :: proc(codex_home, plugin_id: string) -> (ok
 		return false, fmt.tprintf("cannot replace %s: %v", path, rerr)
 	}
 	return true, ""
+}
+
+// bridge_codex_own_unregister_files drops marketplace's tables from
+// $codex_home/config.toml and its install cache, without the codex CLI (which may
+// be missing from an uninstall's PATH). What `codex plugin remove` and
+// `codex plugin marketplace remove` would leave is the same.
+bridge_codex_own_unregister_files :: proc(codex_home, marketplace: string) -> (ok: bool, msg: string) {
+	if codex_home == "" || !strings.has_prefix(marketplace, BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX) do return true, ""
+	if ok, msg = bridge_codex_config_rewrite(codex_home, bridge_codex_config_remove_own, marketplace); !ok do return
+	cache := bridgesvc.pjoin(bridgesvc.pjoin(bridgesvc.pjoin(codex_home, "plugins"), "cache"), marketplace)
+	_ = os.remove_all(cache)
+	if os.exists(cache) do return false, fmt.tprintf("cannot remove %s", cache)
+	return true, ""
+}
+
+// bridge_codex_own_marketplace_root_ok reports whether source still holds the
+// marketplace manifest Codex needs; a deleted one (a bridge uninstalled before
+// it cleaned up) makes `codex plugin list` fail for every caller.
+bridge_codex_own_marketplace_root_ok :: proc(source: string) -> bool {
+	return source != "" && os.is_file(bridgesvc.pjoin(bridgesvc.pjoin(bridgesvc.pjoin(source, ".agents"), "plugins"), "marketplace.json"))
+}
+
+// bridge_codex_own_heal unregisters every bridge's own marketplace whose source
+// is gone from codex_home. Returns how many it removed.
+bridge_codex_own_heal :: proc(codex_home: string) -> (removed: int, msg: string) {
+	raw, err := os.read_entire_file(bridgesvc.pjoin(codex_home, "config.toml"), context.temp_allocator)
+	if err != nil do return 0, ""
+	names, sources := bridge_codex_config_own_marketplaces(string(raw))
+	failed := make([dynamic]string, context.temp_allocator)
+	for name, i in names {
+		if bridge_codex_own_marketplace_root_ok(sources[i]) do continue
+		if ok, fail := bridge_codex_own_unregister_files(codex_home, name); ok do removed += 1
+		else do append(&failed, fail)
+	}
+	return removed, strings.join(failed[:], "; ", context.temp_allocator)
 }
 
 // bridge_codex_own_write_marketplace lays out <data_dir>/codex-marketplace: a
@@ -238,6 +380,21 @@ bridge_codex_own_remove :: proc(bin_path: string, deadline: time.Time, env: []st
 	_, _, _ = bridge_extension_install_step({bin_path, "plugin", "remove", bridge_codex_own_plugin_id(marketplace)}, deadline, env)
 	_, _, _ = bridge_extension_install_step({bin_path, "plugin", "marketplace", "remove", marketplace}, deadline, env)
 	if data_dir := bridge_codex_own_data_dir(); data_dir != "" do _ = os.remove_all(bridgesvc.pjoin(data_dir, BRIDGE_CODEX_OWN_MARKETPLACE_DIR))
+}
+
+// bridge_codex_own_unregister is uninstall's cleanup for the profile whose data
+// dir is data_dir: its marketplace and plugin leave the default CODEX_HOME before
+// <data_dir>/codex-marketplace goes, so Codex never points at a deleted source.
+bridge_codex_own_unregister :: proc(data_dir: string) -> (ok: bool, msg: string) {
+	return bridge_codex_own_unregister_in(bridge_codex_default_home(), data_dir)
+}
+
+bridge_codex_own_unregister_in :: proc(codex_home, data_dir: string) -> (ok: bool, msg: string) {
+	marketplace := bridge_codex_own_marketplace_name_for_data_dir(data_dir)
+	if marketplace == "" do return true, ""
+	if ok, msg = bridge_codex_own_unregister_files(codex_home, marketplace); !ok do return
+	_ = os.remove_all(bridgesvc.pjoin(data_dir, BRIDGE_CODEX_OWN_MARKETPLACE_DIR))
+	return true, ""
 }
 
 @(private = "file")

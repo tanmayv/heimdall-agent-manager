@@ -239,6 +239,9 @@ bridge_uninstall_run :: proc(data: rawptr, step: bridgesvc.Uninstall_Step) -> (b
 		return bridge_uninstall_secrets(u)
 
 	case .Extensions:
+		// This profile's own Codex marketplace (provider_extension_codex_own.odin)
+		// points at <data_dir>/codex-marketplace: unregister it before that goes.
+		if ok, msg := bridge_codex_own_unregister_hook(l.data_dir); !ok do return false, .Busy, msg
 		n, busy, left := bridge_uninstall_remove(u, paths.extensions)
 		if busy do return false, .Busy, fmt.tprintf("cannot remove %s", left)
 		return true, .None, "skipped" if n == 0 else "extensions generation removed"
