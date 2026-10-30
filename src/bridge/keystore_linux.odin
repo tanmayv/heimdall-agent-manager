@@ -10,6 +10,8 @@ package main
 //     never regenerated, so it must survive a reboot (finding H1); @u cannot hold it.
 //   - .Epoch_Floor: a 0600 file "epoch_floor" beside it, for the same reason: a
 //     reboot must not reset the anti-rollback floor.
+//   - .Profile_Key: a 0600 file "profile_key" beside it (provider profile store
+//     key), persistent so profile secrets stay readable after a reboot.
 //
 // Bridge ids name both, so bridges of the same OS user never share or purge each
 // other's secrets (REQ-T5-1). Lookups use only KEYCTL_SEARCH rooted at @u
@@ -46,6 +48,7 @@ IDENTITY_FILE_NAME :: "identity_key"
 EPOCH_FLOOR_FILE_NAME :: "epoch_floor"
 IDENTITY_PREVIOUS_FILE_NAME :: "identity_key.previous"
 EPOCH_FLOOR_PREVIOUS_FILE_NAME :: "epoch_floor.previous"
+PROFILE_KEY_FILE_NAME :: "profile_key"
 
 KEYSTORE_ERR_EPERM    :: 1
 KEYSTORE_ERR_EACCES   :: 13
@@ -201,6 +204,7 @@ keystore_identity_file_path :: proc(slot: Keystore_Slot, bridge_id: string) -> (
 	case .Epoch_Floor:          name = EPOCH_FLOOR_FILE_NAME
 	case .Identity_Previous:    name = IDENTITY_PREVIOUS_FILE_NAME
 	case .Epoch_Floor_Previous: name = EPOCH_FLOOR_PREVIOUS_FILE_NAME
+	case .Profile_Key:          name = PROFILE_KEY_FILE_NAME
 	}
 	return strings.concatenate({dir, name}, context.temp_allocator), true
 }

@@ -64,6 +64,7 @@ KEYSTORE_ANDROID_IDENTITY_FILE :: "identity_key.sealed"
 KEYSTORE_ANDROID_FLOOR_FILE    :: "epoch_floor.sealed"
 KEYSTORE_ANDROID_IDENTITY_PREVIOUS_FILE :: "identity_key.previous.sealed"
 KEYSTORE_ANDROID_FLOOR_PREVIOUS_FILE    :: "epoch_floor.previous.sealed"
+KEYSTORE_ANDROID_PROFILE_KEY_FILE       :: "profile_key.sealed"
 KEYSTORE_ANDROID_SEALED_MAGIC  :: "HMVS"
 KEYSTORE_ANDROID_SEALED_VER    :: u8(2)
 KEYSTORE_ANDROID_HEADER_LEN    :: len(KEYSTORE_ANDROID_SEALED_MAGIC) + 1
@@ -117,6 +118,7 @@ keystore_android_sealed_path :: proc(slot: Keystore_Slot, bridge_id: string) -> 
 	case .Epoch_Floor: name = KEYSTORE_ANDROID_FLOOR_FILE
 	case .Identity_Previous:    name = KEYSTORE_ANDROID_IDENTITY_PREVIOUS_FILE
 	case .Epoch_Floor_Previous: name = KEYSTORE_ANDROID_FLOOR_PREVIOUS_FILE
+	case .Profile_Key:          name = KEYSTORE_ANDROID_PROFILE_KEY_FILE
 	}
 	return strings.concatenate({dir, name}, context.temp_allocator), true
 }
@@ -263,6 +265,7 @@ keystore_android_aad :: proc(slot: Keystore_Slot, bridge_id: string) -> []u8 {
 	case .Epoch_Floor: slot_name = "epoch_floor:"
 	case .Identity_Previous:    slot_name = "identity_previous:"
 	case .Epoch_Floor_Previous: slot_name = "epoch_floor_previous:"
+	case .Profile_Key:          slot_name = "profile_key:"
 	}
 	return transmute([]u8)strings.concatenate({string(header[:]), slot_name, bridge_id}, context.temp_allocator)
 }

@@ -20,6 +20,9 @@ Agent_Profile :: struct {
 	prompt_tmux_delay_ms: int,
 	prompt_tmux_enter: bool,
 	model_flag: string,
+	// Provider profile launch args (REQ-PROF, user-authored on the bridge): literal
+	// arguments placed after the model flag and before the prompt.
+	extra_args: []string,
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
 }
@@ -49,6 +52,7 @@ build_agent_command :: proc(profile: Agent_Profile, model, daemon_url, agent_tok
 	if strings.trim_space(profile.model_flag) == "" { delete(argv); return nil }
 	append(&argv, profile.model_flag)
 	append(&argv, model)
+	append(&argv, ..profile.extra_args)
 	if prompt_delivery(profile) == "flag-injection" {
 		prompt := render_starter_prompt_for_agent(profile, daemon_url, agent_token, agent_instance_id)
 		if strings.trim_space(prompt) != "" {

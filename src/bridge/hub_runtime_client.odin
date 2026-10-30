@@ -940,6 +940,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_extension_install_command(conn, text)
 		return
 	}
+	if type == "provider_profile_op" {
+		bridge_hub_handle_provider_profile_op(conn, text)
+		return
+	}
 	if type == "task_chain_search" {
 		bridge_task_chain_search_handle_command(conn, text)
 		return
@@ -2525,7 +2529,9 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	// flags). Absent (older hub) means the historical yolo launch.
 	permission_mode := extract_json_string(command_json, "permission_mode", "")
 	defer delete(permission_mode)
-	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode)
+	provider_profile := extract_json_string(command_json, "provider_profile", "")
+	defer delete(provider_profile)
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, descriptor.display_name, 0, descriptor.project_path, permission_mode, provider_profile)
 }
 
 bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) -> (ok: bool, detail: string, err: Bridge_Error) {
@@ -2552,7 +2558,9 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider test bootstrap failed", bridge_error(.agent_bootstrap_invalid)
 	}
-	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS)
+	provider_profile := extract_json_string(command_json, "provider_profile", "")
+	defer delete(provider_profile)
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS, provider_profile = provider_profile)
 }
 
 // bridge_runtime_launch_agent_pty_host is the wrapper-free launch path (BR-2).
@@ -2561,7 +2569,15 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 // ham-pty-host daemon, and (3) spawn (or restart, if the instance is already
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
-bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, model, agent_token, display_name: string, timeout_seconds: u64, project_path: string = "", permission_mode: string = "", provider_profile: string = "") -> (ok: bool, detail: string, err: Bridge_Error) {
+	// REQ-PROF-4: an unknown or disabled profile fails the launch; it never falls
+	// back to the default profile, which could run under the wrong account.
+	pp, pp_err := profile_lookup(provider, provider_profile)
+	if pp_err != .None {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, profile_error_code(pp_err), bridge_error(.agent_launch_failed, .unsupported)
+	}
+	pp_ref: ^Provider_Profile = &pp if pp.profile_id != provider || pp.secret.binary != "" || pp.secret.config_dir != "" || pp.secret.home_dir != "" || len(pp.secret.env) > 0 || len(pp.secret.args) > 0 else nil
 	// Bootstrap files were already clean-slated + written to run_dir by
 	// bridge_bootstrap_launch_materialize_run_dir in the caller (the bridge is the
 	// sole materializer in the pty-host runtime). Here we only build the agent env.
@@ -2574,7 +2590,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
 	}
 
-	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds, permission_mode)
+	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds, permission_mode, pp_ref)
 	if !req_ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		blog_error(.provider_missing, blog_provider(provider))
