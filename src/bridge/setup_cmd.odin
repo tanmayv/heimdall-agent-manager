@@ -417,6 +417,7 @@ bridge_setup_register :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 	in_ := bridge_setup_render_input(s)
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "logs"))
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "run"))
+	if r := bridge_setup_write_ctl_wrapper(s, in_); !r.ok do return r
 	switch l.backend {
 	case .None:
 		return {failure = .Fatal, message = "no service manager"}
@@ -442,6 +443,23 @@ bridge_setup_register :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 		if ok, out := bridge_service_exec({"schtasks", "/Create", "/TN", tn, "/XML", xml, "/F"}); !ok do return {failure = .Stale_Service, message = fmt.tprintf("schtasks /Create: %s", out)}
 	}
 	return {ok = true, message = fmt.tprintf("%s rendered", bridgesvc.backend_name(l.backend))}
+}
+
+// bridge_setup_write_ctl_wrapper (re)writes bin/ham-ctl-<service>, the profile's
+// CLI for people. Written here rather than staged because it needs the profile's
+// ports, and on every run so a bin/ swap (install or update) never drops it.
+bridge_setup_write_ctl_wrapper :: proc(s: ^Bridge_Setup, in_: bridgesvc.Render_Input) -> bridgesvc.Step_Result {
+	l := s.layout
+	path := bridgesvc.ctl_wrapper_path(s.host, l)
+	// No bridge_setup_backup: rollback restores bin/ from bin.bak, and the
+	// generic restore would rewrite the wrapper without its execute bit.
+	_ = os.make_directory_all(l.bin_dir)
+	mode: os.Permissions = {.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other}
+	if err := os.write_entire_file_from_string(path, bridgesvc.render_ctl_wrapper(s.host, l, in_), mode); err != nil {
+		return {failure = .Fatal, message = fmt.tprintf("cannot write %s: %v", path, err)}
+	}
+	_ = os.chmod(path, mode) // an existing file keeps its old mode on write
+	return {ok = true}
 }
 
 // bridge_setup_remediate executes bridgesvc.remediation_plan for a known failure.

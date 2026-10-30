@@ -316,12 +316,36 @@ bridge_bootstrap_shell_quote :: proc(b: ^strings.Builder, value: string) {
 }
 
 bridge_bootstrap_ham_ctl_path :: proc() -> string {
-	// ham-ctl is resolved from the HEIMDALL_HAM_CTL_BIN env var (set by the flake
-	// `bridge` app to the matching build), falling back to `ham-ctl` on PATH. There
-	// is intentionally no config-file entry — the env var keeps the ctl bound to the
+	// ham-ctl is resolved from the HEIMDALL_HAM_CTL_BIN env var (set by the service
+	// file and the flake `bridge` app to the matching build), then the ham-ctl
+	// installed next to this ham-bridge, then `ham-ctl` on PATH. There is
+	// intentionally no config-file entry — the env var keeps the ctl bound to the
 	// same build as the bridge without a stale hardcoded path in config.toml.
-	if v := os.get_env_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator); strings.trim_space(v) != "" {
-		if normalized := bridge_bootstrap_normalize_executable_path(v); normalized != "" do return normalized
+	env := os.get_env_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator)
+	exe, _ := os.get_executable_path(context.temp_allocator)
+	return bridge_bootstrap_resolve_ham_ctl(env, exe)
+}
+
+// bridge_bootstrap_resolve_ham_ctl picks the ham-ctl the agent shims exec. An env
+// value naming a missing or non-executable file is skipped rather than trusted:
+// a service file rendered by an older setup pointed at bin/ham-ctl-<service>,
+// which setup never installed, so every agent shim exec'd nothing. setup always
+// installs ham-ctl beside ham-bridge in bin/, so the sibling is the fallback.
+// Like bridge_bootstrap_normalize_executable_path and find_on_path, the result is
+// allocated on context.allocator and owned by the caller ("" is not allocated).
+bridge_bootstrap_resolve_ham_ctl :: proc(env_value, self_exe: string) -> string {
+	if strings.trim_space(env_value) != "" {
+		normalized := bridge_bootstrap_normalize_executable_path(env_value)
+		if normalized != "" && bridge_os_is_executable(normalized) do return normalized
+		if normalized != "" do fmt.eprintfln("bridge: HEIMDALL_HAM_CTL_BIN=%s is not an executable; falling back", env_value)
+	}
+	if self_exe != "" {
+		dir := strings.trim_right(self_exe[:strings.last_index_any(self_exe, "/\\") + 1], "/\\")
+		if dir != "" do for name in bridge_os_executable_names("ham-ctl") {
+			candidate := strings.concatenate({dir, "/", name})
+			if bridge_os_is_executable(candidate) do return candidate
+			delete(candidate)
+		}
 	}
 	if found := bridge_bootstrap_find_on_path("ham-ctl"); found != "" do return found
 	return ""

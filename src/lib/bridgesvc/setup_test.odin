@@ -314,3 +314,38 @@ test_render_service_files :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(render_service_file(mac, layout_for(mac, name), odd), "/a&amp;b%c"))
 	testing.expect(t, strings.contains(render_service_file(linux, layout_for(linux, name), odd), "/a&b%%c"))
 }
+
+// The bridge execs HEIMDALL_HAM_CTL_BIN from every agent shim, so it must name the
+// ham-ctl binary setup installs, never the ham-ctl-<service> wrapper (which setup
+// once never wrote, leaving every agent shim pointing at a missing file).
+@(test)
+test_render_ctl_bin_and_wrapper :: proc(t: ^testing.T) {
+	in_ := Render_Input{hub = "https://hub.example.com", bridge_port = 49325, endpoint_port = 49326}
+	name := "heimdall-bridge-hub-example-com_work"
+	linux := Host{os = .Linux, home = "/home/u"}
+	l := layout_for(linux, name)
+	bin :: "/home/u/.local/share/heimdall/bridges/heimdall-bridge-hub-example-com_work/bin"
+	env := service_env(linux, l, in_)
+	found := false
+	for e in env do if strings.has_prefix(e, "HEIMDALL_HAM_CTL_BIN=") {
+		found = true
+		testing.expect_value(t, e, "HEIMDALL_HAM_CTL_BIN=" + bin + "/ham-ctl")
+	}
+	testing.expect(t, found, "service env sets HEIMDALL_HAM_CTL_BIN")
+
+	testing.expect_value(t, ctl_wrapper_path(linux, l), bin + "/ham-ctl-heimdall-bridge-hub-example-com_work")
+	sh := render_ctl_wrapper(linux, l, in_)
+	testing.expect(t, strings.has_prefix(sh, "#!/bin/sh\n"))
+	testing.expect(t, strings.contains(sh, `: "${HEIMDALL_BRIDGE_ENDPOINT:=tcp:127.0.0.1:49326}"`), "keeps a caller-set endpoint, else this profile's")
+	testing.expect(t, strings.contains(sh, "exec '" + bin + "/ham-ctl' --config '/home/u/.config/heimdall/bridges/heimdall-bridge-hub-example-com_work/config.toml' \"$@\"\n"))
+
+	win := Host{os = .Windows, appdata = "C:/R", local_appdata = "C:/L"}
+	wl := layout_for(win, name)
+	for e in service_env(win, wl, in_) do if strings.has_prefix(e, "HEIMDALL_HAM_CTL_BIN=") {
+		testing.expect(t, strings.has_suffix(e, "/bin/ham-ctl.exe"), e)
+	}
+	testing.expect(t, strings.has_suffix(ctl_wrapper_path(win, wl), "/bin/ham-ctl-heimdall-bridge-hub-example-com_work.cmd"))
+	cmd := render_ctl_wrapper(win, wl, in_)
+	testing.expect(t, strings.contains(cmd, "if not defined HEIMDALL_BRIDGE_ENDPOINT set \"HEIMDALL_BRIDGE_ENDPOINT=tcp:127.0.0.1:49326\"\r\n"))
+	testing.expect(t, strings.contains(cmd, "/bin/ham-ctl.exe\" --config \"C:/R/heimdall/bridges/heimdall-bridge-hub-example-com_work/config.toml\" %*\r\n"))
+}

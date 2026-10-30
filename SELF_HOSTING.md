@@ -771,6 +771,12 @@ is a fully separate bridge:
 | Binaries, data, extensions | `~/.local/share/heimdall/bridges/heimdall-bridge-hub-example-com/` | `~/.local/share/heimdall/bridges/heimdall-bridge-hub-example-com_bob/` |
 | CLI wrapper | `<data dir>/bin/ham-ctl-heimdall-bridge-hub-example-com` | `<data dir>/bin/ham-ctl-heimdall-bridge-hub-example-com_bob` |
 
+The CLI wrapper is for you: it runs `<data dir>/bin/ham-ctl` with that profile's
+config and endpoint, and `ham-bridge setup` rewrites it on every install and
+update. Agents never use it: the service sets `HEIMDALL_HAM_CTL_BIN` to
+`<data dir>/bin/ham-ctl` itself, and the bridge falls back to the `ham-ctl`
+next to `ham-bridge` if that variable names a missing file.
+
 Each profile also gets its own loopback port pair, its own bridge id and
 credential, and its own vault key (keyed by bridge id, see 2.1). The profile is
 recorded in `<config dir>/profile`, and the systemd unit's `Description` ends in
