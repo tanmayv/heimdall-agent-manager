@@ -150,6 +150,10 @@ function fakeRealHome() {
   put('.claude/history.jsonl', 'secret history');
   put('.codex/auth.json', '{"tokens":{"refresh_token":"r2"}}');
   put('.gemini/hooks.json', '{"real":"hook"}');
+  put('.gemini/settings.json', JSON.stringify({ theme: 'dark', mcpServers: { real: {} }, hooks: { a: 1 }, toolDiscoveryCommand: 'real-disc', tools: { discoveryCommand: 'real-d', callCommand: 'real-c', sandbox: true } }));
+  put('.gemini/config/config.json', JSON.stringify({ userSettings: { model: 'g', mcpServers: { real: {} }, hooksConfig: { x: 1 } } }));
+  put('.gemini/antigravity-cli/settings.json', JSON.stringify({ trustedWorkspaces: ['/work/a'], permissions: { allow: [] }, mcpServers: { real: {} } }));
+  put('.pi/agent/settings.json', JSON.stringify({ defaultModel: 'm', packages: ['real-pkg'], extensions: ['/real/ext.ts'] }));
   put('.gitconfig', '[user]\n  name = dev\n');
   put('.codex/config.toml', 'model = "gpt"\nnotify = [\n  "real-notify",\n  ["x"],\n]\nargs = [\n  ["a"],\n]\n\n[hooks]\nx = 1\n\n[mcp_servers.real]\ncommand = "real-mcp"\n\n[projects."/work/a"]\ntrust_level = "trusted"\n\n[marketplaces.real]\nsource = "/real"\n\n[plugins."real@m"]\nenabled = true\n\n[hooks.state."real@m:x"]\nok = 1\n\n[tui]\nx = 1\n');
   put('.pi/agent/auth.json', '{}');
@@ -177,7 +181,7 @@ test('provider home seeds auth and trust only, and never writes the real home', 
     const before = snapshot(real);
     const m = seedHome({ realHome: real, home, providers: ['claude', 'codex', 'pi', 'gemini', 'git'], trustRoots: ['/work/c'] });
     assert.equal(snapshot(real), before);
-    assert.deepEqual(m.providers.sort(), ['claude', 'codex', 'git', 'pi']);
+    assert.deepEqual(m.providers.sort(), ['claude', 'codex', 'gemini', 'git', 'pi']);
     assert.equal(readFileSync(join(home, '.claude/.credentials.json'), 'utf8'), '{"claudeAiOauth":{"refreshToken":"r1"}}');
     const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
     assert.equal(cj.userID, 'u1');
@@ -193,6 +197,10 @@ test('provider home seeds auth and trust only, and never writes the real home', 
     assert.doesNotMatch(toml, /marketplaces|plugins|hooks|mcp_servers|real-mcp|real-notify|notify/);
     assert.match(toml, /^model = "gpt"\nargs = \[\n  \["a"\],\n\]$/m);
     assert.equal(existsSync(join(home, '.gemini/hooks.json')), false);
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.gemini/settings.json'), 'utf8')), { theme: 'dark', tools: { sandbox: true } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.gemini/config/config.json'), 'utf8')), { userSettings: { model: 'g' } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.gemini/antigravity-cli/settings.json'), 'utf8')), { trustedWorkspaces: ['/work/a'], permissions: { allow: [] } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.pi/agent/settings.json'), 'utf8')), { defaultModel: 'm' });
     // Writable link target: copied, so the instance cannot write through it.
     assert.equal(lstatSync(join(home, '.claude/CLAUDE.md')).isSymbolicLink(), false);
     assert.equal(readFileSync(join(home, '.claude/CLAUDE.md'), 'utf8'), 'mine');
@@ -210,7 +218,9 @@ test('provider home seeds auth and trust only, and never writes the real home', 
 test('reseeding keeps what the instance installed itself', () => {
   const { root, real, home } = fakeRealHome();
   try {
-    seedHome({ realHome: real, home, providers: ['claude', 'codex'] });
+    seedHome({ realHome: real, home, providers: ['claude', 'codex', 'pi'] });
+    const piPath = join(home, '.pi/agent/settings.json');
+    writeFileSync(piPath, JSON.stringify({ defaultModel: 'm', packages: ['instance-pkg'] }));
     // The instance installs its own extension and trusts its own run dir.
     const settingsPath = join(home, '.claude/settings.json');
     const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
@@ -218,7 +228,8 @@ test('reseeding keeps what the instance installed itself', () => {
     const tomlPath = join(home, '.codex/config.toml');
     writeFileSync(tomlPath, `${readFileSync(tomlPath, 'utf8')}\n[plugins."heimdall@heimdall-codex"]\nenabled = true\n\n[mcp_servers.heimdall]\ncommand = "ham-ctl"\n\n[projects."/run/x"]\ntrust_level = "trusted"\n`);
     writeFileSync(join(real, '.codex/auth.json'), '{"tokens":{"refresh_token":"r3"}}');
-    seedHome({ realHome: real, home, providers: ['claude', 'codex'] });
+    seedHome({ realHome: real, home, providers: ['claude', 'codex', 'pi'] });
+    assert.deepEqual(JSON.parse(readFileSync(piPath, 'utf8')), { defaultModel: 'm', packages: ['instance-pkg'] });
     const after = JSON.parse(readFileSync(settingsPath, 'utf8'));
     assert.deepEqual(after.enabledPlugins, { 'heimdall@heimdall': true });
     assert.deepEqual(after.hooks, { Stop: [{ command: 'instance-hook' }] });
@@ -229,7 +240,7 @@ test('reseeding keeps what the instance installed itself', () => {
     assert.doesNotMatch(toml, /real@m/);
     assert.equal(readFileSync(join(home, '.codex/auth.json'), 'utf8'), '{"tokens":{"refresh_token":"r3"}}');
     seedHome({ realHome: real, home, providers: ['codex'] });
-    assert.deepEqual(JSON.parse(readFileSync(join(home, MANIFEST), 'utf8')).providers.sort(), ['claude', 'codex']);
+    assert.deepEqual(JSON.parse(readFileSync(join(home, MANIFEST), 'utf8')).providers.sort(), ['claude', 'codex', 'pi']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -43,6 +43,21 @@ const CLAUDE_JSON_KEYS = [
 // claude: settings.json keys that install or run code (plugins, hooks, MCP servers,
 // the status-line command). The real values are dropped; the instance keeps its own.
 const CLAUDE_PLUGIN_SETTINGS = ['enabledPlugins', 'extraKnownMarketplaces', 'hooks', 'mcpServers', 'statusLine'];
+// gemini CLI / Antigravity settings: MCP servers, hooks, extensions and the tool
+// discovery/call commands (current nested and legacy top-level spellings).
+const GEMINI_CODE_SETTINGS = [
+  'mcpServers', 'hooks', 'hooksConfig', 'extensions', 'plugins', 'toolDiscoveryCommand', 'toolCallCommand',
+  'tools.discoveryCommand', 'tools.callCommand', 'mcp',
+];
+// pi settings: extension packages.
+const PI_CODE_SETTINGS = ['packages', 'extensions'];
+// JSON settings files filtered by those lists. `nest` also applies the list one
+// level down (gemini config/config.json keeps its settings under userSettings).
+const JSON_FILTERS = {
+  'claude-settings': { drop: CLAUDE_PLUGIN_SETTINGS },
+  'gemini-settings': { drop: GEMINI_CODE_SETTINGS, nest: ['userSettings'] },
+  'pi-settings': { drop: PI_CODE_SETTINGS },
+};
 // codex: config.toml tables that install or run code, with the same rule.
 const CODEX_PLUGIN_TABLE = /^\[\[?(plugins|marketplaces|hooks|mcp_servers)([.\]])/;
 
@@ -65,10 +80,10 @@ export const PROVIDERS = {
   gemini: [
     { path: '.gemini/oauth_creds.json', kind: 'copy' },
     { path: '.gemini/google_accounts.json', kind: 'copy' },
-    { path: '.gemini/settings.json', kind: 'copy' },
-    { path: '.gemini/config/config.json', kind: 'copy' },
+    { path: '.gemini/settings.json', kind: 'gemini-settings' },
+    { path: '.gemini/config/config.json', kind: 'gemini-settings' },
     { path: '.gemini/antigravity-cli/antigravity-oauth-token', kind: 'copy' },
-    { path: '.gemini/antigravity-cli/settings.json', kind: 'copy' },
+    { path: '.gemini/antigravity-cli/settings.json', kind: 'gemini-settings' },
     { path: '.gemini/GEMINI.md', kind: 'copy' },
     { path: '.gemini/CLAUDE.md', kind: 'copy' },
     { path: '.gemini/CODEX.md', kind: 'copy' },
@@ -76,7 +91,7 @@ export const PROVIDERS = {
   ],
   pi: [
     { path: '.pi/agent/auth.json', kind: 'copy' },
-    { path: '.pi/agent/settings.json', kind: 'copy' },
+    { path: '.pi/agent/settings.json', kind: 'pi-settings' },
   ],
   // git keeps working for agents: identity, ignore rules and https credentials.
   // ssh remotes use the developer's agent (SSH_AUTH_SOCK is passed through).
@@ -115,15 +130,37 @@ export function mergeClaudeJson(real, current, trustRoots = []) {
   return out;
 }
 
-/** claude settings.json: the real settings, but the instance's own plugin selection. */
-export function mergeClaudeSettings(real, current) {
-  const out = { ...real };
-  for (const key of CLAUDE_PLUGIN_SETTINGS) {
-    delete out[key];
-    if (key in current) out[key] = current[key];
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => (o && typeof o === 'object' && k in o ? o[k] : undefined), obj);
+}
+
+function setPath(obj, path, value) {
+  const keys = path.split('.');
+  let o = obj;
+  for (const k of keys.slice(0, -1)) {
+    if (!o[k] || typeof o[k] !== 'object') {
+      if (value === undefined) return; // nothing to remove below a missing parent
+      o[k] = {};
+    }
+    o = o[k];
   }
+  if (value === undefined) delete o[keys[keys.length - 1]];
+  else o[keys[keys.length - 1]] = value;
+}
+
+/**
+ * A settings file: the real settings, except the code-running keys `drop` (dotted
+ * paths), which come from the instance's own file instead.
+ */
+export function mergeJsonSettings(real, current, { drop, nest = [] }) {
+  const out = structuredClone(real);
+  const paths = [...drop, ...nest.flatMap((n) => drop.map((d) => `${n}.${d}`))];
+  for (const path of paths) setPath(out, path, getPath(current, path));
   return out;
 }
+
+/** claude settings.json: the real settings, but the instance's own plugins and hooks. */
+export const mergeClaudeSettings = (real, current) => mergeJsonSettings(real, current, JSON_FILTERS['claude-settings']);
 
 /** Remove `key = ...` (including a multi-line array value) from top-level lines. */
 function dropTomlKey(lines, key) {
@@ -177,7 +214,6 @@ export function mergeCodexToml(realText, currentText = '', trustRoots = []) {
   return body.endsWith('\n') ? body : `${body}\n`;
 }
 
-/** A symlink whose target is outside the real home (e.g. /nix/store) is immutable. */
 /**
  * A symlink into a read-only store (home-manager's /nix/store files) is recreated as
  * the same symlink. Any other link is copied: a writable target outside the real
@@ -221,8 +257,8 @@ export function seed({ realHome, home, providers = ALL_PROVIDERS, trustRoots = [
         let text;
         if (kind === 'claude-json') {
           text = `${JSON.stringify(mergeClaudeJson(JSON.parse(srcBytes), current ? JSON.parse(current) : {}, trustRoots), null, 2)}\n`;
-        } else if (kind === 'claude-settings') {
-          text = `${JSON.stringify(mergeClaudeSettings(JSON.parse(srcBytes), current ? JSON.parse(current) : {}), null, 2)}\n`;
+        } else if (JSON_FILTERS[kind]) {
+          text = `${JSON.stringify(mergeJsonSettings(JSON.parse(srcBytes), current ? JSON.parse(current) : {}, JSON_FILTERS[kind]), null, 2)}\n`;
         } else if (kind === 'codex-toml') {
           text = mergeCodexToml(srcBytes.toString('utf8'), current, trustRoots);
         } else {
