@@ -9,8 +9,9 @@ package main
 // Progress protocol: docs/bridge-setup-progress.md.
 // Several Ninjy accounts share a machine with one profile each: --separate-account
 // installs into a profile no account has enrolled yet (account-2, account-3, ...)
-// when the requested one already belongs to an account; an interactive setup that
-// would re-enroll an enrolled profile offers the same. Multi-account installs:
+// when the requested one already belongs to an account; a setup that would enroll
+// a new bridge into an enrolled profile offers the same on a terminal and does it
+// headless (bridge_setup_wants_separate_account). Multi-account installs:
 // docs/bridge-multi-account.md.
 
 import "core:fmt"
@@ -114,15 +115,20 @@ bridge_setup_command :: proc(args: []string) -> bool {
 	return done
 }
 
-// bridge_setup_wants_separate_account: --separate-account, or (on a terminal, with
-// neither account flag) the user's yes to a profile owned by an account that
-// this run would re-enroll. Updates of an enrolled profile never ask.
+// bridge_setup_wants_separate_account: --separate-account, or a run that would
+// enroll a new bridge into a profile an account already enrolled, with neither
+// account flag. Headless (installers, Electron) nobody can confirm a replace, so
+// such a run defaults to a separate profile and the enrolled one (its service,
+// ports and credential) is left as is; --reenroll re-pairs the profile's own
+// bridge and stays put. On a terminal the user is asked. Updates of an enrolled
+// profile never ask.
 bridge_setup_wants_separate_account :: proc(host: bridgesvc.Host, args: []string, profile: bridgesvc.Profile) -> bool {
 	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) do return true
-	if has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) || !bridge_stdin_is_terminal(args) do return false
+	if has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) do return false
 	l := bridgesvc.layout_for(host, profile.service_name)
 	current := bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)))
 	if current == "" || !bridge_setup_enroll_needed(args, current) do return false
+	if !bridge_stdin_is_terminal(args) do return !has_flag(args, "--reenroll")
 	fmt.printfln("Profile %s is enrolled as bridge %s.", profile.service_name, current)
 	fmt.print("  Are you enrolling a DIFFERENT Ninjy account? Install it as a separate profile (the existing one keeps running) [y/N] ")
 	if !bridge_stdin_wait_readable(BRIDGE_ENROLL_PROMPT_TIMEOUT_MS) {

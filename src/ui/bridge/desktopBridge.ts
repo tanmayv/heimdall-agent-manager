@@ -47,6 +47,8 @@ export interface DesktopBridgeOperationOptions {
   bridgeId?: string;
   purge?: boolean;
   replaceOtherAccount?: boolean;
+  /** `setup --separate-account`: install into a profile no Ninjy account has enrolled yet. */
+  separateAccount?: boolean;
   /** The renderer opens /device/add itself for the pairing code (no external browser). */
   inAppApproval?: boolean;
 }
@@ -123,6 +125,54 @@ export function desktopCapabilities(): DesktopCapabilities {
 
 export function desktopBridgeManager(): DesktopBridgeManagerApi | null {
   return desktopCapabilities().bridgeManager;
+}
+
+function hubOrigin(value: string | undefined): string {
+  try { return new URL(String(value || '').trim()).origin; } catch (_err) { return ''; }
+}
+
+/**
+ * The installed profile for `hubUrl` that belongs to the signed-in Ninjy
+ * account: its bridge id is one of the account's bridges on the Hub. Several
+ * accounts can share this machine and OS user with one profile each, so "the
+ * default profile" may be someone else's bridge.
+ */
+export function accountBridgeProfile(
+  profiles: DesktopBridgeStatus[] | undefined,
+  hubUrl: string,
+  accountBridgeIds: Iterable<string>,
+): DesktopBridgeStatus | null {
+  const own = new Set(Array.from(accountBridgeIds).filter(Boolean));
+  const hub = hubOrigin(hubUrl);
+  return (profiles || []).find((p) => p?.installed && hubOrigin(p.hub) === hub && own.has(String(p.bridge_id || ''))) || null;
+}
+
+/** Installed profiles for `hubUrl` that are not the signed-in account's. */
+export function otherAccountProfiles(
+  profiles: DesktopBridgeStatus[] | undefined,
+  hubUrl: string,
+  accountBridgeIds: Iterable<string>,
+): DesktopBridgeStatus[] {
+  const own = new Set(Array.from(accountBridgeIds).filter(Boolean));
+  const hub = hubOrigin(hubUrl);
+  return (profiles || []).filter((p) => p?.installed && hubOrigin(p.hub) === hub && !own.has(String(p.bridge_id || '')));
+}
+
+/**
+ * How "Set up this machine" runs for the signed-in account. Its own installed
+ * profile is targeted as is (never a second bridge for the same account);
+ * otherwise setup always passes --separate-account, even for the first
+ * bridge, so another account's running bridge is never replaced, stopped or
+ * reconfigured. ham-bridge then uses `profile` (default: the default profile)
+ * while no account has enrolled it, else the next free account-N profile.
+ */
+export function desktopSetupPlan(
+  own: DesktopBridgeStatus | null,
+  hubUrl: string,
+  profile = '',
+): { target: DesktopBridgeTarget; options: DesktopBridgeOperationOptions } {
+  if (own) return { target: { hub: hubUrl, profile: String(own.profile || '') }, options: {} };
+  return { target: { hub: hubUrl, profile }, options: { separateAccount: true } };
 }
 
 export type BridgeStatusTone = 'success' | 'warning' | 'danger' | 'muted';

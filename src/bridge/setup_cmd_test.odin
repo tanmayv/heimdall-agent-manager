@@ -1,5 +1,8 @@
 package main
 
+import "core:fmt"
+import "core:os"
+import "core:strings"
 import "core:testing"
 import bridgesvc "odin_test:lib/bridgesvc"
 
@@ -58,4 +61,38 @@ test_bridge_setup_wants_separate_account :: proc(t: ^testing.T) {
 	// Nothing enrolled: the requested profile is used as is.
 	testing.expect_value(t, bridgesvc.separate_account_profile(host, profile.hub_name, ""), "")
 	testing.expect_value(t, bridgesvc.separate_account_profile(host, profile.hub_name, "work"), "work")
+}
+
+// Headless (installers, Electron) nobody can confirm a replace: a run that would
+// enroll a new bridge into another account's enrolled profile goes to a separate
+// profile, and the enrolled one is left alone.
+@(test)
+test_bridge_setup_headless_enrolled_profile_defaults_to_separate :: proc(t: ^testing.T) {
+	home := fmt.aprintf("%s/.cache/heimdall-tests/setup-separate-%d", os.get_env("HOME", context.temp_allocator), os.get_pid())
+	defer delete(home)
+	_ = os.remove_all(home)
+	defer os.remove_all(home)
+	host := bridgesvc.Host{os = .Linux, home = home, uid = 1000}
+	profile, ok := bridgesvc.profile_from("https://hub.example.com", "", context.temp_allocator)
+	testing.expect(t, ok)
+	l := bridgesvc.layout_for(host, profile.service_name)
+	testing.expect(t, os.make_directory_all(l.state_dir) == nil)
+	credential := strings.concatenate({bridgesvc.CREDENTIAL_HEADER, "secret brg_account_a\n"}, context.temp_allocator)
+	testing.expect(t, os.write_entire_file_from_string(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE), credential) == nil)
+
+	headless := []string{"setup", "--hub", "https://hub.example.com", "--headless", "--json-progress"}
+	with :: proc(base: []string, extra: ..string) -> []string {
+		out := make([dynamic]string, context.temp_allocator)
+		append(&out, ..base)
+		append(&out, ..extra)
+		return out[:]
+	}
+	testing.expect(t, bridge_setup_wants_separate_account(host, with(headless, "--new-bridge"), profile), "new bridge into an enrolled profile: separate")
+	testing.expect(t, bridge_setup_wants_separate_account(host, with(headless, "--reuse-bridge", "brg_other"), profile), "another bridge into an enrolled profile: separate")
+	testing.expect(t, !bridge_setup_wants_separate_account(host, headless, profile), "update of the enrolled profile stays in place")
+	testing.expect(t, !bridge_setup_wants_separate_account(host, with(headless, "--reuse-bridge", "brg_account_a"), profile), "reuse of the current bridge stays in place")
+	testing.expect(t, !bridge_setup_wants_separate_account(host, with(headless, "--reenroll"), profile), "re-pairing its own bridge stays in place")
+	testing.expect(t, !bridge_setup_wants_separate_account(host, with(headless, "--new-bridge", "--replace-other-account"), profile), "an explicit replace is honoured")
+	// The separate profile is a fresh one; the enrolled default is never chosen.
+	testing.expect_value(t, bridgesvc.separate_account_profile(host, profile.hub_name, ""), "account-2")
 }

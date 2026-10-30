@@ -390,6 +390,7 @@ bridgeHandler('heimdall-bridge:run', (kind: unknown, target: unknown, options: a
     bridgeId: typeof options?.bridgeId === 'string' ? options.bridgeId : '',
     purge: options?.purge === true,
     replaceOtherAccount: options?.replaceOtherAccount === true,
+    separateAccount: options?.separateAccount === true,
   };
   const inAppApproval = options?.inAppApproval === true;
   return bridgeManager.runOperation(operation, bridgeTarget(target), (payload: any) => sendBridgeEvent(payload, inAppApproval), clean);
@@ -471,7 +472,7 @@ app.whenReady().then(async () => {
     const { openWindow } = await installChoice.runFirstLaunch({
       markerPath: installChoiceMarker,
       showMessageBox: (options: any) => dialog.showMessageBox(options),
-      setupBridge: () => bridgeManager.runOperation('setup', bridgeTarget({}), sendBridgeEvent, {}),
+      setupBridge: () => bridgeManager.firstLaunchSetup(configuredHubApiBaseUrl(), sendBridgeEvent),
       packageKind: installChoice.packageKind(),
     });
     if (!openWindow) { app.quit(); return; }
