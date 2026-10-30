@@ -77,6 +77,19 @@ A per-account provider profile (its own config dir) is not shared, so its
 extension registers from that profile's own `<data dir>/extensions` copy. That
 path stays the same across updates and no other profile's prune touches it.
 
+Codex agents of the default provider config run their own bridge's extension,
+not the newest shared one. Each profile also registers a copy of its
+`<data dir>/extensions/codex` (under `<data dir>/codex-marketplace`) as the
+marketplace `heimdall-codex-<service>`, saved in the user's `config.toml` with
+`enabled = false`. That way the user's own Codex sessions and other bridges'
+agents don't load it. Agents launch with
+`-c plugins.heimdall@heimdall-codex.enabled=false -c plugins.heimdall@heimdall-codex-<service>.enabled=true`,
+so exactly one Heimdall plugin loads, with the shared `CODEX_HOME` and login.
+Without that registration (for example when the copy is missing), the launch
+adds no override and uses the shared release. Uninstalling the extension or the
+profile removes only that profile's own marketplace. Claude keeps the shared
+registration.
+
 Uninstalling a profile removes only that profile's own copy; the shared root and
 the provider registration stay. Removing a provider's extension from the hub
 (Settings) is left undone, with a message, while another profile of this OS user
