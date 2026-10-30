@@ -13,26 +13,31 @@ import vault "odin_test:lib/vault"
 
 g_profile_test_mu: sync.Mutex
 @(private = "file")
-g_profile_test_kr_storage: vault.Vault_Keyring
-@(private = "file")
 g_profile_test_seq: int
 // Package-level so the slice outlives profile_test_setup (a slice literal would not).
 @(private = "file")
-PROFILE_TEST_CATALOG := [?]string{"claude", "codex", "pi", "copilot"}
+PROFILE_TEST_CATALOG := [?]string{"claude", "codex", "pi", "copilot", "antigravity"}
 
 @(private = "file")
 profile_test_setup :: proc(t: ^testing.T) -> string {
 	sync.mutex_lock(&g_profile_test_mu)
-	dir := strings.concatenate({os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp", "/ham-profile-test-", random_hex_string_temp(8)}, context.temp_allocator)
+	dir := strings.concatenate(
+		{
+			os.get_env("TMPDIR", context.temp_allocator) if os.get_env("TMPDIR", context.temp_allocator) != "" else "/tmp",
+			"/ham-profile-test-",
+			random_hex_string_temp(8),
+		},
+		context.temp_allocator,
+	)
 	g_profile_test_seq += 1
 	dir = strings.concatenate({dir, "-", random_hex_string_temp(4), "-"}, context.temp_allocator)
 	dir = fmt.tprintf("%s%d-%d", dir, os.get_pid(), g_profile_test_seq)
 	_ = os.remove_all(dir)
 	testing.expect(t, os.make_directory(dir, {.Read_User, .Write_User, .Execute_User}) == nil)
-	g_profile_test_store_path = strings.concatenate({dir, "/provider_profiles.json"}, context.temp_allocator)
-	g_profile_test_kr_storage = test_keyring_from_hex(PROFILE_OP_KEY1, 1)
-	g_profile_test_keyring = &g_profile_test_kr_storage
-	g_profile_test_use_keyring = true
+	g_profile_test_store_path = strings.concatenate(
+		{dir, "/provider_profiles.json"},
+		context.temp_allocator,
+	)
 	g_profile_test_catalog = PROFILE_TEST_CATALOG[:]
 	return dir
 }
@@ -41,9 +46,6 @@ profile_test_setup :: proc(t: ^testing.T) -> string {
 profile_test_teardown :: proc(dir: string) {
 	_ = os.remove_all(dir)
 	g_profile_test_store_path = ""
-	vault.keyring_wipe(&g_profile_test_kr_storage)
-	g_profile_test_keyring = nil
-	g_profile_test_use_keyring = false
 	g_profile_test_catalog = nil
 	sync.mutex_unlock(&g_profile_test_mu)
 }
@@ -61,167 +63,447 @@ random_hex_string_temp :: proc(n: int) -> string {
 test_profile_id_namespace_and_metadata :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	ok_p := Provider_Profile{profile_id = "claude_k3fq", provider = "claude", enabled = true, accent = "#a1B2c3"}
+	ok_p := Provider_Profile {
+		profile_id = "claude_k3fq",
+		provider   = "claude",
+		enabled    = true,
+		accent     = "#a1B2c3",
+	}
 	testing.expect_value(t, profile_validate_metadata(&ok_p), Profile_Error.None)
-	def := Provider_Profile{profile_id = "claude", provider = "claude"}
+	def := Provider_Profile {
+		profile_id = "claude",
+		provider   = "claude",
+	}
 	testing.expect_value(t, profile_validate_metadata(&def), Profile_Error.None)
 	// A custom profile may never take any catalog slug.
-	clash := Provider_Profile{profile_id = "codex", provider = "claude"}
+	clash := Provider_Profile {
+		profile_id = "codex",
+		provider   = "claude",
+	}
 	testing.expect_value(t, profile_validate_metadata(&clash), Profile_Error.Reserved_Id)
 	for bad in ([]string{"", "Claude", "1abc", "a b", "abcdefghijklmnopqrstuvwxyz0123456", "a.b"}) {
-		p := Provider_Profile{profile_id = bad, provider = "claude"}
+		p := Provider_Profile {
+			profile_id = bad,
+			provider   = "claude",
+		}
 		testing.expectf(t, profile_validate_metadata(&p) == .Invalid_Id, "id %q accepted", bad)
 	}
-	unknown := Provider_Profile{profile_id = "x_1", provider = "nope"}
+	unknown := Provider_Profile {
+		profile_id = "x_1",
+		provider   = "nope",
+	}
 	testing.expect_value(t, profile_validate_metadata(&unknown), Profile_Error.Unknown_Provider)
-	accent := Provider_Profile{profile_id = "x_1", provider = "claude", accent = "red"}
+	accent := Provider_Profile {
+		profile_id = "x_1",
+		provider   = "claude",
+		accent     = "red",
+	}
 	testing.expect_value(t, profile_validate_metadata(&accent), Profile_Error.Invalid_Accent)
-	label := Provider_Profile{profile_id = "x_1", provider = "claude", label_enc = "Work"}
+	label := Provider_Profile {
+		profile_id = "x_1",
+		provider   = "claude",
+		label_enc  = "Work",
+	}
 	testing.expect_value(t, profile_validate_metadata(&label), Profile_Error.Invalid_Label)
 }
 
+
 @(test)
-test_profile_secret_validation :: proc(t: ^testing.T) {
+test_profile_driver_validation :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	s := Provider_Profile_Secret{config_dir = "/abs/cfg", env = []Provider_Profile_Env{{name = "ANTHROPIC_BASE_URL", value = "x"}}, args = []string{"--chrome"}}
-	testing.expect_value(t, profile_validate_secret("claude", &s), Profile_Error.None)
-	rel := Provider_Profile_Secret{home_dir = "rel/home"}
-	testing.expect_value(t, profile_validate_secret("claude", &rel), Profile_Error.Path_Invalid)
-	dots := Provider_Profile_Secret{home_dir = "a/../b"} // relative even after cleaning
-	testing.expect_value(t, profile_validate_secret("claude", &dots), Profile_Error.Path_Invalid)
-	nocfg := Provider_Profile_Secret{config_dir = "/abs"}
-	testing.expect_value(t, profile_validate_secret("copilot", &nocfg), Profile_Error.Config_Dir_Unsupported)
-	hd := Provider_Profile_Secret{env = []Provider_Profile_Env{{name = "HEIMDALL_AGENT_TOKEN", value = "x"}}}
-	testing.expect_value(t, profile_validate_secret("claude", &hd), Profile_Error.Env_Forbidden)
-	home := Provider_Profile_Secret{home_dir = "/h", env = []Provider_Profile_Env{{name = "XDG_CONFIG_HOME", value = "/x"}}}
-	testing.expect_value(t, profile_validate_secret("claude", &home), Profile_Error.Env_Forbidden)
-	cfg := Provider_Profile_Secret{config_dir = "/c", env = []Provider_Profile_Env{{name = "CLAUDE_CONFIG_DIR", value = "/x"}}}
-	testing.expect_value(t, profile_validate_secret("claude", &cfg), Profile_Error.Env_Forbidden)
-	dup := Provider_Profile_Secret{env = []Provider_Profile_Env{{name = "A", value = "1"}, {name = "A", value = "2"}}}
-	testing.expect_value(t, profile_validate_secret("claude", &dup), Profile_Error.Env_Invalid)
-	badname := Provider_Profile_Secret{env = []Provider_Profile_Env{{name = "1A", value = "1"}}}
-	testing.expect_value(t, profile_validate_secret("claude", &badname), Profile_Error.Env_Invalid)
-	emptyarg := Provider_Profile_Secret{args = []string{""}}
-	testing.expect_value(t, profile_validate_secret("claude", &emptyarg), Profile_Error.Args_Invalid)
-	notexec := Provider_Profile_Secret{binary = "/nonexistent/claude"}
-	testing.expect_value(t, profile_validate_secret("claude", &notexec), Profile_Error.Binary_Invalid)
+	p := Provider_Profile {
+		provider = "claude",
+		config = Provider_Profile_Config{config_dir = "/abs/cfg", launch_args = "--chrome"},
+		environment = []Provider_Profile_Env{{name = "ANTHROPIC_BASE_URL", value = "x"}},
+	}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
+	p.config.config_dir = "rel/cfg"
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Path_Invalid)
+	p.config.config_dir = "/abs/cfg"
+	p.provider = "copilot"
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Dir_Unsupported)
+	p = Provider_Profile {
+		provider = "claude",
+		config = Provider_Profile_Config{home_path = "/abs/codex"},
+	}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	p = Provider_Profile {
+		provider = "codex",
+		config = Provider_Profile_Config{api_key = "key"},
+	}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	p = Provider_Profile {
+		provider = "claude",
+		config = Provider_Profile_Config{binary_path = "/nonexistent/claude"},
+	}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Binary_Invalid)
+	p.config.binary_path = "claude"
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
+	for name in ([]string{"HOME", "USERPROFILE", "HEIMDALL_AGENT_TOKEN", "heimdall_agent_token"}) {
+		p.environment = []Provider_Profile_Env{{name = name, value = "x"}}
+		testing.expect_value(t, profile_validate(&p), Profile_Error.Env_Forbidden)
+	}
+	for env in ([][]Provider_Profile_Env{{{name = "1BAD", value = "x"}}, {{name = "DUP", value = "1"}, {name = "DUP", value = "2"}}, {{name = "BAD", value = "a\x00b"}}}) {
+		p.environment = env
+		testing.expect_value(t, profile_validate(&p), Profile_Error.Env_Invalid)
+	}
+	p = Provider_Profile {
+		provider = "antigravity",
+		config = Provider_Profile_Config{auth_method = "bad"},
+	}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	p.config.auth_method = "gemini-api-key"
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
+	p.config.launch_args = "--bad"
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
 }
 
 @(test)
 test_profile_env_plan_order :: proc(t: ^testing.T) {
-	p := Provider_Profile{profile_id = "claude_w", provider = "claude", secret = Provider_Profile_Secret{
-		home_dir = "/p/home", env = []Provider_Profile_Env{{name = "FOO", value = "bar"}},
-	}}
-	plan := profile_env_plan(&p)
-	env := profile_apply_env_plan([]string{"HOME=/inst/home", "XDG_CONFIG_HOME=/inst/home/.config", "CLAUDE_CONFIG_DIR=/leak", "PATH=/bin", "FOO=old"}, plan)
+	p := Provider_Profile {
+		provider = "claude",
+		config = Provider_Profile_Config{config_dir = "/p/config"},
+		environment = []Provider_Profile_Env {
+			{name = "CLAUDE_CONFIG_DIR", value = "/env/config"},
+			{name = "FOO", value = "bar"},
+		},
+	}
+	env := profile_apply_env_plan(
+		[]string {
+			"HOME=/bridge/home",
+			"XDG_CONFIG_HOME=/bridge/.config",
+			"CLAUDE_CONFIG_DIR=/base",
+			"FOO=old",
+			"PATH=/bin",
+		},
+		profile_env_plan(&p),
+	)
 	joined := strings.join(env, "\n", context.temp_allocator)
-	testing.expect(t, strings.contains(joined, "HOME=/p/home\n") || strings.has_prefix(joined, "HOME=/p/home"))
-	testing.expect(t, strings.contains(joined, "XDG_CONFIG_HOME=/p/home/.config"))
-	testing.expect(t, !strings.contains(joined, "/inst/home"))
-	testing.expect(t, strings.contains(joined, "CLAUDE_CONFIG_DIR=/p/home/.claude") && !strings.contains(joined, "/leak"))
-	testing.expect(t, strings.contains(joined, "PATH=/bin"))
-	testing.expect(t, strings.contains(joined, "FOO=bar") && !strings.contains(joined, "FOO=old"))
-	c := Provider_Profile{profile_id = "codex_w", provider = "codex", secret = Provider_Profile_Secret{config_dir = "/c/codex/"}}
-	cplan := profile_env_plan(&c)
-	cenv := strings.join(profile_apply_env_plan([]string{"CODEX_HOME=/real", "HOME=/inst"}, cplan), "\n", context.temp_allocator)
-	testing.expect(t, strings.contains(cenv, "CODEX_HOME=/c/codex") && !strings.contains(cenv, "/real"))
-	testing.expect(t, strings.contains(cenv, "HOME=/inst"))
+	testing.expect(t, strings.contains(joined, "HOME=/bridge/home"))
+	testing.expect(t, strings.contains(joined, "XDG_CONFIG_HOME=/bridge/.config"))
+	testing.expect(
+		t,
+		strings.contains(joined, "CLAUDE_CONFIG_DIR=/p/config") &&
+		!strings.contains(joined, "/env/config") &&
+		!strings.contains(joined, "/base"),
+	)
+	testing.expect(
+		t,
+		strings.contains(joined, "FOO=bar") &&
+		!strings.contains(joined, "FOO=old") &&
+		strings.contains(joined, "PATH=/bin"),
+	)
+	p = Provider_Profile {
+		provider = "codex",
+		config = Provider_Profile_Config{home_path = "/codex", shadow_home_path = "/shadow"},
+		environment = []Provider_Profile_Env{{name = "CODEX_HOME", value = "/env"}},
+	}
+	cenv := strings.join(
+		profile_apply_env_plan([]string{"CODEX_HOME=/base", "HOME=/bridge"}, profile_env_plan(&p)),
+		"\n",
+		context.temp_allocator,
+	)
+	testing.expect(
+		t,
+		strings.contains(cenv, "CODEX_HOME=/shadow") &&
+		!strings.contains(cenv, "/base") &&
+		!strings.contains(cenv, "/env"),
+	)
+	testing.expect(t, strings.contains(cenv, "HOME=/bridge"))
 }
 
 @(test)
-test_profile_store_roundtrip_encrypted_and_keep :: proc(t: ^testing.T) {
+test_profile_launch_args_t3code_quotes_and_no_expansion :: proc(t: ^testing.T) {
+	input := `--config model=\"gpt-6.1-sol\" --prompt don\'t --enable foo\ bar --config=profile='work profile' --path C:\Users\me --quoted "quoted=C:\Users\me" "$HOME" '$(touch nope)' ""`
+	args := profile_tokenize_args(input)
+	expected := []string {
+		"--config",
+		"model=\"gpt-6.1-sol\"",
+		"--prompt",
+		"don't",
+		"--enable",
+		"foo bar",
+		"--config=profile=work profile",
+		"--path",
+		`C:\Users\me`,
+		"--quoted",
+		`quoted=C:\Users\me`,
+		"$HOME",
+		"$(touch nope)",
+	}
+	testing.expect_value(t, len(args), len(expected))
+	for a, i in args do if i < len(expected) - 1 do testing.expect_value(t, a, expected[i])
+}
+
+@(test)
+test_profile_store_separate_secrets_and_keep :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
 	cfg := strings.concatenate({dir, "/cfg-work"}, context.temp_allocator)
-	p := Provider_Profile{profile_id = "claude_w", provider = "claude", enabled = true, secret = Provider_Profile_Secret{
-		config_dir = cfg, env = []Provider_Profile_Env{{name = "API_KEY", value = "s3cret-value", sensitive = true}, {name = "PLAIN", value = "v"}},
-		args = []string{"--chrome"},
-	}}
+	p := Provider_Profile {
+		profile_id = "claude_w",
+		provider = "claude",
+		enabled = true,
+		config = Provider_Profile_Config {
+			config_dir = cfg,
+			launch_args = "--chrome",
+			custom_models = []string{"local-model"},
+		},
+		environment = []Provider_Profile_Env {
+			{name = "API_KEY", value = "s3cret-value", sensitive = true},
+			{name = "PLAIN", value = "v"},
+		},
+	}
 	testing.expect_value(t, profile_upsert(&p, nil, 1000), Profile_Error.None)
 	testing.expect(t, os.is_dir(cfg))
 	raw, _ := os.read_entire_file(g_profile_test_store_path, context.temp_allocator)
 	text := string(raw)
-	// Trusted host: only the secret value is sealed; the rest is plain.
-	testing.expect(t, !strings.contains(text, "s3cret-value"))
-	for plain in ([]string{"API_KEY", "PLAIN", "--chrome", "cfg-work"}) {
-		testing.expectf(t, strings.contains(text, plain), "store should keep %q in clear", plain)
+	testing.expect(
+		t,
+		!strings.contains(text, "s3cret-value") && !strings.contains(text, "vault:v2"),
+	)
+	for plain in ([]string{"API_KEY", "PLAIN", "--chrome", "cfg-work", "local-model"}) do testing.expect(t, strings.contains(text, plain))
+	path := profile_secret_path(profile_env_secret_name("claude_w", "API_KEY"))
+	value, err := os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, err == nil && string(value) == "s3cret-value")
+	for file in ([]string{path, g_profile_test_store_path, profile_secrets_dir()}) {
+		info, e := os.stat(file, context.temp_allocator)
+		testing.expect(t, e == nil)
+		when ODIN_OS != .Windows {
+			testing.expect(
+				t,
+				info.mode &
+					os.Permissions {
+							.Read_Group,
+							.Read_Other,
+							.Write_Group,
+							.Write_Other,
+							.Execute_Group,
+							.Execute_Other,
+						} ==
+				{},
+			)
+		}
 	}
-	info, _ := os.stat(g_profile_test_store_path, context.temp_allocator)
-	testing.expect(t, info.mode & os.Permissions{.Read_Group, .Read_Other, .Write_Group, .Write_Other} == {})
-
-	// Update with the sensitive value redacted: keep retains it.
-	upd := Provider_Profile{profile_id = "claude_w", provider = "claude", enabled = true, secret = Provider_Profile_Secret{
-		config_dir = cfg, env = []Provider_Profile_Env{{name = "API_KEY", value = "", sensitive = true}},
-	}}
-	testing.expect_value(t, profile_upsert(&upd, []string{"API_KEY"}, 2000), Profile_Error.None)
-	got, err := profile_lookup("claude", "claude_w")
-	testing.expect_value(t, err, Profile_Error.None)
-	testing.expect_value(t, len(got.secret.env), 1)
-	if len(got.secret.env) == 1 do testing.expect_value(t, got.secret.env[0].value, "s3cret-value")
+	// No vault test seam at all: both lookup and upsert are independent of its state.
+	got, lerr := profile_lookup("claude", "claude_w")
+	testing.expect_value(t, lerr, Profile_Error.None)
+	testing.expect_value(t, got.environment[0].value, "s3cret-value")
+	profiles, _ := profile_list()
+	testing.expect(
+		t,
+		profiles[0].environment[0].value == "" && profiles[0].environment[0].value_redacted,
+	)
+	upd := Provider_Profile {
+		profile_id  = "claude_w",
+		provider    = "claude",
+		enabled     = true,
+		environment = []Provider_Profile_Env {
+			{name = "API_KEY", sensitive = true, value_redacted = true},
+		},
+	}
+	testing.expect_value(t, profile_upsert(&upd, nil, 2000), Profile_Error.None)
+	got, lerr = profile_lookup("claude", "claude_w")
+	testing.expect_value(t, lerr, Profile_Error.None)
+	testing.expect_value(t, got.environment[0].value, "s3cret-value")
 	testing.expect_value(t, got.created_at, i64(1000))
 	testing.expect_value(t, got.updated_at, i64(2000))
-
-	// Provider is fixed for an id; unknown ids never fall back to the default.
-	_, merr := profile_lookup("codex", "claude_w")
-	testing.expect_value(t, merr, Profile_Error.Provider_Mismatch)
-	_, uerr := profile_lookup("claude", "claude_gone")
-	testing.expect_value(t, uerr, Profile_Error.Unknown)
-	def, derr := profile_lookup("claude", "")
-	testing.expect_value(t, derr, Profile_Error.None)
-	testing.expect_value(t, def.profile_id, "claude")
-
-	// Another account's keyring cannot open the store; a locked bridge reports Locked.
-	other := test_keyring_from_hex(PROFILE_OP_KEY2, 1)
-	defer vault.keyring_wipe(&other)
-	g_profile_test_keyring = &other
-	_, kerr := profile_list()
-	testing.expect_value(t, kerr, Profile_Error.Store_Unavailable)
-	g_profile_test_keyring = nil
-	_, lerr := profile_lookup("claude", "claude_w")
-	testing.expect_value(t, lerr, Profile_Error.Locked)
-	_, derr2 := profile_lookup("claude", "")
-	testing.expect_value(t, derr2, Profile_Error.None) // defaults launch while locked
-	testing.expect(t, strings.contains(profile_report_json(context.temp_allocator), `"env_count":1`))
-	g_profile_test_keyring = &g_profile_test_kr_storage
-
-	// Disabled and removed.
+	_, mismatch := profile_lookup("codex", "claude_w")
+	testing.expect_value(t, mismatch, Profile_Error.Provider_Mismatch)
+	_, unknown := profile_lookup("claude", "gone")
+	testing.expect_value(t, unknown, Profile_Error.Unknown)
+	def, de := profile_lookup("claude", "")
+	testing.expect(t, de == .None && def.profile_id == "claude")
 	upd.enabled = false
-	testing.expect_value(t, profile_upsert(&upd, []string{"API_KEY"}, 3000), Profile_Error.None)
-	_, dis := profile_lookup("claude", "claude_w")
-	testing.expect_value(t, dis, Profile_Error.Disabled)
+	testing.expect_value(t, profile_upsert(&upd, nil, 3000), Profile_Error.None)
+	_, disabled := profile_lookup("claude", "claude_w")
+	testing.expect_value(t, disabled, Profile_Error.Disabled)
 	testing.expect_value(t, profile_remove("claude"), Profile_Error.Default_Not_Removable)
 	testing.expect_value(t, profile_remove("claude_w"), Profile_Error.None)
+	testing.expect(t, !os.exists(path))
 	testing.expect_value(t, profile_remove("claude_w"), Profile_Error.Not_Found)
+}
+
+@(test)
+test_profile_secret_replace_clear_stale_and_non_sensitive :: proc(t: ^testing.T) {
+	dir := profile_test_setup(t)
+	defer profile_test_teardown(dir)
+	p := Provider_Profile {
+		profile_id = "ag_work",
+		provider = "antigravity",
+		enabled = true,
+		config = Provider_Profile_Config {
+			auth_method = "gemini-api-key",
+			api_key = "config-secret",
+		},
+		environment = []Provider_Profile_Env {
+			{name = "TOKEN", value = "old-secret", sensitive = true},
+		},
+	}
+	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
+	env_path := profile_secret_path(profile_env_secret_name(p.profile_id, "TOKEN"))
+	config_path := profile_secret_path(
+		profile_config_secret_name(p.profile_id, "antigravity", "api_key"),
+	)
+	list, _ := profile_list()
+	view := profile_view(&list[0])
+	testing.expect(t, view.config.api_key == "" && view.config.api_key_redacted)
+	p.config.api_key = ""
+	p.config.api_key_redacted = true // keep config while replacing env
+	p.environment[0].value = "new-secret"
+	testing.expect_value(t, profile_upsert(&p, nil, 2), Profile_Error.None)
+	got, e := profile_lookup("antigravity", p.profile_id)
+	testing.expect(
+		t,
+		e == .None &&
+		got.config.api_key == "config-secret" &&
+		got.environment[0].value == "new-secret",
+	)
+	view = profile_view(&got)
+	bytes, _ := json.marshal(view, allocator = context.temp_allocator)
+	testing.expect(
+		t,
+		!strings.contains(string(bytes), "config-secret") &&
+		!strings.contains(string(bytes), "new-secret"),
+	)
+	p.config.api_key_redacted = false // explicit empty clears
+	p.environment[0].sensitive = false
+	p.environment[0].value = "plain"
+	testing.expect_value(t, profile_upsert(&p, nil, 3), Profile_Error.None)
+	testing.expect(t, !os.exists(config_path) && !os.exists(env_path))
+	p.config.api_key = "second"
+	p.environment[0].sensitive = true
+	p.environment[0].value = "second"
+	testing.expect_value(t, profile_upsert(&p, nil, 4), Profile_Error.None)
+	p.environment = nil // stale env cleanup
+	p.config.api_key = ""
+	testing.expect_value(t, profile_upsert(&p, nil, 5), Profile_Error.None)
+	testing.expect(t, !os.exists(config_path) && !os.exists(env_path))
+	// Keep with no pre-existing secret stays redacted and materializes empty.
+	p.config.api_key_redacted = true
+	testing.expect_value(t, profile_upsert(&p, nil, 6), Profile_Error.None)
+	got, e = profile_lookup("antigravity", p.profile_id)
+	testing.expect(t, e == .None && got.config.api_key == "")
+}
+
+@(test)
+test_profile_secret_transaction_rolls_back :: proc(t: ^testing.T) {
+	dir := profile_test_setup(t)
+	defer profile_test_teardown(dir)
+	p := Provider_Profile {
+		profile_id  = "claude_w",
+		provider    = "claude",
+		enabled     = true,
+		environment = []Provider_Profile_Env{{name = "TOKEN", value = "before", sensitive = true}},
+	}
+	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
+	path := profile_secret_path(profile_env_secret_name(p.profile_id, "TOKEN"))
+	// A directory at the settings temporary filename forces the final write to
+	// fail after secret writes. The prior settings and secret must survive.
+	tmp := strings.concatenate({g_profile_test_store_path, ".tmp"}, context.temp_allocator)
+	testing.expect(t, os.make_directory(tmp, {.Read_User, .Write_User, .Execute_User}) == nil)
+	child := strings.concatenate({tmp, "/block"}, context.temp_allocator)
+	testing.expect(t, os.write_entire_file(child, []byte{'x'}) == nil)
+	p.environment = []Provider_Profile_Env {
+		{name = "TOKEN", value = "after", sensitive = true},
+		{name = "NEW", value = "new", sensitive = true},
+	}
+	testing.expect_value(t, profile_upsert(&p, nil, 2), Profile_Error.Store_Unavailable)
+	raw, err := os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, err == nil && string(raw) == "before")
+	testing.expect(
+		t,
+		!os.exists(profile_secret_path(profile_env_secret_name(p.profile_id, "NEW"))),
+	)
+	got, e := profile_lookup("claude", p.profile_id)
+	testing.expect(t, e == .None && len(got.environment) == 1 && got.updated_at == 1)
+	// A later secret-file write can also fail after the first one succeeded.
+	_ = os.remove_all(tmp)
+	new_path := profile_secret_path(profile_env_secret_name(p.profile_id, "NEW"))
+	new_tmp := strings.concatenate({new_path, ".tmp"}, context.temp_allocator)
+	testing.expect(t, os.make_directory(new_tmp, {.Read_User, .Write_User, .Execute_User}) == nil)
+	testing.expect(
+		t,
+		os.write_entire_file(
+			strings.concatenate({new_tmp, "/block"}, context.temp_allocator),
+			[]byte{'x'},
+		) ==
+		nil,
+	)
+	testing.expect_value(t, profile_upsert(&p, nil, 3), Profile_Error.Store_Unavailable)
+	raw, err = os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, err == nil && string(raw) == "before")
+	testing.expect(t, !os.exists(new_path))
+
+}
+
+@(test)
+test_profile_reset_purge_and_secret_namespace :: proc(t: ^testing.T) {
+	dir := profile_test_setup(t)
+	defer profile_test_teardown(dir)
+	p := Provider_Profile {
+		profile_id  = "claude",
+		provider    = "claude",
+		enabled     = true,
+		environment = []Provider_Profile_Env{{name = "TOKEN", value = "secret", sensitive = true}},
+	}
+	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
+	path := profile_secret_path(profile_env_secret_name("claude", "TOKEN"))
+	testing.expect_value(t, profile_reset("claude"), Profile_Error.None)
+	testing.expect(t, !os.exists(path))
+	p.profile_id = "claude_other"
+	testing.expect_value(t, profile_upsert(&p, nil, 2), Profile_Error.None)
+	other := profile_secret_path(profile_env_secret_name(p.profile_id, "TOKEN"))
+	testing.expect(t, os.exists(other) && !os.exists(path))
+	testing.expect(t, profile_env_secret_name("a_b", "C") != profile_env_secret_name("a", "b_C"))
+	testing.expect(t, profile_purge())
+	testing.expect(t, !os.exists(g_profile_test_store_path) && !os.exists(profile_secrets_dir()))
 }
 
 @(test)
 test_profile_dirs_leaf_only_and_report_metadata_only :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	deep := Provider_Profile{profile_id = "codex_d", provider = "codex", enabled = true, secret = Provider_Profile_Secret{
-		config_dir = strings.concatenate({dir, "/missing-parent/leaf"}, context.temp_allocator),
-	}}
+	deep := Provider_Profile {
+		profile_id = "codex_d",
+		provider = "codex",
+		enabled = true,
+		config = Provider_Profile_Config {
+			home_path = strings.concatenate({dir, "/missing/leaf"}, context.temp_allocator),
+		},
+	}
 	testing.expect_value(t, profile_upsert(&deep, nil, 1), Profile_Error.Path_Invalid)
-	p := Provider_Profile{profile_id = "pi_x", provider = "pi", enabled = true, accent = "#112233", label_enc = "", secret = Provider_Profile_Secret{
-		home_dir = strings.concatenate({dir, "/pi-home"}, context.temp_allocator),
-		env = []Provider_Profile_Env{{name = "SECRET_NAME", value = "secret-val", sensitive = true}},
-		args = []string{"--a", "--b"},
-	}}
+	p := Provider_Profile {
+		profile_id = "codex_x",
+		provider = "codex",
+		enabled = true,
+		accent = "#112233",
+		config = Provider_Profile_Config {
+			home_path = strings.concatenate({dir, "/codex-home"}, context.temp_allocator),
+			launch_args = "--a --b",
+			custom_models = []string{"private-model"},
+		},
+		environment = []Provider_Profile_Env {
+			{name = "SECRET_NAME", value = "secret-val", sensitive = true},
+		},
+	}
 	testing.expect_value(t, profile_upsert(&p, nil, 5), Profile_Error.None)
 	report := profile_report_json(context.temp_allocator)
-	for leak in ([]string{"secret-val", "SECRET_NAME", "pi-home", "--a"}) {
-		testing.expectf(t, !strings.contains(report, leak), "report leaks %q", leak)
-	}
+	for leak in ([]string{"secret-val", "SECRET_NAME", "codex-home", "--a", "private-model"}) do testing.expect(t, !strings.contains(report, leak))
 	wire: Provider_Profiles_Report_Wire
-	testing.expect(t, json.unmarshal_string(report, &wire, json.Specification.JSON, context.temp_allocator) == nil)
+	testing.expect(
+		t,
+		json.unmarshal_string(report, &wire, json.Specification.JSON, context.temp_allocator) ==
+		nil,
+	)
 	testing.expect_value(t, len(wire.profiles), 1)
 	if len(wire.profiles) == 1 {
 		e := wire.profiles[0]
-		testing.expect(t, e.has_home_dir && !e.has_config_dir && !e.has_binary)
+		testing.expect(t, e.has_home_path && !e.has_config_dir && !e.has_binary)
 		testing.expect_value(t, e.env_count, 1)
 		testing.expect_value(t, e.args_count, 2)
-		testing.expect_value(t, e.state, "ok")
+		testing.expect_value(t, e.custom_models_count, 1)
 	}
 }
 
@@ -245,7 +527,13 @@ test_profile_op_open_checks :: proc(t: ^testing.T) {
 	defer vault.keyring_wipe(&kr)
 	old := test_keyring_from_hex(PROFILE_OP_KEY1, 1)
 	defer vault.keyring_wipe(&old)
-	base := Provider_Profile_Op_Wire{op = "get", profile_id = "claude", bridge_id = "brg_a", boot_id = "boot1", ts = now}
+	base := Provider_Profile_Op_Wire {
+		op         = "get",
+		profile_id = "claude",
+		bridge_id  = "brg_a",
+		boot_id    = "boot1",
+		ts         = now,
+	}
 
 	ok_op := base
 	ok_op.nonce = "nonce-ok-0000000001"
@@ -291,42 +579,96 @@ test_profile_op_open_checks :: proc(t: ^testing.T) {
 test_profile_op_apply_upsert_get_redacts :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	up := Provider_Profile_Op_Wire{op = "upsert", profile_id = "claude_w", nonce = "n1", body = Provider_Profile_Body_Wire{
-		provider = "claude", enabled = true, accent = "#00aa00", env = []Provider_Profile_Env_Wire{{name = "TOKEN", value = "tok-secret", sensitive = true}, {name = "MODE", value = "fast"}},
-		args = []string{"--verbose"},
-	}}
+	up := Provider_Profile_Op_Wire {
+		op = "upsert",
+		profile_id = "claude_w",
+		nonce = "n1",
+		body = Provider_Profile_Body_Wire {
+			provider = "claude",
+			enabled = true,
+			accent = "#00aa00",
+			environment = []Provider_Profile_Env_Wire {
+				{name = "TOKEN", value = "tok-secret", sensitive = true},
+				{name = "MODE", value = "fast"},
+			},
+			config = Provider_Profile_Config{launch_args = "--verbose"},
+		},
+	}
 	testing.expect_value(t, profile_op_apply(&up, 10).error, "")
-	get := Provider_Profile_Op_Wire{op = "get", profile_id = "claude_w", nonce = "n2"}
+	get := Provider_Profile_Op_Wire {
+		op         = "get",
+		profile_id = "claude_w",
+		nonce      = "n2",
+	}
 	out := profile_op_apply(&get, 11)
 	testing.expect_value(t, out.error, "")
 	testing.expect(t, !strings.contains(out.response, "tok-secret"))
-	testing.expect(t, strings.contains(out.response, `"value_redacted":true`) && strings.contains(out.response, "fast") && strings.contains(out.response, "--verbose"))
+	testing.expect(
+		t,
+		strings.contains(out.response, `"value_redacted":true`) &&
+		strings.contains(out.response, "fast") &&
+		strings.contains(out.response, "--verbose"),
+	)
 	// Keep the redacted secret on the next edit.
 	up2 := up
 	up2.nonce = "n3"
-	up2.body.env = []Provider_Profile_Env_Wire{{name = "TOKEN", value = "", sensitive = true, keep = true}}
+	up2.body.environment = []Provider_Profile_Env_Wire {
+		{name = "TOKEN", value = "", sensitive = true, keep = true},
+	}
 	testing.expect_value(t, profile_op_apply(&up2, 12).error, "")
 	p, _ := profile_lookup("claude", "claude_w")
-	testing.expect(t, len(p.secret.env) == 1 && p.secret.env[0].value == "tok-secret")
+	testing.expect(t, len(p.environment) == 1 && p.environment[0].value == "tok-secret")
 	// Unedited default profile is readable; unknown ids are not.
-	def := Provider_Profile_Op_Wire{op = "get", profile_id = "codex", nonce = "n4"}
+	def := Provider_Profile_Op_Wire {
+		op         = "get",
+		profile_id = "codex",
+		nonce      = "n4",
+	}
 	testing.expect_value(t, profile_op_apply(&def, 13).error, "")
-	missing := Provider_Profile_Op_Wire{op = "get", profile_id = "codex_x", nonce = "n5"}
+	missing := Provider_Profile_Op_Wire {
+		op         = "get",
+		profile_id = "codex_x",
+		nonce      = "n5",
+	}
 	testing.expect_value(t, profile_op_apply(&missing, 14).error, "profile_not_found")
-	bad := Provider_Profile_Op_Wire{op = "drop", profile_id = "claude_w"}
+	bad := Provider_Profile_Op_Wire {
+		op         = "drop",
+		profile_id = "claude_w",
+	}
 	testing.expect_value(t, profile_op_apply(&bad, 15).error, "profile_bad_op")
 	// Reset is for default profiles only; remove takes the provider from the record.
-	rst := Provider_Profile_Op_Wire{op = "reset", profile_id = "claude_w"}
+	rst := Provider_Profile_Op_Wire {
+		op         = "reset",
+		profile_id = "claude_w",
+	}
 	testing.expect_value(t, profile_op_apply(&rst, 16).error, "profile_invalid_id")
-	rm_default := Provider_Profile_Op_Wire{op = "remove", profile_id = "codex"}
-	testing.expect_value(t, profile_op_apply(&rm_default, 17).error, "profile_default_not_removable")
-	rm := Provider_Profile_Op_Wire{op = "remove", profile_id = "claude_w"}
+	rm_default := Provider_Profile_Op_Wire {
+		op         = "remove",
+		profile_id = "codex",
+	}
+	testing.expect_value(
+		t,
+		profile_op_apply(&rm_default, 17).error,
+		"profile_default_not_removable",
+	)
+	rm := Provider_Profile_Op_Wire {
+		op         = "remove",
+		profile_id = "claude_w",
+	}
 	testing.expect_value(t, profile_op_apply(&rm, 18).error, "")
 }
 
 @(test)
 test_profile_launch_argv_and_env :: proc(t: ^testing.T) {
-	prof := Bridge_Provider_Profile{name = "claude", command = []string{"/bin/claude"}, base_args = []string{"--b"}, yolo_flags = []string{"--y"}, model_flag = "--model", extra_args = []string{"--chrome", "--x=1"}, prompt_delivery = "none"}
+	prof := Bridge_Provider_Profile {
+		name            = "claude",
+		command         = []string{"/bin/claude"},
+		base_args       = []string{"--b"},
+		yolo_flags      = []string{"--y"},
+		model_flag      = "--model",
+		extra_args      = []string{"--chrome", "--x=1"},
+		prompt_delivery = "none",
+	}
 	argv := bridge_runtime_agent_argv_for_profile(prof, "opus", "tok", "inst")
 	defer delete(argv)
 	joined := strings.join(argv, " ", context.temp_allocator)
@@ -337,40 +679,77 @@ test_profile_launch_argv_and_env :: proc(t: ^testing.T) {
 test_profile_reset_keeps_enabled_and_clears_overrides :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	off := Provider_Profile_Op_Wire{op = "upsert", profile_id = "claude", body = Provider_Profile_Body_Wire{
-		provider = "claude", enabled = false, accent = "#123456", args = []string{"--x"},
-	}}
+	off := Provider_Profile_Op_Wire {
+		op = "upsert",
+		profile_id = "claude",
+		body = Provider_Profile_Body_Wire {
+			provider = "claude",
+			enabled = false,
+			accent = "#123456",
+			config = Provider_Profile_Config{launch_args = "--x"},
+		},
+	}
 	testing.expect_value(t, profile_op_apply(&off, 1).error, "")
-	rst := Provider_Profile_Op_Wire{op = "reset", profile_id = "claude"}
+	rst := Provider_Profile_Op_Wire {
+		op         = "reset",
+		profile_id = "claude",
+	}
 	testing.expect_value(t, profile_op_apply(&rst, 2).error, "")
 	_, err := profile_lookup("claude", "")
 	testing.expect_value(t, err, Profile_Error.Disabled)
 	profiles, _ := profile_list()
 	testing.expect_value(t, len(profiles), 1)
-	if len(profiles) == 1 do testing.expect(t, profiles[0].accent == "" && len(profiles[0].secret.args) == 0)
+	if len(profiles) == 1 do testing.expect(t, profiles[0].accent == "" && profiles[0].config.launch_args == "")
 	// An enabled default with overrides resets to the implicit default.
-	on := Provider_Profile_Op_Wire{op = "upsert", profile_id = "codex", body = Provider_Profile_Body_Wire{provider = "codex", enabled = true, args = []string{"--y"}}}
+	on := Provider_Profile_Op_Wire {
+		op = "upsert",
+		profile_id = "codex",
+		body = Provider_Profile_Body_Wire {
+			provider = "codex",
+			enabled = true,
+			config = Provider_Profile_Config{launch_args = "--y"},
+		},
+	}
 	testing.expect_value(t, profile_op_apply(&on, 3).error, "")
-	rst2 := Provider_Profile_Op_Wire{op = "reset", profile_id = "codex"}
+	rst2 := Provider_Profile_Op_Wire {
+		op         = "reset",
+		profile_id = "codex",
+	}
 	testing.expect_value(t, profile_op_apply(&rst2, 4).error, "")
 	def, derr := profile_lookup("codex", "codex")
 	testing.expect_value(t, derr, Profile_Error.None)
-	testing.expect_value(t, len(def.secret.args), 0)
+	testing.expect_value(t, len(profile_tokenize_args(def.config.launch_args)), 0)
 }
 
 @(test)
 test_profile_paths_normalized_and_empty_args_dropped :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
-	p := Provider_Profile{profile_id = "claude_n", provider = "claude", enabled = true, secret = Provider_Profile_Secret{
-		config_dir = strings.concatenate({dir, "/./a/../cfg-n/"}, context.temp_allocator), args = []string{"", "--keep", ""},
-	}}
+	p := Provider_Profile {
+		profile_id = "claude_n",
+		provider = "claude",
+		enabled = true,
+		config = Provider_Profile_Config {
+			config_dir = strings.concatenate({dir, "/./a/../cfg-n/"}, context.temp_allocator),
+			launch_args = "",
+		},
+	}
+	p.config.launch_args = "\"\" --keep ''"
 	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
 	got, _ := profile_lookup("claude", "claude_n")
-	testing.expect_value(t, got.secret.config_dir, strings.concatenate({dir, "/cfg-n"}, context.temp_allocator))
-	testing.expect_value(t, len(got.secret.args), 1)
+	testing.expect_value(
+		t,
+		got.config.config_dir,
+		strings.concatenate({dir, "/cfg-n"}, context.temp_allocator),
+	)
+	testing.expect_value(t, len(profile_tokenize_args(got.config.launch_args)), 1)
 	tilde := profile_normalize_path("~/x/../y")
-	testing.expect(t, filepath_is_abs_test(tilde) && strings.has_suffix(tilde, "/y") && !strings.contains(tilde, "~"))
+	testing.expect(
+		t,
+		filepath_is_abs_test(tilde) &&
+		strings.has_suffix(tilde, "/y") &&
+		!strings.contains(tilde, "~"),
+	)
 	testing.expect_value(t, profile_normalize_path("rel/p"), "rel/p")
 }
 
@@ -384,7 +763,11 @@ test_profile_slug_clash_is_reported :: proc(t: ^testing.T) {
 	dir := profile_test_setup(t)
 	defer profile_test_teardown(dir)
 	// "newprov" is not in the catalog yet: a claude profile may use the id.
-	p := Provider_Profile{profile_id = "newprov", provider = "claude", enabled = true}
+	p := Provider_Profile {
+		profile_id = "newprov",
+		provider   = "claude",
+		enabled    = true,
+	}
 	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
 	// A later catalog adds the slug.
 	prev := g_profile_test_catalog
@@ -402,7 +785,7 @@ test_profile_slug_clash_is_reported :: proc(t: ^testing.T) {
 
 // Golden vector shared with the UI encoder (P3): a fixed key, vault id, epoch and
 // nonce over the canonical envelope bytes give this exact token.
-PROFILE_GOLDEN_PLAIN :: `{"op":"upsert","profile_id":"claude_k3fq","body":{"provider":"claude","label_enc":"","accent":"#a1b2c3","enabled":true,"binary":"","config_dir":"/home/dev/.claude-work","home_dir":"","env":[{"name":"ANTHROPIC_API_KEY","value":"sk-golden","sensitive":true,"value_redacted":false,"keep":false}],"args":["--chrome"]},"bridge_id":"brg_golden","boot_id":"boot_golden","ts":1793350000000,"nonce":"golden-nonce-000001"}`
+PROFILE_GOLDEN_PLAIN :: `{"op":"upsert","profile_id":"claude_k3fq","body":{"provider":"claude","label_enc":"","accent":"#a1b2c3","enabled":true,"environment":[{"name":"ANTHROPIC_API_KEY","value":"sk-golden","sensitive":true,"value_redacted":false,"keep":false}],"config":{"binary_path":"","config_dir":"/home/dev/.claude-work","home_path":"","shadow_home_path":"","launch_args":"--chrome","custom_models":["work-model"],"auth_method":"","api_key":"","api_key_redacted":false,"gcp_project":"","gcp_location":""}},"bridge_id":"brg_golden","boot_id":"boot_golden","ts":1793350000000,"nonce":"golden-nonce-000001"}`
 PROFILE_GOLDEN_NONCE :: "000102030405060708090a0b"
 
 @(test)
@@ -412,51 +795,124 @@ test_profile_op_golden_vector :: proc(t: ^testing.T) {
 	key, _ := vault.keyring_key_for_epoch(&kr, 1)
 	nonce: [vault.NONCE_BYTES]byte
 	_ = vault.hex_decode_into(nonce[:], PROFILE_GOLDEN_NONCE)
-	tok, ok := vault.seal_with_nonce(transmute([]byte)string(PROFILE_GOLDEN_PLAIN), key, kr.vault_id, 1, nonce[:], context.temp_allocator)
+	tok, ok := vault.seal_with_nonce(
+		transmute([]byte)string(PROFILE_GOLDEN_PLAIN),
+		key,
+		kr.vault_id,
+		1,
+		nonce[:],
+		context.temp_allocator,
+	)
 	testing.expect(t, ok)
 	testing.expect_value(t, tok, PROFILE_GOLDEN_TOKEN)
-	op, err := profile_op_open(PROFILE_GOLDEN_TOKEN, &kr, "brg_golden", "boot_golden", 1793350000000)
+	op, err := profile_op_open(
+		PROFILE_GOLDEN_TOKEN,
+		&kr,
+		"brg_golden",
+		"boot_golden",
+		1793350000000,
+	)
 	testing.expect_value(t, err, "")
 	testing.expect_value(t, op.op, "upsert")
 	testing.expect_value(t, op.profile_id, "claude_k3fq")
 	testing.expect_value(t, op.body.provider, "claude")
-	testing.expect_value(t, op.body.config_dir, "/home/dev/.claude-work")
-	testing.expect(t, len(op.body.env) == 1 && op.body.env[0].name == "ANTHROPIC_API_KEY" && op.body.env[0].sensitive)
-	testing.expect(t, len(op.body.args) == 1 && op.body.args[0] == "--chrome")
+	testing.expect_value(t, op.body.config.config_dir, "/home/dev/.claude-work")
+	testing.expect(
+		t,
+		len(op.body.environment) == 1 &&
+		op.body.environment[0].name == "ANTHROPIC_API_KEY" &&
+		op.body.environment[0].sensitive,
+	)
+	testing.expect(t, op.body.config.launch_args == "--chrome")
 	testing.expect_value(t, op.nonce, "golden-nonce-000001")
 }
 
-PROFILE_GOLDEN_TOKEN :: "vault:v2:c8f193e678e762f9:e1:AAECAwQFBgcICQoLi2nHThjS0rcGWWappqMgpWjB2WNZmReBZMu27bCN2wS5028OfBk3cMCEnUXfIw9PAtYs6yc2EKZUozSZ6yd3gEWqWgTL6XiCF49+9U1uUjeiRQnwZp0F0JL/UYahpN6Y0m22UlMtJ0EN/Ghjz0Y0kNrFSUyPAnZeyvaiVdkgxt87D1Yh5RfckkDdswxvGbs9V5FoB3Ozq4eTE2RnwOdTjuiBVPnSQEAxhAJ+2gu0NmxlpdQfZbnKciCy+afzu70ZvRIiSw9heX+apVft7crUPBTcZfQlcePmE2GoQXytKQlzMuXcympR1Qf/FsN7TT/BY0dkmuARC/dMgLI2wvD+zEuHhDR45K/DF3dEv7gSiijBG6AiNzDbaXMtBr8UkVjqS/n0dJFTa6DvlV19gxWCYuqkWdSdxjCDAji+XCR0Uyhci1DY3ebMXt2Aui7rwOSqy2sFslIuqf1DIX3EOkclfsAYhB5kjKwvwsSzyLlhUoAdzk9BVVKHEQj9lRkUosfhBVFH2eREuRAwSJQ/bO9LLXpLcc6QEy7KUN7kOfNNx16I62Wvkd0Gr8Avjjg="
+PROFILE_GOLDEN_TOKEN :: "vault:v2:c8f193e678e762f9:e1:AAECAwQFBgcICQoLgk1tS2fB7s7XqvMlNCD8hmjB2WNZmReBZMu27bCN2wS5028OfBk3cMCEnUXfIw9PAtYs6yc2EKZUozSZ6yd3gEWqWgTL6XiCF49+9U1uUjeiRQnwZp0F0JL/UYahpN6Y0m22UlMtJ0EN/Ghjz0Y0kNrFSUyPAnZeyvaiVdkgxt87D1Yh5RfckkfaqwRvD/dqEN0wByqHvsOUFVZmi69T9YT6dMTwdSYWvjUBvTeTEkAj7Nsea6fUNS6qs7v184USuARlHw9vdy6apVKmo/jZe1iHfONyLu2FK1SMZlaiEi9IEtbh8EU2tkOyWMZ/DWjPJBg2y7FaDfRTgaoFzP6/0ECPnjout6KEVyRerL8O+XrWDqR1aE2LIDUvCqUXnB2PSfHqJc5dZqPlnUhw3RaVIbeiSOjEgDTcEiTuDV16XG1QjkfowOKaa4KWum61i/Olz1ADoS985PJUGVLCIUNjIYwYhB5qgrY1/sWIi/EkQ81ImD0LWVaRGwu6mxdCspCoQAkTtboe7UVsC4Y1B+EeLGdOP8bdTWnBHe+sfvwV3Vm55WX2yYJSvco8jmkwf6EhDq19UIp81XfWniTW8yYuvP3cJW/LFZFYPSmlp8IiEIOo+zyGlbr/fodGBHrSXPNPuxWPXssCNxCC3i2mv0lOWyxTHziPApGUH8yGA/JHXD4fFYeBr4r7sESs1xheXqnMd4jSbBhCGWx5fm3fCI2HZVFPi2FlrsiCeb8SqtVeEeSFjIrXQuqMHN2YGxed08yZcPMBC9/DCuC4XMCQKsA7lo1SBbws7zsLxA=="
 
+// Exercise the actual Spawn assembler with an explicit binary and a model that
+// exists only on this profile; never start a provider process.
 @(test)
-test_profile_record_bound_to_profile_id :: proc(t: ^testing.T) {
-	dir := profile_test_setup(t)
-	defer profile_test_teardown(dir)
-	p := Provider_Profile{profile_id = "claude_a", provider = "claude", enabled = true, secret = Provider_Profile_Secret{env = []Provider_Profile_Env{{name = "K", value = "v-secret", sensitive = true}}}}
-	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
-	// Move the sealed blob to another profile id: the embedded binding refuses it.
-	raw, _ := os.read_entire_file(g_profile_test_store_path, context.temp_allocator)
-	moved, _ := strings.replace_all(string(raw), `"profile_id":"claude_a"`, `"profile_id":"claude_b"`, context.temp_allocator)
-	_ = os.write_entire_file(g_profile_test_store_path, transmute([]byte)moved)
-	_, err := profile_lookup("claude", "claude_b")
-	testing.expect_value(t, err, Profile_Error.Store_Unavailable)
-}
-
-@(test)
-test_profile_without_secrets_launches_while_locked :: proc(t: ^testing.T) {
-	dir := profile_test_setup(t)
-	defer profile_test_teardown(dir)
-	p := Provider_Profile{profile_id = "codex_p", provider = "codex", enabled = true, secret = Provider_Profile_Secret{
-		args = []string{"--x"}, env = []Provider_Profile_Env{{name = "MODE", value = "fast"}},
-	}}
-	g_profile_test_keyring = nil // no keyring needed without sensitive values
-	testing.expect_value(t, profile_upsert(&p, nil, 1), Profile_Error.None)
-	got, err := profile_lookup("codex", "codex_p")
-	testing.expect_value(t, err, Profile_Error.None)
-	testing.expect(t, len(got.secret.args) == 1 && got.secret.env[0].value == "fast")
-	s := Provider_Profile{profile_id = "codex_s", provider = "codex", enabled = true, secret = Provider_Profile_Secret{
-		env = []Provider_Profile_Env{{name = "TOKEN", value = "t", sensitive = true}},
-	}}
-	testing.expect_value(t, profile_upsert(&s, nil, 2), Profile_Error.Locked)
-	g_profile_test_keyring = &g_profile_test_kr_storage
+test_profile_spawn_binary_custom_model_args_and_env :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	snap := Bridge_Provider_Catalog_Snapshot {
+		providers = []Bridge_Catalog_Provider {
+			{
+				provider = "claude",
+				state = "active",
+				binary = "claude",
+				base_args = []string{"--base"},
+				model_flag = "--model",
+				prompt_delivery = "arg",
+				prompt_args = []string{"--prompt"},
+				starter_prompt = "hello",
+				models = []Bridge_Catalog_Model{{model_id = "seed", state = "active"}},
+			},
+		},
+	}
+	sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+	old_snap, old_loaded := bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded
+	bridge_provider_catalog_snapshot = &snap
+	bridge_provider_catalog_loaded = true
+	sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	defer {
+		sync.rw_mutex_lock(&bridge_provider_catalog_mutex)
+		bridge_provider_catalog_snapshot = old_snap
+		bridge_provider_catalog_loaded = old_loaded
+		sync.rw_mutex_unlock(&bridge_provider_catalog_mutex)
+	}
+	pp := Provider_Profile {
+		profile_id = "claude_work",
+		provider = "claude",
+		enabled = true,
+		config = Provider_Profile_Config {
+			binary_path = "/explicit/claude",
+			config_dir = "/config",
+			launch_args = `--name "work profile" '$HOME'`,
+			custom_models = []string{"custom"},
+		},
+		environment = []Provider_Profile_Env {
+			{name = "CLAUDE_CONFIG_DIR", value = "/env-dir"},
+			{name = "TOKEN", value = "local-secret"},
+		},
+	}
+	req, ok := bridge_pty_host_build_spawn(
+		"profile_spawn_test",
+		"/run/test",
+		"claude",
+		"custom",
+		"agent-token",
+		[]string{"HEIMDALL_AGENT_TOKEN=forced-token"},
+		pp = &pp,
+	)
+	if !testing.expect(t, ok) do return
+	defer bridge_pty_host_spawn_request_delete(req)
+	expected := []string {
+		"/explicit/claude",
+		"--base",
+		"--model",
+		"custom",
+		"--name",
+		"work profile",
+		"$HOME",
+		"--prompt",
+		"hello",
+	}
+	testing.expect_value(t, len(req.argv), len(expected))
+	for a, i in req.argv do if i < len(expected) - 1 do testing.expect_value(t, a, expected[i])
+	testing.expect(
+		t,
+		strings.has_prefix(req.argv[len(req.argv) - 1], "hello") &&
+		strings.contains(req.argv[len(req.argv) - 1], "Heimdall runtime:"),
+	)
+	dir, token, launch_token := "", "", ""
+	for kv in req.env {
+		if kv[0] == "CLAUDE_CONFIG_DIR" do dir = kv[1]
+		if kv[0] == "TOKEN" do token = kv[1]
+		if kv[0] == "HEIMDALL_AGENT_TOKEN" do launch_token = kv[1]
+		testing.expect(t, kv[0] != "HOME")
+	}
+	testing.expect_value(t, dir, "/config")
+	testing.expect_value(t, token, "local-secret")
+	testing.expect_value(t, launch_token, "forced-token")
 }

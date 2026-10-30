@@ -26,6 +26,7 @@ import crypto_hash "core:crypto/hash"
 import "core:encoding/hex"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -320,12 +321,12 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // env layer goes before env (so the HEIMDALL_* variables always win).
 bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent_token: string, env: []string, display_name := "", timeout_seconds: u64 = 0, permission_mode := "", pp: ^Provider_Profile = nil) -> (Pty_Host_Spawn_Request, bool) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false
-	if !bridge_provider_catalog_has_model(provider, model) do return {}, false
+	if !bridge_provider_catalog_has_model(provider, model) && !(pp != nil && slice.contains(pp.config.custom_models, model)) do return {}, false
 	profile, profile_ok := bridge_provider_catalog_profile(provider)
 	if !profile_ok do return {}, false
 	resolved_path: string
-	if pp != nil && pp.secret.binary != "" {
-		resolved_path = strings.clone(pp.secret.binary)
+	if pp != nil && pp.config.binary_path != "" {
+		resolved_path = strings.clone(pp.config.binary_path)
 	} else {
 		path_ok: bool
 		resolved_path, path_ok = bridge_provider_resolve_path(provider)
@@ -335,7 +336,7 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 	profile.command = []string{resolved_path}
 	full_env := env
 	if pp != nil {
-		profile.extra_args = pp.secret.args
+		profile.extra_args = profile_tokenize_args(pp.config.launch_args)
 		plan := profile_env_plan(pp)
 		layered := make([dynamic]string, context.temp_allocator)
 		for kv in plan.set do append(&layered, strings.concatenate({kv[0], "=", kv[1]}, context.temp_allocator))

@@ -37,15 +37,12 @@ Provider_Profile_Env_Wire :: struct {
 }
 
 Provider_Profile_Body_Wire :: struct {
-	provider:   string `json:"provider"`, // upsert only
-	label_enc:  string `json:"label_enc"`,
-	accent:     string `json:"accent"`,
-	enabled:    bool `json:"enabled"`,
-	binary:     string `json:"binary"`,
-	config_dir: string `json:"config_dir"`,
-	home_dir:   string `json:"home_dir"`,
-	env:        []Provider_Profile_Env_Wire `json:"env"`,
-	args:       []string `json:"args"`,
+	provider:    string `json:"provider"`,
+	label_enc:   string `json:"label_enc"`,
+	accent:      string `json:"accent"`,
+	enabled:     bool `json:"enabled"`,
+	environment: []Provider_Profile_Env_Wire `json:"environment"`,
+	config:      Provider_Profile_Config `json:"config"`,
 }
 
 Provider_Profile_Op_Wire :: struct {
@@ -58,20 +55,7 @@ Provider_Profile_Op_Wire :: struct {
 	body:       Provider_Profile_Body_Wire `json:"body"`,
 }
 
-Provider_Profile_View_Wire :: struct {
-	profile_id: string `json:"profile_id"`,
-	provider:   string `json:"provider"`,
-	label_enc:  string `json:"label_enc"`,
-	accent:     string `json:"accent"`,
-	enabled:    bool `json:"enabled"`,
-	binary:     string `json:"binary"`,
-	config_dir: string `json:"config_dir"`,
-	home_dir:   string `json:"home_dir"`,
-	env:        []Provider_Profile_Env_Wire `json:"env"`,
-	args:       []string `json:"args"`,
-	created_at: i64 `json:"created_at"`,
-	updated_at: i64 `json:"updated_at"`,
-}
+Provider_Profile_View_Wire :: Provider_Profile
 
 Provider_Profile_Op_Response_Wire :: struct {
 	nonce:    string `json:"nonce"`,
@@ -87,16 +71,24 @@ Provider_Profile_Op_Result_Wire :: struct {
 }
 
 // profile_view redacts a profile for the browser: sensitive values never leave.
-profile_view :: proc(p: ^Provider_Profile, allocator := context.temp_allocator) -> Provider_Profile_View_Wire {
-	env := make([]Provider_Profile_Env_Wire, len(p.secret.env), allocator)
-	for e, i in p.secret.env {
-		env[i] = Provider_Profile_Env_Wire{name = e.name, sensitive = e.sensitive, value = "" if e.sensitive else e.value, value_redacted = e.sensitive}
+profile_view :: proc(
+	p: ^Provider_Profile,
+	allocator := context.temp_allocator,
+) -> Provider_Profile_View_Wire {
+	out := p^
+	out.environment = make([]Provider_Profile_Env, len(p.environment), allocator)
+	copy(out.environment, p.environment)
+	for &e in out.environment {
+		if e.sensitive {
+			e.value_redacted = e.value_redacted || e.value != ""
+			e.value = ""
+		} else {
+			e.value_redacted = false
+		}
 	}
-	return Provider_Profile_View_Wire{
-		profile_id = p.profile_id, provider = p.provider, label_enc = p.label_enc, accent = p.accent, enabled = p.enabled,
-		binary = p.secret.binary, config_dir = p.secret.config_dir, home_dir = p.secret.home_dir,
-		env = env, args = p.secret.args, created_at = p.created_at, updated_at = p.updated_at,
-	}
+	out.config.api_key_redacted = out.config.api_key_redacted || out.config.api_key != ""
+	out.config.api_key = ""
+	return out
 }
 
 Profile_Op_Outcome :: struct {
@@ -110,15 +102,25 @@ profile_op_apply :: proc(op: ^Provider_Profile_Op_Wire, now_ms: i64) -> Profile_
 	switch op.op {
 	case "upsert":
 		body := &op.body
-		env := make([]Provider_Profile_Env, len(body.env), context.temp_allocator)
+		env := make([]Provider_Profile_Env, len(body.environment), context.temp_allocator)
 		keep := make([dynamic]string, context.temp_allocator)
-		for e, i in body.env {
-			env[i] = Provider_Profile_Env{name = e.name, value = e.value, sensitive = e.sensitive}
+		for e, i in body.environment {
+			env[i] = Provider_Profile_Env {
+				name           = e.name,
+				value          = e.value,
+				sensitive      = e.sensitive,
+				value_redacted = e.value_redacted,
+			}
 			if e.keep && e.sensitive && e.value == "" do append(&keep, e.name)
 		}
-		p := Provider_Profile{
-			profile_id = op.profile_id, provider = body.provider, label_enc = body.label_enc, accent = body.accent, enabled = body.enabled,
-			secret = Provider_Profile_Secret{binary = body.binary, config_dir = body.config_dir, home_dir = body.home_dir, env = env, args = body.args},
+		p := Provider_Profile {
+			profile_id  = op.profile_id,
+			provider    = body.provider,
+			label_enc   = body.label_enc,
+			accent      = body.accent,
+			enabled     = body.enabled,
+			environment = env,
+			config      = body.config,
 		}
 		if e := profile_upsert(&p, keep[:], now_ms); e != .None do return {error = profile_error_code(e)}
 		return {changed = true}
@@ -141,13 +143,20 @@ profile_op_apply :: proc(op: ^Provider_Profile_Op_Wire, now_ms: i64) -> Profile_
 		if op.op == "get" && len(views) == 0 {
 			// An unedited default profile exists without a record.
 			if op.profile_id != "" && profile_catalog_has(op.profile_id) {
-				def := Provider_Profile{profile_id = op.profile_id, provider = op.profile_id, enabled = true}
+				def := Provider_Profile {
+					profile_id = op.profile_id,
+					provider   = op.profile_id,
+					enabled    = true,
+				}
 				append(&views, profile_view(&def))
 			} else {
 				return {error = profile_error_code(.Not_Found)}
 			}
 		}
-		data, merr := json.marshal(Provider_Profile_Op_Response_Wire{nonce = op.nonce, profiles = views[:]}, allocator = context.temp_allocator)
+		data, merr := json.marshal(
+			Provider_Profile_Op_Response_Wire{nonce = op.nonce, profiles = views[:]},
+			allocator = context.temp_allocator,
+		)
 		if merr != nil do return {error = profile_error_code(.Store_Unavailable)}
 		return {response = string(data)}
 	}
@@ -156,7 +165,15 @@ profile_op_apply :: proc(op: ^Provider_Profile_Op_Wire, now_ms: i64) -> Profile_
 
 // profile_op_open authenticates a sealed op (amendment 5): current epoch only, then
 // binding, then freshness (so a foreign op never consumes a nonce slot).
-profile_op_open :: proc(sealed: string, kr: ^vault.Vault_Keyring, bridge_id, boot_id: string, now_ms: i64) -> (op: Provider_Profile_Op_Wire, err: string) {
+profile_op_open :: proc(
+	sealed: string,
+	kr: ^vault.Vault_Keyring,
+	bridge_id, boot_id: string,
+	now_ms: i64,
+) -> (
+	op: Provider_Profile_Op_Wire,
+	err: string,
+) {
 	if sealed == "" || !vault.is_armored(sealed) do return {}, "profile_bad_seal"
 	if kr == nil do return {}, "profile_locked"
 	if _, epoch, payload, res := vault.envelope_parse(sealed, context.temp_allocator); res == .Ok {
@@ -174,8 +191,21 @@ profile_op_open :: proc(sealed: string, kr: ^vault.Vault_Keyring, bridge_id, boo
 	return op, ""
 }
 
-profile_op_result_json :: proc(command_id: string, err, sealed: string, allocator := context.allocator) -> string {
-	data, merr := json.marshal(Provider_Profile_Op_Result_Wire{type = "provider_profile_op_result", command_id = command_id, ok = err == "", error = err, sealed = sealed}, allocator = allocator)
+profile_op_result_json :: proc(
+	command_id: string,
+	err, sealed: string,
+	allocator := context.allocator,
+) -> string {
+	data, merr := json.marshal(
+		Provider_Profile_Op_Result_Wire {
+			type = "provider_profile_op_result",
+			command_id = command_id,
+			ok = err == "",
+			error = err,
+			sealed = sealed,
+		},
+		allocator = allocator,
+	)
 	if merr != nil do return strings.clone(`{"type":"provider_profile_op_result","ok":false,"error":"profile_error"}`, allocator)
 	return string(data)
 }
@@ -198,7 +228,13 @@ bridge_hub_handle_provider_profile_op :: proc(conn: ^ws.Connection, text: string
 		reply(conn, command_id, "profile_locked", "")
 		return
 	}
-	op, err := profile_op_open(sealed, &kr, bridge_config.daemon_id, bridge_unseal_boot_id(), bridge_now_unix_ms())
+	op, err := profile_op_open(
+		sealed,
+		&kr,
+		bridge_config.daemon_id,
+		bridge_unseal_boot_id(),
+		bridge_now_unix_ms(),
+	)
 	if err != "" {
 		fmt.printfln("bridge provider profile op refused: %s", err)
 		reply(conn, command_id, err, "")

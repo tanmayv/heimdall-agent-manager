@@ -2577,7 +2577,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, profile_error_code(pp_err), bridge_error(.agent_launch_failed, .unsupported)
 	}
-	pp_ref: ^Provider_Profile = &pp if pp.profile_id != provider || pp.secret.binary != "" || pp.secret.config_dir != "" || pp.secret.home_dir != "" || len(pp.secret.env) > 0 || len(pp.secret.args) > 0 else nil
+	pp_ref: ^Provider_Profile = &pp
 	// Bootstrap files were already clean-slated + written to run_dir by
 	// bridge_bootstrap_launch_materialize_run_dir in the caller (the bridge is the
 	// sole materializer in the pty-host runtime). Here we only build the agent env.

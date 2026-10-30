@@ -1,26 +1,10 @@
 package main
 
-// Provider profiles (REQ-PROF-1, 2, 4): bridge-local instances of a catalog provider.
-//
-// A profile names a catalog provider ("driver") and may override where and how it
-// runs: binary, config_dir (the driver's config-dir variable), home_dir (HOME and the
-// XDG dirs), env, and launch args appended after the catalog's model arguments.
-// Every provider has an implicit default profile whose id is its slug and that has no
-// overrides; it behaves exactly like the provider did before profiles existed.
-//
-// Storage: <data_dir>/bridge/provider_profiles.json (0600). The host is trusted
-// (user decision 2026-10-30), so the store is plain JSON: binary, config_dir,
-// home_dir, args and non-sensitive env are stored as they are. Only SECRETS, the
-// values of env variables marked sensitive, are sealed, under the account vault
-// keyring (the keys that protect messages), each bound to this bridge, the
-// profile id and the variable name. While the bridge is locked a profile with
-// sensitive env cannot be opened (profile_locked); every other profile, the
-// defaults and the metadata report keep working. The hub learns only ids, the
-// provider, the UI-encrypted label, accent, enabled, has-flags and counts.
+// Provider profiles: trusted-host settings in a plain 0600 JSON file. Sensitive
+// values live in separate 0600 files under profile-secrets/ (0700), as in t3code.
+// Vault keys protect operations in transit only; local launches need no vault.
 
 import "core:encoding/json"
-import "core:fmt"
-import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
@@ -38,52 +22,49 @@ PROFILE_ARG_MAX :: 1024
 PROFILE_PATH_MAX :: 4096
 PROFILE_LABEL_ENC_MAX :: 4096
 PROFILE_STORE_MAX :: 256
-PROFILE_STORE_VERSION :: 1
+PROFILE_STORE_VERSION :: 2
 
 Provider_Profile_Env :: struct {
-	name:      string `json:"name"`,
-	value:     string `json:"value"`,
-	sensitive: bool `json:"sensitive"`,
+	name:           string `json:"name"`,
+	value:          string `json:"value"`,
+	sensitive:      bool `json:"sensitive"`,
+	value_redacted: bool `json:"value_redacted"`,
 }
 
-// The encrypted part of a profile: everything the hub must never see.
-Provider_Profile_Secret :: struct {
-	binary:     string `json:"binary"`,
-	config_dir: string `json:"config_dir"`,
-	home_dir:   string `json:"home_dir"`,
-	env:        []Provider_Profile_Env `json:"env"`,
-	args:       []string `json:"args"`,
+// A driver-tagged config: provider selects the supported fields, checked below.
+// Empty fields use the discovered binary / inherited driver directory.
+Provider_Profile_Config :: struct {
+	binary_path:      string `json:"binary_path"`,
+	config_dir:       string `json:"config_dir"`, // claude
+	home_path:        string `json:"home_path"`, // codex
+	shadow_home_path: string `json:"shadow_home_path"`, // prepared by P1c
+	launch_args:      string `json:"launch_args"`,
+	custom_models:    []string `json:"custom_models"`,
+	auth_method:      string `json:"auth_method"`, // antigravity
+	api_key:          string `json:"api_key"`,
+	api_key_redacted: bool `json:"api_key_redacted"`,
+	gcp_project:      string `json:"gcp_project"`,
+	gcp_location:     string `json:"gcp_location"`,
 }
 
 Provider_Profile :: struct {
-	profile_id: string,
-	provider:   string,
-	label_enc:  string, // vault:v2 ciphertext made by the UI; the bridge never reads it
-	accent:     string,
-	enabled:    bool,
-	created_at: i64,
-	updated_at: i64,
-	secret:     Provider_Profile_Secret,
+	profile_id:  string `json:"profile_id"`,
+	provider:    string `json:"provider"`,
+	label_enc:   string `json:"label_enc"`,
+	accent:      string `json:"accent"`,
+	enabled:     bool `json:"enabled"`,
+	environment: []Provider_Profile_Env `json:"environment"`,
+	config:      Provider_Profile_Config `json:"config"`,
+	created_at:  i64 `json:"created_at"`,
+	updated_at:  i64 `json:"updated_at"`,
 }
 
-// On-disk record. secret.env[i].value is a vault:v2 token when env[i].sensitive.
-Provider_Profile_Record_Wire :: struct {
-	profile_id: string `json:"profile_id"`,
-	provider:   string `json:"provider"`,
-	label_enc:  string `json:"label_enc"`,
-	accent:     string `json:"accent"`,
-	enabled:    bool `json:"enabled"`,
-	created_at: i64 `json:"created_at"`,
-	updated_at: i64 `json:"updated_at"`,
-	secret:     Provider_Profile_Secret `json:"secret"`,
-}
-
+Provider_Profile_Record_Wire :: Provider_Profile
 Provider_Profile_Store_Wire :: struct {
 	version:  int `json:"version"`,
 	profiles: []Provider_Profile_Record_Wire `json:"profiles"`,
 }
 
-// Typed refusal codes; they go to the hub and the UI verbatim.
 Profile_Error :: enum {
 	None,
 	Invalid_Id,
@@ -95,6 +76,7 @@ Profile_Error :: enum {
 	Path_Invalid,
 	Binary_Invalid,
 	Config_Dir_Unsupported,
+	Config_Invalid,
 	Env_Invalid,
 	Env_Forbidden,
 	Args_Invalid,
@@ -105,62 +87,54 @@ Profile_Error :: enum {
 	Unknown,
 	Disabled,
 	Slug_Clash,
-	Locked,
 }
-
 profile_error_code :: proc(e: Profile_Error) -> string {
 	switch e {
-	case .None:                   return ""
-	case .Invalid_Id:             return "profile_invalid_id"
-	case .Reserved_Id:            return "profile_reserved_id"
-	case .Unknown_Provider:       return "profile_unknown_provider"
-	case .Provider_Mismatch:      return "profile_provider_mismatch"
-	case .Invalid_Accent:         return "profile_invalid_accent"
-	case .Invalid_Label:          return "profile_invalid_label"
-	case .Path_Invalid:           return "profile_path_invalid"
-	case .Binary_Invalid:         return "profile_binary_invalid"
-	case .Config_Dir_Unsupported: return "profile_config_dir_unsupported"
-	case .Env_Invalid:            return "profile_env_invalid"
-	case .Env_Forbidden:          return "profile_env_forbidden"
-	case .Args_Invalid:           return "profile_args_invalid"
-	case .Not_Found:              return "profile_not_found"
-	case .Default_Not_Removable:  return "profile_default_not_removable"
-	case .Store_Full:             return "profile_store_full"
-	case .Store_Unavailable:      return "profile_store_unavailable"
-	case .Unknown:                return "profile_unknown"
-	case .Disabled:               return "profile_disabled"
-	case .Slug_Clash:             return "profile_slug_clash"
-	case .Locked:                 return "profile_locked"
+	case .None:
+		return ""
+	case .Invalid_Id:
+		return "profile_invalid_id"
+	case .Reserved_Id:
+		return "profile_reserved_id"
+	case .Unknown_Provider:
+		return "profile_unknown_provider"
+	case .Provider_Mismatch:
+		return "profile_provider_mismatch"
+	case .Invalid_Accent:
+		return "profile_invalid_accent"
+	case .Invalid_Label:
+		return "profile_invalid_label"
+	case .Path_Invalid:
+		return "profile_path_invalid"
+	case .Binary_Invalid:
+		return "profile_binary_invalid"
+	case .Config_Dir_Unsupported:
+		return "profile_config_dir_unsupported"
+	case .Config_Invalid:
+		return "profile_config_invalid"
+	case .Env_Invalid:
+		return "profile_env_invalid"
+	case .Env_Forbidden:
+		return "profile_env_forbidden"
+	case .Args_Invalid:
+		return "profile_args_invalid"
+	case .Not_Found:
+		return "profile_not_found"
+	case .Default_Not_Removable:
+		return "profile_default_not_removable"
+	case .Store_Full:
+		return "profile_store_full"
+	case .Store_Unavailable:
+		return "profile_store_unavailable"
+	case .Unknown:
+		return "profile_unknown"
+	case .Disabled:
+		return "profile_disabled"
+	case .Slug_Clash:
+		return "profile_slug_clash"
 	}
 	return "profile_error"
 }
-
-// ── Driver config-dir variables ─────────────────────────────────────────────
-
-// profile_config_dir_var is the environment variable through which a driver takes
-// its config directory; "" means the driver has none and config_dir is refused.
-profile_config_dir_var :: proc(provider: string) -> string {
-	switch provider {
-	case "claude":      return "CLAUDE_CONFIG_DIR"
-	case "codex":       return "CODEX_HOME"
-	case "antigravity", "gemini": return "GEMINI_CONFIG_DIR"
-	case "pi":          return "PI_CODING_AGENT_DIR"
-	}
-	return ""
-}
-
-// profile_config_dir_default is where the driver keeps its config under a HOME.
-profile_config_dir_default :: proc(provider: string) -> string {
-	switch provider {
-	case "claude":      return ".claude"
-	case "codex":       return ".codex"
-	case "antigravity", "gemini": return ".gemini"
-	case "pi":          return ".pi/agent"
-	}
-	return ""
-}
-
-// ── Validation ──────────────────────────────────────────────────────────────
 
 profile_id_valid :: proc(id: string) -> bool {
 	if len(id) < 1 || len(id) > PROFILE_ID_MAX do return false
@@ -177,7 +151,8 @@ profile_env_name_valid :: proc(name: string) -> bool {
 	c0 := name[0]
 	if !((c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || c0 == '_') do return false
 	for c in transmute([]u8)name {
-		ok := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+		ok :=
+			(c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
 		if !ok do return false
 	}
 	return true
@@ -222,16 +197,6 @@ profile_normalize_path :: proc(p: string, allocator := context.temp_allocator) -
 	return cleaned
 }
 
-// profile_normalize_secret normalises paths and drops empty args (amendment 4 §3).
-profile_normalize_secret :: proc(s: ^Provider_Profile_Secret, allocator := context.temp_allocator) {
-	s.binary = profile_normalize_path(s.binary, allocator)
-	s.config_dir = profile_normalize_path(s.config_dir, allocator)
-	s.home_dir = profile_normalize_path(s.home_dir, allocator)
-	args := make([dynamic]string, allocator)
-	for a in s.args do if a != "" do append(&args, a)
-	s.args = args[:]
-}
-
 // profile_catalog_has is the catalog lookup used by validation; a test seam lets
 // unit tests run without a cached catalog.
 profile_catalog_has :: proc(provider: string) -> bool {
@@ -257,149 +222,200 @@ profile_validate_metadata :: proc(p: ^Provider_Profile) -> Profile_Error {
 	return .None
 }
 
-// profile_validate_secret checks the overrides (amendment 2 §4, amendment 4 §3).
-// Directory creation is separate (profile_prepare_dirs) so validation has no effects.
-profile_validate_secret :: proc(provider: string, s: ^Provider_Profile_Secret) -> Profile_Error {
-	if s.binary != "" {
-		if !profile_path_absolute(s.binary) do return .Path_Invalid
-		info, err := os.stat(s.binary, context.temp_allocator)
-		if err != nil || info.type != .Regular || !bridge_os_is_executable(s.binary) do return .Binary_Invalid
+
+// Same quote/backslash rules as t3code tokenizeCliArgs. No shell expansion.
+// Empty quoted arguments are dropped per the profile launch contract.
+profile_tokenize_args :: proc(input: string, allocator := context.temp_allocator) -> []string {
+	tokens := make([dynamic]string, allocator)
+	current := make([dynamic]byte, context.temp_allocator)
+	quote: byte
+	for i := 0; i < len(input); i += 1 {
+		c := input[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			} else if c == '\\' &&
+			   quote == '"' &&
+			   i + 1 < len(input) &&
+			   (input[i + 1] == '"' ||
+					   input[i + 1] == '\\' ||
+					   input[i + 1] == '$' ||
+					   input[i + 1] == '`') {
+				i += 1
+				append(&current, input[i])
+			} else {
+				append(&current, c)
+			}
+		} else if c == '\'' || c == '"' {
+			quote = c
+		} else if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+			if len(current) > 0 {
+				append(&tokens, strings.clone(string(current[:]), allocator))
+				clear(&current)
+			}
+		} else if c == '\\' &&
+		   i + 1 < len(input) &&
+		   (input[i + 1] == ' ' ||
+				   input[i + 1] == '\t' ||
+				   input[i + 1] == '\r' ||
+				   input[i + 1] == '\n' ||
+				   input[i + 1] == '\'' ||
+				   input[i + 1] == '"') {
+			i += 1
+			append(&current, input[i])
+		} else {
+			append(&current, c)
+		}
 	}
-	if s.home_dir != "" && !profile_path_absolute(s.home_dir) do return .Path_Invalid
-	config_var := profile_config_dir_var(provider)
-	if s.config_dir != "" {
-		if config_var == "" do return .Config_Dir_Unsupported
-		if !profile_path_absolute(s.config_dir) do return .Path_Invalid
+	if len(current) > 0 do append(&tokens, strings.clone(string(current[:]), allocator))
+	return tokens[:]
+}
+
+profile_normalize :: proc(p: ^Provider_Profile) {
+	c := &p.config
+	c.binary_path = strings.trim_space(c.binary_path)
+	// Bare executable names use PATH; paths are expanded/cleaned on the bridge.
+	if strings.contains_any(c.binary_path, "/\\") || c.binary_path == "~" {
+		c.binary_path = profile_normalize_path(c.binary_path)
 	}
-	if len(s.env) > PROFILE_ENV_MAX do return .Env_Invalid
+	c.config_dir = profile_normalize_path(c.config_dir)
+	c.home_path = profile_normalize_path(c.home_path)
+	c.shadow_home_path = profile_normalize_path(c.shadow_home_path)
+	c.launch_args = strings.trim_space(c.launch_args)
+}
+
+profile_validate :: proc(p: ^Provider_Profile) -> Profile_Error {
+	c := &p.config
+	if c.binary_path != "" {
+		if profile_has_nul(c.binary_path) || len(c.binary_path) > PROFILE_PATH_MAX do return .Path_Invalid
+		if strings.contains_any(c.binary_path, "/\\") {
+			if !profile_path_absolute(c.binary_path) do return .Path_Invalid
+			info, err := os.stat(c.binary_path, context.temp_allocator)
+			if err != nil || info.type != .Regular || !bridge_os_is_executable(c.binary_path) do return .Binary_Invalid
+		}
+	}
+	for path in ([]string{c.config_dir, c.home_path, c.shadow_home_path}) {
+		if path != "" && !profile_path_absolute(path) do return .Path_Invalid
+	}
+	if c.config_dir != "" && p.provider != "claude" do return .Config_Dir_Unsupported
+	if (c.home_path != "" || c.shadow_home_path != "") && p.provider != "codex" do return .Config_Invalid
+	ag_config :=
+		c.auth_method != "" ||
+		c.api_key != "" ||
+		c.api_key_redacted ||
+		c.gcp_project != "" ||
+		c.gcp_location != ""
+	if ag_config && p.provider != "antigravity" do return .Config_Invalid
+	if p.provider == "antigravity" {
+		if c.launch_args != "" || len(c.custom_models) > 0 do return .Config_Invalid
+		if c.auth_method != "" && !slice.contains([]string{"oauth-personal", "oauth-business", "gemini-api-key", "agent-platform"}, c.auth_method) do return .Config_Invalid
+	}
+	for value in ([]string{c.api_key, c.gcp_project, c.gcp_location}) {
+		if len(value) > PROFILE_ENV_VALUE_MAX || profile_has_nul(value) do return .Config_Invalid
+	}
+	if len(p.environment) > PROFILE_ENV_MAX do return .Env_Invalid
 	seen := make(map[string]bool, context.temp_allocator)
-	for e in s.env {
-		if !profile_env_name_valid(e.name) || len(e.value) > PROFILE_ENV_VALUE_MAX || profile_has_nul(e.value) do return .Env_Invalid
-		if seen[e.name] do return .Env_Invalid
+	for e in p.environment {
+		if !profile_env_name_valid(e.name) || len(e.value) > PROFILE_ENV_VALUE_MAX || profile_has_nul(e.value) || seen[e.name] do return .Env_Invalid
 		seen[e.name] = true
-		if strings.has_prefix(e.name, "HEIMDALL_") do return .Env_Forbidden
-		if s.home_dir != "" && (e.name == "HOME" || strings.has_prefix(e.name, "XDG_")) do return .Env_Forbidden
-		if s.config_dir != "" && e.name == config_var do return .Env_Forbidden
+		// Windows env names are case-insensitive too.
+		name := strings.to_upper(e.name, context.temp_allocator)
+		if strings.has_prefix(name, "HEIMDALL_") || name == "HOME" || name == "USERPROFILE" do return .Env_Forbidden
 	}
-	if len(s.args) > PROFILE_ARGS_MAX do return .Args_Invalid
-	for a in s.args {
-		if len(a) == 0 || len(a) > PROFILE_ARG_MAX || profile_has_nul(a) do return .Args_Invalid
+	if len(c.launch_args) > PROFILE_ARGS_MAX * PROFILE_ARG_MAX || profile_has_nul(c.launch_args) do return .Args_Invalid
+	args := profile_tokenize_args(c.launch_args)
+	if len(args) > PROFILE_ARGS_MAX do return .Args_Invalid
+	for a in args do if len(a) > PROFILE_ARG_MAX do return .Args_Invalid
+	if len(c.custom_models) > PROFILE_STORE_MAX do return .Config_Invalid
+	for model in c.custom_models {
+		if strings.trim_space(model) == "" || len(model) > PROFILE_ARG_MAX || profile_has_nul(model) do return .Config_Invalid
 	}
 	return .None
 }
 
-// profile_prepare_dirs creates a missing config_dir / home_dir leaf with mode 0700.
-// Only the leaf: its parent must already exist and be writable (amendment 3 §3).
-profile_prepare_dirs :: proc(s: ^Provider_Profile_Secret) -> Profile_Error {
-	context.allocator = context.temp_allocator
-	for dir in ([]string{s.home_dir, s.config_dir}) {
+// Preserve the existing leaf-only creation rule. Codex shadow setup is P1c.
+profile_prepare_dirs :: proc(c: ^Provider_Profile_Config) -> Profile_Error {
+	for dir in ([]string{c.config_dir, c.home_path}) {
 		if dir == "" do continue
-		trimmed := strings.trim_right(dir, "/")
-		if info, err := os.stat(trimmed, context.temp_allocator); err == nil {
+		if info, err := os.stat(dir, context.temp_allocator); err == nil {
 			if info.type != .Directory do return .Path_Invalid
 			continue
 		}
-		parent := filepath.dir(trimmed)
-		pinfo, perr := os.stat(parent, context.temp_allocator)
-		if perr != nil || pinfo.type != .Directory do return .Path_Invalid
-		// A parent we cannot write to makes this fail, which is the refusal.
-		if os.make_directory(trimmed, {.Read_User, .Write_User, .Execute_User}) != nil && !os.is_dir(trimmed) do return .Path_Invalid
+		info, err := os.stat(filepath.dir(dir), context.temp_allocator)
+		if err != nil || info.type != .Directory do return .Path_Invalid
+		if os.make_directory(dir, {.Read_User, .Write_User, .Execute_User}) != nil && !os.is_dir(dir) do return .Path_Invalid
 	}
 	return .None
 }
 
-// ── Child environment (amendment 1 §4) ──────────────────────────────────────
-
 Profile_Env_Plan :: struct {
 	set:   [dynamic][2]string,
-	unset: [dynamic]string, // kept for callers that build a full env; launches only add
+	unset: [dynamic]string,
 }
 
-// profile_env_plan computes the profile's layer on top of the bridge env (which
-// already carries an isolated local home when there is one): home_dir, then the
-// driver config-dir variable, then the profile env. HEIMDALL_* is added later by
-// the launcher and can never be set here (validation refuses it).
-profile_env_plan :: proc(p: ^Provider_Profile, allocator := context.temp_allocator) -> Profile_Env_Plan {
-	plan := Profile_Env_Plan{set = make([dynamic][2]string, allocator), unset = make([dynamic]string, allocator)}
-	s := &p.secret
-	if s.home_dir != "" {
-		h := strings.trim_right(s.home_dir, "/")
-		append(&plan.set, [2]string{"HOME", h})
-		append(&plan.set, [2]string{"XDG_CONFIG_HOME", strings.concatenate({h, "/.config"}, allocator)})
-		append(&plan.set, [2]string{"XDG_DATA_HOME", strings.concatenate({h, "/.local/share"}, allocator)})
-		append(&plan.set, [2]string{"XDG_STATE_HOME", strings.concatenate({h, "/.local/state"}, allocator)})
-		append(&plan.set, [2]string{"XDG_CACHE_HOME", strings.concatenate({h, "/.cache"}, allocator)})
-		// A config-dir variable inherited from the bridge would point back out of
-		// home_dir. The pty host can only add variables, so pin it inside home_dir.
-		if v := profile_config_dir_var(p.provider); v != "" && s.config_dir == "" {
-			append(&plan.set, [2]string{v, strings.concatenate({h, "/", profile_config_dir_default(p.provider)}, allocator)})
+profile_env_set :: proc(plan: ^Profile_Env_Plan, name, value: string) {
+	for &kv in plan.set {
+		when ODIN_OS == .Windows {
+			if strings.equal_fold(kv[0], name) {kv = {name, value}; return}
+		} else {
+			if kv[0] == name {kv[1] = value; return}
 		}
 	}
-	if s.config_dir != "" {
-		if v := profile_config_dir_var(p.provider); v != "" do append(&plan.set, [2]string{v, strings.trim_right(s.config_dir, "/")})
+	append(&plan.set, [2]string{name, value})
+}
+
+// bridge env -> profile environment -> forced driver dir -> launcher HEIMDALL_*.
+// HOME is inherited unchanged. A directory config wins over an env entry.
+profile_env_plan :: proc(
+	p: ^Provider_Profile,
+	allocator := context.temp_allocator,
+) -> Profile_Env_Plan {
+	plan := Profile_Env_Plan {
+		set   = make([dynamic][2]string, allocator),
+		unset = make([dynamic]string, allocator),
 	}
-	for e in s.env do append(&plan.set, [2]string{e.name, e.value})
+	for e in p.environment do profile_env_set(&plan, e.name, e.value)
+	c := &p.config
+	if p.provider == "claude" && c.config_dir != "" {
+		profile_env_set(&plan, "CLAUDE_CONFIG_DIR", c.config_dir)
+	}
+	if p.provider == "codex" {
+		dir := c.shadow_home_path if c.shadow_home_path != "" else c.home_path
+		if dir != "" do profile_env_set(&plan, "CODEX_HOME", dir)
+	}
+	if p.provider == "antigravity" {
+		if c.api_key != "" do profile_env_set(&plan, "GEMINI_API_KEY", c.api_key)
+		if c.gcp_project != "" do profile_env_set(&plan, "GOOGLE_CLOUD_PROJECT", c.gcp_project)
+		if c.gcp_location != "" do profile_env_set(&plan, "GOOGLE_CLOUD_LOCATION", c.gcp_location)
+	}
 	return plan
 }
 
-// profile_apply_env_plan returns base with the plan applied (later wins).
-profile_apply_env_plan :: proc(base: []string, plan: Profile_Env_Plan, allocator := context.temp_allocator) -> []string {
+profile_env_name_equal :: proc(a, b: string) -> bool {
+	when ODIN_OS == .Windows {return strings.equal_fold(a, b)} else {return a == b}
+}
+
+profile_apply_env_plan :: proc(
+	base: []string,
+	plan: Profile_Env_Plan,
+	allocator := context.temp_allocator,
+) -> []string {
 	out := make([dynamic]string, allocator)
-	skip :: proc(entry: string, plan: Profile_Env_Plan) -> bool {
+	for entry in base {
 		eq := strings.index_byte(entry, '=')
 		name := entry[:eq] if eq >= 0 else entry
-		for u in plan.unset do if u == name do return true
-		for kv in plan.set do if kv[0] == name do return true
-		return false
+		skip := false
+		for u in plan.unset do if profile_env_name_equal(u, name) do skip = true
+		for kv in plan.set do if profile_env_name_equal(kv[0], name) do skip = true
+		if !skip do append(&out, entry)
 	}
-	for entry in base do if !skip(entry, plan) do append(&out, entry)
 	for kv in plan.set do append(&out, strings.concatenate({kv[0], "=", kv[1]}, allocator))
 	return out[:]
 }
 
-// ── Secret sealing (vault keyring, sensitive env values only) ───────────────
-
-Provider_Profile_Sealed_Value :: struct {
-	v:          int `json:"v"`,
-	bridge_id:  string `json:"bridge_id"`,
-	profile_id: string `json:"profile_id"`,
-	name:       string `json:"name"`,
-	value:      string `json:"value"`,
-}
-
-profile_seal_value :: proc(kr: ^vault.Vault_Keyring, bridge_id, profile_id, name, value: string, allocator := context.temp_allocator) -> (token: string, ok: bool) {
-	plain, merr := json.marshal(Provider_Profile_Sealed_Value{v = 1, bridge_id = bridge_id, profile_id = profile_id, name = name, value = value}, allocator = context.temp_allocator)
-	if merr != nil do return "", false
-	defer mem.zero_explicit(raw_data(plain), len(plain))
-	return bridge_encrypt_vault_text(string(plain), kr, allocator)
-}
-
-// profile_open_value opens a sealed value under any epoch the keyring holds (values
-// sealed before a rotation stay readable) and checks its binding.
-profile_open_value :: proc(kr: ^vault.Vault_Keyring, bridge_id, profile_id, name, token: string, allocator := context.temp_allocator) -> (value: string, ok: bool) {
-	if !vault.is_armored(token) do return "", false
-	plain, dok := bridge_decrypt_vault_token(token, kr, context.temp_allocator)
-	if !dok do return "", false
-	defer mem.zero_explicit(raw_data(plain), len(plain))
-	wire: Provider_Profile_Sealed_Value
-	if json.unmarshal_string(plain, &wire, json.Specification.JSON, allocator) != nil do return "", false
-	if wire.v != 1 || wire.bridge_id != bridge_id || wire.profile_id != profile_id || wire.name != name do return "", false
-	return wire.value, true
-}
-
-profile_record_has_sensitive :: proc(rec: Provider_Profile_Record_Wire) -> bool {
-	for e in rec.secret.env do if e.sensitive do return true
-	return false
-}
-
-// ── Store ───────────────────────────────────────────────────────────────────
-
+// Store globals are protected by a single mutex for reads, writes and materialization.
 g_profile_store_mu: sync.Mutex
-
-// Tests point the store somewhere private and supply a keyring (nil = locked).
 g_profile_test_store_path: string
-g_profile_test_keyring: ^vault.Vault_Keyring
-g_profile_test_use_keyring: bool
 
 profile_store_path :: proc(allocator := context.temp_allocator) -> string {
 	when ODIN_TEST {
@@ -409,58 +425,65 @@ profile_store_path :: proc(allocator := context.temp_allocator) -> string {
 	if data_dir == "" do data_dir = "~/.local/share/heimdall"
 	expanded := bridge_expand_home(data_dir)
 	defer if raw_data(expanded) != raw_data(data_dir) do delete(expanded)
-	return strings.concatenate({strings.trim_right(expanded, "/"), "/bridge/provider_profiles.json"}, allocator)
+	return strings.concatenate(
+		{strings.trim_right(expanded, "/"), "/bridge/provider_profiles.json"},
+		allocator,
+	)
 }
 
-// profile_store_keyring returns the unsealed vault keyring, or ok=false while the
-// bridge is locked. The caller wipes it.
-profile_store_keyring :: proc() -> (kr: vault.Vault_Keyring, ok: bool) {
-	when ODIN_TEST {
-		if g_profile_test_use_keyring {
-			if g_profile_test_keyring == nil do return {}, false
-			return g_profile_test_keyring^, true
-		}
-	}
-	status, key := bridge_vault_status_and_key()
-	if status != .Unlocked {
-		vault.keyring_wipe(&key)
-		return {}, false
-	}
-	return key, true
+profile_secrets_dir :: proc() -> string {
+	path, _ := filepath.join(
+		{filepath.dir(profile_store_path()), "profile-secrets"},
+		context.temp_allocator,
+	)
+	return path
 }
 
-profile_bridge_id :: proc() -> string {
-	return bridge_config.daemon_id
+profile_env_secret_name :: proc(id, name: string) -> string {
+	return strings.concatenate(
+		{
+			"provider-env-",
+			bridge_base64url_unpadded(transmute([]byte)id, context.temp_allocator),
+			"-",
+			bridge_base64url_unpadded(transmute([]byte)name, context.temp_allocator),
+			".bin",
+		},
+		context.temp_allocator,
+	)
+}
+profile_config_secret_name :: proc(id, provider, field: string) -> string {
+	return strings.concatenate(
+		{
+			"provider-config-",
+			bridge_base64url_unpadded(transmute([]byte)id, context.temp_allocator),
+			"-",
+			provider,
+			"-",
+			field,
+			".bin",
+		},
+		context.temp_allocator,
+	)
+}
+profile_secret_path :: proc(name: string) -> string {
+	path, _ := filepath.join({profile_secrets_dir(), name}, context.temp_allocator)
+	return path
 }
 
-// Caller holds g_profile_store_mu. A missing file is an empty store.
-profile_store_read_locked :: proc(allocator := context.temp_allocator) -> (records: []Provider_Profile_Record_Wire, ok: bool) {
-	path := profile_store_path()
-	if !os.exists(path) do return nil, true
-	data, rerr := os.read_entire_file(path, context.temp_allocator)
-	if rerr != nil do return nil, false
-	wire: Provider_Profile_Store_Wire
-	if json.unmarshal(data, &wire, json.Specification.JSON, allocator) != nil do return nil, false
-	if wire.version != PROFILE_STORE_VERSION do return nil, false
-	return wire.profiles, true
-}
-
-// Caller holds g_profile_store_mu. Atomic 0600 write (temp file + rename).
-profile_store_write_locked :: proc(records: []Provider_Profile_Record_Wire) -> bool {
-	context.allocator = context.temp_allocator
-	path := profile_store_path()
+profile_atomic_write :: proc(path: string, data: []byte) -> bool {
 	dir := filepath.dir(path)
 	if err := bridge_make_directory_all(dir); err != nil && !os.is_dir(dir) do return false
-	data, merr := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = records}, allocator = context.temp_allocator)
-	if merr != nil do return false
+	when ODIN_OS != .Windows {
+		if os.chmod(dir, {.Read_User, .Write_User, .Execute_User}) != nil do return false
+	}
 	tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
 	_ = os.remove(tmp)
-	f, oerr := os.open(tmp, {.Write, .Create, .Excl, .Trunc}, {.Read_User, .Write_User})
-	if oerr != nil do return false
+	f, err := os.open(tmp, {.Write, .Create, .Excl, .Trunc}, {.Read_User, .Write_User})
+	if err != nil do return false
 	n, werr := os.write(f, data)
 	serr := os.sync(f)
-	os.close(f)
-	if werr != nil || n != len(data) || serr != nil {
+	cerr := os.close(f)
+	if werr != nil || n != len(data) || serr != nil || cerr != nil {
 		_ = os.remove(tmp)
 		return false
 	}
@@ -471,196 +494,264 @@ profile_store_write_locked :: proc(records: []Provider_Profile_Record_Wire) -> b
 	return true
 }
 
-// profile_record_open copies a record, opening its sensitive values with kr
-// (nil = locked: .Locked when the record has any).
-profile_record_open :: proc(kr: ^vault.Vault_Keyring, rec: Provider_Profile_Record_Wire, out: ^Provider_Profile, allocator := context.temp_allocator) -> Profile_Error {
-	out^ = Provider_Profile{
-		profile_id = rec.profile_id, provider = rec.provider, label_enc = rec.label_enc, accent = rec.accent,
-		enabled = rec.enabled, created_at = rec.created_at, updated_at = rec.updated_at, secret = rec.secret,
-	}
-	if !profile_record_has_sensitive(rec) do return .None
-	if kr == nil do return .Locked
-	env := make([]Provider_Profile_Env, len(rec.secret.env), allocator)
-	for e, i in rec.secret.env {
-		env[i] = e
-		if !e.sensitive do continue
-		v, ok := profile_open_value(kr, profile_bridge_id(), rec.profile_id, e.name, e.value, allocator)
-		if !ok do return .Store_Unavailable
-		env[i].value = v
-	}
-	out.secret.env = env
-	return .None
+profile_store_read_locked :: proc(
+	allocator := context.temp_allocator,
+) -> (
+	records: []Provider_Profile_Record_Wire,
+	ok: bool,
+) {
+	path := profile_store_path()
+	if !os.exists(path) do return nil, true
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil do return nil, false
+	wire: Provider_Profile_Store_Wire
+	if json.unmarshal(data, &wire, json.Specification.JSON, allocator) != nil || wire.version != PROFILE_STORE_VERSION do return nil, false
+	return wire.profiles, true
 }
 
-// profile_list returns every stored profile, decrypted, in temp memory.
-profile_list :: proc(allocator := context.temp_allocator) -> (profiles: []Provider_Profile, err: Profile_Error) {
+profile_store_write_locked :: proc(records: []Provider_Profile_Record_Wire) -> bool {
+	data, err := json.marshal(
+		Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = records},
+		allocator = context.temp_allocator,
+	)
+	if err != nil do return false
+	return profile_atomic_write(profile_store_path(), data)
+}
+
+Profile_Secret_Field :: struct {
+	name:      string,
+	value:     ^string,
+	redacted:  ^bool,
+	sensitive: bool,
+}
+
+profile_secret_fields :: proc(p: ^Provider_Profile) -> []Profile_Secret_Field {
+	out := make([dynamic]Profile_Secret_Field, context.temp_allocator)
+	for &e in p.environment {
+		append(
+			&out,
+			Profile_Secret_Field {
+				profile_env_secret_name(p.profile_id, e.name),
+				&e.value,
+				&e.value_redacted,
+				e.sensitive,
+			},
+		)
+	}
+	if p.provider == "antigravity" {
+		append(
+			&out,
+			Profile_Secret_Field {
+				profile_config_secret_name(p.profile_id, p.provider, "api_key"),
+				&p.config.api_key,
+				&p.config.api_key_redacted,
+				true,
+			},
+		)
+	}
+	return out[:]
+}
+
+// Missing redacted values are empty, as in t3code; unreadable files fail closed.
+profile_materialize :: proc(p: ^Provider_Profile) -> bool {
+	for field in profile_secret_fields(p) {
+		if !field.sensitive || !field.redacted^ do continue
+		path := profile_secret_path(field.name)
+		if !os.exists(path) {field.value^ = ""; continue}
+		data, err := os.read_entire_file(path, context.temp_allocator)
+		if err != nil do return false
+		field.value^ = string(data)
+	}
+	return true
+}
+
+// Lists are redacted even in local memory. Only launch/probe lookup opens secrets.
+profile_list :: proc(allocator := context.temp_allocator) -> ([]Provider_Profile, Profile_Error) {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked(allocator)
-	if !ok do return nil, .Store_Unavailable
-	if len(records) == 0 do return nil, .None
-	kr, kok := profile_store_keyring()
-	defer if kok do vault.keyring_wipe(&kr)
-	out := make([dynamic]Provider_Profile, allocator)
-	for rec in records {
-		p: Provider_Profile
-		if e := profile_record_open(&kr if kok else nil, rec, &p, allocator); e != .None do return nil, e
-		append(&out, p)
-	}
-	return out[:], .None
+	return records, .None if ok else .Store_Unavailable
 }
 
-// profile_lookup resolves a profile id for a launch or probe of `provider`.
-// "" or the provider slug with no stored record is the implicit default profile.
-// A stored profile must be enabled and belong to `provider`. Never falls back.
-// Only the matching record is decrypted, so one damaged record cannot break the
-// launches of other profiles.
-profile_lookup :: proc(provider, profile_id: string, allocator := context.temp_allocator) -> (p: Provider_Profile, err: Profile_Error) {
+profile_lookup :: proc(
+	provider, profile_id: string,
+	allocator := context.temp_allocator,
+) -> (
+	p: Provider_Profile,
+	err: Profile_Error,
+) {
 	id := strings.trim_space(profile_id)
 	if id == "" do id = provider
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked(allocator)
 	if !ok do return {}, .Store_Unavailable
-	for rec in records {
+	for &rec in records {
 		if rec.profile_id != id do continue
-		if rec.provider != provider {
-			// A later catalog added `provider` with the slug of an existing custom
-			// profile of another driver: the new default is unavailable here.
-			return {}, .Slug_Clash if id == provider else .Provider_Mismatch
-		}
+		if rec.provider != provider do return {}, .Slug_Clash if id == provider else .Provider_Mismatch
 		if !rec.enabled do return {}, .Disabled
-		if !profile_record_has_sensitive(rec) {
-			_ = profile_record_open(nil, rec, &p, allocator)
-			return p, .None
-		}
-		kr, kok := profile_store_keyring()
-		if !kok do return {}, .Locked
-		defer vault.keyring_wipe(&kr)
-		if e := profile_record_open(&kr, rec, &p, allocator); e != .None do return {}, e
+		p = rec
+		if !profile_materialize(&p) do return {}, .Store_Unavailable
 		return p, .None
 	}
 	if id == provider do return Provider_Profile{profile_id = provider, provider = provider, enabled = true}, .None
 	return {}, .Unknown
 }
 
-// profile_upsert stores p, keeping any sensitive env value marked keep in
-// keep_names from the stored version. Validates everything before writing.
+Profile_Secret_Change :: struct {
+	name:   string,
+	value:  string,
+	remove: bool,
+}
+Profile_Secret_Snapshot :: struct {
+	name:    string,
+	value:   []byte,
+	existed: bool,
+}
+
+// Persist redacted settings and secret changes together. All old bytes are read
+// before mutation; failures restore already-applied writes in reverse order.
+profile_commit_locked :: proc(
+	records: []Provider_Profile_Record_Wire,
+	changes: []Profile_Secret_Change,
+) -> bool {
+	snapshots := make([dynamic]Profile_Secret_Snapshot, context.temp_allocator)
+	for c in changes {
+		path := profile_secret_path(c.name)
+		existed := os.exists(path)
+		data: []byte
+		if existed {
+			err: os.Error
+			data, err = os.read_entire_file(path, context.temp_allocator)
+			if err != nil do return false
+		}
+		append(&snapshots, Profile_Secret_Snapshot{c.name, data, existed})
+	}
+	success := false
+	applied := 0
+	defer if !success {
+		for i := applied - 1; i >= 0; i -= 1 {
+			s := snapshots[i]
+			path := profile_secret_path(s.name)
+			if s.existed {_ = profile_atomic_write(path, s.value)} else {_ = os.remove(path)}
+		}
+	}
+	for c in changes {
+		applied += 1
+		path := profile_secret_path(c.name)
+		if c.remove {
+			if os.exists(path) && os.remove(path) != nil do return false
+		} else if !profile_atomic_write(path, transmute([]byte)c.value) {
+			return false
+		}
+	}
+	success = profile_store_write_locked(records)
+	return success
+}
+
+// keep_names supports the earlier explicit keep bit; value_redacted is the
+// t3code keep rule. Non-redacted empty clears; missing/non-sensitive removes.
 profile_upsert :: proc(p: ^Provider_Profile, keep_names: []string, now: i64) -> Profile_Error {
 	if e := profile_validate_metadata(p); e != .None do return e
+	profile_normalize(p)
+	if e := profile_validate(p); e != .None do return e
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	if !ok do return .Store_Unavailable
 	idx := -1
 	for rec, i in records do if rec.profile_id == p.profile_id do idx = i
-	// kept[i]: env[i] is a redacted sensitive value whose stored token is reused as is.
-	kept := make([]bool, len(p.secret.env), context.temp_allocator)
+	previous: Provider_Profile
 	if idx >= 0 {
-		existing := records[idx]
-		if existing.provider != p.provider do return .Provider_Mismatch
-		for &e, i in p.secret.env {
-			if !e.sensitive || !slice.contains(keep_names, e.name) do continue
-			for old in existing.secret.env do if old.name == e.name && old.sensitive {
-				e.value = old.value
-				kept[i] = true
-			}
-		}
-		p.created_at = records[idx].created_at
+		previous = records[idx]
+		if previous.provider != p.provider do return .Provider_Mismatch
+		p.created_at = previous.created_at
 	} else {
 		if len(records) >= PROFILE_STORE_MAX do return .Store_Full
 		p.created_at = now
 	}
+	if e := profile_prepare_dirs(&p.config); e != .None do return e
 	p.updated_at = now
-	profile_normalize_secret(&p.secret)
-	if e := profile_validate_secret(p.provider, &p.secret); e != .None do return e
-	if e := profile_prepare_dirs(&p.secret); e != .None do return e
-	// Seal new sensitive values; only this needs the unsealed keyring.
-	stored := p.secret
-	stored.env = make([]Provider_Profile_Env, len(p.secret.env), context.temp_allocator)
-	kr: vault.Vault_Keyring
-	have_kr := false
-	defer if have_kr do vault.keyring_wipe(&kr)
-	for e, i in p.secret.env {
-		stored.env[i] = e
-		if !e.sensitive || kept[i] do continue
-		if !have_kr {
-			kr, have_kr = profile_store_keyring()
-			if !have_kr do return .Locked
+	stored := p^
+	stored.environment = make([]Provider_Profile_Env, len(p.environment), context.temp_allocator)
+	copy(stored.environment, p.environment)
+	changes := make([dynamic]Profile_Secret_Change, context.temp_allocator)
+	retained := make(map[string]bool, context.temp_allocator)
+	for field in profile_secret_fields(&stored) {
+		retained[field.name] = true
+		if !field.sensitive {
+			field.redacted^ = false
+			append(&changes, Profile_Secret_Change{name = field.name, remove = true})
+			continue
 		}
-		tok, sok := profile_seal_value(&kr, profile_bridge_id(), p.profile_id, e.name, e.value)
-		if !sok do return .Store_Unavailable
-		stored.env[i].value = tok
+		keep := field.redacted^
+		for e in p.environment {
+			if field.name == profile_env_secret_name(p.profile_id, e.name) && slice.contains(keep_names, e.name) && e.value == "" do keep = true
+		}
+		if keep {
+			field.value^ = ""
+			field.redacted^ = true
+		} else if field.value^ == "" {
+			field.redacted^ = false
+			append(&changes, Profile_Secret_Change{name = field.name, remove = true})
+		} else {
+			append(&changes, Profile_Secret_Change{name = field.name, value = field.value^})
+			field.value^ = ""
+			field.redacted^ = true
+		}
 	}
-	rec := Provider_Profile_Record_Wire{
-		profile_id = p.profile_id, provider = p.provider, label_enc = p.label_enc, accent = p.accent,
-		enabled = p.enabled, created_at = p.created_at, updated_at = p.updated_at, secret = stored,
+	for field in profile_secret_fields(&previous) {
+		if field.sensitive && !retained[field.name] do append(&changes, Profile_Secret_Change{name = field.name, remove = true})
 	}
 	next := make([dynamic]Provider_Profile_Record_Wire, context.temp_allocator)
-	append(&next, ..records)
-	if idx >= 0 do next[idx] = rec
-	else do append(&next, rec)
-	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
+	for rec, i in records do append(&next, stored if i == idx else rec)
+	if idx < 0 do append(&next, stored)
+	return .None if profile_commit_locked(next[:], changes[:]) else .Store_Unavailable
 }
 
-// profile_remove deletes a custom profile; its provider comes from the stored
-// record. A default profile (id = a catalog slug it belongs to) cannot be removed,
-// only reset. The hub refuses removal while agents reference the profile.
 profile_remove :: proc(profile_id: string) -> Profile_Error {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	if !ok do return .Store_Unavailable
 	next := make([dynamic]Provider_Profile_Record_Wire, context.temp_allocator)
+	changes := make([dynamic]Profile_Secret_Change, context.temp_allocator)
 	found := false
-	for rec in records {
-		if rec.profile_id == profile_id {
-			if rec.provider == profile_id do return .Default_Not_Removable
-			found = true
-			continue
-		}
-		append(&next, rec)
+	for &rec in records {
+		if rec.profile_id != profile_id {append(&next, rec); continue}
+		if rec.profile_id == rec.provider do return .Default_Not_Removable
+		found = true
+		for field in profile_secret_fields(&rec) do if field.sensitive do append(&changes, Profile_Secret_Change{name = field.name, remove = true})
 	}
-	if !found {
-		if profile_catalog_has(profile_id) do return .Default_Not_Removable
-		return .Not_Found
-	}
-	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
+	if !found do return .Default_Not_Removable if profile_catalog_has(profile_id) else .Not_Found
+	return .None if profile_commit_locked(next[:], changes[:]) else .Store_Unavailable
 }
 
-// profile_reset clears a default profile's overrides, label and accent and keeps
-// `enabled` (amendment 1 §3). An enabled default with nothing left is dropped, so
-// it is again the implicit default; a disabled one stays as a bare record.
+// Reset drops all overrides, including secrets, but preserves enabled.
 profile_reset :: proc(provider: string) -> Profile_Error {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	if !ok do return .Store_Unavailable
 	next := make([dynamic]Provider_Profile_Record_Wire, context.temp_allocator)
+	changes := make([dynamic]Profile_Secret_Change, context.temp_allocator)
 	changed := false
-	for rec in records {
-		if rec.profile_id != provider || rec.provider != provider {
-			append(&next, rec)
-			continue
-		}
+	for &rec in records {
+		if rec.profile_id != provider || rec.provider != provider {append(&next, rec); continue}
 		changed = true
-		if !rec.enabled {
-			append(&next, Provider_Profile_Record_Wire{
-				profile_id = rec.profile_id, provider = rec.provider, enabled = false,
-				created_at = rec.created_at, updated_at = profile_now_ms(),
-			})
-		}
+		for field in profile_secret_fields(&rec) do if field.sensitive do append(&changes, Profile_Secret_Change{name = field.name, remove = true})
+		if !rec.enabled do append(&next, Provider_Profile_Record_Wire{profile_id = rec.profile_id, provider = rec.provider, enabled = false, created_at = rec.created_at, updated_at = profile_now_ms()})
 	}
 	if !changed do return .None
-	return .None if profile_store_write_locked(next[:]) else .Store_Unavailable
+	return .None if profile_commit_locked(next[:], changes[:]) else .Store_Unavailable
 }
 
-// profile_purge removes the store (uninstall --purge, purge-home). There is no
-// separate key: secrets are sealed under the vault keyring.
 profile_purge :: proc() -> bool {
 	sync.mutex_lock(&g_profile_store_mu)
 	defer sync.mutex_unlock(&g_profile_store_mu)
 	path := profile_store_path()
+	dir := profile_secrets_dir()
+	if os.exists(dir) && os.remove_all(dir) != nil do return false
 	return !os.exists(path) || os.remove(path) == nil
 }
 
@@ -668,24 +759,23 @@ profile_now_ms :: proc() -> i64 {
 	return time.time_to_unix_nano(time.now()) / 1_000_000
 }
 
-// ── Metadata report (amendment 2 §3) ────────────────────────────────────────
-
 Provider_Profile_Report_Entry :: struct {
-	profile_id:     string `json:"profile_id"`,
-	provider:       string `json:"provider"`,
-	label_enc:      string `json:"label_enc"`,
-	accent:         string `json:"accent"`,
-	enabled:        bool `json:"enabled"`,
-	has_config_dir: bool `json:"has_config_dir"`,
-	has_home_dir:   bool `json:"has_home_dir"`,
-	has_binary:     bool `json:"has_binary"`,
-	env_count:      int `json:"env_count"`,
-	args_count:     int `json:"args_count"`,
-	state:          string `json:"state"`,
-	created_at:     i64 `json:"created_at"`,
-	updated_at:     i64 `json:"updated_at"`,
+	profile_id:           string `json:"profile_id"`,
+	provider:             string `json:"provider"`,
+	label_enc:            string `json:"label_enc"`,
+	accent:               string `json:"accent"`,
+	enabled:              bool `json:"enabled"`,
+	has_config_dir:       bool `json:"has_config_dir"`,
+	has_home_path:        bool `json:"has_home_path"`,
+	has_shadow_home_path: bool `json:"has_shadow_home_path"`,
+	has_binary:           bool `json:"has_binary"`,
+	env_count:            int `json:"env_count"`,
+	args_count:           int `json:"args_count"`,
+	custom_models_count:  int `json:"custom_models_count"`,
+	state:                string `json:"state"`,
+	created_at:           i64 `json:"created_at"`,
+	updated_at:           i64 `json:"updated_at"`,
 }
-
 Provider_Profiles_Report_Wire :: struct {
 	type:     string `json:"type"`,
 	ok:       bool `json:"ok"`,
@@ -693,29 +783,47 @@ Provider_Profiles_Report_Wire :: struct {
 	profiles: []Provider_Profile_Report_Entry `json:"profiles"`,
 }
 
-// profile_report_json is the provider_profiles_report frame: metadata only, never a
-// value, path, env name or argument. state is "slug_clash" when a later catalog
-// added a provider whose slug equals this custom profile's id.
+// The hub receives metadata only: no values, paths, env names or arguments.
 profile_report_json :: proc(allocator := context.allocator) -> string {
 	sync.mutex_lock(&g_profile_store_mu)
 	records, ok := profile_store_read_locked()
 	sync.mutex_unlock(&g_profile_store_mu)
 	entries := make([dynamic]Provider_Profile_Report_Entry, context.temp_allocator)
-	for rec in records {
+	for &rec in records {
 		state := "ok"
 		if rec.profile_id != rec.provider && profile_catalog_has(rec.profile_id) do state = "slug_clash"
-		append(&entries, Provider_Profile_Report_Entry{
-			profile_id = rec.profile_id, provider = rec.provider, label_enc = rec.label_enc, accent = rec.accent,
-			enabled = rec.enabled, has_config_dir = rec.secret.config_dir != "", has_home_dir = rec.secret.home_dir != "",
-			has_binary = rec.secret.binary != "", env_count = len(rec.secret.env), args_count = len(rec.secret.args),
-			state = state, created_at = rec.created_at, updated_at = rec.updated_at,
-		})
+		c := &rec.config
+		append(
+			&entries,
+			Provider_Profile_Report_Entry {
+				profile_id = rec.profile_id,
+				provider = rec.provider,
+				label_enc = rec.label_enc,
+				accent = rec.accent,
+				enabled = rec.enabled,
+				has_config_dir = c.config_dir != "",
+				has_home_path = c.home_path != "",
+				has_shadow_home_path = c.shadow_home_path != "",
+				has_binary = c.binary_path != "",
+				env_count = len(rec.environment),
+				args_count = len(profile_tokenize_args(c.launch_args)),
+				custom_models_count = len(c.custom_models),
+				state = state,
+				created_at = rec.created_at,
+				updated_at = rec.updated_at,
+			},
+		)
 	}
 	err: Profile_Error = .None if ok else .Store_Unavailable
-	wire := Provider_Profiles_Report_Wire{type = "provider_profiles_report", ok = ok, error = profile_error_code(err), profiles = entries[:]}
-	data, merr := json.marshal(wire, allocator = allocator)
+	data, merr := json.marshal(
+		Provider_Profiles_Report_Wire {
+			type = "provider_profiles_report",
+			ok = ok,
+			error = profile_error_code(err),
+			profiles = entries[:],
+		},
+		allocator = allocator,
+	)
 	if merr != nil do return strings.clone(`{"type":"provider_profiles_report","ok":false,"error":"profile_store_unavailable","profiles":[]}`, allocator)
 	return string(data)
 }
-
-_ :: fmt
