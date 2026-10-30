@@ -29,6 +29,8 @@ BRIDGE_UNINSTALL_PARENT_WAIT :: 30 * time.Second
 // its own executable only when it carries this prefix.
 BRIDGE_UNINSTALL_COPY_PREFIX :: "ham-bridge-uninstall-"
 BRIDGE_UNINSTALL_STOP_WAIT :: 10 * time.Second
+// How long uninstall waits for another bridge's Codex extension ensure.
+BRIDGE_UNINSTALL_CODEX_LOCK_WAIT :: 15 * time.Second
 
 Bridge_Uninstall :: struct {
 	host:          bridgesvc.Host,
@@ -239,6 +241,16 @@ bridge_uninstall_run :: proc(data: rawptr, step: bridgesvc.Uninstall_Step) -> (b
 		return bridge_uninstall_secrets(u)
 
 	case .Extensions:
+		// This profile's own Codex marketplace (provider_extension_codex_own.odin)
+		// points at <data_dir>/codex-marketplace: unregister it before that goes.
+		// Under the per-OS-user codex lock, so no bridge's ensure/heal rewrites
+		// config.toml at the same time. Best effort: a busy lock still unregisters.
+		// CODEX_HOME comes from this shell, which may differ from the bridge
+		// service's; another bridge's heal drops a leftover once the source is gone.
+		lock_path, locked := bridge_extension_lock("codex", time.time_add(time.now(), BRIDGE_UNINSTALL_CODEX_LOCK_WAIT))
+		ok, msg := bridge_codex_own_unregister_hook(l.data_dir)
+		if locked do bridge_extension_unlock("codex", lock_path)
+		if !ok do return false, .Busy, msg
 		n, busy, left := bridge_uninstall_remove(u, paths.extensions)
 		if busy do return false, .Busy, fmt.tprintf("cannot remove %s", left)
 		return true, .None, "skipped" if n == 0 else "extensions generation removed"

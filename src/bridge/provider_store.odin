@@ -27,7 +27,7 @@ Bridge_Provider_Profile :: struct {
 	skill_dir: string,
 	bootstrap_file_name: string,
 	model_flag: string,
-	extra_args: []string, // provider profile args; never from the catalog
+	extra_args: []string, // provider profile args, or the default Codex profile's own-extension overrides; never from the catalog
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
 }

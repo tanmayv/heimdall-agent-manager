@@ -344,10 +344,20 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 		for kv in plan.set do append(&layered, strings.concatenate({kv[0], "=", kv[1]}, context.temp_allocator))
 		append(&layered, ..env)
 		full_env = layered[:]
+	} else {
+		profile.extra_args = bridge_pty_host_default_profile_args(provider)
 	}
 	profile.extension_expected = bridge_provider_launch_extension_expected(profile,pp.profile_id if pp != nil else "")
 	bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
 	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode)
+}
+
+// Args of a launch without a provider profile: for Codex, the overrides that load
+// this bridge's own extension instead of the shared newest release. Claude and
+// the other providers get none.
+bridge_pty_host_default_profile_args :: proc(provider: string) -> []string {
+	if bridge_extension_canonical_provider(provider) != "codex" do return nil
+	return bridge_codex_own_launch_args()
 }
 
 // Assemble the launch from the already resolved, immutable catalog profile.

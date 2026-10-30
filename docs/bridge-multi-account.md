@@ -89,6 +89,29 @@ A per-account provider profile (its own config dir) is not shared, so its
 extension registers from that profile's own `<data dir>/extensions` copy. That
 path stays the same across updates and no other profile's prune touches it.
 
+Codex agents of the default provider config run their own bridge's extension,
+not the newest shared one. Each profile also registers a copy of its
+`<data dir>/extensions/codex` (under `<data dir>/codex-marketplace`) as the
+marketplace `heimdall-codex-<service>`, saved in the user's `config.toml` with
+`enabled = false`. That way the user's own Codex sessions and other bridges'
+agents don't load it. Agents launch with
+`-c plugins.heimdall@heimdall-codex.enabled=false -c plugins.heimdall@heimdall-codex-<service>.enabled=true`,
+so exactly one Heimdall plugin loads, with the shared `CODEX_HOME` and login.
+Without that registration (for example when the copy is missing), the launch
+adds no override and uses the shared release. Removing the extension from the
+hub, or `ham-bridge uninstall` (with or without `--purge`), removes only that
+profile's own marketplace, plugin table and install cache, before its
+`codex-marketplace` copy is deleted. Every ensure also drops any
+`heimdall-codex-*` marketplace whose source directory is gone (a bridge removed
+by hand), because Codex fails every `codex plugin list` while one is
+registered. These `config.toml` edits change only the bridge's own two tables
+and keep every other byte, comments included; when the file has a line that
+cannot be read for certain (an escaped quote in a table name, or invalid TOML),
+the bridge leaves the file unchanged and reports it. Uninstall makes its edit
+under the same per-OS-user lock as the bridges' extension installs. Hook trust is per plugin: the own plugin is a different plugin id
+from `heimdall@heimdall-codex`, so hook trust granted to the shared plugin in
+the Codex TUI does not carry over. Claude keeps the shared registration.
+
 Uninstalling a profile removes only that profile's own copy; the shared root and
 the provider registration stay. Removing a provider's extension from the hub
 (Settings) is left undone, with a message, while another profile of this OS user

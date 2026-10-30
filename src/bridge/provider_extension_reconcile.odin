@@ -296,6 +296,21 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 			fmt.tprintf("another Ninjy extension install for %s is still running for this OS user; retry when it finishes", prov))
 	}
 	defer bridge_extension_unlock(prov, lock_path)
+	// Runs before the unlock above: this bridge's own Codex plugin, enabled per
+	// launch only (provider_extension_codex_own.odin). Best effort; without it
+	// agents keep the shared release.
+	// A bridge uninstalled without cleaning up leaves its own marketplace with a
+	// deleted source, and Codex then fails every `plugin list`, including the
+	// shared registration's check below: drop those first.
+	if prov == "codex" && sink.profile == nil {
+		if healed, heal_msg := bridge_codex_own_heal_hook(); healed > 0 || heal_msg != "" {
+			bridge_extension_sink_progress(sink, "installing", 5, fmt.tprintf("Removed %d stale bridge Codex marketplace(s)%s%s", healed, "; " if heal_msg != "" else "", heal_msg))
+		}
+	}
+	defer if prov == "codex" && sink.profile == nil {
+		own_ok, own_msg := bridge_codex_own_ensure_hook(bin_path, install_deadline, sink.env)
+		bridge_extension_sink_progress(sink, "installing", 90, own_ok ? own_msg : fmt.tprintf("This bridge's own Codex plugin was not registered (%s); agents use the shared one", own_msg))
+	}
 	bundled_version := bridge_provider_extension_read_manifest_version(ext_path, prov)
 	required_version := bridge_extension_required_version(prov)
 	// Verification needs the newer of the bundled manifest and the catalog minimum.
@@ -409,6 +424,8 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 			fmt.tprintf("another Ninjy extension install for %s is still running for this OS user; retry when it finishes", prov))
 	}
 	defer bridge_extension_unlock(prov, lock_path)
+	// This bridge's own Codex plugin is never shared with another profile.
+	if prov == "codex" && sink.profile == nil do bridge_codex_own_remove_hook(bin_path, install_deadline, sink.env)
 	// The OS user's registration is shared by every profile of this OS user;
 	// removing it for one Ninjy account would break the others' agents. A
 	// per-account provider profile registers in its own config dir instead.
