@@ -44,7 +44,19 @@ A setup run on a terminal that would re-enroll a profile another bridge already
 holds (`--new-bridge`, `--reenroll`, `--reuse-bridge` of another bridge) asks
 whether this is a different account and, on yes, installs a separate profile.
 Updates of an enrolled profile never ask. `--headless` and `--json-progress`
-runs never prompt.
+runs never prompt: one that would enroll a new bridge into an enrolled profile
+(`--new-bridge`, `--reuse-bridge` of another bridge) installs a separate profile
+instead, leaving the enrolled one's service, ports and credential untouched.
+`--reenroll` re-pairs the profile's own bridge in place.
+
+The Ninjy desktop app (Settings > Bridges > This machine) matches the profiles in
+`ham-bridge list --json` against the signed-in account's bridges on the Hub. It
+shows and manages only that account's own profile. Without one, it runs setup
+with `--separate-account`, even for the first bridge, so a second account's
+install never stops, replaces or reconfigures the first account's running
+bridge. Replacing is offered only as an explicit choice after an enrollment
+refusal. The first-launch setup (before sign-in) runs only when no bridge is
+installed for the Hub.
 
 Replacing the account that owns a profile is still explicit:
 `--replace-other-account` (mutually exclusive with `--separate-account`) revokes

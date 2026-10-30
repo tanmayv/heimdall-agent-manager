@@ -233,7 +233,7 @@ test('ThisMachineCard retries a failed Re-enroll as Re-enroll and labels the fai
     getConfig: async () => ({ ok: true, supported: true, platform: 'linux', hubUrl: 'https://hub.example.test', defaultHubUrl: 'https://hub.example.test', bundledVersion: '' }),
     setHubUrl: async () => ({ ok: true }),
     getStatus: async () => ({ supported: true, busy: false, operation: '', installed: true, state: 'connected', bridge_id: 'brg_this', error: '' }),
-    list: async () => ({ ok: true, profiles: [] }),
+    list: async () => ({ ok: true, profiles: [{ installed: true, state: 'connected', hub: 'https://hub.example.test', profile: '', bridge_id: 'brg_this' }] }),
     run: async (kind: string, _target: any, options: any) => { runs.push({ kind, options }); return { ok: true }; },
     cancel: async () => ({ ok: true }),
     openLog: async () => ({ ok: true }),
@@ -248,7 +248,7 @@ test('ThisMachineCard retries a failed Re-enroll as Re-enroll and labels the fai
     await act(async () => { element!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
   };
   try {
-    await act(async () => { root.render(React.createElement(ThisMachineCard, { manager })); });
+    await act(async () => { root.render(React.createElement(ThisMachineCard, { manager, accountBridgeIds: ['brg_this'] })); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await click('settings-this-machine-reenroll-btn');
     await click('settings-this-machine-confirm-ok');
@@ -259,6 +259,60 @@ test('ThisMachineCard retries a failed Re-enroll as Re-enroll and labels the fai
     assert.equal(query('settings-bridge-wizard'), null, 'the setup wizard is not shown for a re-enroll');
     await click('settings-bridge-wizard-retry');
     assert.deepEqual(runs[1], { kind: 'reenroll', options: { bridgeId: 'brg_this', inAppApproval: true } }, 'Retry repeats the re-enroll, not an update');
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as any)[key];
+    }
+  }
+});
+
+test('ThisMachineCard: account B never sees or manages account A\'s bridge and sets up a separate one', async () => {
+  const { default: ThisMachineCard } = await import('../src/ui/components/settings/ThisMachineCard.tsx');
+  // The run session is module state; start without the previous test's run.
+  (await import('../src/ui/bridge/desktopBridgeSession.ts')).resetDesktopBridgeSessionForTests();
+  const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/', pretendToBeVisual: true });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({
+    window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
+  }
+  const runs: Array<{ kind: string; target: any; options: any }> = [];
+  const statusTargets: any[] = [];
+  const profileA = { installed: true, state: 'connected', hub: 'https://hub.example.test', profile: '', service: 'heimdall-bridge-hub-example-test', bridge_id: 'brg_a' };
+  const manager: any = {
+    getConfig: async () => ({ ok: true, supported: true, platform: 'linux', hubUrl: 'https://hub.example.test', defaultHubUrl: 'https://hub.example.test', bundledVersion: '' }),
+    setHubUrl: async () => ({ ok: true }),
+    getStatus: async (target: any) => { statusTargets.push(target); return { supported: true, busy: false, operation: '', ...profileA, error: '' }; },
+    list: async () => ({ ok: true, profiles: [profileA] }),
+    run: async (kind: string, target: any, options: any) => { runs.push({ kind, target, options }); return { ok: true }; },
+    cancel: async () => ({ ok: true }),
+    openLog: async () => ({ ok: true }),
+    onEvent: () => () => undefined,
+  };
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const doc = dom.window.document;
+  const query = (id: string) => doc.querySelector(`[data-debug-id="${id}"]`) as HTMLElement | null;
+  try {
+    // While the account's bridges load, setup cannot start (it could duplicate the account's own bridge).
+    await act(async () => { root.render(React.createElement(ThisMachineCard, { manager, accountBridgeIds: null })); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.equal((query('settings-this-machine-setup-btn') as HTMLButtonElement | null)?.disabled, true);
+
+    await act(async () => { root.render(React.createElement(ThisMachineCard, { manager, accountBridgeIds: ['brg_b_elsewhere'] })); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.deepEqual(statusTargets, [], 'A\'s profile status is never queried for B');
+    assert.equal(query('settings-this-machine-update-btn'), null, 'B cannot update A\'s bridge');
+    assert.equal(query('settings-this-machine-uninstall-btn'), null, 'B cannot uninstall A\'s bridge');
+    assert.doesNotMatch(doc.body.textContent || '', /brg_a/);
+    assert.match(query('settings-this-machine-other-accounts')!.textContent || '', /Another Ninjy account has a bridge on this machine/);
+    await act(async () => { query('settings-this-machine-setup-btn')!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
+    assert.deepEqual(runs, [{ kind: 'setup', target: { hub: 'https://hub.example.test', profile: '' }, options: { separateAccount: true, inAppApproval: true } }]);
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

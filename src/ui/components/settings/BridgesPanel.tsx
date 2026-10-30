@@ -1,5 +1,5 @@
 import { useEntitlements } from '../../hooks/useEntitlements';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   type Bridge,
   useBridgeProviderStatus,
@@ -64,6 +64,14 @@ export default function BridgesPanel() {
   const [updateDrainTimeout, setUpdateDrainTimeout] = useState(60);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState('');
+
+  // The signed-in account's bridge ids (revoked ones included: a revoked bridge
+  // is still this account's to re-enroll), or null until the Hub answers. This
+  // machine's card shows only the profile enrolled as one of them.
+  const accountBridgeIds = useMemo(() => (bridgesQuery.data
+    ? (bridgesQuery.data.bridges || []).map((b: Bridge) => String(b?.bridge_id || b?.bridgeId || b?.id || '')).filter(Boolean)
+    : null), [bridgesQuery.data]);
+  const refetchBridges = useCallback(() => { void bridgesQuery.refetch(); }, [bridgesQuery.refetch]);
 
   const bridges: Bridge[] = (bridgesQuery.data?.bridges || [])
     .filter((b: Bridge) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked')
@@ -162,7 +170,7 @@ export default function BridgesPanel() {
         : 'Your installed bridges. Set up or uninstall a bridge from the Ninjy desktop app or with ham-bridge on that machine.'}
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
-      {manager ? <ThisMachineCard manager={manager} onBridgeId={setLocalBridgeId} /> : null}
+      {manager ? <ThisMachineCard manager={manager} accountBridgeIds={accountBridgeIds} onBridgeId={setLocalBridgeId} onSetupComplete={refetchBridges} /> : null}
       {desktop.legacyBridgeManager ? (
         <div data-debug-id="settings-bridges-desktop-outdated" className="mt-3 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
           This desktop app is too old to set up or manage this machine's Bridge from here. Update the desktop app to the latest version, or run ham-bridge on this machine.

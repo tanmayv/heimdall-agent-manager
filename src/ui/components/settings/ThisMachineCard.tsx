@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Icon, Input, Modal, ModalBody, ModalFooter, StatusDot, Text } from '@ui';
 import type { Tone } from '@ui';
 import {
@@ -7,7 +7,11 @@ import {
   type DesktopBridgeOperation,
   type DesktopBridgeOperationOptions,
   type DesktopBridgeStatus,
+  type DesktopBridgeTarget,
+  accountBridgeProfile,
   desktopBridgeStatusLabel,
+  desktopSetupPlan,
+  otherAccountProfiles,
 } from '../../bridge/desktopBridge';
 import {
   attachDesktopBridgeSession,
@@ -43,10 +47,28 @@ const operationFailed: Record<DesktopBridgeOperation, string> = {
  * progress, automatic recovery shown inline, an expandable log, Retry from the
  * failed step once recovery is exhausted, and Cancel (= rollback). Installed →
  * status plus Update / Re-enroll / Uninstall.
+ *
+ * Several Ninjy accounts can each run a bridge on this machine and OS user, one
+ * profile each. The card shows only the signed-in account's own profile: the
+ * `ham-bridge list` profile whose bridge id is one of `accountBridgeIds` (the
+ * account's bridges on the Hub; null while they load). Without one it offers
+ * setup with --separate-account, which never touches another account's bridge.
  */
-export default function ThisMachineCard({ manager, onBridgeId }: { manager: DesktopBridgeManagerApi; onBridgeId?: (bridgeId: string) => void }) {
+export default function ThisMachineCard({ manager, accountBridgeIds, onBridgeId, onSetupComplete }: {
+  manager: DesktopBridgeManagerApi;
+  accountBridgeIds: string[] | null;
+  onBridgeId?: (bridgeId: string) => void;
+  onSetupComplete?: () => void;
+}) {
   const [config, setConfig] = useState<DesktopBridgeConfig | null>(null);
   const [status, setStatus] = useState<DesktopBridgeStatus | null>(null);
+  // The signed-in account's installed profile, and how many other accounts' are installed.
+  const [own, setOwn] = useState<DesktopBridgeStatus | null>(null);
+  const [otherAccounts, setOtherAccounts] = useState(0);
+  // A bridge this card just set up counts as the account's own until the Hub's
+  // bridge list (refetched through onSetupComplete) includes it.
+  const [adoptedBridgeId, setAdoptedBridgeId] = useState('');
+  const sawSetup = useRef(false);
   // The operation, wizard and log live in desktopBridgeSession: they keep following
   // the run while /device/add is open for its pairing code (REQ-ENR-INAPP-1).
   const session = useSyncExternalStore(subscribeDesktopBridgeSession, desktopBridgeSession);
@@ -59,12 +81,23 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
   const [purge, setPurge] = useState(true);
   const [error, setError] = useState('');
 
-  const target = useCallback(() => ({ hub: config?.hubUrl, profile }), [config?.hubUrl, profile]);
+  const target = useCallback((): DesktopBridgeTarget => (own ? { hub: config?.hubUrl, profile: String(own.profile || '') } : { hub: config?.hubUrl, profile }), [config?.hubUrl, own, profile]);
 
   const refresh = useCallback(async () => {
-    try { setStatus(await manager.getStatus(target())); }
-    catch (err: any) { setError(String(err?.message || err)); }
-  }, [manager, target]);
+    if (!config || !accountBridgeIds) return;
+    try {
+      const listed = await manager.list();
+      if (!listed.ok) throw new Error(listed.error || 'Unable to list the Bridges on this machine.');
+      const ids = adoptedBridgeId ? [...accountBridgeIds, adoptedBridgeId] : accountBridgeIds;
+      const mine = accountBridgeProfile(listed.profiles, config.hubUrl, ids);
+      setOwn(mine);
+      setOtherAccounts(otherAccountProfiles(listed.profiles, config.hubUrl, ids).length);
+      // Another account's profile is never shown (or updated / uninstalled) here.
+      setStatus(mine
+        ? await manager.getStatus({ hub: config.hubUrl, profile: String(mine.profile || '') })
+        : { supported: config.supported, busy: false, operation: '', installed: false, state: 'not_installed', hub: config.hubUrl, error: '' });
+    } catch (err: any) { setError(String(err?.message || err)); }
+  }, [manager, config, accountBridgeIds, adoptedBridgeId]);
 
   useEffect(() => { onBridgeId?.(status?.installed ? String(status.bridge_id || '') : ''); }, [status?.installed, status?.bridge_id, onBridgeId]);
 
@@ -82,17 +115,30 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
   useEffect(() => { attachDesktopBridgeSession(manager); }, [manager]);
 
   // A finished run (seen here, or while this card was unmounted) refreshes the status.
+  useEffect(() => { if (operation === 'setup') sawSetup.current = true; }, [operation]);
   useEffect(() => {
     if (!session.finished) return;
-    if (session.finalStatus) setStatus(session.finalStatus);
+    const final = session.finalStatus as DesktopBridgeStatus | null;
+    if (sawSetup.current && final?.installed && final.bridge_id) {
+      sawSetup.current = false;
+      setAdoptedBridgeId(String(final.bridge_id));
+      onSetupComplete?.();
+    }
+    if (final) setStatus(final);
     else void refresh();
-  }, [session.finished, session.finalStatus, refresh]);
+  }, [session.finished, session.finalStatus, refresh, onSetupComplete]);
 
-  const run = async (kind: DesktopBridgeOperation, options: DesktopBridgeOperationOptions = {}) => {
+  const run = async (kind: DesktopBridgeOperation, options: DesktopBridgeOperationOptions = {}, runTarget: DesktopBridgeTarget = target()) => {
     setError('');
     setShowLog(false);
-    const failure = await runDesktopBridgeOperation(manager, kind, target(), options);
+    const failure = await runDesktopBridgeOperation(manager, kind, runTarget, options);
     if (failure) setError(failure);
+  };
+
+  // Set up: the account's own profile as is, else a separate-account install.
+  const setup = () => {
+    const plan = desktopSetupPlan(own, config?.hubUrl || '', profile);
+    void run('setup', plan.options, plan.target);
   };
 
   const saveHub = async () => {
@@ -111,7 +157,8 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
     );
   }
 
-  const label = desktopBridgeStatusLabel(status);
+  // Whose bridge is whose is unknown until the account's bridges load.
+  const label = accountBridgeIds ? desktopBridgeStatusLabel(status) : { label: 'Loading your bridges…', tone: 'muted' as const };
   const installed = Boolean(status?.installed);
   const busy = Boolean(operation) || Boolean(status?.busy);
   const lastKind = lastRun?.kind || 'setup';
@@ -152,6 +199,11 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
               </span>
             ) : status?.profile ? <span>profile: <span className="font-mono text-primary">{status.profile}</span></span> : null}
           </div>
+          {!installed && otherAccounts > 0 ? (
+            <p data-debug-id="settings-this-machine-other-accounts" className="mt-2 text-xs text-muted">
+              {otherAccounts === 1 ? 'Another Ninjy account has a bridge' : `${otherAccounts} other Ninjy accounts have bridges`} on this machine. Setting up installs a separate bridge for your account; {otherAccounts === 1 ? 'theirs keeps' : 'theirs keep'} running untouched.
+            </p>
+          ) : null}
           {status?.needs_reenrollment ? (
             <p data-debug-id="settings-this-machine-reenroll-hint" className="mt-2 text-xs text-danger">The Hub no longer accepts this Bridge ({status.reenroll_reason || 'revoked'}). Re-enroll it to reconnect.</p>
           ) : null}
@@ -160,7 +212,7 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
         <div className="flex flex-wrap gap-1.5 sm:justify-end">
           {!installed ? (
             busy ? null : (
-              <Button variant="primary" size="sm" data-debug-id="settings-this-machine-setup-btn" leading={<Icon name="download" size="sm" />} onClick={() => void run('setup')}>
+              <Button variant="primary" size="sm" data-debug-id="settings-this-machine-setup-btn" leading={<Icon name="download" size="sm" />} disabled={!accountBridgeIds} title={accountBridgeIds ? undefined : 'Loading your bridges…'} onClick={() => setup()}>
                 Set up this machine
               </Button>
             )
@@ -227,10 +279,17 @@ export default function ThisMachineCard({ manager, onBridgeId }: { manager: Desk
                   ? `Failed at ${wizard.steps.find((step) => step.id === wizard.failedStep)?.label || 'a step'} after automatic recovery.${wizard.rolledBack ? ' Changes were rolled back.' : ''}`
                   : `${operationFailed[lastKind]}${wizard.error ? `: ${wizard.error}` : '.'}`}
           </span>
+          {wizard.otherAccount && lastKind === 'setup' ? (
+            // The safe answer to another account's enrollment: a profile of
+            // this account's own, next to theirs.
+            <Button size="sm" variant="primary" data-debug-id="settings-bridge-wizard-separate-account" onClick={() => void run('setup', { separateAccount: true }, { hub: config.hubUrl, profile: '' })}>
+              Install a separate bridge for this account
+            </Button>
+          ) : null}
           {wizard.otherAccount ? (
             // F1: replacing another account's bridge revokes it and wipes its
             // secrets on this machine, so it needs this explicit confirmation.
-            <Button size="sm" variant="danger" data-debug-id="settings-bridge-wizard-replace-account" onClick={() => void run(lastKind === 'reenroll' ? 'reenroll' : 'setup', { ...lastRun?.options, replaceOtherAccount: true, bridgeId: lastRun?.options.bridgeId || status?.bridge_id || '' })}>
+            <Button size="sm" variant="danger" data-debug-id="settings-bridge-wizard-replace-account" onClick={() => void run(lastKind === 'reenroll' ? 'reenroll' : 'setup', { ...lastRun?.options, separateAccount: false, replaceOtherAccount: true, bridgeId: lastRun?.options.bridgeId || status?.bridge_id || '' })}>
               Replace the other account's bridge
             </Button>
           ) : null}
