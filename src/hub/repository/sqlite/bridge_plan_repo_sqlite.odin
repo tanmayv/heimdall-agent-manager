@@ -67,7 +67,7 @@ sunset_exec :: proc(conn: ^Conn, sql: string, args: ..string) -> (ok: bool, chan
 }
 
 // bridge_sunset_on retires the sunset bridge inside the caller's transaction and, when
-// receipt_for names the pending replacement, records the receipt (migration 175):
+// receipt_for names the pending replacement, records the receipt (migration 178):
 // the bridge, the revoked_at stamped, and the ids of exactly the tokens this revoked.
 // Refusals: absent, owned by someone else, or already revoked -> .Not_Found with the
 // same text (revoke_bridge's anti-enumeration shape); the owner's own still-pending

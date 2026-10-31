@@ -46,6 +46,7 @@ Bridge_Handlers :: struct {
 	projects: ^project_service.Project_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
+	mcp_control: ^MCP_Control_Handlers,
 	actions: rawptr,
 	scheduled_prompts: rawptr,
 	// experiments gates explorer relays (domain.PROJECT_VCS_EXPERIMENT_KEY) and Actions
@@ -2469,6 +2470,8 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		}
 		delete(stage)
 		delete(message)
+	case "mcp_transform_result":
+		mcp_bridge_result(h,bridge_id,text,connection_generation)
 	case "provider_profiles_report":
 		if err:=bridge_provider_profiles_frame(h,bridge_id,text);err.code!=.None do fmt.eprintln("provider profiles report:",err.message)
 	case "auto_update_config_result", "provider_profile_op_result", "command_result", "project_path_validation_result", "provider_discovery_report", "provider_model_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_show_file_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "vcs_upload_result", "vcs_sync_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "task_chain_search_result", "taskv2_merge_worktree_result":

@@ -969,6 +969,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_task_chain_search_handle_command(conn, text)
 		return
 	}
+	if type == "mcp_transform" {bridge_mcp_transform(conn,text);return}
 	if type == "set_telemetry" {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
@@ -4198,7 +4199,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION}
 
 bridge_hub_hello_json :: proc() -> string {
 	hello := Bridge_Hello_Wire{

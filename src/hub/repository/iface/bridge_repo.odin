@@ -109,7 +109,7 @@ Bridge_Sunset :: struct {
 }
 
 // With a sunset AND a pending replacement (enrollment_pending_until set), the same
-// transaction writes a durable receipt (migration 175): the sunset bridge, the
+// transaction writes a durable receipt (migration 178): the sunset bridge, the
 // revoked_at it stamped, and the exact token ids it revoked. The receipt is what
 // Bridge_Delete_Pending_Restoring_Sunset_Proc consumes on every rollback path, and
 // the enrollment commit (Bridge_Commit_Enrollment_Proc, new bridge) drops it in its

@@ -4,9 +4,9 @@
 // token session (`withSessionQuery` + `session.clientToken`). Centralizing this
 // stops each new cookie endpoint from reinventing its own apiUrl/fetch wrapper.
 
-import { withApiBase } from './apiBase';
+import { withApiBase } from './apiBase.ts';
 import type { WireErrorClass } from './wireError';
-import { announcePlanLimit } from '../utils/planLimit';
+import { announcePlanLimit } from '../utils/planLimit.ts';
 
 /**
  * ApiError carries the hub's MACHINE-READABLE error code alongside the message.

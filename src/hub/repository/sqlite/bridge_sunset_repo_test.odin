@@ -1,6 +1,6 @@
 #+private file
 // REQ-3: "register new and sunset one" is ONE admission transaction, and its durable
-// receipt (migration 175) is consumed by THE pending-row rollback. These tests
+// receipt (migration 178) is consumed by THE pending-row rollback. These tests
 // assert on the rows themselves (bridge status, every token's revoked_at), not on the
 // returned error alone: a refusal or a failed COMMIT must leave the sunset bridge and
 // its credentials exactly as they were, and a restore must revive exactly the
@@ -133,7 +133,7 @@ expect_victim_untouched :: proc(t: ^testing.T, f: ^Sunset_Fixture, bridge_id: st
 	testing.expect_value(t, token_revoked_at(f, fmt.tprintf("%s_tok_b", bridge_id)), "", loc = loc)
 }
 
-// Receipt_Snapshot is the durable receipt keyed by a replacement (migration 175);
+// Receipt_Snapshot is the durable receipt keyed by a replacement (migration 178);
 // sunset_id is "" when there is no receipt row. tokens are sorted.
 Receipt_Snapshot :: struct {
 	sunset_id:  string,

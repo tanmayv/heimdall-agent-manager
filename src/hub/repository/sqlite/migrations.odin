@@ -598,12 +598,16 @@ MIGRATION_171_EXTENSION_VERSION_SYNC :: #load("migrations/171_extension_version_
 MIGRATION_172_EXTENSION_VERSION_SYNC :: #load("migrations/172_extension_version_sync_0_5_30.sql", string)
 
 MIGRATION_173_EXTENSION_VERSION_SYNC :: #load("migrations/173_extension_version_sync_0_5_31.sql", string)
+MIGRATION_175_MCP :: #load("migrations/175_mcp_delegated_credentials.sql", string)
+MIGRATION_176_MCP_WRAPS :: #load("migrations/176_mcp_epoch_wraps.sql", string)
 
 MIGRATION_174_EXTENSION_VERSION_SYNC :: #load("migrations/174_extension_version_sync_0_5_32.sql", string)
 
-MIGRATION_175_BRIDGE_SUNSET_RECEIPTS :: #load("migrations/175_bridge_sunset_receipts.sql", string)
+MIGRATION_178_BRIDGE_SUNSET_RECEIPTS :: #load("migrations/178_bridge_sunset_receipts.sql", string)
 
-migration_order :: [179]string {
+MIGRATION_177_EXTENSION_VERSION_SYNC :: #load("migrations/177_extension_version_sync_0_5_33.sql", string)
+
+migration_order :: [182]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -782,7 +786,10 @@ migration_order :: [179]string {
 	"172_extension_version_sync_0_5_30.sql",
 	"173_extension_version_sync_0_5_31.sql",
 	"174_extension_version_sync_0_5_32.sql",
-	"175_bridge_sunset_receipts.sql",
+	"175_mcp_delegated_credentials.sql",
+	"176_mcp_epoch_wraps.sql",
+	"177_extension_version_sync_0_5_33.sql",
+	"178_bridge_sunset_receipts.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1272,9 +1279,12 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
-	if name == "175_bridge_sunset_receipts.sql" do return strings.clone(MIGRATION_175_BRIDGE_SUNSET_RECEIPTS)
+	if name == "177_extension_version_sync_0_5_33.sql" do return strings.clone(MIGRATION_177_EXTENSION_VERSION_SYNC)
+	if name == "178_bridge_sunset_receipts.sql" do return strings.clone(MIGRATION_178_BRIDGE_SUNSET_RECEIPTS)
 	if name == "174_extension_version_sync_0_5_32.sql" do return strings.clone(MIGRATION_174_EXTENSION_VERSION_SYNC)
 	if name == "173_extension_version_sync_0_5_31.sql" do return strings.clone(MIGRATION_173_EXTENSION_VERSION_SYNC)
+	if name == "175_mcp_delegated_credentials.sql" do return strings.clone(MIGRATION_175_MCP)
+	if name == "176_mcp_epoch_wraps.sql" do return strings.clone(MIGRATION_176_MCP_WRAPS)
 	if name == "172_extension_version_sync_0_5_30.sql" do return strings.clone(MIGRATION_172_EXTENSION_VERSION_SYNC)
 	if name == "171_extension_version_sync_0_5_29.sql" do return strings.clone(MIGRATION_171_EXTENSION_VERSION_SYNC)
 	if name == "170_extension_version_sync_0_5_28.sql" do return strings.clone(MIGRATION_170_EXTENSION_VERSION_SYNC)

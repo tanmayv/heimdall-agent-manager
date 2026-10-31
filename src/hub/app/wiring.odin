@@ -9,6 +9,7 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
+import mcp_service "odin_test:hub/service/mcp"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
@@ -33,6 +34,16 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	mcp_spike: mcp_service.Store,
+	mcp_spike_handlers: http.MCP_Spike_Handlers,
+	mcp_repository_impl: sqlite.MCP_Repo_SQLite,
+	mcp_repository: iface.MCP_Repository,
+	mcp_vault_repo_impl: sqlite.Vault_Directory_Repo_SQLite,
+	mcp_vault_repo: iface.Vault_Directory_Repository,
+	mcp_vault_view: vault_directory_service.Service,
+	mcp_delegation: mcp_service.Delegation_Service,
+	mcp_delegation_handlers: http.MCP_Delegation_Handlers,
+	mcp_control_handlers: http.MCP_Control_Handlers,
 	config: Hub_Config,
 	clock: platform.Clock,
 	ids: platform.ID_Generator,
@@ -209,6 +220,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		terminal_retention = time.Duration(config.runtime_terminal_retention_seconds) * time.Second,
 	}
 	if oidc_ok, oidc_err := validate_oidc_config(config); !oidc_ok do return false, oidc_err
+	if config.mcp_oauth_spike || config.mcp_oauth_key_file != "" {
+		if config.mcp_oauth_spike && config.mcp_oauth_key_file != "" do return false, "choose synthetic MCP probe or delegated OAuth, not both"
+		// Reuse the strict HTTPS origin parser, without imposing a distinct host.
+		origin, valid, _ := normalize_preview_origin(config.ui_origin, "")
+		if !valid || origin == "" do return false, "MCP OAuth probe requires a valid HTTPS ui_origin without a path"
+		delete(origin)
+		if !web_login_configured(config) do return false, "MCP OAuth probe requires existing OIDC browser login"
+	}
 	graph.config = config
 	graph.clock = platform.real_clock()
 	graph.ids = platform.real_id_generator()
@@ -318,6 +337,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		graph.vault_directory_repo = sqlite.new_vault_directory_repository(&graph.sqlite_vault_directory, &graph.db)
 	}
 	graph.vault_directory = vault_directory_service.new_service(&graph.vault_directory_repo, &graph.clock)
+	if config.mcp_oauth_key_file != "" {
+		if config.database_path == ":memory:" do return false, "delegated MCP OAuth requires a persistent database"
+		if ok, err := configure_mcp_delegation(graph); !ok do return false, err
+	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
@@ -496,6 +519,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{
+		mcp_control = &graph.mcp_control_handlers,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth = &graph.auth,
 		bridges = &graph.bridges,
@@ -588,6 +612,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
+	if config.mcp_oauth_spike {
+		mcp_service.init(&graph.mcp_spike)
+		graph.mcp_spike_handlers = {auth = &graph.auth, store = &graph.mcp_spike, origin = strings.trim_right(config.ui_origin, "/")}
+	}
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
 	// When unconfigured, subscription endpoints still work; only sending is off.
@@ -616,6 +644,8 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	sqlite.close(&graph.sqlite_actions.snapshot_conn)
 	sqlite.close(&graph.sqlite_billing.conn)
 	sqlite.close(&graph.sqlite_bridge_commit.conn)
+	if graph.config.mcp_oauth_spike || graph.config.mcp_oauth_key_file != "" do mcp_service.free(&graph.mcp_spike)
+	free_mcp_delegation(graph)
 	auth_service.oidc_free(&graph.auth)
 	sqlite.close(&graph.oidc_identity_db)
 	vault_directory_service.service_free(&graph.vault_directory)
@@ -624,6 +654,11 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 }
 
 register_routes :: proc(graph: ^App_Graph) {
+	if graph.config.mcp_oauth_spike {
+		http.mcp_spike_register_routes(&graph.router, &graph.mcp_spike_handlers)
+	}
+	if graph.config.mcp_oauth_key_file != "" do http.mcp_delegation_register_routes(&graph.router, &graph.mcp_delegation_handlers)
+	if graph.config.mcp_oauth_key_file != "" do http.mcp_control_register_routes(&graph.router, &graph.mcp_control_handlers)
 	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/portal", rawptr(&graph.billing_handlers), http.account_portal_handler)
