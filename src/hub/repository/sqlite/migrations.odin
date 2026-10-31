@@ -603,7 +603,9 @@ MIGRATION_176_MCP_WRAPS :: #load("migrations/176_mcp_epoch_wraps.sql", string)
 
 MIGRATION_174_EXTENSION_VERSION_SYNC :: #load("migrations/174_extension_version_sync_0_5_32.sql", string)
 
-migration_order :: [180]string {
+MIGRATION_177_EXTENSION_VERSION_SYNC :: #load("migrations/177_extension_version_sync_0_5_33.sql", string)
+
+migration_order :: [181]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -784,6 +786,7 @@ migration_order :: [180]string {
 	"174_extension_version_sync_0_5_32.sql",
 	"175_mcp_delegated_credentials.sql",
 	"176_mcp_epoch_wraps.sql",
+	"177_extension_version_sync_0_5_33.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1273,6 +1276,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "177_extension_version_sync_0_5_33.sql" do return strings.clone(MIGRATION_177_EXTENSION_VERSION_SYNC)
 	if name == "174_extension_version_sync_0_5_32.sql" do return strings.clone(MIGRATION_174_EXTENSION_VERSION_SYNC)
 	if name == "173_extension_version_sync_0_5_31.sql" do return strings.clone(MIGRATION_173_EXTENSION_VERSION_SYNC)
 	if name == "175_mcp_delegated_credentials.sql" do return strings.clone(MIGRATION_175_MCP)
