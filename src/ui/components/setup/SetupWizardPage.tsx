@@ -116,7 +116,7 @@ export default function SetupWizardPage({ userId: userIdProp = '' }: { userId?: 
                     item.state === 'done' ? 'bg-success-soft text-success' : item.state === 'current' ? 'bg-accent text-accent-fg' : 'border border-subtle text-faint'
                   }`}
                 >
-                  {item.state === 'done' ? <Icon name="check" size={12} /> : index + 1}
+                  {item.state === 'done' ? <Icon name="check" size="sm" /> : index + 1}
                 </span>
                 <span className="min-w-0">
                   <span className={`block text-sm font-medium ${item.state === 'todo' ? 'text-muted' : 'text-primary'}`}>{item.label}</span>
@@ -283,7 +283,7 @@ function MachineSteps({ manager, step, onStep, onConnected }: {
           {items.map((label, index) => (
             <li key={label} className="flex items-center gap-3 border-b border-subtle py-3 text-sm last:border-b-0">
               {index < checks - 1 || (checks === 3 && index === 2)
-                ? <Icon name="check" size={16} className="text-success" />
+                ? <Icon name="check" size="md" className="text-success" />
                 : index === checks - 1 ? <Spinner size="sm" /> : <span className="grid h-4 w-4 place-items-center"><span className="h-1.5 w-1.5 rounded-full bg-neutral-soft" /></span>}
               <span className={index < checks ? 'text-primary' : 'text-muted'}>{label}</span>
             </li>
@@ -338,7 +338,7 @@ function MachineSteps({ manager, step, onStep, onConnected }: {
           {session.lastRun?.kind === 'update' && (updating || session.log.length) ? (
             <div className="border-t border-subtle p-4">
               <p className="mb-2 flex items-center gap-2 text-sm font-medium">
-                {updating ? <><Spinner size="sm" /> Updating the bridge…</> : session.wizard.failedStep ? <span className="text-danger">Update failed{session.wizard.error ? `: ${session.wizard.error}` : ''}</span> : <><Icon name="check" size={16} className="text-success" /> Updated</>}
+                {updating ? <><Spinner size="sm" /> Updating the bridge…</> : session.wizard.failedStep ? <span className="text-danger">Update failed{session.wizard.error ? `: ${session.wizard.error}` : ''}</span> : <><Icon name="check" size="md" className="text-success" /> Updated</>}
               </p>
               <LogView lines={session.log} debugId="setup-update-log" />
             </div>
@@ -431,8 +431,8 @@ function MachineSteps({ manager, step, onStep, onConnected }: {
             {rows.map((row) => (
               <li key={row.id} data-debug-id={`setup-install-row-${row.id}`} data-state={row.state} className="flex items-start gap-2 px-4 py-3">
                 <span className="mt-0.5">
-                  {row.state === 'ok' || row.state === 'skipped' ? <Icon name="check" size={16} className="text-success" />
-                    : row.state === 'failed' ? <Icon name="close" size={16} className="text-danger" />
+                  {row.state === 'ok' || row.state === 'skipped' ? <Icon name="check" size="md" className="text-success" />
+                    : row.state === 'failed' ? <Icon name="close" size="md" className="text-danger" />
                     : row.state === 'running' || row.state === 'recovering' ? <Spinner size="sm" />
                     : <span className="grid h-4 w-4 place-items-center"><span className="h-1.5 w-1.5 rounded-full bg-neutral-soft" /></span>}
                 </span>
@@ -720,11 +720,14 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
             ) : null}
           </div>
 
-          {plan.reuse ? <Alert tone="warning" data-debug-id="setup-identity-reuse-warning">{REUSE_WARNING}</Alert> : null}
+          {/* Alert does not forward data-* props, so the debug IDs sit on a wrapper. */}
+          {plan.reuse ? <div data-debug-id="setup-identity-reuse-warning"><Alert tone="warning">{REUSE_WARNING}</Alert></div> : null}
           {plan.sunset ? (
-            <Alert tone="warning" data-debug-id="setup-identity-sunset-warning" title={`${plan.sunset.label} will be revoked`}>
-              Its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
-            </Alert>
+            <div data-debug-id="setup-identity-sunset-warning">
+              <Alert tone="warning" title={`${sanitizeForDisplay(plan.sunset.label).text} will be revoked`}>
+                Its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
+              </Alert>
+            </div>
           ) : null}
 
           <details className="text-xs text-muted">
@@ -783,7 +786,7 @@ const bridgeSessionFs = (bridgeId: string): SessionFs => ({
 });
 
 function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => void }) {
-  const { data: projectsData, isLoading: projectsLoading } = useListProjectsQuery(undefined as any);
+  const { data: projectsData, isLoading: projectsLoading } = useListProjectsQuery();
   const [createProject] = useCreateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();
   const [found, setFound] = useState<DiscoveredProject[] | null>(null);

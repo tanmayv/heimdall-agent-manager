@@ -71,6 +71,9 @@ export async function resolveClaudeProjectDir(name: string, stat: SessionFs['sta
 
   // base: the resolved folders so far; current: the component being built.
   const walk = async (i: number, base: string, current: string): Promise<string> => {
+    // Out of stats: give up on the whole name. Without this the search keeps
+    // branching on cached/refused lookups (JOINERS^tokens) and never returns.
+    if (budget <= 0) return '';
     if (i === tokens.length) {
       const full = join(base, current);
       return current && (await isDir(full)) ? full : '';
@@ -125,7 +128,7 @@ export async function discoverClaudeProjects(fs: SessionFs, limit = 40): Promise
   if (!listing?.ok) return [];
   const sep = listing.path.includes('\\') ? '\\' : '/';
   const dirs = listing.entries.filter((e) => e.is_dir && parseClaudeProjectDir(e.name)).slice(0, limit);
-  const found = await mapLimit(dirs, 4, async (entry): Promise<DiscoveredProject | null> => {
+  const found = await mapLimit<FsEntry, DiscoveredProject | null>(dirs, 4, async (entry) => {
     const sessionsDir = listing.path.endsWith(sep) ? listing.path + entry.name : listing.path + sep + entry.name;
     const [inside, path] = await Promise.all([
       fs.list(sessionsDir).catch(() => null),
