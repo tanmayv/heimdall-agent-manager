@@ -78,6 +78,9 @@ class ReleaseTargetsTest(unittest.TestCase):
             matrix = json.loads(result)["include"]
             self.assertEqual({row["target"] for row in matrix}, set(MANDATORY + (["darwin-amd64"] if intel else [])))
             self.assertEqual(any(row["runner"] == "macos-15-intel" for row in matrix), intel)
+            arm = next(row for row in matrix if row["target"] == "darwin-arm64")
+            self.assertEqual(arm["runner"], "macos-15")
+            self.assertEqual(arm["nix_system"], "aarch64-darwin")
         text = (ROOT / ".github/workflows/release-local-binaries.yml").read_text()
         self.assertEqual(text.count("matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}"), 2)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true", text)

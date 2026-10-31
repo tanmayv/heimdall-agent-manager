@@ -9,7 +9,7 @@ def release_matrix(include_darwin_x64=False):
     targets = [
         {"target": "linux-amd64", "runner": "ubuntu-24.04", "nix_system": "x86_64-linux"},
         {"target": "linux-arm64", "runner": "ubuntu-24.04-arm", "nix_system": "aarch64-linux"},
-        {"target": "darwin-arm64", "runner": "macos-14", "nix_system": "aarch64-darwin"},
+        {"target": "darwin-arm64", "runner": "macos-15", "nix_system": "aarch64-darwin"},
     ]
     # termux-arm64 stays disabled until the release-musl backtrace link issue is fixed.
     if include_darwin_x64:
