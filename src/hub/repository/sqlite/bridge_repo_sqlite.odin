@@ -45,7 +45,7 @@ new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.B
 		save_bridge = bridge_save_bridge_sqlite,
 		update_runtime = bridge_update_runtime_sqlite,
 		create_limited = bridge_create_limited_sqlite,
-		restore_sunset = bridge_restore_sunset_sqlite,
+		delete_pending_restoring_sunset = bridge_delete_pending_restoring_sunset_sqlite,
 		count_active_by_owner = bridge_count_active_by_owner_sqlite,
 		reconcile_plan = bridge_reconcile_plan_sqlite,
 		list_owners = bridge_list_owners_sqlite,

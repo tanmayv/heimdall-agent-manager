@@ -1086,8 +1086,9 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		// approver owns the target and that it is neither revoked nor pending.
 		target_bridge_id = req.target_bridge_id,
 		// The setup wizard's "register new and sunset one": retired in the same
-		// repository transaction that creates the new row; restored below if the
-		// vault commit fails.
+		// repository transaction that creates the new row; restored by any rollback of
+		// this pending enrollment (below, cancel, committed:false, the sweep), and
+		// final only once the bridge commits its vault key.
 		sunset_bridge_id = req.sunset_bridge_id,
 		// REQ-EA-1: the enrollment stays pending until the vault key is delivered.
 		pending = true,
@@ -1104,14 +1105,11 @@ device_bridge_minter :: proc(graph_ptr: rawptr, req: device_auth_service.Bridge_
 		// Roll back exactly the family just minted. cancel_pending_enrollment would pick
 		// the bridge's newest enroll family, which for an attach refused because another
 		// attach is already pending could be THAT attach's family (same-second tie).
-		// The same rollback restores a bridge this enrollment sunset, in the
-		// transaction that deletes the new row.
-		_, _, _ = bridge_service.rollback_pending_enrollment(&graph.bridges, result.bridge.bridge_id, result.family_id, &result.sunset)
-		iface.bridge_sunset_receipt_destroy(&result.sunset)
+		// The same rollback restores a bridge this enrollment sunset (from the durable
+		// receipt), in the transaction that deletes the new row.
+		_, _, _ = bridge_service.rollback_pending_enrollment(&graph.bridges, result.bridge.bridge_id, result.family_id)
 		return device_auth_service.Bridge_Mint_Result{error = commit_err}, false
 	}
-	// The vault commit landed: the sunset is final, and its receipt is no longer needed.
-	iface.bridge_sunset_receipt_destroy(&result.sunset)
 	// REQ-IMPL-3: enroll_bridge_from_device_grant returns an EXPIRING PAIR
 	// (`hba_` + `hbf_`), so the approval hands both halves to the grant and the
 	// bridge receives them together on its single-use poll.

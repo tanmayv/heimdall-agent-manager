@@ -137,12 +137,20 @@ commit_pending_enrollment :: proc(service: ^Bridge_Service, input: Pending_Commi
 // process before the commit's committed:true and make it discard a credential the
 // hub already treats as live.
 //
-// `sunset`, when it names a bridge, is the receipt of a bridge the enrollment retired
-// (Enroll_Bridge_Result.sunset). The pending row is then deleted and that bridge
-// restored in ONE transaction (iface.bridge_restore_sunset), so the slot the new row
-// held passes straight back to the bridge it was taken from and no concurrent
-// approval can claim it in between.
-rollback_pending_enrollment :: proc(service: ^Bridge_Service, bridge_id, family_id: string, sunset: ^iface.Bridge_Sunset_Receipt = nil) -> (rolled_back: bool, row_deleted: bool, err: domain.Domain_Error) {
+// A new bridge that sunset another (REQ-3, "register new and sunset one") carries a
+// durable receipt; the row delete here is delete_pending_restoring_sunset, which gives
+// that bridge back in the SAME transaction. Every rollback path (the approval's own
+// vault-commit failure, cancel / the bridge's committed:false, both sweep sources)
+// comes through here, so none of them can leave the owner with neither bridge.
+// A caller whose INTENT is to kill credentials (vault reset's revoke-all, a vault
+// device's bridge revocation) passes .Keep_Revoked: reviving a bridge there would
+// undo the very revocation it was asked for.
+Sunset_On_Rollback :: enum {
+	Restore,
+	Keep_Revoked,
+}
+
+rollback_pending_enrollment :: proc(service: ^Bridge_Service, bridge_id, family_id: string, sunset := Sunset_On_Rollback.Restore) -> (rolled_back: bool, row_deleted: bool, err: domain.Domain_Error) {
 	if service == nil || service.repo == nil do return false, false, domain.domain_error(.Internal_Error, "bridge service is not configured")
 	if bridge_id == "" do return false, false, domain.domain_error(.Validation_Failed, "bridge_id is required")
 	now := platform.clock_now(service.clock)
@@ -167,42 +175,41 @@ rollback_pending_enrollment :: proc(service: ^Bridge_Service, bridge_id, family_
 		}
 	}
 	if committed do return false, false, domain.Domain_Error{}
-	if sunset != nil && sunset.bridge_id != "" {
-		removed, restore_err := restore_sunset_after_rollback(service, bridge_id, sunset)
-		if restore_err.code != .None do return false, removed, restore_err
-		return family_id != "" || removed, removed, domain.Domain_Error{}
-	}
-	removed, del_err := iface.bridge_delete_pending(service.repo, bridge_id)
+	removed, del_err := delete_pending_restoring_sunset(service, bridge_id, sunset)
 	if del_err.code != .None do return false, removed, del_err
 	// With no family to judge by, the deleted row is the only evidence of a rollback.
 	return family_id != "" || removed, removed, domain.Domain_Error{}
 }
 
-// restore_sunset_after_rollback deletes the pending replacement and revives the
-// bridge it sunset, atomically (see iface.Bridge_Restore_Sunset_Proc). A restore the
-// repository declines (the replacement was committed, the row was revoked again by
-// someone else, or the plan has no room) is not an error to the caller — the
-// enrollment is still rolled back — but it is logged, because the owner has lost a
-// bridge they did not finally give up.
-restore_sunset_after_rollback :: proc(service: ^Bridge_Service, replacement_bridge_id: string, sunset: ^iface.Bridge_Sunset_Receipt) -> (replacement_deleted: bool, err: domain.Domain_Error) {
-	bridge, found, _ := iface.bridge_get_bridge(service.repo, sunset.bridge_id)
-	if !found do return false, domain.domain_error(.Not_Found, "sunset bridge not found")
-	owner := strings.clone(string(bridge.owner_user_id))
-	defer delete(owner)
-	domain.bridge_destroy(&bridge)
+// delete_pending_restoring_sunset hard-deletes a still-pending new bridge and, if its
+// approval sunset another bridge, restores that bridge in the same transaction
+// (iface.Bridge_Delete_Pending_Restoring_Sunset_Proc). The plan cap for the restore
+// comes from the replacement's owner (the sunset bridge has the same owner: admission
+// checked it). FAIL CLOSED: when the owner or their plan cannot be read, the row is
+// still deleted but the sunset bridge stays revoked -- reviving it unchecked could
+// put the owner over their plan. A declined restore is not an error to the caller (the
+// enrollment is rolled back either way), but it is logged: the owner lost a bridge
+// they did not finally give up.
+delete_pending_restoring_sunset :: proc(service: ^Bridge_Service, bridge_id: string, sunset := Sunset_On_Rollback.Restore) -> (removed: bool, err: domain.Domain_Error) {
 	max_bridges := -1
-	if entitlements, ent_err := domain.lookup_entitlements(service.entitlements, owner); ent_err.code == .None {
-		max_bridges = entitlements.max_bridges
+	restore_allowed := false
+	replacement, found, _ := iface.bridge_get_bridge(service.repo, bridge_id)
+	if found {
+		if sunset == .Restore {
+			entitlements, ent_err := domain.lookup_entitlements(service.entitlements, string(replacement.owner_user_id))
+			if ent_err.code == .None {
+				max_bridges = entitlements.max_bridges
+				restore_allowed = true
+			}
+		}
+		domain.bridge_destroy(&replacement)
 	}
-	restored, removed, restore_err := iface.bridge_restore_sunset(service.repo, replacement_bridge_id, sunset^, max_bridges, platform.clock_now(service.clock))
-	if restore_err.code != .None {
-		fmt.eprintfln("hub: enrollment %s rolled back; restoring sunset bridge %s failed: %s", replacement_bridge_id, sunset.bridge_id, restore_err.message)
-		return removed, restore_err
+	outcome, del_err := iface.bridge_delete_pending_restoring_sunset(service.repo, bridge_id, max_bridges, restore_allowed, platform.clock_now(service.clock))
+	if del_err.code != .None do return false, del_err
+	if outcome.had_sunset && !outcome.restored && sunset == .Restore {
+		fmt.eprintfln("hub: pending bridge %s rolled back; the bridge it sunset stays revoked (replacement committed, sunset row changed since, plan full, or plan unreadable)", bridge_id)
 	}
-	if !restored {
-		fmt.eprintfln("hub: enrollment %s rolled back; sunset bridge %s was left revoked (replacement committed, row changed since, or no plan room)", replacement_bridge_id, sunset.bridge_id)
-	}
-	return removed, domain.Domain_Error{}
+	return outcome.replacement_deleted, domain.Domain_Error{}
 }
 
 @(private = "file")
@@ -218,11 +225,14 @@ family_has_live_scope :: proc(service: ^Bridge_Service, family_id, scope: string
 // live enroll-scoped family, then roll back. A failed family lookup returns the error
 // with NOTHING done — rolling back with no family would delete a new bridge's row
 // while its enroll token stays live, or call a still-pending attach committed.
-cancel_pending_enrollment :: proc(service: ^Bridge_Service, bridge_id: string) -> (rolled_back: bool, row_deleted: bool, err: domain.Domain_Error) {
+//
+// `sunset`: see rollback_pending_enrollment. The operator's own cancel restores a
+// bridge this enrollment sunset; revoke-everything callers pass .Keep_Revoked.
+cancel_pending_enrollment :: proc(service: ^Bridge_Service, bridge_id: string, sunset := Sunset_On_Rollback.Restore) -> (rolled_back: bool, row_deleted: bool, err: domain.Domain_Error) {
 	family, _, lookup_err := pending_enrollment_family(service, bridge_id)
 	defer delete(family)
 	if lookup_err.code != .None do return false, false, lookup_err
-	return rollback_pending_enrollment(service, bridge_id, family)
+	return rollback_pending_enrollment(service, bridge_id, family, sunset)
 }
 
 // Rolled_Back_Enrollment names one enrollment the sweep undid, so the caller can

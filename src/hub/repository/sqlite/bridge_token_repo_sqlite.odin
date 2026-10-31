@@ -281,7 +281,8 @@ bridge_mark_token_rotated_sqlite :: proc(ctx: rawptr, token_id, rotated_at, requ
 //      it a compare-and-set: a revoked or already-promoted family changes 0 rows.
 //   2. attach: revoke every OTHER live family of the bridge (the old device);
 //      new bridge: clear enrollment_pending_until, so the sweep never deletes a row
-//      whose credential is now live.
+//      whose credential is now live, and drop its sunset receipt (REQ-3), which
+//      makes the sunset of the bridge it replaced final.
 //
 // Either both happen or neither does. A 0-row promote is told apart: a family that
 // is already live in to_scope is a duplicate result (Already_Committed, nothing
@@ -363,6 +364,10 @@ bridge_commit_enrollment_on :: proc(conn: ^Conn, bridge_id, family_id, from_scop
 		}
 		if sqlite3_step(stmt) != SQLITE_DONE do return fail("the enrollment swap failed; nothing was committed")
 	}
+	// A new bridge that sunset another (REQ-3) makes that sunset final here, in the
+	// commit transaction: with its receipt gone, no later rollback path can revive the
+	// sunset bridge next to the now-live replacement.
+	if !attach && !bridge_drop_sunset_receipt(conn, bridge_id) do return fail("the enrollment's sunset receipt could not be dropped; nothing was committed")
 	if !exec(conn, "COMMIT;") do return fail("failed to commit the enrollment")
 	committed = true
 	return .Committed, true, domain.Domain_Error{}

@@ -1,5 +1,6 @@
 #+private file
-// REQ-3: "register new and sunset one" is ONE admission transaction. These tests
+// REQ-3: "register new and sunset one" is ONE admission transaction, and its durable
+// receipt (migration 175) is consumed by THE pending-row rollback. These tests
 // assert on the rows themselves (bridge status, every token's revoked_at), not on the
 // returned error alone: a refusal or a failed COMMIT must leave the sunset bridge and
 // its credentials exactly as they were, and a restore must revive exactly the
@@ -132,6 +133,42 @@ expect_victim_untouched :: proc(t: ^testing.T, f: ^Sunset_Fixture, bridge_id: st
 	testing.expect_value(t, token_revoked_at(f, fmt.tprintf("%s_tok_b", bridge_id)), "", loc = loc)
 }
 
+// Receipt_Snapshot is the durable receipt keyed by a replacement (migration 175);
+// sunset_id is "" when there is no receipt row. tokens are sorted.
+Receipt_Snapshot :: struct {
+	sunset_id:  string,
+	revoked_at: string,
+	tokens:     [dynamic]string,
+}
+
+receipt_of :: proc(f: ^Sunset_Fixture, replacement_id: string) -> Receipt_Snapshot {
+	out := Receipt_Snapshot{tokens = make([dynamic]string, context.temp_allocator)}
+	{
+		stmt: sqlite3_stmt
+		q := "SELECT sunset_bridge_id, revoked_at FROM bridge_sunset_receipts WHERE replacement_bridge_id = ?;"
+		if sqlite3_prepare_v2(f.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out
+		defer sqlite3_finalize(stmt)
+		bind_text(stmt, 1, replacement_id)
+		if sqlite3_step(stmt) == SQLITE_ROW {
+			out.sunset_id = fmt.tprintf("%s", column_text_unowned(stmt, 0))
+			out.revoked_at = fmt.tprintf("%s", column_text_unowned(stmt, 1))
+		}
+	}
+	stmt: sqlite3_stmt
+	q := "SELECT token_id FROM bridge_sunset_receipt_tokens WHERE replacement_bridge_id = ? ORDER BY token_id;"
+	if sqlite3_prepare_v2(f.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, replacement_id)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out.tokens, fmt.tprintf("%s", column_text_unowned(stmt, 0)))
+	return out
+}
+
+expect_no_receipt :: proc(t: ^testing.T, f: ^Sunset_Fixture, replacement_id: string, loc := #caller_location) {
+	r := receipt_of(f, replacement_id)
+	testing.expect_value(t, r.sunset_id, "", loc = loc)
+	testing.expect_value(t, len(r.tokens), 0, loc = loc)
+}
+
 sunset :: proc(bridge_id: string) -> iface.Bridge_Sunset {
 	return iface.Bridge_Sunset{bridge_id = bridge_id, revoked_at = SUNSET_AT}
 }
@@ -145,8 +182,7 @@ test_sunset_on_full_plan_revokes_and_creates_in_one_transaction :: proc(t: ^test
 	testing.expect_value(t, owner_count(&f), 1)
 
 	// max_bridges = 1 and the plan is full: only the slot the sunset frees admits it.
-	saved, receipt, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_sun_new"), 1, sunset("brg_sun_old"))
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	saved, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_sun_new"), 1, sunset("brg_sun_old"))
 	testing.expect(t, ok, "full plan admits the replacement when it sunsets a bridge")
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	testing.expect_value(t, saved.bridge_id, "brg_sun_new")
@@ -159,12 +195,15 @@ test_sunset_on_full_plan_revokes_and_creates_in_one_transaction :: proc(t: ^test
 	testing.expect(t, snapshot(&f, "brg_sun_new").found, "replacement row inserted")
 	testing.expect_value(t, owner_count(&f), 1)
 
-	// The receipt names exactly the two credentials this sunset revoked.
-	testing.expect_value(t, receipt.bridge_id, "brg_sun_old")
+	// The durable receipt, keyed by the pending replacement, names exactly the two
+	// credentials this sunset revoked (not the one revoked earlier at the same time).
+	receipt := receipt_of(&f, "brg_sun_new")
+	testing.expect_value(t, receipt.sunset_id, "brg_sun_old")
 	testing.expect_value(t, receipt.revoked_at, SUNSET_AT)
-	testing.expect_value(t, len(receipt.token_ids), 2)
-	for id in receipt.token_ids {
-		testing.expectf(t, id == "brg_sun_old_tok_a" || id == "brg_sun_old_tok_b", "unexpected receipt token %s", id)
+	testing.expect_value(t, len(receipt.tokens), 2)
+	if len(receipt.tokens) == 2 {
+		testing.expect_value(t, receipt.tokens[0], "brg_sun_old_tok_a")
+		testing.expect_value(t, receipt.tokens[1], "brg_sun_old_tok_b")
 	}
 	testing.expect(t, exec(&f.conn, "BEGIN; COMMIT;"), "no transaction left open")
 }
@@ -175,11 +214,10 @@ test_sunset_also_runs_transactionally_on_an_unlimited_plan :: proc(t: ^testing.T
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
 	sunset_seed_victim(t, &f, "brg_unl_old")
-	_, receipt, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_unl_new"), -1, sunset("brg_unl_old"))
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	_, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_unl_new"), -1, sunset("brg_unl_old"))
 	testing.expect(t, ok, "unlimited plan admits")
 	testing.expect_value(t, snapshot(&f, "brg_unl_old").status, domain.Bridge_Status.Revoked)
-	testing.expect_value(t, len(receipt.token_ids), 2)
+	testing.expect_value(t, len(receipt_of(&f, "brg_unl_new").tokens), 2)
 }
 
 @(test)
@@ -208,12 +246,11 @@ test_sunset_refuses_foreign_absent_revoked_and_pending_bridges_without_writing :
 	for c, i in cases {
 		new_id := fmt.tprintf("brg_ref_new_%d", i)
 		// An unlimited plan, so a refusal can only come from the sunset checks.
-		_, receipt, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement(new_id), -1, sunset(c.sunset_id))
-		defer iface.bridge_sunset_receipt_destroy(&receipt)
+		_, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement(new_id), -1, sunset(c.sunset_id))
 		testing.expectf(t, !ok, "sunset of %s refused", c.sunset_id)
 		testing.expect_value(t, err.code, c.code)
 		testing.expectf(t, !snapshot(&f, new_id).found, "no replacement inserted when sunsetting %s", c.sunset_id)
-		testing.expect_value(t, receipt.bridge_id, "")
+		expect_no_receipt(t, &f, new_id)
 	}
 	// Nothing was touched by any refusal.
 	expect_victim_untouched(t, &f, "brg_ref_mine")
@@ -235,14 +272,13 @@ test_sunset_rolls_back_when_the_plan_is_still_full_after_it :: proc(t: ^testing.
 	sunset_seed_victim(t, &f, "brg_cap_old")
 	sunset_seed_bridge(t, &f, "brg_cap_b", SUNSET_OWNER)
 	sunset_seed_bridge(t, &f, "brg_cap_c", SUNSET_OWNER)
-	_, receipt, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_cap_new"), 2, sunset("brg_cap_old"))
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	_, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_cap_new"), 2, sunset("brg_cap_old"))
 	testing.expect(t, !ok, "plan still full after the sunset")
 	testing.expect_value(t, err.code, domain.Error_Code.Plan_Limit_Reached)
 	expect_victim_untouched(t, &f, "brg_cap_old")
 	testing.expect(t, !snapshot(&f, "brg_cap_new").found, "no replacement inserted")
 	testing.expect_value(t, owner_count(&f), 3)
-	testing.expect_value(t, receipt.bridge_id, "")
+	expect_no_receipt(t, &f, "brg_cap_new")
 }
 
 @(test)
@@ -254,11 +290,10 @@ test_sunset_rolls_back_when_the_replacement_insert_fails :: proc(t: ^testing.T) 
 	// The replacement INSERT fails for real (a trigger RAISE(ABORT)s) after the sunset
 	// statements already ran inside the transaction.
 	testing.expect(t, exec(&f.conn, "CREATE TRIGGER sunset_fail_insert BEFORE INSERT ON bridges WHEN NEW.bridge_id = 'brg_dup_new' BEGIN SELECT RAISE(ABORT, 'insert refused'); END;"), "trigger installed")
-	_, receipt, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_dup_new"), -1, sunset("brg_dup_old"))
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	_, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_dup_new"), -1, sunset("brg_dup_old"))
 	testing.expect(t, !ok, "failed insert reported")
 	testing.expect(t, !snapshot(&f, "brg_dup_new").found, "no replacement row")
-	testing.expect_value(t, receipt.bridge_id, "")
+	expect_no_receipt(t, &f, "brg_dup_new")
 	expect_victim_untouched(t, &f, "brg_dup_old")
 }
 
@@ -273,14 +308,13 @@ test_sunset_rolls_back_when_the_admission_commit_fails :: proc(t: ^testing.T) {
 	defer close(&f.conn)
 	sunset_seed_victim(t, &f, "brg_hook_old")
 	bridge_create_limited_test_hook = fail_commit_for_sunset_test
-	_, receipt, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_hook_new"), 1, sunset("brg_hook_old"))
+	_, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_hook_new"), 1, sunset("brg_hook_old"))
 	bridge_create_limited_test_hook = nil
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
 	testing.expect(t, !ok, "injected COMMIT failure reported")
 	testing.expect_value(t, err.code, domain.Error_Code.Internal_Error)
 	expect_victim_untouched(t, &f, "brg_hook_old")
 	testing.expect(t, !snapshot(&f, "brg_hook_new").found, "replacement rolled back")
-	testing.expect_value(t, receipt.bridge_id, "")
+	expect_no_receipt(t, &f, "brg_hook_new")
 	testing.expect(t, exec(&f.conn, "BEGIN; COMMIT;"), "no transaction left open")
 }
 
@@ -290,34 +324,45 @@ test_sunset_requires_a_revocation_time :: proc(t: ^testing.T) {
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
 	sunset_seed_victim(t, &f, "brg_time_old")
-	_, receipt, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_time_new"), -1, iface.Bridge_Sunset{bridge_id = "brg_time_old"})
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	_, ok, err := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_time_new"), -1, iface.Bridge_Sunset{bridge_id = "brg_time_old"})
 	testing.expect(t, !ok, "refused")
 	testing.expect_value(t, err.code, domain.Error_Code.Validation_Failed)
 	expect_victim_untouched(t, &f, "brg_time_old")
 }
 
-// sunset_then :: runs a successful sunset of brg_<tag>_old for pending replacement
-// brg_<tag>_new and returns the receipt (caller destroys).
-sunset_then :: proc(t: ^testing.T, f: ^Sunset_Fixture, old_id, new_id: string, max_bridges: int) -> iface.Bridge_Sunset_Receipt {
+// sunset_then runs a successful sunset of old_id for pending replacement new_id.
+sunset_then :: proc(t: ^testing.T, f: ^Sunset_Fixture, old_id, new_id: string, max_bridges: int) {
 	sunset_seed_victim(t, f, old_id)
-	_, receipt, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement(new_id), max_bridges, sunset(old_id))
+	_, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement(new_id), max_bridges, sunset(old_id))
 	testing.expect(t, ok, "sunset admitted")
-	return receipt
+}
+
+rollback :: proc(f: ^Sunset_Fixture, new_id: string, max_bridges: int, restore_allowed := true) -> (iface.Sunset_Rollback_Outcome, domain.Domain_Error) {
+	return iface.bridge_delete_pending_restoring_sunset(&f.repo, new_id, max_bridges, restore_allowed, SUNSET_LATER)
+}
+
+// expect_victim_still_sunset: the rollback left the sunset bridge and its two
+// sunset-revoked credentials exactly as the sunset made them.
+expect_victim_still_sunset :: proc(t: ^testing.T, f: ^Sunset_Fixture, bridge_id: string, revoked_at := SUNSET_AT, loc := #caller_location) {
+	s := snapshot(f, bridge_id)
+	testing.expect_value(t, s.status, domain.Bridge_Status.Revoked, loc = loc)
+	testing.expect_value(t, s.revoked_at, revoked_at, loc = loc)
+	testing.expect_value(t, token_revoked_at(f, fmt.tprintf("%s_tok_a", bridge_id)), SUNSET_AT, loc = loc)
+	testing.expect_value(t, token_revoked_at(f, fmt.tprintf("%s_tok_b", bridge_id)), SUNSET_AT, loc = loc)
 }
 
 @(test)
-test_sunset_restore_deletes_replacement_and_revives_exactly_the_receipt_tokens :: proc(t: ^testing.T) {
+test_sunset_rollback_deletes_replacement_and_revives_exactly_the_receipt_tokens :: proc(t: ^testing.T) {
 	f: Sunset_Fixture
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
-	receipt := sunset_then(t, &f, "brg_rs_old", "brg_rs_new", 1)
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	sunset_then(t, &f, "brg_rs_old", "brg_rs_new", 1)
 
-	restored, deleted, err := iface.bridge_restore_sunset(&f.repo, "brg_rs_new", receipt, 1, SUNSET_LATER)
+	out, err := rollback(&f, "brg_rs_new", 1)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect(t, restored, "sunset bridge restored")
-	testing.expect(t, deleted, "pending replacement deleted")
+	testing.expect(t, out.replacement_deleted, "pending replacement deleted")
+	testing.expect(t, out.had_sunset, "receipt found")
+	testing.expect(t, out.restored, "sunset bridge restored")
 	testing.expect(t, !snapshot(&f, "brg_rs_new").found, "replacement gone")
 	old := snapshot(&f, "brg_rs_old")
 	// Restored as offline: its socket was closed when it was sunset.
@@ -328,62 +373,177 @@ test_sunset_restore_deletes_replacement_and_revives_exactly_the_receipt_tokens :
 	// Revoked earlier with the same timestamp but not by this sunset: stays dead.
 	testing.expect_value(t, token_revoked_at(&f, "brg_rs_old_tok_stolen"), SUNSET_AT)
 	testing.expect_value(t, owner_count(&f), 1)
+	expect_no_receipt(t, &f, "brg_rs_new")
+
+	// The receipt was consumed: a second rollback (e.g. the sweep after the approval's
+	// own rollback) finds nothing to do.
+	again, again_err := rollback(&f, "brg_rs_new", 1)
+	testing.expect_value(t, again_err.code, domain.Error_Code.None)
+	testing.expect(t, !again.replacement_deleted && !again.had_sunset && !again.restored, "second rollback is a no-op")
+	testing.expect(t, exec(&f.conn, "BEGIN; COMMIT;"), "no transaction left open")
 }
 
 @(test)
-test_sunset_restore_refuses_when_the_replacement_was_committed :: proc(t: ^testing.T) {
+test_sunset_rollback_after_enrollment_commit_keeps_the_sunset :: proc(t: ^testing.T) {
 	f: Sunset_Fixture
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
-	receipt := sunset_then(t, &f, "brg_rc_old", "brg_rc_new", 1)
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
-	// The enrollment committed (pending cleared) before the late rollback arrived.
+	sunset_then(t, &f, "brg_cm_old", "brg_cm_new", 1)
+	// The replacement's pending credential, then the REAL commit transaction.
+	_, tok_ok, _ := iface.bridge_save_token(&f.repo, domain.Bridge_Token{
+		token_id = "brg_cm_new_tok", bridge_id = "brg_cm_new", kind = .Access,
+		token_hash = "hash_brg_cm_new_tok", family_id = "fam_brg_cm_new", generation = 1,
+		scope = "bridge:enroll", issued_at = SUNSET_AT,
+		expires_at = "2099-01-01T00:00:00Z", family_expires_at = "2099-01-01T00:00:00Z",
+	})
+	testing.expect(t, tok_ok, "pending credential seeded")
+	outcome, commit_ok, _ := iface.bridge_commit_enrollment(&f.repo, "brg_cm_new", "fam_brg_cm_new", "bridge:enroll", "bridge:runtime", false, SUNSET_LATER)
+	testing.expect(t, commit_ok, "commit ran")
+	testing.expect_value(t, outcome, iface.Enrollment_Commit_Outcome.Committed)
+	// The commit transaction dropped the receipt: the sunset is final now.
+	expect_no_receipt(t, &f, "brg_cm_new")
+
+	// A late rollback (the sweep listing the replacement just before the commit).
+	out, err := rollback(&f, "brg_cm_new", -1)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, !out.replacement_deleted, "committed replacement kept")
+	testing.expect(t, !out.restored, "sunset not revived next to a live replacement")
+	testing.expect(t, snapshot(&f, "brg_cm_new").found, "replacement kept")
+	expect_victim_still_sunset(t, &f, "brg_cm_old")
+}
+
+@(test)
+test_sunset_rollback_refuses_restore_when_the_replacement_is_no_longer_pending :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_then(t, &f, "brg_rc_old", "brg_rc_new", 1)
+	// Belt and braces for a row that left pending without the commit path (receipt
+	// still present): the row owns the slot, so the receipt is consumed unused.
 	testing.expect(t, exec(&f.conn, "UPDATE bridges SET enrollment_pending_until = '' WHERE bridge_id = 'brg_rc_new';"), "commit replacement")
 
-	restored, deleted, err := iface.bridge_restore_sunset(&f.repo, "brg_rc_new", receipt, -1, SUNSET_LATER)
+	out, err := rollback(&f, "brg_rc_new", -1)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect(t, !restored, "a committed replacement keeps the slot")
-	testing.expect(t, !deleted, "committed replacement not deleted")
+	testing.expect(t, out.had_sunset, "receipt was there")
+	testing.expect(t, !out.restored, "a committed replacement keeps the slot")
+	testing.expect(t, !out.replacement_deleted, "committed replacement not deleted")
 	testing.expect(t, snapshot(&f, "brg_rc_new").found, "replacement kept")
-	testing.expect_value(t, snapshot(&f, "brg_rc_old").status, domain.Bridge_Status.Revoked)
-	testing.expect_value(t, token_revoked_at(&f, "brg_rc_old_tok_a"), SUNSET_AT)
+	expect_victim_still_sunset(t, &f, "brg_rc_old")
+	expect_no_receipt(t, &f, "brg_rc_new")
 }
 
 @(test)
-test_sunset_restore_leaves_a_bridge_revoked_again_since :: proc(t: ^testing.T) {
+test_sunset_rollback_leaves_a_bridge_revoked_again_since :: proc(t: ^testing.T) {
 	f: Sunset_Fixture
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
-	receipt := sunset_then(t, &f, "brg_rr_old", "brg_rr_new", -1)
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
+	sunset_then(t, &f, "brg_rr_old", "brg_rr_new", -1)
 	// An operator revoke after the sunset stamps its own time: the receipt no longer
 	// describes the row, so the restore must not undo the operator's decision.
 	testing.expect(t, exec(&f.conn, "UPDATE bridges SET revoked_at = '2026-10-31T12:05:00Z' WHERE bridge_id = 'brg_rr_old';"), "operator revoke")
 
-	restored, deleted, err := iface.bridge_restore_sunset(&f.repo, "brg_rr_new", receipt, -1, SUNSET_LATER)
+	out, err := rollback(&f, "brg_rr_new", -1)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect(t, !restored, "re-revoked bridge stays revoked")
-	testing.expect(t, deleted, "pending replacement still removed")
-	testing.expect_value(t, snapshot(&f, "brg_rr_old").status, domain.Bridge_Status.Revoked)
-	testing.expect_value(t, token_revoked_at(&f, "brg_rr_old_tok_a"), SUNSET_AT)
+	testing.expect(t, !out.restored, "re-revoked bridge stays revoked")
+	testing.expect(t, out.replacement_deleted, "pending replacement still removed")
+	expect_victim_still_sunset(t, &f, "brg_rr_old", "2026-10-31T12:05:00Z")
+	expect_no_receipt(t, &f, "brg_rr_new")
 }
 
 @(test)
-test_sunset_restore_respects_the_plan_when_the_slot_was_taken :: proc(t: ^testing.T) {
+test_sunset_rollback_respects_the_plan_when_the_slot_was_taken :: proc(t: ^testing.T) {
 	f: Sunset_Fixture
 	if !sunset_open(t, &f) do return
 	defer close(&f.conn)
-	receipt := sunset_then(t, &f, "brg_rp_old", "brg_rp_new", 1)
-	defer iface.bridge_sunset_receipt_destroy(&receipt)
-	// The replacement vanished earlier (sweep) and another approval took the slot.
-	deleted_early, _ := iface.bridge_delete_pending(&f.repo, "brg_rp_new")
-	testing.expect(t, deleted_early, "sweep removed the replacement")
+	sunset_then(t, &f, "brg_rp_old", "brg_rp_new", 1)
+	// Another live bridge appeared while the replacement was pending (e.g. a plan
+	// reconcile re-enabled one): reviving the sunset bridge would exceed the plan.
 	sunset_seed_bridge(t, &f, "brg_rp_other", SUNSET_OWNER)
 
-	restored, deleted, err := iface.bridge_restore_sunset(&f.repo, "brg_rp_new", receipt, 1, SUNSET_LATER)
+	out, err := rollback(&f, "brg_rp_new", 1)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
-	testing.expect(t, !restored, "restoring would exceed the plan")
-	testing.expect(t, !deleted, "nothing left to delete")
-	testing.expect_value(t, snapshot(&f, "brg_rp_old").status, domain.Bridge_Status.Revoked)
+	testing.expect(t, out.replacement_deleted, "replacement still deleted")
+	testing.expect(t, !out.restored, "restoring would exceed the plan")
+	expect_victim_still_sunset(t, &f, "brg_rp_old")
 	testing.expect_value(t, owner_count(&f), 1)
+	expect_no_receipt(t, &f, "brg_rp_new")
+}
+
+@(test)
+test_sunset_rollback_fails_closed_when_the_plan_is_unknown :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_then(t, &f, "brg_fc_old", "brg_fc_new", -1)
+	// restore_allowed = false: the caller could not read the owner's plan.
+	out, err := rollback(&f, "brg_fc_new", -1, restore_allowed = false)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, out.replacement_deleted, "replacement deleted regardless")
+	testing.expect(t, out.had_sunset && !out.restored, "sunset bridge left revoked")
+	testing.expect(t, !snapshot(&f, "brg_fc_new").found, "replacement gone")
+	expect_victim_still_sunset(t, &f, "brg_fc_old")
+	expect_no_receipt(t, &f, "brg_fc_new")
+}
+
+@(test)
+test_sunset_rollback_still_deletes_the_replacement_when_the_sunset_row_is_gone :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_then(t, &f, "brg_gone_old", "brg_gone_new", -1)
+	testing.expect(t, exec(&f.conn, "DELETE FROM bridges WHERE bridge_id = 'brg_gone_old';"), "sunset row removed")
+	out, err := rollback(&f, "brg_gone_new", -1)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, out.replacement_deleted, "replacement deleted, not left for the sweep")
+	testing.expect(t, !out.restored, "nothing to restore")
+	testing.expect(t, !snapshot(&f, "brg_gone_new").found, "replacement gone")
+	expect_no_receipt(t, &f, "brg_gone_new")
+}
+
+@(test)
+test_sunset_rollback_does_not_revive_a_receipt_token_revoked_again_since :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_then(t, &f, "brg_tk_old", "brg_tk_new", -1)
+	testing.expect(t, exec(&f.conn, "UPDATE bridge_tokens SET revoked_at = '2026-10-31T12:07:00Z' WHERE token_id = 'brg_tk_old_tok_b';"), "token revoked again")
+	out, err := rollback(&f, "brg_tk_new", -1)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, out.restored, "bridge restored")
+	testing.expect_value(t, token_revoked_at(&f, "brg_tk_old_tok_a"), "")
+	testing.expect_value(t, token_revoked_at(&f, "brg_tk_old_tok_b"), "2026-10-31T12:07:00Z")
+	testing.expect_value(t, token_revoked_at(&f, "brg_tk_old_tok_stolen"), SUNSET_AT)
+}
+
+@(test)
+test_sunset_rollback_failure_rolls_back_delete_restore_and_receipt_together :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_then(t, &f, "brg_at_old", "brg_at_new", -1)
+	// The token restore fails for real AFTER the replacement delete and the row restore
+	// already ran inside the rollback transaction.
+	testing.expect(t, exec(&f.conn, "CREATE TRIGGER sunset_fail_restore BEFORE UPDATE ON bridge_tokens WHEN OLD.bridge_id = 'brg_at_old' AND NEW.revoked_at = '' BEGIN SELECT RAISE(ABORT, 'restore refused'); END;"), "trigger installed")
+	_, err := rollback(&f, "brg_at_new", -1)
+	testing.expect_value(t, err.code, domain.Error_Code.Internal_Error)
+	// Nothing changed: the sweep can retry the whole thing later.
+	testing.expect(t, snapshot(&f, "brg_at_new").found, "replacement still pending")
+	expect_victim_still_sunset(t, &f, "brg_at_old")
+	testing.expect_value(t, receipt_of(&f, "brg_at_new").sunset_id, "brg_at_old")
+	testing.expect(t, exec(&f.conn, "BEGIN; COMMIT;"), "no transaction left open")
+}
+
+@(test)
+test_sunset_with_a_non_pending_replacement_is_final_and_writes_no_receipt :: proc(t: ^testing.T) {
+	f: Sunset_Fixture
+	if !sunset_open(t, &f) do return
+	defer close(&f.conn)
+	sunset_seed_victim(t, &f, "brg_np_old")
+	_, ok, _ := iface.bridge_create_limited_with_sunset(&f.repo, replacement("brg_np_new", pending = false), 1, sunset("brg_np_old"))
+	testing.expect(t, ok, "admitted")
+	expect_no_receipt(t, &f, "brg_np_new")
+	out, err := rollback(&f, "brg_np_new", 1)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, !out.replacement_deleted && !out.had_sunset, "an enrolled replacement has no rollback")
+	expect_victim_still_sunset(t, &f, "brg_np_old")
 }

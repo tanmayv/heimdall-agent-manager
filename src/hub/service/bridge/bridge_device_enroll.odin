@@ -157,8 +157,10 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	}
 	// The sunset (if any) is revoked inside the admission transaction, before the
 	// plan count, so its slot is the one this bridge takes; a refusal anywhere in
-	// that transaction leaves the sunset bridge untouched.
-	saved, sunset, ok, err := iface.bridge_create_limited_with_sunset(service.repo, bridge, entitlements.max_bridges, iface.Bridge_Sunset{bridge_id = sunset_bridge_id, revoked_at = now})
+	// that transaction leaves the sunset bridge untouched. For a pending bridge the
+	// same transaction stores a durable receipt, so every later rollback of this
+	// enrollment (rollback_pending_enrollment) gives the sunset bridge back.
+	saved, ok, err := iface.bridge_create_limited_with_sunset(service.repo, bridge, entitlements.max_bridges, iface.Bridge_Sunset{bridge_id = sunset_bridge_id, revoked_at = now})
 	if !ok {
 		// The repository enforces the count atomically; add account metadata only
 		// after its transaction releases the commit mutex.
@@ -172,33 +174,25 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 		}
 		return Enroll_Bridge_Result{}, false, err
 	}
+	if sunset_bridge_id != "" {
+		// Same last step as revoke_bridge: its credentials are already dead, so this
+		// only drops a socket that can no longer authenticate anything.
+		_ = close_bridge_connection(service, sunset_bridge_id)
+	}
 	// Fail closed when the OS entropy source is unavailable (settled 8): 503 with a
 	// retry hint, never a weaker credential and never `.Internal_Error`. The bridge
 	// row survives an entropy failure; the human approves again and that approval
 	// mints into a new family.
-	if sunset.bridge_id != "" {
-		// Same last step as revoke_bridge: its credentials are already dead, so this
-		// only drops a socket that can no longer authenticate anything.
-		_ = close_bridge_connection(service, sunset.bridge_id)
-	}
 	pair, pair_ok, pair_err := issue_bridge_token_pair(service, saved.bridge_id, scope)
 	if !pair_ok {
 		// A pending row with no credential can never be committed; remove it now
-		// rather than leave it for the sweep (REQ-EA-3) — and with it give back the
-		// sunset bridge, in the same transaction as the delete.
-		if input.pending {
-			if sunset.bridge_id != "" {
-				restore_sunset_after_rollback(service, saved.bridge_id, &sunset)
-			} else {
-				_, _ = iface.bridge_delete_pending(service.repo, saved.bridge_id)
-			}
-		}
-		iface.bridge_sunset_receipt_destroy(&sunset)
+		// rather than leave it for the sweep (REQ-EA-3). The same transaction gives
+		// back a bridge this approval sunset.
+		if input.pending do _, _ = delete_pending_restoring_sunset(service, saved.bridge_id)
 		return Enroll_Bridge_Result{}, false, pair_err
 	}
 	return Enroll_Bridge_Result{
 		bridge = saved,
-		sunset = sunset,
 		family_id = pair.family_id,
 		bridge_token = pair.access_token,
 		refresh_token = pair.refresh_token,

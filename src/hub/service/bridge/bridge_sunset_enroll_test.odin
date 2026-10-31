@@ -1,6 +1,9 @@
 // REQ-3: "register this machine as NEW and sunset one of mine" through the bridge
-// service (enroll_bridge_from_device_grant with sunset_bridge_id, and the
-// rollback_pending_enrollment that a failed vault commit runs). A real sqlite
+// service (enroll_bridge_from_device_grant with sunset_bridge_id), and EVERY way the
+// pending replacement can roll back afterwards: the approval's vault-commit failure,
+// the replacement's credential mint failing, cancel (operator / committed:false),
+// both sweep sources -- each must give the sunset bridge back -- versus a commit,
+// after which nothing may, and a revoke-all cancel, which must not. A real sqlite
 // repository holds the rows so the assertions read what was actually written; the
 // connection closer is a recorder (the real socket teardown is covered in
 // src/hub/transport/http/bridge_revocation_ws_test.odin).
@@ -30,6 +33,8 @@ Sunset_Fixture :: struct {
 	ids:     platform.ID_Generator,
 	svc:     Bridge_Service,
 	limit:   int,
+	// lookup_fails makes the entitlement lookup error (a rollback must fail closed).
+	lookup_fails: bool,
 	closed:  [dynamic]string,
 }
 
@@ -42,8 +47,10 @@ sunset_closer :: proc(ctx: rawptr, bridge_id: string) -> bool {
 
 @(private = "file")
 sunset_lookup :: proc(ctx: rawptr, user_id: string) -> (domain.User_Entitlements, domain.Domain_Error) {
+	f := (^Sunset_Fixture)(ctx)
+	if f.lookup_fails do return {}, domain.domain_error(.Internal_Error, "billing unavailable")
 	entitlements := domain.unlimited_entitlements()
-	entitlements.max_bridges = (^Sunset_Fixture)(ctx).limit
+	entitlements.max_bridges = f.limit
 	return entitlements, {}
 }
 
@@ -131,8 +138,7 @@ test_sunset_with_target_bridge_id_is_refused_before_touching_anything :: proc(t:
 	target, target_family := enrol_live(t, f, "sx_owner")
 	other, other_family := enrol_live(t, f, "sx_owner")
 
-	result, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sx_owner", true, sunset = other, target = target))
-	defer iface.bridge_sunset_receipt_destroy(&result.sunset)
+	_, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sx_owner", true, sunset = other, target = target))
 	testing.expect(t, !ok, "attach + sunset refused")
 	testing.expect_value(t, err.code, domain.Error_Code.Validation_Failed)
 	// Neither the attach (credential rotation) nor the sunset happened.
@@ -141,6 +147,49 @@ test_sunset_with_target_bridge_id_is_refused_before_touching_anything :: proc(t:
 	_, other_status := bridge_state(f, other)
 	testing.expect(t, other_status != .Revoked, "sunset bridge not revoked")
 	testing.expect_value(t, len(f.closed), 0)
+}
+
+// sunset_replace enrolls a live bridge for owner on a full one-bridge plan, then
+// approves a pending replacement that sunsets it. Returns the ids and families.
+@(private = "file")
+Sunset_Case :: struct {
+	old_id, old_family, new_id, new_family: string,
+}
+
+@(private = "file")
+sunset_replace :: proc(t: ^testing.T, f: ^Sunset_Fixture, owner: string) -> (c: Sunset_Case, ok: bool) {
+	c.old_id, c.old_family = enrol_live(t, f, owner)
+	enrolled, enroll_ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input(owner, true, sunset = c.old_id))
+	testing.expect(t, enroll_ok, err.message)
+	if !enroll_ok do return c, false
+	c.new_id = strings.clone(enrolled.bridge.bridge_id, context.temp_allocator)
+	c.new_family = strings.clone(enrolled.family_id, context.temp_allocator)
+	_, old_status := bridge_state(f, c.old_id)
+	testing.expect_value(t, old_status, domain.Bridge_Status.Revoked)
+	testing.expect_value(t, live_family_tokens(f, c.old_family), 0)
+	return c, true
+}
+
+// expect_restored: the replacement is gone, and the sunset bridge and exactly its
+// credentials are live again, within the one-bridge plan.
+@(private = "file")
+expect_restored :: proc(t: ^testing.T, f: ^Sunset_Fixture, c: Sunset_Case, owner: string, loc := #caller_location) {
+	new_found, _ := bridge_state(f, c.new_id)
+	testing.expect(t, !new_found, "replacement deleted", loc = loc)
+	found, status := bridge_state(f, c.old_id)
+	testing.expect(t, found, "sunset bridge exists", loc = loc)
+	testing.expect_value(t, status, domain.Bridge_Status.Offline, loc = loc)
+	testing.expect_value(t, live_family_tokens(f, c.old_family), 2, loc = loc)
+	testing.expect_value(t, live_family_tokens(f, c.new_family), 0, loc = loc)
+	count, _ := iface.bridge_count_active_by_owner(&f.repo, domain.User_ID(owner))
+	testing.expect_value(t, count, 1, loc = loc)
+}
+
+@(private = "file")
+expect_still_sunset :: proc(t: ^testing.T, f: ^Sunset_Fixture, c: Sunset_Case, loc := #caller_location) {
+	_, status := bridge_state(f, c.old_id)
+	testing.expect_value(t, status, domain.Bridge_Status.Revoked, loc = loc)
+	testing.expect_value(t, live_family_tokens(f, c.old_family), 0, loc = loc)
 }
 
 @(test)
@@ -158,59 +207,146 @@ test_sunset_on_full_plan_then_vault_rollback_restores_the_old_bridge :: proc(t: 
 
 	// ...and admits it when the approval sunsets the old one, atomically.
 	enrolled, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sf_owner", true, sunset = old))
-	defer iface.bridge_sunset_receipt_destroy(&enrolled.sunset)
 	testing.expect(t, ok, err.message)
 	if !ok do return
-	new_id := strings.clone(enrolled.bridge.bridge_id, context.temp_allocator)
-	testing.expect_value(t, enrolled.sunset.bridge_id, old)
-	testing.expect_value(t, len(enrolled.sunset.token_ids), 2)
-	_, old_status := bridge_state(f, old)
-	testing.expect_value(t, old_status, domain.Bridge_Status.Revoked)
+	c := Sunset_Case{old_id = old, old_family = old_family, new_id = enrolled.bridge.bridge_id, new_family = enrolled.family_id}
 	testing.expect_value(t, live_family_tokens(f, old_family), 0)
 	testing.expect(t, was_closed(f, old), "the sunset bridge's socket is dropped")
 	count, _ := iface.bridge_count_active_by_owner(&f.repo, domain.User_ID("sf_owner"))
 	testing.expect_value(t, count, 1)
 
-	// The vault commit fails: the wiring rolls back with the receipt.
-	rolled_back, removed, rb_err := rollback_pending_enrollment(&f.svc, new_id, enrolled.family_id, &enrolled.sunset)
+	// The vault commit fails: the wiring rolls back exactly the minted family. No
+	// receipt is passed: it is durable.
+	rolled_back, removed, rb_err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
 	testing.expect_value(t, rb_err.code, domain.Error_Code.None)
 	testing.expect(t, rolled_back, "pending enrollment rolled back")
 	testing.expect(t, removed, "replacement row deleted")
-	new_found, _ := bridge_state(f, new_id)
+	new_found, _ := bridge_state(f, c.new_id)
 	testing.expect(t, !new_found, "replacement gone")
-	restored_found, restored_status := bridge_state(f, old)
-	testing.expect(t, restored_found, "old bridge still exists")
-	testing.expect_value(t, restored_status, domain.Bridge_Status.Offline)
-	testing.expect_value(t, live_family_tokens(f, old_family), 2)
-	testing.expect_value(t, live_family_tokens(f, enrolled.family_id), 0)
-	count_after, _ := iface.bridge_count_active_by_owner(&f.repo, domain.User_ID("sf_owner"))
-	testing.expect_value(t, count_after, 1)
+	expect_restored(t, f, c, "sf_owner")
+}
+
+@(test)
+test_sunset_is_restored_when_the_sweep_expires_the_enrollment :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "sweep_family", 1)
+	defer sunset_fixture_close(f)
+	c, ok := sunset_replace(t, f, "sw_owner")
+	if !ok do return
+	// The new machine never received its vault key: the enroll family ages out.
+	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf("UPDATE bridge_tokens SET issued_at = '2000-01-01T00:00:00Z' WHERE family_id = '%s';", c.new_family)), "family aged")
+	rolled := sweep_expired_enrollments(&f.svc)
+	defer rolled_back_enrollments_destroy(rolled)
+	testing.expect_value(t, len(rolled), 1)
+	expect_restored(t, f, c, "sw_owner")
+}
+
+@(test)
+test_sunset_is_restored_when_the_sweep_removes_an_expired_row_without_credential :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "sweep_row", 1)
+	defer sunset_fixture_close(f)
+	c, ok := sunset_replace(t, f, "sr_owner")
+	if !ok do return
+	// The sweep's second source: a pending row past its deadline whose credential is
+	// already gone (rolled back with no family to judge by).
+	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf("UPDATE bridge_tokens SET revoked_at = '2000-01-01T00:00:00Z' WHERE family_id = '%s'; UPDATE bridges SET enrollment_pending_until = '2000-01-01T00:00:00Z' WHERE bridge_id = '%s';", c.new_family, c.new_id)), "row aged")
+	rolled := sweep_expired_enrollments(&f.svc)
+	defer rolled_back_enrollments_destroy(rolled)
+	testing.expect_value(t, len(rolled), 1)
+	expect_restored(t, f, c, "sr_owner")
+}
+
+@(test)
+test_sunset_is_restored_when_the_enrollment_is_cancelled :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "cancel", 1)
+	defer sunset_fixture_close(f)
+	c, ok := sunset_replace(t, f, "sk_owner")
+	if !ok do return
+	// The operator's cancel; the bridge's committed:false reaches the same rollback.
+	rolled_back, removed, err := cancel_pending_enrollment(&f.svc, c.new_id)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, rolled_back && removed, "cancel rolled the replacement back")
+	expect_restored(t, f, c, "sk_owner")
+}
+
+@(test)
+test_sunset_stays_revoked_when_a_revoke_all_cancels_the_replacement :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "keep_revoked", 1)
+	defer sunset_fixture_close(f)
+	c, ok := sunset_replace(t, f, "sk2_owner")
+	if !ok do return
+	rolled_back, removed, err := cancel_pending_enrollment(&f.svc, c.new_id, .Keep_Revoked)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, rolled_back && removed, "replacement rolled back")
+	expect_still_sunset(t, f, c)
+	// And the receipt was consumed: a later sweep cannot revive it either.
+	rolled := sweep_expired_enrollments(&f.svc)
+	defer rolled_back_enrollments_destroy(rolled)
+	expect_still_sunset(t, f, c)
 }
 
 @(test)
 test_sunset_rollback_after_commit_keeps_the_sunset_final :: proc(t: ^testing.T) {
 	f := sunset_fixture_open(t, "commit_then_rb", 1)
 	defer sunset_fixture_close(f)
-	old, old_family := enrol_live(t, f, "sc_owner")
-	enrolled, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sc_owner", true, sunset = old))
-	defer iface.bridge_sunset_receipt_destroy(&enrolled.sunset)
-	testing.expect(t, ok, err.message)
+	c, ok := sunset_replace(t, f, "sc_owner")
 	if !ok do return
-	new_id := strings.clone(enrolled.bridge.bridge_id, context.temp_allocator)
-	committed, commit_ok, _ := commit_pending_enrollment(&f.svc, Pending_Commit_Input{bridge_id = new_id, family_id = enrolled.family_id})
+	committed, commit_ok, _ := commit_pending_enrollment(&f.svc, Pending_Commit_Input{bridge_id = c.new_id, family_id = c.new_family})
 	defer domain.bridge_destroy(&committed)
 	testing.expect(t, commit_ok, "replacement committed")
 
-	// A late rollback (the commit won the race) must not resurrect the old bridge.
-	rolled_back, removed, rb_err := rollback_pending_enrollment(&f.svc, new_id, enrolled.family_id, &enrolled.sunset)
+	// A late rollback (the commit won the race) must not resurrect the old bridge...
+	rolled_back, removed, rb_err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
 	testing.expect_value(t, rb_err.code, domain.Error_Code.None)
 	testing.expect(t, !rolled_back, "committed enrollment is not rolled back")
 	testing.expect(t, !removed, "committed replacement kept")
-	_, old_status := bridge_state(f, old)
-	testing.expect_value(t, old_status, domain.Bridge_Status.Revoked)
-	testing.expect_value(t, live_family_tokens(f, old_family), 0)
-	new_found, _ := bridge_state(f, new_id)
+	// ...and neither may a late sweep, even with the family's issue time long past.
+	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf("UPDATE bridge_tokens SET issued_at = '2000-01-01T00:00:00Z' WHERE family_id = '%s';", c.new_family)), "family aged")
+	rolled := sweep_expired_enrollments(&f.svc)
+	defer rolled_back_enrollments_destroy(rolled)
+	testing.expect_value(t, len(rolled), 0)
+	expect_still_sunset(t, f, c)
+	new_found, _ := bridge_state(f, c.new_id)
 	testing.expect(t, new_found, "replacement kept")
+}
+
+@(test)
+test_sunset_is_restored_when_the_replacement_credential_cannot_be_minted :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "pair_fail", 1)
+	defer sunset_fixture_close(f)
+	old, old_family := enrol_live(t, f, "sp_owner")
+	// issue_bridge_token_pair fails AFTER the admission transaction committed the
+	// sunset and the pending row: its first token INSERT is refused.
+	testing.expect(t, sqlite.exec(&f.conn, "CREATE TRIGGER sunset_fail_pair BEFORE INSERT ON bridge_tokens WHEN NEW.scope = 'bridge:enroll' BEGIN SELECT RAISE(ABORT, 'mint refused'); END;"), "trigger installed")
+	_, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sp_owner", true, sunset = old))
+	testing.expect(t, !ok, "approval fails")
+	testing.expect(t, err.code != .None, "error reported")
+	bridges, _ := iface.bridge_list_by_owner(&f.repo, domain.User_ID("sp_owner"))
+	defer {
+		for &b in bridges do domain.bridge_destroy(&b)
+		delete(bridges)
+	}
+	// Only the old bridge is left, live again with its own credentials.
+	testing.expect_value(t, len(bridges), 1)
+	found, status := bridge_state(f, old)
+	testing.expect(t, found, "old bridge exists")
+	testing.expect_value(t, status, domain.Bridge_Status.Offline)
+	testing.expect_value(t, live_family_tokens(f, old_family), 2)
+}
+
+@(test)
+test_sunset_fails_closed_when_the_plan_cannot_be_read_at_rollback :: proc(t: ^testing.T) {
+	f := sunset_fixture_open(t, "plan_unreadable", 1)
+	defer sunset_fixture_close(f)
+	c, ok := sunset_replace(t, f, "su_owner")
+	if !ok do return
+	f.lookup_fails = true
+	rolled_back, removed, err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect(t, rolled_back && removed, "the replacement is still rolled back")
+	new_found, _ := bridge_state(f, c.new_id)
+	testing.expect(t, !new_found, "replacement deleted, not left for the sweep")
+	// Restoring without knowing the plan could exceed it: left revoked.
+	expect_still_sunset(t, f, c)
 }
 
 @(test)
@@ -219,8 +355,7 @@ test_sunset_of_another_owners_bridge_is_refused_without_side_effects :: proc(t: 
 	defer sunset_fixture_close(f)
 	victim, victim_family := enrol_live(t, f, "sv_victim")
 
-	result, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sv_attacker", true, sunset = victim))
-	defer iface.bridge_sunset_receipt_destroy(&result.sunset)
+	_, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sv_attacker", true, sunset = victim))
 	testing.expect(t, !ok, "foreign sunset refused")
 	testing.expect_value(t, err.code, domain.Error_Code.Not_Found)
 	_, victim_status := bridge_state(f, victim)

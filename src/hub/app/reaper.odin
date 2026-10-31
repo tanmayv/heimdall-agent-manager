@@ -488,9 +488,11 @@ reaper_revoke_all_bridges :: proc(graph: ^App_Graph, user_id: string) -> bool {
 		if b.status == .Revoked do continue
 		if _, ok, _ := bridge_service.revoke_bridge(&graph.bridges, auth, b.bridge_id); !ok do all_ok = false
 	}
-	// Pending new-bridge enrollments: roll back (revokes the enroll family, deletes the row).
+	// Pending new-bridge enrollments: roll back (revokes the enroll family, deletes the
+	// row). .Keep_Revoked: a bridge such an enrollment sunset was skipped above as
+	// already revoked, and must not be revived by its replacement's rollback.
 	for b in bridge_service.list_pending_bridges(&graph.bridges, auth) {
-		if _, _, cerr := bridge_service.cancel_pending_enrollment(&graph.bridges, b.bridge_id); cerr.code != .None do all_ok = false
+		if _, _, cerr := bridge_service.cancel_pending_enrollment(&graph.bridges, b.bridge_id, .Keep_Revoked); cerr.code != .None do all_ok = false
 	}
 	return all_ok
 }

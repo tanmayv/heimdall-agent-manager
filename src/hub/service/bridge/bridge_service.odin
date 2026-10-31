@@ -67,11 +67,6 @@ Enroll_Bridge_Result :: struct {
 	// family_id is the credential lineage just minted; for a pending enrollment it is
 	// what commit_pending_enrollment promotes and a rollback revokes (REQ-EA-2/3).
 	family_id: string,
-	// sunset is what a "register new and sunset one" enrollment retired (zero when
-	// none). A caller that rolls the enrollment back passes it to
-	// rollback_pending_enrollment so the retired bridge comes back; free it with
-	// iface.bridge_sunset_receipt_destroy.
-	sunset: iface.Bridge_Sunset_Receipt,
 	bridge_token: string,
 	refresh_token: string,
 	expires_in: int,
