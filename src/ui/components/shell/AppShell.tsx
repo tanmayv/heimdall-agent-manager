@@ -64,6 +64,8 @@ import {
 } from '../../utils/clientPersistence';
 import { Workspace } from '../mainWorkspace/Workspace';
 import { DeviceVaultGate } from '../devices/DeviceVaultScreens';
+import { desktopCapabilities } from '../../bridge/desktopBridge';
+import { setupSeen } from '../setup/setupWizardModel';
 import { VaultResetBanner } from '../devices/VaultResetBanner';
 import { bootDeviceVault, autoUnsealLockedBridges } from '../../services/deviceVault';
 import { setTheme } from '../../store/themeSlice';
@@ -102,6 +104,7 @@ import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../.
 const TaskChainsPage = lazy(() => import('../taskchain/TaskChainsPage'));
 const NewConversationPage = lazy(() => import('../chat/NewConversationPage'));
 const DeviceApprovalPage = lazy(() => import('../devices/DeviceApprovalPage'));
+const SetupWizardPage = lazy(() => import('../setup/SetupWizardPage'));
 const DevicesPanel = lazy(() => import('../settings/DevicesPanel'));
 const ProviderEnrollmentSetupPage = lazy(() => import('../providers/ProviderEnrollmentSetupPage'));
 const BridgesPanel = lazy(() => import('../settings/BridgesPanel'));
@@ -1388,6 +1391,16 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     setApprovalPageOpener(() => { window.location.hash = buildRouteHash('/device/add', ''); });
     return () => setApprovalPageOpener(null);
   }, []);
+  // First-run setup (desktop app only): an account that has not finished or skipped
+  // /setup in this app lands there once per launch instead of on Home.
+  const setupRedirectChecked = useRef(false);
+  useEffect(() => {
+    if (setupRedirectChecked.current) return;
+    setupRedirectChecked.current = true;
+    if (path !== '/home' || !desktopCapabilities().desktop) return;
+    if (setupSeen(String(user?.user_id || ''))) return;
+    window.location.hash = buildRouteHash('/setup', '');
+  }, [path, user?.user_id]);
   const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [resourcePicker, setResourcePicker] = useState<'conversation' | 'task-chain' | 'shell' | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1948,6 +1961,21 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // Keep navigation, command palette, and vault onboarding
   // out of this route so the operator sees only the machine asking for access and the
   // decision in front of them.
+  if (path === '/setup') {
+    // First-run setup: its own rail + independently scrolling pane, so the page
+    // itself does not scroll.
+    return (
+      <main
+        data-debug-id="setup-standalone-page"
+        className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary"
+      >
+        <Suspense fallback={null}>
+          <SetupWizardPage userId={String(user?.user_id || '')} />
+        </Suspense>
+      </main>
+    );
+  }
+
   if (path === '/device/add') {
     return (
       <main

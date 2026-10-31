@@ -98,6 +98,18 @@ export function attachDesktopBridgeSession(manager: DesktopBridgeManagerApi) {
 /** How the app opens /device/add for a pairing code (set once by the shell). */
 export function setApprovalPageOpener(open: (() => void) | null) { openApprovalPage = open; }
 
+/**
+ * While mounted, the first-run setup wizard reviews its own enrollment's pairing
+ * code in place instead of on /device/add. It takes the opener over and gets the
+ * restore function back; the code is still handed over in memory only and taken
+ * once with takePendingApprovalCode().
+ */
+export function overrideApprovalPageOpener(open: () => void): () => void {
+  const previous = openApprovalPage;
+  openApprovalPage = open;
+  return () => { if (openApprovalPage === open) openApprovalPage = previous; };
+}
+
 /** The code the app's own enrollment printed, once; '' when there is none. */
 export function takePendingApprovalCode(): string {
   const code = pendingApprovalCode;
