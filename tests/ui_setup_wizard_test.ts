@@ -163,10 +163,34 @@ test('identity step: a sunset rides on the approval, never a revoke up front (RE
   // No UI-side revoke: the hub retires the bridge atomically with the approval.
   assert.doesNotMatch(source, /useRevokeBridgeMutation|revokeBridge\(/);
   assert.match(source, /await approveBridgeEnrollment\(\{[\s\S]*?target: plan\.reuse,[\s\S]*?sunset: sunset \? \{ bridge_id: sunset\.bridge_id, label: sunset\.label \} : null,/);
-  // A failure before the hub approved says nothing changed; after, that the sunset is final.
-  assert.match(source, /Nothing was changed and \$\{sunset\.label\} is still active\./);
-  assert.match(source, /was sunset when the hub approved this machine, but finishing enrollment failed/);
-  // The warning describes atomic semantics.
+  // The failure copy is decided from the bridge list refetched after the failure,
+  // never from how far the client got (a POST can commit and still throw).
+  assert.doesNotMatch(source, /Nothing was changed/);
+  assert.doesNotMatch(source, /approvedId/);
+  assert.match(source, /const refreshed = await refetchBridges\(\)\.unwrap\(\)[\s\S]*?prefix = sunsetFailureNote\(sunset, refreshed\);/);
+  // The warning matches the hub: restored on any rollback of the pending enrollment,
+  // final only once this machine is enrolled.
   assert.match(source, /data-debug-id="setup-identity-sunset-warning"/);
-  assert.match(source, /It is revoked in the same step that approves this machine, never before: if the approval is refused or fails, it keeps working\./);
+  assert.match(source, /It is revoked in the same step that approves this machine, never before\. If the approval is refused or this machine does not finish enrolling, it comes back on its own \(within 5 minutes\) unless its plan slot is used meanwhile\. Once this machine is enrolled, its credentials stop working/);
+  assert.doesNotMatch(source, /if the approval is refused or fails, it keeps working/);
+});
+
+test('sunset failure note reads the refetched bridge list (REQ-3)', () => {
+  const sunset = { bridge_id: 'brg_dawnstar', label: 'dawnstar' };
+  // Approval refused, or rolled back and restored by the hub: still listed as active.
+  assert.equal(model.sunsetFailureNote(sunset, bridges), 'dawnstar is still active. ');
+  // The POST threw on the client but committed on the hub (lost response, proxy 5xx
+  // after commit, or no bridge id in the answer): the list shows it revoked, so the
+  // note must NOT claim nothing changed.
+  const committed = bridges.map((b) => (b.bridge_id === 'brg_dawnstar' ? { ...b, status: 'revoked', revoked_at: '2026-10-31T12:00:00Z' } : b));
+  const pending = model.sunsetFailureNote(sunset, committed);
+  assert.match(pending, /^dawnstar is retired while this approval is pending\./);
+  assert.match(pending, /comes back on its own when the enrollment is cancelled or expires \(within 5 minutes\)/);
+  assert.doesNotMatch(pending, /still active|Nothing was changed/);
+  // Gone from the list entirely reads the same as revoked.
+  assert.match(model.sunsetFailureNote(sunset, bridges.filter((b) => b.bridge_id !== 'brg_dawnstar')), /^dawnstar is retired/);
+  // The refetch itself failed: the outcome is unknown, and the note says so.
+  const unknown = model.sunsetFailureNote(sunset, null);
+  assert.match(unknown, /^Could not check whether dawnstar is still active; see Bridges\./);
+  assert.doesNotMatch(unknown, /is still active\. $/);
 });

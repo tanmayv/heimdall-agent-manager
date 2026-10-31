@@ -54,6 +54,7 @@ import {
   markSetupSeen,
   setupRail,
   sunsetCandidates,
+  sunsetFailureNote,
   type IdentityChoice,
   type SetupStep,
 } from './setupWizardModel';
@@ -573,10 +574,9 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
     const label = newLabel.trim() || review.label;
     const sunset = plan.sunset;
     // The sunset is not a separate step: the hub retires that bridge in the same
-    // transaction that approves this one (sunset_bridge_id), and puts it back if the
-    // approval is refused or its vault commit fails. Once the hub has approved
-    // (onWaiting reports the new bridge id), the sunset is final.
-    let approvedId = '';
+    // transaction that approves this one (sunset_bridge_id), and gives it back on any
+    // rollback of the still-pending enrollment. It is final only once this machine
+    // finishes enrolling.
     try {
       const outcome = await approveBridgeEnrollment({
         info,
@@ -585,20 +585,22 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
         newLabel: label,
         sunset: sunset ? { bridge_id: sunset.bridge_id, label: sunset.label } : null,
         onProgress: (message) => setPhase({ kind: 'working', message }),
-        onWaiting: (bridgeId) => { if (bridgeId) approvedId = bridgeId; },
       });
+      // The picker's copy of the sunset bridge is stale now.
+      if (sunset) void refetchBridges();
       setPhase({ kind: 'reconnecting', bridgeId: outcome.bridgeId, label: outcome.label, approved: outcome.approved });
     } catch (err) {
-      const prefix = !sunset
-        ? ''
-        : approvedId
-          ? `${sunset.label} was sunset when the hub approved this machine, but finishing enrollment failed: `
-          : `Nothing was changed and ${sunset.label} is still active. `;
+      // What happened to the sunset bridge is read back from the hub, not guessed from
+      // how far this client got; the same refetch keeps a retry from offering a
+      // bridge that is already retired.
+      let prefix = '';
+      if (sunset) {
+        const refreshed = await refetchBridges().unwrap()
+          .then((data: any) => (Array.isArray(data?.bridges) ? data.bridges : null))
+          .catch(() => null);
+        prefix = sunsetFailureNote(sunset, refreshed);
+      }
       setPhase({ kind: 'failed', message: prefix + errText(err) });
-    } finally {
-      // The sunset bridge's status changed (or did not) on the hub; refresh the
-      // picker so a retry never offers a bridge that is already gone.
-      if (sunset) void refetchBridges();
     }
   }, [review, info, plan, newLabel, refetchBridges]);
 
@@ -736,7 +738,7 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           {plan.sunset ? (
             <div data-debug-id="setup-identity-sunset-warning">
               <Alert tone="warning" title={`${sanitizeForDisplay(plan.sunset.label).text} will be revoked`}>
-                It is revoked in the same step that approves this machine, never before: if the approval is refused or fails, it keeps working. Once approved, its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
+                It is revoked in the same step that approves this machine, never before. If the approval is refused or this machine does not finish enrolling, it comes back on its own (within 5 minutes) unless its plan slot is used meanwhile. Once this machine is enrolled, its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
               </Alert>
             </div>
           ) : null}

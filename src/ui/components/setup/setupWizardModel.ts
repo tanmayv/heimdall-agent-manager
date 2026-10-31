@@ -107,7 +107,7 @@ export interface SunsetCandidate {
 }
 
 /** The account's bridges that still count against the plan (not revoked). */
-export function sunsetCandidates(bridges: any[] | null | undefined): SunsetCandidate[] {
+export function sunsetCandidates(bridges: readonly any[] | null | undefined): SunsetCandidate[] {
   return (Array.isArray(bridges) ? bridges : [])
     .filter((b) => b && !b.revoked_at && String(b.status || '').toLowerCase() !== 'revoked')
     .map((b) => ({
@@ -152,6 +152,26 @@ export function identityPlan(
     return { ok: Boolean(sunset), action: sunset ? `Register and sunset ${sunset.label}` : 'Choose a bridge to sunset', reuse: null, sunset };
   }
   return { ok: false, action: 'Choose an identity', reuse: null, sunset: null };
+}
+
+/**
+ * What a failed "register new and sunset one" approval did to the sunset bridge, read
+ * from the bridge list fetched AFTER the failure (`refreshed`; null when that fetch
+ * failed), never inferred from how far the client got: a POST can commit on the hub
+ * and still fail on the client (lost response, proxy error after commit).
+ *
+ * The hub retires the bridge in the transaction that approves this machine and gives
+ * it back when the pending enrollment rolls back (refused or failed vault commit at
+ * once; cancel or the 5-minute expiry otherwise), unless its plan slot was taken in
+ * the meantime. It is final only once this machine finishes enrolling.
+ */
+export function sunsetFailureNote(sunset: { bridge_id: string; label: string }, refreshed: readonly any[] | null): string {
+  const label = sunset.label || sunset.bridge_id;
+  if (!refreshed) {
+    return `Could not check whether ${label} is still active; see Bridges. If it was retired for this approval, it comes back on its own when the unfinished enrollment is cancelled or expires (within 5 minutes). `;
+  }
+  if (sunsetCandidates(refreshed).some((b) => b.bridge_id === sunset.bridge_id)) return `${label} is still active. `;
+  return `${label} is retired while this approval is pending. If this machine does not finish enrolling, ${label} comes back on its own when the enrollment is cancelled or expires (within 5 minutes), unless its plan slot is used meanwhile. `;
 }
 
 // ---------------------------------------------------------------------------
