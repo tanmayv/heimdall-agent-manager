@@ -12,10 +12,23 @@ MCP_Spike_Handlers :: struct {
 	auth: ^auth.Auth_Service,
 	store: ^mcp.Store,
 	origin: string,
+	// Standalone synthetic probe: resolve the existing Hub cookie through its
+	// owner-authenticated /me endpoint. Never accepts a caller-supplied identity.
+	resolve_user: proc(ctx: rawptr, req: Request) -> (contracts.Auth_Context, bool),
+	resolve_ctx: rawptr,
 }
 MCP_SPIKE_PATH :: "/api/v1/mcp-spike"
 MCP_SPIKE_OAUTH :: "/api/v1/mcp-spike/oauth"
 MCP_SPIKE_METADATA :: "/.well-known/oauth-protected-resource/api/v1/mcp-spike"
+
+mcp_spike_register_routes :: proc(router: ^Router, h: ^MCP_Spike_Handlers) {
+	ctx := rawptr(h)
+	for path in ([]string{MCP_SPIKE_METADATA, "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"}) do router_add(router, "GET", path, ctx, mcp_spike_metadata_handler)
+	router_add(router, "GET", "/api/v1/mcp-spike/oauth/authorize", ctx, mcp_spike_authorize_handler)
+	router_add(router, "POST", "/api/v1/mcp-spike/oauth/register", ctx, mcp_spike_register_handler)
+	router_add(router, "POST", "/api/v1/mcp-spike/oauth/token", ctx, mcp_spike_token_handler)
+	router_add(router, "ANY", MCP_SPIKE_PATH, ctx, mcp_spike_handler)
+}
 
 mcp_discovery_path :: proc(path: string) -> bool {
 	return path == MCP_SPIKE_METADATA || path == "/.well-known/oauth-protected-resource" || path == "/.well-known/oauth-authorization-server"
@@ -89,7 +102,13 @@ mcp_spike_authorize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !mcp.binding_ok(h.store, client, redirect) || !mcp.challenge_ok(challenge) || len(state) > 1024 || query_value(query, "response_type") != "code" || query_value(query, "code_challenge_method") != "S256" || query_value(query, "resource") != resource || (scope != "" && scope != mcp.SCOPE) do return mcp_oauth_error("invalid_request")
 	// This is existing provider login and cookie resolution, not acceptance of a
 	// provider bearer as an MCP credential. Probe grants disclose no user data.
-	principal, ok, _ := require_auth(h.auth, req)
+	principal: contracts.Auth_Context
+	ok: bool
+	if h.resolve_user != nil {
+		principal, ok = h.resolve_user(h.resolve_ctx, req)
+	} else {
+		principal, ok, _ = require_auth(h.auth, req)
+	}
 	if !ok {
 		if resume == "" {
 			ticket, made := mcp.pending_begin(h.store, query, now)

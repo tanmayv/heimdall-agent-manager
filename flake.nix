@@ -367,6 +367,7 @@
           # Web Push) goes through src/lib/httpc, i.e. the linked libcurl, so the
           # hub needs no TLS helper binaries on PATH any more.
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
+          ham-mcp-probe = mkOdinPackageWithRuntime pkgs odin "ham-mcp-probe" "src/mcp_probe" [ pkgs.sqlite ];
           # SOCAT-1: socat is the DEFAULT bridge->hub WebSocket (wss://) TLS
           # transport (HAM_TLS_BACKEND); openssl stays for the s_client fallback
           # and socat's OpenSSL engine. Outbound HTTPS uses the linked libcurl;

@@ -637,12 +637,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 
 register_routes :: proc(graph: ^App_Graph) {
 	if graph.config.mcp_oauth_spike {
-		ctx := rawptr(&graph.mcp_spike_handlers)
-		for path in ([]string{http.MCP_SPIKE_METADATA, "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"}) do http.router_add(&graph.router, "GET", path, ctx, http.mcp_spike_metadata_handler)
-		http.router_add(&graph.router, "GET", "/api/v1/mcp-spike/oauth/authorize", ctx, http.mcp_spike_authorize_handler)
-		http.router_add(&graph.router, "POST", "/api/v1/mcp-spike/oauth/register", ctx, http.mcp_spike_register_handler)
-		http.router_add(&graph.router, "POST", "/api/v1/mcp-spike/oauth/token", ctx, http.mcp_spike_token_handler)
-		http.router_add(&graph.router, "ANY", http.MCP_SPIKE_PATH, ctx, http.mcp_spike_handler)
+		http.mcp_spike_register_routes(&graph.router, &graph.mcp_spike_handlers)
 	}
 	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)

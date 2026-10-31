@@ -7,6 +7,27 @@ remote MCP plan, not the hosted-decryption implementation.
 
 ## Run in staging
 
+For the authorized Dawnstar canary at `heimdall.mundus.in`, the preferred option
+is the separate `ham-mcp-probe` package. It binds only loopback port 8120 and
+checks the named Ninjy session cookie through the existing Hub's loopback
+`/api/v1/me` on port 8113. It forwards no caller bearer or identity headers,
+follows no redirects, and never opens the Hub database. The existing Hub OIDC
+login and callback routes remain on the existing Hub; a short resume ticket
+brings the browser back to the probe. This avoids replacing/restarting that Hub.
+
+```bash
+ham-mcp-probe --origin https://heimdall.mundus.in --port 8120
+```
+
+Proxy only the exact discovery and MCP paths below to this sidecar, with query
+logging disabled and ingress request/body/rate limits. Keep `/api/v1/auth/*` on
+the existing Hub. Run the sidecar as its own unprivileged user with no state
+directory or secret files; losing its in-memory registrations on restart is an
+explicit U0 limit. This cookie-checking adapter is for the synthetic probe only;
+U1's hosted grant/capability handling remains the reviewed Odin Hub design.
+
+The integrated flag below is an alternative for a dedicated staging Hub.
+
 Build the Hub normally with the project's supported compiler. Start a dedicated
 staging instance using its existing real OIDC browser-login configuration and
 an HTTPS UI origin, adding:
