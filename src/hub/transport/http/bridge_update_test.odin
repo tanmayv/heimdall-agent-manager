@@ -184,6 +184,7 @@ update_handler_wire_fixture :: struct {
 	sink_rec: Update_Sink_Recorder,
 	owner_user_id: string,
 	bridge_id: string,
+	bridge_token: string,
 }
 
 
@@ -254,6 +255,7 @@ setup_update_test_fixture :: proc(t: ^testing.T, tag: string) -> ^update_handler
 	})
 	testing.expect(t, e_ok, "bridge enrolled")
 	f.bridge_id = strings.clone(enrolled.bridge.bridge_id)
+	f.bridge_token = strings.clone(enrolled.bridge_token)
 
 	return f
 }
@@ -265,6 +267,7 @@ teardown_update_test_fixture :: proc(f: ^update_handler_wire_fixture) {
 	
 	delete(f.owner_user_id)
 	delete(f.bridge_id)
+	delete(f.bridge_token)
 	if f.sink_rec.sent {
 		delete(f.sink_rec.last_cmd.bridge_id)
 		delete(f.sink_rec.last_cmd.command_id)
@@ -544,4 +547,37 @@ test_bridge_uninstall_owner_only_online_and_audited :: proc(t: ^testing.T) {
 		testing.expect_value(t, g_uninstall_audit[1], fmt.tprintf("denied %s req_uninst_other", f.bridge_id))
 		testing.expect_value(t, g_uninstall_audit[2], fmt.tprintf("dispatched %s req_uninst_owner", f.bridge_id))
 	}
+}
+
+@(test)
+test_bridge_auto_update_catalog_auth :: proc(t: ^testing.T) {
+    f := setup_update_test_fixture(t, "auto-catalog")
+    defer teardown_update_test_fixture(f)
+    req := Request{method = "GET", path = "/api/v1/bridge/update-catalog", request_id = "auto-catalog", remote_addr = "192.0.2.1:1234"}
+    testing.expect_value(t, bridge_auto_update_catalog_handler(rawptr(&f.bh), req).status, 401)
+    req.headers = {{name = "Authorization", value = fmt.tprintf("Bearer %s", f.bridge_token)}}
+    cat := bridge_service.Bridge_Update_Catalog{override_version = "9.0.0", override_download_url = "https://example.test/bundle.tar.gz", override_sha256 = "a"}
+    f.br_svc.catalog = &cat
+    response := bridge_auto_update_catalog_handler(rawptr(&f.bh), req)
+    testing.expect_value(t, response.status, 200)
+    testing.expect(t, strings.contains(response.body, "9.0.0"))
+}
+
+@(test)
+test_bridge_auto_update_config_authorization :: proc(t: ^testing.T) {
+    f := setup_update_test_fixture(t, "auto-config")
+    defer teardown_update_test_fixture(f)
+    req := Request{method = "GET", path = fmt.tprintf("/api/v1/bridges/%s/auto-update", f.bridge_id), request_id = "auto-config", remote_addr = "192.0.2.1:1234"}
+    testing.expect_value(t, bridge_auto_update_config_handler(rawptr(&f.bh), req).status, 401)
+    req.headers = f.user_headers
+    req.method = "PUT"
+    req.body = "{\"enabled\":\"false\"}"
+    testing.expect_value(t, bridge_auto_update_config_handler(rawptr(&f.bh), req).status, 400)
+    req.body = "{\"enabled\":false}"
+    response := bridge_auto_update_config_handler(rawptr(&f.bh), req)
+    testing.expect(t, response.status >= 400, "offline settings never report a successful save")
+    other := http_test_login(t, &f.auth_svc, "auto_update_other_owner")
+    req.headers = other
+    response = bridge_auto_update_config_handler(rawptr(&f.bh), req)
+    testing.expect(t, response.status == 403 || response.status == 404, "another account cannot edit the profile")
 }

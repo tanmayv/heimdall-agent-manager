@@ -24,6 +24,51 @@ import {
 // Dynamic imports run after the harness registers its Vite-style module resolver.
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { default: BridgesPanel } = await import('../src/ui/components/settings/BridgesPanel.tsx');
+const { default: BridgeAutoUpdateToggle } = await import('../src/ui/components/settings/BridgeAutoUpdateToggle.tsx');
+
+test('automatic updates read and persist only the selected bridge, preserving errors and offline state', async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/' });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
+  }
+  const previousFetch = globalThis.fetch;
+  const requests: Array<{ path: string; method: string; body: any }> = [];
+  let rejectSave = false;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    requests.push({ path: String(input), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
+    if (rejectSave && init.method === 'PUT') return Response.json({ error: { message: 'Cannot save config' } }, { status: 500 });
+    return Response.json({ data: { enabled: init.body ? JSON.parse(init.body).enabled : true } });
+  }) as typeof fetch;
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const toggle = () => dom.window.document.querySelector('input') as HTMLInputElement;
+  try {
+    await act(async () => { root.render(React.createElement(BridgeAutoUpdateToggle, { bridgeId: 'account-a', online: true })); });
+    assert.equal(toggle().checked, true);
+    await act(async () => { toggle().click(); });
+    assert.equal(toggle().checked, false);
+    assert.deepEqual(requests[1], { path: '/api/v1/bridges/account-a/auto-update', method: 'PUT', body: { enabled: false } });
+    rejectSave = true;
+    await act(async () => { toggle().click(); });
+    assert.equal(toggle().checked, false, 'failed save preserves the confirmed value');
+    assert.match(dom.window.document.querySelector('[role="alert"]')!.textContent || '', /Cannot save config/);
+    const count = requests.length;
+    await act(async () => { root.render(React.createElement(BridgeAutoUpdateToggle, { bridgeId: 'account-b', online: false })); });
+    assert.equal(toggle().disabled, true);
+    assert.equal(requests.length, count, 'offline bridge receives no request');
+    assert.ok(requests.every((request) => request.path.includes('/account-a/')), 'no other account is changed');
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = previousFetch;
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as any)[key];
+    }
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 1. Version Formatting and Update Predicates (REQ-BUPD-3)

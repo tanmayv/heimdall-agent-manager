@@ -12,6 +12,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { desktopCapabilities } from '../../bridge/desktopBridge';
 import ThisMachineCard from './ThisMachineCard';
+import BridgeAutoUpdateToggle from './BridgeAutoUpdateToggle';
 import {
   useFetchTelemetryDefaultEnabledQuery,
   useSaveTelemetryDefaultEnabledMutation,
@@ -171,6 +172,7 @@ export default function BridgesPanel() {
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
       {manager ? <ThisMachineCard manager={manager} accountBridgeIds={accountBridgeIds} onBridgeId={setLocalBridgeId} onSetupComplete={refetchBridges} /> : null}
+      {manager && localBridgeId ? <BridgeAutoUpdateToggle bridgeId={localBridgeId} online={(bridgesQuery.data?.bridges || []).some((bridge: Bridge) => String(bridge.bridge_id || bridge.bridgeId || bridge.id || '') === localBridgeId && bridgeOnline(bridge))} /> : null}
       {desktop.legacyBridgeManager ? (
         <div data-debug-id="settings-bridges-desktop-outdated" className="mt-3 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
           This desktop app is too old to set up or manage this machine's Bridge from here. Update the desktop app to the latest version, or run ham-bridge on this machine.
@@ -272,6 +274,7 @@ export default function BridgesPanel() {
                         {bridge?.latest_version && bridge?.latest_source ? (
                           <span className="text-[10px] text-muted">Catalog: {latestLabel} ({bridge.latest_source})</span>
                         ) : null}
+                        <BridgeAutoUpdateToggle bridgeId={id} online={online} />
                         {bridge?.update_warning ? (
                           <span role="status" className="text-xs text-warning">{bridge.update_warning}</span>
                         ) : null}

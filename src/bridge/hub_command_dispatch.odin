@@ -240,7 +240,7 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 8}, true
 	case "agent_pty_input", "agent_pty_resize":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 1}, true
-	case "bridge_unseal", "set_telemetry":
+	case "bridge_unseal", "set_telemetry", "auto_update_config":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
 	// REQ-PROF-3: sealed provider profile edit/read from the user's browser.
 	case "provider_profile_op":
@@ -323,7 +323,7 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 		if prov != "" do return strings.concatenate({"provider-ext-install:", prov})
 		return strings.clone("provider-ext-install")
 	case "bridge_update", "bridge_uninstall": return strings.clone("bridge-update")
-	case "bridge_unseal", "set_telemetry": return strings.clone("bridge-control")
+	case "bridge_unseal", "set_telemetry", "auto_update_config": return strings.clone("bridge-control")
 	case "provider_profile_op": return strings.clone("provider-profiles")
 	case "fs_make_dir", "fs_create_file", "fs_write_file", "fs_batch_write", "fs_move", "fs_delete":
 		// Batch operations can touch several paths. A single filesystem mutation key
