@@ -15,7 +15,7 @@
 
 export interface FsEntry { name: string; is_dir: boolean }
 export interface FsListing { ok: boolean; path: string; entries: FsEntry[] }
-export interface FsStat { ok: boolean; exists: boolean; is_dir: boolean }
+export interface FsStat { ok: boolean; exists: boolean; is_dir: boolean; path?: string }
 
 export interface SessionFs {
   list(path: string): Promise<FsListing | null>;
@@ -30,6 +30,7 @@ export interface DiscoveredProject {
   sessions: number;
   source: 'Claude Code' | 'Codex' | 'Claude Code + Codex';
   lastSessionAt?: string;
+  description?: string;
 }
 
 const JOINERS = ['-', '.', '_', ' '];
@@ -154,6 +155,7 @@ export async function discoverClaudeProjects(fs: SessionFs, limit = 40): Promise
 export async function loadProjectBridgeMappings(
   existing: { project_id: string }[],
   fetchDetail: (projectId: string) => Promise<any>,
+  canonical?: { bridgeId: string; stat: SessionFs['stat'] },
 ): Promise<{ bridge_paths: { bridge_id: string; path: string }[] }[]> {
   return mapLimit(existing, 4, async (project) => {
     if (!project || typeof project.project_id !== 'string' || !project.project_id.trim()) throw new Error('Could not identify an existing project.');
@@ -168,13 +170,19 @@ export async function loadProjectBridgeMappings(
       typeof mapping.path !== 'string' || !mapping.path.trim())) {
       throw new Error('Could not check existing project folders.');
     }
-    return { bridge_paths: paths };
+    const checked = await Promise.all(paths.map(async (mapping) => {
+      if (!canonical || mapping.bridge_id !== canonical.bridgeId) return mapping;
+      const stat = await canonical.stat(mapping.path);
+      if (!stat?.ok) throw new Error('Could not check existing project folders.');
+      return { ...mapping, path: stat.exists && stat.is_dir && stat.path ? stat.path : mapping.path };
+    }));
+    return { bridge_paths: checked };
   });
 }
 
 /** Drop the discovered folders that are already a project on this bridge. */
 export function newProjectsOnly(found: DiscoveredProject[], existing: any[] | null | undefined, bridgeId: string): DiscoveredProject[] {
-  const norm = (p: string) => p.replace(/[\\/]+$/, '');
+  const norm = projectPathKey;
   const taken = new Set<string>();
   for (const project of Array.isArray(existing) ? existing : []) {
     for (const bp of Array.isArray(project?.bridge_paths) ? project.bridge_paths : []) {
@@ -186,11 +194,19 @@ export function newProjectsOnly(found: DiscoveredProject[], existing: any[] | nu
   return found.filter((p) => !taken.has(norm(p.path)));
 }
 
+export function projectPathKey(path: string): string {
+  const windows = /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\');
+  const normalized = (windows ? path.replace(/\\/g, '/') : path).replace(/\/+$/, '');
+  return windows ? normalized.toLowerCase() : normalized;
+}
+
 export interface SessionProjectMetadata {
   source: 'Claude Code' | 'Codex';
   path: string;
   sessions: number;
   last_session_at: string;
+  canonical_path?: string;
+  description?: string;
 }
 export interface SessionProjectListing {
   ok: boolean;
@@ -203,20 +219,23 @@ export async function discoverSessionProjects(metadata: SessionProjectListing, f
   if (!metadata?.ok || !Array.isArray(metadata.projects)) throw new Error('Could not read session project history.');
   const resolved = await mapLimit(metadata.projects, 4, async (entry): Promise<DiscoveredProject | null> => {
     if (!entry || !['Codex', 'Claude Code'].includes(entry.source) || typeof entry.path !== 'string' || !(entry.sessions > 0)) return null;
-    const path = entry.source === 'Claude Code' ? await resolveClaudeProjectDir(entry.path, fs.stat) : entry.path;
-    if (!path) return null;
-    if (entry.source === 'Codex') {
-      const stat = await fs.stat(path).catch(() => null);
-      if (!stat?.ok || !stat.exists || !stat.is_dir) return null;
-    }
+    if ('canonical_path' in entry && (typeof entry.canonical_path !== 'string' || !entry.canonical_path)) return null;
+    const requested = entry.canonical_path || (entry.source === 'Claude Code' ? await resolveClaudeProjectDir(entry.path, fs.stat) : entry.path);
+    if (!requested) return null;
+    const stat = await fs.stat(requested).catch(() => null);
+    if (!stat?.ok || !stat.exists || !stat.is_dir) return null;
+    const path = stat.path || requested;
     const stamp = typeof entry.last_session_at === 'string' && Number.isFinite(Date.parse(entry.last_session_at)) ? entry.last_session_at : undefined;
-    return { name: lastSegment(path), path, sessions: entry.sessions, source: entry.source, lastSessionAt: stamp };
+    const description = typeof entry.description === 'string' ? entry.description.slice(0, 320) : undefined;
+    return { name: lastSegment(path), path, sessions: entry.sessions, source: entry.source, lastSessionAt: stamp, ...(description ? { description } : {}) };
   });
   const byPath = new Map<string, DiscoveredProject>();
   for (const project of resolved) {
     if (!project) continue;
-    const previous = byPath.get(project.path);
-    if (!previous) { byPath.set(project.path, project); continue; }
+    const key = projectPathKey(project.path);
+    const previous = byPath.get(key);
+    if (!previous) { byPath.set(key, project); continue; }
+    previous.description ||= project.description;
     previous.sessions += project.sessions;
     if (previous.source !== project.source) previous.source = 'Claude Code + Codex';
     if (Date.parse(project.lastSessionAt || '') > Date.parse(previous.lastSessionAt || '') || !previous.lastSessionAt) previous.lastSessionAt = project.lastSessionAt;
@@ -246,7 +265,7 @@ export async function importSessionProjects(
   existingNames: string[],
   created: ImportedSessionProjects,
   api: {
-    create(name: string, path: string): Promise<string>;
+    create(name: string, path: string, description?: string): Promise<string>;
     attach(id: string, path: string): Promise<void>;
     errorText(error: unknown): string;
   },
@@ -259,7 +278,7 @@ export async function importSessionProjects(
       let state = created[project.path];
       if (!state) {
         const name = reserveProjectName(project.name, taken);
-        const id = await api.create(name, project.path);
+        const id = await api.create(name, project.path, project.description);
         if (!id) throw new Error('The hub did not return the new project id.');
         state = created[project.path] = { id, name };
       }

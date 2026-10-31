@@ -622,7 +622,7 @@ session_discovery_peer :: proc(data: rawptr) {
 	defer delete(command)
 	peer.received = json_string(command, "type", context.temp_allocator) == "session_projects"
 	id := json_string(command, "command_id", context.temp_allocator)
-	reply := fmt.tprintf(`{{"type":"session_projects_result","command_id":"%s","ok":true,"projects":[{{"source":"Codex","path":"/fixture/app","sessions":2,"last_session_at":"2026-10-31T10:00:00Z"}}],"truncated":false}}`, id)
+	reply := fmt.tprintf(`{{"type":"session_projects_result","command_id":"%s","ok":true,"projects":[{{"source":"Codex","path":"/fixture/app","canonical_path":"/fixture/app","description":"App is a calendar service.","sessions":2,"last_session_at":"2026-10-31T10:00:00Z"}}],"truncated":false}}`, id)
 	chunks: [dynamic]Bridge_Chunk_Reassembly
 	defer bridge_chunk_reassemblies_free(&chunks)
 	peer.correlated = bridge_ws_process_frame(&peer.f.bh, peer.f.bridge_id, peer.generation, peer.socket, &chunks, strings.clone(reply))
@@ -662,4 +662,5 @@ test_session_projects_authorized_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, peer.received && peer.correlated)
 	testing.expect(t, strings.contains(response.body, `"path":"/fixture/app"`))
 	testing.expect(t, strings.contains(response.body, `"sessions":2`))
+	testing.expect(t, strings.contains(response.body, `"description":"App is a calendar service."`))
 }

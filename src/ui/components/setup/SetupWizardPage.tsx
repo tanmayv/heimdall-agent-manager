@@ -835,7 +835,7 @@ export function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: (
       return discoverSessionProjects(metadata, bridgeSessionFs(bridgeId));
     }).then(async (all) => {
       const mappings = await loadProjectBridgeMappings(existing, (projectId) =>
-        cookieJsonFetch(`/projects/${encodeURIComponent(projectId)}`));
+        cookieJsonFetch(`/projects/${encodeURIComponent(projectId)}`), { bridgeId, stat: bridgeSessionFs(bridgeId).stat });
       if (cancelled) return;
       const fresh = newProjectsOnly(all, mappings, bridgeId);
       setFound(fresh);
@@ -863,8 +863,8 @@ export function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: (
   const importChosen = async () => {
     setImporting(true);
     const { imported, errors } = await importSessionProjects(chosen, existing.map((p: any) => String(p.name || '')), importIds.current, {
-      create: async (name, path) => {
-        const created = await createProject({ name, default_path: path }).unwrap();
+      create: async (name, path, description) => {
+        const created = await createProject({ name, default_path: path, ...(description ? { description } : {}) }).unwrap();
         return String(created?.project_id || created?.projectId || created?.project?.project_id || '');
       },
       attach: async (projectId, path) => { await setBridgePath({ projectId, bridgeId, path }).unwrap(); },
@@ -917,6 +917,7 @@ export function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: (
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-primary">{project.name}</span>
                     <span className="block truncate font-mono text-xs text-muted" title={project.path}>{project.path}</span>
+                    {project.description ? <span className="block text-xs text-muted">{project.description}</span> : null}
                     <span className="block text-xs text-faint">{project.sessions} {project.sessions === 1 ? 'session' : 'sessions'} · {project.source}</span>
                     <span className="block text-xs text-faint">{sessionTimeLabel(project.lastSessionAt)}</span>
                   </span>

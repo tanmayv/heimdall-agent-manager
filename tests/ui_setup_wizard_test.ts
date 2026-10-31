@@ -423,13 +423,24 @@ test('rendered Projects step retries failed and malformed inventory before offer
   let lists = 0;
   let details = 0;
   let scans = 0;
+  let completed = 0;
+  const creations: any[] = [];
+  const attachments: string[] = [];
   const reply = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), 'https://hub.test');
+    if (url.pathname === '/api/v1/projects' && init?.method === 'POST') {
+      creations.push(JSON.parse(String(init.body)));
+      return reply({ data: { project_id: 'new' } });
+    }
+    if (url.pathname === '/api/v1/projects/new/bridge-paths/here' && init?.method === 'PUT') {
+      attachments.push(JSON.parse(String(init.body)).path);
+      return reply({ data: { ok: true } });
+    }
     if (url.pathname === '/api/v1/projects') {
       lists++;
       if (phase === 'failed') return reply({ error: { message: 'inventory offline' } }, 503);
-      return reply({ data: [{ project_id: 'p', name: 'existing' }], page: { has_more: false, next_cursor: null } });
+      return reply({ data: [{ project_id: 'p', name: 'app', description: 'My original description.' }], page: { has_more: false, next_cursor: null } });
     }
     if (url.pathname === '/api/v1/projects/p') {
       details++;
@@ -438,7 +449,8 @@ test('rendered Projects step retries failed and malformed inventory before offer
     if (url.pathname.endsWith('/session-projects')) {
       scans++;
       return reply({ ok: true, projects: [
-        { source: 'Codex', path: '/work/app', sessions: 1, last_session_at: '2026-01-01T00:00:00Z' },
+        { source: 'Codex', path: '/work/app', sessions: 1, last_session_at: '2026-01-01T00:00:00Z', description: 'App is a calendar service.' },
+        { source: 'Claude Code', path: '-work-app', canonical_path: '/work/app', sessions: 2, last_session_at: '2026-01-01T00:00:00Z', description: 'App is a calendar service.' },
         { source: 'Codex', path: '/work/existing', sessions: 1, last_session_at: '2026-01-01T00:00:00Z' },
       ] });
     }
@@ -454,7 +466,7 @@ test('rendered Projects step retries failed and malformed inventory before offer
     assert.fail('render did not settle: ' + dom.window.document.body.textContent);
   };
   try {
-    await React.act(async () => { root.render(React.createElement(Provider, { store }, React.createElement(ProjectsStep, { bridgeId: 'here', onDone() {} }))); });
+    await React.act(async () => { root.render(React.createElement(Provider, { store }, React.createElement(ProjectsStep, { bridgeId: 'here', onDone() { completed++; } }))); });
     await settle(() => Boolean(find('setup-projects-retry-btn')));
     assert.equal(find('setup-projects-import-btn'), null);
     phase = 'malformed';
@@ -470,6 +482,12 @@ test('rendered Projects step retries failed and malformed inventory before offer
     assert.equal(find('setup-projects-retry-btn'), null);
     assert.ok(find('setup-projects-row-%2Fwork%2Fapp'));
     assert.equal(find('setup-projects-row-%2Fwork%2Fexisting'), null);
+    assert.match(find('setup-projects-row-%2Fwork%2Fapp')!.textContent!, /App is a calendar service/);
+    assert.match(find('setup-projects-row-%2Fwork%2Fapp')!.textContent!, /3 sessions/);
+    await React.act(async () => { find('setup-projects-import-btn')!.click(); });
+    await settle(() => completed === 1);
+    assert.deepEqual(creations, [{ name: 'app (2)', default_path: '/work/app', description: 'App is a calendar service.' }]);
+    assert.deepEqual(attachments, ['/work/app']);
   } finally {
     await React.act(async () => { root.unmount(); store.dispatch(heimdallApi.util.resetApiState()); });
     globalThis.fetch = oldFetch;
@@ -478,4 +496,50 @@ test('rendered Projects step retries failed and malformed inventory before offer
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
     dom.window.close();
   }
+});
+
+test('canonical paths merge provider aliases, preserve summaries, and omit unresolved bridge rows', async () => {
+  const summary = 'App is a calendar service.';
+  const stat: import('../src/ui/components/setup/sessionProjects.ts').SessionFs['stat'] = async (path) => ({
+    ok: true, exists: true, is_dir: true, path: path === '/alias/app' ? '/real/app' : path,
+  });
+  const rows = await sessions.discoverSessionProjects({ ok: true, projects: [
+    { source: 'Codex', path: '/alias/app', sessions: 2, last_session_at: '', description: summary },
+    { source: 'Claude Code', path: '-alias-app', canonical_path: '/real/app', sessions: 3, last_session_at: '', description: summary },
+    { source: 'Codex', path: '/other/app', sessions: 1, last_session_at: '', description: 'Another app.' },
+    { source: 'Claude Code', path: '-ambiguous', canonical_path: '', sessions: 1, last_session_at: '' },
+  ] }, { list: async () => null, stat });
+  assert.equal(rows.length, 2);
+  const app = rows.find((p) => p.path === '/real/app')!;
+  assert.equal(app.sessions, 5);
+  assert.equal(app.source, 'Claude Code + Codex');
+  assert.equal(app.description, summary);
+  const inventory = [{ project_id: 'existing', description: 'My own description.' }];
+  const mappings = await sessions.loadProjectBridgeMappings(inventory, async () => ({
+    project: inventory[0], bridge_paths: [{ bridge_id: 'here', path: '/alias/app' }],
+  }), { bridgeId: 'here', stat });
+  assert.deepEqual(sessions.newProjectsOnly(rows, mappings, 'here').map((p) => p.path), ['/other/app']);
+  assert.equal(inventory[0].description, 'My own description.');
+  const created: any[] = [];
+  await sessions.importSessionProjects(rows, ['app'], {}, {
+    create: async (name, path, description) => { created.push({ name, path, description }); return name; },
+    attach: async () => {},
+    errorText: String,
+  });
+  assert.deepEqual(created, [
+    { name: 'app (2)', path: '/real/app', description: summary },
+    { name: 'app (3)', path: '/other/app', description: 'Another app.' },
+  ]);
+});
+
+test('canonical mapping checks fail closed on fs errors, skip other bridges, and normalize Windows identity', async () => {
+  const detail = async () => ({ bridge_paths: [{ bridge_id: 'here', path: '/alias/app' }] });
+  await assert.rejects(sessions.loadProjectBridgeMappings([{ project_id: 'p' }], detail, {
+    bridgeId: 'here', stat: async () => null,
+  }), /check existing/);
+  const mappings = await sessions.loadProjectBridgeMappings([{ project_id: 'p' }], detail, {
+    bridgeId: 'other', stat: async () => { throw new Error('other bridge must not be checked'); },
+  });
+  assert.equal(mappings[0].bridge_paths[0].path, '/alias/app');
+  assert.equal(sessions.projectPathKey('C:\\Work\\App\\'), sessions.projectPathKey('c:/work/app'));
 });
