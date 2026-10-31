@@ -195,3 +195,91 @@ test('sunset failure note reads the refetched bridge list (REQ-3)', () => {
   assert.match(unknown, /^Could not check whether dawnstar is still active; see Bridges\./);
   assert.doesNotMatch(unknown, /is still active\. $/);
 });
+
+test('session metadata: resolve Claude, merge Codex cwd, sort by newest session', async () => {
+  const fs = fakeFs(['/home', '/home/me', '/home/me/app', '/home/me/blog']);
+  const found = await sessions.discoverSessionProjects({ ok: true, projects: [
+    { source: 'Claude Code', path: '-home-me-app', sessions: 2, last_session_at: '2026-10-28T10:00:00Z' },
+    { source: 'Codex', path: '/home/me/app', sessions: 3, last_session_at: '2026-10-31T10:00:00Z' },
+    { source: 'Codex', path: '/home/me/blog', sessions: 10, last_session_at: '2026-10-30T10:00:00Z' },
+    { source: 'Codex', path: '/home/me/gone', sessions: 2, last_session_at: '2026-10-31T11:00:00Z' },
+    { source: 'Claude Code', path: 'invalid', sessions: 1, last_session_at: 'bad' },
+  ] }, fs);
+  assert.deepEqual(found.map((p) => [p.path, p.sessions, p.source, p.lastSessionAt]), [
+    ['/home/me/app', 5, 'Claude Code + Codex', '2026-10-31T10:00:00Z'],
+    ['/home/me/blog', 10, 'Codex', '2026-10-30T10:00:00Z'],
+  ]);
+});
+
+test('session metadata: empty, failed, malformed and inaccessible history', async () => {
+  const fs = fakeFs(['/home', '/home/me', '/home/me/app']);
+  assert.deepEqual(await sessions.discoverSessionProjects({ ok: true, projects: [] }, fs), []);
+  await assert.rejects(sessions.discoverSessionProjects({ ok: false, projects: [] }, fs), /Could not read/);
+  const rows = await sessions.discoverSessionProjects({ ok: true, projects: [
+    { source: 'Codex', path: '/home/me/app', sessions: 1, last_session_at: 'invalid' },
+    null as any,
+    { source: 'Other' as any, path: '/home/me/app', sessions: 4, last_session_at: '' },
+  ] }, fs);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].lastSessionAt, undefined);
+  assert.equal(sessions.sessionTimeLabel(rows[0].lastSessionAt), 'Last session unknown');
+  assert.match(sessions.sessionTimeLabel('2026-10-31T10:00:00Z'), /^Last session .+2026/);
+  assert.deepEqual(await sessions.discoverSessionProjects({ ok: true, projects: [
+    { source: 'Codex', path: '/home/me/app', sessions: 1, last_session_at: '' },
+  ] }, { ...fs, stat: async () => { throw new Error('unreadable'); } }), []);
+});
+
+test('import names reserve existing names and same-basename folders', () => {
+  const taken = new Set(['app', 'app (2)', 'blog']);
+  assert.equal(sessions.reserveProjectName('app', taken), 'app (3)');
+  assert.equal(sessions.reserveProjectName('app', taken), 'app (4)');
+  assert.equal(sessions.reserveProjectName('Blog', taken), 'Blog (2)');
+});
+
+test('project deduplication is scoped to bridge paths', () => {
+  const found = [{ name: 'app', path: '/home/me/app', sessions: 1, source: 'Codex' as const }];
+  assert.equal(sessions.newProjectsOnly(found, [{ default_path: '/home/me/app', bridge_paths: [{ bridge_id: 'brg_other', path: '/home/me/app' }] }], 'brg_here').length, 1);
+});
+
+test('import retries only attach failed rows and preserve unique names and default paths', async () => {
+  const chosen = [
+    { name: 'app', path: '/home/me/app', sessions: 1, source: 'Codex' as const },
+    { name: 'app', path: '/work/app', sessions: 2, source: 'Codex' as const },
+  ];
+  const created: import('../src/ui/components/setup/sessionProjects.ts').ImportedSessionProjects = {};
+  const creations: [string, string][] = [];
+  const attachments: [string, string][] = [];
+  let fail = true;
+  const api = {
+    create: async (name: string, path: string) => { creations.push([name, path]); return 'project-' + creations.length; },
+    attach: async (id: string, path: string) => {
+      attachments.push([id, path]);
+      if (fail && path === '/work/app') throw new Error('bridge disconnected');
+    },
+    errorText: (err: unknown) => (err as Error).message,
+  };
+  const first = await sessions.importSessionProjects(chosen, ['app'], created, api);
+  assert.deepEqual(creations, [['app (2)', '/home/me/app'], ['app (3)', '/work/app']]);
+  assert.deepEqual([...first.imported], ['/home/me/app']);
+  assert.deepEqual(first.errors, { '/work/app': 'bridge disconnected' });
+  fail = false;
+  const retry = await sessions.importSessionProjects(chosen.filter((p) => first.errors[p.path]), ['app'], created, api);
+  assert.equal(creations.length, 2, 'retry reuses the created project');
+  assert.deepEqual(attachments.at(-1), ['project-2', '/work/app']);
+  assert.deepEqual([...retry.imported], ['/work/app']);
+  assert.deepEqual(retry.errors, {});
+});
+
+test('create failures remain visible per row without preventing other imports', async () => {
+  const chosen = [
+    { name: 'bad', path: '/bad', sessions: 1, source: 'Codex' as const },
+    { name: 'good', path: '/good', sessions: 1, source: 'Codex' as const },
+  ];
+  const result = await sessions.importSessionProjects(chosen, [], {}, {
+    create: async (_name, path) => path === '/bad' ? '' : 'id-good',
+    attach: async () => {},
+    errorText: (err) => (err as Error).message,
+  });
+  assert.match(result.errors['/bad'], /did not return.*project id/);
+  assert.deepEqual([...result.imported], ['/good']);
+});

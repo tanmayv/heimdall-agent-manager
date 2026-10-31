@@ -10,9 +10,8 @@
 // dropped. Only the bridge's own sandboxed fs API is used (GET /bridges/{id}/fs and
 // /fs/stat), so nothing outside the bridge's fs_root is read.
 //
-// Codex keeps its sessions as dated JSONL files whose working directory is inside
-// the file; reading those needs a bridge endpoint that does not exist yet, so Codex
-// history is not discovered here.
+// The authorized session-projects endpoint supplies counts and mtimes without
+// returning session bodies. Claude encoded names still use sandboxed fs/stat.
 
 export interface FsEntry { name: string; is_dir: boolean }
 export interface FsListing { ok: boolean; path: string; entries: FsEntry[] }
@@ -29,7 +28,8 @@ export interface DiscoveredProject {
   /** Absolute path on the bridge. */
   path: string;
   sessions: number;
-  source: 'Claude Code';
+  source: 'Claude Code' | 'Codex' | 'Claude Code + Codex';
+  lastSessionAt?: string;
 }
 
 const JOINERS = ['-', '.', '_', ' '];
@@ -157,7 +157,94 @@ export function newProjectsOnly(found: DiscoveredProject[], existing: any[] | nu
     for (const bp of Array.isArray(project?.bridge_paths) ? project.bridge_paths : []) {
       if (String(bp?.bridge_id || '') === bridgeId && bp?.path) taken.add(norm(String(bp.path)));
     }
-    if (project?.default_path) taken.add(norm(String(project.default_path)));
+    // default_path has no bridge identity; the same path on another machine
+    // must remain eligible until it has a mapping on this bridge.
   }
   return found.filter((p) => !taken.has(norm(p.path)));
+}
+
+export interface SessionProjectMetadata {
+  source: 'Claude Code' | 'Codex';
+  path: string;
+  sessions: number;
+  last_session_at: string;
+}
+export interface SessionProjectListing {
+  ok: boolean;
+  projects: SessionProjectMetadata[];
+  truncated?: boolean;
+}
+
+/** Resolve Claude's lossy names; combine providers sharing the same real cwd. */
+export async function discoverSessionProjects(metadata: SessionProjectListing, fs: SessionFs): Promise<DiscoveredProject[]> {
+  if (!metadata?.ok || !Array.isArray(metadata.projects)) throw new Error('Could not read session project history.');
+  const resolved = await mapLimit(metadata.projects, 4, async (entry): Promise<DiscoveredProject | null> => {
+    if (!entry || !['Codex', 'Claude Code'].includes(entry.source) || typeof entry.path !== 'string' || !(entry.sessions > 0)) return null;
+    const path = entry.source === 'Claude Code' ? await resolveClaudeProjectDir(entry.path, fs.stat) : entry.path;
+    if (!path) return null;
+    if (entry.source === 'Codex') {
+      const stat = await fs.stat(path).catch(() => null);
+      if (!stat?.ok || !stat.exists || !stat.is_dir) return null;
+    }
+    const stamp = typeof entry.last_session_at === 'string' && Number.isFinite(Date.parse(entry.last_session_at)) ? entry.last_session_at : undefined;
+    return { name: lastSegment(path), path, sessions: entry.sessions, source: entry.source, lastSessionAt: stamp };
+  });
+  const byPath = new Map<string, DiscoveredProject>();
+  for (const project of resolved) {
+    if (!project) continue;
+    const previous = byPath.get(project.path);
+    if (!previous) { byPath.set(project.path, project); continue; }
+    previous.sessions += project.sessions;
+    if (previous.source !== project.source) previous.source = 'Claude Code + Codex';
+    if (Date.parse(project.lastSessionAt || '') > Date.parse(previous.lastSessionAt || '') || !previous.lastSessionAt) previous.lastSessionAt = project.lastSessionAt;
+  }
+  return [...byPath.values()].sort((a, b) => (Date.parse(b.lastSessionAt || '') || 0) - (Date.parse(a.lastSessionAt || '') || 0) || b.sessions - a.sessions || a.path.localeCompare(b.path));
+}
+
+/** Reserve names as imports run, including same-basename folders in one batch. */
+export function reserveProjectName(name: string, taken: Set<string>): string {
+  let candidate = name;
+  for (let suffix = 2; taken.has(candidate.toLocaleLowerCase()); suffix += 1) candidate = name + ' (' + suffix + ')';
+  taken.add(candidate.toLocaleLowerCase());
+  return candidate;
+}
+
+export function sessionTimeLabel(stamp?: string): string {
+  if (!stamp || !Number.isFinite(Date.parse(stamp))) return 'Last session unknown';
+  return 'Last session ' + new Date(stamp).toLocaleString();
+}
+
+export type ImportedSessionProjects = Record<string, { id: string; name: string }>;
+
+/** Keep created IDs when attaching a bridge path fails, so retry cannot create
+ * another project. Successful rows are returned for removal from the selection. */
+export async function importSessionProjects(
+  chosen: DiscoveredProject[],
+  existingNames: string[],
+  created: ImportedSessionProjects,
+  api: {
+    create(name: string, path: string): Promise<string>;
+    attach(id: string, path: string): Promise<void>;
+    errorText(error: unknown): string;
+  },
+): Promise<{ imported: Set<string>; errors: Record<string, string> }> {
+  const taken = new Set([...existingNames, ...Object.values(created).map((p) => p.name)].map((name) => name.toLocaleLowerCase()));
+  const imported = new Set<string>();
+  const errors: Record<string, string> = {};
+  for (const project of chosen) {
+    try {
+      let state = created[project.path];
+      if (!state) {
+        const name = reserveProjectName(project.name, taken);
+        const id = await api.create(name, project.path);
+        if (!id) throw new Error('The hub did not return the new project id.');
+        state = created[project.path] = { id, name };
+      }
+      await api.attach(state.id, project.path);
+      imported.add(project.path);
+    } catch (error) {
+      errors[project.path] = api.errorText(error);
+    }
+  }
+  return { imported, errors };
 }

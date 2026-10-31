@@ -58,7 +58,7 @@ import {
   type IdentityChoice,
   type SetupStep,
 } from './setupWizardModel';
-import { discoverClaudeProjects, newProjectsOnly, type DiscoveredProject, type SessionFs } from './sessionProjects';
+import { discoverSessionProjects, importSessionProjects, sessionTimeLabel, newProjectsOnly, type DiscoveredProject, type ImportedSessionProjects, type SessionFs } from './sessionProjects';
 
 const statusTone: Record<string, Tone> = { success: 'success', warning: 'warning', danger: 'danger', muted: 'neutral' };
 
@@ -807,6 +807,8 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  const [scanTruncated, setScanTruncated] = useState(false);
+  const importIds = useRef<ImportedSessionProjects>({});
 
   const existing = useMemo(() => {
     const raw: any = projectsData;
@@ -816,33 +818,38 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
   useEffect(() => {
     if (!bridgeId || projectsLoading) return;
     let cancelled = false;
-    void discoverClaudeProjects(bridgeSessionFs(bridgeId)).then((all) => {
+    importIds.current = {};
+    setFound(null);
+    setScanTruncated(false);
+    setScanError('');
+    void cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/session-projects`).then(async (metadata) => {
+      if (!cancelled) setScanTruncated(Boolean(metadata?.truncated));
+      return discoverSessionProjects(metadata, bridgeSessionFs(bridgeId));
+    }).then((all) => {
       if (cancelled) return;
       const fresh = newProjectsOnly(all, existing, bridgeId);
       setFound(fresh);
       setSelected(Object.fromEntries(fresh.map((p) => [p.path, true])));
     }).catch((err) => { if (!cancelled) { setScanError(errText(err)); setFound([]); } });
     return () => { cancelled = true; };
-  }, [bridgeId, projectsLoading, existing]);
+  }, [bridgeId, projectsLoading]);
 
   const chosen = (found || []).filter((p) => selected[p.path]);
   const all = Boolean(found?.length) && chosen.length === found?.length;
 
   const importChosen = async () => {
     setImporting(true);
-    const errors: Record<string, string> = {};
-    for (const project of chosen) {
-      try {
-        const created = await createProject({ name: project.name }).unwrap();
-        const projectId = String(created?.project_id || created?.projectId || created?.project?.project_id || '');
-        if (!projectId) throw new Error('The hub did not return the new project id.');
-        await setBridgePath({ projectId, bridgeId, path: project.path }).unwrap();
-      } catch (err) {
-        errors[project.path] = errText(err);
-      }
-    }
+    const { imported, errors } = await importSessionProjects(chosen, existing.map((p: any) => String(p.name || '')), importIds.current, {
+      create: async (name, path) => {
+        const created = await createProject({ name, default_path: path }).unwrap();
+        return String(created?.project_id || created?.projectId || created?.project?.project_id || '');
+      },
+      attach: async (projectId, path) => { await setBridgePath({ projectId, bridgeId, path }).unwrap(); },
+      errorText: errText,
+    });
     setImporting(false);
     setRowErrors(errors);
+    setFound((rows) => rows?.filter((p) => !imported.has(p.path)) || []);
     if (Object.keys(errors).length === 0) onDone();
     else setSelected(Object.fromEntries(Object.keys(errors).map((path) => [path, true])));
   };
@@ -850,13 +857,14 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
   return (
     <>
       <StepHeading eyebrow="Projects" title="Bring in projects you already work on">
-        Found in your Claude Code session history on this machine. Each folder becomes a project on this bridge; the sessions stay where they are.
+        Found in your Claude Code and Codex session history on this machine. Each folder becomes a project on this bridge; the sessions stay where they are.
       </StepHeading>
+      {scanTruncated ? <p role="status" className="text-xs text-faint">Showing the session history found before the scan limit.</p> : null}
       {found === null ? (
         <p data-debug-id="setup-projects-scanning" className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" /> Looking through past sessions…</p>
       ) : found.length === 0 ? (
         <div data-debug-id="setup-projects-empty" className="flex flex-col gap-3">
-          <p className="text-sm text-muted">{scanError ? `Couldn't read session history: ${scanError}` : 'No past Claude Code sessions with a project folder that isn’t already in Ninjy.'}</p>
+          <p className="text-sm text-muted">{scanError ? `Couldn't read session history: ${scanError}` : 'No past Claude Code or Codex sessions with a project folder that isn’t already in Ninjy.'}</p>
           <div><Button variant="primary" data-debug-id="setup-projects-continue-btn" onClick={onDone}>Continue</Button></div>
         </div>
       ) : (
@@ -874,10 +882,10 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
             </label>
             {found.map((project) => (
               <div key={project.path} className="border-b border-subtle px-4 py-3 last:border-b-0">
-                <label data-debug-id={`setup-projects-row-${project.name}`} className="flex cursor-pointer items-center gap-3">
+                <label data-debug-id={`setup-projects-row-${encodeURIComponent(project.path)}`} className="flex cursor-pointer items-center gap-3">
                   <input
                     type="checkbox"
-                    data-debug-id={`setup-projects-check-${project.name}`}
+                    data-debug-id={`setup-projects-check-${encodeURIComponent(project.path)}`}
                     checked={Boolean(selected[project.path])}
                     disabled={importing}
                     onChange={(event) => { const value = event.target.checked; setSelected((s) => ({ ...s, [project.path]: value })); }}
@@ -886,13 +894,13 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
                     <span className="block text-sm font-semibold text-primary">{project.name}</span>
                     <span className="block truncate font-mono text-xs text-muted" title={project.path}>{project.path}</span>
                     <span className="block text-xs text-faint">{project.sessions} {project.sessions === 1 ? 'session' : 'sessions'} · {project.source}</span>
+                    <span className="block text-xs text-faint">{sessionTimeLabel(project.lastSessionAt)}</span>
                   </span>
                 </label>
                 {rowErrors[project.path] ? <p role="alert" className="mt-1 pl-7 text-xs text-danger">{rowErrors[project.path]}</p> : null}
               </div>
             ))}
           </section>
-          <p className="text-xs text-faint">Codex session history isn't read yet; add those folders from Projects later.</p>
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" data-debug-id="setup-projects-import-btn" loading={importing} disabled={chosen.length === 0 || importing} onClick={() => void importChosen()}>
               Import {chosen.length} {chosen.length === 1 ? 'project' : 'projects'}
