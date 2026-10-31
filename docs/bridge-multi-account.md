@@ -145,3 +145,9 @@ auto_update_enabled = false
 The setting applies only to that profile and is preserved by updates. A running
 update finishes its current transaction; disabling the setting prevents the next
 automatic update. Manual updates remain available.
+
+A profile with continuously running agents waits indefinitely for a quiet window;
+automatic updates never force those agents to stop. This includes agents preserved
+by the PTY host across bridge restarts. If the PTY host cannot be queried, the
+profile defers the update until its agent state can be verified. Stop long-lived
+agents to permit the next automatic check, or use the manual Update action.

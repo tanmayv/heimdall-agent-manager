@@ -184,13 +184,39 @@ test_auto_update_quiet_admission :: proc(t: ^testing.T) {
 		sync.mutex_unlock(&bridge_auto_update_mutex)
 	}
 	testing.expect(t, bridge_auto_update_launch_enter())
-	testing.expect(t, !bridge_auto_update_quiet(), "a preparing launch prevents update admission")
+	testing.expect(t, !bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host), "a preparing launch prevents update admission")
 	bridge_auto_update_launch_leave()
-	if !bridge_auto_update_quiet() { testing.expect(t, false, "fixture unexpectedly has running launches"); return }
-	testing.expect(t, bridge_auto_update_quiet(true))
+	if !bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host) { testing.expect(t, false, "fixture unexpectedly has running launches"); return }
+	testing.expect(t, bridge_auto_update_quiet_with_host(true, auto_update_test_empty_host))
 	testing.expect(t, !bridge_auto_update_launch_enter(), "new agents cannot race the detached updater")
 	launched, _, err := bridge_runtime_launch_agent("auto-update-test", `{"agent_instance_id":"auto-update-test"}`)
 	testing.expect(t, !launched)
 	testing.expect_value(t, err.class, contracts.Bridge_Error_Class.retriable)
 	testing.expect_value(t, err.retry_after_ms, i64(30_000))
+}
+
+auto_update_test_empty_host :: proc(socket: string) -> (Pty_Host_Reply, bool) {
+	return {kind = .Agent_List}, true
+}
+
+@(test)
+test_auto_update_quiet_preserved_pty_agent :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// No current-process launch exists, as after a bridge restart.
+	sync.mutex_lock(&bridge_runtime_mutex)
+	count := len(bridge_runtime_launches)
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	testing.expect_value(t, count, 0)
+	testing.expect(t, !bridge_auto_update_quiet_with_host(true, proc(socket: string) -> (Pty_Host_Reply, bool) {
+		reply := Pty_Host_Reply{kind = .Agent_List}
+		reply.agents = make([]Pty_Host_Agent_Info, 1)
+		reply.agents[0] = {instance_id = strings.clone("preserved-agent"), alive = true}
+		return reply, true
+	}), "a preserved PTY agent prevents update admission")
+	testing.expect(t, !bridge_auto_update_quiet_with_host(true, proc(socket: string) -> (Pty_Host_Reply, bool) {
+		return {}, false
+	}), "failed PTY listing prevents update admission")
+	testing.expect(t, bridge_auto_update_launch_enter(), "busy or unavailable host must not reserve admission")
+	bridge_auto_update_launch_leave()
 }

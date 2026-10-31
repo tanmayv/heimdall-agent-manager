@@ -100,6 +100,15 @@ bridge_auto_update_launch_leave :: proc() {
 }
 
 bridge_auto_update_quiet :: proc(reserve := false) -> bool {
+	return bridge_auto_update_quiet_with_host(reserve)
+}
+
+// The PTY host survives bridge restarts; the current process launch map does not.
+// Inspect the own-profile socket without starting or replacing its daemon.
+bridge_auto_update_quiet_with_host :: proc(
+	reserve := false,
+	list: proc(socket: string) -> (Pty_Host_Reply, bool) = bridge_pty_host_list,
+) -> bool {
 	sync.mutex_lock(&bridge_auto_update_mutex)
 	defer sync.mutex_unlock(&bridge_auto_update_mutex)
 	if bridge_auto_update_launches > 0 do return false
@@ -107,6 +116,12 @@ bridge_auto_update_quiet :: proc(reserve := false) -> bool {
 	count := len(bridge_runtime_launches)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	if count != 0 do return false
+	socket := pty_host_socket_path()
+	defer delete(socket)
+	reply, ok := list(socket)
+	if !ok do return false // unavailable live state cannot authorize a restart
+	defer pty_host_reply_delete(reply)
+	if len(reply.agents) != 0 do return false
 	if reserve do bridge_auto_update_reserved_until = bridge_runtime_now_ms() + 30 * 60_000
 	return true
 }
