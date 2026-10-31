@@ -9,6 +9,7 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
+import mcp_service "odin_test:hub/service/mcp"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
@@ -33,6 +34,8 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	mcp_spike: mcp_service.Store,
+	mcp_spike_handlers: http.MCP_Spike_Handlers,
 	config: Hub_Config,
 	clock: platform.Clock,
 	ids: platform.ID_Generator,
@@ -209,6 +212,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		terminal_retention = time.Duration(config.runtime_terminal_retention_seconds) * time.Second,
 	}
 	if oidc_ok, oidc_err := validate_oidc_config(config); !oidc_ok do return false, oidc_err
+	if config.mcp_oauth_spike {
+		// Reuse the strict HTTPS origin parser, without imposing a distinct host.
+		origin, valid, _ := normalize_preview_origin(config.ui_origin, "")
+		if !valid || origin == "" do return false, "MCP OAuth probe requires a valid HTTPS ui_origin without a path"
+		delete(origin)
+		if !web_login_configured(config) do return false, "MCP OAuth probe requires existing OIDC browser login"
+	}
 	graph.config = config
 	graph.clock = platform.real_clock()
 	graph.ids = platform.real_id_generator()
@@ -586,6 +596,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
+	if config.mcp_oauth_spike {
+		mcp_service.init(&graph.mcp_spike)
+		graph.mcp_spike_handlers = {auth = &graph.auth, store = &graph.mcp_spike, origin = strings.trim_right(config.ui_origin, "/")}
+	}
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
 	// When unconfigured, subscription endpoints still work; only sending is off.
@@ -613,6 +627,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	sqlite.close(&graph.sqlite_actions.snapshot_conn)
 	sqlite.close(&graph.sqlite_billing.conn)
 	sqlite.close(&graph.sqlite_bridge_commit.conn)
+	if graph.config.mcp_oauth_spike do mcp_service.free(&graph.mcp_spike)
 	auth_service.oidc_free(&graph.auth)
 	sqlite.close(&graph.oidc_identity_db)
 	vault_directory_service.service_free(&graph.vault_directory)
@@ -621,6 +636,14 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 }
 
 register_routes :: proc(graph: ^App_Graph) {
+	if graph.config.mcp_oauth_spike {
+		ctx := rawptr(&graph.mcp_spike_handlers)
+		for path in ([]string{http.MCP_SPIKE_METADATA, "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"}) do http.router_add(&graph.router, "GET", path, ctx, http.mcp_spike_metadata_handler)
+		http.router_add(&graph.router, "GET", "/api/v1/mcp-spike/oauth/authorize", ctx, http.mcp_spike_authorize_handler)
+		http.router_add(&graph.router, "POST", "/api/v1/mcp-spike/oauth/register", ctx, http.mcp_spike_register_handler)
+		http.router_add(&graph.router, "POST", "/api/v1/mcp-spike/oauth/token", ctx, http.mcp_spike_token_handler)
+		http.router_add(&graph.router, "ANY", http.MCP_SPIKE_PATH, ctx, http.mcp_spike_handler)
+	}
 	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/portal", rawptr(&graph.billing_handlers), http.account_portal_handler)
