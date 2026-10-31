@@ -90,13 +90,57 @@ Bridge_Commit_Enrollment_Proc :: proc(ctx: rawptr, bridge_id, family_id, from_sc
 Bridge_List_Live_Tokens_By_Scope_Proc :: proc(ctx: rawptr, scope: string) -> ([]domain.Bridge_Token, domain.Domain_Error)
 
 Bridge_Plan_Rank_Proc :: proc(a, b: domain.Bridge) -> bool
-Bridge_Create_Limited_Proc :: proc(ctx: rawptr, bridge: domain.Bridge, max_bridges: int) -> (domain.Bridge, bool, domain.Domain_Error)
+// Bridge_Sunset names an existing bridge to retire IN THE SAME TRANSACTION that
+// creates its replacement (the setup wizard's "register new and sunset one" choice
+// on a full plan). bridge_id empty means no sunset. The repository re-checks, under
+// the write lock, that the bridge belongs to the replacement's owner and is enrolled
+// (not pending) and not revoked; a bridge that fails any of those is .Not_Found for
+// an absent/foreign/revoked one (no enumeration oracle) and .Validation_Failed for
+// the owner's own pending one. Its live credentials are revoked and its row flipped
+// to revoked BEFORE the plan count, so the freed slot is the one the replacement
+// takes, and nothing is written unless the replacement is inserted too.
+Bridge_Sunset :: struct {
+	bridge_id:  string,
+	revoked_at: string,
+}
+
+// Bridge_Sunset_Receipt records exactly what a sunset changed so a compensating
+// rollback (Bridge_Restore_Sunset_Proc) can put back that and nothing else: the
+// token rows ARE listed by id rather than matched by revoked_at, because a family
+// revoked earlier by theft detection could carry the same timestamp and must never
+// be revived. Zero value = no sunset happened. token_ids and the strings are
+// allocated with context.allocator; free with bridge_sunset_receipt_destroy.
+Bridge_Sunset_Receipt :: struct {
+	bridge_id:  string,
+	revoked_at: string,
+	token_ids:  []string,
+}
+
+bridge_sunset_receipt_destroy :: proc(receipt: ^Bridge_Sunset_Receipt) {
+	if receipt == nil do return
+	for id in receipt.token_ids do delete(id)
+	delete(receipt.token_ids)
+	delete(receipt.bridge_id)
+	delete(receipt.revoked_at)
+	receipt^ = {}
+}
+
+Bridge_Create_Limited_Proc :: proc(ctx: rawptr, bridge: domain.Bridge, max_bridges: int, sunset: Bridge_Sunset) -> (domain.Bridge, Bridge_Sunset_Receipt, bool, domain.Domain_Error)
+// Bridge_Restore_Sunset_Proc undoes a sunset whose replacement enrollment rolled back,
+// as ONE transaction: delete the replacement row if it is still pending, then — only
+// if the replacement row is gone, the sunset row is still the revocation this receipt
+// made (status revoked, same revoked_at) and restoring keeps the owner within
+// max_bridges (negative = unlimited) — un-revoke the sunset row (as offline) and
+// exactly the receipt's tokens. restored is false, with no error, when any guard
+// fails; replacement_deleted reports whether this call removed the pending row.
+Bridge_Restore_Sunset_Proc :: proc(ctx: rawptr, replacement_bridge_id: string, receipt: Bridge_Sunset_Receipt, max_bridges: int, now: string) -> (restored: bool, replacement_deleted: bool, err: domain.Domain_Error)
 Bridge_Count_Active_Proc :: proc(ctx: rawptr, owner: domain.User_ID) -> (int, domain.Domain_Error)
 Bridge_Reconcile_Plan_Proc :: proc(ctx: rawptr, owner: domain.User_ID, max_bridges: int, now: string, before: Bridge_Plan_Rank_Proc) -> domain.Domain_Error
 Bridge_List_Owners_Proc :: proc(ctx: rawptr) -> ([]string, domain.Domain_Error)
 
 Bridge_Repository :: struct {
 	create_limited: Bridge_Create_Limited_Proc,
+	restore_sunset: Bridge_Restore_Sunset_Proc,
 	count_active_by_owner: Bridge_Count_Active_Proc,
 	reconcile_plan: Bridge_Reconcile_Plan_Proc,
 	list_owners: Bridge_List_Owners_Proc,
@@ -222,5 +266,25 @@ bridge_count_active_by_owner :: proc(repo: ^Bridge_Repository, owner: domain.Use
 bridge_create_limited :: proc(repo: ^Bridge_Repository, bridge: domain.Bridge, max_bridges: int) -> (domain.Bridge, bool, domain.Domain_Error) {
 	if max_bridges < 0 do return bridge_save_bridge(repo, bridge)
 	if repo == nil || repo.create_limited == nil do return {}, false, domain.domain_error(.Internal_Error, "limited bridge enrollment is not configured")
-	return repo.create_limited(repo.ctx, bridge, max_bridges)
+	saved, _, ok, err := repo.create_limited(repo.ctx, bridge, max_bridges, Bridge_Sunset{})
+	return saved, ok, err
+}
+
+// bridge_create_limited_with_sunset creates `bridge` and retires sunset.bridge_id in
+// one transaction (see Bridge_Sunset). Unlike bridge_create_limited it always goes
+// through the transactional path, even on an unlimited plan (max_bridges < 0), since
+// the sunset revoke must commit or roll back together with the insert.
+bridge_create_limited_with_sunset :: proc(repo: ^Bridge_Repository, bridge: domain.Bridge, max_bridges: int, sunset: Bridge_Sunset) -> (domain.Bridge, Bridge_Sunset_Receipt, bool, domain.Domain_Error) {
+	if sunset.bridge_id == "" {
+		saved, ok, err := bridge_create_limited(repo, bridge, max_bridges)
+		return saved, {}, ok, err
+	}
+	if sunset.revoked_at == "" do return {}, {}, false, domain.domain_error(.Validation_Failed, "a sunset needs a revocation time")
+	if repo == nil || repo.create_limited == nil do return {}, {}, false, domain.domain_error(.Internal_Error, "limited bridge enrollment is not configured")
+	return repo.create_limited(repo.ctx, bridge, max_bridges, sunset)
+}
+
+bridge_restore_sunset :: proc(repo: ^Bridge_Repository, replacement_bridge_id: string, receipt: Bridge_Sunset_Receipt, max_bridges: int, now: string) -> (restored: bool, replacement_deleted: bool, err: domain.Domain_Error) {
+	if repo == nil || repo.restore_sunset == nil do return false, false, domain.domain_error(.Internal_Error, "bridge sunset restore is not configured")
+	return repo.restore_sunset(repo.ctx, replacement_bridge_id, receipt, max_bridges, now)
 }
