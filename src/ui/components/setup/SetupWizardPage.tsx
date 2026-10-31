@@ -516,7 +516,7 @@ function LogView({ lines, debugId, live = false }: { lines: string[]; debugId: s
 
 type Review = Awaited<ReturnType<typeof lookUpPairing>>;
 
-function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: string) => void; onBack: () => void }) {
+export function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: string) => void; onBack: () => void }) {
   const entitlements = useEntitlements();
   const { data: bridgesData, refetch: refetchBridges } = useListBridgesQuery();
   const bridges = useMemo(() => (Array.isArray(bridgesData?.bridges) ? bridgesData.bridges : []), [bridgesData]);
@@ -529,27 +529,44 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   const [phase, setPhase] = useState<{ kind: 'choose' } | { kind: 'working'; message: string } | { kind: 'reconnecting'; bridgeId: string; label: string; approved: string } | { kind: 'failed'; message: string }>({ kind: 'choose' });
   const seeded = useRef(false);
   const lastCode = useRef('');
+  // Signing/POST cannot be cancelled safely. Keep the request in charge through
+  // reconnect; a replacement may be reviewed only after this attempt fails.
+  const approval = useRef<object | null>(null);
+  const queuedCode = useRef('');
+  const [replacementQueued, setReplacementQueued] = useState(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; approval.current = null; };
+  }, []);
+
+  const replaceCode = useCallback((handed: string) => {
+    lastCode.current = handed;
+    setReview(null);
+    setChoice(EMPTY_IDENTITY_CHOICE);
+    setNewLabel('');
+    setLookupError('');
+    setPendingCount(0);
+    seeded.current = false;
+    setCode(handed);
+  }, []);
 
   // The pairing code this app's own setup printed, taken once.
   useEffect(() => {
     const take = () => {
       const handed = takePendingApprovalCode();
       if (!handed || handed === lastCode.current) return;
-      lastCode.current = handed;
-      // A reissued code replaces the request, including its previous identity
-      // hint. Never leave the old approval actionable while lookup is pending.
-      setReview(null);
-      setChoice(EMPTY_IDENTITY_CHOICE);
-      setNewLabel('');
-      setLookupError('');
-      setPendingCount(0);
+      if (approval.current) {
+        queuedCode.current = handed;
+        setReplacementQueued(true);
+        return;
+      }
+      replaceCode(handed);
       setPhase({ kind: 'choose' });
-      seeded.current = false;
-      setCode(handed);
     };
     take();
     return subscribePendingApprovalCode(take);
-  }, []);
+  }, [replaceCode]);
 
   useEffect(() => {
     if (!code) return;
@@ -566,7 +583,9 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
 
   useEffect(() => {
     if (!review) return;
-    void fetchPendingBridgeEnrollments().then((rows) => setPendingCount(rows.length)).catch(() => {});
+    let cancelled = false;
+    void fetchPendingBridgeEnrollments().then((rows) => { if (!cancelled) setPendingCount(rows.length); }).catch(() => {});
+    return () => { cancelled = true; };
   }, [review]);
 
   const info = review?.info as BridgeCodeInfo | undefined;
@@ -589,7 +608,12 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   const busy = phase.kind === 'working' || phase.kind === 'reconnecting';
 
   const approve = useCallback(async () => {
-    if (!review || !info || !plan.ok) return;
+    if (!review || !info || !plan.ok || approval.current) return;
+    const operation = {};
+    approval.current = operation;
+    const ownsApproval = () => mounted.current && approval.current === operation;
+    let pending = true;
+    setPhase({ kind: 'working', message: 'Preparing approval…' });
     const label = newLabel.trim() || review.label;
     const sunset = plan.sunset;
     // The sunset is not a separate step: the hub retires that bridge in the same
@@ -603,12 +627,18 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
         target: plan.reuse,
         newLabel: label,
         sunset: sunset ? { bridge_id: sunset.bridge_id, label: sunset.label } : null,
-        onProgress: (message) => setPhase({ kind: 'working', message }),
+        onProgress: (message) => { if (pending && ownsApproval()) setPhase({ kind: 'working', message }); },
       });
+      pending = false;
+      if (!ownsApproval()) return;
+      queuedCode.current = '';
+      setReplacementQueued(false);
       // The picker's copy of the sunset bridge is stale now.
       if (sunset) void refetchBridges();
       setPhase({ kind: 'reconnecting', bridgeId: outcome.bridgeId, label: outcome.label, approved: outcome.approved });
     } catch (err) {
+      pending = false;
+      if (!ownsApproval()) return;
       // What happened to the sunset bridge is read back from the hub, not guessed from
       // how far this client got; the same refetch keeps a retry from offering a
       // bridge that is already retired.
@@ -619,11 +649,18 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           .catch(() => null);
         prefix = sunsetFailureNote(sunset, refreshed);
       }
-      setPhase({ kind: 'failed', message: prefix + errText(err) });
+      if (!ownsApproval()) return;
+      approval.current = null;
+      const nextCode = queuedCode.current;
+      queuedCode.current = '';
+      setReplacementQueued(false);
+      if (nextCode) replaceCode(nextCode);
+      setPhase({ kind: 'failed', message: prefix + errText(err) + (nextCode ? ' The previous approval failed. Review the latest pairing request before approving again.' : '') });
     }
-  }, [review, info, plan, newLabel, refetchBridges]);
+  }, [review, info, plan, newLabel, refetchBridges, replaceCode]);
 
   const deny = useCallback(async () => {
+    if (approval.current) return;
     if (review) await postApproveBridge({ pair_lookup: review.keys.lookup, approve: false }).catch(() => {});
     const manager = desktopCapabilities().bridgeManager;
     if (manager) await manager.cancel().catch(() => ({ ok: false }));
@@ -654,6 +691,8 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           : 'Register this machine as a new bridge, or hand it one of your existing bridge identities.'}
       </StepHeading>
 
+      {replacementQueued ? <Alert tone="warning">A newer pairing request arrived. This approval will finish first. If it fails, you can review the latest request.</Alert> : null}
+      {phase.kind === 'failed' ? <div data-debug-id="setup-identity-error"><Alert tone="danger">{phase.message}</Alert></div> : null}
       {!review ? (
         lookupError ? (
           <div data-debug-id="setup-identity-lookup-error" className="flex flex-col gap-3">
@@ -772,7 +811,6 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           </details>
 
           {phase.kind === 'working' ? <p data-debug-id="setup-identity-progress" className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" /> {phase.message}</p> : null}
-          {phase.kind === 'failed' ? <div data-debug-id="setup-identity-error"><Alert tone="danger">{phase.message}</Alert></div> : null}
           {atCapacity && !reusable.length && !candidates.length ? <UpgradePrompt details={{ limit: 'max_bridges' }} debugId="setup-identity-plan-cap" /> : null}
 
           <div className="flex flex-wrap gap-2">
