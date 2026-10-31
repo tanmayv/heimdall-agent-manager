@@ -43,6 +43,7 @@ App_Graph :: struct {
 	mcp_vault_view: vault_directory_service.Service,
 	mcp_delegation: mcp_service.Delegation_Service,
 	mcp_delegation_handlers: http.MCP_Delegation_Handlers,
+	mcp_control_handlers: http.MCP_Control_Handlers,
 	config: Hub_Config,
 	clock: platform.Clock,
 	ids: platform.ID_Generator,
@@ -518,6 +519,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{
+		mcp_control = &graph.mcp_control_handlers,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth = &graph.auth,
 		bridges = &graph.bridges,
@@ -656,6 +658,7 @@ register_routes :: proc(graph: ^App_Graph) {
 		http.mcp_spike_register_routes(&graph.router, &graph.mcp_spike_handlers)
 	}
 	if graph.config.mcp_oauth_key_file != "" do http.mcp_delegation_register_routes(&graph.router, &graph.mcp_delegation_handlers)
+	if graph.config.mcp_oauth_key_file != "" do http.mcp_control_register_routes(&graph.router, &graph.mcp_control_handlers)
 	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/portal", rawptr(&graph.billing_handlers), http.account_portal_handler)

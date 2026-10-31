@@ -3,6 +3,7 @@ import { currentDeviceIdentity } from '../../services/deviceVault';
 import { signedRequestHeaders } from '../../utils/vaultRequestSigner';
 import type { McpConsentBody, McpConsentRequest } from '../../utils/mcpConsent';
 import type { ConnectorRecipient, ConnectorEpochDelivery } from '../../utils/mcpEpochDelivery';
+import type { McpWorkerJob, McpWorkerReply } from '../../utils/mcpWorker';
 
 const BASE = '/api/v1/mcp/oauth';
 
@@ -18,6 +19,7 @@ async function request<T>(method: string, suffix: string, value?: unknown, timeo
   try {
     const res = await fetch(apiUrl(path), { method, credentials: 'include', headers, body: body || undefined, signal: controller?.signal });
     if (!res.ok) throw await errorFromResponse(res);
+    if (res.status === 204) return null as T;
     return await res.json() as T;
   } finally { if (timer !== undefined) clearTimeout(timer); }
 }
@@ -33,3 +35,6 @@ export function fetchMcpConnections(): Promise<McpConnection[]> { return request
 export function disconnectMcpConnection(grant: string): Promise<{ disconnected: boolean }> { return request('POST', '/disconnect', { grant }); }
 export function fetchMcpRecipients(): Promise<ConnectorRecipient[]> { return request('GET', '/recipients', undefined, 10000); }
 export function deliverMcpEpochWrap(body: ConnectorEpochDelivery): Promise<{ delivered: boolean }> { return request('POST', '/wraps', body, 10000); }
+export function fetchMcpWorkerJob(generation: string): Promise<McpWorkerJob | null> { return request('GET', `/jobs?generation=${encodeURIComponent(generation)}`, undefined, 3000); }
+export function deliverMcpWorkerReply(body: McpWorkerReply, generation: string): Promise<{ accepted: boolean }> { return request('POST', `/jobs?generation=${encodeURIComponent(generation)}`, body, 3000); }
+export function registerMcpWorker(generation: string, enabled: boolean): Promise<{ registered: boolean }> { return request('POST', '/worker', { generation, enabled, expires_ms: Date.now() + 60000 }, 3000); }

@@ -12,16 +12,7 @@ import vault "odin_test:lib/vault"
 
 // Canonical fixed-order JSON, signed by an already-approved user device. This
 // grants no device/directory signing authority. Both runtimes render all fields.
-Consent :: struct {
-	v: int,
-	owner, vault_id, client, resource, scope, grant, family: string,
-	revision: i64,
-	mode, recipient, recipient_public_key, approver: string,
-	directory_version: i64,
-	directory_head: string,
-	epoch, issued_ms: i64,
-	wrap_sha256: string,
-}
+Consent :: vault.Control_Consent
 CONSENT_DOMAIN :: "heimdall-mcp-consent/v1\n"
 consent_message :: proc(canonical: string) -> string {
 	return strings.concatenate({CONSENT_DOMAIN,canonical},context.temp_allocator)

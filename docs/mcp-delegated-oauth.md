@@ -6,6 +6,9 @@ deployed. U2 supplies actual hosted decryption and epoch-wrap delivery; U3 suppl
 the four remote tools and device routing. Enabling U1 alone does not provide those
 tools. The existing synthetic `/api/v1/mcp-spike` remains a separate U0 probe.
 
+The implemented U3 transport and device-worker behavior are documented in
+[mcp-remote-control.md](mcp-remote-control.md); deployment remains a separate step.
+
 ## Authorization boundaries
 
 The authorization server uses the existing OIDC browser sign-in and Ninjy session.
