@@ -41,7 +41,7 @@ bridge_create_limited_on :: proc(conn: ^Conn, bridge: domain.Bridge, max_bridges
 	if max_bridges >= 0 && count >= max_bridges do return {}, {}, false, domain.plan_limit_error("max_bridges", max_bridges, count, "Current")
 	saved, ok, save_err := bridge_save_bridge_sqlite(&local, bridge)
 	if !ok do return {}, {}, false, save_err
-	if bridge_create_limited_test_hook != nil && !bridge_create_limited_test_hook() {
+	if bridge_create_limited_test_hook != nil && !bridge_create_limited_test_hook(bridge.bridge_id) {
 		return {}, {}, false, domain.domain_error(.Internal_Error, "failed to commit bridge approval")
 	}
 	if !exec(conn, "COMMIT;") do return {}, {}, false, domain.domain_error(.Internal_Error, "failed to commit bridge approval")
@@ -51,8 +51,9 @@ bridge_create_limited_on :: proc(conn: ^Conn, bridge: domain.Bridge, max_bridges
 
 // bridge_create_limited_test_hook runs inside the admission transaction after the
 // insert and before COMMIT; returning false fails the transaction as a failed COMMIT
-// would. Tests only — nil in production.
-bridge_create_limited_test_hook: proc() -> bool
+// would. It receives the bridge being created so a test can fail only its own
+// approval while other tests run concurrently. Tests only — nil in production.
+bridge_create_limited_test_hook: proc(bridge_id: string) -> bool
 
 // bridge_sunset_on retires the sunset bridge inside the caller's transaction and fills
 // `receipt` with what it changed. Refusals: absent, owned by someone else, or already
