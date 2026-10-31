@@ -12,6 +12,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { desktopCapabilities } from '../../bridge/desktopBridge';
 import ThisMachineCard from './ThisMachineCard';
+import BridgeAutoUpdateToggle from './BridgeAutoUpdateToggle';
 import {
   useFetchTelemetryDefaultEnabledQuery,
   useSaveTelemetryDefaultEnabledMutation,
@@ -267,6 +268,17 @@ export default function BridgesPanel() {
                             <Icon name="sparkle" size="sm" />
                             <span>Update available: {latestLabel}</span>
                           </span>
+                        ) : null}
+
+                        {bridge?.latest_version && bridge?.latest_source ? (
+                          <Text as="span" role="caption" tone="muted">Catalog: {latestLabel} ({bridge.latest_source})</Text>
+                        ) : null}
+                        <BridgeAutoUpdateToggle bridgeId={id} online={online} />
+                        {bridge?.update_warning ? (
+                          <span role="status"><Text as="span" role="caption" tone="warning">{bridge.update_warning}</Text></span>
+                        ) : null}
+                        {bridge?.update_fallback_reason ? (
+                          <Text as="span" role="caption" tone="muted">Release lookup: {bridge.update_fallback_reason}</Text>
                         ) : null}
 
                         {/* Real-time progress state if update is in progress (downloading, validating, restarting) */}

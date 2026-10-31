@@ -2447,7 +2447,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(message)
 	case "provider_profiles_report":
 		if err:=bridge_provider_profiles_frame(h,bridge_id,text);err.code!=.None do fmt.eprintln("provider profiles report:",err.message)
-	case "provider_profile_op_result", "command_result", "project_path_validation_result", "provider_discovery_report", "provider_model_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_show_file_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "vcs_upload_result", "vcs_sync_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "task_chain_search_result", "taskv2_merge_worktree_result":
+	case "auto_update_config_result", "provider_profile_op_result", "command_result", "project_path_validation_result", "provider_discovery_report", "provider_model_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_show_file_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "vcs_upload_result", "vcs_sync_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "task_chain_search_result", "taskv2_merge_worktree_result":
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
@@ -3075,6 +3075,9 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	// REQ-T13-2: false when the latest release ships no bundle for `target`.
 	strings.write_string(b, ",\"update_artifact_available\":"); strings.write_string(b, "true" if update_info.artifact_available else "false")
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
+	strings.write_string(b, "\",\"latest_source\":\""); write_handler_json_string(b, update_info.latest_source)
+	strings.write_string(b, "\",\"update_warning\":\""); write_handler_json_string(b, update_info.warning)
+	strings.write_string(b, "\",\"update_fallback_reason\":\""); write_handler_json_string(b, update_info.fallback_reason)
 	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
 	strings.write_string(b, "\",\"telemetry_enabled\":\""); write_handler_json_string(b, br.telemetry_enabled if br.telemetry_enabled != "" else "inherit")
 	// REQ-BVS-2: emitted VERBATIM, with no default substitution. A bridge that has
