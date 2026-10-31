@@ -168,10 +168,10 @@ export function identityPlan(
 export function sunsetFailureNote(sunset: { bridge_id: string; label: string }, refreshed: readonly any[] | null): string {
   const label = sunset.label || sunset.bridge_id;
   if (!refreshed) {
-    return `Could not check whether ${label} is still active; see Bridges. If it was retired for this approval, it comes back on its own when the unfinished enrollment is cancelled or expires (within 5 minutes). `;
+    return `Could not check whether ${label} is still active; see Bridges. If it was retired for this approval, it comes back on its next retry after the unfinished enrollment is cancelled or expires, unless its plan slot is used meanwhile. Pending enrollments expire after 5 minutes. `;
   }
   if (sunsetCandidates(refreshed).some((b) => b.bridge_id === sunset.bridge_id)) return `${label} is still active. `;
-  return `${label} is retired while this approval is pending. If this machine does not finish enrolling, ${label} comes back on its own when the enrollment is cancelled or expires (within 5 minutes), unless its plan slot is used meanwhile. `;
+  return `${label} is retired while this approval is pending. If this machine does not finish enrolling, ${label} comes back on its next retry after the enrollment is cancelled or expires, unless its plan slot is used meanwhile. Pending enrollments expire after 5 minutes. `;
 }
 
 // ---------------------------------------------------------------------------

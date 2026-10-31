@@ -738,7 +738,7 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           {plan.sunset ? (
             <div data-debug-id="setup-identity-sunset-warning">
               <Alert tone="warning" title={`${sanitizeForDisplay(plan.sunset.label).text} will be revoked`}>
-                It is revoked in the same step that approves this machine, never before. If the approval is refused or this machine does not finish enrolling, it comes back on its own (within 5 minutes) unless its plan slot is used meanwhile. Once this machine is enrolled, its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
+                It is paused in the same step that approves this machine, never before. If the approval is refused or this machine does not finish enrolling, its credentials are restored unless its plan slot is used meanwhile. It reconnects on its next retry after restoration; an unfinished enrollment expires after 5 minutes. Once this machine is enrolled, retirement is permanent and the old machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
               </Alert>
             </div>
           ) : null}

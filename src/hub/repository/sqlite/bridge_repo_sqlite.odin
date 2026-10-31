@@ -58,6 +58,7 @@ new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.B
 		// seam, so a service holding a ^Bridge_Repository reaches both tables.
 		save_token = bridge_save_token_sqlite,
 		get_token = bridge_get_token_sqlite,
+		credential_revocation = bridge_credential_revocation_sqlite,
 		list_tokens_by_family = bridge_list_tokens_by_family_sqlite,
 		revoke_token_family = bridge_revoke_token_family_sqlite,
 		revoke_token_family_in_scope = bridge_revoke_token_family_in_scope_sqlite,

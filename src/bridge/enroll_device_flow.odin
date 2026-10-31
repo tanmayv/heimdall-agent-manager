@@ -869,12 +869,7 @@ bridge_credential_refresh_worker :: proc() {
                     bridge_refresh_pause(key, finished)
                     continue
                 }
-                if err.code == .Unauthenticated {
-                    _ = os.remove(refresh_path); _ = os.remove(g_bridge_credential_file); _ = os.remove(request_path)
-                    sync.mutex_lock(&g_bridge_credential_mu); bridge_config.bridge_token = ""; sync.mutex_unlock(&g_bridge_credential_mu)
-                    // F21: a stable state the next start parks on, not a crash loop.
-                    bridge_reenroll_mark(cfg_lib.config_path_from_args(os.args), api_base, bridge_id, .Refresh_Rejected)
-                }
+                bridge_refresh_apply_rejection(cfg_lib.config_path_from_args(os.args), api_base, bridge_id, g_bridge_credential_file, refresh_path, request_path, err)
                 fmt.eprintfln("bridge credential recovery stopped: state=%v attempts=%d code=%v class=%v", finished.state, finished.attempts, finished.code, finished.class)
                 return
             }
@@ -1881,4 +1876,14 @@ bridge_refresh_adopt :: proc(cred: Bridge_Enroll_Credential) {
     key := bridge_action_scheduler_sync_key()
     defer delete(key)
     bridge_retry_credential_repaired(key)
+}
+
+// Only a final authentication refusal destroys persisted enrollment. A pending
+// sunset uses a retriable error and must survive the retry budget and a restart.
+bridge_refresh_apply_rejection :: proc(config_path, api_base, bridge_id, path, refresh_path, request_path: string, err: contracts.Wire_Error) -> bool {
+    if err.code != .Unauthenticated do return false
+    _ = os.remove(refresh_path); _ = os.remove(path); _ = os.remove(request_path)
+    sync.mutex_lock(&g_bridge_credential_mu); bridge_config.bridge_token = ""; sync.mutex_unlock(&g_bridge_credential_mu)
+    bridge_reenroll_mark(config_path, api_base, bridge_id, .Refresh_Rejected)
+    return true
 }

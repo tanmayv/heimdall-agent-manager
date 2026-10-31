@@ -15,6 +15,7 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
@@ -364,4 +365,175 @@ test_sunset_of_another_owners_bridge_is_refused_without_side_effects :: proc(t: 
 	testing.expect(t, !was_closed(f, victim), "victim socket untouched")
 	count, _ := iface.bridge_count_active_by_owner(&f.repo, domain.User_ID("sv_attacker"))
 	testing.expect_value(t, count, 0)
+}
+
+@(private = "file")
+sunset_fixed_now :: proc(ctx: rawptr) -> string { return "2026-10-31T12:00:00Z" }
+
+@(test)
+test_sunset_same_second_explicit_revoke_cannot_be_undone :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "same_second", 1)
+    defer sunset_fixture_close(f)
+    f.clock = platform.Clock{now = sunset_fixed_now}
+    c, ok := sunset_replace(t, f, "ss_owner")
+    if !ok do return
+    revoked, revoke_ok, err := revoke_bridge(&f.svc, contracts.Auth_Context{kind = .Session, user_id = "ss_owner"}, c.old_id)
+    testing.expect(t, revoke_ok, err.message)
+    testing.expect_value(t, revoked.revoked_at, sunset_fixed_now(nil))
+    _, removed, rb_err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
+    testing.expect_value(t, rb_err.code, domain.Error_Code.None)
+    testing.expect(t, removed, "pending replacement removed")
+    expect_still_sunset(t, f, c)
+    tokens, _ := iface.bridge_list_tokens_by_family(&f.repo, c.old_family)
+    defer free_bridge_tokens(tokens)
+    for tok in tokens {
+        state, state_err := iface.bridge_credential_revocation(&f.repo, tok.token_id)
+        testing.expect_value(t, state_err.code, domain.Error_Code.None)
+        testing.expect_value(t, state, iface.Credential_Revocation.Final)
+    }
+}
+
+@(test)
+test_sunset_same_second_explicit_family_revoke_cannot_restore_credentials :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "same_second_family", 1)
+    defer sunset_fixture_close(f)
+    f.clock = platform.Clock{now = sunset_fixed_now}
+    c, ok := sunset_replace(t, f, "ssf_owner")
+    if !ok do return
+    _, revoke_ok, err := iface.bridge_revoke_token_family(&f.repo, c.old_family, sunset_fixed_now(nil))
+    testing.expect(t, revoke_ok, err.message)
+    _, removed, rb_err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
+    testing.expect_value(t, rb_err.code, domain.Error_Code.None)
+    testing.expect(t, removed)
+    testing.expect_value(t, live_family_tokens(f, c.old_family), 0)
+}
+
+@(test)
+test_sunset_rejection_is_recoverable_until_commit_then_final :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "pending_auth", 1)
+    defer sunset_fixture_close(f)
+    old, old_ok, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("sa_owner", false))
+    testing.expect(t, old_ok)
+    token_id, _, _ := split_credential(ACCESS_TOKEN_PREFIX, old.bridge_token)
+    replacement, ok, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("sa_owner", true, sunset = old.bridge.bridge_id))
+    if !testing.expect(t, ok) do return
+    _, access_ok, access_err := verify_bridge_token(&f.svc, old.bridge_token)
+    testing.expect(t, !access_ok)
+    testing.expect_value(t, access_err.code, domain.Error_Code.Internal_Error)
+    _, refresh_ok, refresh_err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, !refresh_ok)
+    testing.expect_value(t, domain.domain_error_class(refresh_err), contracts.Bridge_Error_Class.retriable)
+    testing.expect_value(t, session_credential_state(&f.svc, token_id), Session_Credential_State.Pending_Sunset)
+    _, committed, err := commit_pending_enrollment(&f.svc, {bridge_id = replacement.bridge.bridge_id, family_id = replacement.family_id})
+    if !testing.expect(t, committed, err.message) do return
+    _, _, final_refresh := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect_value(t, final_refresh.code, domain.Error_Code.Unauthenticated)
+    testing.expect_value(t, session_credential_state(&f.svc, token_id), Session_Credential_State.Revoked)
+}
+
+@(test)
+test_sunset_explicit_revoke_failure_preserves_rollback_authority :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "revoke_failure", 1)
+    defer sunset_fixture_close(f)
+    c, ok := sunset_replace(t, f, "srf_owner")
+    if !ok do return
+    // The first DELETE (receipt tokens) succeeds, then the receipt DELETE fails.
+    // Both must roll back along with token revocation.
+    testing.expect(t, sqlite.exec(&f.conn, "CREATE TRIGGER refuse_sunset_delete BEFORE DELETE ON bridge_sunset_receipts BEGIN SELECT RAISE(ABORT, 'receipt delete failed'); END;"))
+    _, revoke_ok, err := iface.bridge_revoke_tokens_for_bridge(&f.repo, c.old_id, platform.clock_now(&f.clock))
+    testing.expect(t, !revoke_ok && err.code == .Internal_Error)
+    testing.expect(t, sqlite.exec(&f.conn, "DROP TRIGGER refuse_sunset_delete;"))
+    tokens, _ := iface.bridge_list_tokens_by_family(&f.repo, c.old_family)
+    defer free_bridge_tokens(tokens)
+    for tok in tokens {
+        state, state_err := iface.bridge_credential_revocation(&f.repo, tok.token_id)
+        testing.expect_value(t, state_err.code, domain.Error_Code.None)
+        testing.expect_value(t, state, iface.Credential_Revocation.Pending_Sunset)
+    }
+    _, removed, rb_err := rollback_pending_enrollment(&f.svc, c.new_id, c.new_family)
+    testing.expect(t, removed && rb_err.code == .None)
+    expect_restored(t, f, c, "srf_owner")
+}
+
+@(test)
+test_sunset_blocks_inflight_refresh_writes_and_preserves_old_pair :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "inflight_refresh", 1)
+    defer sunset_fixture_close(f)
+    old, old_ok, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("sir_owner", false))
+    if !testing.expect(t, old_ok) do return
+    refresh_id, _, _ := split_credential(REFRESH_TOKEN_PREFIX, old.refresh_token)
+    original, original_ok, _ := iface.bridge_get_token(&f.repo, refresh_id)
+    if !testing.expect(t, original_ok) do return
+    defer domain.bridge_token_destroy(&original)
+    // The refresh read and credential generation happened before admission, but
+    // its spend/insert hit the database afterwards.
+    _, refresh_row, _, prepared, _ := prepare_generation(&f.svc, old.bridge.bridge_id, old.family_id, 1, original.family_expires_at, platform.clock_now(&f.clock))
+    if !testing.expect(t, prepared) do return
+    replacement, ok, err := enroll_bridge_from_device_grant(&f.svc, sunset_input("sir_owner", true, sunset = old.bridge.bridge_id))
+    if !testing.expect(t, ok, err.message) do return
+    spent, spend_err := iface.bridge_mark_token_rotated(&f.repo, refresh_id, platform.clock_now(&f.clock), "")
+    testing.expect(t, !spent && spend_err.code == .None, "suspended token cannot be spent")
+    _, saved, save_err := iface.bridge_save_token(&f.repo, refresh_row)
+    testing.expect(t, !saved && save_err.code == .Internal_Error, "no post-snapshot credentials can escape the suspension")
+    _, rotate_ok, rotate_err := rotate_from(&f.svc, original, platform.clock_now(&f.clock), false)
+    testing.expect(t, !rotate_ok)
+    testing.expect_value(t, domain.domain_error_class(rotate_err), contracts.Bridge_Error_Class.retriable)
+    _, removed, rb_err := rollback_pending_enrollment(&f.svc, replacement.bridge.bridge_id, replacement.family_id)
+    testing.expect(t, removed && rb_err.code == .None)
+    _, renewed, renew_err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, renewed, renew_err.message)
+}
+
+@(private = "file")
+sunset_spend_race_fixture: ^Sunset_Fixture
+
+@(private = "file")
+sunset_spend_during_suspension :: proc(ctx: rawptr, token_id, now, request_hash: string) -> (bool, domain.Domain_Error) {
+    f := sunset_spend_race_fixture
+    original, _, _ := iface.bridge_get_token(&f.repo, token_id)
+    defer domain.bridge_token_destroy(&original)
+    replacement, _, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("ssr_owner", true, sunset = original.bridge_id))
+    changed, err := sqlite.bridge_mark_token_rotated_sqlite(ctx, token_id, now, request_hash)
+    _, _, _ = rollback_pending_enrollment(&f.svc, replacement.bridge.bridge_id, replacement.family_id)
+    // Rollback wins before the refresh service gets to classify its failed spend.
+    return changed, err
+}
+
+
+@(private = "file")
+sunset_regrant_during_suspension :: proc(ctx: rawptr, input: iface.Bridge_Regrant_Input) -> (iface.Bridge_Regrant_Outcome, domain.Domain_Error) {
+    f := sunset_spend_race_fixture
+    replacement, _, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("ssr_owner", true, sunset = input.refresh_row.bridge_id))
+    outcome, err := sqlite.bridge_regrant_atomic_sqlite(ctx, input)
+    _, _, _ = rollback_pending_enrollment(&f.svc, replacement.bridge.bridge_id, replacement.family_id)
+    return outcome, err
+}
+
+@(test)
+test_sunset_rollback_between_failed_spend_and_classification_is_not_theft :: proc(t: ^testing.T) {
+    f := sunset_fixture_open(t, "spend_rollback_race", 1)
+    defer sunset_fixture_close(f)
+    f.clock = platform.Clock{now = sunset_fixed_now}
+    sunset_spend_race_fixture = f
+    defer { sunset_spend_race_fixture = nil }
+    old, old_ok, _ := enroll_bridge_from_device_grant(&f.svc, sunset_input("ssr_owner", false))
+    if !testing.expect(t, old_ok) do return
+    f.repo.mark_token_rotated = sunset_spend_during_suspension
+    _, refreshed, err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, !refreshed)
+    testing.expect_value(t, domain.domain_error_class(err), contracts.Bridge_Error_Class.retriable)
+    testing.expect_value(t, live_family_tokens(f, old.family_id), 2)
+    f.repo.mark_token_rotated = sqlite.bridge_mark_token_rotated_sqlite
+    _, renewed, renew_err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, renewed, renew_err.message)
+    // Repeat the same interleaving for the graced re-grant CAS.
+    before := live_family_tokens(f, old.family_id)
+    f.repo.regrant_atomic = sunset_regrant_during_suspension
+    _, regranted, regrant_err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, !regranted)
+    testing.expect_value(t, domain.domain_error_class(regrant_err), contracts.Bridge_Error_Class.retriable)
+    testing.expect_value(t, live_family_tokens(f, old.family_id), before)
+    f.repo.regrant_atomic = sqlite.bridge_regrant_atomic_sqlite
+    _, recovered, recovery_err := refresh_bridge_token(&f.svc, old.refresh_token)
+    testing.expect(t, recovered, recovery_err.message)
 }

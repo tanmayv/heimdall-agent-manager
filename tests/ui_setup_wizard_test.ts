@@ -171,7 +171,7 @@ test('identity step: a sunset rides on the approval, never a revoke up front (RE
   // The warning matches the hub: restored on any rollback of the pending enrollment,
   // final only once this machine is enrolled.
   assert.match(source, /data-debug-id="setup-identity-sunset-warning"/);
-  assert.match(source, /It is revoked in the same step that approves this machine, never before\. If the approval is refused or this machine does not finish enrolling, it comes back on its own \(within 5 minutes\) unless its plan slot is used meanwhile\. Once this machine is enrolled, its credentials stop working/);
+  assert.match(source, /It is paused in the same step that approves this machine, never before\. If the approval is refused or this machine does not finish enrolling, its credentials are restored unless its plan slot is used meanwhile\. It reconnects on its next retry after restoration; an unfinished enrollment expires after 5 minutes\. Once this machine is enrolled, retirement is permanent/);
   assert.doesNotMatch(source, /if the approval is refused or fails, it keeps working/);
 });
 
@@ -185,8 +185,9 @@ test('sunset failure note reads the refetched bridge list (REQ-3)', () => {
   const committed = bridges.map((b) => (b.bridge_id === 'brg_dawnstar' ? { ...b, status: 'revoked', revoked_at: '2026-10-31T12:00:00Z' } : b));
   const pending = model.sunsetFailureNote(sunset, committed);
   assert.match(pending, /^dawnstar is retired while this approval is pending\./);
-  assert.match(pending, /comes back on its own when the enrollment is cancelled or expires \(within 5 minutes\)/);
-  assert.doesNotMatch(pending, /still active|Nothing was changed/);
+  assert.match(pending, /comes back on its next retry after the enrollment is cancelled or expires/);
+  assert.match(pending, /Pending enrollments expire after 5 minutes/);
+  assert.doesNotMatch(pending, /within 5 minutes|still active|Nothing was changed/);
   // Gone from the list entirely reads the same as revoked.
   assert.match(model.sunsetFailureNote(sunset, bridges.filter((b) => b.bridge_id !== 'brg_dawnstar')), /^dawnstar is retired/);
   // The refetch itself failed: the outcome is unknown, and the note says so.

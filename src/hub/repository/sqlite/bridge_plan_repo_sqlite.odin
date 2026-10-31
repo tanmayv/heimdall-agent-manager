@@ -56,7 +56,7 @@ bridge_create_limited_on :: proc(conn: ^Conn, bridge: domain.Bridge, max_bridges
 bridge_create_limited_test_hook: proc(bridge_id: string) -> bool
 
 // sunset_exec runs one parameterised write and reports the rows it changed.
-@(private = "file")
+@(private = "package")
 sunset_exec :: proc(conn: ^Conn, sql: string, args: ..string) -> (ok: bool, changes: int) {
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(sql)), -1, &stmt, nil) != SQLITE_OK do return false, 0
@@ -93,7 +93,7 @@ bridge_sunset_on :: proc(conn: ^Conn, owner: domain.User_ID, sunset: iface.Bridg
 			return domain.domain_error(.Internal_Error, "failed to record bridge sunset credentials")
 		}
 	}
-	if _, revoke_ok, revoke_err := bridge_revoke_tokens_for_bridge_sqlite(&local, sunset.bridge_id, sunset.revoked_at); !revoke_ok do return revoke_err
+	if _, revoke_ok, revoke_err := bridge_revoke_tokens_for_bridge_on(conn, sunset.bridge_id, sunset.revoked_at); !revoke_ok do return revoke_err
 	ok, changed := sunset_exec(conn, "UPDATE bridges SET status = 'revoked', revoked_at = ?2, updated_at = ?2 WHERE bridge_id = ?1 AND status != 'revoked' AND revoked_at = '' AND enrollment_pending_until = '';", sunset.bridge_id, sunset.revoked_at)
 	if !ok do return domain.domain_error(.Internal_Error, "failed to sunset bridge")
 	// The read above was under the same write lock, so this cannot miss; checked
@@ -170,8 +170,8 @@ bridge_delete_pending_restoring_sunset_on :: proc(conn: ^Conn, bridge_id: string
 			if !found {
 				restore = false
 			} else {
-				// Anything else since the sunset (an operator revoke stamps its own
-				// revoked_at) means this receipt no longer describes the row.
+				// Explicit bridge revocation consumes this receipt in its write
+				// transaction; timestamp equality alone is not a generation guard.
 				restore = current.status == .Revoked && current.revoked_at == revoked_at
 				if restore && max_bridges >= 0 {
 					count, count_err := bridge_count_active_by_owner_sqlite(&local, current.owner_user_id)
@@ -281,4 +281,23 @@ bridge_reconcile_plan_on :: proc(conn: ^Conn, owner: domain.User_ID, max_bridges
 	if !exec(conn, "COMMIT;") do return domain.domain_error(.Internal_Error, "failed to commit bridge plan reconciliation")
 	committed = true
 	return {}
+}
+
+// Snapshot of token, bridge and receipt. A caller must verify the secret before
+// exposing Pending_Sunset. Query errors are retriable, never terminal revocation.
+bridge_credential_revocation_sqlite :: proc(ctx: rawptr, token_id: string) -> (iface.Credential_Revocation, domain.Domain_Error) {
+	impl := (^Bridge_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt
+	query := "SELECT CASE WHEN t.revoked_at = '' AND b.status != 'revoked' AND b.revoked_at = '' THEN 0 WHEN EXISTS (SELECT 1 FROM bridge_sunset_receipts r JOIN bridge_sunset_receipt_tokens rt ON rt.replacement_bridge_id = r.replacement_bridge_id WHERE rt.token_id = t.token_id AND r.sunset_bridge_id = b.bridge_id AND r.revoked_at = t.revoked_at AND r.revoked_at = b.revoked_at) THEN 1 ELSE 2 END FROM bridge_tokens t JOIN bridges b ON b.bridge_id = t.bridge_id WHERE t.token_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return .Final, domain.domain_error(.Internal_Error, "failed to read bridge credential revocation")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, token_id)
+	switch sqlite3_step(stmt) {
+	case SQLITE_ROW:
+		return iface.Credential_Revocation(sqlite3_column_int64(stmt, 0)), {}
+	case SQLITE_DONE:
+		return .Final, {}
+	case:
+		return .Final, domain.domain_error(.Internal_Error, "failed to read bridge credential revocation")
+	}
 }

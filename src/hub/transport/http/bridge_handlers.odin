@@ -2102,6 +2102,7 @@ bridge_ws_revalidate_interval := 60 * time.Second
 // credential. Sent as bridge_error.payload.code and as the WS close reason.
 BRIDGE_WS_TOKEN_EXPIRED_CODE :: "bridge_token_expired"
 BRIDGE_WS_CREDENTIAL_REVOKED_CODE :: "bridge_credential_revoked"
+BRIDGE_WS_SUNSET_PENDING_CODE :: "bridge_sunset_pending"
 
 // bridge_ws_session_check enforces the session credential bound: expired (wall
 // clock against the bound recorded at upgrade or bridge_reauth), or revoked /
@@ -2129,6 +2130,9 @@ bridge_ws_session_check :: proc(h: ^Bridge_Handlers, connection: ^project_servic
 	case .Expired:
 		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_TOKEN_EXPIRED_CODE, "bridge access token has expired; reconnect with the refreshed credential")
 		return .Credential_Expired
+	case .Pending_Sunset:
+		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_SUNSET_PENDING_CODE, "bridge retirement is pending enrollment; retain credentials and reconnect")
+		return .Credential_Revoked
 	case .Revoked:
 		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_CREDENTIAL_REVOKED_CODE, "bridge credential is revoked")
 		return .Credential_Revoked

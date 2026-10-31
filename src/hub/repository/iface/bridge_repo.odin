@@ -38,6 +38,10 @@ Bridge_Delete_Pending_Proc :: proc(ctx: rawptr, bridge_id: string) -> (bool, dom
 // by-token-hash procs above are the unsalted design this replaces and are already
 // uncalled — REQ-IMPL-6 deletes them.
 Bridge_Save_Token_Proc :: proc(ctx: rawptr, token: domain.Bridge_Token) -> (domain.Bridge_Token, bool, domain.Domain_Error)
+// One database snapshot distinguishes a recoverable sunset from final revocation.
+// Active also covers a stale revoked read followed by a completed rollback.
+Credential_Revocation :: enum { Active, Pending_Sunset, Final }
+Bridge_Credential_Revocation_Proc :: proc(ctx: rawptr, token_id: string) -> (Credential_Revocation, domain.Domain_Error)
 Bridge_Get_Token_Proc :: proc(ctx: rawptr, token_id: string) -> (domain.Bridge_Token, bool, domain.Domain_Error)
 Bridge_List_Tokens_By_Family_Proc :: proc(ctx: rawptr, family_id: string) -> ([]domain.Bridge_Token, domain.Domain_Error)
 // Both revoke procs stamp revoked_at on every matching row that does not already
@@ -131,7 +135,7 @@ Sunset_Rollback_Outcome :: struct {
 //   - the replacement is gone (a row still present was committed and owns the slot);
 //   - restore_allowed (the caller knows the owner's plan; false = fail closed);
 //   - the sunset row is still the revocation this receipt made (status revoked,
-//     same revoked_at: an operator revoke since then stamps its own time);
+//     same revoked_at; explicit revocation consumes the receipt atomically);
 //   - restoring keeps the owner within max_bridges (negative = unlimited).
 // The receipt is deleted in the same transaction whatever the guards decided, so a
 // sunset is restored at most once and never after its replacement committed.
@@ -155,6 +159,7 @@ Bridge_Repository :: struct {
 	delete_pending: Bridge_Delete_Pending_Proc,
 	save_token: Bridge_Save_Token_Proc,
 	get_token: Bridge_Get_Token_Proc,
+	credential_revocation: Bridge_Credential_Revocation_Proc,
 	list_tokens_by_family: Bridge_List_Tokens_By_Family_Proc,
 	revoke_token_family: Bridge_Revoke_Token_Family_Proc,
 	revoke_tokens_for_bridge: Bridge_Revoke_Tokens_For_Bridge_Proc,
@@ -291,4 +296,10 @@ bridge_delete_pending_restoring_sunset :: proc(repo: ^Bridge_Repository, bridge_
 	}
 	deleted, err := bridge_delete_pending(repo, bridge_id)
 	return Sunset_Rollback_Outcome{replacement_deleted = deleted}, err
+}
+
+bridge_credential_revocation :: proc(repo: ^Bridge_Repository, token_id: string) -> (Credential_Revocation, domain.Domain_Error) {
+	// Legacy test repositories have no sunset support.
+	if repo == nil || repo.credential_revocation == nil do return .Final, {}
+	return repo.credential_revocation(repo.ctx, token_id)
 }

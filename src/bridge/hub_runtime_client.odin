@@ -856,6 +856,10 @@ bridge_hub_session_frame :: proc(type, text: string) -> bool {
 		switch code {
 		case "bridge_token_expired":
 			fmt.eprintfln("bridge hub ended the session: the access token expired (%s); reconnecting with the current credential", msg)
+		case "bridge_sunset_pending":
+			// The hub may restore this machine if replacement enrollment rolls
+			// back. Keep credential files and the profile intact across restarts.
+			fmt.eprintfln("bridge retirement is pending enrollment (%s); retaining credentials and reconnecting", msg)
 		case "bridge_credential_revoked":
 			fmt.eprintfln("bridge hub ended the session: this bridge's credential is revoked (%s); re-enrollment is required", msg)
 			// F21: record it and exit 0, never non-zero into a crash loop. launchd

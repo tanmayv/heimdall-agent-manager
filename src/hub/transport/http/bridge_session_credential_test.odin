@@ -553,3 +553,43 @@ test_bridge_self_revoke_uses_the_bridges_own_access_token :: proc(t: ^testing.T)
 	again := self_revoke(f, f.enrolled.bridge_token)
 	testing.expectf(t, again.status == 401 || again.status == 403, "a revoked token is refused (got %d)", again.status)
 }
+
+// Force the existing session to observe suspension via periodic revalidation,
+// rather than admission's immediate socket closer. This is also the multi-hub path.
+@(test)
+test_pending_sunset_session_recheck_is_recoverable_and_rollback_reconnects :: proc(t: ^testing.T) {
+    f := setup_session_fixture(t)
+    defer teardown_session_fixture(f)
+    old_interval := bridge_ws_revalidate_interval
+    bridge_ws_revalidate_interval = 50 * time.Millisecond
+    defer { bridge_ws_revalidate_interval = old_interval }
+    f.br_svc.connection_closer = {}
+    replacement: bridge_service.Enroll_Bridge_Result
+    {
+        socks := session_socks(t)
+        runner: Session_Runner
+        stream := Session_Stream{sock = socks.client}
+        th, ready := session_connect(t, f, &socks, &runner, &stream, f.enrolled.bridge_token)
+        defer session_finish(&socks, th, &stream)
+        delete(ready)
+        enrolled, ok, err := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, {
+            owner_user_id = f.owner_user_id, bridge_public_key = "04aabb",
+            pending = true, sunset_bridge_id = f.enrolled.bridge.bridge_id,
+        })
+        if !testing.expect(t, ok, err.message) do return
+        replacement = enrolled
+        found, frames := session_wait_for(&stream, `"bridge_sunset_pending"`, 3 * time.Second)
+        defer free_frames(frames)
+        testing.expect(t, found, "temporary retirement has a recoverable session code")
+        for frame in frames do testing.expect(t, !strings.contains(frame, BRIDGE_WS_CREDENTIAL_REVOKED_CODE), "no terminal revocation frame")
+    }
+    _, removed, rollback_err := bridge_service.rollback_pending_enrollment(&f.br_svc, replacement.bridge.bridge_id, replacement.family_id)
+    if !testing.expect(t, removed && rollback_err.code == .None) do return
+    socks := session_socks(t)
+    runner: Session_Runner
+    stream := Session_Stream{sock = socks.client}
+    th, ready := session_connect(t, f, &socks, &runner, &stream, f.enrolled.bridge_token)
+    defer session_finish(&socks, th, &stream)
+    defer delete(ready)
+    testing.expect(t, strings.contains(ready, "bridge_ready"), "same credential reconnects after rollback")
+}
