@@ -197,7 +197,8 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 		pin := catalog.override_version
 		// Never pair a pin with a different version's manifest/promoted artifact.
 		if strings.trim_prefix(pin, "v") != strings.trim_prefix(info.latest_version, "v") || info.latest_version == "" {
-			if strings.trim_prefix(pin, "v") == strings.trim_prefix(manifest_info.latest_version, "v") {
+			if strings.trim_prefix(pin, "v") == strings.trim_prefix(manifest_info.latest_version, "v") &&
+				strings.trim_space(manifest_info.download_url) != "" && strings.trim_space(manifest_info.sha256) != "" {
 				info = manifest_info
 			} else {
 				info, _ = bridge_catalog_release(catalog, target, pin)

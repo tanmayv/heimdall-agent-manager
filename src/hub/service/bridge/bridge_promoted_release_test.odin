@@ -235,3 +235,27 @@ test_catalog_explicit_prerelease_pin_requires_verified_artifact :: proc(t: ^test
 	info = resolve_bridge_update_info(&cat, {})
 	testing.expect(t, !info.artifact_available, "explicit pins still reject drafts")
 }
+
+@(test)
+test_catalog_matching_manifest_pin_fetches_missing_target :: proc(t: ^testing.T) {
+	path := catalog_test_manifest(t)
+	defer os.remove(path)
+	source := Catalog_Test_Source{
+		doc = fmt.tprintf("[%s]", catalog_test_release("v2.0.0", "linux-arm64")),
+		pin_doc = catalog_test_release("v1.0.0", "linux-arm64"),
+		sums = fmt.tprintf("%s  heimdall-local-linux-arm64-v2.0.0.tar.gz\n%s  heimdall-local-linux-arm64-v1.0.0.tar.gz\n", CATALOG_TEST_SHA, CATALOG_TEST_SHA),
+	}
+	context.user_ptr = &source
+	cat := Bridge_Update_Catalog{manifest_path = path, release_get = catalog_test_get, override_version = "v1.0.0"}
+	info := resolve_bridge_update_info(&cat, {version = "0.9.0", machine_os = "linux", machine_arch = "arm64"})
+	testing.expect_value(t, info.latest_source, "override")
+	testing.expect_value(t, info.latest_version, "v1.0.0")
+	testing.expect_value(t, info.target, "linux-arm64")
+	testing.expect_value(t, info.latest_commit_sha, "")
+	testing.expect_value(t, info.download_url, "https://github.com/tanmayv/heimdall-agent-manager/releases/download/v1.0.0/heimdall-local-linux-arm64-v1.0.0.tar.gz")
+	testing.expect_value(t, info.sha256, CATALOG_TEST_SHA)
+	testing.expect(t, info.artifact_available && info.update_available)
+	testing.expect(t, strings.contains(info.warning, "older than promoted release 2.0.0"))
+	testing.expect_value(t, info.fallback_reason, "")
+	testing.expect_value(t, source.calls, 4)
+}
