@@ -935,6 +935,23 @@ jobs:
           # resolve the newest promoted release, so any copy works.
           cp scripts/install.sh scripts/install.ps1 dist/
           if gh release view "$VERSION" >/dev/null 2>&1; then
+            if [ "$BUILD_DARWIN_X64" != "true" ]; then
+              # --clobber replaces matching names but leaves assets omitted by
+              # this run. Remove only this version's optional Intel macOS set;
+              # otherwise its old assets would outlive their checksum entries.
+              gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
+              for asset in \
+                "heimdall-local-darwin-amd64-$VERSION.tar.gz" \
+                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg" \
+                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg.blockmap" \
+                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip" \
+                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip.blockmap" \
+                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg"; do
+                if grep -Fxq "$asset" "$RUNNER_TEMP/existing-release-assets.txt"; then
+                  gh release delete-asset "$VERSION" "$asset" --yes
+                fi
+              done
+            fi
             gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 --clobber
             gh release edit "$VERSION" --notes-file "$notes_file"
           else

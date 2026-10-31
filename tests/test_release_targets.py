@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -55,7 +56,7 @@ class ReleaseTargetsTest(unittest.TestCase):
                          "README.md", "LICENSE", "METADATA.json"]:
                 archive.writestr(name, "x")
         for arch in ["arm64"] + (["x64"] if intel else []):
-            for extension in ["dmg", "zip", "pkg"]:
+            for extension in ["dmg", "zip", "zip.blockmap", "dmg.blockmap", "pkg"]:
                 (self.work / "dist" / f"Ninjy-{VERSION[1:]}-{arch}.{extension}").write_text("fixture")
             target = "darwin-arm64" if arch == "arm64" else "darwin-amd64"
             name = f"Ninjy-{VERSION[1:]}-{arch}.zip"
@@ -128,15 +129,78 @@ class ReleaseTargetsTest(unittest.TestCase):
     def gh_stub(self):
         stub = self.work / "gh"
         stub.write_text('''#!/usr/bin/env python3
-import os, pathlib, shutil, sys
+import json, os, pathlib, shutil, sys
 root = pathlib.Path(os.environ["RUNNER_TEMP"])
+remote = root / "remote-assets"
+metadata = root / "fixture-release.json"
 if sys.argv[1:3] == ["release", "view"]:
-    print((root / "fixture-release.json").read_text())
+    data = json.loads(metadata.read_text())
+    if "--jq" in sys.argv:
+        print("\\n".join(a["name"] for a in data.get("assets", [])))
+    else:
+        print(json.dumps(data))
 elif sys.argv[1:3] == ["release", "download"]:
-    shutil.copyfile(root / "fixture-sums.txt", "sums.txt")
+    source = remote / "SHA256SUMS" if remote.exists() else root / "fixture-sums.txt"
+    shutil.copyfile(source, "sums.txt")
+elif sys.argv[1:3] == ["release", "upload"] and remote.exists():
+    for arg in sys.argv[4:]:
+        if not arg.startswith("--"):
+            shutil.copyfile(arg, remote / pathlib.Path(arg).name)
+    data = json.loads(metadata.read_text())
+    data["assets"] = [{"name": p.name} for p in remote.iterdir()]
+    metadata.write_text(json.dumps(data))
+elif sys.argv[1:3] == ["release", "delete-asset"]:
+    (remote / sys.argv[4]).unlink()
+    data = json.loads(metadata.read_text())
+    data["assets"] = [{"name": p.name} for p in remote.iterdir()]
+    metadata.write_text(json.dumps(data))
 ''')
         stub.chmod(0o755)
         self.env["PATH"] = str(self.work) + os.pathsep + self.env["PATH"]
+
+    def test_existing_release_reruns_reconcile_intel_assets(self):
+        self.gh_stub()
+        remote = self.work / "remote-assets"
+        remote.mkdir()
+        (self.work / "fixture-release.json").write_text(json.dumps({
+            "isDraft": False, "isPrerelease": True, "assets": []}))
+        helper = self.work / "scripts/release"
+        helper.mkdir(parents=True)
+        (helper / "changelog.sh").write_text("#!/bin/sh\nprintf 'Fixture changelog\\n'\n")
+        (helper / "changelog.sh").chmod(0o755)
+        for name in ["install.sh", "install.ps1"]:
+            (self.work / "scripts" / name).write_text("fixture")
+        self.env.update(RELEASE_COMMIT="fixture", EXTRA_NOTES="", GITHUB_SERVER_URL="https://example.invalid",
+                        GITHUB_REPOSITORY="fixture/repo")
+        publish = re.sub(r"\$\{\{.*?\}\}", "false", workflow_script(
+            "release-local-binaries.yml", "Create or update GitHub Release"))
+        for intel in [True, True, False, False, True]:
+            shutil.rmtree(self.work / "dist")
+            (self.work / "dist").mkdir()
+            self.bundles(intel)
+            self.env["BUILD_DARWIN_X64"] = str(intel).lower()
+            for script in [workflow_script("release-local-binaries.yml", "Verify tarballs and create SHA256SUMS"),
+                           publish, workflow_script("promote-release.yml", "Verify the release is a complete candidate")]:
+                result = self.run_script(script)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            names = {p.name for p in remote.iterdir()}
+            self.assertEqual(f"heimdall-local-darwin-amd64-{VERSION}.tar.gz" in names, intel)
+            for suffix in ["dmg", "dmg.blockmap", "zip", "zip.blockmap", "pkg"]:
+                # DMG blockmaps are optional in current uploads but must be
+                # cleaned up if an earlier run published one.
+                name = f"Ninjy-{VERSION[1:]}-x64.{suffix}"
+                if suffix != "dmg.blockmap":
+                    self.assertEqual(name in names, intel)
+            if intel:
+                (remote / f"Ninjy-{VERSION[1:]}-x64.dmg.blockmap").write_text("legacy")
+                data = json.loads((self.work / "fixture-release.json").read_text())
+                data["assets"] = [{"name": p.name} for p in remote.iterdir()]
+                (self.work / "fixture-release.json").write_text(json.dumps(data))
+            else:
+                self.assertNotIn(f"Ninjy-{VERSION[1:]}-x64.dmg.blockmap", names)
+            self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe", names)
+            self.assertIn(f"Ninjy-{VERSION[1:]}-x64.exe.blockmap", names)
+            self.assertEqual("-x64.zip" in (remote / "latest-mac.yml").read_text(), intel)
 
     def test_promotion_optional_asset_manifest_agreement(self):
         self.gh_stub()

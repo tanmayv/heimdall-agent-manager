@@ -15,6 +15,10 @@ Promotion supports releases with or without Intel macOS. If its tarball or
 checksum entry is present, both must be present. Installer support for existing
 Intel macOS releases is unchanged.
 
+Rerunning an existing release with the option disabled removes that version's
+previous Intel macOS tarball and desktop artifacts, including blockmaps, before
+replacing its published checksums and updater metadata. Windows x64 is retained.
+
 Local workflow regression checks:
 
 ```bash
