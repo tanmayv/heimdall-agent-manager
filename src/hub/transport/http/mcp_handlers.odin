@@ -32,7 +32,7 @@ mcp_spike_register_routes :: proc(router: ^Router, h: ^MCP_Spike_Handlers) {
 }
 
 mcp_discovery_path :: proc(path: string) -> bool {
-	return path == MCP_SPIKE_METADATA || path == "/.well-known/oauth-protected-resource" || path == "/.well-known/oauth-authorization-server"
+	return path == MCP_SPIKE_METADATA || path == "/.well-known/oauth-protected-resource/api/v1/mcp" || path == "/.well-known/oauth-protected-resource" || path == "/.well-known/oauth-authorization-server"
 }
 mcp_json :: proc(value: $T, status := 200) -> Response {
 	data, err := json.marshal(value, allocator = context.temp_allocator)
@@ -69,8 +69,8 @@ mcp_spike_register_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 // Reject duplicate parameters, including percent-encoded names; downstream reads
 // use canonical literal names. No ambiguous first-value/last-value OAuth binding.
-mcp_form_unique :: proc(form: string) -> bool {
-	if len(form) > 8192 do return false
+mcp_form_unique :: proc(form: string, max_bytes:=8192) -> bool {
+	if len(form) > max_bytes do return false
 	seen := make(map[string]bool, context.temp_allocator)
 	for part in strings.split(form, "&", context.temp_allocator) {
 		eq := strings.index_byte(part, '=')

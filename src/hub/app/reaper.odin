@@ -110,6 +110,7 @@ reaper_loop :: proc(graph: ^App_Graph) {
 	interval := graph.config.reaper_interval_seconds
 	if interval <= 0 do interval = DEFAULT_REAPER_INTERVAL_SECONDS
 	reaper_with_scratch(graph, proc(graph: ^App_Graph) {
+		mcp_cleanup_once(graph)
 		// Attention cards: reconcile once at startup, then on the sweep cadence below.
 		attention_reconcile_maybe(graph, true)
 		// REQ-EA-3: once at startup, before the first interval, so an enrollment that
@@ -169,6 +170,7 @@ attention_reconcile_maybe :: proc(graph: ^App_Graph, force: bool) {
 // launch reaper_loop as a thread entry point.
 reaper_sweep_once :: proc(graph: ^App_Graph) {
 	if graph == nil do return
+	mcp_cleanup_once(graph)
 	// Outcome for heimdall_reaper_runs_total: the passes below swallow their
 	// own failures by design, so the only error signal that surfaces is the
 	// retention sweep's domain error. Recorded on every exit path.

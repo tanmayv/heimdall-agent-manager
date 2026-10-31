@@ -9,6 +9,8 @@ import auth_service "odin_test:hub/service/auth"
 Hub_Config :: struct {
 	// U0 synthetic OAuth probe only. Off by default; never grants vault access.
 	mcp_oauth_spike: bool,
+	// U1 delegated OAuth: explicit opt-in with stable deployment envelope keys.
+	mcp_oauth_key_file: string,
 	// OIDC provider settings (docs/plans/oidc-only-auth.md). Explicit endpoints, no
 	// discovery fetch at startup. Setting oidc_issuer enables OIDC bearer
 	// authentication for native clients; see validate_oidc_config.

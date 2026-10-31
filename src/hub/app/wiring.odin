@@ -36,6 +36,13 @@ import platform "odin_test:hub/platform"
 App_Graph :: struct {
 	mcp_spike: mcp_service.Store,
 	mcp_spike_handlers: http.MCP_Spike_Handlers,
+	mcp_repository_impl: sqlite.MCP_Repo_SQLite,
+	mcp_repository: iface.MCP_Repository,
+	mcp_vault_repo_impl: sqlite.Vault_Directory_Repo_SQLite,
+	mcp_vault_repo: iface.Vault_Directory_Repository,
+	mcp_vault_view: vault_directory_service.Service,
+	mcp_delegation: mcp_service.Delegation_Service,
+	mcp_delegation_handlers: http.MCP_Delegation_Handlers,
 	config: Hub_Config,
 	clock: platform.Clock,
 	ids: platform.ID_Generator,
@@ -212,7 +219,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		terminal_retention = time.Duration(config.runtime_terminal_retention_seconds) * time.Second,
 	}
 	if oidc_ok, oidc_err := validate_oidc_config(config); !oidc_ok do return false, oidc_err
-	if config.mcp_oauth_spike {
+	if config.mcp_oauth_spike || config.mcp_oauth_key_file != "" {
+		if config.mcp_oauth_spike && config.mcp_oauth_key_file != "" do return false, "choose synthetic MCP probe or delegated OAuth, not both"
 		// Reuse the strict HTTPS origin parser, without imposing a distinct host.
 		origin, valid, _ := normalize_preview_origin(config.ui_origin, "")
 		if !valid || origin == "" do return false, "MCP OAuth probe requires a valid HTTPS ui_origin without a path"
@@ -328,6 +336,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		graph.vault_directory_repo = sqlite.new_vault_directory_repository(&graph.sqlite_vault_directory, &graph.db)
 	}
 	graph.vault_directory = vault_directory_service.new_service(&graph.vault_directory_repo, &graph.clock)
+	if config.mcp_oauth_key_file != "" {
+		if config.database_path == ":memory:" do return false, "delegated MCP OAuth requires a persistent database"
+		if ok, err := configure_mcp_delegation(graph); !ok do return false, err
+	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
@@ -630,7 +642,8 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	sqlite.close(&graph.sqlite_actions.snapshot_conn)
 	sqlite.close(&graph.sqlite_billing.conn)
 	sqlite.close(&graph.sqlite_bridge_commit.conn)
-	if graph.config.mcp_oauth_spike do mcp_service.free(&graph.mcp_spike)
+	if graph.config.mcp_oauth_spike || graph.config.mcp_oauth_key_file != "" do mcp_service.free(&graph.mcp_spike)
+	free_mcp_delegation(graph)
 	auth_service.oidc_free(&graph.auth)
 	sqlite.close(&graph.oidc_identity_db)
 	vault_directory_service.service_free(&graph.vault_directory)
@@ -642,6 +655,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	if graph.config.mcp_oauth_spike {
 		http.mcp_spike_register_routes(&graph.router, &graph.mcp_spike_handlers)
 	}
+	if graph.config.mcp_oauth_key_file != "" do http.mcp_delegation_register_routes(&graph.router, &graph.mcp_delegation_handlers)
 	http.router_add(&graph.router, "GET", "/api/v1/account/billing", rawptr(&graph.billing_handlers), http.account_billing_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/checkout", rawptr(&graph.billing_handlers), http.account_checkout_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/account/billing/portal", rawptr(&graph.billing_handlers), http.account_portal_handler)

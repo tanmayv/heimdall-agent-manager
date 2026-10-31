@@ -102,6 +102,7 @@ import { chainConversationRoute, chainIdFromTargetId, chainTargetId } from '../.
 const TaskChainsPage = lazy(() => import('../taskchain/TaskChainsPage'));
 const NewConversationPage = lazy(() => import('../chat/NewConversationPage'));
 const DeviceApprovalPage = lazy(() => import('../devices/DeviceApprovalPage'));
+const McpConsentPage = lazy(() => import('../devices/McpConsentPage'));
 const DevicesPanel = lazy(() => import('../settings/DevicesPanel'));
 const ProviderEnrollmentSetupPage = lazy(() => import('../providers/ProviderEnrollmentSetupPage'));
 const BridgesPanel = lazy(() => import('../settings/BridgesPanel'));
@@ -1271,6 +1272,8 @@ function RouteOutlet({
           <ProjectFormPage projectId={decodeURIComponent(path.slice('/projects/'.length, -'/edit'.length))} />
         ) : path.startsWith('/projects/') ? (
           <ProjectViewPage projectId={decodeURIComponent(path.slice('/projects/'.length))} />
+        ) : path === '/mcp/consent' ? (
+          <McpConsentPage />
         ) : path === '/device/add' ? (
           // The one approval surface for new browsers and bridges.
           <DeviceApprovalPage />
