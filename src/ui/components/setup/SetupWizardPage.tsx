@@ -31,7 +31,7 @@ import {
 } from '../../bridge/desktopBridgeSession';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { fetchPendingBridgeEnrollments } from '../../api/endpoints/bridges';
-import { postApproveBridge, type BridgeCodeInfo } from '../../api/endpoints/vaultDevices';
+import { type BridgeCodeInfo } from '../../api/endpoints/vaultDevices';
 import { useCreateProjectMutation, useListProjectsQuery, useSetProjectBridgePathMutation } from '../../api/endpoints/projects';
 import { cookieJsonFetch } from '../../api/cookieFetch';
 import { useEntitlements } from '../../hooks/useEntitlements';
@@ -41,6 +41,7 @@ import { buildRouteHash } from '../../utils/appLocation';
 import { deviceVaultUserId } from '../../services/deviceVault';
 import { BridgeReconnectWait, lookUpPairing } from '../devices/DeviceApprovalPage';
 import { approveBridgeEnrollment } from '../devices/bridgeApproval';
+import { cancelSetupEnrollment } from './setupEnrollment';
 import { reusableBridgesOf, reusableBridgeStatusText, REUSE_WARNING } from '../devices/bridgeReuseChoice';
 import UpgradePrompt from '../billing/UpgradePrompt';
 import ProviderSetupSurface from '../providers/ProviderSetupSurface';
@@ -522,6 +523,12 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   const [choice, setChoice] = useState<IdentityChoice>(EMPTY_IDENTITY_CHOICE);
   const [newLabel, setNewLabel] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
+  const [waitingBridgeId, setWaitingBridgeId] = useState('');
+  const [cancelError, setCancelError] = useState('');
+  const [cancelling, setCancelling] = useState(false);
+  const pendingAttempt = useRef('');
+  const enrollmentWait = useRef<AbortController | null>(null);
+  const seeded = useRef(false);
   const [phase, setPhase] = useState<{ kind: 'choose' } | { kind: 'working'; message: string } | { kind: 'reconnecting'; bridgeId: string; label: string; approved: string } | { kind: 'failed'; message: string }>({ kind: 'choose' });
 
   // The pairing code this app's own setup printed, taken once.
@@ -534,6 +541,12 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   useEffect(() => {
     if (!code) return;
     let cancelled = false;
+    setReview(null);
+    setChoice(EMPTY_IDENTITY_CHOICE);
+    setPhase({ kind: 'choose' });
+    setCancelError('');
+    pendingAttempt.current = '';
+    seeded.current = false;
     setLookupError('');
     void lookUpPairing(code, deviceVaultUserId()).then((found) => {
       if (cancelled) return;
@@ -546,7 +559,7 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
 
   useEffect(() => {
     if (!review) return;
-    void fetchPendingBridgeEnrollments().then((rows) => setPendingCount(rows.length)).catch(() => {});
+    void fetchPendingBridgeEnrollments().then((rows) => setPendingCount(rows.filter((row) => !row.replacing).length)).catch(() => {});
   }, [review]);
 
   const info = review?.info as BridgeCodeInfo | undefined;
@@ -557,7 +570,6 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   // Preselect only when the machine's own hint names one of your bridges; otherwise
   // a new bridge when there is room. Reuse signs another machine out, so it is never
   // picked for the user without that hint.
-  const seeded = useRef(false);
   useEffect(() => {
     if (!info || seeded.current) return;
     seeded.current = true;
@@ -577,6 +589,8 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
     // transaction that approves this one (sunset_bridge_id), and gives it back on any
     // rollback of the still-pending enrollment. It is final only once this machine
     // finishes enrolling.
+    const wait = new AbortController();
+    enrollmentWait.current = wait;
     try {
       const outcome = await approveBridgeEnrollment({
         info,
@@ -585,6 +599,11 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
         newLabel: label,
         sunset: sunset ? { bridge_id: sunset.bridge_id, label: sunset.label } : null,
         onProgress: (message) => setPhase({ kind: 'working', message }),
+        waitSignal: wait.signal,
+        onWaiting: (id) => {
+          if (id) pendingAttempt.current = id;
+          setWaitingBridgeId(id);
+        },
       });
       // The picker's copy of the sunset bridge is stale now.
       if (sunset) void refetchBridges();
@@ -605,10 +624,25 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   }, [review, info, plan, newLabel, refetchBridges]);
 
   const deny = useCallback(async () => {
-    if (review) await postApproveBridge({ pair_lookup: review.keys.lookup, approve: false }).catch(() => {});
-    const manager = desktopCapabilities().bridgeManager;
-    if (manager) await manager.cancel().catch(() => ({ ok: false }));
-    onBack();
+    setCancelling(true);
+    setCancelError('');
+    try {
+      // After approval the pairing grant is consumed. Cancel the pending
+      // enrollment itself so a retry does not collide with its old identity.
+      const manager = desktopCapabilities().bridgeManager;
+      if (!await cancelSetupEnrollment({
+        bridgeId: pendingAttempt.current,
+        pairLookup: review?.keys.lookup,
+        wait: enrollmentWait.current,
+        cancelLocal: () => manager ? manager.cancel() : Promise.resolve({ ok: true }),
+      })) return;
+      pendingAttempt.current = '';
+      onBack();
+    } catch (err) {
+      setCancelError(errText(err));
+    } finally {
+      setCancelling(false);
+    }
   }, [review, onBack]);
 
   if (phase.kind === 'reconnecting') {
@@ -754,11 +788,12 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
 
           {phase.kind === 'working' ? <p data-debug-id="setup-identity-progress" className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" /> {phase.message}</p> : null}
           {phase.kind === 'failed' ? <div data-debug-id="setup-identity-error"><Alert tone="danger">{phase.message}</Alert></div> : null}
+          {cancelError ? <div data-debug-id="setup-identity-cancel-error" role="alert"><Alert tone="danger">{cancelError}</Alert></div> : null}
           {atCapacity && !reusable.length && !candidates.length ? <UpgradePrompt details={{ limit: 'max_bridges' }} debugId="setup-identity-plan-cap" /> : null}
 
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" data-debug-id="setup-identity-approve-btn" loading={phase.kind === 'working'} disabled={!plan.ok || busy} onClick={() => void approve()}>{plan.action}</Button>
-            <Button variant="ghost" data-debug-id="setup-identity-deny-btn" disabled={busy} onClick={() => void deny()}>Cancel setup</Button>
+            <Button variant="primary" data-debug-id="setup-identity-approve-btn" loading={phase.kind === 'working'} disabled={!plan.ok || busy || cancelling || Boolean(pendingAttempt.current)} onClick={() => void approve()}>{plan.action}</Button>
+            <Button variant="ghost" data-debug-id="setup-identity-deny-btn" disabled={cancelling || (busy && !waitingBridgeId)} onClick={() => void deny()}>{cancelling ? 'Cancelling…' : phase.kind === 'failed' && pendingAttempt.current ? 'Retry setup' : 'Cancel setup'}</Button>
           </div>
         </>
       )}

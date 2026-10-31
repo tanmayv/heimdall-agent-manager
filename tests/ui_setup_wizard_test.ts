@@ -10,6 +10,50 @@ import assert from 'node:assert/strict';
 const model = await import('../src/ui/components/setup/setupWizardModel.ts');
 const sessions = await import('../src/ui/components/setup/sessionProjects.ts');
 const { initialWizard, reduceWizard, startWizard } = await import('../src/ui/bridge/desktopBridge.ts');
+const { cancelSetupEnrollment } = await import('../src/ui/components/setup/setupEnrollment.ts');
+
+test('wizard recovery cancels the Hub attempt before stopping local setup', async () => {
+  const realFetch = globalThis.fetch;
+  const events: string[] = [];
+  const wait = new AbortController();
+  wait.signal.addEventListener('abort', () => events.push('abort-wait'));
+  globalThis.fetch = (async (url: any, init: any) => {
+    assert.equal(String(url), '/api/v1/bridges/brg_old/enrollment/cancel');
+    assert.equal(init.method, 'POST');
+    events.push('cancel-hub');
+    return Response.json({ data: { rolled_back: true } });
+  }) as any;
+  try {
+    assert.equal(await cancelSetupEnrollment({ bridgeId: 'brg_old', wait,
+      cancelLocal: async () => { events.push('stop-local'); return { ok: true }; } }), true);
+    assert.deepEqual(events, ['cancel-hub', 'abort-wait', 'stop-local']);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('wizard recovery preserves a committed enrollment and does not guess on Hub failure', async () => {
+  const realFetch = globalThis.fetch;
+  const wait = new AbortController();
+  const cancelLocal = async () => { assert.fail('must not stop a committed or unknown enrollment'); return { ok: true }; };
+  try {
+    globalThis.fetch = (async () => Response.json({ data: { rolled_back: false } })) as any;
+    assert.equal(await cancelSetupEnrollment({ bridgeId: 'brg_old', wait, cancelLocal }), false);
+    assert.equal(wait.signal.aborted, false);
+    globalThis.fetch = (async () => Response.json({ error: { message: 'Hub unavailable' } }, { status: 503 })) as any;
+    await assert.rejects(cancelSetupEnrollment({ bridgeId: 'brg_old', wait, cancelLocal }), /Hub unavailable/);
+    assert.equal(wait.signal.aborted, false);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('an expired unapproved pairing code does not block retrying local setup', async () => {
+  const realFetch = globalThis.fetch;
+  let stopped = false;
+  globalThis.fetch = (async () => Response.json({ error: { message: 'expired code' } }, { status: 404 })) as any;
+  try {
+    assert.equal(await cancelSetupEnrollment({ bridgeId: '', pairLookup: 'expired', wait: null,
+      cancelLocal: async () => { stopped = true; return { ok: true }; } }), true);
+    assert.equal(stopped, true);
+  } finally { globalThis.fetch = realFetch; }
+});
 
 const reusable = [
   { bridge_id: 'brg_riverwood', label: 'riverwood', machine_hostname: 'mac.local', status: 'online', last_seen: '' },
