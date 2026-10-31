@@ -12,7 +12,7 @@ import httpc "odin_test:lib/httpc"
 CATALOG_TEST_SHA :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 Catalog_Test_Source :: struct {
 	doc, sums, pin_doc: string,
-	fail, fail_sums: bool,
+	fail, fail_sums, fail_pin: bool,
 	calls: int,
 }
 
@@ -24,7 +24,10 @@ catalog_test_get :: proc(req: httpc.Request) -> (string, bool, string) {
 		if source.fail_sums do return "", false, "HTTP 503"
 		return source.sums, true, ""
 	}
-	if len(req.path) == 6 && req.path[4] == "tags" do return source.pin_doc, true, ""
+	if len(req.path) == 6 && req.path[4] == "tags" {
+		if source.fail_pin do return "", false, "HTTP 404"
+		return source.pin_doc, true, ""
+	}
 	return source.doc, true, ""
 }
 
@@ -170,4 +173,65 @@ test_catalog_cache_refresh_and_windows_asset :: proc(t: ^testing.T) {
 	_ = resolve_bridge_update_info(&cat, br)
 	testing.expect_value(t, source.calls, 3)
 	testing.expect_value(t, first.latest_version, "2.0.0")
+}
+
+@(test)
+test_catalog_pin_preserves_matching_manifest_artifact :: proc(t: ^testing.T) {
+	path := catalog_test_manifest(t)
+	defer os.remove(path)
+	source := Catalog_Test_Source{
+		doc = fmt.tprintf("[%s]", catalog_test_release("v2.0.0", "linux-amd64")),
+		pin_doc = catalog_test_release("v1.0.0", "linux-amd64", pre = true),
+		sums = fmt.tprintf("%s  heimdall-local-linux-amd64-v2.0.0.tar.gz\n", CATALOG_TEST_SHA),
+	}
+	context.user_ptr = &source
+	cat := Bridge_Update_Catalog{manifest_path = path, release_get = catalog_test_get, override_version = "v1.0.0"}
+	info := resolve_bridge_update_info(&cat, {version = "0.9.0"})
+	testing.expect_value(t, info.latest_source, "override")
+	testing.expect_value(t, info.latest_version, "v1.0.0")
+	testing.expect_value(t, info.latest_commit_sha, "manifest-commit")
+	testing.expect_value(t, info.download_url, "/manifest-v1.tar.gz")
+	testing.expect_value(t, info.sha256, "manifest-sha")
+	testing.expect(t, info.artifact_available && info.update_available)
+	testing.expect(t, strings.contains(info.warning, "older than promoted release 2.0.0"))
+	testing.expect(t, source.calls == 2, "matching manifest pin does not require a tag lookup")
+}
+
+@(test)
+test_catalog_pin_lookup_failure_explained_alongside_age_warning :: proc(t: ^testing.T) {
+	source := Catalog_Test_Source{
+		doc = fmt.tprintf("[%s]", catalog_test_release("v2.0.0", "linux-amd64")),
+		pin_doc = catalog_test_release("v1.5.0", "linux-amd64"),
+		sums = fmt.tprintf("%s  heimdall-local-linux-amd64-v2.0.0.tar.gz\n", CATALOG_TEST_SHA),
+		fail_pin = true,
+	}
+	context.user_ptr = &source
+	cat := Bridge_Update_Catalog{release_get = catalog_test_get, override_version = "1.5.0"}
+	info := resolve_bridge_update_info(&cat, {})
+	testing.expect(t, !info.artifact_available)
+	testing.expect(t, strings.contains(info.fallback_reason, "HTTP 404"))
+	testing.expect(t, strings.contains(info.warning, "older than promoted"))
+	source.fail_pin = false
+	info = resolve_bridge_update_info(&cat, {})
+	testing.expect(t, !info.artifact_available)
+	testing.expect(t, strings.contains(info.warning, "Pinned release 1.5.0 has no verified artifact for linux-amd64"))
+	testing.expect(t, strings.contains(info.warning, "older than promoted"))
+}
+
+@(test)
+test_catalog_explicit_prerelease_pin_requires_verified_artifact :: proc(t: ^testing.T) {
+	source := Catalog_Test_Source{
+		doc = fmt.tprintf("[%s]", catalog_test_release("v2.0.0", "linux-amd64")),
+		pin_doc = catalog_test_release("v1.5.0", "linux-amd64", pre = true),
+		sums = fmt.tprintf("%s  heimdall-local-linux-amd64-v2.0.0.tar.gz\n%s  heimdall-local-linux-amd64-v1.5.0.tar.gz\n", CATALOG_TEST_SHA, CATALOG_TEST_SHA),
+	}
+	context.user_ptr = &source
+	cat := Bridge_Update_Catalog{release_get = catalog_test_get, override_version = "1.5.0"}
+	info := resolve_bridge_update_info(&cat, {})
+	testing.expect(t, info.artifact_available)
+	testing.expect_value(t, info.latest_source, "override")
+	testing.expect(t, strings.contains(info.download_url, "/v1.5.0/"))
+	source.pin_doc = catalog_test_release("v1.5.0", "linux-amd64", draft = true)
+	info = resolve_bridge_update_info(&cat, {})
+	testing.expect(t, !info.artifact_available, "explicit pins still reject drafts")
 }

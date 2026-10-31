@@ -96,7 +96,7 @@ bridge_catalog_fetch_release :: proc(get: Bridge_Catalog_Get, target, pin: strin
 	}
 	// GitHub lists newest promotions first, matching the desktop's latestRelease.
 	for release in releases {
-		if release.draft || release.prerelease || !bridge_catalog_tag_valid(release.tag_name) do continue
+		if release.draft || (pin == "" && release.prerelease) || !bridge_catalog_tag_valid(release.tag_name) do continue
 		if pin != "" && strings.trim_prefix(pin, "v") != strings.trim_prefix(release.tag_name, "v") do continue
 		name := bridge_catalog_bundle(target, release.tag_name)
 		has_bundle, has_sums := false, false
@@ -122,7 +122,11 @@ bridge_catalog_fetch_release :: proc(get: Bridge_Catalog_Get, target, pin: strin
 		info.artifact_available = true
 		return info, true
 	}
-	info.warning = fmt.tprintf("No promoted release has a verified artifact for %s", target)
+	if pin != "" {
+		info.warning = fmt.tprintf("Pinned release %s has no verified artifact for %s", pin, target)
+	} else {
+		info.warning = fmt.tprintf("No promoted release has a verified artifact for %s", target)
+	}
 	return info, true
 }
 
@@ -177,6 +181,8 @@ bridge_catalog_release :: proc(catalog: ^Bridge_Update_Catalog, target, pin: str
 	if !catalog.cache_enabled || index < 0 do return bridge_catalog_fetch_release(catalog.release_get, target, pin)
 	if pin != "" do index += 1
 	// Serialize cold lookups as well: many bridge rows must not stampede GitHub.
+	// Cold targets share this lock across bounded HTTP calls; the five-minute
+	// cache includes failures so outages do not repeat the delay for every row.
 	sync.mutex_lock(&catalog.cache_mutex)
 	defer sync.mutex_unlock(&catalog.cache_mutex)
 	entry := &catalog.cache[index]

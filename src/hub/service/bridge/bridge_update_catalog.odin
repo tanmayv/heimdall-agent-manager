@@ -186,6 +186,7 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 			}
 		}
 	}
+	manifest_info := info
 	promoted, reachable := bridge_catalog_release(catalog, target, "")
 	if reachable {
 		info = promoted
@@ -196,12 +197,27 @@ resolve_bridge_update_info :: proc(catalog: ^Bridge_Update_Catalog, bridge: doma
 		pin := catalog.override_version
 		// Never pair a pin with a different version's manifest/promoted artifact.
 		if strings.trim_prefix(pin, "v") != strings.trim_prefix(info.latest_version, "v") || info.latest_version == "" {
-			info, _ = bridge_catalog_release(catalog, target, pin)
+			if strings.trim_prefix(pin, "v") == strings.trim_prefix(manifest_info.latest_version, "v") {
+				info = manifest_info
+			} else {
+				info, _ = bridge_catalog_release(catalog, target, pin)
+			}
 		}
 		info.latest_version, info.latest_source = pin, "override"
-		if !reachable do info.fallback_reason = promoted.fallback_reason
+		if !reachable {
+			if info.fallback_reason == "" {
+				info.fallback_reason = promoted.fallback_reason
+			} else if info.fallback_reason != promoted.fallback_reason {
+				info.fallback_reason = fmt.tprintf("%s; %s", promoted.fallback_reason, info.fallback_reason)
+			}
+		}
 		if promoted.latest_version != "" && compare_semver(pin, promoted.latest_version) < 0 {
-			info.warning = fmt.tprintf("Operator pin %s is older than promoted release %s", pin, promoted.latest_version)
+			pin_warning := fmt.tprintf("Operator pin %s is older than promoted release %s", pin, promoted.latest_version)
+			if info.warning == "" {
+				info.warning = pin_warning
+			} else {
+				info.warning = fmt.tprintf("%s; %s", pin_warning, info.warning)
+			}
 		}
 		if catalog.override_commit_sha != "" do info.latest_commit_sha = catalog.override_commit_sha
 		// URL and digest are an inseparable operator-supplied pair.

@@ -1184,7 +1184,11 @@ There is no separate update script: setup's transaction is the update.
   prereleases) with this target's bundle and a valid entry in `SHA256SUMS`, using
   the same release list as the desktop app. Lookups are cached for five minutes.
   An explicit operator `override_version` remains a pin; Settings warns if it is
-  older than the promoted release. If GitHub cannot be reached or decoded, the Hub
+  older than the promoted release. A pin matching the manifest version retains
+  that manifest's target artifact. Other explicit pins may select prereleases,
+  but still require a verified target artifact; drafts are excluded. Failed pin
+  lookups report why the artifact is unavailable.
+  If GitHub cannot be reached or decoded, the Hub
   falls back to `HEIMDALL_UPDATE_MANIFEST_PATH` and reports the reason. Bridge info
   includes `latest_version`, `latest_source` (`promoted`, `override`, or `manifest`),
   `update_warning`, and `update_fallback_reason`.
