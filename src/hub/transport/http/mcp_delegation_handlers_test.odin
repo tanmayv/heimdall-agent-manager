@@ -59,7 +59,7 @@ test_mcp_delegation_signed_consent_token_retry_and_disconnect :: proc(t:^testing
 	repo,rerr:=sqlite.open_mcp_repository(&impl,":memory:")
 	testing.expect(t,rerr.code==.None)
 	defer sqlite.close(&impl.conn)
-	testing.expect(t,sqlite.exec(&impl.conn,#load("../../repository/sqlite/migrations/174_mcp_delegated_credentials.sql",string)))
+	testing.expect(t,sqlite.exec(&impl.conn,#load("../../repository/sqlite/migrations/175_mcp_delegated_credentials.sql",string)))
 	testing.expect(t,iface.mcp_transaction(&repo,mcp_http_seed,&state).code==.None)
 	keys:[1]mcp.Envelope_Key
 	keys[0].id="http-test";keys[0].bytes[0]=9

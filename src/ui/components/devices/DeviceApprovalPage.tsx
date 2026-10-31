@@ -23,7 +23,7 @@ import { atPlanLimit } from '../../utils/accountEntitlements';
 //             and reconnect, detect its providers and let the user pick which to enable
 //             (REQ-ENR-2..4).
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Icon, Input, Radio, Spinner } from '@ui';
 import { ApiError } from '../../api/cookieFetch';
 import {
@@ -37,7 +37,7 @@ import {
   type BrowserCodeInfo,
   type DeviceCodeInfo,
 } from '../../api/endpoints/vaultDevices';
-import { fetchPendingBridgeEnrollments, fetchBridgeEnrollmentStatus, fetchBridgeRow, fetchBridgeUnsealTarget, unsealBridge } from '../../api/endpoints/bridges';
+import { cancelBridgeEnrollment, fetchPendingBridgeEnrollments, fetchBridgeEnrollmentStatus, fetchBridgeRow, fetchBridgeUnsealTarget, unsealBridge } from '../../api/endpoints/bridges';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { enrollmentPendingOutcome, ENROLLMENT_PENDING_FALLBACK_SECONDS } from '../enrollment/bridgeEnrollmentCompletion';
 import ProviderSetupSurface from '../providers/ProviderSetupSurface';
@@ -183,19 +183,22 @@ function notAcceptedMessage(refused: string[], accepted: string[]): string {
   return `No device this hub accepts is waiting with that code. A pending request was started against ${refused.join(', ')}, which is not one of this hub's pairing addresses (${accepted.join(', ') || 'none'}). Restart it with this hub's address (ham-bridge enroll -Hub <address>); if that address really is this hub, its operator must add it to --pairing-hub-origins.`;
 }
 
-async function waitForEnrollingBridge(bridgeId: string, onTick: (s: string) => void): Promise<void> {
+export async function waitForEnrollingBridge(bridgeId: string, onTick: (s: string) => void, signal?: AbortSignal): Promise<void> {
   const fallback = Date.now() + ENROLLMENT_PENDING_FALLBACK_SECONDS * 1000;
   for (;;) {
+    signal?.throwIfAborted();
     let outcome: ReturnType<typeof enrollmentPendingOutcome> = 'waiting';
     let deadline = fallback;
     try {
-      const status = await fetchBridgeEnrollmentStatus(bridgeId);
+      const status = await fetchBridgeEnrollmentStatus(bridgeId, signal);
       const until = Date.parse(String(status?.enrollment_pending_until || ''));
       if (Number.isFinite(until)) deadline = until;
       outcome = enrollmentPendingOutcome(status, Date.now());
     } catch {
+      signal?.throwIfAborted();
       // transient; the deadline still applies
     }
+    signal?.throwIfAborted();
     if (outcome === 'ready' || outcome === 'committed') return;
     if (outcome === 'rolled-back' || Date.now() >= deadline) throw new Error('The bridge did not connect to receive the vault key in time; run `ham-bridge enroll` again.');
     onTick(`Waiting for the bridge to connect (${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))} s)…`);
@@ -253,6 +256,10 @@ export default function DeviceApprovalPage() {
   const entitlements = useEntitlements();
   const { data: bridgesData } = useListBridgesQuery();
   const [pendingCount, setPendingCount] = useState(0);
+  const [waitingBridgeId, setWaitingBridgeId] = useState('');
+  const [cancellingEnrollment, setCancellingEnrollment] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+  const enrollmentWait = useRef<AbortController | null>(null);
   const [planError, setPlanError] = useState<PlanLimitDetails | null>(null);
   const [code, setCode] = useState('');
   const [phase, setPhase] = useState<Phase>({ kind: 'enter' });
@@ -266,7 +273,7 @@ export default function DeviceApprovalPage() {
     if (phase.kind !== 'review' || phase.browser) return;
     let cancelled = false;
     void fetchPendingBridgeEnrollments().then((rows) => {
-      if (!cancelled) setPendingCount(rows.length);
+      if (!cancelled) setPendingCount(rows.filter((row) => !row.replacing).length);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [phase.kind]);
@@ -335,7 +342,16 @@ export default function DeviceApprovalPage() {
       if (!bridgeId) throw new Error('The hub did not report the approved bridge id.');
       if (target && bridgeId !== target.bridge_id) throw new Error(`The hub approved ${bridgeId}, not the bridge you chose to reuse (${target.bridge_id}). The vault key was not delivered.`);
       const expectedPublicKey = String(bridgeInfo.bridge_public_key || '');
-      await waitForEnrollingBridge(bridgeId, (message) => setPhase({ kind: 'working', message }));
+      const wait = new AbortController();
+      enrollmentWait.current = wait;
+      setCancelError('');
+      setWaitingBridgeId(bridgeId);
+      try {
+        await waitForEnrollingBridge(bridgeId, (message) => setPhase({ kind: 'working', message }), wait.signal);
+      } finally {
+        setWaitingBridgeId('');
+        enrollmentWait.current = null;
+      }
       setPhase({ kind: 'working', message: 'Delivering the vault key to the bridge…' });
       // Fresh, verified chain: it now contains this bridge's signed approval. The
       // pair_mac lets the bridge pin this account's root on its first unseal.
@@ -352,6 +368,23 @@ export default function DeviceApprovalPage() {
       setPhase({ kind: 'failed', message: errText(err) });
     }
   }, [phase, label, effectiveBridgeChoice]);
+
+  const cancelEnrollment = async () => {
+    const wait = enrollmentWait.current;
+    if (!waitingBridgeId || !wait) return;
+    setCancellingEnrollment(true);
+    setCancelError('');
+    try {
+      const result = await cancelBridgeEnrollment(waitingBridgeId);
+      // A commit may have won the race. Only the Hub's rollback verdict cancels
+      // this wait; never tell a committed bridge to discard its new credential.
+      if (result.rolledBack) wait.abort(new Error('Bridge enrollment cancelled.'));
+    } catch (err) {
+      setCancelError(errText(err));
+    } finally {
+      setCancellingEnrollment(false);
+    }
+  };
 
   const deny = useCallback(async () => {
     if (phase.kind !== 'review') return;
@@ -431,6 +464,8 @@ export default function DeviceApprovalPage() {
 
       {planError ? <UpgradePrompt details={planError} debugId="device-approval-plan-error" /> : null}
       {phase.kind === 'working' ? <p data-debug-id="device-approval-progress" className="text-sm text-muted">{phase.message}</p> : null}
+      {waitingBridgeId ? <Button data-debug-id="device-approval-cancel-enrollment-btn" variant="ghost" disabled={cancellingEnrollment} onClick={() => void cancelEnrollment()}>{cancellingEnrollment ? 'Cancelling…' : 'Cancel enrollment'}</Button> : null}
+      {cancelError ? <p data-debug-id="device-approval-cancel-enrollment-error" role="alert" className="text-sm text-danger">{cancelError}</p> : null}
       {phase.kind === 'reconnecting' || phase.kind === 'providers' ? (
         <p data-debug-id="device-approval-bridge-outcome" className="mb-3 text-sm">{phase.approved}</p>
       ) : null}

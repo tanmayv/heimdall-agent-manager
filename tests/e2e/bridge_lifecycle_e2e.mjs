@@ -223,6 +223,10 @@ async function approveEnrollment(hub, acct, { exited, code: codeOf, out: output,
   const bridgeId = appr.data?.hub_observed?.bridge_id;
   expect(appr.status === 200 && bridgeId, `approved -> ${bridgeId} (${appr.status} ${appr.status === 200 ? '' : appr.raw})`);
   if (!CREATED.includes(bridgeId)) CREATED.push(bridgeId);
+  const pendingList = await http(acct, 'GET', '/api/v1/bridges?include_pending=1');
+  const pendingRows = Array.isArray(pendingList.data) ? pendingList.data : pendingList.data?.bridges || [];
+  expect(pendingRows.filter((row) => row.bridge_id === bridgeId && row.enrollment_in_progress).length === 1,
+    'the approved enrollment appears exactly once in Settings, including replacement of an enrolled bridge');
   let target = null;
   for (const deadline = Date.now() + 30_000; ; await sleep(250)) {
     const pk = await http(acct, 'GET', `/api/v1/bridges/${bridgeId}/public-key?enrollment=1`);
@@ -331,6 +335,15 @@ async function main() {
     expect(active.length === 1 && active[0].bridge_id === S.first.bridgeId, `account A has exactly one active bridge (${active.map((b) => b.bridge_id)})`);
     const r = await runtime(online(A, S.first.bridgeId));
     expect(r.ok, 'the re-enrolled runtime connects');
+    await stop(r.child);
+  });
+  await step('3a approval replaces a saved identity when the CLI offered no reuse hint', async () => {
+    // --new-bridge suppresses the hint, as a reinstall with no saved config does.
+    // The approving owner is still allowed to select the existing bridge.
+    const again = await enroll(hub, A, { reuse: S.first.bridgeId, extra: ['--new-bridge'] });
+    expect(again.bridgeId === S.first.bridgeId, 'approval selected the existing bridge without a CLI hint');
+    const r = await runtime(online(A, S.first.bridgeId));
+    expect(r.ok, 'the replacement runtime connects after approval without a reuse hint');
     await stop(r.child);
   });
   await step('4 replace with account B: A revoked on the hub, A secrets wiped', async () => {

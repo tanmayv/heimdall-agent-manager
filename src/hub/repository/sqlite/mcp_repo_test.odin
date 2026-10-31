@@ -9,7 +9,7 @@ test_mcp_metadata_migration_embedded_upgrade_and_repeat :: proc(t:^testing.T) {
 	testing.expect(t,opened)
 	if !opened do return
 	defer close(&conn)
-	const_name:="174_mcp_delegated_credentials.sql"
+	const_name:="175_mcp_delegated_credentials.sql"
 	ok,err:=run_migrations(&conn,"/missing-embedded-migration-test",const_name)
 	testing.expectf(t,ok,"baseline migrations: %s",err.message)
 	testing.expect(t,!sqlite_object_exists(&conn,"mcp_records"))

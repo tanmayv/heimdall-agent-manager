@@ -1,3 +1,4 @@
+-- Unreleased MCP schema follows main's 174 release migration.
 -- This table contains PUBLIC bindings, signed grants, encrypted keyring wraps,
 -- credential hashes and client-secret-encrypted bounded retry capsules only.
 -- Raw OAuth credentials and recipient private capabilities MUST NOT be stored.

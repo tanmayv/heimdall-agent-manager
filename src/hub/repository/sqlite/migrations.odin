@@ -598,9 +598,11 @@ MIGRATION_171_EXTENSION_VERSION_SYNC :: #load("migrations/171_extension_version_
 MIGRATION_172_EXTENSION_VERSION_SYNC :: #load("migrations/172_extension_version_sync_0_5_30.sql", string)
 
 MIGRATION_173_EXTENSION_VERSION_SYNC :: #load("migrations/173_extension_version_sync_0_5_31.sql", string)
-MIGRATION_174_MCP :: #load("migrations/174_mcp_delegated_credentials.sql", string)
+MIGRATION_175_MCP :: #load("migrations/175_mcp_delegated_credentials.sql", string)
 
-migration_order :: [178]string {
+MIGRATION_174_EXTENSION_VERSION_SYNC :: #load("migrations/174_extension_version_sync_0_5_32.sql", string)
+
+migration_order :: [179]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
 	"003_device_tokens.sql",
@@ -778,7 +780,8 @@ migration_order :: [178]string {
 	"171_extension_version_sync_0_5_29.sql",
 	"172_extension_version_sync_0_5_30.sql",
 	"173_extension_version_sync_0_5_31.sql",
-	"174_mcp_delegated_credentials.sql",
+	"174_extension_version_sync_0_5_32.sql",
+	"175_mcp_delegated_credentials.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1268,8 +1271,9 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "174_extension_version_sync_0_5_32.sql" do return strings.clone(MIGRATION_174_EXTENSION_VERSION_SYNC)
 	if name == "173_extension_version_sync_0_5_31.sql" do return strings.clone(MIGRATION_173_EXTENSION_VERSION_SYNC)
-	if name == "174_mcp_delegated_credentials.sql" do return strings.clone(MIGRATION_174_MCP)
+	if name == "175_mcp_delegated_credentials.sql" do return strings.clone(MIGRATION_175_MCP)
 	if name == "172_extension_version_sync_0_5_30.sql" do return strings.clone(MIGRATION_172_EXTENSION_VERSION_SYNC)
 	if name == "171_extension_version_sync_0_5_29.sql" do return strings.clone(MIGRATION_171_EXTENSION_VERSION_SYNC)
 	if name == "170_extension_version_sync_0_5_28.sql" do return strings.clone(MIGRATION_170_EXTENSION_VERSION_SYNC)
