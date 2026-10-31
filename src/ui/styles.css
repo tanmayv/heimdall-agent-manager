@@ -1,5 +1,11 @@
 @import '@xterm/xterm/css/xterm.css';
 @import './tokens.css';
+
+/* Design system: page titles, section headings and agent replies are set in the serif. */
+.text-display,
+.text-heading {
+  font-family: var(--font-display);
+}
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -17,7 +23,7 @@
   --fd-hairline: var(--color-border-subtle);
   --fd-hairline-soft: var(--color-border-subtle);
   --fd-success: var(--color-success);
-  --fd-font-body: Inter, 'Inter Variable', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --fd-font-body: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
   --fd-radius-xs: 4px;
   --fd-radius-sm: 6px;
@@ -625,7 +631,7 @@ body {
   border-radius: var(--fd-radius-sm);
   background: var(--color-neutral-soft);
   padding: 0.1rem 0.32rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.86em;
 }
 
