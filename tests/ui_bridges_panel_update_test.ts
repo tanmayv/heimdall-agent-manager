@@ -24,6 +24,51 @@ import {
 // Dynamic imports run after the harness registers its Vite-style module resolver.
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { default: BridgesPanel } = await import('../src/ui/components/settings/BridgesPanel.tsx');
+const { default: BridgeAutoUpdateToggle } = await import('../src/ui/components/settings/BridgeAutoUpdateToggle.tsx');
+
+test('automatic updates read and persist only the selected bridge, preserving errors and offline state', async () => {
+  const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/' });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
+  }
+  const previousFetch = globalThis.fetch;
+  const requests: Array<{ path: string; method: string; body: any }> = [];
+  let rejectSave = false;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    requests.push({ path: String(input), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
+    if (rejectSave && init.method === 'PUT') return Response.json({ error: { message: 'Cannot save config' } }, { status: 500 });
+    return Response.json({ data: { enabled: init.body ? JSON.parse(init.body).enabled : true } });
+  }) as typeof fetch;
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  const toggle = () => dom.window.document.querySelector('[role="switch"]') as HTMLButtonElement;
+  try {
+    await act(async () => { root.render(React.createElement(BridgeAutoUpdateToggle, { bridgeId: 'account-a', online: true })); });
+    assert.equal(toggle().getAttribute('aria-checked'), 'true');
+    await act(async () => { toggle().click(); });
+    assert.equal(toggle().getAttribute('aria-checked'), 'false');
+    assert.deepEqual(requests[1], { path: '/api/v1/bridges/account-a/auto-update', method: 'PUT', body: { enabled: false } });
+    rejectSave = true;
+    await act(async () => { toggle().click(); });
+    assert.equal(toggle().getAttribute('aria-checked'), 'false', 'failed save preserves the confirmed value');
+    assert.match(dom.window.document.querySelector('[role="alert"]')!.textContent || '', /Cannot save config/);
+    const count = requests.length;
+    await act(async () => { root.render(React.createElement(BridgeAutoUpdateToggle, { bridgeId: 'account-b', online: false })); });
+    assert.equal(toggle().disabled, true);
+    assert.equal(requests.length, count, 'offline bridge receives no request');
+    assert.ok(requests.every((request) => request.path.includes('/account-a/')), 'no other account is changed');
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = previousFetch;
+    dom.window.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as any)[key];
+    }
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 1. Version Formatting and Update Predicates (REQ-BUPD-3)
@@ -159,8 +204,10 @@ test('web BridgesPanel lists installed bridges with Update only (no This machine
   const requests: Array<{ path: string; method: string }> = [];
   const bridges = [
     { bridge_id: 'bridge-online', label: 'Online bridge', status: 'online', runtime_connected: true,
-      version: '0.4.30', latest_version: '0.4.31', update_available: true, update_artifact_available: true },
-    { bridge_id: 'bridge-offline', label: 'Offline bridge', status: 'offline', version: '0.4.30' },
+      version: '0.4.30', latest_version: '0.4.31', latest_source: 'override', update_available: true, update_artifact_available: true,
+      update_warning: 'Operator pin 0.4.31 is older than promoted release 0.4.32' },
+    { bridge_id: 'bridge-offline', label: 'Offline bridge', status: 'offline', version: '0.4.30',
+      latest_version: '0.4.31', latest_source: 'manifest', update_fallback_reason: 'cannot resolve promoted releases: HTTP 503' },
   ];
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const path = new URL(String(input), 'https://hub.example.test').pathname;
@@ -189,6 +236,10 @@ test('web BridgesPanel lists installed bridges with Update only (no This machine
     assert.equal(query('settings-this-machine-card'), null, 'no This machine card on the web');
     assert.equal(doc.querySelector('[data-debug-id^="settings-bridge-wizard"]'), null);
     assert.match(query('settings-bridges-list')!.textContent || '', /Installed bridges \(2\)/);
+    assert.match(query('settings-bridge-row-bridge-online')!.textContent || '', /Catalog: v0\.4\.31 \(override\)/);
+    assert.match(query('settings-bridge-row-bridge-online')!.textContent || '', /Operator pin 0\.4\.31 is older than promoted release 0\.4\.32/);
+    assert.match(query('settings-bridge-row-bridge-offline')!.textContent || '', /Catalog: v0\.4\.31 \(manifest\)/);
+    assert.match(query('settings-bridge-row-bridge-offline')!.textContent || '', /Release lookup: cannot resolve promoted releases: HTTP 503/);
     for (const bridge of bridges) {
       const id = bridge.bridge_id;
       assert.ok(query(`settings-bridge-row-${id}`), `row for ${id}`);

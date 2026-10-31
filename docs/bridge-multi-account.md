@@ -117,3 +117,37 @@ the provider registration stay. Removing a provider's extension from the hub
 (Settings) is left undone, with a message, while another profile of this OS user
 is installed. Uninstalling any account, in any order, leaves the others' agents
 working.
+
+## Automatic bridge updates
+
+Installed profiles check for promoted releases about every six hours, with 10%
+jitter, even when the desktop app is closed. Each profile checks its Hub catalog
+first and falls back to GitHub if the catalog is unavailable. Downloads use the
+existing SHA-256 verified release updater. Equal and older versions are skipped.
+
+Automatic updates wait for a full minute with no running or starting agents.
+New agent launches receive a retriable response while the updater applies the release. The detached
+updater changes only its own profile; a kernel lock serializes automatic updates
+across all accounts and Hubs belonging to the OS user. Other profiles keep running.
+Setup verifies the restarted bridge and rolls back on failure. Retry state is
+stored per profile in `auto-update.json`; failures back off from six hours up to
+four days (with jitter), including after a crash or rollback.
+
+Automatic updates are on by default. Toggle **Automatic bridge updates** in
+**Settings → Bridges** while the bridge is online, or edit that profile's
+`config.toml` (no restart needed):
+
+```toml
+[bridge]
+auto_update_enabled = false
+```
+
+The setting applies only to that profile and is preserved by updates. A running
+update finishes its current transaction; disabling the setting prevents the next
+automatic update. Manual updates remain available.
+
+A profile with continuously running agents waits indefinitely for a quiet window;
+automatic updates never force those agents to stop. This includes agents preserved
+by the PTY host across bridge restarts. If the PTY host cannot be queried, the
+profile defers the update until its agent state can be verified. Stop long-lived
+agents to permit the next automatic check, or use the manual Update action.

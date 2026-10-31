@@ -391,6 +391,7 @@ The web app no longer installs provider extensions; `ham-bridge setup` / `ham-br
 | Component | Debug IDs |
 | --- | --- |
 | `BridgesPanel` | `settings-bridge-update-extensions` |
+| `BridgeAutoUpdateToggle` | `settings-bridge-auto-update-${bridgeId}`, `settings-bridge-auto-update-toggle-${bridgeId}` |
 
 ### Quoted context controls
 | Component | Debug IDs |
