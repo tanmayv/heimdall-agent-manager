@@ -959,6 +959,24 @@ the outcome as `Re-enrolled existing bridge <id>` or `Registered new bridge <id>
 `ham-bridge enroll --hub <url>` keeps the config so the previous id is offered, and
 `ham-bridge enroll --hub <url> --new-bridge` registers a new bridge.
 
+Selecting an existing bridge on the approval page also works after reinstalling,
+when the local config no longer contains its ID. On every platform, a saved local
+identity for the selected bridge is backed up before replacement and restored if
+enrollment fails, is cancelled, or expires. A successful commit removes the backup.
+The saved identity must belong to the approving account.
+
+Settings → Bridges detects pending new enrollments and replacements every ten
+seconds and offers **Cancel**. A replacement's existing bridge remains available
+until the replacement commits. The approval page also offers **Cancel enrollment**
+while waiting for the enrolling process. Cancellation preserves the old enrollment;
+if commit already won the race, the completed enrollment is kept.
+
+For API clients, `GET /api/v1/bridges?include_pending=1` adds
+`enrollment_in_progress: true` to enrolled bridges with a pending replacement and
+includes pending new bridges once. Replacement targets retain
+`enrollment_state: "enrolled"`; new pending bridges use `"pending"`. Cancel an attempt
+with `POST /api/v1/bridges/{id}/enrollment/cancel` and respect its `rolled_back` verdict.
+
 **Credential shapes, because the distinction is a security decision and not a naming
 detail:** `hba_` is the expiring access credential and the only shape that
 authenticates. `hbf_` is a refresh credential, accepted at the refresh endpoint alone.

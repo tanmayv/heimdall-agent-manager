@@ -78,23 +78,32 @@ list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	bridges, err := bridge_service.list_bridges(h.bridges, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
 	// REQ-EA-1: list_bridges returns enrolled bridges only. ?include_pending=1 (the
-	// Settings view) also returns the owner's pending enrollments, marked
-	// enrollment_state:"pending", after them. Opt-in, so a picker, an agent or an
-	// older client never offers a bridge that is not enrolled yet.
+	// Settings view) includes enrollment_in_progress for pending replacements as
+	// well as new pending rows. Existing targets retain enrollment_state:"enrolled"
+	// and appear once; ordinary pickers keep their working bridge available.
 	pending: []domain.Bridge
-	if query_bool(req.query, "include_pending", false) do pending = bridge_service.list_pending_bridges(h.bridges, auth_ctx)
+	if query_bool(req.query, "include_pending", false) {
+		pending_err: domain.Domain_Error
+		pending, pending_err = bridge_service.list_pending_enrollments(h.bridges, auth_ctx)
+		if pending_err.code != .None do return respond_error(pending_err, req.request_id)
+	}
 	defer { for &p in pending do domain.bridge_destroy(&p); delete(pending) }
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	n := 0
 	for bridge in bridges {
 		if n > 0 do strings.write_byte(&b, ',')
-		write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
+		in_progress := false
+		for p in pending do if p.bridge_id == bridge.bridge_id { in_progress = true; break }
+		write_bridge_json(&b, bridge, h.agents, h.bridges.catalog, in_progress)
 		n += 1
 	}
 	for bridge in pending {
+		already_listed := false
+		for enrolled in bridges do if enrolled.bridge_id == bridge.bridge_id { already_listed = true; break }
+		if already_listed do continue
 		if n > 0 do strings.write_byte(&b, ',')
-		write_bridge_json(&b, bridge, h.agents, h.bridges.catalog)
+		write_bridge_json(&b, bridge, h.agents, h.bridges.catalog, true)
 		n += 1
 	}
 	strings.write_byte(&b, ']')
@@ -3043,8 +3052,9 @@ suffix_after :: proc(value, prefix: string) -> string {
 	return ""
 }
 
-write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent_service.Agent_Service, catalog: ^bridge_service.Bridge_Update_Catalog = nil) {
-	strings.write_string(b, "{\"bridge_id\":\""); write_handler_json_string(b, br.bridge_id)
+write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent_service.Agent_Service, catalog: ^bridge_service.Bridge_Update_Catalog = nil, enrollment_in_progress := false) {
+	strings.write_string(b, "{\"enrollment_in_progress\":"); strings.write_string(b, "true" if enrollment_in_progress || domain.bridge_is_pending(br) else "false")
+	strings.write_string(b, ",\"bridge_id\":\""); write_handler_json_string(b, br.bridge_id)
 	strings.write_string(b, "\",\"label\":\""); write_handler_json_string(b, br.label)
 	strings.write_string(b, "\",\"label_is_user_customized\":"); strings.write_string(b, "true" if br.label_is_user_customized else "false")
 	strings.write_string(b, ",\"machine_hostname\":\""); write_handler_json_string(b, br.machine_hostname)

@@ -106,6 +106,48 @@ list_pending_bridges :: proc(service: ^Bridge_Service, auth: contracts.Auth_Cont
 	return out[:]
 }
 
+// REQ-ENROLL-PENDING: replacement enrollments have no pending bridge row.
+// Include their enroll-scoped credential families without changing the durable
+// target or removing the still-working bridge from ordinary discovery.
+list_pending_enrollments :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context) -> ([]domain.Bridge, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return nil, err
+	tokens, token_err := iface.bridge_list_live_tokens_by_scope(service.repo, BRIDGE_ENROLL_TOKEN_SCOPE)
+	if token_err.code != .None do return nil, token_err
+	defer free_bridge_tokens(tokens)
+	rows, row_err := iface.bridge_list_pending(service.repo)
+	if row_err.code != .None do return nil, row_err
+	out := make([dynamic]domain.Bridge)
+	seen := make(map[string]bool)
+	defer delete(seen)
+	for &r in rows {
+		if r.owner_user_id == owner {
+			append(&out, r)
+			seen[r.bridge_id] = true
+		} else {
+			domain.bridge_destroy(&r)
+		}
+	}
+	delete(rows)
+	for token in tokens {
+		if seen[token.bridge_id] do continue
+		r, found, get_err := iface.bridge_get_bridge(service.repo, token.bridge_id)
+		if get_err.code != .None {
+			for &b in out do domain.bridge_destroy(&b)
+			delete(out)
+			return nil, get_err
+		}
+		if !found do continue
+		if r.owner_user_id == owner && r.status != .Revoked {
+			append(&out, r)
+			seen[r.bridge_id] = true
+		} else {
+			domain.bridge_destroy(&r)
+		}
+	}
+	return out[:], domain.Domain_Error{}
+}
+
 // get_bridge is the owner-scoped lookup behind every user-facing bridge operation,
 // and it does NOT return a pending enrollment (REQ-EA-1): until its vault key is
 // delivered a bridge is not enrolled, so it must not be a launch, command, rename or
