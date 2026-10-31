@@ -310,3 +310,48 @@ test('create failures remain visible per row without preventing other imports', 
   assert.match(result.errors['/bad'], /did not return.*project id/);
   assert.deepEqual([...result.imported], ['/good']);
 });
+
+test('complete inventory excludes a mapped project beyond the first 50 and reserves its name', async () => {
+  const { loadAllProjectPages } = await import('../src/ui/api/projectPagination.ts');
+  const first = Array.from({ length: 50 }, (_, i) => ({ project_id: 'p' + i, name: 'name' + i }));
+  const last = { project_id: 'p50', name: 'app' };
+  const requests: string[] = [];
+  const inventory = await loadAllProjectPages(async (cursor) => {
+    requests.push(cursor);
+    return cursor
+      ? { data: { projects: [last] }, page: { has_more: false, next_cursor: '' } }
+      : { data: { projects: first }, page: { has_more: true, next_cursor: 'page2' } };
+  });
+  assert.deepEqual(requests, ['', 'page2']);
+  assert.equal(inventory.length, 51);
+  const mappings = await sessions.loadProjectBridgeMappings(inventory, async (id) => ({
+    bridge_paths: id === 'p50' ? [{ bridge_id: 'here', path: '/already/app' }] : [],
+  }));
+  const found = [{ name: 'app', path: '/already/app', sessions: 1, source: 'Codex' as const }];
+  assert.deepEqual(sessions.newProjectsOnly(found, mappings, 'here'), []);
+  const names: string[] = [];
+  await sessions.importSessionProjects(
+    [{ ...found[0], path: '/new/app' }], inventory.map((p) => p.name), {},
+    {
+      create: async (name) => { names.push(name); return 'new'; },
+      attach: async () => {},
+      errorText: String,
+    },
+  );
+  assert.deepEqual(names, ['app (2)']);
+});
+
+test('complete inventory fails closed on later-page errors and invalid cursors', async () => {
+  const { loadAllProjectPages } = await import('../src/ui/api/projectPagination.ts');
+  await assert.rejects(loadAllProjectPages(async (cursor) => {
+    if (cursor) throw new Error('page two offline');
+    return { data: { projects: [] }, page: { has_more: true, next_cursor: 'next' } };
+  }), /page two offline/);
+  await assert.rejects(loadAllProjectPages(async () => ({
+    data: { projects: [] }, page: { has_more: true, next_cursor: 'repeat' },
+  })), /invalid pagination/);
+  await assert.rejects(loadAllProjectPages(async () => ({ data: { projects: [] } })), /Could not check/);
+  assert.deepEqual(await loadAllProjectPages(async () => ({
+    data: { projects: [] }, page: { has_more: false, next_cursor: '' },
+  })), []);
+});

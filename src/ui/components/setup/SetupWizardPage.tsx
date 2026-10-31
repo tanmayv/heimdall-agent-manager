@@ -799,7 +799,7 @@ const bridgeSessionFs = (bridgeId: string): SessionFs => ({
 });
 
 function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => void }) {
-  const { data: projectsData, isLoading: projectsLoading, isError: projectsFailed } = useListProjectsQuery();
+  const { data: projectsData, isLoading: projectsLoading, isError: projectsFailed } = useListProjectsQuery({ allPages: true });
   const [createProject] = useCreateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();
   const [found, setFound] = useState<DiscoveredProject[] | null>(null);
