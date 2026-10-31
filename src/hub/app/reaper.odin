@@ -475,9 +475,9 @@ reaper_sweep_vault_resets :: proc(graph: ^App_Graph) -> int {
 	return executed
 }
 
-// reaper_revoke_all_bridges revokes the credentials of every non-revoked bridge
+// reaper_revoke_all_bridges revokes the credentials of every bridge
 // user_id owns. False if any of them could not be revoked (or the list failed).
-@(private = "file")
+@(private = "package")
 reaper_revoke_all_bridges :: proc(graph: ^App_Graph, user_id: string) -> bool {
 	auth := contracts.Auth_Context{kind = .Internal_User, user_id = user_id}
 	bridges, err := bridge_service.list_bridges(&graph.bridges, auth)
@@ -485,12 +485,13 @@ reaper_revoke_all_bridges :: proc(graph: ^App_Graph, user_id: string) -> bool {
 	all_ok := true
 	// Enrolled bridges (list_bridges omits pending rows): revoke every credential.
 	for b in bridges {
-		if b.status == .Revoked do continue
+		// Already-revoked sunset rows retain rollback authority until explicitly
+		// revoked. Invalidate it here before a concurrent rollback can restore them.
 		if _, ok, _ := bridge_service.revoke_bridge(&graph.bridges, auth, b.bridge_id); !ok do all_ok = false
 	}
 	// Pending new-bridge enrollments: roll back (revokes the enroll family, deletes the
-	// row). .Keep_Revoked: a bridge such an enrollment sunset was skipped above as
-	// already revoked, and must not be revived by its replacement's rollback.
+	// row). .Keep_Revoked also covers sunsets admitted after the enrolled-row
+	// snapshot: resetting the vault must never revive their old credentials.
 	for b in bridge_service.list_pending_bridges(&graph.bridges, auth) {
 		if _, _, cerr := bridge_service.cancel_pending_enrollment(&graph.bridges, b.bridge_id, .Keep_Revoked); cerr.code != .None do all_ok = false
 	}

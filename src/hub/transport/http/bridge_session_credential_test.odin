@@ -593,3 +593,34 @@ test_pending_sunset_session_recheck_is_recoverable_and_rollback_reconnects :: pr
     defer delete(ready)
     testing.expect(t, strings.contains(ready, "bridge_ready"), "same credential reconnects after rollback")
 }
+
+
+// Exercise the helper used by the signed vault-device revoke handler. A durable
+// sunset receipt must not turn an explicit credential kill back into suspension.
+@(test)
+test_vault_revoke_sunset_bridge_cannot_be_restored_by_replacement_rollback :: proc(t: ^testing.T) {
+	f := setup_session_fixture(t)
+	defer teardown_session_fixture(f)
+	replacement, enrolled_ok, enroll_err := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, {
+		owner_user_id = f.owner_user_id, bridge_public_key = "04ccdd",
+		pending = true, sunset_bridge_id = f.enrolled.bridge.bridge_id,
+	})
+	if !testing.expect(t, enrolled_ok, enroll_err.message) do return
+	_, suspended_ok, suspended_err := bridge_service.verify_bridge_token(&f.br_svc, f.enrolled.bridge_token)
+	testing.expect(t, !suspended_ok && suspended_err.code == .Internal_Error, "receipt initially suspends credentials")
+	auth := contracts.Auth_Context{kind = .Internal_User, user_id = f.owner_user_id}
+	revoke_err := vault_revoke_bridge_credentials(&f.br_svc, auth, f.enrolled.bridge.bridge_id)
+	if !testing.expect(t, revoke_err.code == .None, revoke_err.message) do return
+	// The fake clock never advanced: this also catches same-second revocation.
+	again := vault_revoke_bridge_credentials(&f.br_svc, auth, f.enrolled.bridge.bridge_id)
+	testing.expect(t, again.code == .None, "explicit revocation is idempotent")
+	_, removed, rollback_err := bridge_service.rollback_pending_enrollment(&f.br_svc, replacement.bridge.bridge_id, replacement.family_id)
+	if !testing.expect(t, removed && rollback_err.code == .None, rollback_err.message) do return
+	old, found, get_err := iface.bridge_get_bridge(&f.br_repo, f.enrolled.bridge.bridge_id)
+	defer if found do domain.bridge_destroy(&old)
+	testing.expect(t, found && get_err.code == .None && old.status == .Revoked, "vault-revoked bridge stays revoked")
+	_, access_ok, access_err := bridge_service.verify_bridge_token(&f.br_svc, f.enrolled.bridge_token)
+	testing.expect(t, !access_ok && access_err.code == .Forbidden, "old access credential remains finally revoked")
+	_, refresh_ok, refresh_err := bridge_service.refresh_bridge_token(&f.br_svc, f.enrolled.refresh_token)
+	testing.expect(t, !refresh_ok && refresh_err.code == .Unauthenticated, "old refresh credential cannot resume")
+}
