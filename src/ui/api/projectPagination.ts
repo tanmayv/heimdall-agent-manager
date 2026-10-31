@@ -8,7 +8,7 @@ export async function loadAllProjectPages(
   let cursor = '';
   for (;;) {
     const body = await fetchPage(cursor);
-    const items = body?.data?.projects;
+    const items = body?.data;
     const page = body?.page;
     if (!Array.isArray(items) || typeof page?.has_more !== 'boolean') {
       throw new Error('Could not check all existing projects.');

@@ -319,8 +319,8 @@ test('complete inventory excludes a mapped project beyond the first 50 and reser
   const inventory = await loadAllProjectPages(async (cursor) => {
     requests.push(cursor);
     return cursor
-      ? { data: { projects: [last] }, page: { has_more: false, next_cursor: '' } }
-      : { data: { projects: first }, page: { has_more: true, next_cursor: 'page2' } };
+      ? { data: [last], page: { has_more: false, next_cursor: null } }
+      : { data: first, page: { has_more: true, next_cursor: 'page2' } };
   });
   assert.deepEqual(requests, ['', 'page2']);
   assert.equal(inventory.length, 51);
@@ -345,13 +345,51 @@ test('complete inventory fails closed on later-page errors and invalid cursors',
   const { loadAllProjectPages } = await import('../src/ui/api/projectPagination.ts');
   await assert.rejects(loadAllProjectPages(async (cursor) => {
     if (cursor) throw new Error('page two offline');
-    return { data: { projects: [] }, page: { has_more: true, next_cursor: 'next' } };
+    return { data: [], page: { has_more: true, next_cursor: 'next' } };
   }), /page two offline/);
   await assert.rejects(loadAllProjectPages(async () => ({
-    data: { projects: [] }, page: { has_more: true, next_cursor: 'repeat' },
+    data: [], page: { has_more: true, next_cursor: 'repeat' },
   })), /invalid pagination/);
-  await assert.rejects(loadAllProjectPages(async () => ({ data: { projects: [] } })), /Could not check/);
+  await assert.rejects(loadAllProjectPages(async () => ({ data: [] })), /Could not check/);
   assert.deepEqual(await loadAllProjectPages(async () => ({
-    data: { projects: [] }, page: { has_more: false, next_cursor: '' },
+    data: [], page: { has_more: false, next_cursor: null },
   })), []);
+});
+
+test('listProjects allPages consumes real array envelopes through the endpoint', async () => {
+  const { makeVaultStore, installWindowShim } = await import('./helpers/vaultEndpointHarness.ts');
+  installWindowShim();
+  const { projectsApi } = await import('../src/ui/api/endpoints/projects.ts');
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const originalFetch = globalThis.fetch;
+  const store = await makeVaultStore();
+  const requests: string[] = [];
+  let empty = false;
+  const first = Array.from({ length: 50 }, (_, i) => ({ project_id: 'p' + i, name: 'name' + i }));
+  const last = { project_id: 'p50', name: 'app' };
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'https://hub.test');
+    assert.equal(init?.credentials, 'include');
+    assert.equal(url.searchParams.get('limit'), '50');
+    const cursor = url.searchParams.get('cursor');
+    requests.push(cursor || '');
+    const body = empty
+      ? { data: [], page: { has_more: false, next_cursor: null } }
+      : cursor === 'page2'
+        ? { data: [last], page: { has_more: false, next_cursor: null } }
+        : { data: first, page: { has_more: true, next_cursor: 'page2' } };
+    return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await store.dispatch(projectsApi.endpoints.listProjects.initiate({ allPages: true }, { subscribe: false })).unwrap();
+    assert.deepEqual(result.projects, [...first, last]);
+    assert.deepEqual(requests, ['', 'page2']);
+    empty = true;
+    const resultEmpty = await store.dispatch(projectsApi.endpoints.listProjects.initiate({ allPages: true }, { subscribe: false, forceRefetch: true })).unwrap();
+    assert.deepEqual(resultEmpty.projects, []);
+    assert.deepEqual(requests, ['', 'page2', '']);
+  } finally {
+    store.dispatch(heimdallApi.util.resetApiState());
+    globalThis.fetch = originalFetch;
+  }
 });
