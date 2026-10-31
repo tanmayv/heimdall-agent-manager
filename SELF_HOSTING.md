@@ -1180,6 +1180,14 @@ There is no separate update script: setup's transaction is the update.
   it hosts), then runs the staged `ham-bridge update --bundle <stage> --service <name>
   --detach`. The PTY host is found through its socket's peer process, and only a
   process whose image is `ham-pty-host` is signalled (SIGTERM, then SIGKILL).
+  The Hub catalog follows the newest promoted GitHub release (excluding drafts and
+  prereleases) with this target's bundle and a valid entry in `SHA256SUMS`, using
+  the same release list as the desktop app. Lookups are cached for five minutes.
+  An explicit operator `override_version` remains a pin; Settings warns if it is
+  older than the promoted release. If GitHub cannot be reached or decoded, the Hub
+  falls back to `HEIMDALL_UPDATE_MANIFEST_PATH` and reports the reason. Bridge info
+  includes `latest_version`, `latest_source` (`promoted`, `override`, or `manifest`),
+  `update_warning`, and `update_fallback_reason`.
 - **From the command line.**
 
   ```bash
@@ -1355,8 +1363,9 @@ cannot restart.
   in its hello, and the Hub stores it as `os: termux`, `arch: arm64`. A `linux-*` build
   that finds itself under Termux also reports `termux-<arch>`, but it **refuses**
   self-update: reinstall it with `install.sh`.
-- **Hub catalog.** The Hub resolves updates from the manifest at
-  `HEIMDALL_UPDATE_MANIFEST_PATH`. Add a `termux-arm64` entry under `targets` that
+- **Hub catalog.** The Hub selects a promoted release with a verified `termux-arm64`
+  bundle. For the offline fallback manifest at `HEIMDALL_UPDATE_MANIFEST_PATH`, add
+  a `termux-arm64` entry under `targets` that
   points to `heimdall-local-termux-arm64-<tag>.tar.gz` and gives its `SHA256SUMS`
   digest:
 

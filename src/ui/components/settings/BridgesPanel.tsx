@@ -269,6 +269,16 @@ export default function BridgesPanel() {
                           </span>
                         ) : null}
 
+                        {bridge?.latest_version && bridge?.latest_source ? (
+                          <span className="text-[10px] text-muted">Catalog: {latestLabel} ({bridge.latest_source})</span>
+                        ) : null}
+                        {bridge?.update_warning ? (
+                          <span role="status" className="text-xs text-warning">{bridge.update_warning}</span>
+                        ) : null}
+                        {bridge?.update_fallback_reason ? (
+                          <span className="text-xs text-muted">Release lookup: {bridge.update_fallback_reason}</span>
+                        ) : null}
+
                         {/* Real-time progress state if update is in progress (downloading, validating, restarting) */}
                         {isUpdating ? (
                           <span

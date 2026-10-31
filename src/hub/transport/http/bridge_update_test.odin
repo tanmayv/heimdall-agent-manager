@@ -136,6 +136,9 @@ test_write_bridge_json_update_available_output :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, "\"update_message\":\"\""), "update_message serialized")
 	testing.expect(t, strings.contains(out, "\"update_progress\":0"), "update_progress serialized")
 	testing.expect(t, strings.contains(out, "\"latest_version\":\"0.2.0\""), "latest_version serialized")
+	testing.expect(t, strings.contains(out, "\"latest_source\":\"override\""), "catalog source serialized")
+	testing.expect(t, strings.contains(out, "\"update_warning\":\"\""), "catalog warning serialized")
+	testing.expect(t, strings.contains(out, "\"update_fallback_reason\":\"release source is not configured\""), "fallback reason serialized")
 	testing.expect(t, strings.contains(out, "\"latest_commit_sha\":\"796bfb57\""), "latest_commit_sha serialized")
 }
 
@@ -340,6 +343,13 @@ test_bridge_update_handler_online_dispatches_ws_command_and_returns_202 :: proc(
 		remote_addr = "127.0.0.1:4444",
 		headers = f.user_headers,
 	}
+
+	stale_req := req
+	stale_req.body = `{"target_version":"0.1.9","force":true}`
+	stale_resp := bridge_update_handler(rawptr(&f.bh), stale_req)
+	testing.expect_value(t, stale_resp.status, 400)
+	testing.expect(t, strings.contains(stale_resp.body, "update catalog changed"))
+	testing.expect(t, !f.sink_rec.sent, "stale version must not dispatch the current artifact")
 
 	resp := bridge_update_handler(rawptr(&f.bh), req)
 	testing.expectf(t, resp.status == 202, "expected status 202 Accepted, got %d (body: %s)", resp.status, resp.body)

@@ -3075,6 +3075,9 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 	// REQ-T13-2: false when the latest release ships no bundle for `target`.
 	strings.write_string(b, ",\"update_artifact_available\":"); strings.write_string(b, "true" if update_info.artifact_available else "false")
 	strings.write_string(b, ",\"latest_version\":\""); write_handler_json_string(b, update_info.latest_version)
+	strings.write_string(b, "\",\"latest_source\":\""); write_handler_json_string(b, update_info.latest_source)
+	strings.write_string(b, "\",\"update_warning\":\""); write_handler_json_string(b, update_info.warning)
+	strings.write_string(b, "\",\"update_fallback_reason\":\""); write_handler_json_string(b, update_info.fallback_reason)
 	strings.write_string(b, "\",\"latest_commit_sha\":\""); write_handler_json_string(b, update_info.latest_commit_sha)
 	strings.write_string(b, "\",\"telemetry_enabled\":\""); write_handler_json_string(b, br.telemetry_enabled if br.telemetry_enabled != "" else "inherit")
 	// REQ-BVS-2: emitted VERBATIM, with no default substitution. A bridge that has

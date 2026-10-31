@@ -990,6 +990,10 @@ send_bridge_update :: proc(
 	effective_version := target_version
 	if effective_version == "" || effective_version == "latest" {
 		effective_version = info.latest_version
+	} else if strings.trim_prefix(effective_version, "v") != strings.trim_prefix(info.latest_version, "v") {
+		// A Settings modal may predate a newly promoted release. Never dispatch
+		// the new bundle/hash under the modal's old version label.
+		return "", false, domain.domain_error(.Validation_Failed, "update catalog changed; refresh bridge update information and retry")
 	}
 	download_url := info.download_url
 	sha256 := info.sha256

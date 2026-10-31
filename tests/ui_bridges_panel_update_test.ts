@@ -159,8 +159,10 @@ test('web BridgesPanel lists installed bridges with Update only (no This machine
   const requests: Array<{ path: string; method: string }> = [];
   const bridges = [
     { bridge_id: 'bridge-online', label: 'Online bridge', status: 'online', runtime_connected: true,
-      version: '0.4.30', latest_version: '0.4.31', update_available: true, update_artifact_available: true },
-    { bridge_id: 'bridge-offline', label: 'Offline bridge', status: 'offline', version: '0.4.30' },
+      version: '0.4.30', latest_version: '0.4.31', latest_source: 'override', update_available: true, update_artifact_available: true,
+      update_warning: 'Operator pin 0.4.31 is older than promoted release 0.4.32' },
+    { bridge_id: 'bridge-offline', label: 'Offline bridge', status: 'offline', version: '0.4.30',
+      latest_version: '0.4.31', latest_source: 'manifest', update_fallback_reason: 'cannot resolve promoted releases: HTTP 503' },
   ];
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const path = new URL(String(input), 'https://hub.example.test').pathname;
@@ -189,6 +191,10 @@ test('web BridgesPanel lists installed bridges with Update only (no This machine
     assert.equal(query('settings-this-machine-card'), null, 'no This machine card on the web');
     assert.equal(doc.querySelector('[data-debug-id^="settings-bridge-wizard"]'), null);
     assert.match(query('settings-bridges-list')!.textContent || '', /Installed bridges \(2\)/);
+    assert.match(query('settings-bridge-row-bridge-online')!.textContent || '', /Catalog: v0\.4\.31 \(override\)/);
+    assert.match(query('settings-bridge-row-bridge-online')!.textContent || '', /Operator pin 0\.4\.31 is older than promoted release 0\.4\.32/);
+    assert.match(query('settings-bridge-row-bridge-offline')!.textContent || '', /Catalog: v0\.4\.31 \(manifest\)/);
+    assert.match(query('settings-bridge-row-bridge-offline')!.textContent || '', /Release lookup: cannot resolve promoted releases: HTTP 503/);
     for (const bridge of bridges) {
       const id = bridge.bridge_id;
       assert.ok(query(`settings-bridge-row-${id}`), `row for ${id}`);
