@@ -58,7 +58,7 @@ import {
   type IdentityChoice,
   type SetupStep,
 } from './setupWizardModel';
-import { discoverSessionProjects, importSessionProjects, sessionTimeLabel, newProjectsOnly, type DiscoveredProject, type ImportedSessionProjects, type SessionFs } from './sessionProjects';
+import { discoverSessionProjects, importSessionProjects, loadProjectBridgeMappings, sessionTimeLabel, newProjectsOnly, type DiscoveredProject, type ImportedSessionProjects, type SessionFs } from './sessionProjects';
 
 const statusTone: Record<string, Tone> = { success: 'success', warning: 'warning', danger: 'danger', muted: 'neutral' };
 
@@ -799,7 +799,7 @@ const bridgeSessionFs = (bridgeId: string): SessionFs => ({
 });
 
 function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => void }) {
-  const { data: projectsData, isLoading: projectsLoading } = useListProjectsQuery();
+  const { data: projectsData, isLoading: projectsLoading, isError: projectsFailed } = useListProjectsQuery();
   const [createProject] = useCreateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();
   const [found, setFound] = useState<DiscoveredProject[] | null>(null);
@@ -822,17 +822,24 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
     setFound(null);
     setScanTruncated(false);
     setScanError('');
+    if (projectsFailed) {
+      setScanError('Could not check existing projects.');
+      setFound([]);
+      return;
+    }
     void cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/session-projects`).then(async (metadata) => {
       if (!cancelled) setScanTruncated(Boolean(metadata?.truncated));
       return discoverSessionProjects(metadata, bridgeSessionFs(bridgeId));
-    }).then((all) => {
+    }).then(async (all) => {
+      const mappings = await loadProjectBridgeMappings(existing, (projectId) =>
+        cookieJsonFetch(`/projects/${encodeURIComponent(projectId)}`));
       if (cancelled) return;
-      const fresh = newProjectsOnly(all, existing, bridgeId);
+      const fresh = newProjectsOnly(all, mappings, bridgeId);
       setFound(fresh);
       setSelected(Object.fromEntries(fresh.map((p) => [p.path, true])));
     }).catch((err) => { if (!cancelled) { setScanError(errText(err)); setFound([]); } });
     return () => { cancelled = true; };
-  }, [bridgeId, projectsLoading]);
+  }, [bridgeId, projectsLoading, projectsFailed]);
 
   const chosen = (found || []).filter((p) => selected[p.path]);
   const all = Boolean(found?.length) && chosen.length === found?.length;

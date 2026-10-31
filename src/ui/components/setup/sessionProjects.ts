@@ -149,6 +149,21 @@ export async function discoverClaudeProjects(fs: SessionFs, limit = 40): Promise
   return [...byPath.values()].sort((a, b) => b.sessions - a.sessions || a.name.localeCompare(b.name));
 }
 
+/** List records omit bridge_paths. Resolve details before offering imports, and
+ * fail closed if any mapping cannot be checked rather than offering duplicates. */
+export async function loadProjectBridgeMappings(
+  existing: { project_id: string }[],
+  fetchDetail: (projectId: string) => Promise<any>,
+): Promise<{ bridge_paths: { bridge_id: string; path: string }[] }[]> {
+  return mapLimit(existing, 4, async (project) => {
+    if (!project.project_id) throw new Error('Could not identify an existing project.');
+    const detail = await fetchDetail(project.project_id);
+    const paths = detail?.project?.bridge_paths ?? detail?.bridge_paths;
+    if (!Array.isArray(paths)) throw new Error('Could not check existing project folders.');
+    return { bridge_paths: paths };
+  });
+}
+
 /** Drop the discovered folders that are already a project on this bridge. */
 export function newProjectsOnly(found: DiscoveredProject[], existing: any[] | null | undefined, bridgeId: string): DiscoveredProject[] {
   const norm = (p: string) => p.replace(/[\\/]+$/, '');

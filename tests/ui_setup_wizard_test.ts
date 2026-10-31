@@ -11,6 +11,33 @@ const model = await import('../src/ui/components/setup/setupWizardModel.ts');
 const sessions = await import('../src/ui/components/setup/sessionProjects.ts');
 const { initialWizard, reduceWizard, startWizard } = await import('../src/ui/bridge/desktopBridge.ts');
 
+test('project list records load detail mappings before filtering on the selected bridge', async () => {
+  // GET /projects uses write_project_json: no bridge_paths on list records.
+  const list = { projects: [
+    { project_id: 'proj_here', name: 'app', default_path: '/home/me/app' },
+    { project_id: 'proj_elsewhere', name: 'other', default_path: '/home/me/other' },
+  ] };
+  const requests: string[] = [];
+  const mappings = await sessions.loadProjectBridgeMappings(list.projects, async (id) => {
+    requests.push(id);
+    // GET /projects/{id} returns project plus top-level bridge_paths.
+    return { project: list.projects.find((p) => p.project_id === id), bridge_paths: [
+      { bridge_id: id === 'proj_here' ? 'brg_here' : 'brg_other', path: id === 'proj_here' ? '/home/me/app/' : '/home/me/other' },
+    ] };
+  });
+  const found = ['app', 'other'].map((name) => ({ name, path: '/home/me/' + name, sessions: 1, source: 'Codex' as const }));
+  assert.deepEqual(requests.sort(), ['proj_elsewhere', 'proj_here']);
+  assert.deepEqual(sessions.newProjectsOnly(found, mappings, 'brg_here').map((p) => p.name), ['other']);
+  assert.deepEqual(await sessions.loadProjectBridgeMappings([], async () => { throw new Error('unexpected request'); }), []);
+});
+
+test('mapping lookup failure prevents unsafe import candidates', async () => {
+  const list = [{ project_id: 'proj_1' }];
+  await assert.rejects(sessions.loadProjectBridgeMappings(list, async () => { throw new Error('offline'); }), /offline/);
+  await assert.rejects(sessions.loadProjectBridgeMappings(list, async () => ({ project: list[0] })), /Could not check/);
+  assert.deepEqual(await sessions.loadProjectBridgeMappings(list, async () => ({ project: { ...list[0], bridge_paths: [] } })), [{ bridge_paths: [] }]);
+});
+
 const reusable = [
   { bridge_id: 'brg_riverwood', label: 'riverwood', machine_hostname: 'mac.local', status: 'online', last_seen: '' },
   { bridge_id: 'brg_dawnstar', label: 'dawnstar', machine_hostname: 'dawnstar', status: 'online', last_seen: '' },
