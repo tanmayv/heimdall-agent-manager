@@ -64,8 +64,7 @@ import {
 } from '../../utils/clientPersistence';
 import { Workspace } from '../mainWorkspace/Workspace';
 import { DeviceVaultGate } from '../devices/DeviceVaultScreens';
-import { desktopCapabilities } from '../../bridge/desktopBridge';
-import { setupSeen } from '../setup/setupWizardModel';
+import { useSetupRedirect } from '../setup/useSetupRedirect';
 import { VaultResetBanner } from '../devices/VaultResetBanner';
 import { bootDeviceVault, autoUnsealLockedBridges } from '../../services/deviceVault';
 import { setTheme } from '../../store/themeSlice';
@@ -1396,14 +1395,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   }, []);
   // First-run setup (desktop app only): an account that has not finished or skipped
   // /setup in this app lands there once per launch instead of on Home.
-  const setupRedirectChecked = useRef(false);
-  useEffect(() => {
-    if (setupRedirectChecked.current) return;
-    setupRedirectChecked.current = true;
-    if (path !== '/home' || !desktopCapabilities().desktop) return;
-    if (setupSeen(String(user?.user_id || ''))) return;
-    window.location.hash = buildRouteHash('/setup', '');
-  }, [path, user?.user_id]);
+  useSetupRedirect(path, String(user?.user_id || ''));
   const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [resourcePicker, setResourcePicker] = useState<'conversation' | 'task-chain' | 'shell' | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);

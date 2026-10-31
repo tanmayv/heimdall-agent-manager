@@ -23,6 +23,7 @@ import {
 import {
   attachDesktopBridgeSession,
   desktopBridgeSession,
+  openApprovalForCode,
   overrideApprovalPageOpener,
   runDesktopBridgeOperation,
   subscribeDesktopBridgeSession,
@@ -209,8 +210,11 @@ function MachineSteps({ manager, step, onStep, onConnected }: {
 
   useEffect(() => { attachDesktopBridgeSession(manager); }, [manager]);
   useEffect(() => {
-    void manager.getConfig().then(setConfig).catch((err) => setError(errText(err)));
-  }, [manager]);
+    let cancelled = false;
+    void manager.getConfig().then((value) => { if (!cancelled) setConfig(value); })
+      .catch((err) => { if (!cancelled) setError(errText(err)); });
+    return () => { cancelled = true; };
+  }, [manager, detectRun]);
 
   // Detect: is the signed-in account's bridge installed on this machine?
   useEffect(() => {
@@ -477,7 +481,7 @@ function MachineSteps({ manager, step, onStep, onConnected }: {
 
       {running ? (
         <div className="flex flex-wrap items-center gap-2">
-          {wizard.pairing ? <Button variant="primary" data-debug-id="setup-install-identity-btn" onClick={() => onStep('identity')}>Choose bridge identity</Button> : null}
+          {wizard.pairing ? <Button variant="primary" data-debug-id="setup-install-identity-btn" onClick={() => openApprovalForCode(wizard.pairing!.code)}>Choose bridge identity</Button> : null}
           <Button variant="ghost" data-debug-id="setup-install-cancel-btn" onClick={() => void manager.cancel()}>Cancel</Button>
         </div>
       ) : setupRun && wizard.completed ? (
@@ -523,10 +527,26 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   const [newLabel, setNewLabel] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [phase, setPhase] = useState<{ kind: 'choose' } | { kind: 'working'; message: string } | { kind: 'reconnecting'; bridgeId: string; label: string; approved: string } | { kind: 'failed'; message: string }>({ kind: 'choose' });
+  const seeded = useRef(false);
+  const lastCode = useRef('');
 
   // The pairing code this app's own setup printed, taken once.
   useEffect(() => {
-    const take = () => { const handed = takePendingApprovalCode(); if (handed) setCode(handed); };
+    const take = () => {
+      const handed = takePendingApprovalCode();
+      if (!handed || handed === lastCode.current) return;
+      lastCode.current = handed;
+      // A reissued code replaces the request, including its previous identity
+      // hint. Never leave the old approval actionable while lookup is pending.
+      setReview(null);
+      setChoice(EMPTY_IDENTITY_CHOICE);
+      setNewLabel('');
+      setLookupError('');
+      setPendingCount(0);
+      setPhase({ kind: 'choose' });
+      seeded.current = false;
+      setCode(handed);
+    };
     take();
     return subscribePendingApprovalCode(take);
   }, []);
@@ -536,11 +556,11 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
     let cancelled = false;
     setLookupError('');
     void lookUpPairing(code, deviceVaultUserId()).then((found) => {
-      if (cancelled) return;
+      if (cancelled || lastCode.current !== code) return;
       if (found.browser) { setLookupError('That pairing code belongs to a browser, not this machine’s bridge.'); return; }
       setReview(found);
       setNewLabel(found.label);
-    }).catch((err) => { if (!cancelled) setLookupError(errText(err)); });
+    }).catch((err) => { if (!cancelled && lastCode.current === code) setLookupError(errText(err)); });
     return () => { cancelled = true; };
   }, [code]);
 
@@ -557,7 +577,6 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   // Preselect only when the machine's own hint names one of your bridges; otherwise
   // a new bridge when there is room. Reuse signs another machine out, so it is never
   // picked for the user without that hint.
-  const seeded = useRef(false);
   useEffect(() => {
     if (!info || seeded.current) return;
     seeded.current = true;
@@ -744,7 +763,7 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           ) : null}
 
           <details className="text-xs text-muted">
-            <summary className="cursor-pointer">Pairing details</summary>
+            <summary data-debug-id="setup-identity-details-toggle" className="cursor-pointer">Pairing details</summary>
             <dl className="mt-2 grid grid-cols-[8rem_minmax(0,1fr)] gap-y-1">
               <dt>Claims to be</dt><dd className="text-primary">{review.label}</dd>
               <dt>Fingerprint</dt><dd data-debug-id="setup-identity-fingerprint" className="font-mono tracking-wider text-primary">{review.fingerprint}</dd>

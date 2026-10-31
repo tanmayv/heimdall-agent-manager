@@ -39,6 +39,7 @@ let attached: DesktopBridgeManagerApi | null = null;
 const listeners = new Set<Listener>();
 let pendingApprovalCode = '';
 let openApprovalPage: (() => void) | null = null;
+const approvalPageOverrides: { open: () => void }[] = [];
 // An open /device/add page takes a newly handed code (a reissued one) at once.
 const codeListeners = new Set<Listener>();
 
@@ -75,9 +76,10 @@ function onEvent(event: DesktopBridgeEvent) {
 
 /** Open this app's /device/add for a code its own enrollment printed. */
 export function openApprovalForCode(code: string): boolean {
-  if (!code || !openApprovalPage) return false;
+  const open = approvalPageOverrides.at(-1)?.open || openApprovalPage;
+  if (!code || !open) return false;
   pendingApprovalCode = code;
-  openApprovalPage();
+  open();
   codeListeners.forEach((listener) => listener());
   return true;
 }
@@ -105,9 +107,12 @@ export function setApprovalPageOpener(open: (() => void) | null) { openApprovalP
  * once with takePendingApprovalCode().
  */
 export function overrideApprovalPageOpener(open: () => void): () => void {
-  const previous = openApprovalPage;
-  openApprovalPage = open;
-  return () => { if (openApprovalPage === open) openApprovalPage = previous; };
+  const owner = { open };
+  approvalPageOverrides.push(owner);
+  return () => {
+    const index = approvalPageOverrides.indexOf(owner);
+    if (index !== -1) approvalPageOverrides.splice(index, 1);
+  };
 }
 
 /** The code the app's own enrollment printed, once; '' when there is none. */
@@ -140,5 +145,6 @@ export function resetDesktopBridgeSessionForTests() {
   listeners.clear();
   pendingApprovalCode = '';
   openApprovalPage = null;
+  approvalPageOverrides.length = 0;
   codeListeners.clear();
 }

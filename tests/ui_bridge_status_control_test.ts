@@ -673,7 +673,9 @@ test('F24: desktopCapabilities is the one desktop check; no odinApi.deviceAuth r
     }
   };
   walk(path.join(ROOT, 'src/ui'));
-  assert.deepEqual(probes, ['src/ui/bridge/desktopBridge.ts']);
+  // The isolated dev fixture installs a fake native API; production reads still
+  // go exclusively through desktopCapabilities.
+  assert.deepEqual(probes, ['src/ui/bridge/desktopBridge.ts', 'src/ui/dev/setupWizardDemo.tsx']);
   // Restored after 6eac97a5: older bridges and failed installs need the Hub-driven
   // Install / Update extension action (it never touches odinApi).
   assert.equal(fs.existsSync(path.join(ROOT, 'src/ui/components/extension/ProviderExtensionInstallAction.tsx')), true);
@@ -750,6 +752,52 @@ test('REQ-ENR-INAPP-1: a pairing event outside an app-started setup/reenroll ope
   // No opener registered: the wizard link falls back to the browser.
   session.setApprovalPageOpener(null);
   assert.equal(session.openApprovalForCode('AAAA-BBBB-CCCC-DD'), false);
+});
+
+test('setup owns pairing while shell registration changes and restores the latest shell handler', () => {
+  session.resetDesktopBridgeSessionForTests();
+  const opened: string[] = [];
+  const restore = session.overrideApprovalPageOpener(() => opened.push('setup'));
+  // Child effects can run before the shell effect on a direct /setup launch.
+  session.setApprovalPageOpener(() => opened.push('shell'));
+  session.openApprovalForCode('AAAA-BBBB-CCCC-DD');
+  session.setApprovalPageOpener(() => opened.push('settings'));
+  session.openApprovalForCode('EEEE-FFFF-GGGG-HH');
+  assert.deepEqual(opened, ['setup', 'setup']);
+  restore();
+  restore();
+  session.openApprovalForCode('AAAA-BBBB-CCCC-DD');
+  assert.deepEqual(opened, ['setup', 'setup', 'settings']);
+  session.resetDesktopBridgeSessionForTests();
+});
+
+test('pairing override cleanup cannot resurrect an unmounted owner', () => {
+  session.resetDesktopBridgeSessionForTests();
+  const opened: string[] = [];
+  session.setApprovalPageOpener(() => opened.push('shell'));
+  const stopSetup = session.overrideApprovalPageOpener(() => opened.push('setup'));
+  const stopNested = session.overrideApprovalPageOpener(() => opened.push('nested'));
+  stopSetup();
+  session.openApprovalForCode('AAAA-BBBB-CCCC-DD');
+  stopNested();
+  session.openApprovalForCode('AAAA-BBBB-CCCC-DD');
+  assert.deepEqual(opened, ['nested', 'shell']);
+  session.setApprovalPageOpener(null);
+  assert.equal(session.openApprovalForCode('AAAA-BBBB-CCCC-DD'), false);
+  session.resetDesktopBridgeSessionForTests();
+});
+
+test('pairing ownership tracks registrations even when callbacks are identical', () => {
+  session.resetDesktopBridgeSessionForTests();
+  const shared = () => {};
+  const stopFirst = session.overrideApprovalPageOpener(shared);
+  const stopSecond = session.overrideApprovalPageOpener(shared);
+  stopFirst();
+  stopFirst();
+  assert.equal(session.openApprovalForCode('AAAA-BBBB-CCCC-DD'), true);
+  stopSecond();
+  assert.equal(session.openApprovalForCode('AAAA-BBBB-CCCC-DD'), false);
+  session.resetDesktopBridgeSessionForTests();
 });
 
 test('REQ-ENR-INAPP-1: the approval page never reads a code from the URL', () => {

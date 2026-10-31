@@ -52,6 +52,9 @@ interface Scenario {
   /** Bridges already on the account (the hub's /bridges rows). */
   bridges: number;
   updateAvailable?: boolean;
+  updateArtifactAvailable?: boolean;
+  emptyProjects?: boolean;
+  configFailsOnce?: boolean;
   installFails?: boolean;
   reuseHint?: boolean;
 }
@@ -62,6 +65,9 @@ const SCENARIOS: Scenario[] = [
   { id: 'reuse-hint', label: 'Reinstall (reuse hint)', note: 'The machine names a previous bridge → reuse is preselected, with the sign-out warning.', native: 'current', installed: 'none', maxBridges: 2, bridges: 2, reuseHint: true },
   { id: 'connected', label: 'Already connected', note: 'Own bridge installed and connected, up to date → machine card → Agents → Projects.', native: 'current', installed: 'own', maxBridges: 3, bridges: 1 },
   { id: 'update', label: 'Update available', note: `Own bridge installed at v${OLD_VERSION}; hub says v${LATEST} is out.`, native: 'current', installed: 'own', maxBridges: 3, bridges: 1, updateAvailable: true },
+  { id: 'no-artifact', label: 'Update unavailable for this platform', note: 'A newer release exists, but no installable artifact is available here.', native: 'current', installed: 'own', maxBridges: 3, bridges: 1, updateAvailable: true, updateArtifactAvailable: false },
+  { id: 'empty-projects', label: 'No past projects', note: 'Connected bridge with no session history → empty Projects step.', native: 'current', installed: 'own', maxBridges: 3, bridges: 1, emptyProjects: true },
+  { id: 'config-retry', label: 'Retry native configuration', note: 'The first native config read fails; Check again recovers.', native: 'current', installed: 'none', maxBridges: 3, bridges: 1, configFailsOnce: true },
   { id: 'install-fails', label: 'Install fails', note: 'Setup fails at the service step → failure card with retry / copy log.', native: 'current', installed: 'none', maxBridges: 3, bridges: 1, installFails: true },
   { id: 'other-account', label: 'Other account here', note: "Another account's bridge is installed on this machine; setup installs alongside it.", native: 'current', installed: 'other', maxBridges: 3, bridges: 1 },
   { id: 'unsupported', label: 'Unsupported platform', note: 'The desktop app reports this platform cannot run a bridge.', native: 'current', supported: false, installed: 'none', maxBridges: 3, bridges: 1 },
@@ -84,6 +90,7 @@ const accountBridges = Array.from({ length: scenario.bridges }, (_, i) => ({
   status: i === 0 ? 'online' : 'offline',
   version: scenario.updateAvailable ? OLD_VERSION : LATEST,
   update_available: Boolean(scenario.updateAvailable && i === 0),
+  update_artifact_available: scenario.updateArtifactAvailable !== false,
   latest_version: LATEST,
   latest_commit_sha: '8d895ea6c0ffee00',
   created_at: '2026-09-01T10:00:00Z',
@@ -167,6 +174,7 @@ async function route(req: DemoRequest) {
     return ok({ bridge: row });
   }
   if (method === 'GET' && /^\/bridges\/[^/]+\/session-projects$/.test(path)) {
+    if (scenario.emptyProjects) return ok({ ok: true, truncated: false, projects: [] });
     return ok({ ok: true, truncated: false, projects: [
       { source: 'Claude Code', path: '-home-dev-heimdall-agent-manager', canonical_path: '/home/dev/heimdall-agent-manager', sessions: 12, last_session_at: '2026-10-31T10:00:00Z', description: 'Heimdall is a Hub-and-Bridge multi-agent orchestration system.' },
       { source: 'Codex', path: '/home/dev/heimdall-agent-manager', canonical_path: '/home/dev/heimdall-agent-manager', sessions: 4, last_session_at: '2026-10-31T12:00:00Z', description: 'Heimdall is a Hub-and-Bridge multi-agent orchestration system.' },
@@ -231,6 +239,7 @@ setDemoRouter(route);
 // Scripted desktop bridge manager
 
 function fakeManager(): DesktopBridgeManagerApi {
+  let configReads = 0;
   const callbacks = new Set<(e: DesktopBridgeEvent) => void>();
   const emit = (e: DesktopBridgeEvent) => callbacks.forEach((cb) => cb(e));
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -250,7 +259,10 @@ function fakeManager(): DesktopBridgeManagerApi {
     emit({ type: 'progress', step, state: 'ok' });
   };
   return {
-    getConfig: async () => ({ ok: true, supported: scenario.supported !== false, platform: 'linux', hubUrl: HUB_URL, defaultHubUrl: HUB_URL, bundledVersion: LATEST }),
+    getConfig: async () => {
+      if (scenario.configFailsOnce && configReads++ === 0) throw new Error('Native configuration temporarily unavailable (fixture).');
+      return { ok: true, supported: scenario.supported !== false, platform: 'linux', hubUrl: HUB_URL, defaultHubUrl: HUB_URL, bundledVersion: LATEST };
+    },
     setHubUrl: async (hubUrl) => ({ ok: true, hubUrl }),
     getStatus: async () => status(),
     list: async () => ({ ok: true, profiles: profiles() }),
