@@ -393,3 +393,89 @@ test('listProjects allPages consumes real array envelopes through the endpoint',
     globalThis.fetch = originalFetch;
   }
 });
+
+test('mapping inventory rejects malformed identifiers, records and mapping entries', async () => {
+  for (const project of [null, {}, { project_id: 3 }, { project_id: ' ' }]) {
+    await assert.rejects(sessions.loadProjectBridgeMappings([project] as any, async () => ({ bridge_paths: [] })), /identify/);
+  }
+  for (const mapping of [null, {}, { bridge_id: 'here' }, { bridge_id: 4, path: '/work/app' }, { bridge_id: 'here', path: '' }, { bridge_id: '', path: '/work/app' }]) {
+    await assert.rejects(sessions.loadProjectBridgeMappings([{ project_id: 'p' }], async () => ({ bridge_paths: [mapping] })), /check existing/);
+  }
+  await assert.rejects(sessions.loadProjectBridgeMappings([{ project_id: 'p' }], async () => ({ project: { project_id: 'other' }, bridge_paths: [] })), /identify/);
+});
+
+test('rendered Projects step retries failed and malformed inventory before offering imports', async () => {
+  const { JSDOM } = await import('jsdom');
+  const React = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { Provider } = await import('react-redux');
+  const { makeVaultStore } = await import('./helpers/vaultEndpointHarness.ts');
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const { ProjectsStep } = await import('../src/ui/components/setup/SetupWizardPage.tsx');
+  const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.test' });
+  const oldWindow = globalThis.window;
+  const oldDocument = globalThis.document;
+  const oldFetch = globalThis.fetch;
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const store = await makeVaultStore();
+  const root = createRoot(dom.window.document.getElementById('root')!);
+  let phase = 'failed';
+  let lists = 0;
+  let details = 0;
+  let scans = 0;
+  const reply = (body: any, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), 'https://hub.test');
+    if (url.pathname === '/api/v1/projects') {
+      lists++;
+      if (phase === 'failed') return reply({ error: { message: 'inventory offline' } }, 503);
+      return reply({ data: [{ project_id: 'p', name: 'existing' }], page: { has_more: false, next_cursor: null } });
+    }
+    if (url.pathname === '/api/v1/projects/p') {
+      details++;
+      return reply({ project: { project_id: 'p' }, bridge_paths: phase === 'malformed' ? [{ bridge_id: 'here' }] : [{ bridge_id: 'here', path: '/work/existing' }] });
+    }
+    if (url.pathname.endsWith('/session-projects')) {
+      scans++;
+      return reply({ ok: true, projects: [
+        { source: 'Codex', path: '/work/app', sessions: 1, last_session_at: '2026-01-01T00:00:00Z' },
+        { source: 'Codex', path: '/work/existing', sessions: 1, last_session_at: '2026-01-01T00:00:00Z' },
+      ] });
+    }
+    if (url.pathname.endsWith('/fs/stat')) return reply({ ok: true, exists: true, is_dir: true });
+    throw new Error('unexpected request: ' + url);
+  };
+  const find = (id: string) => dom.window.document.querySelector('[data-debug-id="' + id + '"]') as HTMLElement | null;
+  const settle = async (predicate: () => boolean) => {
+    for (let i = 0; i < 100; i++) {
+      await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+      if (predicate()) return;
+    }
+    assert.fail('render did not settle: ' + dom.window.document.body.textContent);
+  };
+  try {
+    await React.act(async () => { root.render(React.createElement(Provider, { store }, React.createElement(ProjectsStep, { bridgeId: 'here', onDone() {} }))); });
+    await settle(() => Boolean(find('setup-projects-retry-btn')));
+    assert.equal(find('setup-projects-import-btn'), null);
+    phase = 'malformed';
+    await React.act(async () => { find('setup-projects-retry-btn')!.click(); });
+    await settle(() => details === 1 && Boolean(find('setup-projects-retry-btn')));
+    assert.equal(find('setup-projects-import-btn'), null);
+    phase = 'healthy';
+    await React.act(async () => { find('setup-projects-retry-btn')!.click(); });
+    await settle(() => Boolean(find('setup-projects-import-btn')));
+    assert.equal(lists, 3);
+    assert.equal(details, 2);
+    assert.equal(scans, 2);
+    assert.equal(find('setup-projects-retry-btn'), null);
+    assert.ok(find('setup-projects-row-%2Fwork%2Fapp'));
+    assert.equal(find('setup-projects-row-%2Fwork%2Fexisting'), null);
+  } finally {
+    await React.act(async () => { root.unmount(); store.dispatch(heimdallApi.util.resetApiState()); });
+    globalThis.fetch = oldFetch;
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+    dom.window.close();
+  }
+});

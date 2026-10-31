@@ -798,8 +798,8 @@ const bridgeSessionFs = (bridgeId: string): SessionFs => ({
   stat: (path) => cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/fs/stat?path=${encodeURIComponent(path)}`),
 });
 
-function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => void }) {
-  const { data: projectsData, isLoading: projectsLoading, isError: projectsFailed } = useListProjectsQuery({ allPages: true });
+export function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => void }) {
+  const { data: projectsData, isFetching: projectsLoading, isError: projectsFailed, refetch: refetchProjects } = useListProjectsQuery({ allPages: true });
   const [createProject] = useCreateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();
   const [found, setFound] = useState<DiscoveredProject[] | null>(null);
@@ -808,6 +808,8 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
   const [scanTruncated, setScanTruncated] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [scanVersion, setScanVersion] = useState(0);
   const importIds = useRef<ImportedSessionProjects>({});
 
   const existing = useMemo(() => {
@@ -816,12 +818,13 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
   }, [projectsData]);
 
   useEffect(() => {
-    if (!bridgeId || projectsLoading) return;
+    if (!bridgeId) return;
     let cancelled = false;
-    importIds.current = {};
     setFound(null);
     setScanTruncated(false);
     setScanError('');
+    setSelected({});
+    if (projectsLoading || retrying) return;
     if (projectsFailed) {
       setScanError('Could not check existing projects.');
       setFound([]);
@@ -839,7 +842,20 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
       setSelected(Object.fromEntries(fresh.map((p) => [p.path, true])));
     }).catch((err) => { if (!cancelled) { setScanError(errText(err)); setFound([]); } });
     return () => { cancelled = true; };
-  }, [bridgeId, projectsLoading, projectsFailed]);
+  }, [bridgeId, projectsLoading, projectsFailed, existing, retrying, scanVersion]);
+
+  const retryDiscovery = async () => {
+    setFound(null);
+    setRetrying(true);
+    try {
+      await refetchProjects().unwrap();
+    } catch {
+      // The query error is rendered by the discovery effect after retry settles.
+    } finally {
+      setScanVersion((version) => version + 1);
+      setRetrying(false);
+    }
+  };
 
   const chosen = (found || []).filter((p) => selected[p.path]);
   const all = Boolean(found?.length) && chosen.length === found?.length;
@@ -872,6 +888,7 @@ function ProjectsStep({ bridgeId, onDone }: { bridgeId: string; onDone: () => vo
       ) : found.length === 0 ? (
         <div data-debug-id="setup-projects-empty" className="flex flex-col gap-3">
           <p className="text-sm text-muted">{scanError ? `Couldn't read session history: ${scanError}` : 'No past Claude Code or Codex sessions with a project folder that isn’t already in Ninjy.'}</p>
+          {scanError ? <div><Button variant="primary" data-debug-id="setup-projects-retry-btn" onClick={() => void retryDiscovery()}>Retry discovery</Button></div> : null}
           <div><Button variant="primary" data-debug-id="setup-projects-continue-btn" onClick={onDone}>Continue</Button></div>
         </div>
       ) : (

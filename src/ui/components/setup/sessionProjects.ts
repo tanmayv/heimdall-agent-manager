@@ -156,10 +156,18 @@ export async function loadProjectBridgeMappings(
   fetchDetail: (projectId: string) => Promise<any>,
 ): Promise<{ bridge_paths: { bridge_id: string; path: string }[] }[]> {
   return mapLimit(existing, 4, async (project) => {
-    if (!project.project_id) throw new Error('Could not identify an existing project.');
+    if (!project || typeof project.project_id !== 'string' || !project.project_id.trim()) throw new Error('Could not identify an existing project.');
     const detail = await fetchDetail(project.project_id);
     const paths = detail?.project?.bridge_paths ?? detail?.bridge_paths;
-    if (!Array.isArray(paths)) throw new Error('Could not check existing project folders.');
+    if (detail?.project && (typeof detail.project !== 'object' ||
+      detail.project.project_id !== project.project_id)) {
+      throw new Error('Could not identify an existing project.');
+    }
+    if (!Array.isArray(paths) || paths.some((mapping) =>
+      !mapping || typeof mapping.bridge_id !== 'string' || !mapping.bridge_id.trim() ||
+      typeof mapping.path !== 'string' || !mapping.path.trim())) {
+      throw new Error('Could not check existing project folders.');
+    }
     return { bridge_paths: paths };
   });
 }
