@@ -404,7 +404,7 @@ The web app no longer installs provider extensions; `ham-bridge setup` / `ham-br
 | Component | Debug IDs |
 | --- | --- |
 | `McpConsentPage` | `mcp-consent-page`, `mcp-consent-hosted`, `mcp-consent-approve`, `mcp-consent-cancel` |
-| `McpConnections` | `settings-mcp-connections`, `settings-mcp-disconnect-${grantId}` |
+| `McpConnections` | `settings-mcp-connections`, `settings-mcp-disconnect-${grantId}`, `settings-mcp-deliver-keys` |
 
 When adding any new interactive element to the UI:
 

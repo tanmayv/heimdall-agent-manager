@@ -46,7 +46,7 @@ configure_mcp_delegation :: proc(graph: ^App_Graph) -> (bool, string) {
 	graph.mcp_vault_repo=sqlite.new_vault_directory_repository(&graph.mcp_vault_repo_impl,&graph.mcp_repository_impl.conn)
 	graph.mcp_vault_view=vd.Service{repo=&graph.mcp_vault_repo,clock=&graph.clock}
 	origin:=strings.trim_right(graph.config.ui_origin,"/")
-	graph.mcp_delegation={repo=&graph.mcp_repository,keys=keys,issuer=origin,resource=strings.concatenate({origin,"/api/v1/mcp"},runtime.heap_allocator()),authority_ctx=graph,authority=mcp_account_authority}
+	graph.mcp_delegation={repo=&graph.mcp_repository,keys=keys,issuer=origin,resource=strings.concatenate({origin,"/api/v1/mcp"},runtime.heap_allocator()),clock=&graph.clock,authority_ctx=graph,authority=mcp_account_authority}
 	mcp.init(&graph.mcp_spike) // bounded transient pre-login request handles only
 	graph.mcp_delegation_handlers={auth=&graph.auth,directory=&graph.vault_directory,grant_directory=&graph.mcp_vault_view,service=&graph.mcp_delegation,login_requests=&graph.mcp_spike,origin=origin}
 	valid=true

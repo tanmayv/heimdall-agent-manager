@@ -14,15 +14,16 @@ import sqlite "odin_test:hub/repository/sqlite"
 // Generated using production browser crypto and a synthetic vault. This pins
 // fixed-order consent JSON, signature domain, P-256 scalar/public binding and
 // signed wrap interoperability across TypeScript/WebCrypto and Odin.
-Consent_Vector :: struct {
-	now_ms:i64,
-	request:struct {owner,client,redirect,resource,scope,grant,family:string,revision,expires_ms:i64},
-	directory:struct {
+Consent_Test_Directory :: struct {
 		version,current_epoch:i64,
 		root_device_id,head_hash:string,
 		devices:[]struct {device_id,kind,sign_alg,wrap_alg,sign_public_key,ecdh_public_key:string},
 		log:[]struct {seq:i64,statement:string,signature:struct {alg,sig:string}},
-	},
+	}
+Consent_Vector :: struct {
+	now_ms:i64,
+	request:struct {owner,client,redirect,resource,scope,grant,family:string,revision,expires_ms:i64},
+	directory:Consent_Test_Directory,
 	hosted,device:Consent_Input,
 	revoked:bool,
 }
@@ -44,7 +45,15 @@ consent_test_devices :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Device,do
 	for d,i in v.directory.devices do rows[i]={user_id=owner,device_id=d.device_id,kind=d.kind,sign_alg=d.sign_alg,wrap_alg=d.wrap_alg,sign_public_key=d.sign_public_key,ecdh_public_key=d.ecdh_public_key,status=.Revoked if v.revoked else .Approved}
 	return rows,{}
 }
-consent_test_log :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Log_Entry,domain.Domain_Error) {return nil,{}}
+consent_test_log :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Log_Entry,domain.Domain_Error) {
+	v:=(^Consent_Vector)(ctx)
+	rows:=make([]domain.Vault_Log_Entry,len(v.directory.log),context.temp_allocator)
+	for entry,i in v.directory.log {
+		sig,_:=vault.signature_text_from_parts(entry.signature.alg,entry.signature.sig,context.temp_allocator)
+		rows[i]={user_id=owner,seq=entry.seq,statement=entry.statement,signature=sig}
+	}
+	return rows,{}
+}
 consent_test_now :: proc(ctx:rawptr)->string {return "2026-10-31T07:00:00Z"}
 
 Consent_Seed :: struct {vector:^Consent_Vector}

@@ -17,8 +17,8 @@ MCP_HTTP_Vector :: struct {
 	request:struct {owner,client,redirect,resource,scope,grant,family:string,revision,expires_ms:i64},
 	directory:struct {version,current_epoch:i64,root_device_id,head_hash:string,devices:[]struct {device_id,kind,sign_alg,wrap_alg,sign_public_key,ecdh_public_key:string},log:[]struct {seq:i64,statement:string,signature:struct {alg,sig:string}}},
 	hosted:mcp.Consent_Input,
-	consent_body,disconnect_body:string,
-	consent_headers,disconnect_headers:map[string]string,
+	consent_body,disconnect_body,delivery_body:string,
+	consent_headers,disconnect_headers,delivery_headers,recipients_headers:map[string]string,
 }
 MCP_HTTP_State :: struct {vector:MCP_HTTP_Vector}
 mcp_http_directory :: proc(ctx:rawptr,owner:string)->(domain.Vault_Directory,bool,domain.Domain_Error) {
@@ -32,7 +32,15 @@ mcp_http_devices :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Device,domain
 	for d,i in v.directory.devices do out[i]={user_id=owner,device_id=d.device_id,kind=d.kind,sign_alg=d.sign_alg,wrap_alg=d.wrap_alg,sign_public_key=d.sign_public_key,ecdh_public_key=d.ecdh_public_key,status=.Approved}
 	return out,{}
 }
-mcp_http_log :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Log_Entry,domain.Domain_Error) {return nil,{}}
+mcp_http_log :: proc(ctx:rawptr,owner:string)->([]domain.Vault_Log_Entry,domain.Domain_Error) {
+	v:=&(^MCP_HTTP_State)(ctx).vector
+	out:=make([]domain.Vault_Log_Entry,len(v.directory.log),context.temp_allocator)
+	for entry,i in v.directory.log {
+		sig,_:=vault.signature_text_from_parts(entry.signature.alg,entry.signature.sig,context.temp_allocator)
+		out[i]={user_id=owner,seq=entry.seq,statement=entry.statement,signature=sig}
+	}
+	return out,{}
+}
 mcp_http_seed :: proc(tx:iface.MCP_Transaction,ctx:rawptr)->domain.Domain_Error {
 	v:=&(^MCP_HTTP_State)(ctx).vector
 	if err:=tx.put(tx.ctx,domain.MCP_Record{kind="client",id=v.request.client,redirect=v.request.redirect});err.code!=.None do return err
@@ -60,6 +68,7 @@ test_mcp_delegation_signed_consent_token_retry_and_disconnect :: proc(t:^testing
 	testing.expect(t,rerr.code==.None)
 	defer sqlite.close(&impl.conn)
 	testing.expect(t,sqlite.exec(&impl.conn,#load("../../repository/sqlite/migrations/175_mcp_delegated_credentials.sql",string)))
+	testing.expect(t,sqlite.exec(&impl.conn,#load("../../repository/sqlite/migrations/176_mcp_epoch_wraps.sql",string)))
 	testing.expect(t,iface.mcp_transaction(&repo,mcp_http_seed,&state).code==.None)
 	keys:[1]mcp.Envelope_Key
 	keys[0].id="http-test";keys[0].bytes[0]=9
@@ -101,6 +110,10 @@ test_mcp_delegation_signed_consent_token_retry_and_disconnect :: proc(t:^testing
 	rotated:=mcp_delegation_token_handler(&h,{method="POST",body=strings.clone(refresh_form,context.temp_allocator),headers=form_headers})
 	retry:=mcp_delegation_token_handler(&h,{method="POST",body=strings.clone(refresh_form,context.temp_allocator),headers=form_headers})
 	testing.expect(t,rotated.status==200 && retry.status==200 && rotated.body==retry.body)
+	recipients:=mcp_connector_epoch_handler(&h,{method="GET",path=MCP_OAUTH+"/recipients",headers=mcp_http_headers(cookie,v.recipients_headers,h.origin)})
+	testing.expect(t,recipients.status==200 && strings.contains(recipients.body,v.request.grant) && !strings.contains(recipients.body,v.hosted.private_capability))
+	delivered:=mcp_connector_epoch_handler(&h,{method="POST",path=MCP_OAUTH+"/wraps",body=strings.clone(v.delivery_body,context.temp_allocator),headers=mcp_http_headers(cookie,v.delivery_headers,h.origin)})
+	testing.expect(t,delivered.status==200)
 	disconnect:=mcp_delegation_connections_handler(&h,{method="POST",path=MCP_OAUTH+"/disconnect",body=strings.clone(v.disconnect_body,context.temp_allocator),headers=mcp_http_headers(cookie,v.disconnect_headers,h.origin)})
 	testing.expect(t,disconnect.status==200)
 	after:=mcp_delegation_token_handler(&h,{method="POST",body=strings.clone(refresh_form,context.temp_allocator),headers=form_headers})

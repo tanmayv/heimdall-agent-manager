@@ -21,4 +21,7 @@ const consent_body = JSON.stringify(hosted);
 const consent_headers = await signedRequestHeaders(identity, USER, 'POST', '/api/v1/mcp/oauth/consent', consent_body, { ts: now, nonce: 'n11111111111111111111111111111111' });
 const disconnect_body = JSON.stringify({ grant: request.grant });
 const disconnect_headers = await signedRequestHeaders(identity, USER, 'POST', '/api/v1/mcp/oauth/disconnect', disconnect_body, { ts: now, nonce: 'n22222222222222222222222222222222' });
-writeFileSync(new URL('../fixtures/mcp_consent_v1.json', import.meta.url), JSON.stringify({ synthetic_fixture: true, now_ms: now, request, directory: hub.dir(), hosted, device, consent_body, consent_headers, disconnect_body, disconnect_headers }, null, 2) + '\n');
+const delivery_body = JSON.stringify({ grant: request.grant, revision: 1, directory_version: chain.version, directory_head: chain.headHash, wrap_json: hosted.wrap_json });
+const delivery_headers = await signedRequestHeaders(identity, USER, 'POST', '/api/v1/mcp/oauth/wraps', delivery_body, { ts: now, nonce: 'n33333333333333333333333333333333' });
+const recipients_headers = await signedRequestHeaders(identity, USER, 'GET', '/api/v1/mcp/oauth/recipients', '', { ts: now, nonce: 'n44444444444444444444444444444444' });
+writeFileSync(new URL('../fixtures/mcp_consent_v1.json', import.meta.url), JSON.stringify({ synthetic_fixture: true, now_ms: now, request, directory: hub.dir(), hosted, device, consent_body, consent_headers, disconnect_body, disconnect_headers, delivery_body, delivery_headers, recipients_headers }, null, 2) + '\n');

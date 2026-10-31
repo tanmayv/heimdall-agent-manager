@@ -2,19 +2,24 @@ import { apiUrl, errorFromResponse } from '../cookieFetch';
 import { currentDeviceIdentity } from '../../services/deviceVault';
 import { signedRequestHeaders } from '../../utils/vaultRequestSigner';
 import type { McpConsentBody, McpConsentRequest } from '../../utils/mcpConsent';
+import type { ConnectorRecipient, ConnectorEpochDelivery } from '../../utils/mcpEpochDelivery';
 
 const BASE = '/api/v1/mcp/oauth';
 
-async function request<T>(method: string, suffix: string, value?: unknown): Promise<T> {
+async function request<T>(method: string, suffix: string, value?: unknown, timeoutMs?: number): Promise<T> {
   const identity = currentDeviceIdentity();
   if (!identity) throw new Error('An approved unlocked Ninjy device is required');
   const path = `${BASE}${suffix}`;
   const body = value === undefined ? '' : JSON.stringify(value);
   const headers = await signedRequestHeaders(identity, identity.userId, method, path.split('?')[0], body);
   if (body) headers['Content-Type'] = 'application/json';
-  const res = await fetch(apiUrl(path), { method, credentials: 'include', headers, body: body || undefined });
-  if (!res.ok) throw await errorFromResponse(res);
-  return res.json() as Promise<T>;
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    const res = await fetch(apiUrl(path), { method, credentials: 'include', headers, body: body || undefined, signal: controller?.signal });
+    if (!res.ok) throw await errorFromResponse(res);
+    return await res.json() as T;
+  } finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
 export function fetchMcpConsent(ticket: string): Promise<McpConsentRequest> {
@@ -26,3 +31,5 @@ export function completeMcpConsent(body: McpConsentBody): Promise<{ redirect: st
 export interface McpConnection { grant: string; client: string; resource: string; mode: string; created_ms: number; revoked: boolean }
 export function fetchMcpConnections(): Promise<McpConnection[]> { return request('GET', '/connections'); }
 export function disconnectMcpConnection(grant: string): Promise<{ disconnected: boolean }> { return request('POST', '/disconnect', { grant }); }
+export function fetchMcpRecipients(): Promise<ConnectorRecipient[]> { return request('GET', '/recipients', undefined, 10000); }
+export function deliverMcpEpochWrap(body: ConnectorEpochDelivery): Promise<{ delivered: boolean }> { return request('POST', '/wraps', body, 10000); }

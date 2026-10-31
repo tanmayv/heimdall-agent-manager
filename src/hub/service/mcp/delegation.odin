@@ -5,6 +5,7 @@ import "core:encoding/json"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import auth "odin_test:hub/service/auth"
+import platform "odin_test:hub/platform"
 
 DELEGATION_SCOPE :: "mcp:chains"
 REFRESH_RETRY_MS :: 30_000
@@ -14,6 +15,7 @@ Delegation_Service :: struct {
 	repo: ^iface.MCP_Repository,
 	keys: []Envelope_Key, // current key first, explicitly supported prior keys after
 	issuer, resource: string,
+	clock: ^platform.Clock,
 	authority_ctx: rawptr,
 	authority: proc(ctx: rawptr, grant: domain.MCP_Record) -> (bool, domain.Domain_Error),
 }

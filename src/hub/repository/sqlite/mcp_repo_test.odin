@@ -16,6 +16,7 @@ test_mcp_metadata_migration_embedded_upgrade_and_repeat :: proc(t:^testing.T) {
 	upgraded,uerr:=run_migrations(&conn,"/missing-embedded-migration-test")
 	testing.expectf(t,upgraded,"embedded MCP upgrade: %s",uerr.message)
 	testing.expect(t,sqlite_object_exists(&conn,"mcp_records") && migration_applied(&conn,const_name))
+	testing.expect(t,sqlite_object_exists(&conn,"mcp_epoch_wraps") && migration_applied(&conn,"176_mcp_epoch_wraps.sql"))
 	testing.expect(t,exec(&conn,`INSERT INTO mcp_records(kind,id,owner_user_id,metadata_json) VALUES('client','survives','','{}');`))
 	again,aerr:=run_migrations(&conn,"/missing-embedded-migration-test")
 	testing.expectf(t,again,"repeat migration: %s",aerr.message)

@@ -22,6 +22,7 @@ delegation_fixture :: proc(t: ^testing.T, f: ^Delegation_Fixture, path := ":memo
 	testing.expect(t, err.code == .None)
 	if err.code != .None do return false
 	if !sqlite.exec(&f.impl.conn, #load("../../repository/sqlite/migrations/175_mcp_delegated_credentials.sql", string)) do return false
+	if !sqlite.exec(&f.impl.conn, #load("../../repository/sqlite/migrations/176_mcp_epoch_wraps.sql", string)) do return false
 	f.repo = repo
 	f.key[0].id = "test"; f.key[0].bytes[0] = 9
 	f.service = {repo = &f.repo, keys = f.key[:], issuer = "https://hub", resource = "https://hub/api/v1/mcp", authority = proc(ctx: rawptr, g: domain.MCP_Record) -> (bool, domain.Domain_Error) {return true, {}}}

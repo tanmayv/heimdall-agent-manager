@@ -129,8 +129,9 @@ refresh responses and disconnect; existing native auth rejects delegated tokens.
 The browser tests verify the default mode does not read keyring bytes and hosted
 mode uses a fresh recipient without exporting device identity keys.
 
-U2 must verify the signed directory/epoch chain and epoch commits before opening
-any wrap, and add connector-recipient rotation fanout with freshness checks. U3
+U2's [hosted vault path](mcp-hosted-vault.md) verifies the signed directory/epoch
+chain, wraps and epoch commits, and delivers current wraps to connector recipients.
+U3
 must implement only `chains.list`, `chains.get`, `chains.create`, and client-driven
 `events.wait` (20-second default, 25-second maximum wait, 30-second total deadline).
 The user excluded unsolicited push, subscriptions and sampling. Polling needs a

@@ -11,6 +11,8 @@ import { resubscribeOnLoad } from './services/pushSubscriptionService';
 import { selectNotificationsState } from './store/notificationsSlice';
 import { configureDeviceVault } from './services/deviceVault';
 import { bridgeUnsealTransport } from './api/endpoints/bridges';
+import { fetchMcpRecipients, deliverMcpEpochWrap } from './api/endpoints/mcp';
+import { apiUrl } from './api/cookieFetch';
 import { installAppViewportHeightSync } from './utils/appViewportHeight';
 import { ShortcutProvider } from './services/shortcuts/ShortcutContext';
 import { ChordHud } from './components/shortcuts/ChordHud';
@@ -72,7 +74,11 @@ void registerNotificationServiceWorker();
 const DEVICE_VAULT_FLAG = '__heimdallDeviceVaultConfigured';
 if (!(globalThis as any)[DEVICE_VAULT_FLAG]) {
   (globalThis as any)[DEVICE_VAULT_FLAG] = true;
-  configureDeviceVault({ bridges: bridgeUnsealTransport });
+  configureDeviceVault({ bridges: bridgeUnsealTransport, connectors: {
+    list: fetchMcpRecipients,
+    deliver: deliverMcpEpochWrap,
+    resource: () => new URL(apiUrl('/api/v1/mcp'), window.location.href).href,
+  } });
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(

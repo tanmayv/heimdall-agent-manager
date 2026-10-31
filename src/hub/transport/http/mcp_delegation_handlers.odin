@@ -29,6 +29,27 @@ mcp_delegation_register_routes :: proc(r: ^Router, h: ^MCP_Delegation_Handlers) 
 	router_add(r, "POST", MCP_OAUTH+"/consent", h, mcp_delegation_consent_handler)
 	router_add(r, "GET", MCP_OAUTH+"/connections", h, mcp_delegation_connections_handler)
 	router_add(r, "POST", MCP_OAUTH+"/disconnect", h, mcp_delegation_connections_handler)
+	router_add(r, "GET", MCP_OAUTH+"/recipients", h, mcp_connector_epoch_handler)
+	router_add(r, "POST", MCP_OAUTH+"/wraps", h, mcp_connector_epoch_handler)
+}
+
+mcp_connector_epoch_handler :: proc(ctx:rawptr,req:Request)->Response {
+	h:=(^MCP_Delegation_Handlers)(ctx)
+	principal,signer,ok,resp:=mcp_delegation_user(h,req,true)
+	if !ok do return resp
+	if req.method=="GET" {
+		recipients,err:=mcp.connector_recipients(h.service,h.grant_directory,principal.user_id)
+		if err.code!=.None do return respond_error(err,req.request_id)
+		Row::struct {grant:string,revision:i64,consent,signature:string}
+		out:=make([]Row,len(recipients),context.temp_allocator)
+		for g,i in recipients do out[i]={g.id,g.revision,g.consent,g.signature}
+		return mcp_json(out)
+	}
+	if len(req.body)>16384 do return mcp_oauth_error("invalid_request")
+	input:mcp.Epoch_Delivery_Input
+	if json.unmarshal_string(req.body,&input,.JSON,context.temp_allocator)!=nil do return mcp_oauth_error("invalid_request")
+	if err:=mcp.deliver_connector_epoch(h.service,h.grant_directory,principal.user_id,signer.device_id,input);err.code!=.None do return respond_error(err,req.request_id)
+	return mcp_json(struct {delivered:bool}{true})
 }
 mcp_delegation_metadata_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^MCP_Delegation_Handlers)(ctx)
@@ -79,11 +100,11 @@ mcp_delegation_authorize_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	if berr.code != .None do return respond_error(berr,req.request_id)
 	return redirect_response(mcp_join(h.origin,"/#/mcp/consent?request=",ticket))
 }
-mcp_delegation_user :: proc(h: ^MCP_Delegation_Handlers, req: Request) -> (contracts.Auth_Context, domain.Vault_Device, bool, Response) {
+mcp_delegation_user :: proc(h: ^MCP_Delegation_Handlers, req: Request, allow_native:=false) -> (contracts.Auth_Context, domain.Vault_Device, bool, Response) {
 	principal, ok, resp := require_auth(h.auth,req)
 	if !ok do return {},{},false,resp
-	if principal.kind != .Session do return {},{},false,mcp_oauth_error("access_denied",403)
-	if req.method == "POST" && header_value(req.headers,"Origin") != h.origin do return {},{},false,mcp_oauth_error("access_denied",403)
+	if principal.kind != .Session && !(allow_native && principal.kind==.OIDC) do return {},{},false,mcp_oauth_error("access_denied",403)
+	if principal.kind==.Session && req.method == "POST" && header_value(req.headers,"Origin") != h.origin do return {},{},false,mcp_oauth_error("access_denied",403)
 	vh := Vault_Directory_Handlers{auth=h.auth,vault=h.directory}
 	signer, err := vault_request_signer(&vh,principal,req,.Approver)
 	if err.code != .None do return {},{},false,respond_error(err,req.request_id)
@@ -114,7 +135,7 @@ mcp_delegation_consent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 mcp_delegation_connections_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^MCP_Delegation_Handlers)(ctx)
-	principal,_,ok,resp:=mcp_delegation_user(h,req)
+	principal,_,ok,resp:=mcp_delegation_user(h,req,true)
 	if !ok do return resp
 	if req.method=="POST" {
 		input:struct {grant:string}

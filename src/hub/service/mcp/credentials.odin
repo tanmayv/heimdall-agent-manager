@@ -76,7 +76,10 @@ credential_open :: proc(keys: []Envelope_Key, raw, expected_kind: string) -> (Cr
 		claims: Credential_Claims
 		// Use the request allocator for decoded string fields too. The caller is
 		// responsible for wiping the private field before releasing the request.
-		if json.unmarshal(plain, &claims, .JSON, context.temp_allocator) != nil || claims.kind != expected_kind do return {}, false
+		if json.unmarshal(plain, &claims, .JSON, context.temp_allocator) != nil || claims.kind != expected_kind {
+			credential_claims_wipe(&claims)
+			return {}, false
+		}
 		return claims, true
 	}
 	return {}, false
