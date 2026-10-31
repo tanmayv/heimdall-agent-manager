@@ -156,3 +156,17 @@ test('discover projects with sessions, skip ones already in Ninjy', async () => 
   assert.equal(sessions.newProjectsOnly(found, [{ bridge_paths: [{ bridge_id: 'brg_2', path: '/home/me/app' }] }], 'brg_1').length, 2);
   assert.deepEqual(await sessions.discoverClaudeProjects(fakeFs([])), []);
 });
+
+test('identity step: a sunset rides on the approval, never a revoke up front (REQ-3)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../src/ui/components/setup/SetupWizardPage.tsx', import.meta.url), 'utf8');
+  // No UI-side revoke: the hub retires the bridge atomically with the approval.
+  assert.doesNotMatch(source, /useRevokeBridgeMutation|revokeBridge\(/);
+  assert.match(source, /await approveBridgeEnrollment\(\{[\s\S]*?target: plan\.reuse,[\s\S]*?sunset: sunset \? \{ bridge_id: sunset\.bridge_id, label: sunset\.label \} : null,/);
+  // A failure before the hub approved says nothing changed; after, that the sunset is final.
+  assert.match(source, /Nothing was changed and \$\{sunset\.label\} is still active\./);
+  assert.match(source, /was sunset when the hub approved this machine, but finishing enrollment failed/);
+  // The warning describes atomic semantics.
+  assert.match(source, /data-debug-id="setup-identity-sunset-warning"/);
+  assert.match(source, /It is revoked in the same step that approves this machine, never before: if the approval is refused or fails, it keeps working\./);
+});

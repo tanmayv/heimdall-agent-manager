@@ -29,7 +29,7 @@ import {
   subscribePendingApprovalCode,
   takePendingApprovalCode,
 } from '../../bridge/desktopBridgeSession';
-import { useListBridgesQuery, useRevokeBridgeMutation } from '../../api/endpoints/bridgeSupport';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { fetchPendingBridgeEnrollments } from '../../api/endpoints/bridges';
 import { postApproveBridge, type BridgeCodeInfo } from '../../api/endpoints/vaultDevices';
 import { useCreateProjectMutation, useListProjectsQuery, useSetProjectBridgePathMutation } from '../../api/endpoints/projects';
@@ -513,8 +513,7 @@ type Review = Awaited<ReturnType<typeof lookUpPairing>>;
 
 function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: string) => void; onBack: () => void }) {
   const entitlements = useEntitlements();
-  const { data: bridgesData } = useListBridgesQuery();
-  const [revokeBridge] = useRevokeBridgeMutation();
+  const { data: bridgesData, refetch: refetchBridges } = useListBridgesQuery();
   const bridges = useMemo(() => (Array.isArray(bridgesData?.bridges) ? bridgesData.bridges : []), [bridgesData]);
   const [code, setCode] = useState('');
   const [review, setReview] = useState<Review | null>(null);
@@ -572,24 +571,36 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
   const approve = useCallback(async () => {
     if (!review || !info || !plan.ok) return;
     const label = newLabel.trim() || review.label;
+    const sunset = plan.sunset;
+    // The sunset is not a separate step: the hub retires that bridge in the same
+    // transaction that approves this one (sunset_bridge_id), and puts it back if the
+    // approval is refused or its vault commit fails. Once the hub has approved
+    // (onWaiting reports the new bridge id), the sunset is final.
+    let approvedId = '';
     try {
-      if (plan.sunset) {
-        setPhase({ kind: 'working', message: `Sunsetting ${plan.sunset.label}…` });
-        await revokeBridge({ bridgeId: plan.sunset.bridge_id }).unwrap();
-      }
       const outcome = await approveBridgeEnrollment({
         info,
         keys: review.keys,
         target: plan.reuse,
         newLabel: label,
+        sunset: sunset ? { bridge_id: sunset.bridge_id, label: sunset.label } : null,
         onProgress: (message) => setPhase({ kind: 'working', message }),
+        onWaiting: (bridgeId) => { if (bridgeId) approvedId = bridgeId; },
       });
       setPhase({ kind: 'reconnecting', bridgeId: outcome.bridgeId, label: outcome.label, approved: outcome.approved });
     } catch (err) {
-      const prefix = plan.sunset ? `${plan.sunset.label} was sunset, but enrolling this machine failed: ` : '';
+      const prefix = !sunset
+        ? ''
+        : approvedId
+          ? `${sunset.label} was sunset when the hub approved this machine, but finishing enrollment failed: `
+          : `Nothing was changed and ${sunset.label} is still active. `;
       setPhase({ kind: 'failed', message: prefix + errText(err) });
+    } finally {
+      // The sunset bridge's status changed (or did not) on the hub; refresh the
+      // picker so a retry never offers a bridge that is already gone.
+      if (sunset) void refetchBridges();
     }
-  }, [review, info, plan, newLabel, revokeBridge]);
+  }, [review, info, plan, newLabel, refetchBridges]);
 
   const deny = useCallback(async () => {
     if (review) await postApproveBridge({ pair_lookup: review.keys.lookup, approve: false }).catch(() => {});
@@ -725,7 +736,7 @@ function IdentityStep({ onDone, onBack }: { onDone: (bridgeId: string, note: str
           {plan.sunset ? (
             <div data-debug-id="setup-identity-sunset-warning">
               <Alert tone="warning" title={`${sanitizeForDisplay(plan.sunset.label).text} will be revoked`}>
-                Its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
+                It is revoked in the same step that approves this machine, never before: if the approval is refused or fails, it keeps working. Once approved, its credentials stop working and its machine is signed out for good. Your agents and projects stay on your account; to use that machine again, set it up as a bridge again.
               </Alert>
             </div>
           ) : null}

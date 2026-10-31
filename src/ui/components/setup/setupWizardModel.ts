@@ -126,14 +126,15 @@ export interface IdentityPlan {
   action: string;
   /** Reuse target (must be one the hub listed as reusable). */
   reuse: ReusableBridge | null;
-  /** Bridge to revoke before registering this one (plan full). */
+  /** Bridge the hub retires atomically with this approval (plan full). */
   sunset: SunsetCandidate | null;
 }
 
 /**
  * Turn the user's picks into what approval will do. A new bridge at plan
- * capacity is only allowed once a bridge to sunset is picked; the sunset bridge
- * is revoked first so the hub's plan limit admits the new one.
+ * capacity is only allowed once a bridge to sunset is picked; the hub revokes the
+ * sunset bridge in the same transaction that admits the new one (sunset_bridge_id),
+ * so it is never revoked up front.
  */
 export function identityPlan(
   choice: IdentityChoice,

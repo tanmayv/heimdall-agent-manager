@@ -3,7 +3,8 @@
 // signed sequence, so it lives here once:
 //
 //   1. sign a vault approval of the bridge's identity key with this device;
-//   2. POST /device/approve as a NEW bridge or as a reuse of `target`;
+//   2. POST /device/approve as a NEW bridge (optionally sunsetting one of the user's
+//      bridges in the same hub transaction) or as a reuse of `target`;
 //   3. wait for the enrolling process to connect;
 //   4. deliver the keyring (unseal v2) bound to the pair_mac under the same code.
 //
@@ -69,20 +70,28 @@ export async function approveBridgeEnrollment(args: {
   keys: PairKeys;
   target: ReusableBridge | null;
   newLabel: string;
+  /**
+   * New bridge only: the bridge to retire to make room on a full plan. The hub
+   * revokes it atomically with this approval (sunset_bridge_id), so it is never
+   * revoked up front and a refused approval leaves it working.
+   */
+  sunset?: { bridge_id: string; label: string } | null;
   onProgress: (message: string) => void;
   /** Aborts the wait for the enrolling bridge to connect (step 3). */
   waitSignal?: AbortSignal;
   /** Called with the approved bridge id while step 3 waits, and with '' after it. */
   onWaiting?: (bridgeId: string) => void;
 }): Promise<BridgeApprovalOutcome> {
-  const { info, keys, target, newLabel, onProgress, waitSignal, onWaiting } = args;
+  const { info, keys, target, newLabel, sunset, onProgress, waitSignal, onWaiting } = args;
+  // Checked before anything is signed; bridgeApproveBody enforces it again.
+  if (target && sunset?.bridge_id) throw new Error('A reused bridge identity cannot also sunset a bridge.');
   const identity = currentDeviceIdentity();
   if (!identity || !deviceSignerContext()) throw new Error('This device is not ready to approve.');
   onProgress('Verifying your device directory…');
   const chain = await verifiedChainForApproval();
   const label = approvalLabel(target, newLabel);
   const { vault_approval, statement } = await buildBridgeApproval(identity, chain, info, label);
-  const res = await postApproveBridge(bridgeApproveBody(keys.lookup, vault_approval, target, newLabel));
+  const res = await postApproveBridge(bridgeApproveBody(keys.lookup, vault_approval, target, newLabel, sunset?.bridge_id || ''));
   const bridgeId = String(res?.hub_observed?.bridge_id || '');
   if (!bridgeId) throw new Error('The hub did not report the approved bridge id.');
   if (target && bridgeId !== target.bridge_id) throw new Error(`The hub approved ${bridgeId}, not the bridge you chose to reuse (${target.bridge_id}). The vault key was not delivered.`);
@@ -103,5 +112,5 @@ export async function approveBridgeEnrollment(args: {
     dispatch: unsealBridge,
     withKeyringBytes: (fn) => withKeyringBytes(fn, after),
   }, { enrollment: true, identityPublicKey: info.bridge_identity_public_key, expectedPublicKey, extra: { enrollment: true, expected_public_key: expectedPublicKey.trim().toLowerCase(), pair_mac: pairMac } });
-  return { bridgeId, label, approved: bridgeApprovedMessage(target, label, bridgeId) };
+  return { bridgeId, label, approved: bridgeApprovedMessage(target, label, bridgeId, sunset?.label || '') };
 }

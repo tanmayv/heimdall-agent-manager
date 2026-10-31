@@ -217,7 +217,12 @@ test('DeviceApprovalPage: bridge approvals wait for reconnect, then the compact 
   const approval = read('../src/ui/components/devices/bridgeApproval.ts');
   assert.match(approval, /const label = approvalLabel\(target, newLabel\);/);
   assert.match(approval, /buildBridgeApproval\(identity, chain, info, label\)/);
-  assert.match(approval, /return \{ bridgeId, label, approved: bridgeApprovedMessage\(target, label, bridgeId\) \};/);
+  assert.match(approval, /return \{ bridgeId, label, approved: bridgeApprovedMessage\(target, label, bridgeId, sunset\?\.label \|\| ''\) \};/);
+  // REQ-3: a sunset rides on the approval itself (sunset_bridge_id); nothing in the
+  // shared sequence revokes a bridge on its own.
+  assert.match(approval, /postApproveBridge\(bridgeApproveBody\(keys\.lookup, vault_approval, target, newLabel, sunset\?\.bridge_id \|\| ''\)\)/);
+  assert.match(approval, /if \(target && sunset\?\.bridge_id\) throw/);
+  assert.doesNotMatch(approval, /revokeBridge|\/revoke/);
   assert.match(approval, /if \(target && bridgeId !== target\.bridge_id\) throw/, 'the hub approving a different bridge than the reuse target is refused');
   assert.match(source, /Waiting for the bridge to restart and reconnect…/);
   assert.match(source, /device-approval-reconnect-retry-btn/);
