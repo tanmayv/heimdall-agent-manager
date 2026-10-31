@@ -82,6 +82,12 @@ connector UI, with no manually entered headers, client secret or token.
    method, code/token length acceptance and refresh behavior. Never record raw
    codes, tokens, session cookies or user secrets.
 
+The service journal emits only fixed success markers (`mcp_probe token_issued
+authorization_code`, `mcp_probe token_issued refresh_token`, `mcp_probe tool_called
+probe`). These establish that refresh and tool invocation actually reached the
+service. The synthetic tool response includes server time to distinguish calls.
+Markers contain no user identities, credentials, bindings or request contents.
+
 No real Claude acceptance result has been recorded yet. Fixture tests do not
 prove actual provider interoperability. Repeat against each additional provider
 before claiming it is supported.

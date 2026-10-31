@@ -1,6 +1,7 @@
 package http
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import auth "odin_test:hub/service/auth"
@@ -145,6 +146,8 @@ mcp_spike_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	case: return mcp_oauth_error("unsupported_grant_type")
 	}
 	if !ok do return mcp_oauth_error("invalid_grant")
+	// Fixed operation names only. Never log credentials, bindings or bodies.
+	fmt.println("mcp_probe token_issued", query_value(req.body, "grant_type"))
 	return mcp_json(tokens)
 }
 mcp_spike_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -180,7 +183,10 @@ mcp_spike_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	case "tools/list":
 		return mcp_json(struct {jsonrpc: string, id: json.Value, result: struct {tools: []struct {name, description: string, inputSchema: struct {type: string, properties: struct {}}}}}{"2.0", rpc.id, {[]struct {name, description: string, inputSchema: struct {type: string, properties: struct {}}}{{"probe", "Confirm OAuth connectivity with synthetic data only", {"object", {}}}}}})
 	case "tools/call":
-		if rpc.params.name == "probe" do return mcp_json(struct {jsonrpc: string, id: json.Value, result: struct {content: []struct {type, text: string}, isError: bool}}{"2.0", rpc.id, {[]struct {type, text: string}{{"text", "Ninjy OAuth probe connected. Synthetic data only; no vault access."}}, false}})
+		if rpc.params.name == "probe" {
+			fmt.println("mcp_probe tool_called probe")
+			return mcp_json(struct {jsonrpc: string, id: json.Value, result: struct {content: []struct {type, text: string}, isError: bool}}{"2.0", rpc.id, {[]struct {type, text: string}{{"text", fmt.tprintf("Ninjy OAuth probe connected. Synthetic data only; no vault access. Server time: %d", now)}}, false}})
+		}
 	}
 	return mcp_json(struct {jsonrpc: string, id: json.Value, error: struct {code: int, message: string}}{"2.0", rpc.id, {-32601, "Method or tool not found"}})
 }
