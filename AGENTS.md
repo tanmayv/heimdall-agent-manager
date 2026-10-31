@@ -401,6 +401,11 @@ The web app no longer installs provider extensions; `ham-bridge setup` / `ham-br
 
 ### Adding new elements
 
+| Component | Debug IDs |
+| --- | --- |
+| `McpConsentPage` | `mcp-consent-page`, `mcp-consent-hosted`, `mcp-consent-approve`, `mcp-consent-cancel` |
+| `McpConnections` | `settings-mcp-connections`, `settings-mcp-disconnect-${grantId}`, `settings-mcp-deliver-keys`, `settings-mcp-worker` |
+
 When adding any new interactive element to the UI:
 
 1. Choose an ID following the naming convention above.
