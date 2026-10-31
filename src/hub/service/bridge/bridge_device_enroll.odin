@@ -177,7 +177,8 @@ enroll_bridge_from_device_grant :: proc(service: ^Bridge_Service, input: Device_
 	if sunset_bridge_id != "" {
 		// Same last step as revoke_bridge: its credentials are already dead, so this
 		// only drops a socket that can no longer authenticate anything.
-		_ = close_bridge_connection(service, sunset_bridge_id)
+		code := "bridge_sunset_pending" if input.pending else "bridge_credential_revoked"
+		_ = close_bridge_connection(service, sunset_bridge_id, code)
 	}
 	// Fail closed when the OS entropy source is unavailable (settled 8): 503 with a
 	// retry hint, never a weaker credential and never `.Internal_Error`. The bridge

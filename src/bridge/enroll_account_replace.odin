@@ -104,7 +104,7 @@ bridge_self_revoke :: proc(api_base, token: string) -> (ok: bool, detail: string
 	if t == "" do return false, "no credential"
 	auth := strings.concatenate({"Bearer ", t}, context.temp_allocator)
 	path := BRIDGE_SELF_REVOKE_PATH
-	resp, err := httpc.send({
+	resp, err := bridge_hub_http_send_alloc({
 		method = .POST, url = bridge_hub_url(api_base), path = path[:],
 		headers = {{name = "Authorization", value = auth}},
 		body = httpc.json_body(struct{}{}), timeout_ms = 10_000,

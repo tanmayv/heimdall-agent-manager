@@ -1199,7 +1199,7 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 		Blob_Request :: struct {
 			hashes: []string `json:"hashes"`,
 		}
-		post_resp, post_err := httpc.send({
+		post_resp, post_err := bridge_hub_http_send_alloc({
 			method = .POST, url = hub, path = {"api", "v1", "bridge", "blobs"}, headers = headers[:],
 			body = httpc.json_body(Blob_Request{hashes = missing_hashes[:]}),
 		})

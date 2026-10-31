@@ -365,6 +365,7 @@ bridge_hub_runtime_worker :: proc() {
 		}
 	}
 	for {
+		if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 		ws_url := bridge_hub_ws_url(bridge_config.daemon_url)
 		if ws_url == "" {
 			fmt.println("bridge hub runtime disabled: daemon_url must be an http:// or https:// base URL")
@@ -373,6 +374,7 @@ bridge_hub_runtime_worker :: proc() {
 		credential := bridge_credential_snapshot()
         conn, ok := ws.connect_with_bearer(ws_url, credential)
         delete(credential)
+		conn.send_disabled = &bridge_hub_traffic_stopped
 		if !ok {
 			connect_err := ws.last_connect_error()
 			code, stage, why := blog_connect_failure(connect_err)
@@ -431,6 +433,7 @@ bridge_hub_runtime_worker :: proc() {
 					if bridge_enroll_atomic_is_active() && strings.contains(hub_error, "bridge token is invalid") {
 						bridge_enroll_atomic_on_result(`{"type":"bridge_enrollment_result","committed":false}`)
 					}
+					_ = bridge_hub_session_frame(msg_type, text)
 					delete(msg_type)
 					delete(text)
 					break
@@ -500,6 +503,7 @@ bridge_hub_runtime_worker :: proc() {
 			log_failure(&last_failure, &attempts, "no bridge_ready within 5s after hello — hub didn't accept the session (slow link over the tunnel, or hub-side rejection)", .hub_ready_timeout, blog_sym(.stage, .ready))
 		}
 		bridge_hub_connection_teardown(&conn)
+		if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 		if plan_disabled {
 			fmt.println("bridge hub runtime: disabled by plan limits; retrying in 60s")
 			time.sleep(60 * time.Second)
@@ -639,6 +643,7 @@ bridge_hub_heartbeat_shape :: proc() -> Bridge_Heartbeat_Shape {
 // dropped around the disconnect) and heartbeat liveness for that long after every
 // reconnect. It is an ordinary heartbeat frame, so hubs of every version accept it.
 bridge_hub_send_connect_heartbeat :: proc(conn: ^ws.Connection) -> (anchor_ns: i64) {
+	if sync.atomic_load(&bridge_hub_traffic_stopped) do return time.to_unix_nanoseconds(time.now())
 	hb := bridge_hub_heartbeat_json()
 	_ = ws.send_text(conn, hb)
 	delete(hb)
@@ -660,6 +665,7 @@ bridge_hub_heartbeat_due :: proc(last_ns: ^i64, now_ns, interval_ns: i64) -> boo
 BRIDGE_HUB_INBOUND_BUDGET :: 32
 
 bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
+	if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 	defer bridge_tool_live_disconnect()
 	connection_generation := bridge_command_dispatch_begin_connection()
 	// PER-CONNECTION inbound chunk reassembly (REQ-SHELL-36). The hub splits any
@@ -687,7 +693,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	bridge_blockers_mark_all_dirty()
 	bridge_tool_live_drain(conn, true)
 	last_iteration := time.now()
-	for conn.connected {
+	for conn.connected && !sync.atomic_load(&bridge_hub_traffic_stopped) {
 		now_iteration := time.now()
 		bridge_command_dispatch_observe_loop_delay(time.diff(last_iteration, now_iteration))
 		last_iteration = now_iteration
@@ -716,7 +722,10 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 				if !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
 			}
 			delete(text)
+			if sync.atomic_load(&bridge_hub_traffic_stopped) do break
 		}
+		// Stop before ANY drain or heartbeat in the iteration receiving retirement.
+		if sync.atomic_load(&bridge_hub_traffic_stopped) do break
 		bridge_command_dispatch_drain(conn, connection_generation)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
@@ -842,9 +851,17 @@ bridge_hub_session_frame :: proc(type, text: string) -> bool {
 		if extract_json_bool(text, "ok", false) {
 			fmt.printfln("bridge hub session renewed with the refreshed credential (valid for %ds)", extract_json_int(text, "expires_in", 0))
 		} else {
+			code := extract_json_string(text, "code", "")
+			defer delete(code)
+			if code == "bridge_sunset_pending" do bridge_hub_stop_traffic(false)
+			if code == "bridge_credential_revoked" do bridge_hub_stop_traffic(true)
 			msg := extract_json_string(text, "message", "")
 			defer delete(msg)
-			fmt.eprintfln("bridge hub refused the session renewal: %s; the session will end at the old credential's expiry and reconnect", msg)
+			if sync.atomic_load(&bridge_hub_traffic_stopped) {
+				fmt.eprintfln("bridge hub refused the session renewal: %s; Hub traffic paused until explicit activation", msg)
+			} else {
+				fmt.eprintfln("bridge hub refused the session renewal: %s; the session will end at the old credential's expiry and reconnect", msg)
+			}
 		}
 		return true
 	}
@@ -859,17 +876,13 @@ bridge_hub_session_frame :: proc(type, text: string) -> bool {
 		case "bridge_sunset_pending":
 			// The hub may restore this machine if replacement enrollment rolls
 			// back. Keep credential files and the profile intact across restarts.
-			fmt.eprintfln("bridge retirement is pending enrollment (%s); retaining credentials and reconnecting", msg)
+			bridge_hub_stop_traffic(false)
+			fmt.eprintfln("bridge retirement is pending enrollment (%s); Hub traffic paused; retain credentials and explicitly resume after rollback", msg)
 		case "bridge_credential_revoked":
+			bridge_hub_stop_traffic(true)
 			fmt.eprintfln("bridge hub ended the session: this bridge's credential is revoked (%s); re-enrollment is required", msg)
-			// F21: record it and exit 0, never non-zero into a crash loop. launchd
-			// KeepAlive / Scheduled Task restarts park on the marker; systemd's
-			// Restart=on-failure leaves the unit stopped. Either way `status --json`
-			// reports needs_reenrollment and `ham-bridge enroll` restarts the service.
-			if !bridge_hub_is_enroll_only_runtime() {
-				bridge_reenroll_mark(cfg_lib.config_path_from_args(os.args), bridge_config.daemon_url, bridge_config.daemon_id, .Revoked)
-				os.exit(0)
-			}
+			// Stay parked. The runtime owner joins stream writers before closing
+			// its connection; process exit here would bypass that teardown.
 		case:
 			fmt.eprintfln("bridge hub error: %s", msg)
 		}
@@ -1529,6 +1542,7 @@ Bridge_Update_Download :: #type proc(req: httpc.Request, dest_path: string) -> (
 // absolute http(s) URL or a hub-relative target ("/api/v1/...") from the update
 // command, resolved under the configured hub base URL without concatenation.
 bridge_update_download :: proc(download_url, dest_path: string, download: Bridge_Update_Download = httpc.download_to_file) -> (bool, string) {
+	if sync.atomic_load(&bridge_hub_traffic_stopped) do return false, "Hub traffic is paused"
 	req := httpc.Request{
 		method = .GET, timeout_ms = BRIDGE_UPDATE_DOWNLOAD_TIMEOUT_MS,
 		connect_timeout_ms = BRIDGE_UPDATE_DOWNLOAD_CONNECT_TIMEOUT_MS,
@@ -6092,6 +6106,7 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	// under the 65,535-byte WebSocket frame ceiling after base64 expansion (~43.7 KB).
 	buf: [32768]byte
 	for {
+		if sync.atomic_load(&bridge_hub_traffic_stopped) do break
 		n, recv_err := net.recv_tcp(local_tcp_conn, buf[:])
 		// A receive timeout is a periodic wake, NOT end-of-stream.  core:net reports a
 		// graceful close as (0, nil), so the plain `n <= 0` test below cannot tell the two

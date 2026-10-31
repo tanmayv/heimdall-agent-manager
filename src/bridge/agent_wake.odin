@@ -313,7 +313,7 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
         left := (deadline_ns - time.to_unix_nanoseconds(time.now())) / i64(time.Millisecond)
         if left <= 0 do return "", bridge_error(.hub_connect_failed, .transport), false
         req.timeout_ms = int(min(10_000, left))
-        resp, http_err = httpc.send(req)
+        resp, http_err = bridge_hub_http_send_alloc(req)
     } else {
         resp, http_err = bridge_http_request_retry(req)
     }

@@ -363,7 +363,7 @@ verify_access_token_scoped :: proc(service: ^Bridge_Service, token: string, scop
 	if row.scope != scope do return contracts.Auth_Context{}, "", false, invalid
 	if row.revoked_at != "" {
 		if credential_revocation_is_recoverable(service, row.token_id) do return {}, "", false, pending_sunset_error()
-		return {}, "", false, domain.domain_error(.Forbidden, "bridge credential is revoked")
+		return {}, "", false, revoked_credential_error("bridge credential is revoked")
 	}
 	now := platform.clock_now(service.clock)
 	if token_is_expired(row.expires_at, now) do return contracts.Auth_Context{}, "", false, domain.domain_error(.Unauthenticated, "bridge access token has expired")
@@ -377,7 +377,7 @@ verify_access_token_scoped :: proc(service: ^Bridge_Service, token: string, scop
 	// (or by a future path that forgets) must not outlive its bridge.
 	if bridge.status == .Revoked {
 		if credential_revocation_is_recoverable(service, row.token_id) do return {}, "", false, pending_sunset_error()
-		return {}, "", false, domain.domain_error(.Forbidden, "bridge is revoked")
+		return {}, "", false, revoked_credential_error("bridge is revoked")
 	}
 	// First authentication with this access token: record it. It proves the reply
 	// that carried the token was delivered, which ends the retry grace of the
@@ -716,12 +716,22 @@ free_bridge_tokens :: proc(tokens: []domain.Bridge_Token) {
 // A sunset receipt is a durable suspension, not a permanent credential rejection.
 // Use the existing retriable wire error (500), understood by installed bridges:
 // they retain both credential files and retry with the same rotation request id.
+// Current bridges recognize the cause and park without polling; the retriable
+// envelope keeps older bridges from destroying recoverable credentials.
 // Do not turn a lookup failure or a stale revoked read racing rollback into a 401.
 pending_sunset_error :: proc() -> domain.Domain_Error {
-	return domain.domain_error(.Internal_Error, "bridge retirement is pending enrollment; retain credentials and retry")
+	err := domain.domain_error(.Internal_Error, "bridge retirement is pending enrollment; retain credentials and explicitly resume after rollback")
+	err.cause = "bridge_sunset_pending"
+	return err
 }
 
 credential_revocation_is_recoverable :: proc(service: ^Bridge_Service, token_id: string) -> bool {
 	state, err := iface.bridge_credential_revocation(service.repo, token_id)
 	return err.code != .None || state != .Final
+}
+
+revoked_credential_error :: proc(message: string) -> domain.Domain_Error {
+    err := domain.domain_error(.Forbidden, message)
+    err.cause = "bridge_credential_revoked"
+    return err
 }

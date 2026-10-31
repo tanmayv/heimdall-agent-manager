@@ -39,6 +39,8 @@ Bridge_Service :: struct {
 Bridge_Connection_Closer :: struct {
 	ctx: rawptr,
 	close_bridge_connection: proc(ctx: rawptr, bridge_id: string) -> bool,
+	// Production sends a typed retirement notice before waking the socket reader.
+	close_with_reason: proc(ctx: rawptr, bridge_id, code: string) -> bool,
 }
 
 // with_connection_closer attaches the F6 socket teardown. Called by app wiring once
@@ -48,9 +50,11 @@ with_connection_closer :: proc(service: ^Bridge_Service, closer: Bridge_Connecti
 }
 
 // close_bridge_connection invokes the seam, or reports false when none is wired.
-close_bridge_connection :: proc(service: ^Bridge_Service, bridge_id: string) -> bool {
-	if service == nil || service.connection_closer.close_bridge_connection == nil do return false
+close_bridge_connection :: proc(service: ^Bridge_Service, bridge_id: string, code := "bridge_credential_revoked") -> bool {
+	if service == nil do return false
 	if bridge_id == "" do return false
+	if service.connection_closer.close_with_reason != nil do return service.connection_closer.close_with_reason(service.connection_closer.ctx, bridge_id, code)
+	if service.connection_closer.close_bridge_connection == nil do return false
 	return service.connection_closer.close_bridge_connection(service.connection_closer.ctx, bridge_id)
 }
 

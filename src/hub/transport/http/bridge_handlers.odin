@@ -1726,7 +1726,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 		}
 	}
 	// Unauthenticated attempts carry no trustworthy bridge_id: they share one series.
-	if !auth_ok { bridge_metrics_connect_result(BRIDGE_ID_UNKNOWN, "auth_failed"); _ = write_ws_text_frame(client, bridge_ws_error_payload(auth_err.message)); return }
+	if !auth_ok { bridge_metrics_connect_result(BRIDGE_ID_UNKNOWN, "auth_failed"); bridge_ws_auth_error(client, auth_err); return }
 	admitted_bridge, found, lookup_err := iface.bridge_get_bridge(h.bridges.repo, bridge_auth.bridge_id)
 	if !found { bridge_metrics_connect_result(BRIDGE_ID_UNKNOWN, "auth_failed"); _ = write_ws_text_frame(client, bridge_ws_error_payload(lookup_err.message)); return }
 	defer domain.bridge_destroy(&admitted_bridge)
@@ -2020,6 +2020,10 @@ bridge_ws_runtime_loop :: proc(
 	last_frame := time.tick_now()
 	next_revalidate := time.tick_add(time.tick_now(), bridge_ws_revalidate_interval)
 	for {
+		if connection != nil && sync.atomic_load(&connection.credential_revoked) {
+			reason = .Credential_Revoked
+			return
+		}
 		// 120s read deadline decoupled from the bridge's idle heartbeat cadence
 		// (BRIDGE_HEARTBEAT_INTERVAL_SECONDS = 45s): a single delayed/dropped heartbeat
 		// still leaves a full extra beat of margin before we treat the bridge as
@@ -2111,6 +2115,7 @@ BRIDGE_WS_SUNSET_PENDING_CODE :: "bridge_sunset_pending"
 // reason; the caller returns and the reader closes the socket.
 bridge_ws_session_check :: proc(h: ^Bridge_Handlers, connection: ^project_service.Bridge_Runtime_Connection, bridge_id: string, client: net.TCP_Socket, next_revalidate: ^time.Tick) -> Bridge_WS_Disconnect_Reason {
 	if connection == nil do return .None
+	if sync.atomic_load(&connection.credential_revoked) do return .Credential_Revoked
 	if project_service.bridge_runtime_connection_auth_expired(connection) {
 		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_TOKEN_EXPIRED_CODE, "bridge access token has expired; reconnect with the refreshed credential")
 		return .Credential_Expired
@@ -2131,7 +2136,7 @@ bridge_ws_session_check :: proc(h: ^Bridge_Handlers, connection: ^project_servic
 		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_TOKEN_EXPIRED_CODE, "bridge access token has expired; reconnect with the refreshed credential")
 		return .Credential_Expired
 	case .Pending_Sunset:
-		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_SUNSET_PENDING_CODE, "bridge retirement is pending enrollment; retain credentials and reconnect")
+		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_SUNSET_PENDING_CODE, "bridge retirement is pending enrollment; retain credentials and explicitly resume after rollback")
 		return .Credential_Revoked
 	case .Revoked:
 		bridge_ws_end_session(h, bridge_id, client, BRIDGE_WS_CREDENTIAL_REVOKED_CODE, "bridge credential is revoked")
@@ -2222,10 +2227,16 @@ bridge_ws_try_reauth :: proc(h: ^Bridge_Handlers, connection: ^project_service.B
 	} else {
 		message := err.message if !ok else "the credential does not belong to this bridge"
 		result.payload = {ok = false, code = BRIDGE_WS_CREDENTIAL_REVOKED_CODE if err.code == .Forbidden else BRIDGE_WS_TOKEN_EXPIRED_CODE, message = message}
+		if err.cause == BRIDGE_WS_SUNSET_PENDING_CODE do result.payload.code = BRIDGE_WS_SUNSET_PENDING_CODE
 		fmt.printfln("ham-hub bridge reauth refused bridge=%s: %s", bridge_id, message)
 	}
 	if data, merr := json.marshal(result, allocator = context.temp_allocator); merr == nil {
 		_ = write_ws_text_frame_locked(h, bridge_id, client, string(data))
+	}
+	if !cred_ok && (result.payload.code == BRIDGE_WS_CREDENTIAL_REVOKED_CODE || result.payload.code == BRIDGE_WS_SUNSET_PENDING_CODE) {
+		bridge_ws_end_session(h, bridge_id, client, result.payload.code, result.payload.message)
+		if connection != nil do sync.atomic_store(&connection.credential_revoked, true)
+		_ = net.shutdown(net.Any_Socket(client), .Receive)
 	}
 	return true
 }
@@ -3790,6 +3801,10 @@ bridge_ws_plan_error_payload :: proc(err: domain.Domain_Error) -> string {
 // Plan refusals have an application close code as well as the diagnostic frame.
 // These calls happen before registering a command socket, so there is one writer.
 bridge_ws_domain_error :: proc(client: net.TCP_Socket, err: domain.Domain_Error) {
+	if err.cause == BRIDGE_WS_SUNSET_PENDING_CODE || err.cause == BRIDGE_WS_CREDENTIAL_REVOKED_CODE || err.code == .Bridge_Revoked {
+		bridge_ws_auth_error(client, err)
+		return
+	}
 	if err.code != .Plan_Limit_Reached {
 		_ = write_ws_text_frame(client, bridge_ws_error_payload(err.message))
 		return
@@ -3802,4 +3817,18 @@ bridge_ws_domain_error :: proc(client: net.TCP_Socket, err: domain.Domain_Error)
 	frame[3] = 0x32
 	copy(frame[4:], "plan_limit_reached")
 	_, _ = net.send_tcp(client, frame[:])
+}
+
+// Used only after verifying a bridge bearer, never for unrelated authorization.
+// Expiry can be refreshed; invalid/revoked credentials require explicit enrollment.
+bridge_ws_auth_error :: proc(client: net.TCP_Socket, err: domain.Domain_Error) {
+    if err.cause != BRIDGE_WS_SUNSET_PENDING_CODE && err.code != .Unauthenticated && err.code != .Forbidden && err.code != .Bridge_Revoked {
+        // A transient admission failure is not authoritative revocation.
+        _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message))
+        return
+    }
+    code := BRIDGE_WS_CREDENTIAL_REVOKED_CODE
+    if err.cause == BRIDGE_WS_SUNSET_PENDING_CODE do code = BRIDGE_WS_SUNSET_PENDING_CODE
+    else if err.code == .Unauthenticated && strings.contains(err.message, "expired") do code = BRIDGE_WS_TOKEN_EXPIRED_CODE
+    _ = write_ws_text_frame(client, bridge_ws_session_error_payload(code, err.message, context.temp_allocator))
 }

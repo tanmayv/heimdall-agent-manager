@@ -36,6 +36,8 @@ sunset_recovery_exchange :: proc(api, token, request_id: string, timeout_ms: int
 test_sunset_pending_refresh_and_session_survive_restart_then_rollback :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex)
     defer sync.mutex_unlock(&bridge_test_config_mutex)
+    hub_pause_test_reset()
+    defer hub_pause_test_reset()
     dir := fmt.tprintf("%s/.cache/heimdall-tests/sunset-client-%d-%d", os.get_env("HOME", context.temp_allocator), os.get_pid(), time.to_unix_nanoseconds(time.now()))
     defer os.remove_all(dir)
     config := fmt.tprintf("%s/config.toml", dir)
@@ -74,6 +76,10 @@ test_sunset_pending_refresh_and_session_survive_restart_then_rollback :: proc(t:
     testing.expect_value(t, hub.session_credential_state(&svc, token_id), hub.Session_Credential_State.Pending_Sunset)
     frame := transport.bridge_ws_session_error_payload(transport.BRIDGE_WS_SUNSET_PENDING_CODE, "pending", context.temp_allocator)
     testing.expect(t, bridge_hub_session_frame("bridge_error", frame))
+    testing.expect(t, sync.atomic_load(&bridge_hub_traffic_stopped))
+    // The old regression exercised bounded retry persistence while suspended.
+    // Those attempts are now forbidden; exercise preservation before explicitly
+    // modelling operator activation below instead.
 
     recovery := Bridge_Refresh_Recovery{request_id = request_id, pending = {version = 1, key = key, api_base = api, bridge_id = old.bridge.bridge_id}}
     budget: Bridge_Operation_Budget
@@ -115,6 +121,7 @@ test_sunset_pending_refresh_and_session_survive_restart_then_rollback :: proc(t:
     testing.expect_value(t, hub.session_credential_state(&svc, token_id), hub.Session_Credential_State.Valid)
     _, access_ok, _ := hub.verify_bridge_token(&svc, old.bridge_token)
     testing.expect(t, access_ok, "same persisted access token reconnects")
+    hub_pause_test_reset() // fresh process after explicit local activation
     // Reopen a bounded budget as the worker does after a retriable exhaustion.
     budget = {}
     testing.expect(t, bridge_operation_reserve(&budget, 300_000))
@@ -131,6 +138,8 @@ test_sunset_pending_refresh_and_session_survive_restart_then_rollback :: proc(t:
 test_sunset_final_refresh_refusal_still_marks_reenrollment :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex)
     defer sync.mutex_unlock(&bridge_test_config_mutex)
+    hub_pause_test_reset()
+    defer hub_pause_test_reset()
     dir := fmt.tprintf("%s/.cache/heimdall-tests/sunset-final-%d-%d", os.get_env("HOME", context.temp_allocator), os.get_pid(), time.to_unix_nanoseconds(time.now()))
     defer os.remove_all(dir)
     path := fmt.tprintf("%s/credential", dir)
