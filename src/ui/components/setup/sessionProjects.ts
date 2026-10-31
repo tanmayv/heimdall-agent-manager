@@ -52,6 +52,11 @@ export function parseClaudeProjectDir(name: string): Encoded | null {
  * starts (its parent must be an existing folder) or the current component goes on
  * with one of the characters "-" also stands for. An empty token (two "-" in a row)
  * starts a component with "." (a hidden folder such as .config).
+ *
+ * Limit: each name gets at most MAX_STATS_PER_ENTRY stat calls, and the search
+ * stops as soon as they are spent (even if later lookups would be cache hits).
+ * So '' means "not resolved": the folder may be absent, or it may exist but need
+ * more stats than the budget allows (a deep path with many "-"-joined names).
  */
 export async function resolveClaudeProjectDir(name: string, stat: SessionFs['stat']): Promise<string> {
   const parsed = parseClaudeProjectDir(name);
