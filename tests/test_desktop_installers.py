@@ -153,8 +153,23 @@ class WindowsInstallerTests(unittest.TestCase):
         nsh = read('build/installer.nsh')
         config = read('electron-builder.yml')
         self.assertIn('include: build/installer.nsh', config)
-        for label in ('App and Bridge (recommended)', 'App only', 'Bridge only'):
+        for label in ('App (recommended)', 'Bridge only'):
             self.assertIn(label, nsh)
+        # No combined App + Bridge choice on Windows, interactive or silent.
+        radios = [l for l in nsh.splitlines() if 'NSD_CreateRadioButton' in l]
+        self.assertEqual(len(radios), 2, radios)
+        self.assertFalse([l for l in radios if 'App and Bridge' in l or 'both' in l.lower()], radios)
+        self.assertNotIn('"both"', nsh)
+        self.assertNotIn('$HeimdallRadioBoth', nsh)
+        self.assertIn('Settings > Bridges', nsh)
+        # Interactive and unattended installs both default to the App, which never runs Bridge setup.
+        init = nsh.split('!macro customInit', 1)[1].split('!macroend', 1)[0]
+        self.assertIn('StrCpy $HeimdallComponents "app"', init)
+        self.assertNotIn('${Silent}', init)
+        self.assertIn('/COMPONENTS must be app or bridge', init)
+        install = nsh.split('!macro customInstall', 1)[1].split('!macroend', 1)[0]
+        self.assertIn('${AndIf} $HeimdallComponents == "bridge"', install)
+        self.assertNotIn('The app is installed; finish the Bridge', install)
         self.assertIn('install.ps1" -Bundle "$INSTDIR\\resources\\bridge\\heimdall-local-windows-amd64.zip"', nsh)
         self.assertIn('-Interactive', nsh)
         # Auto-updates (--updated) never re-run Bridge setup or remove the app.

@@ -42,7 +42,8 @@ win:
   # SHA-512 digest in latest.yml.
   verifyUpdateCodeSignature: false
 nsis:
-  # build/installer.nsh adds the App / Bridge / both page (REQ-ENR-4).
+  # build/installer.nsh adds the App / Bridge only page (REQ-ENR-4). Windows has
+  # no combined choice: the App sets up a Bridge from Settings > Bridges.
   include: build/installer.nsh
   oneClick: false
   perMachine: false

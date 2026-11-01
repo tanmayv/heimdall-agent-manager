@@ -913,7 +913,7 @@ jobs:
           - heimdall-local-windows-amd64-$VERSION.zip (scripts/install.ps1)
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.dmg (signed + notarized macOS app with Bridge)
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-arm64.pkg (macOS installer: App, Bridge, or both)
-          - Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe (unsigned Windows installer: App, Bridge, or both)
+          - Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.exe (unsigned Windows installer: App, or Bridge only)
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-x86_64.AppImage / -arm64.AppImage, -amd64.deb / -arm64.deb (Linux app; App, Bridge, or both on first launch)
           - Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)
           - SHA256SUMS
