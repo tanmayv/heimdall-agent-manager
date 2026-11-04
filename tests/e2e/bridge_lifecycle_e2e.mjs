@@ -148,7 +148,7 @@ function ptyDaemonScan(socket) {
     ? spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'ham-pty-host.exe' } | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }"], { encoding: 'utf8', timeout: 60_000 })
     : spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 10_000 });
   const raw = `${out.stdout || ''}${out.stderr || ''}`;
-  const pids = raw.split(/\r?\n/).filter((l) => /ham-pty-host/i.test(l) && / daemon /.test(` ${l} `) && l.includes(name))
+  const pids = raw.split(/\r?\n/).filter((l) => /ham-pty-host/i.test(l) && /(^|[\s"])daemon([\s"]|$)/.test(l) && l.includes(name))
     .map((l) => Number(l.trim().split(/\s+/)[0])).filter((n) => n > 0);
   return { pids, raw };
 }
