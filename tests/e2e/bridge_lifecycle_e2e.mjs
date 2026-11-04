@@ -165,7 +165,9 @@ async function startRestartProbe(acct, bridgeId) {
   for (const deadline = Date.now() + 30_000; !(originalPid = pid()); await sleep(200)) {
     if (Date.now() > deadline) throw new CheckFailed(`shell did not start on the service's PTY daemon (${socket})`);
   }
-  return { originalPid, pid, close: async () => {
+  const daemonUp = () => spawnSync(ptyBin, ['--socket', socket, 'list'], { env: ENV, encoding: 'utf8', timeout: 5000 }).status === 0;
+  const endShell = () => http(acct, 'DELETE', `/api/v1/shells/${sessionId}`);
+  return { originalPid, pid, daemonUp, endShell, close: async () => {
     await http(acct, 'DELETE', `/api/v1/shells/${sessionId}`);
     spawnSync(ptyBin, ['--socket', socket, 'stop'], { env: ENV, timeout: 5000 });
   } };
@@ -466,6 +468,23 @@ async function main() {
         if (Date.now() > deadline) throw new CheckFailed('the restarted service never reconnected');
       }
       expect(live.pid() === live.originalPid, 'live PTY process survived explicit service restart');
+      // An IDLE PTY daemon (no agents) is replaced by an update instead of
+      // serving the old binary forever; one with live agents (above) is kept.
+      await live.endShell();
+      for (const deadline = Date.now() + 30_000; live.pid(); await sleep(300)) {
+        if (Date.now() > deadline) throw new CheckFailed('the probe shell never ended');
+      }
+      expect(live.daemonUp(), 'the PTY daemon is still up (idle) after its last shell ended');
+      const idleBefore = JSON.parse(fs.readFileSync(path.join(PROFILE.dir, 'runtime-status.json'), 'utf8'));
+      const idleUpd = spawnSync(BRIDGE_BIN, ['update', '--bundle', bundle, ...hubProfileArgs(hub), '--json-progress'], { env: ENV, encoding: 'utf8', timeout: 300_000 });
+      expect(idleUpd.status === 0, `idle-daemon update accepted (exit ${idleUpd.status})\n${idleUpd.stdout}${idleUpd.stderr}`);
+      expect(/replaced 1 idle PTY host/.test(idleUpd.stdout), `the update reported replacing the idle PTY host\n${idleUpd.stdout}`);
+      for (const deadline = Date.now() + 90_000; ; await sleep(500)) {
+        const after = JSON.parse(fs.readFileSync(path.join(PROFILE.dir, 'runtime-status.json'), 'utf8'));
+        if (after.pid !== idleBefore.pid && after.connected && await online(B, S.b.bridgeId)()) break;
+        if (Date.now() > deadline) throw new CheckFailed('the idle-daemon update never reconnected');
+      }
+      expect(!live.daemonUp(), 'the idle PTY daemon from the old binary is gone after the update');
       const active = (await bridgesOf(B)).filter(isActive);
       expect(active.length === 1 && active[0].bridge_id === S.b.bridgeId, 'both updates kept the same enrolled Bridge identity');
     } finally { await live.close(); }

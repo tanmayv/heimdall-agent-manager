@@ -367,6 +367,10 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.stopped_for_setup = true
 		}
 		if !s.copy_binaries do return {ok = true, message = "skipped"}
+		// An update (bin/ already installed): retire an idle ham-pty-host so the
+		// restarted bridge runs the new one; one with live agents is kept.
+		pty_note := ""
+		if os.exists(l.bin_dir) do pty_note = bridge_setup_retire_idle_pty_hosts(s.host, l)
 		bak := strings.concatenate({l.bin_dir, ".bak"}, context.temp_allocator)
 		if os.exists(bak) {
 			// A live PTY daemon may still execute from an earlier backup. Keep
@@ -395,7 +399,9 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			}
 			return {failure = .Partial_Install, message = fmt.tprintf("cannot install %s: %v", l.bin_dir, err)}
 		}
-		return {ok = true, message = fmt.tprintf("installed into %s (previous kept as bin.bak)", l.bin_dir)}
+		msg := fmt.tprintf("installed into %s (previous kept as bin.bak)", l.bin_dir)
+		if pty_note != "" do msg = fmt.tprintf("%s; %s", msg, pty_note)
+		return {ok = true, message = msg}
 
 	case .Config:
 		if ownership := bridge_setup_check_owner(s); !ownership.ok do return ownership

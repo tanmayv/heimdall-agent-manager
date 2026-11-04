@@ -158,12 +158,19 @@ bridge_uninstall_snapshot :: proc(u: ^Bridge_Uninstall) {
 	if u.hub != "" do _ = bridge_keystore_set_hub(u.hub)
 	// Snapshot before Secrets removes identity records. Only this profile's run
 	// directory supplies candidates; never scan shared temporary socket directories.
-	run := bridgesvc.pjoin(l.data_dir, "run")
 	bridge_uninstall_add_pty_identity(u, u.bridge_id)
+	bridge_profile_scan_pty_sockets(l, &u.pty_sockets)
+}
+
+// bridge_profile_scan_pty_sockets appends the PTY daemon sockets found in this
+// profile's run directory. Only that directory supplies candidates; shared
+// temporary socket directories are never scanned.
+bridge_profile_scan_pty_sockets :: proc(l: bridgesvc.Layout, out: ^[dynamic]string) {
+	run := bridgesvc.pjoin(l.data_dir, "run")
 	if infos, err := os.read_directory_by_path(run, -1, context.temp_allocator); err == nil {
 		for info in infos {
 			if info.name == "pty-host.sock" || (strings.has_prefix(info.name, "pty-host-") && strings.has_suffix(info.name, ".sock")) {
-				append(&u.pty_sockets, bridge_unix_socket_bounded_path(bridgesvc.pjoin(run, info.name)))
+				append(out, bridge_unix_socket_bounded_path(bridgesvc.pjoin(run, info.name)))
 			}
 		}
 	}
@@ -186,31 +193,37 @@ bridge_uninstall_stop_pty_hosts :: proc(u: ^Bridge_Uninstall) -> (bool, string) 
 	when ODIN_OS == .Windows {
 		if ok, detail := bridge_uninstall_discover_pty_hosts(u); !ok do return false, detail
 	}
-	request := pty_host_frame([]byte{0x37}) // dproto::CtlMsg::Shutdown
-	defer delete(request)
 	for socket in u.pty_sockets {
-		// Connect before sending: Winsock's nonblocking AF_UNIX connect can
-		// return WSAEWOULDBLOCK even for a healthy local daemon.
-		fd, connected := pty_host_dial(socket)
-		if !connected do continue
-		sent := 0
-		for sent < len(request) {
-			n := local_socket.send(fd, request[sent:])
-			if n <= 0 do break
-			sent += n
-		}
-		local_socket.close(fd)
-		if sent != len(request) do return false, fmt.tprintf("cannot request PTY shutdown at %s", socket)
-		deadline := time.time_add(time.now(), BRIDGE_UNINSTALL_STOP_WAIT)
-		for {
-			probe, alive := pty_host_dial(socket)
-			if alive do local_socket.close(probe)
-			if !alive do break
-			if time.diff(time.now(), deadline) <= 0 do return false, fmt.tprintf("profile PTY daemon is still running at %s", socket)
-			time.sleep(100 * time.Millisecond)
-		}
+		if ok, detail := bridge_pty_host_shutdown_at(socket, BRIDGE_UNINSTALL_STOP_WAIT); !ok do return false, detail
 	}
 	return true, ""
+}
+
+// bridge_pty_host_shutdown_at speaks Shutdown to the daemon at socket and waits
+// until it stops answering. A socket nobody serves is already stopped (ok).
+bridge_pty_host_shutdown_at :: proc(socket: string, wait: time.Duration) -> (bool, string) {
+	request := pty_host_frame([]byte{0x37}) // dproto::CtlMsg::Shutdown
+	defer delete(request)
+	// Connect before sending: Winsock's nonblocking AF_UNIX connect can
+	// return WSAEWOULDBLOCK even for a healthy local daemon.
+	fd, connected := pty_host_dial(socket)
+	if !connected do return true, ""
+	sent := 0
+	for sent < len(request) {
+		n := local_socket.send(fd, request[sent:])
+		if n <= 0 do break
+		sent += n
+	}
+	local_socket.close(fd)
+	if sent != len(request) do return false, fmt.tprintf("cannot request PTY shutdown at %s", socket)
+	deadline := time.time_add(time.now(), wait)
+	for {
+		probe, alive := pty_host_dial(socket)
+		if alive do local_socket.close(probe)
+		if !alive do return true, ""
+		if time.diff(time.now(), deadline) <= 0 do return false, fmt.tprintf("profile PTY daemon is still running at %s", socket)
+		time.sleep(100 * time.Millisecond)
+	}
 }
 
 bridge_uninstall_pty_image_owned :: proc(l: bridgesvc.Layout, image: string) -> bool {
