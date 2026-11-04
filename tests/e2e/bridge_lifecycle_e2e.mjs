@@ -135,6 +135,18 @@ function initProfile(hub) {
 const hubProfileArgs = (hub) => ['--hub', hub.base, '--profile', PROFILE_NAME];
 
 // Match the daemon socket derived from the installed service's own run dir.
+// ptyDaemonPids lists the ham-pty-host daemons serving socket (matched on the
+// socket's file name in their command line; Windows reports mixed separators).
+function ptyDaemonPids(socket) {
+  const name = path.basename(socket);
+  const out = WIN
+    ? spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='ham-pty-host.exe'\" | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }"], { encoding: 'utf8', timeout: 30_000 }).stdout
+    : spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 10_000 }).stdout;
+  return String(out || '').split(/\r?\n/).filter((l) => /ham-pty-host/.test(l) && / daemon /.test(` ${l} `) && l.includes(name))
+    .map((l) => Number(l.trim().split(/\s+/)[0])).filter((n) => n > 0);
+}
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
 function profilePtySocket(bridgeId) {
   const data = WIN ? `${ENV.LOCALAPPDATA}/heimdall/bridges/${SERVICE}` : PROFILE.data;
   const intended = `${data}/run/pty-host-${bridgeId}.sock`;
@@ -475,6 +487,8 @@ async function main() {
         if (Date.now() > deadline) throw new CheckFailed('the probe shell never ended');
       }
       expect(live.daemonUp(), 'the PTY daemon is still up (idle) after its last shell ended');
+      const idlePids = ptyDaemonPids(profilePtySocket(S.b.bridgeId));
+      expect(idlePids.length >= 1, `found the idle PTY daemon process (${profilePtySocket(S.b.bridgeId)})`);
       const idleBefore = JSON.parse(fs.readFileSync(path.join(PROFILE.dir, 'runtime-status.json'), 'utf8'));
       const idleUpd = spawnSync(BRIDGE_BIN, ['update', '--bundle', bundle, ...hubProfileArgs(hub), '--json-progress'], { env: ENV, encoding: 'utf8', timeout: 300_000 });
       expect(idleUpd.status === 0, `idle-daemon update accepted (exit ${idleUpd.status})\n${idleUpd.stdout}${idleUpd.stderr}`);
@@ -484,7 +498,9 @@ async function main() {
         if (after.pid !== idleBefore.pid && after.connected && await online(B, S.b.bridgeId)()) break;
         if (Date.now() > deadline) throw new CheckFailed('the idle-daemon update never reconnected');
       }
-      expect(!live.daemonUp(), 'the idle PTY daemon from the old binary is gone after the update');
+      // The restarted bridge may start a fresh daemon on the same socket; what
+      // matters is that the OLD process is gone.
+      expect(idlePids.every((pid) => !pidAlive(pid)), `the idle PTY daemon from the old binary is gone after the update (old pids ${idlePids}, now ${ptyDaemonPids(profilePtySocket(S.b.bridgeId))})`);
       const active = (await bridgesOf(B)).filter(isActive);
       expect(active.length === 1 && active[0].bridge_id === S.b.bridgeId, 'both updates kept the same enrolled Bridge identity');
     } finally { await live.close(); }
