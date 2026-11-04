@@ -29,33 +29,56 @@ bridge_setup_retire_idle_pty_hosts :: proc(host: bridgesvc.Host, l: bridgesvc.La
 		if ok, _ := bridge_uninstall_discover_pty_hosts(&u); ok do append(&sockets, ..u.pty_sockets[:])
 	}
 	slice.sort(sockets[:])
-	retired, kept, failed := 0, 0, 0
-	for socket, i in sockets {
-		if i > 0 && socket == sockets[i - 1] do continue
-		agents, live := bridge_pty_host_agent_count(socket)
-		if !live do continue
-		if agents > 0 {
-			kept += 1
-			continue
-		}
-		if ok, _ := bridge_pty_host_shutdown_at(socket, BRIDGE_SETUP_PTY_STOP_WAIT); ok do retired += 1
-		else do failed += 1
-	}
-	parts := make([dynamic]string, context.temp_allocator)
-	if retired > 0 do append(&parts, fmt.tprintf("replaced %d idle PTY host(s)", retired))
-	if kept > 0 do append(&parts, fmt.tprintf("kept %d PTY host(s) with live agents (replaced at the next idle update)", kept))
-	if failed > 0 do append(&parts, fmt.tprintf("%d idle PTY host(s) did not stop", failed))
-	return strings.join(parts[:], "; ", context.temp_allocator)
+	unique := make([dynamic]string, context.temp_allocator)
+	for socket, i in sockets do if i == 0 || socket != sockets[i - 1] do append(&unique, socket)
+	return bridge_setup_retire_summary(bridge_setup_retire_idle_with(unique[:]))
 }
 
-// bridge_pty_host_agent_count asks the daemon at socket how many LIVE agents it
-// hosts; exited sessions stay listed (alive=false) and do not count. live=false
-// when nothing answers there.
-bridge_pty_host_agent_count :: proc(socket: string) -> (agents: int, live: bool) {
-	reply, ok := bridge_pty_host_list(socket)
-	if !ok do return 0, bridge_pty_host_ping(socket)
-	defer pty_host_reply_delete(reply)
-	return bridge_pty_host_live_agents(reply.agents), true
+Bridge_Pty_Retire_Ops :: struct {
+	list:     proc(socket: string) -> (Pty_Host_Reply, bool),
+	ping:     proc(socket: string) -> bool,
+	shutdown: proc(socket: string, wait: time.Duration) -> (bool, string),
+}
+
+Bridge_Pty_Retire_Result :: struct {
+	retired: int, // listed with no live agents, then shut down
+	kept:    int, // listed with live agents: their sessions survive the update
+	unknown: int, // answers but its agent list could not be read: kept (fail safe)
+	failed:  int, // idle, but did not stop in time
+}
+
+// bridge_setup_retire_idle_with decides per socket. Only a SUCCESSFUL list with
+// zero alive agents authorizes a shutdown: a daemon that answers but whose list
+// fails (an old daemon's reply the new decoder cannot read, too many async frames,
+// a transient read error) may still host live agents, so it is kept, the same rule
+// as bridge_auto_update_quiet_with_host ("unavailable live state cannot authorize
+// a restart"). A socket nobody answers is skipped.
+bridge_setup_retire_idle_with :: proc(sockets: []string, ops := Bridge_Pty_Retire_Ops{list = bridge_pty_host_list, ping = bridge_pty_host_ping, shutdown = bridge_pty_host_shutdown_at}) -> (r: Bridge_Pty_Retire_Result) {
+	for socket in sockets {
+		reply, listed := ops.list(socket)
+		if !listed {
+			if ops.ping(socket) do r.unknown += 1
+			continue
+		}
+		alive := bridge_pty_host_live_agents(reply.agents)
+		pty_host_reply_delete(reply)
+		if alive > 0 {
+			r.kept += 1
+			continue
+		}
+		if ok, _ := ops.shutdown(socket, BRIDGE_SETUP_PTY_STOP_WAIT); ok do r.retired += 1
+		else do r.failed += 1
+	}
+	return
+}
+
+bridge_setup_retire_summary :: proc(r: Bridge_Pty_Retire_Result) -> string {
+	parts := make([dynamic]string, context.temp_allocator)
+	if r.retired > 0 do append(&parts, fmt.tprintf("replaced %d idle PTY host(s)", r.retired))
+	if r.kept > 0 do append(&parts, fmt.tprintf("kept %d PTY host(s) with live agents (replaced at the next idle update)", r.kept))
+	if r.unknown > 0 do append(&parts, fmt.tprintf("kept %d PTY host(s) whose agent list could not be read", r.unknown))
+	if r.failed > 0 do append(&parts, fmt.tprintf("%d idle PTY host(s) did not stop", r.failed))
+	return strings.join(parts[:], "; ", context.temp_allocator)
 }
 
 bridge_pty_host_live_agents :: proc(agents: []Pty_Host_Agent_Info) -> int {
