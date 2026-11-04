@@ -23,3 +23,13 @@ test_setup_retire_idle_pty_hosts_without_a_daemon_is_a_noop :: proc(t: ^testing.
 	ok, detail := bridge_pty_host_shutdown_at(sock, 0)
 	testing.expect(t, ok, detail)
 }
+
+// CI (run 41854017926): a shell that ended stays in the daemon's list with
+// alive=false; counting it kept an idle daemon on the old binary.
+@(test)
+test_setup_counts_only_live_pty_agents :: proc(t: ^testing.T) {
+	agents := []Pty_Host_Agent_Info{{instance_id = "sh_done", alive = false}, {instance_id = "sh_live", alive = true}, {instance_id = "sh_gone", alive = false, has_exit_code = true}}
+	testing.expect_value(t, bridge_pty_host_live_agents(agents), 1)
+	testing.expect_value(t, bridge_pty_host_live_agents(agents[:1]), 0)
+	testing.expect_value(t, bridge_pty_host_live_agents(nil), 0)
+}

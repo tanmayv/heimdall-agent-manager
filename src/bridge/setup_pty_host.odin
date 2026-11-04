@@ -48,11 +48,18 @@ bridge_setup_retire_idle_pty_hosts :: proc(host: bridgesvc.Host, l: bridgesvc.La
 	return strings.join(parts[:], "; ", context.temp_allocator)
 }
 
-// bridge_pty_host_agent_count asks the daemon at socket how many agents it hosts.
-// live=false when nothing answers there.
+// bridge_pty_host_agent_count asks the daemon at socket how many LIVE agents it
+// hosts; exited sessions stay listed (alive=false) and do not count. live=false
+// when nothing answers there.
 bridge_pty_host_agent_count :: proc(socket: string) -> (agents: int, live: bool) {
 	reply, ok := bridge_pty_host_list(socket)
 	if !ok do return 0, bridge_pty_host_ping(socket)
 	defer pty_host_reply_delete(reply)
-	return len(reply.agents), true
+	return bridge_pty_host_live_agents(reply.agents), true
+}
+
+bridge_pty_host_live_agents :: proc(agents: []Pty_Host_Agent_Info) -> int {
+	n := 0
+	for a in agents do if a.alive do n += 1
+	return n
 }
