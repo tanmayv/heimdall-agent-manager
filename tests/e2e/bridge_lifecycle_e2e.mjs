@@ -138,12 +138,19 @@ const hubProfileArgs = (hub) => ['--hub', hub.base, '--profile', PROFILE_NAME];
 // ptyDaemonPids lists the ham-pty-host daemons serving socket (matched on the
 // socket's file name in their command line; Windows reports mixed separators).
 function ptyDaemonPids(socket) {
+  return ptyDaemonScan(socket).pids;
+}
+// No double quotes in the PowerShell command: Node escapes them as \" and
+// Windows PowerShell 5.1 does not parse that.
+function ptyDaemonScan(socket) {
   const name = path.basename(socket);
   const out = WIN
-    ? spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='ham-pty-host.exe'\" | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }"], { encoding: 'utf8', timeout: 30_000 }).stdout
-    : spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 10_000 }).stdout;
-  return String(out || '').split(/\r?\n/).filter((l) => /ham-pty-host/.test(l) && / daemon /.test(` ${l} `) && l.includes(name))
+    ? spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'ham-pty-host.exe' } | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }"], { encoding: 'utf8', timeout: 60_000 })
+    : spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 10_000 });
+  const raw = `${out.stdout || ''}${out.stderr || ''}`;
+  const pids = raw.split(/\r?\n/).filter((l) => /ham-pty-host/i.test(l) && / daemon /.test(` ${l} `) && l.includes(name))
     .map((l) => Number(l.trim().split(/\s+/)[0])).filter((n) => n > 0);
+  return { pids, raw };
 }
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
@@ -488,7 +495,7 @@ async function main() {
       }
       expect(live.daemonUp(), 'the PTY daemon is still up (idle) after its last shell ended');
       const idlePids = ptyDaemonPids(profilePtySocket(S.b.bridgeId));
-      expect(idlePids.length >= 1, `found the idle PTY daemon process (${profilePtySocket(S.b.bridgeId)})`);
+      expect(idlePids.length >= 1, `found the idle PTY daemon process (${profilePtySocket(S.b.bridgeId)})\n${idlePids.length ? '' : ptyDaemonScan(profilePtySocket(S.b.bridgeId)).raw.slice(0, 2000)}`);
       const idleBefore = JSON.parse(fs.readFileSync(path.join(PROFILE.dir, 'runtime-status.json'), 'utf8'));
       const idleUpd = spawnSync(BRIDGE_BIN, ['update', '--bundle', bundle, ...hubProfileArgs(hub), '--json-progress'], { env: ENV, encoding: 'utf8', timeout: 300_000 });
       expect(idleUpd.status === 0, `idle-daemon update accepted (exit ${idleUpd.status})\n${idleUpd.stdout}${idleUpd.stderr}`);
