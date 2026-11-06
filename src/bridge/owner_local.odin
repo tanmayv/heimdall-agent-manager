@@ -31,15 +31,23 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     return opened
 }
 bridge_owner_publish :: proc() {
-    pending,ok:=owner.pending(&bridge_owner_store)
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    pending,ok:=owner.intent_claim_due(&bridge_owner_store,now)
     if !ok do return
     token:=bridge_credential_snapshot();defer delete(token)
     headers:=[?]httpc.Header{httpc.bearer(token)}
-    for row in pending {
-        genesis:=owner.genesis_for(&bridge_owner_store,row[2])
-        publication:=contracts.Owner_Publication{genesis,row[1]}
+    for claim in pending {
+        // Only registry effects are handled here. Future consumers must validate
+        // their own exact execution fences before any launch/stop I/O.
+        if claim.kind!="registry" {
+            _=owner.intent_result(&bridge_owner_store,claim,false,"unsupported_kind",now)
+            continue
+        }
+        genesis:=owner.genesis_for(&bridge_owner_store,claim.chain)
+        publication:=contracts.Owner_Publication{genesis,claim.payload}
         response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","registry"},headers=headers[:],body=httpc.json_body(publication)})
-        if err==.None && response.status==200 do _=owner.acknowledge(&bridge_owner_store,row[0])
+        completed:=time.to_unix_nanoseconds(time.now())/1000000
+        _=owner.intent_result(&bridge_owner_store,claim,err==.None && response.status==200,fmt.tprintf("%d",response.status),completed)
         httpc.response_destroy(&response)
     }
 }
@@ -89,6 +97,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
     pin_seq,pin_hash:=owner.directory_pin(&bridge_owner_store)
     key,owner_key,version,head,trusted:=owner.verify_directory(bridge_owner_json(wire.directory),account,bridge_config.daemon_id,owner_pub,contracts.owner_string(command,"principal_id"),contracts.owner_string(command,"key_id"),floor.root,pin_seq,pin_hash,&kr)
     if !trusted do return
+    if !owner.observe_directory(&bridge_owner_store,version,head) do return
     if contracts.owner_string(command,"method")=="chain.create" {
         genesis,gvalid:=contracts.owner_parse(genesis_raw,"genesis")
         if !gvalid || contracts.owner_string(genesis,"owner_bridge_id")!=bridge_config.daemon_id || contracts.owner_string(genesis,"owner_key_id")!=owner_key.key_id || !contracts.owner_verify_signature("genesis",genesis,"creator_signature",key) do return

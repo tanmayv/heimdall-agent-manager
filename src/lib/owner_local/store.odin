@@ -15,6 +15,10 @@ Store :: struct {
     mutex: sync.Mutex,
     db, writer: DB,
     account, owner, owner_key: string,
+    incarnation, tx_serial:i64,
+    active:^Transaction,
+    tx_thread:int,
+    tx_failed,unusable:bool,
 }
 SCHEMA :: #load("schema.sql")
 MAX_RECORDS :: 100000
@@ -38,17 +42,29 @@ open :: proc(s: ^Store, path, account, owner, owner_key: string) -> bool {
     if s.db != nil || account == "" || owner == "" || owner_key == "" do return false
     // SQLite holds an OS byte-range lock on a separate lifetime lock database.
     // A second process cannot serve this profile, including between transactions.
-    if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 do return false
+    if sqlite3_open(strings.clone_to_cstring(fmt.tprintf("%s.writer",path), context.temp_allocator), &s.writer) != 0 { close(s);return false }
     if !exec(s.writer, "CREATE TABLE IF NOT EXISTS writer_lock(id INTEGER); BEGIN EXCLUSIVE;") { close(s); return false }
     if sqlite3_open(strings.clone_to_cstring(path, context.temp_allocator), &s.db) != 0 { close(s); return false }
-    if !exec(s.db, string(SCHEMA)) { close(s); return false }
+    // Reject a mismatched account/owner before even migrating an existing DB.
+    tables,tables_ok:=query(s.db,"SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_database'")
+    if !tables_ok {close(s);return false}
+    if len(tables)>0 {
+        identity,identity_ok:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
+        if !identity_ok || len(identity)!=1 || identity[0][0]!=account || identity[0][1]!=owner || identity[0][2]!=owner_key {close(s);return false}
+    }
+    if !migrate(s.db) { close(s); return false }
     if !exec(s.db, "BEGIN IMMEDIATE") { close(s); return false }
-    _, inserted := query(s.db, "INSERT OR IGNORE INTO runtime_database(singleton,account_id,owner_bridge_id,owner_key_id) VALUES(1,?,?,?)", account, owner, owner_key)
+    _, inserted := query(s.db, "INSERT OR IGNORE INTO runtime_database(singleton,account_id,owner_bridge_id,owner_key_id,database_id) VALUES(1,?,?,?,lower(hex(randomblob(16))))", account, owner, owner_key)
     rows, read := query(s.db, "SELECT account_id,owner_bridge_id,owner_key_id FROM runtime_database WHERE singleton=1")
     if !inserted || !read || len(rows)!=1 || rows[0][0]!=account || rows[0][1]!=owner || rows[0][2]!=owner_key {
         _ = exec(s.db, "ROLLBACK"); close(s); return false
     }
-    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; COMMIT") { close(s); return false }
+    // A prior claim may have performed I/O before the process died. Retry its
+    // exact identity/payload; consumers deduplicate, never invent a new effect.
+    if !exec(s.db, "UPDATE runtime_database SET incarnation=incarnation+1; UPDATE runtime_intents SET state='pending',claim_incarnation=0 WHERE state='claimed'; COMMIT") { close(s); return false }
+    state,state_ok:=query(s.db,"SELECT incarnation FROM runtime_database WHERE singleton=1")
+    if !state_ok || len(state)!=1 { close(s);return false }
+    s.incarnation=number(state[0][0])
     s.account=strings.clone(account); s.owner=strings.clone(owner); s.owner_key=strings.clone(owner_key)
     return true
 }
@@ -57,6 +73,8 @@ close :: proc(s: ^Store) {
     if s.writer != nil { _ = exec(s.writer, "ROLLBACK"); _ = sqlite3_close(s.writer); s.writer=nil }
     delete(s.account); delete(s.owner); delete(s.owner_key)
     s.account=""; s.owner=""; s.owner_key=""
+    s.incarnation=0;s.active=nil
+    s.tx_thread=0;s.tx_failed=false;s.unusable=false
 }
 number :: proc(v: string) -> i64 { n,_:=strconv.parse_i64(v); return n }
 encode :: proc(v: $T) -> string { b,e:=json.marshal(v, allocator=context.temp_allocator); if e!=nil do return ""; return string(b) }
@@ -83,14 +101,14 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
-    if s.db==nil || key.account_id!=s.account || owner_key.principal_id!=s.owner do return fail("invalid_scope")
-    sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
-    if !exec(s.db,"BEGIN IMMEDIATE") do return fail("storage_error")
-    committed:=false
-    defer { if !committed do _=exec(s.db,"ROLLBACK") }
-    state,ok:=query(s.db,"SELECT commit_seq,clock_high_ms,directory_version,directory_hash FROM runtime_database WHERE singleton=1")
+    if s.db==nil || key.account_id!=s.account || owner_key.account_id!=s.account || owner_key.principal_id!=s.owner ||
+       owner_key.key_id!=s.owner_key || owner_key.kind!="bridge" || !owner_key.enrolled || owner_key.revoked { return fail("invalid_scope") }
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return fail("storage_error")
+    defer transaction_rollback(&tx)
+    state,ok:=query(s.db,"SELECT commit_seq,clock_high_ms,directory_version,directory_hash,recovery_state FROM runtime_database WHERE singleton=1")
     if !ok || len(state)!=1 do return fail("storage_error")
-    if directory_version<number(state[0][2]) || (directory_version==number(state[0][2]) && directory_hash!=state[0][3]) do return fail("invalid_scope")
+    if directory_version!=number(state[0][2]) || directory_hash!=state[0][3] do return fail("invalid_scope")
     method,chain,task,principal,op:=field(c,"method"),field(c,"chain_id"),field(c,"task_id"),field(c,"principal_id"),field(c,"operation_id")
     g,has_grant:=grant(s,c,now)
     genesis:json.Object
@@ -108,16 +126,22 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     } else if !has_grant { return fail("invalid_scope") }
     if e:=contracts.owner_authenticate_command(c,payload,key,g,now);e!=.None do return auth_fail(e)
-    if _,pinned:=query(s.db,"UPDATE runtime_database SET directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",directory_version),directory_hash);!pinned do return fail("storage_error")
     digest,_:=contracts.owner_digest("command",c)
     receipts,receipt_ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",principal,op)
     if !receipt_ok do return fail("storage_error")
     if len(receipts)>0 {
         r:=receipts[0]
         if r[0]!=method || r[1]!=digest || r[4]!=chain || r[5]!=task do return fail("operation_conflict")
-        if !exec(s.db,"COMMIT") do return fail("storage_error")
-        committed=true
+        // A historical replay is read-only, including directory/clock pins.
+        if !transaction_commit(&tx) do return fail("storage_error")
         return Result{code="ok",body=r[2],seq=number(r[3]),replay=true}
+    }
+    tombstones,tombstone_ok:=query(s.db,"SELECT method,input_digest,chain_id,task_id FROM operation_tombstones WHERE principal_id=? AND operation_id=?",principal,op)
+    if !tombstone_ok do return fail("storage_error")
+    if len(tombstones)>0 {
+        r:=tombstones[0]
+        if r[0]!=method || r[1]!=digest || r[2]!=chain || r[3]!=task do return fail("operation_conflict")
+        return fail("retired")
     }
     revision:i64
     chains,chain_ok:=query(s.db,"SELECT revision FROM task_chains WHERE chain_id=?",chain)
@@ -135,12 +159,15 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if read {
         result:=read_result(s,c,payload,revision)
         if result.code!="ok" do return result
-        if !exec(s.db,"COMMIT") do return fail("storage_error")
-        committed=true
+        if !transaction_commit(&tx) do return fail("storage_error")
         return result
     }
-    if now<number(state[0][1]) do return fail("clock_uncertain")
-    quota,quota_ok:=query(s.db,"SELECT (SELECT COUNT(*) FROM command_receipts),(SELECT COUNT(*) FROM local_changes)")
+    if now<number(state[0][1]) {
+        if !mark_clock_uncertain(&tx) do return fail("storage_error")
+        return fail("clock_uncertain")
+    }
+    if state[0][4]!="ready" do return fail("clock_uncertain")
+    quota,quota_ok:=query(s.db,"SELECT (SELECT COUNT(*) FROM command_receipts)+(SELECT COUNT(*) FROM operation_tombstones),(SELECT COUNT(*) FROM local_changes)")
     if !quota_ok || number(quota[0][0])>=MAX_RECORDS || number(quota[0][1])>=1000000 do return fail("retention_capacity")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
     title,body,description:string
@@ -170,10 +197,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         _,wrote=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,task,op,principal,body,fmt.tprintf("%d",seq))
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }
     }
-    if !wrote do return fail("operation_conflict")
+    if !wrote {
+        if sqlite3_errcode(s.db)==19 do return fail("operation_conflict") // SQLITE_CONSTRAINT
+        return fail("storage_error")
+    }
     if !creating { if _,ok=query(s.db,"UPDATE task_chains SET revision=revision+1 WHERE chain_id=?",chain);!ok do return fail("storage_error") }
     result:=encode(map[string]string{"chain_id"=chain,"task_id"=task,"operation_id"=op,"revision"=fmt.tprintf("%d",next)})
-    if _,ok=query(s.db,"INSERT INTO command_receipts VALUES(?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq));!ok do return fail("storage_error")
+    if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if method=="chain.create" || method=="task.create" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)
@@ -185,10 +215,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         signature,signed:=sign.sign(sign.ctx,"registry",registry)
         if !signed do return fail("storage_error")
         registry["signature"]=json.String(signature)
-        if _,ok=query(s.db,"INSERT INTO runtime_intents(intent_id,chain_id,commit_seq,payload_json) VALUES(?,?,?,?)",op,chain,fmt.tprintf("%d",seq),encode(registry));!ok do return fail("storage_error")
+        if !intent_enqueue(&tx,Intent_Input{chain=chain,principal=principal,operation=op,seq=seq,kind="registry",fence="{}",payload=encode(registry)}) do return fail("storage_error")
     }
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=?,directory_version=?,directory_hash=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now),fmt.tprintf("%d",directory_version),directory_hash);!ok do return fail("storage_error")
-    if !exec(s.db,"COMMIT") do return fail("storage_error")
-    committed=true
+    if !transaction_commit(&tx) do return fail("storage_error")
     return Result{code="ok",body=result,seq=seq}
 }

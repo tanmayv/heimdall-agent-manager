@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package main
 
 // Passwordless vault P1 â€” bridge-side security tests (compact by design; the
@@ -12,6 +13,8 @@ import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import contracts "odin_test:contracts"
+import owner "odin_test:lib/owner_local"
 import os_random "odin_test:lib/os_random"
 import vault "odin_test:lib/vault"
 
@@ -49,6 +52,27 @@ v2_close :: proc(f: ^V2_Fixture) {
 @(private = "file")
 v2_now :: proc() -> i64 {
 	return time.to_unix_nanoseconds(time.now()) / 1_000_000
+}
+
+@(test)
+test_owner_local_signer_never_loads_keystore_inside_transaction :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    sync.mutex_lock(&keystore_test_mutex);defer sync.mutex_unlock(&keystore_test_mutex)
+    f:=v2_open();defer v2_close(&f)
+    object:=owner.doc(map[string]string{"protocol_version"="1","account_id"="account","chain_id"="chain","creation_op"="create",
+      "owner_bridge_id"=f.id_a,"owner_key_id"="bridge_key","creator_id"="device","creator_key_id"="device",
+      "schema_version"="1","creator_signature"=strings.repeat("0",128,context.temp_allocator),"owner_signature"=strings.repeat("0",128,context.temp_allocator)})
+    if !testing.expect(t,contracts.owner_document_valid("genesis",object)) do return
+    testing.expect(t,bridge_identity_public_key_hex(f.id_a)!="")
+    _,signed:=bridge_owner_sign(nil,"genesis",object)
+    testing.expect(t,signed,"preloaded identity signs without keystore I/O")
+    bridge_unseal_forget_identity()
+    _,signed=bridge_owner_sign(nil,"genesis",object)
+    testing.expect(t,!signed,"a persisted but unloaded identity must fail instead of loading inside UoW")
+    testing.expect(t,bridge_identity_public_key_hex(f.id_a)!="","identity record still exists")
+    _,signed=bridge_owner_sign(nil,"genesis",object)
+    testing.expect(t,signed,"explicit pre-transaction load restores signing")
 }
 
 @(test)

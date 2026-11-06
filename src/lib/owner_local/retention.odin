@@ -1,0 +1,52 @@
+package owner_local
+
+import "core:fmt"
+
+RECEIPT_RETENTION_MS :: i64(30*24*60*60*1000)
+
+// Clock uncertainty is a durable safety observation, not a task mutation. No
+// canonical change, receipt or intent is created; only reconciliation clears it.
+mark_clock_uncertain :: proc(tx:^Transaction) -> bool {
+    if !transaction_current(tx) || tx.parent!=nil do return false
+    if _,ok:=query(tx.store.db,"UPDATE runtime_database SET recovery_state='clock_uncertain' WHERE singleton=1 AND recovery_state='ready'");!ok do return false
+    return transaction_commit(tx)
+}
+
+// Compaction retains deduplication identity permanently. Active or unknown
+// outbox work pins its full receipt, regardless of age. Bounded batches avoid
+// monopolizing the account writer. No automatic capacity reclamation exists.
+compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
+    if now<RECEIPT_RETENTION_MS || limit<1 || limit>1000 do return 0,false
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return 0,false
+    defer transaction_rollback(&tx)
+    state,read:=query(s.db,"SELECT clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
+    if !read || len(state)!=1 || now<number(state[0][0]) || state[0][1]!="ready" do return 0,false
+    rows,ok:=query(s.db,`SELECT principal_id,operation_id FROM command_receipts r
+      WHERE created_ms<=? AND request_expires_ms<? AND NOT EXISTS(SELECT 1 FROM runtime_intents i
+       WHERE i.principal_id=r.principal_id AND i.operation_id=r.operation_id AND i.state!='settled')
+      ORDER BY commit_seq LIMIT ?`,fmt.tprintf("%d",now-RECEIPT_RETENTION_MS),fmt.tprintf("%d",now),fmt.tprintf("%d",limit))
+    if !ok do return 0,false
+    for row in rows {
+        if _,ok=query(s.db,`INSERT INTO operation_tombstones SELECT principal_id,operation_id,chain_id,task_id,method,
+          input_digest,digest_key_id,request_expires_ms,commit_seq FROM command_receipts WHERE principal_id=? AND operation_id=?`,row[0],row[1]);!ok do return 0,false
+        if _,ok=query(s.db,"DELETE FROM command_receipts WHERE principal_id=? AND operation_id=?",row[0],row[1]);!ok do return 0,false
+    }
+    if _,ok=query(s.db,"UPDATE runtime_database SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now));!ok do return 0,false
+    if !transaction_commit(&tx) do return 0,false
+    return len(rows),true
+}
+
+// Trusted local recovery API, not a command/capability. It can only advance a
+// clock generation at/above the existing floor, never extend any deadline.
+reconcile_clock :: proc(s:^Store,incarnation,generation,trusted_now:i64) -> bool {
+    if trusted_now<0 || incarnation!=s.incarnation do return false
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false
+    defer transaction_rollback(&tx)
+    rows,ok:=query(s.db,`UPDATE runtime_database SET clock_generation=clock_generation+1,clock_high_ms=?,recovery_state='ready'
+     WHERE singleton=1 AND incarnation=? AND clock_generation=? AND clock_high_ms<=? AND recovery_state!='recovery_required'
+     RETURNING clock_generation`,fmt.tprintf("%d",trusted_now),fmt.tprintf("%d",incarnation),fmt.tprintf("%d",generation),fmt.tprintf("%d",trusted_now))
+    if !ok || len(rows)!=1 do return false
+    return transaction_commit(&tx)
+}

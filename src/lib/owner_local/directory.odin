@@ -1,7 +1,25 @@
 package owner_local
 import "core:encoding/json"
+import "core:fmt"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
+
+// Persist a successfully verified paired directory independently of a command.
+// Security observations survive even rejected commands and read-only replay.
+// The caller must first verify_directory against the durable pin and root.
+observe_directory :: proc(s:^Store,version:i64,hash:string) -> bool {
+    if version<1 || hash=="" do return false
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false
+    defer transaction_rollback(&tx)
+    current,read:=query(s.db,"SELECT directory_version,directory_hash FROM runtime_database WHERE singleton=1")
+    if !read || len(current)!=1 do return false
+    if number(current[0][0])==version && current[0][1]==hash do return transaction_commit(&tx)
+    rows,ok:=query(s.db,`UPDATE runtime_database SET directory_version=?,directory_hash=? WHERE singleton=1
+      AND (directory_version<? OR (directory_version=? AND directory_hash=?)) RETURNING directory_version`,
+      fmt.tprintf("%d",version),hash,fmt.tprintf("%d",version),fmt.tprintf("%d",version),hash)
+    return ok && len(rows)==1 && transaction_commit(&tx)
+}
 
 // Only the caller's paired root and durable head are trusted. The relay's
 // directory is signed evidence, never a caller-supplied key/grant assertion.

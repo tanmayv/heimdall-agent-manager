@@ -13,6 +13,11 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     if method=="receipt.read" {
         rows,ok:=query(s.db,"SELECT method,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(p,"operation_id"))
         if !ok do return fail("storage_error")
+        if len(rows)==0 {
+            retired,found:=query(s.db,"SELECT chain_id FROM operation_tombstones WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(p,"operation_id"))
+            if !found do return fail("storage_error")
+            if len(retired)==1 && retired[0][0]==chain do return fail("retired")
+        }
         if len(rows)!=1 || rows[0][3]!=chain do return fail("invalid_scope")
         return Result{code="ok",body=rows[0][1],seq=number(rows[0][2]),replay=true}
     }
@@ -69,15 +74,6 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     encoded:=encode(result)
     if encoded=="" || len(encoded)>MAX_PAGE do return fail("invalid_content")
     return Result{code="ok",body=encoded}
-}
-pending :: proc(s:^Store,limit:=20) -> (rows:[dynamic][]string,ok:bool) {
-    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    return query(s.db,"SELECT intent_id,payload_json,chain_id FROM runtime_intents WHERE published=0 ORDER BY commit_seq LIMIT ?",fmt.tprintf("%d",min(limit,20)))
-}
-acknowledge :: proc(s:^Store,id:string) -> bool {
-    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
-    _,ok:=query(s.db,"UPDATE runtime_intents SET published=1 WHERE intent_id=?",id)
-    return ok
 }
 genesis_for :: proc(s:^Store,chain:string) -> string {
     sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)

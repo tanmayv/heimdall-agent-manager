@@ -14,6 +14,8 @@ Stmt :: distinct rawptr
 foreign sqlite {
     sqlite3_open :: proc(path: cstring, db: ^DB) -> c.int ---
     sqlite3_close :: proc(db: DB) -> c.int ---
+    sqlite3_get_autocommit :: proc(db:DB)->c.int ---
+    sqlite3_errcode :: proc(db:DB)->c.int ---
     sqlite3_exec :: proc(db: DB, sql: cstring, cb, arg, err: rawptr) -> c.int ---
     sqlite3_prepare_v2 :: proc(db: DB, sql: cstring, n: c.int, stmt: ^Stmt, tail: rawptr) -> c.int ---
     sqlite3_finalize :: proc(stmt: Stmt) -> c.int ---

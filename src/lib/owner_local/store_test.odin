@@ -54,6 +54,7 @@ command :: proc(f:^Fixture,method,op,task,payload,revision:string,expires:i64=20
     return encode(c)
 }
 invoke :: proc(f:^Fixture,c,p:string,now:i64=1000)->Result {
+    if !observe_directory(&f.store,1,"head") do return fail("invalid_scope")
     return execute(&f.store,c,p,f.genesis,f.creator,f.owner,1,"head",now,&f.kr,Signer{&f.owner_priv,test_sign})
 }
 seed :: proc(t:^testing.T,f:^Fixture) {
@@ -74,12 +75,12 @@ receipt_replay_precedes_expiry_revision_and_mutation_rights :: proc(t:^testing.T
     c:=command(f,"task.comment","comment","task",p,"1")
     first:=invoke(f,c,p)
     testing.expect_value(t,first.code,"ok")
-    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0")
+    _,_=query(f.store.db,"UPDATE local_grants SET can_mutate=0,revision=revision+1")
     replay:=invoke(f,c,p,3000)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body,"expired request replays without mutation permission")
     changed:=command(f,"task.comment","comment","task",p,"0",4000)
     testing.expect_value(t,invoke(f,changed,p,3000).code,"operation_conflict")
-    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1")
+    _,_=query(f.store.db,"UPDATE local_grants SET revoked=1,revision=revision+1")
     testing.expect_value(t,invoke(f,c,p,3000).code,"invalid_scope")
     rows,_:=query(f.store.db,"SELECT count(*) FROM task_comments")
     testing.expect_value(t,rows[0][0],"1")
@@ -203,7 +204,7 @@ oversized_legacy_row_fails_explicitly_without_a_looping_cursor :: proc(t:^testin
     testing.expect_value(t,invoke(f,command(f,"task.comment","comment","task",p,"1"),p).code,"ok")
     // Simulate an object accepted by the earlier draft, bypassing new admission.
     oversized:=strings.repeat("\x01",8192,context.temp_allocator)
-    _,_=query(f.store.db,"UPDATE tasks SET title=?,body=? WHERE task_id='task'",oversized,oversized)
+    _,_=query(f.store.db,"UPDATE tasks SET title=?,body=?,revision=revision+1 WHERE task_id='task'",oversized,oversized)
     p=encode(doc(map[string]string{"cursor"="","limit"="100"}))
     result:=invoke(f,command(f,"task.read","read_legacy","task",p,"0"),p)
     testing.expect_value(t,result.code,"invalid_content")

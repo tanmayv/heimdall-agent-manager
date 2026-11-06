@@ -1,0 +1,80 @@
+package owner_local
+
+import "core:fmt"
+import contracts "odin_test:contracts"
+
+payload_hash :: contracts.owner_payload_digest
+Intent_Input :: struct {
+    chain,principal,operation:string,
+    seq:i64,
+    kind,destination,fence,payload:string,
+}
+Intent_Claim :: struct {
+    id,chain,kind,destination,fence,payload,digest:string,
+    incarnation,attempt:i64,
+}
+
+// Only a current transaction may enqueue. The source receipt must already be
+// present in that transaction. A deterministic target identity prevents a
+// caller from minting a new effect when a prior outcome is unknown.
+intent_enqueue :: proc(tx:^Transaction,input:Intent_Input) -> bool {
+    if !transaction_current(tx) || input.seq<1 || input.kind=="" || len(input.payload)>contracts.OWNER_DOCUMENT_MAX || len(input.fence)>8192 do return false
+    s:=tx.store
+    rows,ok:=query(s.db,"SELECT commit_seq FROM command_receipts WHERE principal_id=? AND operation_id=? AND chain_id=?",input.principal,input.operation,input.chain)
+    if !ok || len(rows)!=1 || number(rows[0][0])!=input.seq do return false
+    id:=payload_hash(encode([6]string{s.account,input.chain,input.principal,input.operation,input.kind,input.destination}))
+    digest:=payload_hash(input.payload)
+    existing,found:=query(s.db,"SELECT payload_digest,exact_fence_json,commit_seq FROM runtime_intents WHERE principal_id=? AND operation_id=? AND kind=? AND destination_bridge=?",input.principal,input.operation,input.kind,input.destination)
+    if !found do return false
+    if len(existing)>0 do return existing[0][0]==digest && existing[0][1]==input.fence && number(existing[0][2])==input.seq
+    _,ok=query(s.db,`INSERT INTO runtime_intents(intent_id,chain_id,commit_seq,payload_json,principal_id,operation_id,
+     kind,destination_bridge,exact_fence_json,payload_digest) VALUES(?,?,?,?,?,?,?,?,?,?)`,id,input.chain,fmt.tprintf("%d",input.seq),input.payload,
+     input.principal,input.operation,input.kind,input.destination,input.fence,digest)
+    return ok
+}
+
+intent_claim_due :: proc(s:^Store,now:i64,limit:=20) -> (claims:[dynamic]Intent_Claim,ok:bool) {
+    if now<0 || limit<1 || limit>20 do return nil,false
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return nil,false
+    defer transaction_rollback(&tx)
+    state,read:=query(s.db,"SELECT clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
+    if !read || len(state)!=1 do return nil,false
+    if now<number(state[0][0]) { _=mark_clock_uncertain(&tx);return nil,false }
+    if state[0][1]!="ready" do return nil,false
+    rows,rows_ok:=query(s.db,`SELECT intent_id,chain_id,kind,destination_bridge,exact_fence_json,payload_json,payload_digest,attempts
+     FROM runtime_intents WHERE state='pending' AND next_retry_ms<=? ORDER BY commit_seq,intent_id LIMIT ?`,fmt.tprintf("%d",now),fmt.tprintf("%d",limit))
+    if !rows_ok do return nil,false
+    claims=make([dynamic]Intent_Claim,context.temp_allocator)
+    for row in rows {
+        if payload_hash(row[5])!=row[6] || number(row[7])==0x7fffffffffffffff do return nil,false
+        attempt:=number(row[7])+1
+        if _,updated:=query(s.db,"UPDATE runtime_intents SET state='claimed',attempts=?,claim_incarnation=? WHERE intent_id=?",fmt.tprintf("%d",attempt),fmt.tprintf("%d",s.incarnation),row[0]);!updated do return nil,false
+        append(&claims,Intent_Claim{row[0],row[1],row[2],row[3],row[4],row[5],row[6],s.incarnation,attempt})
+    }
+    if len(claims)>0 {
+        if _,updated:=query(s.db,"UPDATE runtime_database SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now));!updated do return nil,false
+    }
+    if !transaction_commit(&tx) do return nil,false
+    return claims,true
+}
+
+// Successful results are immutable. A failed/unknown external outcome retries
+// the same effect with a bounded delay; no payload may be replaced on retry.
+intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now:i64) -> bool {
+    if now<0 || now>0x7fffffffffffffff-60000 || len(result)>8192 do return false
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return false
+    defer transaction_rollback(&tx)
+    if claim.incarnation!=s.incarnation do return false
+    state:="pending";published:="0"
+    if success {state="settled";published="1"}
+    // Retry floor persists across restarts. Never decrement the clock watermark
+    // or permit a delayed completion to overwrite the current claimant.
+    delay:=min(i64(60000),1000*min(claim.attempt,i64(60)))
+    rows,ok:=query(s.db,`UPDATE runtime_intents SET state=?,published=?,result_json=?,next_retry_ms=?
+     WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? RETURNING intent_id`,
+     state,published,result,fmt.tprintf("%d",now+delay),claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
+    if !ok || len(rows)!=1 do return false
+    return transaction_commit(&tx)
+}

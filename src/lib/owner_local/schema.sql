@@ -1,7 +1,3 @@
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=FULL;
-PRAGMA foreign_keys=ON;
-PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS runtime_database (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), account_id TEXT NOT NULL,
  owner_bridge_id TEXT NOT NULL, owner_key_id TEXT NOT NULL,

@@ -850,7 +850,9 @@ bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
     canonical,valid:=contracts.owner_canonical(kind,o)
     if !valid do return "",false
     sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
-    if !bridge_unseal_identity_for_locked(bridge_config.daemon_id) do return "",false
+    // Called inside the owner UoW for registry intents. The request path loads
+    // the enrolled identity before opening it; never touch the keystore here.
+    if !g_bridge_identity_loaded || string(g_bridge_identity_owner_buf[:g_bridge_identity_owner_len])!=bridge_config.daemon_id do return "",false
     sig,signed:=vault.sign_p256(&g_bridge_identity_priv,transmute([]byte)canonical)
     if !signed do return "",false
     return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true
