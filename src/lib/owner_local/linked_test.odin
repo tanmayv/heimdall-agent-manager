@@ -163,7 +163,8 @@ linked_encrypted_manifest_pages_restore_and_tombstone_dominance :: proc(t:^testi
     testing.expect_value(t,linked_test_fetch(g,"message","second_message").code,"retired")
     // Tombstones within the same import win before any body is inserted.
     tomb:=doc(map[string]string{"kind"="artifact","object_id"="third_artifact","revision"="1","task_id"="task"})
-    bundle:=linked_test_restore_bundle([]string{artifact},[]json.Object{tomb})
+    blob_tomb:=doc(map[string]string{"kind"="blob","object_id"="first_chunk","revision"="1","task_id"="task"})
+    bundle:=linked_test_restore_bundle([]string{artifact},[]json.Object{tomb,blob_tomb})
     testing.expect_value(t,linked_test_call(g,"linked.restore","tombstone_first",bundle).code,"ok")
     testing.expect_value(t,linked_test_fetch(g,"artifact","third_artifact").code,"retired")
     testing.expect_value(t,linked_test_fetch(g,"blob","first_chunk").code,"retired")

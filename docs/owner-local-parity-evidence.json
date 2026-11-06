@@ -1109,11 +1109,11 @@
     "linked.put": "src/lib/owner_local/linked_test.odin:19",
     "linked.delete": "src/lib/owner_local/linked_test.odin:27",
     "linked.restore": "src/lib/owner_local/linked_test.odin:19",
-    "linked.read": "src/lib/owner_local/linked_test.odin:218",
+    "linked.read": "src/lib/owner_local/linked_test.odin:219",
     "linked.fetch": "src/lib/owner_local/linked_test.odin:24",
     "linked.backup": "src/lib/owner_local/linked_test.odin:30",
-    "linked.facet.read": "src/lib/owner_local/linked_test.odin:194",
-    "envelope.read": "src/lib/owner_local/linked_test.odin:206"
+    "linked.facet.read": "src/lib/owner_local/linked_test.odin:195",
+    "envelope.read": "src/lib/owner_local/linked_test.odin:207"
   },
   "inventory_proof": "src/lib/owner_local/aggregate_test.odin:243"
 }

@@ -73,6 +73,22 @@ export async function ownerLocalLinkedFlow({session,bridgeId,cli,expect,stopOwne
   await mutate('linked.delete',{body:JSON.stringify({kind:'artifact',object_id:'art_original',revision:'7'})});
   let collected=false;try{await fetch('blob','chunk');}catch{collected=true;}
   expect(collected,'deleting the final artifact reference transactionally tombstones and collects its blob chunk');
+  // Imported deletions describe a partial graph. A later restore page may
+  // carry the only live pin for a blob currently referenced by the old object.
+  const shared=await record('blob','restore_shared','c2hhcmVk');
+  const old=await record('artifact','restore_old','old manifest',[{kind:'blob',object_id:'restore_shared',revision:'1'}]);
+  const later=await record('artifact','restore_later','later manifest',[{kind:'blob',object_id:'restore_shared',revision:'1'}]);
+  for(const body of [shared,old])await mutate('linked.put',{body});
+  const restorePage=(objects:string[],tombstones:any[]=[])=>JSON.stringify({
+    account_id:session.identity.userId,owner_bridge_id:bridgeId,chain_id:chainId,format:'1',
+    objects:JSON.stringify(objects),tombstones:JSON.stringify(tombstones),
+  });
+  await mutate('linked.restore',{body:restorePage([],[{kind:'artifact',object_id:'restore_old',revision:'1',task_id:taskId}])});
+  expect(await fetch('blob','restore_shared')===shared,'imported tombstone does not infer GC before a later page supplies the live blob pin');
+  for(const body of [shared,later])await mutate('linked.restore',{body:restorePage([body])});
+  expect(await fetch('artifact','restore_later')===later && await fetch('blob','restore_shared')===shared,'paginated restore retains the later artifact and exact shared blob');
+  await stopOwner();await restartOwner();
+  expect(await fetch('blob','restore_shared')===shared,'restored shared blob survives actual owner restart');
   await inspectHub(chainId);
   console.log('C3 linked canonical content: signed message/artifact/blob/facet, restart, encrypted manifests, tombstones, search and GC PASS');
 }

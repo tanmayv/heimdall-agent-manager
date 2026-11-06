@@ -125,6 +125,11 @@ linked_remove :: proc(s:^Store,chain:string,k:[3]string,seq:i64,restore:bool,tas
     if !read do return "storage_error"
     if _,ok=query(s.db,"DELETE FROM linked_references WHERE chain_id=? AND source_kind=? AND source_id=? AND source_revision=?",chain,k[0],k[1],k[2]);!ok do return "storage_error"
     if _,ok=query(s.db,"DELETE FROM linked_bodies WHERE chain_id=? AND kind=? AND object_id=? AND revision=?",chain,k[0],k[1],k[2]);!ok do return "storage_error"
+    // A restore page is only a partial graph: a later page may contain a live
+    // source pin. Never turn a temporary absence of pins into a permanent local
+    // deletion. Apply only explicit imported tombstones; ordinary signed delete
+    // and task deletion still infer GC from their complete current live graph.
+    if restore do return "ok"
     // Iterative queue avoids unbounded recursion for a deep chunk manifest.
     queue:=make([dynamic][3]string,context.temp_allocator)
     for row in children { if row[0]=="blob" do append(&queue,[3]string{row[0],row[1],row[2]}) }

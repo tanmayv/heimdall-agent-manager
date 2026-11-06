@@ -76,7 +76,7 @@ foreign keys to the source body and target identity. `linked_tombstones` is
 permanent. Immutable identity/body/reference/tombstone triggers prevent accidental
 rewrites; deletion requires a tombstone before either body or reference GC.
 
-Deleting an artifact drops its outgoing references. A shared child blob stays
+An ordinary signed deletion of an artifact drops its outgoing references. A shared child blob stays
 live until its final live source reference disappears. GC then tombstones and
 removes that blob's live body, continuing through its child chunks iteratively.
 A signed direct deletion may explicitly tombstone a referenced target; incoming
@@ -145,7 +145,12 @@ M4 must:
 `linked.restore` is the bounded authenticated import primitive, not a complete
 whole-database backup-session or cutover controller. Within each call, tombstones
 and body/reference/search writes commit together. A missing dependency fails
-closed and rolls back that call. M4 owns completeness across all pages and
+closed and rolls back that call. Imported tombstones apply **only their explicit
+identity deletions**: they never cascade inferred blob GC from a partial restore
+graph. A blob whose final live pin arrives on a later page must remain available.
+Genuine existing destination blob tombstones still dominate imports. Any
+unreferenced restore candidates remain retained until complete-inventory staging
+can establish their disposition; there is no eager post-page sweep. M4 owns completeness across all pages and
 offline staging before exposure. An old backup cannot contain deletions that
 happened after it was taken: preserve the newest journal/destination tombstones;
 if both are lost, no implementation can infer those unseen deletions.
@@ -188,7 +193,7 @@ Exact commands, final outcomes and modified full paths are recorded in the task
 submission and final progress comment.
 
 
-## Reproducible checks for this submission
+## Attempt 1 verification (38c242ac)
 
 Run from the assigned task worktree:
 
@@ -245,3 +250,60 @@ matches the baseline source; the product projection was not altered. Pinned
 worktree dependency before the passing typecheck, without a lockfile change.
 Early draft compiler/array-grammar/fixture failures and stale parity method-count
 expectations were corrected; they are not relabeled as passing checks.
+
+
+## REQ-B2 re-review: paginated restore GC
+
+Independent reviewer #24 found a missing restore case in attempt 1: both source
+and destination initially contain A -> B; the source adds C -> B and deletes A.
+Its complete backup contains A's tombstone followed by live B and C. Applying
+A's tombstone previously ran ordinary cascading GC against the destination's
+partial graph, created a false permanent B tombstone, then silently skipped
+B's later body. Earlier broad passing suites did not establish this property.
+
+The reviewer regression is retained and extended in
+`src/lib/owner_local/restore_gc_test.odin`. It first reproduced on 38c242ac
+(1 selected test, failed: blob expected `ok`, got `retired`;
+`sh_217c02faf8deb931e26cb7a52eb87f82`). The fix returns after the explicit
+restore deletion and reference removal, before inferred GC. Ordinary
+`linked.delete` and task deletion retain their existing cascading GC.
+
+The regression restores actual limit=1 backup pages into an older destination,
+checks exact B/C bytes and restart, verifies a genuine destination B tombstone
+still wins against that same backup, and imports a later genuine source GC
+journal to establish explicit blob deletion. The real enrolled linked-content
+proof additionally sends the explicit old-artifact tombstone before a later
+live artifact/blob page and checks the shared body through a real owner restart.
+
+A staging store already damaged by the old implementation cannot distinguish
+an inferred false tombstone from a genuine destination deletion. Do not remove
+tombstones automatically: rebuild that private staging store from its verified
+baseline and newest explicit journals. No production deployment occurred in
+this task.
+
+Attempt 2 validation:
+
+| Check | Result | Managed session |
+| --- | --- | --- |
+| Reviewer reproduction on parent | 1 selected test fails as reported | `sh_217c02faf8deb931e26cb7a52eb87f82` |
+| Extended restore/ordinary-GC boundary tests after fix | 4/4 pass | `sh_2386462beaeb54fc202f4217128dfed1` |
+| Complete owner-local package | 229/229 pass | `sh_113969c041fd426f46efa436c191a9af` |
+| Four binary builds | Pass | `sh_fc4f45b921906d82a924b3e485301597` |
+| Parity / negative gate cases | 81 methods / 7 cases pass | `sh_f9722b949c694e98139edcf1d80df66c` |
+| Combined actual enrolled proof, including new partial-page case | All five harness steps pass | `sh_92268dd51ef3b41ec2346736bb0c1b13` |
+
+Exact new storage checks:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=review_restore_tombstone_must_preserve_blob_live_in_backup -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c3-restore-reproduce-$$
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=review_restore_tombstone_must_preserve_blob_live_in_backup,linked_encrypted_manifest_pages_restore_and_tombstone_dominance,linked_reference_delete_shared_blob_gc_tombstones_and_task_delete,linked_task_tombstone_suppresses_unknown_restored_message_and_delete_rolls_back -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c3-restore-fixed-$$
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c3-restore-final-$$
+```
+
+The first command intentionally ran before the fix. Builds, parity and the full
+combined enrollment command use the exact commands and flags above from attempt
+1, now against the corrected runtime and expanded fixture. Contracts, UI and
+Bridge unit packages were not changed by this correction; their earlier passing
+results are retained, while the final binaries and actual combined integration
+path were rebuilt/re-executed. No production or cross-platform experiment was
+run. Independent re-review remains required.
