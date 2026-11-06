@@ -51,6 +51,20 @@ export async function ownerLocalBudgetReworkFlow(args:any) {
     await raised.human('task.release',{body:'Release hold'});await raised.claim();
     expect((await raised.state()).budget.counting_attempts==='2','real current child admits native next grant after budget increase');
 
+    const released=await create('Released hold stays released after budget recovery',{max_attempts:1,hard_deadline:5});
+    await released.claim();
+    await released.human('task.hold',{body:'Hold before exhaustion'});
+    for(const end=Date.now()+45000;;){if((await released.state()).budget.reason==='budget_exhausted')break;if(Date.now()>end)throw new Error('real held work did not expire');await new Promise(r=>setTimeout(r,500));}
+    await stopOwner();await restartOwner();
+    await released.human('task.release',{body:'Release while budget remains exhausted'});
+    expect((await released.state()).budget.reason==='budget_exhausted','real release preserves exhausted admission block');
+    await released.human('requirements.edit',{requirementsRevision:'2',body:JSON.stringify({goal:'Recover without restoring released hold',acceptance:['Hold remains released'],budget:{max_attempts:2,hard_deadline:30}})});
+    await stopOwner();await restartOwner();
+    state=await released.state();
+    expect(state.budget.reason==='' && !state.controls.some((row:any)=>row[0]==='held'),'real released pre-exhaustion hold stays released through budget increase and restart');
+    await released.rebind();await released.claim();
+    expect((await released.state()).budget.counting_attempts==='2','real rebound current child claims after release-under-overlay recovery');
+
     const osc=await create('Native oscillation admission');
     for(let n=1;n<=3;n++)await osc.submit(await osc.claim(),String(n),'request_changes');
     state=await osc.state();expect(state.budget.reason==='oscillation' && state.controls[0][0]==='blocked','real third rejection persists oscillation block');

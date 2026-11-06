@@ -64,6 +64,33 @@ control_mode :: proc(s:^Store,chain,task,mode,resume,reason,waiting:string) -> b
     _,ok:=query(s.db,"INSERT INTO local_controls VALUES(?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET mode=excluded.mode,resume_state=excluded.resume_state,reason=excluded.reason,waiting_on=excluded.waiting_on",chain,task,mode,resume,reason,waiting)
     return ok
 }
+// The budget overlay saves independent controls for later recovery. Accepted
+// hold/release commands must advance that saved state in the same transaction,
+// otherwise recovery can restore a hold the operator has already released.
+control_budget_hold :: proc(s:^Store,chain,task,method,body:string) -> bool {
+    rows,ok:=query(s.db,"SELECT prior_json FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
+    if !ok do return false
+    if len(rows)==0 do return true
+    prior:[dynamic][]string
+    if json.unmarshal_string(rows[0][0],&prior,.JSON,context.temp_allocator)!=nil do return false
+    if len(prior)>1 || (len(prior)==1 && len(prior[0])!=4) do return false
+    mode,resume,reason,waiting:="ready","ready",body,""
+    if len(prior)==1 { mode=prior[0][0];resume=prior[0][1];reason=prior[0][2];waiting=prior[0][3] }
+    if method=="task.hold" {
+        if mode!="held" { resume=mode;mode="held";reason=body }
+    } else if mode=="held" {
+        mode="ready";reason=body
+        if resume=="blocked" {
+            mode="blocked"
+            blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
+            if !found || len(blocks)!=1 do return false
+            reason=blocks[0][0]
+        } else { waiting="" }
+        resume="ready"
+    }
+    _,ok=query(s.db,"UPDATE budget_control_owners SET prior_json=? WHERE chain_id=? AND task_id=?",encode([1][4]string{{mode,resume,reason,waiting}}),chain,task)
+    return ok
+}
 control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
     state:="ready"
@@ -135,6 +162,9 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         // A signed retry acknowledges repair; it never rebinds Git input.
         next="merge_pending"
     case: return "malformed"
+    }
+    if method=="task.hold" || method=="task.release" {
+        if !control_budget_hold(s,chain,task,method,body) do return "storage_error"
     }
     if method!="task.hold" {
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"

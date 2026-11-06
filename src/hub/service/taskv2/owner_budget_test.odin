@@ -8,6 +8,24 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import local "odin_test:lib/owner_local"
 
+@(test)
+test_owner_released_hold_after_budget_increase_native_ready :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    events:=[5]domain.Task_Event{
+        {kind=EV_PUBLISHED,payload_json=`{}`},
+        {kind=EV_LEASE_GRANTED,payload_json=`{"lease_id":"lease"}`},
+        {kind=EV_HELD,payload_json=`{"reason":"hold"}`},
+        {kind=EV_LEASE_EXPIRED,payload_json=`{"reason":"ttl"}`},
+        {kind=EV_HOLD_RELEASED,payload_json=`{}`},
+    }
+    for cap in ([2]int{1,2}) {
+        v:=fold_task(events[:],Fold_Input{kind=.Task,deps_done=true,review_roles_count=1,max_attempts=cap})
+        testing.expect(t,!v.held)
+        testing.expect_value(t,budget_allows_grant(v,cap),cap==2)
+        if cap==2 do testing.expect(t,!v.budget_exhausted && v.state==.Ready)
+    }
+}
+
 // Compare each prefix with the original fold and its actual admission helper.
 // Includes a declared pre-v2 baseline without inventing old attempt records.
 @(test)

@@ -1437,3 +1437,88 @@ git diff --cached --check
 The inventory remains 240 fields/23 structs; it is an inventory check, not a
 claim of completed aggregate parity. No broad unrelated suites were repeated;
 unchanged identity code uses the prior tested disposable identity binary.
+
+## C1c released-hold review follow-up (attempts 4–5, requirements revision 2)
+
+The prior rework still missed this ordering: hold before expiry → exhausted
+while held → explicit release while still exhausted → authorized budget raise.
+Its saved independent control state remained held, so restoring it resurrected
+the released hold. This was a real review failure at `784e4bf3`, not an
+accepted limitation. The independent signed regression is retained verbatim in
+`src/lib/owner_local/budget_hold_recovery_test.odin:7`; its first run failed
+with the reported resurrected hold and `invalid_scope`
+(`sh_02c49d56ef2dbdc7eea05ad9010cf1fa`).
+
+Accepted signed hold and release now advance the budget owner's saved
+independent control state in the same transaction as visible controls,
+checkpoints, lifecycle state, accepted event, revision, receipt and intents
+(`src/lib/owner_local/controls.odin:70`). A release leaves budget exhaustion
+in force while removing the saved hold. A later budget raise restores that
+updated state. An unreleased hold, a new hold after release, original
+independent block reason/waiting target, and cancellation remain intact.
+There are no schema or contract changes in this follow-up.
+
+The additional storage regression injects both statement and deferred-COMMIT
+failures for the signed release and budget raise. It compares saved ownership,
+visible controls, task revision, accepted events, receipts, checkpoints and
+intents before/after rejection, restarts, retries the exact command and verifies
+historical replay; only the accepted transitions can authorize the next grant.
+Still-held-before-expiry, hold-after-expiry, release/rehold, independent-block
+and cancellation paths also pass. The native original fold independently
+confirms unheld/exhausted at max1 and unheld/Ready/admissible at max2
+(`src/hub/service/taskv2/owner_budget_test.odin:12`).
+
+Focused exact commands and outcomes:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.independent_released_hold_does_not_return_after_budget_increase -out:$HOME/.cache/heimdall-tests/c1c-hold-released-red
+# Reproduced review failure, exit1; sh_02c49d56ef2dbdc7eea05ad9010cf1fa
+
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.independent_released_hold_does_not_return_after_budget_increase,owner_local.budget_increase_held_restart_preserves_hold_and_independent_block -out:$HOME/.cache/heimdall-tests/c1c-hold-released-green
+# 2/2 PASS exit0; sh_1fb8997a91877373860c32ca5081a99a
+
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.independent_released_hold_does_not_return_after_budget_increase,owner_local.budget_released_hold_restart_replay_and_transaction_rollback,owner_local.budget_hold_release_retains_independent_block_and_cancel,owner_local.budget_increase_held_restart_preserves_hold_and_independent_block -out:$HOME/.cache/heimdall-tests/c1c-hold-orderings
+# 4/4 PASS exit0; sh_56d68c97b2d33c6e9d15fca619ca68a6
+
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.budget_hold_before_expiry_and_rehold_remain_active_after_recovery -out:$HOME/.cache/heimdall-tests/c1c-hold-rehold
+# 1/1 PASS exit0; sh_b15b1a575080be1ac68e112b6f76fba3
+
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_released_hold_after_budget_increase_native_ready -out:$HOME/.cache/heimdall-tests/c1c-hold-native
+# 1/1 PASS exit0; sh_e4eb2307f1507a40b7f270cdf94a0b66
+```
+
+The real regression retains the earlier four cases and adds hold before actual
+maintenance expiry, owner restart, explicit signed release under exhaustion,
+budget increase, second owner restart, child rebinding and successful next
+counting grant
+(`tests/e2e/owner_local_budget_rework_flow.ts:54`).
+
+The first full run (`sh_036360ee30bfbe6fe5c6925b0d3623d5`) built all four
+binaries but failed one incidental test copied alongside the reviewer's hold
+reproduction. That unrelated overlap test inserted an unsupported
+`work_lease_id` field and incorrectly expected strict import to accept it;
+the contract correctly returned `invalid_content`. Removed that unrelated
+copied test and unused imports, retaining the exact hold reproduction and all
+existing overlap conflict tests. The focused hold/rollback tests had passed;
+the corrected full suite contains 155 tests. Typecheck was not reached in that
+failed combined command and is explicitly rerun below.
+
+Final validation results follow below. Earlier contract21/UI20/native4 evidence
+remains applicable: this follow-up changes no contract or UI production code.
+
+
+Final four-binary rebuild, **155/155** storage tests and typecheck pass with
+exit0 (`sh_08ea52db116dfdd0e9695625da25e00d`):
+
+```bash
+git add src/lib/owner_local/budget_hold_recovery_test.odin && nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1c-hold-release-final-bins && nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-hold-release-store155 && nix develop --command npm run typecheck
+```
+
+The complete retained demonstration with the additional exact hold ordering
+passes with exit0, 687 log lines and `all steps PASSED`
+(`sh_981a2525e9aaaaa795d27bc7cf37c387`). It runs against those same rebuilt
+binaries with this exact command:
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 HEIMDALL_E2E_OWNER_BUDGET=1 HEIMDALL_E2E_OWNER_BUDGET_REWORK=1 HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
