@@ -215,6 +215,8 @@ ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
 
 // ---- task-chain ---------------------------------------------------------
 ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
+    if pos(tokens,0)=="owner-local" { ctl_v2_owner_local(endpoint,token,tokens,args);return }
+
 	verb := pos(tokens, 0)
 	switch verb {
 	case "", "list":

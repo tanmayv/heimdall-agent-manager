@@ -10,6 +10,7 @@ const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
 const methods = new Set(['chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read']);
 function fieldValid(s: string, kind: string): boolean {
+  if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
   switch (kind) {
     case 'id': case 'optional': return (kind === 'optional' && s === '') || (s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s));
@@ -19,12 +20,15 @@ function fieldValid(s: string, kind: string): boolean {
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'method': return methods.has(s);
     case 'flag': return s === '0' || s === '1';
+    case 'relay_cipher':
+      if (s.length > 196608) return false;
+      try { parseVaultEnvelope(s); return true; } catch { return false; }
     case 'cipher': case 'required_cipher':
       if (s === '') return kind === 'cipher';
       if (s.length > 65536) return false;
       try { parseVaultEnvelope(s); return true; } catch { return false; }
     case 'result_code': return s === 'ok' || s === 'retired';
-    case 'error_code': return ['malformed', 'bad_signature', 'invalid_scope', 'owner_mismatch', 'digest_mismatch', 'operation_conflict', 'expired', 'retired', 'stale_revision', 'owner_unavailable', 'retention_capacity'].includes(s);
+    case 'error_code': return ['malformed', 'bad_signature', 'invalid_scope', 'owner_mismatch', 'digest_mismatch', 'operation_conflict', 'expired', 'retired', 'stale_revision', 'owner_unavailable', 'retention_capacity', 'storage_error', 'invalid_content', 'clock_uncertain', 'stale_cursor'].includes(s);
     default: return false;
   }
 }

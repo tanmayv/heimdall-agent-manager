@@ -8,5 +8,8 @@
   "task_create_payload": "title_cipher:required_cipher body_cipher:required_cipher",
   "comment_payload": "body_cipher:required_cipher",
   "read_payload": "cursor:optional limit:positive",
-  "receipt_payload": "operation_id:id"
+  "receipt_payload": "operation_id:id",
+  "relay": "protocol_version:version chain_id:id bridge_id:id request_id:id expires_ms:positive envelope:relay_cipher",
+  "request": "command:document payload:document genesis:optional_document",
+  "publication": "genesis:document registry:document"
 }

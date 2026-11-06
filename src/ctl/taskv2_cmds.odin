@@ -30,6 +30,8 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
+import contracts "odin_test:contracts"
+import "core:time"
 import jsonx "odin_test:lib/jsonx"
 
 ctl_requirements_revision_flag :: proc(args: []string, flag: string) -> int {
@@ -1326,4 +1328,21 @@ print_help_workflow :: proc() {
  fmt.println("  inputs fail before anything is created. An empty array completes the stage with zero tasks.")
  fmt.println("A retry creates a fresh execution. Consumed outputs block retry. Stage retry is unsupported.")
  fmt.println("Agent mode may omit --chain when creating/listing runs; run IDs are always explicit.")
+}
+
+
+// Relays an opaque human-device-signed request. The instance token authenticates
+// transport only; it cannot sign, create grants, or authorize owner mutations.
+ctl_v2_owner_local :: proc(endpoint,token:string,tokens,args:[]string) {
+    if pos(tokens,1)!="relay" { ctl_print_error_exit("usage: task-chain owner-local relay --request-file <browser-export.json>") }
+    path:=option_value(args,"--request-file","")
+    if path=="" do ctl_print_error_exit("--request-file is required")
+    bytes,read:=os.read_entire_file(path,context.temp_allocator)
+    if read!=nil do ctl_print_error_exit("cannot read signed request file")
+    relay,valid:=contracts.owner_parse(string(bytes),"relay")
+    if !valid do ctl_print_error_exit("invalid signed request relay")
+    now:=time.to_unix_nanoseconds(time.now())/1000000
+    relay["expires_ms"]=json.String(fmt.tprintf("%d",now+60000))
+    relay["request_id"]=json.String(fmt.tprintf("req_cli_%d",time.to_unix_nanoseconds(time.now())))
+    ctl_agent_rest(endpoint,token,{method=.POST,path=ctl_api("owner-local","relay"),body=httpc.json_body(relay)})
 }

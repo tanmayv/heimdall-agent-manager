@@ -1,3 +1,4 @@
+import OwnerLocalPanel from './OwnerLocalPanel';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, IconButton, ResourceContainer, ResourceSearchFilter, useViewport } from '@ui';
 import Icon from '../Icon';
@@ -419,6 +420,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   const twoPane = viewport === 'desktop';
   const isMobileViewport = isMobile ?? viewport === 'mobile';
 
+  const [showOwnerLocal, setShowOwnerLocal] = useState(false);
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'active' | 'completed' | 'archived' | 'all'>('active');
@@ -757,6 +759,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
     </div>
   );
 
+  if (showOwnerLocal) return <OwnerLocalPanel onClose={() => setShowOwnerLocal(false)} />;
+
   return (
     <ResourceContainer
       title={
@@ -768,6 +772,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             </Badge>
           </span>
           <div className="flex items-center gap-2">
+            <button data-debug-id="task-chains-owner-local" onClick={() => setShowOwnerLocal(true)}>Owner-local</button>
             <button
               type="button"
               data-debug-id="task-chains-workflows-btn"

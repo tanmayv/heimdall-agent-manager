@@ -10,6 +10,9 @@ export const ownerSchemas = {
   comment_payload: [["body_cipher", "required_cipher"]],
   read_payload: [["cursor", "optional"], ["limit", "positive"]],
   receipt_payload: [["operation_id", "id"]],
+  relay: [["protocol_version", "version"], ["chain_id", "id"], ["bridge_id", "id"], ["request_id", "id"], ["expires_ms", "positive"], ["envelope", "relay_cipher"]],
+  request: [["command", "document"], ["payload", "document"], ["genesis", "optional_document"]],
+  publication: [["genesis", "document"], ["registry", "document"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -92,6 +95,23 @@ export interface OwnerRead_Payload {
 export interface OwnerReceipt_Payload {
   operation_id: string;
 }
+export interface OwnerRelay {
+  protocol_version: string;
+  chain_id: string;
+  bridge_id: string;
+  request_id: string;
+  expires_ms: string;
+  envelope: string;
+}
+export interface OwnerRequest {
+  command: string;
+  payload: string;
+  genesis: string;
+}
+export interface OwnerPublication {
+  genesis: string;
+  registry: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -103,4 +123,7 @@ export interface OwnerDocuments {
   comment_payload: OwnerComment_Payload;
   read_payload: OwnerRead_Payload;
   receipt_payload: OwnerReceipt_Payload;
+  relay: OwnerRelay;
+  request: OwnerRequest;
+  publication: OwnerPublication;
 }

@@ -10,6 +10,7 @@ import "core:strings"
 import "core:sync"
 import os_random "odin_test:lib/os_random"
 import vault "odin_test:lib/vault"
+import contracts "odin_test:contracts"
 
 // ── Bridge unseal v2 (docs/plans/passwordless-vault.md §1) ──────────────────
 //
@@ -842,4 +843,15 @@ bridge_unseal_decrypt_and_verify :: proc(
 	bridge_pty_stream_resalt_all()
 	bridge_enrollment_unseal_mark_received()
 	return true, ""
+}
+
+bridge_owner_sign :: proc(ctx:rawptr,kind:string,o:json.Object)->(string,bool) {
+    if kind!="genesis" && kind!="registry" do return "",false
+    canonical,valid:=contracts.owner_canonical(kind,o)
+    if !valid do return "",false
+    sync.mutex_lock(&g_bridge_identity_mu);defer sync.mutex_unlock(&g_bridge_identity_mu)
+    if !bridge_unseal_identity_for_locked(bridge_config.daemon_id) do return "",false
+    sig,signed:=vault.sign_p256(&g_bridge_identity_priv,transmute([]byte)canonical)
+    if !signed do return "",false
+    return vault.hex_encode_lower(sig.sig[:],context.temp_allocator),true
 }

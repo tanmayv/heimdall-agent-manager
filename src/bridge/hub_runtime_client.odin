@@ -969,6 +969,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_provider_profile_op(conn, text)
 		return
 	}
+	if type == "owner_local" {
+		bridge_owner_handle(conn, text)
+		return
+	}
 	if type == "task_chain_search" {
 		bridge_task_chain_search_handle_command(conn, text)
 		return

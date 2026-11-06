@@ -170,6 +170,43 @@ Owner_Receipt_Payload :: struct {
 owner_fields_receipt_payload := [?]Owner_Field{
     {"operation_id", "id"},
 }
+Owner_Relay :: struct {
+    protocol_version: string,
+    chain_id: string,
+    bridge_id: string,
+    request_id: string,
+    expires_ms: string,
+    envelope: string,
+}
+@(private)
+owner_fields_relay := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"chain_id", "id"},
+    {"bridge_id", "id"},
+    {"request_id", "id"},
+    {"expires_ms", "positive"},
+    {"envelope", "relay_cipher"},
+}
+Owner_Request :: struct {
+    command: string,
+    payload: string,
+    genesis: string,
+}
+@(private)
+owner_fields_request := [?]Owner_Field{
+    {"command", "document"},
+    {"payload", "document"},
+    {"genesis", "optional_document"},
+}
+Owner_Publication :: struct {
+    genesis: string,
+    registry: string,
+}
+@(private)
+owner_fields_publication := [?]Owner_Field{
+    {"genesis", "document"},
+    {"registry", "document"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -182,6 +219,9 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "comment_payload": return owner_fields_comment_payload[:]
     case "read_payload": return owner_fields_read_payload[:]
     case "receipt_payload": return owner_fields_receipt_payload[:]
+    case "relay": return owner_fields_relay[:]
+    case "request": return owner_fields_request[:]
+    case "publication": return owner_fields_publication[:]
     }
     return nil
 }

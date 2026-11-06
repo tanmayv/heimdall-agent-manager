@@ -54,6 +54,8 @@ Task_Chain_Fleet_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_C
 Task_Chain_Fleet_Delete_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 
 Taskchain_Repository :: struct {
+    owner_registry_publish: Owner_Registry_Publish,
+    owner_registry_list: Owner_Registry_List,
 	ctx: rawptr,
 	get_chain: Task_Chain_Get_Proc,
 	list_chains_by_owner: Task_Chain_List_By_Owner_Proc,

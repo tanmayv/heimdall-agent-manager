@@ -17,6 +17,7 @@
 //   HEIMDALL_E2E_HUB_BIN=<ham-hub> HEIMDALL_E2E_BRIDGE_BIN=<ham-bridge> \
 //   node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
 
+import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -46,6 +47,7 @@ async function step(name, fn) {
   try { await fn(); results.push([name, 'PASS']); console.log(`PASS ${name}`); }
   catch (err) { results.push([name, 'FAIL']); console.log(`    not ok - ${err instanceof CheckFailed ? err.message : (err?.stack || err)}`); console.log(`FAIL ${name}`); }
 }
+const ownerIdForFixture = (prefix) => prefix + randomBytes(12).toString('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -74,6 +76,7 @@ const CREATED = []; // bridge ids whose scoped credentials this run wrote
 
 async function startHub(label) {
   const bin = process.env.HEIMDALL_E2E_HUB_BIN;
+  if (!fs.existsSync(bin)) throw new Error('Hub binary must be visible in the current Nix environment');
   const migrations = path.join(REPO_ROOT, 'src', 'hub', 'repository', 'sqlite', 'migrations');
   const dir = path.join(ROOT, label);
   fs.mkdirSync(dir, { recursive: true });
@@ -122,13 +125,13 @@ async function approverFor(hub) {
 }
 
 function bridgeArgs(cfg) {
-  return ['--config', cfg.config, '--bridge-token-file', cfg.token, '--port', String(cfg.port), '--data-dir', cfg.data];
+  return ['--config', cfg.config, '--bridge-token-file', cfg.token, '--port', String(cfg.port), '--data-dir', cfg.data, '--local-run-dir', cfg.local];
 }
 
 async function newBridgeDirs(label) {
   const dir = path.join(ROOT, label);
   fs.mkdirSync(dir, { recursive: true });
-  return { dir, config: path.join(dir, 'config.toml'), token: path.join(dir, 'bridge.token'), data: path.join(dir, 'data'), port: await freePort() };
+  return { dir, config: path.join(dir, 'config.toml'), token: path.join(dir, 'bridge.token'), data: path.join(dir, 'data'), local: path.join(dir, 'local'), port: await freePort() };
 }
 
 // macOS diagnostics for a stalled child: `sample` prints every thread's stack, which
@@ -240,6 +243,70 @@ async function main() {
     const second = await runtime({ ...S.cfgA, port: await freePort() });
     expect(second.refused && /another ham-bridge instance/i.test(second.out), 'a second instance on the same config refuses (instance lock)');
   });
+
+  if (process.env.HEIMDALL_E2E_OWNER_LOCAL === '1') {
+    await step('owner-local V1 real relay, persistence, retries and offline listing', async () => {
+      const { ownerLocalFlow } = await import('./owner_local_flow.ts');
+      await ownerLocalFlow({
+        hub: hubA, approver: S.apA, bridgeId: S.a.bridgeId, http, expect,
+        otherAccount: async () => ({ ...hubA, session: await hubLogin(hubA.base, 'owner-local-other-account') }),
+        cli: async (relay) => {
+          const requestPath = path.join(ROOT, 'signed-request.json');
+          fs.writeFileSync(requestPath, JSON.stringify(relay), { mode: 0o600 });
+          const called = spawnSync(process.env.HEIMDALL_E2E_CTL_BIN, ['agent', 'task-chain', 'owner-local', 'relay', '--request-file', requestPath], {
+            env: { ...ENV, HEIMDALL_BRIDGE_ENDPOINT: 'unix:' + path.join(S.cfgA.local, 'bridge.sock'), HEIMDALL_AGENT_TOKEN: S.localToken },
+            encoding: 'utf8', timeout: 20000,
+          });
+          if (called.status !== 0) throw new Error('CLI failed: ' + called.stderr + called.stdout);
+          const response = JSON.parse(called.stdout);
+          return response.data?.data ?? response.data;
+        },
+        stopOwner: async () => {
+          S.runA.kill(); await sleep(1500);
+          // Seed an authorized disposable transport instance, bypassing provider
+          // launch only. The real local token + Hub bridge/instance checks run.
+          const iid = ownerIdForFixture('inst_'), epoch = ownerIdForFixture('epoch_');
+          const assertion = spawnSync(process.env.HEIMDALL_E2E_IDENTITY_BIN, [iid, epoch], { encoding: 'utf8' });
+          if (assertion.status !== 0) throw new Error('fixture assertion encoder failed');
+          S.localToken = randomBytes(32).toString('hex');
+          const seeded = spawnSync('python3', ['-c', `import sqlite3,sys,datetime
+c=sqlite3.connect(sys.argv[1])
+now=datetime.datetime.now(datetime.timezone.utc).isoformat()
+c.execute("insert into agent_instances(agent_instance_id,owner_user_id,agent_id,bridge_id,runtime_status,created_at,updated_at,last_seen_at,launch_epoch) values(?,?,?,?,?,?,?,?,?)",(sys.argv[2],sys.argv[3],"agt_owner_fixture",sys.argv[4],"running",now,now,now,sys.argv[5]))
+c.commit()
+`, path.join(ROOT, 'hub-a', 'hub.db'), iid, S.apA.userId, S.a.bridgeId, epoch], { encoding: 'utf8' });
+          if (seeded.status !== 0) throw new Error(seeded.stderr);
+          const namespace = S.cfgA.local.replace(/[^a-zA-Z0-9_.-]/g, '_');
+          const storeDir = path.join(S.cfgA.data, 'bridge', namespace);
+          fs.mkdirSync(storeDir, { recursive: true });
+          fs.writeFileSync(path.join(storeDir, 'local-tokens.jsonl'), JSON.stringify({
+            token_hash: 'sha1:' + createHash('sha1').update(S.localToken).digest('hex'),
+            agent_instance_id: iid, instance_token: assertion.stdout, role: 'agent', run_count: 0,
+            issued_at_unix_ms: Date.now(), invalidated_at_unix_ms: 0,
+          }) + '\n', { mode: 0o600 });
+        },
+        restartOwner: async () => {
+          const restarted = await runtime({ ...S.cfgA, port: await freePort() }, [], online(hubA, S.a.bridgeId));
+          expect(!restarted.refused && !restarted.timeout, 'isolated owner restarted');
+          S.runA = restarted.child;
+        },
+        inspectHub: async (chainId) => {
+          const probe = spawnSync('python3', ['-c', `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+assert c.execute("select count(*) from tasks where chain_id=?",(sys.argv[2],)).fetchone()[0]==0
+assert c.execute("select count(*) from task_chains where chain_id=?",(sys.argv[2],)).fetchone()[0]==0
+r=c.execute("select registry_json from owner_local_titles where chain_id=?",(sys.argv[2],)).fetchall()
+assert len(r)==2 and all("owner-private" not in x[0] for x in r)
+from pathlib import Path
+for dbfile in Path(sys.argv[1]).parent.glob("hub.db*"):
+ if dbfile.is_file(): assert b"owner-private" not in dbfile.read_bytes()
+print("metadata-only Hub SQLite verified")
+`, path.join(ROOT, 'hub-a', 'hub.db'), chainId], { encoding: 'utf8' });
+          expect(probe.status === 0, 'Hub SQLite contains no local chain/task bodies: ' + probe.stderr);
+        },
+      });
+    });
+  }
   await step('3 the same bridge pointed at another hub refuses to start', async () => {
     S.runA?.kill();
     await sleep(500);

@@ -38,6 +38,7 @@ owner_method_valid :: proc(s: string) -> bool {
 }
 
 owner_field_valid :: proc(s, kind: string) -> bool {
+    if kind=="document" || kind=="optional_document" do return len(s)<=OWNER_DOCUMENT_MAX && (s!="" || kind=="optional_document")
     if !owner_ascii(s) do return false
     switch kind {
     case "id", "optional":
@@ -51,6 +52,10 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
     case "flag": return s == "0" || s == "1"
+    case "relay_cipher":
+        if len(s)>196608 do return false
+        _,_,_,result:=vault.envelope_parse(s,context.temp_allocator)
+        return result==.Ok
     case "cipher", "required_cipher":
         if s == "" do return kind == "cipher"
         if len(s) > 65536 do return false
@@ -61,7 +66,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         switch s {
         case "malformed", "bad_signature", "invalid_scope", "owner_mismatch",
              "digest_mismatch", "operation_conflict", "expired", "retired",
-             "stale_revision", "owner_unavailable", "retention_capacity": return true
+             "stale_revision", "owner_unavailable", "retention_capacity",
+             "storage_error", "invalid_content", "clock_uncertain", "stale_cursor": return true
         }
     }
     return false
