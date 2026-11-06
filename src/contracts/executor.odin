@@ -1,0 +1,166 @@
+package contracts
+
+import "core:encoding/json"
+import "core:fmt"
+import "core:strconv"
+import "core:strings"
+import vault "odin_test:lib/vault"
+
+// Executor records allocate device resources only. They confer no task authority.
+// All directory/key inputs must already be resolved by the execution Bridge.
+EXECUTOR_DOCUMENT_MAX :: 32768
+EXECUTOR_CAPACITY_MAX :: 128
+EXECUTOR_PREPARE_TTL_MS :: 30000
+executor_policy_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"policy_revision","positive"},{"device_capacity","positive"},{"slots_json","document"},
+    {"key_id","id"},{"signature","signature"},
+}
+executor_prepare_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"task_id","id"},{"lease_id","id"},
+    {"reservation_id","id"},{"operation_id","id"},{"instance_id","id"},
+    {"launch_epoch","id"},{"run_count","positive"},{"token_generation","hash"},
+    {"configuration_revision","positive"},{"grant_generation","positive"},
+    {"owner_incarnation","positive"},{"executor_incarnation","positive"},
+    {"policy_revision","positive"},{"slot_id","id"},{"provider_profile","id"},
+    {"directory_key","optional"},{"purpose","executor_purpose"},
+    {"prepare_until_ms","positive"},{"hard_ms","positive"},{"request_expires_ms","positive"},
+    {"key_id","id"},{"signature","signature"},
+}
+executor_action_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"reservation_id","id"},{"operation_id","id"},
+    {"method","executor_method"},{"prepare_digest","hash"},{"executor_incarnation","positive"},
+    {"owner_incarnation","positive"},{"owner_commit_seq","positive"},
+    {"grant_generation","positive"},{"deadline_version","positive"},
+    {"expires_ms","positive"},{"hard_ms","positive"},{"request_expires_ms","positive"},
+    {"key_id","id"},{"signature","signature"},
+}
+executor_receipt_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"reservation_id","id"},{"operation_id","id"},
+    {"method","executor_receipt_method"},{"input_digest","hash"},{"prepare_digest","hash"},
+    {"executor_incarnation","positive"},{"child_incarnation","positive"},{"grant_generation","positive"},{"deadline_version","positive"},
+    {"expires_ms","positive"},{"hard_ms","positive"},{"launch_key","hash"},
+    {"state","executor_state"},{"historical","executor_flag"},{"key_id","id"},{"signature","signature"},
+}
+executor_schema :: proc(kind:string)->[]Owner_Field {
+    switch kind {
+    case "policy":return executor_policy_fields[:]
+    case "prepare":return executor_prepare_fields[:]
+    case "action":return executor_action_fields[:]
+    case "receipt":return executor_receipt_fields[:]
+    }
+    return nil
+}
+executor_number :: proc(o:json.Object,key:string)->i64 { n,_:=strconv.parse_i64(owner_string(o,key));return n }
+executor_valid :: proc(o:json.Object,kind:string)->bool {
+    fields:=executor_schema(kind)
+    if len(fields)==0 || len(o)!=len(fields) do return false
+    for f in fields {
+        value,is_string:=o[f.name].(json.String)
+        if !is_string do return false
+        s:=string(value)
+        switch f.kind {
+        case "executor_receipt_method":
+            if s!="prepare" && s!="activate" && s!="heartbeat" && s!="stop" && s!="query" do return false
+        case "executor_state":
+            if s!="prepared" && s!="active" && s!="stopping" && s!="released" do return false
+        case "executor_flag":
+            if s!="0" && s!="1" do return false
+        case "executor_purpose":
+            if s!="work" && s!="review" && s!="manual" && s!="warm" do return false
+        case "executor_method":
+            if s!="activate" && s!="heartbeat" && s!="stop" && s!="query" do return false
+        case:
+            if !owner_field_valid(s,f.kind) do return false
+        }
+    }
+    if kind=="policy" {
+        cap:=executor_number(o,"device_capacity")
+        if cap>EXECUTOR_CAPACITY_MAX do return false
+        v,ok:=owner_request_document(owner_string(o,"slots_json"));slots,arr:=v.(json.Array)
+        if !ok || !arr || len(slots)>int(cap) do return false
+        seen:=make(map[string]bool,context.temp_allocator)
+        for slot in slots {
+            row,obj:=slot.(json.Object)
+            if !obj || len(row)!=3 do return false
+            for key in ([2]string{"slot_id","provider_profile"}) {
+                if v,str:=row[key].(json.String);!str || !owner_field_valid(string(v),"id") do return false
+            }
+            enabled,str:=row["enabled"].(json.String)
+            if !str || (enabled!="0" && enabled!="1") || seen[owner_string(row,"slot_id")] do return false
+            seen[owner_string(row,"slot_id")]=true
+        }
+    }
+    if kind=="prepare" {
+        if executor_number(o,"prepare_until_ms")>executor_number(o,"hard_ms") do return false
+        directory:=owner_string(o,"directory_key")
+        if directory!="" && !owner_field_valid(directory,"hash") do return false
+    }
+    if (kind=="action" || kind=="receipt") && executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
+    return true
+}
+executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
+    if len(raw)>EXECUTOR_DOCUMENT_MAX do return nil,false
+    v,ok:=owner_request_document(raw);o,obj:=v.(json.Object)
+    if !ok || !obj || !executor_valid(o,kind) do return nil,false
+    return o,true
+}
+executor_canonical :: proc(kind:string,o:json.Object)->(string,bool) {
+    if !executor_valid(o,kind) do return "",false
+    b:strings.Builder;strings.builder_init(&b,context.temp_allocator)
+    strings.write_string(&b,fmt.tprintf("heimdall-executor/%s/v1\n",kind))
+    for f in executor_schema(kind) {
+        if f.kind=="signature" do continue
+        s:=owner_string(o,f.name)
+        strings.write_string(&b,fmt.tprintf("%d:%s,",len(s),s))
+    }
+    return strings.to_string(b),true
+}
+executor_digest :: proc(kind:string,o:json.Object)->(string,bool) {
+    canonical,ok:=executor_canonical(kind,o)
+    if !ok do return "",false
+    return owner_payload_digest(canonical),true
+}
+executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool {
+    if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=owner_string(o,"account_id") ||
+       key.key_id!=owner_string(o,"key_id") { return false }
+    identity:="owner_bridge_id"
+    if kind=="policy" || kind=="receipt" do identity="executor_bridge_id"
+    if key.principal_id!=owner_string(o,identity) do return false
+    canonical,ok:=executor_canonical(kind,o)
+    if !ok do return false
+    sig,valid:=vault.signature_text_from_parts("ecdsa-p256-sha256",owner_string(o,"signature"),context.temp_allocator)
+    return valid && vault.verify("ecdsa-p256-sha256",key.public_key,transmute([]byte)canonical,sig)
+}
+
+// Exact signed receipt binding. Historical results are useful for recovery,
+// never a fresh reservation or launch capability.
+executor_receipt_matches :: proc(receipt,request:json.Object,kind:string,key:Owner_Verified_Key,now:i64,current_admission:=true)->bool {
+    if (kind!="prepare" && kind!="action") || !executor_valid(request,kind) || !executor_valid(receipt,"receipt") ||
+       !executor_verify("receipt",receipt,key) { return false }
+    for name in ([7]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","operation_id","grant_generation"}) {
+        if owner_string(receipt,name)!=owner_string(request,name) do return false
+    }
+    digest,_:=executor_digest(kind,request)
+    if owner_string(receipt,"input_digest")!=digest || owner_string(receipt,"executor_incarnation")!=owner_string(request,"executor_incarnation") ||
+       owner_string(receipt,"hard_ms")!=owner_string(request,"hard_ms") { return false }
+    method:="prepare" if kind=="prepare" else owner_string(request,"method")
+    if owner_string(receipt,"method")!=method do return false
+    prepare_digest:=digest if kind=="prepare" else owner_string(request,"prepare_digest")
+    if owner_string(receipt,"prepare_digest")!=prepare_digest do return false
+    if !current_admission do return true
+    if now<0 || owner_string(receipt,"historical")!="0" || executor_number(receipt,"expires_ms")<=now do return false
+    state:=owner_string(receipt,"state")
+    if method=="prepare" {
+        return state=="prepared" && owner_string(receipt,"child_incarnation")==owner_string(request,"executor_incarnation") &&
+          owner_string(receipt,"expires_ms")==owner_string(request,"prepare_until_ms") && owner_string(receipt,"deadline_version")=="1"
+    }
+    if method=="activate" || method=="heartbeat" {
+        return state=="active" && owner_string(receipt,"expires_ms")==owner_string(request,"expires_ms") &&
+          owner_string(receipt,"deadline_version")==owner_string(request,"deadline_version")
+    }
+    return method=="query" || (method=="stop" && (state=="stopping" || state=="released"))
+}

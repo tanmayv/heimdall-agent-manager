@@ -1,0 +1,67 @@
+
+CREATE TABLE executor_runtime (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=1),
+ account_id TEXT NOT NULL, executor_bridge_id TEXT NOT NULL, operator_key_id TEXT NOT NULL,
+ incarnation INTEGER NOT NULL CHECK(incarnation>0), clock_high_ms INTEGER NOT NULL CHECK(clock_high_ms>=0),
+ recovery_state TEXT NOT NULL CHECK(recovery_state IN ('ready','reconciling','clock_uncertain')),
+ policy_revision INTEGER NOT NULL DEFAULT 0 CHECK(policy_revision>=0), device_capacity INTEGER NOT NULL DEFAULT 0 CHECK(device_capacity BETWEEN 0 AND 128)
+);
+CREATE TRIGGER runtime_immutable BEFORE UPDATE ON executor_runtime
+WHEN NEW.singleton IS NOT OLD.singleton OR NEW.account_id IS NOT OLD.account_id OR NEW.executor_bridge_id IS NOT OLD.executor_bridge_id
+ OR NEW.operator_key_id IS NOT OLD.operator_key_id OR NEW.schema_version IS NOT OLD.schema_version
+ OR NEW.incarnation<OLD.incarnation OR NEW.clock_high_ms<OLD.clock_high_ms OR NEW.policy_revision<OLD.policy_revision
+BEGIN SELECT RAISE(ABORT,'immutable executor identity or version'); END;
+CREATE TRIGGER runtime_no_delete BEFORE DELETE ON executor_runtime BEGIN SELECT RAISE(ABORT,'immutable executor identity'); END;
+CREATE TABLE executor_policies (revision INTEGER PRIMARY KEY, input_digest TEXT NOT NULL, document TEXT NOT NULL CHECK(json_valid(document)));
+CREATE TRIGGER policy_no_update BEFORE UPDATE ON executor_policies BEGIN SELECT RAISE(ABORT,'immutable policy'); END;
+CREATE TRIGGER policy_no_delete BEFORE DELETE ON executor_policies BEGIN SELECT RAISE(ABORT,'immutable policy'); END;
+CREATE TABLE executor_slots (slot_id TEXT PRIMARY KEY, provider_profile TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)));
+CREATE TABLE executor_owner_watermarks (owner_bridge_id TEXT PRIMARY KEY, incarnation INTEGER NOT NULL CHECK(incarnation>0));
+CREATE TRIGGER owner_watermark_monotonic BEFORE UPDATE ON executor_owner_watermarks
+WHEN NEW.owner_bridge_id IS NOT OLD.owner_bridge_id OR NEW.incarnation<OLD.incarnation
+BEGIN SELECT RAISE(ABORT,'owner incarnation cannot regress'); END;
+CREATE TABLE executor_reservations (
+ reservation_id TEXT PRIMARY KEY, owner_bridge_id TEXT NOT NULL, operation_id TEXT NOT NULL, chain_id TEXT NOT NULL,
+ slot_id TEXT NOT NULL REFERENCES executor_slots(slot_id), instance_id TEXT NOT NULL, directory_key TEXT NOT NULL,
+ prepare_digest TEXT NOT NULL, document TEXT NOT NULL CHECK(json_valid(document)),
+ owner_incarnation INTEGER NOT NULL CHECK(owner_incarnation>0), executor_incarnation INTEGER NOT NULL CHECK(executor_incarnation>0),
+ grant_generation INTEGER NOT NULL CHECK(grant_generation>0), deadline_version INTEGER NOT NULL CHECK(deadline_version>0),
+ prepare_until_ms INTEGER NOT NULL CHECK(prepare_until_ms>0), expires_ms INTEGER NOT NULL CHECK(expires_ms>0),
+ hard_ms INTEGER NOT NULL CHECK(hard_ms>=expires_ms AND hard_ms>=prepare_until_ms),
+ state TEXT NOT NULL CHECK(state IN ('prepared','active','stopping','released')),
+ launch_key TEXT NOT NULL, launch_state TEXT NOT NULL CHECK(launch_state IN ('none','queued','uncertain','confirmed','stopped')),
+ observed_incarnation INTEGER NOT NULL DEFAULT 0 CHECK(observed_incarnation>=0),
+ UNIQUE(owner_bridge_id,operation_id)
+);
+CREATE UNIQUE INDEX executor_slot_live ON executor_reservations(slot_id) WHERE state!='released';
+CREATE UNIQUE INDEX executor_instance_live ON executor_reservations(instance_id) WHERE state!='released';
+CREATE UNIQUE INDEX executor_directory_live ON executor_reservations(directory_key) WHERE state!='released' AND directory_key!='';
+CREATE TRIGGER reservation_immutable BEFORE UPDATE ON executor_reservations
+WHEN NEW.reservation_id IS NOT OLD.reservation_id OR NEW.owner_bridge_id IS NOT OLD.owner_bridge_id
+ OR NEW.operation_id IS NOT OLD.operation_id OR NEW.chain_id IS NOT OLD.chain_id OR NEW.slot_id IS NOT OLD.slot_id
+ OR NEW.instance_id IS NOT OLD.instance_id OR NEW.directory_key IS NOT OLD.directory_key
+ OR NEW.prepare_digest IS NOT OLD.prepare_digest OR NEW.document IS NOT OLD.document
+ OR NEW.owner_incarnation IS NOT OLD.owner_incarnation OR NEW.executor_incarnation IS NOT OLD.executor_incarnation
+ OR NEW.grant_generation IS NOT OLD.grant_generation OR NEW.prepare_until_ms IS NOT OLD.prepare_until_ms
+ OR NEW.hard_ms IS NOT OLD.hard_ms OR NEW.launch_key IS NOT OLD.launch_key
+ OR NEW.deadline_version<OLD.deadline_version OR (OLD.state!='prepared' AND NEW.expires_ms<OLD.expires_ms)
+ OR (OLD.state='released' AND NEW.state!='released') OR (OLD.state='stopping' AND NEW.state NOT IN ('stopping','released'))
+ OR (OLD.state='active' AND NEW.state='prepared')
+ OR (OLD.state!='prepared' AND NEW.state='released' AND NEW.launch_state!='stopped')
+BEGIN SELECT RAISE(ABORT,'immutable reservation fence or invalid transition'); END;
+CREATE TRIGGER reservation_no_delete BEFORE DELETE ON executor_reservations BEGIN SELECT RAISE(ABORT,'retained reservation'); END;
+CREATE TABLE executor_receipts (
+ owner_bridge_id TEXT NOT NULL, operation_id TEXT NOT NULL, kind TEXT NOT NULL, input_digest TEXT NOT NULL,
+ reservation_id TEXT NOT NULL REFERENCES executor_reservations(reservation_id) DEFERRABLE INITIALLY DEFERRED,
+ result_json TEXT NOT NULL CHECK(json_valid(result_json)), PRIMARY KEY(owner_bridge_id,operation_id)
+);
+CREATE TRIGGER receipt_no_update BEFORE UPDATE ON executor_receipts BEGIN SELECT RAISE(ABORT,'immutable executor receipt'); END;
+CREATE TRIGGER receipt_no_delete BEFORE DELETE ON executor_receipts BEGIN SELECT RAISE(ABORT,'retained executor receipt'); END;
+CREATE TABLE executor_intents (
+ reservation_id TEXT NOT NULL REFERENCES executor_reservations(reservation_id), kind TEXT NOT NULL CHECK(kind IN ('launch','stop')),
+ state TEXT NOT NULL CHECK(state IN ('pending','uncertain','settled')), claim_incarnation INTEGER NOT NULL DEFAULT 0 CHECK(claim_incarnation>=0),
+ PRIMARY KEY(reservation_id,kind)
+);
+
+CREATE INDEX executor_deadlines ON executor_reservations(state,expires_ms);
+CREATE INDEX executor_intents_due ON executor_intents(state,kind,reservation_id);
