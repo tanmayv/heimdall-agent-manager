@@ -200,6 +200,9 @@ control_intents :: proc(tx:^Transaction,c:json.Object,seq:i64) -> bool {
 control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,sign:Signer) -> (string,bool) {
     s:=tx.store
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
+    // Switching starts new destination work, so it has the same publication
+    // admission as claim. Check before recording or retiring the source.
+    if method=="lease.switch" && !work_task_published(s,field(p,"destination_chain_id"),field(p,"destination_task_id")) do return "operation_conflict",false
     if !control_record(s,c,p,seq) do return "storage_error",false
     if _,ok:=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=? AND lease_id=? AND child_json=?",chain,task,field(c,"lease_id"),encode(child));!ok do return "storage_error",false
     if _,ok:=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),field(c,"lease_id"));!ok do return "storage_error",false

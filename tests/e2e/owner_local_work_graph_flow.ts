@@ -35,6 +35,10 @@ export async function ownerLocalWorkGraphFlow({session,bridgeId,cli,expect,stopO
   expect(graph.publish_state==='published' && !graph.pending_proposal_id,'approval atomically publishes and clears pending');
   expect((await read('chain.read')).items.length===2,'approval materializes exactly two tasks');
   expect(graph.items.filter((row:any)=>row.kind==='dependency').length===1,'proposal dependency materializes once');
+  const originalEdge=graph.items.find((row:any)=>row.kind==='dependency').record.dependency_id;
+  await mutate('work.dependency.remove',{body:JSON.stringify({dependency_id:originalEdge,reason:'Verify supported legacy input capture'})});
+  await mutate('dependency.edit',{taskId:second,body:JSON.stringify({prerequisite:first,enabled:'1'})});
+
   await denied('chain.decide',{body:JSON.stringify({proposal_id:JSON.parse(proposal.command).operation_id,decision:'approve',note:'Already decided'})});
   const children:any[]=[];
   try {
@@ -47,6 +51,23 @@ export async function ownerLocalWorkGraphFlow({session,bridgeId,cli,expect,stopO
       if(blocked){expect(worker.call(input).status!==0,'consumer cannot claim before prerequisite succeeds');return;}
       const claimed=worker.call(input);expect(claimed.status===0,'real worker claims published ready task');
       const cap=JSON.parse(claimed.data.body).capability;
+      if(taskId===first){
+        const draft=ownerId('draft_');
+        await call('task.draft',{taskId:draft,expectedRevision:(await read('chain.read')).revision,title:'Unpublished switch target',body:'Publication fence'});
+        await mutate('fleet.edit',{taskId:draft,instanceId:worker.instanceId,configurationRevision:'1'});
+        await mutate('lifecycle.configure',{taskId:draft,lifecycleConfig:{configuration_revision:'1',author_agent_id:worker.agentId,reviewer_agent_id:reviewer.agentId,reviewer_instance_id:reviewer.instanceId,directory_id:ownerId('dir_'),merge_policy:'none',repository:'',worktree:'',source_branch:'',target_branch:'',base_head:''}});
+        await mutate('requirements.edit',{taskId:draft,requirementsRevision:'1',body:JSON.stringify({goal:'Draft target',acceptance:['Publish first']})});
+        const destinationRevision=(await read('task.read',{taskId:draft})).revision;
+        const switched=worker.call({...input,operation_id:ownerId('op_'),method:'lease.switch',capability:cap,payload:JSON.stringify({requirements_revision:'1',summary:'Attempt draft switch',next_steps:'Remain on source',destination_chain_id:chainId,destination_task_id:draft,destination_revision:destinationRevision,destination_configuration_revision:'1',destination_requirements_revision:'1',destination_lease_id:ownerId('lease_')})});
+        expect(switched.status!==0 && JSON.stringify(switched.reply).includes('operation_conflict'),'real switch rejects assigned unpublished draft destination');
+        const source=await read('runtime.read',{taskId:first});
+        expect(source.leases.length===1 && source.leases[0][0]===input.lease_id,'rejected draft switch retains live source lease');
+        const target=await read('runtime.read',{taskId:draft});
+        expect(target.leases.length===0 && target.attempts.attempt_no==='0','rejected draft switch creates no destination attempt');
+        await mutate('task.cancel',{taskId:draft,body:'Exclude unstarted switch probe'});
+        await mutate('work.scope',{body:JSON.stringify({item:{kind:'task',id:draft},action:'exclude',reason:'Completed publication rejection probe'})});
+      }
+
       const childCall=(child:any,method:string,payload:any,capability=cap,expected_revision=revision)=>child.call({...input,operation_id:ownerId('op_'),method,expected_revision,capability,payload:JSON.stringify(payload)});
       for(const method of ['requirements.present','requirements.ack'])expect(childCall(worker,method,{requirements_revision:'1'}).status===0,'real '+method);
       expect(childCall(worker,'lease.submit',{requirements_revision:'1',head:'',summary:'Scoped verification passed'}).status===0,'real submission');
@@ -69,6 +90,8 @@ export async function ownerLocalWorkGraphFlow({session,bridgeId,cli,expect,stopO
     graph=await work();
     const receipts=graph.items.filter((row:any)=>row.kind==='receipt').map((row:any)=>row.record);
     expect(receipts.length===1 && receipts[0].dependent.id===second && receipts[0].prerequisite.id===first && receipts[0].dependent_generation===1 && receipts[0].prerequisite_generation===1,'real consumer freezes exact generation receipt');
+    await denied('task.reopen',{taskId:first,body:'Reject reopening legacy-consumed output'});
+
     const childCall=(child:any,method:string,payload:any,capability=cap)=>child.call({...input,operation_id:ownerId('op_'),method,expected_revision:revision,capability,payload:JSON.stringify(payload)});
     for(const method of ['requirements.present','requirements.ack'])expect(childCall(worker,method,{requirements_revision:'1'}).status===0,'consumer '+method);
     expect(childCall(worker,'lease.submit',{requirements_revision:'1',head:'',summary:'Consumer checks passed'}).status===0,'consumer submits');

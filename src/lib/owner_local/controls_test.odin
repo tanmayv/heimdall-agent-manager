@@ -53,10 +53,10 @@ controls_block_explicit_resolution_and_handoff_history :: proc(t:^testing.T) {
 }
 // Set up a second eligible task for the same exact child using signed device
 // operations; this is an assignment, never a synthetic live lease.
-control_destination_seed :: proc(t:^testing.T,f:^Fixture) {
+control_destination_seed :: proc(t:^testing.T,f:^Fixture,creation:string="task.create") {
     chains,_:=query(f.store.db,"SELECT revision FROM task_chains WHERE chain_id='chain'")
     p:=encode(doc(map[string]string{"title_cipher"=cipher(f,"destination"),"body_cipher"=cipher(f,"switch target")}))
-    testing.expect_value(t,invoke(f,command(f,"task.create","dest","dest",p,chains[0][0]),p).code,"ok")
+    testing.expect_value(t,invoke(f,command(f,creation,"dest","dest",p,chains[0][0]),p).code,"ok")
     p=`{"instance_id":"instance","configuration_revision":"1","enabled":"1"}`
     testing.expect_value(t,execute(&f.store,command(f,"fleet.edit","dest_fleet","dest",p,"1"),p,"",f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},lease_child()).code,"ok")
     config,_,_:=lifecycle_config(&f.store,"chain","task")

@@ -33,10 +33,15 @@ work_snapshot :: proc(s:^Store,chain,kind,id:string)->(Work_Snapshot,bool) {
     if !read do return {},false
     return Work_Snapshot{number(execution),true,state=="done" || state=="failed" || state=="cancelled" || state=="superseded",state=="done",manifest},true
 }
-work_inputs_ready :: proc(s:^Store,chain,kind,id:string)->bool {
-    edges,ok:=query(s.db,`SELECT prerequisite_kind,prerequisite_id FROM local_work_active_dependencies WHERE chain_id=?1 AND dependent_kind=?2 AND dependent_id=?3
+// A single effective input graph governs admission and generation receipts.
+// UNION deduplicates overlaps; private generated-stage DAGs stay executor-owned.
+work_input_edges :: proc(s:^Store,chain,kind,id:string)->([dynamic][]string,bool) {
+    return query(s.db,`SELECT prerequisite_kind,prerequisite_id FROM local_work_active_dependencies WHERE chain_id=?1 AND dependent_kind=?2 AND dependent_id=?3
       UNION SELECT 'task',prerequisite FROM local_dependencies d WHERE chain_id=?1 AND task_id=?3 AND ?2='task'
-      AND NOT EXISTS(SELECT 1 FROM local_workflow_tasks w WHERE w.chain_id=d.chain_id AND w.task_id=d.task_id)`,chain,kind,id)
+      AND NOT EXISTS(SELECT 1 FROM local_workflow_tasks w WHERE w.chain_id=d.chain_id AND w.task_id=d.task_id) ORDER BY 1,2`,chain,kind,id)
+}
+work_inputs_ready :: proc(s:^Store,chain,kind,id:string)->bool {
+    edges,ok:=work_input_edges(s,chain,kind,id)
     if !ok do return false
     for edge in edges {
         snapshot,valid:=work_snapshot(s,chain,edge[0],edge[1])
@@ -51,7 +56,7 @@ work_unconsumed :: proc(s:^Store,chain,kind,id:string)->bool {
 work_capture_inputs :: proc(s:^Store,chain,kind,id:string,seq,now:i64)->bool {
     consumer,valid:=work_snapshot(s,chain,kind,id)
     if !valid || !consumer.started || consumer.terminal || consumer.generation<1 do return false
-    edges,ok:=query(s.db,"SELECT prerequisite_kind,prerequisite_id FROM local_work_active_dependencies WHERE chain_id=? AND dependent_kind=? AND dependent_id=? ORDER BY prerequisite_kind,prerequisite_id",chain,kind,id)
+    edges,ok:=work_input_edges(s,chain,kind,id)
     if !ok do return false
     generation:=fmt.tprintf("%d",consumer.generation)
     for edge in edges {

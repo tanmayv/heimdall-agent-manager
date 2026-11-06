@@ -166,7 +166,7 @@ work_command :: proc(s:^Store,c:json.Object,body:string,seq,now:i64)->string {
 // and stage expansion implementations remain the single runtime authority.
 work_after_event :: proc(tx:^Transaction,chain,task,kind,principal,op,payload:string,seq,now:i64)->bool {
     s:=tx.store
-    if kind=="lease.claim" {
+    if kind=="lease.claim" || kind=="lease.submit" {
         generated,read:=query(s.db,"SELECT 1 FROM local_workflow_tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !read do return false
         if len(generated)==0 && !work_capture_inputs(s,chain,"task",task,seq,now) do return false
