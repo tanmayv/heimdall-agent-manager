@@ -159,7 +159,7 @@ controls_v6_upgrade_collision_and_commit_rollback_preserve_live_fences :: proc(t
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
     rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM local_assignment_history),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL) FROM runtime_database")
-    testing.expect(t,rows[0][0]=="10" && rows[0][1]=="10" && rows[0][2]=="1" && rows[0][3]=="1")
+    testing.expect(t,rows[0][0]=="11" && rows[0][1]=="11" && rows[0][2]=="1" && rows[0][3]=="1")
     testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
 }
 @(test)

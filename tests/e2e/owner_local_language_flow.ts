@@ -28,14 +28,25 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
   await mutate('workflow.run',{run_id:'dynamic',workflow_id:'dynamic',version:'1',inputs:JSON.stringify({goal:'real demo'})});
   const worker=await launchChild(),reviewer=await launchChild(),coordinator=await launchChild();
   const inventory=async()=>{
-    const result:any={runs:[],tasks:[],events:[]};let cursor='';
-    for(let page=0;page<100;page++){
-      const data=await detail('workflow.read',{cursor});
-      for(const kind of ['runs','tasks','events'])result[kind].push(...data[kind]);
-      if(!data.next_cursor)return result;
-      cursor=data.next_cursor;
+    const deadline=Date.now()+15000;
+    for(let attempt=0;attempt<50;attempt++){
+      const result:any={runs:[],tasks:[],events:[]};let cursor='';
+      try {
+        for(let page=0;page<100;page++){
+          const data=await detail('workflow.read',{cursor});
+          for(const kind of ['runs','tasks','events'])result[kind].push(...data[kind]);
+          if(!data.next_cursor)return result;
+          cursor=data.next_cursor;
+        }
+        throw new Error('workflow inventory did not terminate');
+      } catch(error) {
+        // Publisher acknowledgements advance the owner snapshot between pages.
+        // Discard the entire partial result and retry the signed first page.
+        if(!(error instanceof Error) || error.message!=='stale_cursor' || Date.now()>=deadline)throw error;
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
     }
-    throw new Error('workflow inventory did not terminate');
+    throw new Error('workflow inventory snapshot did not stabilize');
   };
   const tasks=async(run:string,execution:string,stage:string)=>(await inventory()).tasks.filter((r:any)=>r[0]===run && r[1]===execution && r[2].startsWith(stage+':'));
   const finish=async(taskId:string,output?:any)=>{
@@ -52,7 +63,9 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     expect(submitted.status===0,'dynamic structured submit');
     const verdict={requirements_revision:'1',attempt:'1',head:'',verdict:'approve',summary:'Independent dynamic review'};
     const opened=await call(reviewer,'review.open',verdict,'');expect(opened.status===0,'dynamic independent review opens');
-    expect((await call(reviewer,'review.post',verdict,JSON.parse(opened.data.body).capability)).status===0,'dynamic independent review approves');
+    const reviewRequest={...base,method:'review.post',operation_id:ownerId('op_'),expected_revision:await revision(taskId),capability:JSON.parse(opened.data.body).capability,payload:JSON.stringify(verdict)};
+    expect(reviewer.call(reviewRequest).status===0,'dynamic independent review approves');
+    expect(reviewer.call(reviewRequest).data.replay,'exact successful review replay preserves one follow-up');
     if(output!==undefined) {
       const retained=await detail('submission.read',{taskId,attempt:'1',offset:'0'});
       expect(JSON.stringify(JSON.parse(retained.output))===JSON.stringify(output),'structured output retained through real relay');
@@ -93,6 +106,19 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     }
     expect(!!summaryFollow,'summary-only submission launches on_output with empty output fallback');
     await finish(summaryFollow);
+    const ordinarySource=ownerId('task_');
+    await human('task.create',{taskId:ordinarySource,expectedRevision:await revision(),title:'Ordinary output producer',body:'Owner-local ordinary task'});
+    await human('requirements.edit',{taskId:ordinarySource,expectedRevision:await revision(ordinarySource),requirementsRevision:'1',body:JSON.stringify({goal:'Produce ordinary output',acceptance:['Done'],output:{schema:'inline',required:['summary']},on_output:{workflow:'follow',inputs:{summary:'{{output.summary}}'}}})});
+    await finish(ordinarySource,{summary:'ordinary-bound'});
+    const ordinaryFollowers=[];
+    for(const row of (await inventory()).tasks.filter((r:any)=>r[2]==='follow:0')) {
+      if((await detail('task.read',{taskId:row[3]})).title==='Follow ordinary-bound')ordinaryFollowers.push(row[3]);
+    }
+    expect(ordinaryFollowers.length===1,'ordinary task output launches exactly one bound sibling after exact review replay');
+    let ordinaryBlocked=false;
+    try{await human('task.reopen',{taskId:ordinarySource,expectedRevision:await revision(ordinarySource),body:'Retry consumed ordinary output'});}catch{ordinaryBlocked=true;}
+    expect(ordinaryBlocked,'ordinary consumed output fences task reopen');
+    await finish(ordinaryFollowers[0]);
     const retrySpec={schema:'workflow.v1',stages:[{key:'gate',kind:'gate',approver:'user'},{key:'result',depends_on:['gate'],brief:{goal:'Retry result',acceptance:['Done']}}]};
     await mutate('workflow.define',{workflow_id:'retry',version:'1',title:'Retry',spec:JSON.stringify(retrySpec)});
     await mutate('workflow.run',{run_id:'retry',workflow_id:'retry',version:'1',inputs:'{}'});
@@ -106,6 +132,7 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
     await worker.stop();await reviewer.stop();await coordinator.stop();
     await stopOwner();await restartOwner();
     expect((await inventory()).runs.find((r:any)=>r[0]==='retry')[5]==='done','real language execution and retry survive owner restart');
+    expect((await inventory()).tasks.filter((r:any)=>r[3]===ordinaryFollowers[0]).length===1,'ordinary on_output sibling survives restart exactly once');
     expect((await detail('chain.search',{query:'dynamic-planned'})).hits.length>0,'structured output remains searchable after cold rebuild');
 
     const {JSDOM}=await import('jsdom');const React=await import('react');
@@ -126,7 +153,14 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
       await React.act(async()=>button().click());
       await wait(()=>!!dom.window.document.querySelector('pre')?.textContent?.includes('dynamic'));
       await wait(()=>!button().disabled);
-      expect(!!dom.window.document.querySelector('pre')?.textContent?.includes('write:1'),'rendered production UI shows actual dynamic fan-out history after restart');
+      for(let page=0;page<100 && !dom.window.document.querySelector('pre')?.textContent?.includes('write:1');page++){
+        const next=dom.window.document.querySelector<HTMLButtonElement>('[data-debug-id=owner-local-workflow-next]');
+        if(!next)break;
+        await wait(()=>!next.disabled);
+        await React.act(async()=>next.click());
+        await wait(()=>!button().disabled);
+      }
+      expect(!!dom.window.document.querySelector('pre')?.textContent?.includes('write:1'),'rendered production UI pagination shows actual dynamic fan-out history after restart');
     } finally {await React.act(async()=>root.unmount());globalThis.fetch=originalFetch;clearKeyringSession();dom.window.close();keys.forEach((k,i)=>{if(descriptors[i])Object.defineProperty(globalThis,k,descriptors[i]!);else delete(globalThis as any)[k];});}
 
     expect(true,'real dynamic templates/fan-out/gates/coordinator/results/on_output/retry passed');

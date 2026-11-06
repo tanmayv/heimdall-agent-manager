@@ -78,6 +78,9 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         generated,checked:=query(s.db,"SELECT 1 FROM local_workflow_language_items WHERE task_id=?",task)
         if !checked do return "storage_error"
         if len(generated)>0 do return "operation_conflict"
+        consumed,read_consumed:=query(s.db,"SELECT 1 FROM local_workflow_output_triggers WHERE chain_id=? AND source_task=? AND consumed=1 LIMIT 1",chain,task)
+        if !read_consumed do return "storage_error"
+        if len(consumed)>0 do return "operation_conflict"
         if mode!="cancelled" && state!="done" && state!="merge_blocked" do return "operation_conflict"
         mode="ready";next="ready"
         if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"

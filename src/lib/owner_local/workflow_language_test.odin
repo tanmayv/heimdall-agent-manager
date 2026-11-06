@@ -13,14 +13,18 @@ language_test_define :: proc(f:^Fixture,id,spec:string)->Result {
 language_test_run :: proc(f:^Fixture,id,run,inputs:string)->Result {
     return advanced_call(f,"workflow.run",fmt.tprintf("run_%s",run),encode(doc(map[string]string{"workflow_id"=id,"version"="1","run_id"=run,"inputs"=inputs})))
 }
-language_child_call :: proc(f:^Fixture,task,lease:string,child:Child,method,op,payload,cap:string)->Result {
+language_child_raw :: proc(f:^Fixture,task,lease:string,child:Child,method,op,payload,cap:string)->string {
     rows,ok:=query(f.store.db,"SELECT revision FROM tasks WHERE chain_id='chain' AND task_id=?",task)
-    if !ok || len(rows)!=1 do return fail("storage_error")
+    if !ok || len(rows)!=1 do return ""
     raw:=lifecycle_raw(f,child,method,op,payload,cap,rows[0][0])
     c,_:=contracts.owner_parse(raw,"lifecycle_command")
     c["task_id"]=json.String(task);c["lease_id"]=json.String(lease)
     sig,_:=test_sign(&f.owner_priv,"lifecycle_command",c);c["signature"]=json.String(sig)
-    return execute_lifecycle(&f.store,encode(c),payload,cap,child,f.owner,1000,Signer{&f.owner_priv,test_sign},Source_Proof{"",true})
+    return encode(c)
+}
+language_child_call :: proc(f:^Fixture,task,lease:string,child:Child,method,op,payload,cap:string)->Result {
+    raw:=language_child_raw(f,task,lease,child,method,op,payload,cap)
+    return execute_lifecycle(&f.store,raw,payload,cap,child,f.owner,1000,Signer{&f.owner_priv,test_sign},Source_Proof{"",true})
 }
 language_finish :: proc(t:^testing.T,f:^Fixture,task,output:string) {
     workflow_bind(t,f,task)
@@ -296,4 +300,189 @@ language_on_output_without_output_contract_uses_empty_output_and_raw_bindings ::
         testing.expect_value(t,rows[0][2],"{}")
         testing.expect_value(t,rows[0][3],"1")
     }
+}
+
+// Ordinary producers have task-attempt prerequisites, not invented workflow runs.
+@(test)
+language_ordinary_on_output_replay_restart_and_consumed_reopen :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","title":"Follow {{inputs.summary}}","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
+    brief:=`{"goal":"Ordinary producer","acceptance":["done"],"on_output":{"workflow":"follow","inputs":{"summary":"{{output.summary}}"}}}`
+    req_payload:=encode(doc(map[string]string{"requirements_revision"="1","body_cipher"=cipher(f,brief)}))
+    testing.expect_value(t,invoke(f,command(f,"requirements.edit","ordinary_brief","task",req_payload,"1"),req_payload).code,"ok")
+    // Bind through current signed task revisions.
+    child:=lease_child()
+    payload:=encode(doc(map[string]string{"instance_id"=child.instance,"configuration_revision"="1","enabled"="1"}))
+    rows,_:=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
+    testing.expect_value(t,execute(&f.store,command(f,"fleet.edit","ordinary_fleet","task",payload,rows[0][0]),payload,"",f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},child).code,"ok")
+    payload=encode(doc(map[string]string{"configuration_revision"="1","author_agent_id"="author","reviewer_agent_id"="reviewer","reviewer_instance_id"="review_instance","directory_id"="directory","merge_policy"="none","repository"="","worktree"="","source_branch"="","target_branch"="","base_head"=""}))
+    rows,_=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
+    testing.expect_value(t,execute(&f.store,command(f,"lifecycle.configure","ordinary_config","task",payload,rows[0][0]),payload,"",f.creator,f.owner,1,"head",1000,&f.kr,Signer{&f.owner_priv,test_sign},{},Lifecycle_Proof{child,lifecycle_reviewer(),true}).code,"ok")
+    rows,_=query(f.store.db,"SELECT revision FROM tasks WHERE task_id='task'")
+    raw:=workflow_lease_raw(f,"task","ordinary_lease","ordinary_claim")
+    c,_:=contracts.owner_parse(raw,"lease_command");c["expected_revision"]=json.String(rows[0][0])
+    sig,_:=test_sign(&f.owner_priv,"lease_command",c);c["signature"]=json.String(sig)
+    claimed:=lease_invoke(f,encode(c),"",child)
+    if !testing.expect_value(t,claimed.code,"ok") do return
+    cap:=result_cap(claimed)
+    for method in ([2]string{"requirements.present","requirements.ack"}) {
+        testing.expect_value(t,language_child_call(f,"task","ordinary_lease",child,method,method,`{"requirements_revision":"1"}`,cap).code,"ok")
+    }
+    testing.expect_value(t,language_child_call(f,"task","ordinary_lease",child,"lease.submit","ordinary_submit",`{"requirements_revision":"1","head":"","summary":"done","output":"{\"summary\":\"ordinary-bound\"}"}`,cap).code,"ok")
+    verdict:=lifecycle_verdict()
+    opened:=language_child_call(f,"task","ordinary_lease",lifecycle_reviewer(),"review.open","ordinary_open",verdict,"")
+    if !testing.expect_value(t,opened.code,"ok") do return
+    review_cap:=result_cap(opened)
+    review_raw:=language_child_raw(f,"task","ordinary_lease",lifecycle_reviewer(),"review.post","ordinary_review",verdict,review_cap)
+    testing.expect(t,exec(f.store.db,`CREATE TABLE ordinary_commit_fail(id INTEGER PRIMARY KEY);
+      CREATE TABLE ordinary_commit_ref(id INTEGER REFERENCES ordinary_commit_fail(id) DEFERRABLE INITIALLY DEFERRED);
+      CREATE TRIGGER ordinary_trigger_commit_failure AFTER INSERT ON local_workflow_output_triggers BEGIN INSERT INTO ordinary_commit_ref VALUES(1); END;`))
+    failed:=execute_lifecycle(&f.store,review_raw,verdict,review_cap,lifecycle_reviewer(),f.owner,1000,Signer{&f.owner_priv,test_sign})
+    testing.expect_value(t,failed.code,"storage_error")
+    rolled_back,rollback_read:=query(f.store.db,"SELECT (SELECT count(*) FROM local_workflow_runs),(SELECT count(*) FROM local_workflow_output_triggers),(SELECT count(*) FROM command_receipts WHERE operation_id='ordinary_review'),(SELECT state FROM lifecycle_state WHERE task_id='task')")
+    testing.expect(t,rollback_read && rolled_back[0][0]=="0" && rolled_back[0][1]=="0" && rolled_back[0][2]=="0" && rolled_back[0][3]=="in_review")
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER ordinary_trigger_commit_failure"))
+    approved:=execute_lifecycle(&f.store,review_raw,verdict,review_cap,lifecycle_reviewer(),f.owner,1000,Signer{&f.owner_priv,test_sign})
+    testing.expect_value(t,approved.code,"ok")
+    found,ok:=query(f.store.db,"SELECT source_run,source_execution,target_run,consumed FROM local_workflow_output_triggers WHERE source_task='task'")
+    if !testing.expect(t,ok && len(found)==1) do return
+    testing.expect_value(t,found[0][0],"")
+    testing.expect_value(t,found[0][1],"")
+    testing.expect_value(t,found[0][3],"1")
+    follow:=language_tasks(f,found[0][2],"1","follow")
+    if testing.expect_value(t,len(follow),1) do testing.expect_value(t,follow[0][1],"Follow ordinary-bound")
+    replay:=execute_lifecycle(&f.store,review_raw,verdict,review_cap,lifecycle_reviewer(),f.owner,1000,Signer{&f.owner_priv,test_sign})
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==approved.body)
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    tx:Transaction
+    testing.expect(t,transaction_begin(&f.store,&tx))
+    testing.expect(t,workflow_refresh(&f.store))
+    testing.expect(t,transaction_commit(&tx))
+    found,ok=query(f.store.db,"SELECT target_run FROM local_workflow_output_triggers WHERE source_task='task'")
+    testing.expect(t,ok && len(found)==1 && len(language_tasks(f,found[0][0],"1","follow"))==1)
+    replay=execute_lifecycle(&f.store,review_raw,verdict,review_cap,lifecycle_reviewer(),f.owner,1000,Signer{&f.owner_priv,test_sign})
+    testing.expect(t,replay.code=="ok" && replay.replay && replay.body==approved.body)
+    testing.expect_value(t,advanced_call(f,"task.reopen","ordinary_reopen","retry","task").code,"operation_conflict")
+}
+
+@(test)
+language_static_on_output_waits_for_run_and_fences_retry :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
+    def,_:=contracts.owner_parse(workflow_test_definition(),"workflow_definition")
+    v,_:=contracts.owner_request_document(field(def,"stages"));stages,_:=v.(json.Array)
+    first,_:=stages[0].(json.Object)
+    first["brief"]=json.String(`{"goal":"Source","acceptance":["done"],"on_output":{"workflow":"follow"}}`)
+    def["stages"]=json.String(encode(stages))
+    testing.expect_value(t,advanced_call(f,"workflow.define","static_define",encode(def)).code,"ok")
+    testing.expect_value(t,advanced_call(f,"workflow.run","static_run",`{"run_id":"static","workflow_id":"definition","version":"1"}`).code,"ok")
+    language_finish(t,f,workflow_task_id("chain","static","1","first"),"")
+    rows,ok:=query(f.store.db,"SELECT target_run,consumed FROM local_workflow_output_triggers WHERE source_run='static'")
+    if !testing.expect(t,ok && len(rows)==1) do return
+    testing.expect_value(t,rows[0][1],"0")
+    testing.expect_value(t,len(language_tasks(f,rows[0][0],"1","follow")),0)
+    language_finish(t,f,workflow_task_id("chain","static","1","second"),"")
+    testing.expect_value(t,len(language_tasks(f,rows[0][0],"1","follow")),1)
+    testing.expect_value(t,advanced_call(f,"workflow.retry","static_consumed_retry",`{"run_id":"static","execution":"1"}`).code,"operation_conflict")
+    testing.expect_value(t,advanced_call(f,"workflow.run","static_unconsumed_run",`{"run_id":"stale_static","workflow_id":"definition","version":"1"}`).code,"ok")
+    language_finish(t,f,workflow_task_id("chain","stale_static","1","first"),"")
+    stale_rows,stale_read:=query(f.store.db,"SELECT target_run FROM local_workflow_output_triggers WHERE source_run='stale_static'")
+    if !testing.expect(t,stale_read && len(stale_rows)==1) do return
+    testing.expect_value(t,advanced_call(f,"workflow.retry","static_unconsumed_retry",`{"run_id":"stale_static","execution":"1"}`).code,"ok")
+    states,read:=query(f.store.db,"SELECT state,failure FROM local_workflow_language_executions WHERE run_id=?",stale_rows[0][0])
+    testing.expect(t,read && len(states)==1 && states[0][0]=="failed" && states[0][1]=="stale_source_execution")
+    testing.expect_value(t,len(language_tasks(f,stale_rows[0][0],"1","follow")),0)
+
+}
+
+@(test)
+language_on_output_capacity_failure_is_durable_and_visible :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
+    testing.expect_value(t,language_test_define(f,"source",`{"schema":"workflow.v1","stages":[{"key":"source","brief":{"goal":"Source","acceptance":["done"],"on_output":{"workflow":"follow"}}}]}`).code,"ok")
+    testing.expect_value(t,language_test_run(f,"source","source","{}").code,"ok")
+    // Fill through the signed public path to exactly128 retained runs.
+    for i in 0..<127 {
+        id:=fmt.tprintf("budget_%d",i)
+        if !testing.expect_value(t,language_test_run(f,"follow",id,"{}").code,"ok") do return
+    }
+    task:=language_tasks(f,"source","1","source")[0][0]
+    language_finish(t,f,task,"")
+    for i in 0..<2 {
+        close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+        tx:Transaction
+        testing.expect(t,transaction_begin(&f.store,&tx))
+        testing.expect(t,workflow_refresh(&f.store))
+        testing.expect(t,transaction_commit(&tx))
+        rows,ok:=query(f.store.db,"SELECT (SELECT count(*) FROM local_workflow_runs),(SELECT count(*) FROM local_workflow_output_triggers),(SELECT count(*) FROM local_workflow_trigger_failures WHERE reason='workflow_budget')")
+        testing.expect(t,ok && rows[0][0]=="128" && rows[0][1]=="0" && rows[0][2]=="1",fmt.tprintf("restart %d",i))
+        cursor:=""
+        visible:=false
+        for page in 0..<10 {
+            inventory:=workflow_inventory(&f.store,"chain",cursor,100,1)
+            testing.expect_value(t,inventory.code,"ok")
+            if strings.contains(inventory.body,"workflow_budget") do visible=true
+            v,valid:=contracts.owner_request_document(inventory.body);o,obj:=v.(json.Object)
+            if !valid || !obj { testing.expect(t,false);break }
+            cursor=field(o,"next_cursor")
+            if cursor=="" do break
+        }
+        testing.expect(t,visible)
+    }
+}
+
+@(test)
+language_v10_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    testing.expect_value(t,language_test_define(f,"follow",`{"schema":"workflow.v1","stages":[{"key":"follow","brief":{"goal":"Follow","acceptance":["done"]}}]}`).code,"ok")
+    testing.expect_value(t,language_test_define(f,"source",`{"schema":"workflow.v1","stages":[{"key":"source","brief":{"goal":"Source","acceptance":["done"],"on_output":{"workflow":"follow"}}}]}`).code,"ok")
+    testing.expect_value(t,language_test_run(f,"source","source","{}").code,"ok")
+    language_finish(t,f,language_tasks(f,"source","1","source")[0][0],"")
+    cap:=lifecycle_ready(t,f)
+    preserved:="SELECT (SELECT json_group_array(json_array(chain_id,source_task,source_attempt,source_run,source_execution,target_run,consumed)) FROM local_workflow_output_triggers),(SELECT json_group_array(json_array(principal_id,operation_id,input_digest,result_json)) FROM command_receipts),(SELECT capability_json FROM local_leases WHERE retired_seq IS NULL LIMIT 1),(SELECT json_group_array(json_array(chain_id,task_id,attempt,output_json)) FROM local_workflow_outputs)"
+    before,read:=query(f.store.db,preserved)
+    if !testing.expect(t,read && len(before)==1) do return
+    close(&f.store)
+    db:DB
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    // Reconstruct the genuine V10 header and non-null workflow prerequisites.
+    testing.expect(t,exec(db,"CREATE TEMP TABLE saved_triggers AS SELECT * FROM local_workflow_output_triggers; DROP TABLE local_workflow_output_triggers;"))
+    m10:=string(MIGRATION_010)
+    start:=strings.index(m10,"CREATE TABLE local_workflow_output_triggers(")
+    end:=strings.index(m10,"CREATE TABLE local_workflow_registry_envelopes(")
+    testing.expect(t,exec(db,m10[start:end]))
+    testing.expect(t,exec(db,"INSERT INTO local_workflow_output_triggers SELECT * FROM saved_triggers; DROP TABLE saved_triggers;"))
+    prefix:=m10[:strings.index(m10,"CREATE TABLE local_workflow_language_runs")]
+    testing.expect(t,exec(db,prefix))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=10; CREATE VIEW local_workflow_output_triggers_v11 AS SELECT 1;"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    rows,ok:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect(t,ok && rows[0][0]=="10" && rows[0][1]=="10")
+    after,checked:=query(db,preserved)
+    if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
+    testing.expect(t,exec(db,`DROP VIEW local_workflow_output_triggers_v11;
+      CREATE TABLE w11_fail(id INTEGER PRIMARY KEY);
+      CREATE TABLE w11_ref(id INTEGER REFERENCES w11_fail(id) DEFERRABLE INITIALLY DEFERRED);
+      CREATE TRIGGER w11_commit_fail AFTER UPDATE ON schema_migrations WHEN NEW.version=11 BEGIN INSERT INTO w11_ref VALUES(1); END;`))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    rows,ok=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect(t,ok && rows[0][0]=="10" && rows[0][1]=="10")
+    after,checked=query(db,preserved)
+    if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
+    testing.expect(t,exec(db,"DROP TRIGGER w11_commit_fail"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    after,checked=query(f.store.db,preserved)
+    if testing.expect(t,checked && len(after)==1) { for value,i in before[0] do testing.expect_value(t,after[0][i],value) }
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","after_v11",`{"requirements_revision":"1"}`,cap).code,"ok")
+    rows,ok=query(f.store.db,"PRAGMA foreign_key_check")
+    testing.expect(t,ok && len(rows)==0)
 }

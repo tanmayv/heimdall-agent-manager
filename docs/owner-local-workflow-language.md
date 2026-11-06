@@ -101,7 +101,7 @@ and dependency retention to the existing account quota. Existing encrypted-body
 and rendered-field limits still apply. A failed expansion publishes no partial
 stage. A zero-item expansion persists an explicit marker.
 
-Schema V10 is additive after accepted V8 grants and V9 static workflows. Runtime
+Schema V10 adds the language after accepted V8 grants and V9 static workflows. V11 preserves V10 evidence while allowing a null run/execution pair for ordinary task-attempt output prerequisites. Runtime
 expansion and source/capability/receipt/dependency changes share the owner UoW.
 Registry preparation is a durable intent: it freezes exact encrypted/signed
 registry bytes locally before network delivery. Recovered claims reuse those
@@ -122,3 +122,17 @@ Commands and final outcomes are recorded in the task's submit summary. Focused
 checks include the pure language suite, owner store suite, shared contracts,
 original workflow regressions, retained UI tests, typecheck, affected binary
 builds and that complete real demo.
+
+Ordinary tasks can set the same strict `output` and `on_output` fields through
+`requirements.edit`; static workflow task briefs also retain them. Trigger
+identity binds the immutable submitted task attempt, requirements and output.
+An ordinary producer gates its sibling on that exact completed attempt;
+a static or language producer gates its sibling on the entire source execution.
+Once the sibling starts, reopening the ordinary source or retrying its source
+workflow is rejected. Superseded execution prerequisites cannot start a sibling.
+
+At the exact 128-run chain budget, automatic follow-ups record one durable
+`workflow_budget` trigger outcome per source attempt. Workflow inventory exposes
+that outcome for ordinary and generated producers, including after restart;
+it never silently reports a follow-up as executed. Missing-reference and invalid
+input outcomes use the same bounded, immutable failure ledger.

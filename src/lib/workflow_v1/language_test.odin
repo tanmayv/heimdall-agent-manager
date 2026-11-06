@@ -169,3 +169,16 @@ language_on_output_binding_uses_original_scalar_rendering :: proc(t:^testing.T) 
     context.allocator=context.temp_allocator
     testing.expect_value(t,substitute_on_output_placeholders("{{output.summary}} {{output.count}}",`{"summary":"done","count":2}`),"done 2")
 }
+
+@(test)
+language_static_briefs_preserve_output_triggers_and_reject_stage_templates :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    testing.expect(t,brief_bounded(`{"goal":"Ordinary","acceptance":["done"],"output":{"schema":"inline","required":["summary"]},"on_output":{"workflow":"next","inputs":{"summary":"{{output.summary}}","nested":{"rate":1.5}}}}`))
+    testing.expect(t,static_brief_bounded(`{"goal":"Static","acceptance":["done"],"on_output":{"workflow":"next","inputs":{"summary":"{{output}}"}}}`))
+    for raw in ([4]string{
+        `{"goal":"Bad","acceptance":["done"],"unknown":true}`,
+        `{"goal":"Bad","acceptance":["done"],"on_output":{"workflow":"next","inputs":{"x":"{{stage.source.output.x}}"}}}`,
+        `{"goal":"Bad","acceptance":["done"],"on_output":{"workflow":"next","inputs":{"x":"{{output.x"}}}`,
+        `{"goal":"{{inputs.goal}}","acceptance":["done"]}`,
+    }) { testing.expect(t,!static_brief_bounded(raw),raw) }
+}

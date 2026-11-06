@@ -122,15 +122,25 @@ language_refresh_pass :: proc(s:^Store)->bool {
     if !ok do return false
     for row in rows {
         chain,run,execution:=row[0],row[1],row[2]
-        prerequisite,prereq_read:=query(s.db,"SELECT g.source_execution,r.current_execution,e.state,g.consumed FROM local_workflow_output_triggers g JOIN local_workflow_runs r ON r.chain_id=g.chain_id AND r.run_id=g.source_run JOIN local_workflow_language_executions e ON e.chain_id=g.chain_id AND e.run_id=g.source_run AND e.execution=g.source_execution WHERE g.chain_id=? AND g.target_run=?",chain,run)
+        prerequisite,prereq_read:=query(s.db,`SELECT g.source_execution,r.current_execution,e.state,g.consumed,
+          g.source_attempt,l.attempt,l.state,COALESCE(c.mode,'ready'),COALESCE(g.source_run,'')
+          FROM local_workflow_output_triggers g
+          LEFT JOIN local_workflow_runs r ON r.chain_id=g.chain_id AND r.run_id=g.source_run
+          LEFT JOIN local_workflow_executions e ON e.chain_id=g.chain_id AND e.run_id=g.source_run AND e.execution=g.source_execution
+          JOIN lifecycle_state l ON l.chain_id=g.chain_id AND l.task_id=g.source_task
+          LEFT JOIN local_controls c ON c.chain_id=g.chain_id AND c.task_id=g.source_task
+          WHERE g.chain_id=? AND g.target_run=?`,chain,run)
         if !prereq_read do return false
         if len(prerequisite)==1 {
             p:=prerequisite[0]
-            if p[0]!=p[1] {
+            stale:=p[4]!=p[5]
+            ready:=p[6]=="done" && p[7]=="ready"
+            if p[8]!="" { stale=p[0]!=p[1];ready=p[2]=="done" }
+            if stale {
                 if _,ok=query(s.db,"UPDATE local_workflow_language_executions SET state='failed',failure='stale_source_execution' WHERE chain_id=? AND run_id=? AND execution=?",chain,run,execution);!ok do return false
                 continue
             }
-            if p[2]!="done" do continue
+            if !ready do continue
             if p[3]=="0" { if _,ok=query(s.db,"UPDATE local_workflow_output_triggers SET consumed=1 WHERE chain_id=? AND target_run=?",chain,run);!ok do return false }
         }
         spec,parsed:=language_definition(s,chain,row[3],row[4])
@@ -279,7 +289,19 @@ language_resolve_ref :: proc(s:^Store,chain,ref:string)->(string,string,bool) {
     return "","",false
 }
 language_triggers :: proc(s:^Store)->(bool,bool) {
-    rows,ok:=query(s.db,"SELECT t.chain_id,t.run_id,t.execution,t.task_id,l.attempt,q.brief_json,COALESCE(o.output_json,'{}'),x.principal_id,x.operation_id FROM local_workflow_tasks t JOIN local_workflow_runs r USING(chain_id,run_id) JOIN local_workflow_language_executions x USING(chain_id,run_id,execution) JOIN lifecycle_state l ON l.chain_id=t.chain_id AND l.task_id=t.task_id JOIN task_requirements q ON q.chain_id=t.chain_id AND q.task_id=t.task_id LEFT JOIN local_workflow_outputs o ON o.chain_id=t.chain_id AND o.task_id=t.task_id AND o.attempt=l.attempt WHERE t.execution=r.current_execution AND x.state IN('running','done') AND l.state='done' AND json_type(q.brief_json,'$.on_output')='object' AND q.revision=(SELECT max(revision) FROM task_requirements qr WHERE qr.chain_id=q.chain_id AND qr.task_id=q.task_id) AND NOT EXISTS(SELECT 1 FROM local_workflow_output_triggers g WHERE g.chain_id=t.chain_id AND g.source_task=t.task_id AND g.source_attempt=l.attempt) AND NOT EXISTS(SELECT 1 FROM local_workflow_trigger_failures f WHERE f.chain_id=t.chain_id AND f.source_task=t.task_id AND f.source_attempt=l.attempt) ORDER BY t.chain_id,t.run_id,t.task_id")
+    rows,ok:=query(s.db,`SELECT l.chain_id,COALESCE(t.run_id,''),COALESCE(cast(t.execution AS TEXT),''),l.task_id,l.attempt,
+      a.requirements_json,COALESCE(o.output_json,'{}'),a.principal_id,a.operation_id
+      FROM lifecycle_state l JOIN local_submissions a ON a.chain_id=l.chain_id AND a.task_id=l.task_id AND a.attempt=l.attempt
+      LEFT JOIN local_workflow_tasks t ON t.chain_id=l.chain_id AND t.task_id=l.task_id
+      LEFT JOIN local_workflow_runs r ON r.chain_id=t.chain_id AND r.run_id=t.run_id
+      LEFT JOIN local_workflow_executions x ON x.chain_id=t.chain_id AND x.run_id=t.run_id AND x.execution=t.execution
+      LEFT JOIN local_controls c ON c.chain_id=l.chain_id AND c.task_id=l.task_id
+      LEFT JOIN local_workflow_outputs o ON o.chain_id=l.chain_id AND o.task_id=l.task_id AND o.attempt=l.attempt
+      WHERE (t.task_id IS NULL OR (t.execution=r.current_execution AND x.state IN('running','done')))
+      AND l.state='done' AND COALESCE(c.mode,'ready')='ready' AND json_type(a.requirements_json,'$.on_output')='object'
+      AND NOT EXISTS(SELECT 1 FROM local_workflow_output_triggers g WHERE g.chain_id=l.chain_id AND g.source_task=l.task_id AND g.source_attempt=l.attempt)
+      AND NOT EXISTS(SELECT 1 FROM local_workflow_trigger_failures f WHERE f.chain_id=l.chain_id AND f.source_task=l.task_id AND f.source_attempt=l.attempt)
+      ORDER BY l.chain_id,l.task_id`)
     if !ok do return false,false
     changed:=false
     for row in rows {
@@ -300,7 +322,10 @@ language_triggers :: proc(s:^Store)->(bool,bool) {
         }
         count,read:=query(s.db,"SELECT count(*) FROM local_workflow_runs WHERE chain_id=?",row[0])
         if !read || len(count)!=1 do return false,false
-        if number(count[0][0])>=128 do continue
+        if number(count[0][0])>=128 {
+            if _,ok=query(s.db,"INSERT INTO local_workflow_trigger_failures VALUES(?,?,?,'workflow_budget')",row[0],row[3],row[4]);!ok do return false,false
+            continue
+        }
         input:=row[6]
         if value,present:=trigger["inputs"];present {
             mapping,object:=value.(json.Object)
@@ -326,7 +351,7 @@ language_triggers :: proc(s:^Store)->(bool,bool) {
         if !read_receipt || len(receipt)!=1 do return false,false
         c:=doc(map[string]string{"principal_id"=row[7],"operation_id"=row[8]})
         if !language_execution(s,row[0],run,"1",c,number(receipt[0][0])) do return false,false
-        if _,ok=query(s.db,"INSERT INTO local_workflow_output_triggers VALUES(?,?,?,?,?,?,0)",row[0],row[3],row[4],row[1],row[2],run);!ok do return false,false
+        if _,ok=query(s.db,"INSERT INTO local_workflow_output_triggers VALUES(?,?,?,NULLIF(?,''),NULLIF(?,''),?,0)",row[0],row[3],row[4],row[1],row[2],run);!ok do return false,false
         changed=true
     }
     return changed,true

@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
+import wf "odin_test:lib/workflow_v1"
 
 workflow_stages :: proc(def:json.Object) -> ([]json.Object,bool) {
     if strings.contains(field(def,"title"),"{{") || strings.contains(field(def,"title"),"}}") do return nil,false
@@ -17,9 +18,10 @@ workflow_stages :: proc(def:json.Object) -> ([]json.Object,bool) {
     for item,i in a {
         o,obj:=item.(json.Object)
         if !obj || !contracts.owner_document_valid("workflow_stage",o) || !brief_valid(field(o,"brief")) do return nil,false
-        for name in ([3]string{"title","body","brief"}) {
+        for name in ([2]string{"title","body"}) {
             if strings.contains(field(o,name),"{{") || strings.contains(field(o,name),"}}") do return nil,false
         }
+        if !wf.static_brief_bounded(field(o,"brief")) do return nil,false
         key:=field(o,"key")
         if keys[key] || len(field(o,"title"))>MAX_BODY || len(field(o,"body"))>MAX_BODY || len(encode(field(o,"title")))>MAX_ENCODED_FIELD || len(encode(field(o,"body")))>MAX_ENCODED_FIELD do return nil,false
         // Definitions are topologically ordered. This admits arbitrary static
@@ -76,6 +78,9 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
         rows,ok:=query(s.db,"SELECT workflow_id,definition_version,current_execution FROM local_workflow_runs WHERE chain_id=? AND run_id=?",chain,run)
         if !ok do return "storage_error"
         if len(rows)!=1 || rows[0][2]!=field(p,"execution") do return "stale_revision"
+        consumed,read_consumed:=query(s.db,"SELECT 1 FROM local_workflow_output_triggers WHERE chain_id=? AND source_run=? AND consumed=1 LIMIT 1",chain,run)
+        if !read_consumed do return "storage_error"
+        if len(consumed)>0 do return "operation_conflict"
         workflow=rows[0][0];version=rows[0][1]
         execution=fmt.tprintf("%d",number(rows[0][2])+1)
         old,read:=query(s.db,"SELECT task_id FROM local_workflow_tasks WHERE chain_id=? AND run_id=? AND execution=?",chain,run,rows[0][2])
@@ -130,9 +135,8 @@ dependency_command :: proc(s:^Store,c,p:json.Object)->string {
     return "ok"
 }
 workflow_refresh :: proc(s:^Store)->bool {
-    if !language_refresh(s) do return false
     _,ok:=query(s.db,"UPDATE local_workflow_executions SET state='done' WHERE state='running' AND NOT EXISTS(SELECT 1 FROM local_workflow_language_runs v WHERE v.chain_id=local_workflow_executions.chain_id AND v.run_id=local_workflow_executions.run_id) AND NOT EXISTS(SELECT 1 FROM local_workflow_tasks t LEFT JOIN lifecycle_state s ON s.chain_id=t.chain_id AND s.task_id=t.task_id LEFT JOIN local_controls c ON c.chain_id=t.chain_id AND c.task_id=t.task_id WHERE t.chain_id=local_workflow_executions.chain_id AND t.run_id=local_workflow_executions.run_id AND t.execution=local_workflow_executions.execution AND (s.state IS NULL OR s.state!='done' OR COALESCE(c.mode,'ready')!='ready'))")
-    return ok
+    return ok && language_refresh(s)
 }
 
 workflow_publications :: proc(tx:^Transaction,c:json.Object,body:string,seq:i64,kr:^vault.Vault_Keyring,sign:Signer)->bool {
@@ -176,7 +180,7 @@ workflow_inventory :: proc(s:^Store,chain,cursor:string,limit,revision:i64)->Res
       FROM local_workflow_runs r JOIN local_workflow_executions e ON e.chain_id=r.chain_id AND e.run_id=r.run_id AND e.execution=r.current_execution LEFT JOIN local_workflow_language_executions x ON x.chain_id=r.chain_id AND x.run_id=r.run_id AND x.execution=r.current_execution WHERE r.chain_id=?
       UNION ALL SELECT 'task',run_id,cast(execution AS TEXT),stage_key,task_id,'','' FROM local_workflow_tasks WHERE chain_id=?
       UNION ALL SELECT 'event',run_id,cast(execution AS TEXT),cast(event_seq AS TEXT),kind,principal_id,operation_id FROM local_workflow_events WHERE chain_id=?
-      UNION ALL SELECT 'event',t.run_id,cast(t.execution AS TEXT),'trigger_failed',f.reason,f.source_task,cast(f.source_attempt AS TEXT) FROM local_workflow_trigger_failures f JOIN local_workflow_tasks t ON t.chain_id=f.chain_id AND t.task_id=f.source_task WHERE f.chain_id=?
+      UNION ALL SELECT 'event',COALESCE(t.run_id,f.source_task),cast(COALESCE(t.execution,f.source_attempt) AS TEXT),'trigger_failed',f.reason,f.source_task,cast(f.source_attempt AS TEXT) FROM local_workflow_trigger_failures f LEFT JOIN local_workflow_tasks t ON t.chain_id=f.chain_id AND t.task_id=f.source_task WHERE f.chain_id=?
       ) ORDER BY kind,run_id,a,b LIMIT ? OFFSET ?`,chain,chain,chain,chain,fmt.tprintf("%d",limit+1),fmt.tprintf("%d",offset))
     if !ok do return fail("storage_error")
     runs:=make([dynamic][]string,context.temp_allocator)

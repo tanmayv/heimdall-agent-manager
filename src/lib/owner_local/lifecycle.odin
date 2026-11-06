@@ -5,6 +5,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
+import wf "odin_test:lib/workflow_v1"
 
 // Child agent identity is observed from the launch record, never caller JSON.
 Lifecycle_Proof :: struct { author,reviewer:Child, paths_valid:bool }
@@ -21,7 +22,7 @@ lifecycle_requirements :: proc(s:^Store,chain,task:string) -> ([]string,bool) {
 }
 brief_valid :: proc(raw:string) -> bool {
     v,ok:=contracts.owner_request_document(raw);o,obj:=v.(json.Object)
-    if !ok || !obj || len(o)!=2 do return false
+    if !ok || !obj || !wf.brief_bounded(raw) do return false
     goal,is_string:=o["goal"].(json.String)
     acceptance,is_array:=o["acceptance"].(json.Array)
     if !is_string || strings.trim_space(string(goal))=="" || !is_array || len(acceptance)==0 || len(acceptance)>100 do return false

@@ -63,6 +63,49 @@ brief_shape :: proc(o:json.Object)->bool {
     return true
 }
 
+// Shared strict shape for ordinary/static owner briefs and language stages.
+brief_bounded :: proc(raw:string)->bool {
+    v,valid:=contracts.owner_request_document(raw);o,obj:=v.(json.Object)
+    if !valid || !obj || !brief_shape(o) do return false
+    for key,value in o {
+        if key=="on_output" && !static_value_templates(value,true) do return false
+    }
+    return true
+}
+
+// Static/ordinary briefs have no stage renderer. Only on_output strings
+// may carry placeholders, which are resolved against the submitted output.
+static_value_templates :: proc(v:json.Value,allow_output:bool)->bool {
+    #partial switch value in v {
+    case json.String:
+        raw:=string(value)
+        if !allow_output do return !strings.contains(raw,"{{") && !strings.contains(raw,"}}")
+        pos:=0
+        for pos<len(raw) {
+            open:=strings.index(raw[pos:],"{{")
+            if open<0 do return true
+            start:=pos+open+2
+            close:=strings.index(raw[start:],"}}")
+            if close<0 do return false
+            token:=strings.trim_space(raw[start:start+close])
+            if token!="output" && (!strings.has_prefix(token,"output.") || strings.contains(token,"{{")) do return false
+            pos=start+close+2
+        }
+    case json.Object:
+        for _,item in value { if !static_value_templates(item,allow_output) do return false }
+    case json.Array:
+        for item in value { if !static_value_templates(item,allow_output) do return false }
+    case: return true
+    }
+    return true
+}
+static_brief_bounded :: proc(raw:string)->bool {
+    v,valid:=contracts.owner_request_document(raw);o,obj:=v.(json.Object)
+    if !valid || !obj || !brief_shape(o) do return false
+    for key,value in o { if !static_value_templates(value,key=="on_output") do return false }
+    return true
+}
+
 // Strict owner boundary for the original language, distinct from its historical
 // permissive scanner. Decoded duplicate keys, malformed JSON, unknown behavior,
 // command fields removed from the product, and unbounded definitions fail closed.
