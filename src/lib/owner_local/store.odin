@@ -254,7 +254,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "dependency.edit":
-        code:=dependency_command(s,c,p)
+        code:=dependency_command(s,c,p,seq)
         if code!="ok" do return fail(code)
         wrote=true
     case "review.roles":

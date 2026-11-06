@@ -79,3 +79,26 @@ CREATE TRIGGER local_budget_evidence_no_update BEFORE UPDATE ON local_budget_evi
 BEGIN SELECT RAISE(ABORT,'immutable budget evidence'); END;
 CREATE TRIGGER local_budget_evidence_no_delete BEFORE DELETE ON local_budget_evidence
 BEGIN SELECT RAISE(ABORT,'immutable budget evidence'); END;
+-- V16 remains under review: retain the independent control below our overlay.
+CREATE TABLE budget_control_owners (
+ chain_id TEXT NOT NULL, task_id TEXT NOT NULL, reason TEXT NOT NULL,
+ prior_json TEXT NOT NULL CHECK(json_valid(prior_json)),
+ PRIMARY KEY(chain_id,task_id)
+);
+CREATE TABLE local_dependency_retirements (
+ chain_id TEXT NOT NULL, task_id TEXT NOT NULL, seq INTEGER NOT NULL,
+ lease_id TEXT NOT NULL REFERENCES local_leases(lease_id),
+ PRIMARY KEY(chain_id,task_id,seq),
+ FOREIGN KEY(seq) REFERENCES local_events(seq) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TRIGGER dependency_retirement_no_update BEFORE UPDATE ON local_dependency_retirements BEGIN SELECT RAISE(ABORT,'immutable dependency retirement'); END;
+CREATE TRIGGER dependency_retirement_no_delete BEFORE DELETE ON local_dependency_retirements BEGIN SELECT RAISE(ABORT,'immutable dependency retirement'); END;
+CREATE TABLE native_budget_overlap (
+ chain_id TEXT NOT NULL, task_id TEXT NOT NULL,
+ local_seq INTEGER NOT NULL REFERENCES local_events(seq), native_event_id TEXT NOT NULL,
+ local_attempt TEXT NOT NULL, native_attempt TEXT NOT NULL,
+ PRIMARY KEY(chain_id,task_id,local_seq,native_event_id), UNIQUE(chain_id,task_id,native_event_id),
+ FOREIGN KEY(chain_id,task_id) REFERENCES native_budget_baselines(chain_id,task_id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TRIGGER native_overlap_no_update BEFORE UPDATE ON native_budget_overlap BEGIN SELECT RAISE(ABORT,'immutable overlap proof'); END;
+CREATE TRIGGER native_overlap_no_delete BEFORE DELETE ON native_budget_overlap BEGIN SELECT RAISE(ABORT,'immutable overlap proof'); END;

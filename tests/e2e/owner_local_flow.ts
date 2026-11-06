@@ -6,6 +6,12 @@ import { readFileSync } from 'node:fs';
 
 export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
+  if(process.env.HEIMDALL_E2E_OWNER_BUDGET_REWORK_ONLY==='1'){
+    await stopOwner();await restartOwner();
+    const {ownerLocalBudgetReworkFlow}=await import('./owner_local_budget_rework_flow.ts');
+    await ownerLocalBudgetReworkFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
+    return;
+  }
   if(process.env.HEIMDALL_E2E_OWNER_BUDGET_ONLY==='1'){
     const {ownerLocalBudgetFlow}=await import('./owner_local_budget_flow.ts');
     await ownerLocalBudgetFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
@@ -440,6 +446,10 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_BUDGET==='1'){
     const {ownerLocalBudgetFlow}=await import('./owner_local_budget_flow.ts');
     await ownerLocalBudgetFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
+  }
+  if(process.env.HEIMDALL_E2E_OWNER_BUDGET_REWORK==='1'){
+    const {ownerLocalBudgetReworkFlow}=await import('./owner_local_budget_rework_flow.ts');
+    await ownerLocalBudgetReworkFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
   }
   if(process.env.HEIMDALL_E2E_OWNER_GRANTS==='1'){
     const {ownerGrantsFlow}=await import('./owner_grants_flow.ts');

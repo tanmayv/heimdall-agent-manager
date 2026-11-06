@@ -61,7 +61,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "native_event_actor": return s=="agent" || s=="user" || s=="hub" || s=="bridge" || s=="coordinator"
     case "facet_kind": return s=="handoff" || s=="vcs" || s=="verify" || s=="output" || s=="runtime" || s=="artifacts" || s=="placement"
     case "optional_counter": return s=="" || owner_decimal_valid(s)
-    case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:replaced" || s=="expired:chain_closed"
+    case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:dep_added" || s=="expired:replaced" || s=="expired:chain_closed"
     case "hash": return owner_hex(s, 64)
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)

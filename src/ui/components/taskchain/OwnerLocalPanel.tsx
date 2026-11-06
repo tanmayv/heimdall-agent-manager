@@ -6,6 +6,15 @@ import { getKeyringSession, subscribeKeyringSession } from '../../utils/vaultKey
 import { decryptVaultText } from '../../utils/vaultContent';
 import { pinsFromChain, verifyDirectory } from '../../utils/vaultDirectoryVerify';
 
+const budgetMessages: Record<string, string> = {
+  budget_exhausted: 'Attempt budget exhausted; resolve the budget or cancel and reopen for a non-counting recovery attempt.',
+  activation_required: 'Imported history requires signed baseline activation.',
+  history_incomplete: 'Attempt history requires reconciliation before another grant.',
+  native_blocked: 'Imported task awaits an explicit signed answer before another grant.',
+  native_terminal: 'Imported task is complete or cancelled; reopen it explicitly before another grant.',
+  oscillation: 'Repeated review rejections require an explicit signed answer before another grant.',
+};
+
 export default function OwnerLocalPanel({ onClose, initialChainId = "", initialBridgeId = "", initialTaskId = "", initialSubmissionAttempt }: { onClose: () => void; initialChainId?: string; initialBridgeId?: string; initialTaskId?: string; initialSubmissionAttempt?: string }) {
   const [bridge, setBridge] = useState(initialBridgeId);
   const [chainId, setChainId] = useState(initialChainId);
@@ -127,7 +136,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       })} /></label>
     </div>
     {error && <p role="alert">{error}</p>}
-    {detail?.budget && <p data-debug-id="owner-local-budget" role="status">Attempts: {detail.budget.counting_attempts} / {detail.budget.max_attempts}. Logical attempt {detail.budget.attempt_no}. {detail.budget.reason === 'budget_exhausted' ? 'Attempt budget exhausted; resolve the budget or cancel and reopen for a non-counting recovery attempt.' : detail.budget.reason === 'activation_required' ? 'Imported history requires signed baseline activation.' : detail.budget.reason === 'history_incomplete' ? 'Attempt history requires reconciliation before another grant.' : detail.budget.reason === 'native_blocked' ? 'Imported task awaits an explicit signed answer before another grant.' : detail.budget.reason === 'native_terminal' ? 'Imported task is complete or cancelled; reopen it explicitly before another grant.' : 'Budget available.'}</p>}
+    {detail?.budget && <p data-debug-id="owner-local-budget" role="status">Attempts: {detail.budget.counting_attempts} / {detail.budget.max_attempts}. Logical attempt {detail.budget.attempt_no}. {budgetMessages[detail.budget.reason] ?? 'Budget available.'}</p>}
     <ul>{listing.map((r) => <li key={r.chain_id + r.task_id}><button data-debug-id={'owner-local-select-' + r.chain_id + r.task_id} onClick={() => {setChainId(r.chain_id);setTaskId(r.task_id);setBridge(r.owner_bridge_id);setRevision('0');setDetail(null);}}>{r.title} — {r.online ? 'owner online' : 'owner offline; details unavailable'}</button></li>)}</ul>
     {detail?.kind === 'workflow' && detail.next_cursor && <button data-debug-id="owner-local-workflow-next" disabled={busy} onClick={() => void run(() => perform('workflow.read', { cursor: detail.next_cursor }))}>Next workflow records</button>}
     {detail?.kind === 'sources' && detail.next_cursor && <button data-debug-id="owner-local-source-next" disabled={busy} onClick={() => void run(() => perform('source.read', { cursor: detail.next_cursor }))}>Next pending sources</button>}

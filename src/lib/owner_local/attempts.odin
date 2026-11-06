@@ -52,6 +52,8 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
         attempt_release(v,"handoff")
     case "lease.block": attempt_release(v,"blocked")
     case "lease.expired": attempt_release(v,"expired")
+    case "dependency.edit":
+        if field(p,"dependency_retired")!="" do attempt_release(v,"dep_added")
     case "lease.submit":
         attempt_release(v,"submitted");v.in_review=true
     case "task.reopen":
@@ -116,7 +118,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','lifecycle.configure',
-              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post'))
+              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit'))
             OR kind='lease.switch' OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
@@ -129,7 +131,8 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             COALESCE(ts_ms,''),COALESCE(json_extract(command,'$.instance_id'),''),
             COALESCE(json_extract(content,'$.reason'),''),
             COALESCE((SELECT lease_id FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
-            COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),'')
+            COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
+            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),'')
           FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
@@ -139,7 +142,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             after=row[0]
             if row[4]!="full" { v.incomplete=true;continue }
             c:=doc(map[string]string{"lease_id"=row[5]})
-            p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7],"hold_semantics"=row[8]})
+            p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7],"hold_semantics"=row[8],"dependency_retired"=row[14]})
             previous:=v
             destination:=row[1]!=chain || row[2]!=task
             if !destination || row[3]=="lease.switch" do attempt_event(&v,row[3],c,p,destination)
@@ -164,6 +167,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                 // their prefix (lease.odin:407), separate from fold releases.
                 switch row[3] {
                 case "task.cancel": record.outcome="expired:cancelled"
+                case "dependency.edit": record.outcome="expired:dep_added"
                 case "fleet.edit","lifecycle.configure","review.roles": record.outcome="expired:replaced"
                 case "lease.expired":
                     if row[11]=="ttl" || row[11]=="hard_cap" {

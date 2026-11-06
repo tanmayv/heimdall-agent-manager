@@ -122,14 +122,26 @@ dependency_ready :: proc(s:^Store,chain,task:string)->bool {
     rows,ok:=query(s.db,"SELECT 1 FROM local_dependencies d LEFT JOIN lifecycle_state s ON s.chain_id=d.chain_id AND s.task_id=d.prerequisite LEFT JOIN local_controls c ON c.chain_id=d.chain_id AND c.task_id=d.prerequisite WHERE d.chain_id=? AND d.task_id=? AND (s.state IS NULL OR s.state!='done' OR COALESCE(c.mode,'ready')!='ready') LIMIT 1",chain,task)
     return ok && len(rows)==0
 }
-dependency_command :: proc(s:^Store,c,p:json.Object)->string {
+dependency_command :: proc(s:^Store,c,p:json.Object,seq:i64)->string {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
     if !workflow_task_current(s,chain,task) do return "stale_revision"
-    busy,ok:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION SELECT 1 FROM local_submissions WHERE chain_id=? AND task_id=? UNION SELECT 1 FROM local_workflow_tasks WHERE chain_id=? AND task_id IN(?,?)",chain,task,chain,task,chain,task,field(p,"prerequisite"))
-    if !ok do return "storage_error"
-    if len(busy)>0 do return "operation_conflict"
+    // Generated private graph edges remain controlled by their workflow plan.
+    generated,read:=query(s.db,"SELECT 1 FROM local_workflow_tasks WHERE chain_id=? AND task_id IN(?,?)",chain,task,field(p,"prerequisite"))
+    if !read do return "storage_error"
+    if len(generated)>0 do return "operation_conflict"
+    ok:=true
     if field(p,"enabled")=="1" {
         if _,ok=query(s.db,"INSERT INTO local_dependencies VALUES(?,?,?)",chain,task,field(p,"prerequisite"));!ok do return "operation_conflict"
+        leases,read:=query(s.db,"SELECT lease_id,instance_id,launch_epoch,token_generation,run_count FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
+        if !read do return "storage_error"
+        agent:=""
+        if config,_,found:=lifecycle_config(s,chain,task);found do agent=field(config,"author_agent_id")
+        for lease in leases {
+            child:=Child{lease[1],lease[2],lease[3],number(lease[4]),agent}
+            if !control_notice(s,c,child,"checkpoint") do return "storage_error"
+            if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),lease[0]);!ok do return "storage_error"
+            if _,ok=query(s.db,"INSERT INTO local_dependency_retirements VALUES(?,?,?,?)",chain,task,fmt.tprintf("%d",seq),lease[0]);!ok do return "storage_error"
+        }
     } else {
         if _,ok=query(s.db,"DELETE FROM local_dependencies WHERE chain_id=? AND task_id=? AND prerequisite=?",chain,task,field(p,"prerequisite"));!ok do return "storage_error"
     }

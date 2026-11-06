@@ -173,7 +173,7 @@ event_v12_upgrade_collision_and_commit_rollback_preserve_live_runtime :: proc(t:
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     prefix:=string(MIGRATION_012);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_workflow_output_triggers_v12")]
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER IF EXISTS deferred_prepared_merge_no_invalidation; DROP TABLE IF EXISTS deferred_workflow_dispositions; DROP TABLE IF EXISTS deferred_workflow_retirements; DROP TABLE IF EXISTS native_history_records; DROP TABLE IF EXISTS local_task_retirements; DROP TABLE local_events;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS native_budget_overlap; DROP TABLE IF EXISTS budget_control_owners; DROP TABLE IF EXISTS local_dependency_retirements; DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER IF EXISTS deferred_prepared_merge_no_invalidation; DROP TABLE IF EXISTS deferred_workflow_dispositions; DROP TABLE IF EXISTS deferred_workflow_retirements; DROP TABLE IF EXISTS native_history_records; DROP TABLE IF EXISTS local_task_retirements; DROP TABLE local_events;"))
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=12; CREATE VIEW local_events AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)

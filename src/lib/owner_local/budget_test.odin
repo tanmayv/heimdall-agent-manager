@@ -97,7 +97,7 @@ budget_v15_upgrade_collision_commit_rollback_preserves_source_and_live_authority
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     prefix:=string(MIGRATION_015);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_history_records")]
-    testing.expect(t,exec(db,"DROP TRIGGER native_budget_snapshot_sealed; DROP TABLE local_budget_evidence; DROP TABLE native_budget_baselines"))
+    testing.expect(t,exec(db,"DROP TRIGGER native_budget_snapshot_sealed; DROP TABLE native_budget_overlap; DROP TABLE budget_control_owners; DROP TABLE local_dependency_retirements; DROP TABLE local_budget_evidence; DROP TABLE native_budget_baselines"))
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=15; CREATE VIEW native_budget_baselines AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)

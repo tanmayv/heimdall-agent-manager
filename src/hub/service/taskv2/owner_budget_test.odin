@@ -3,6 +3,7 @@ package taskv2
 import "core:testing"
 import "core:encoding/json"
 import "core:strconv"
+import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import local "odin_test:lib/owner_local"
@@ -75,6 +76,34 @@ test_owner_budget_native_fold_and_admission_prefixes :: proc(t:^testing.T) {
             }
         }
     }
+}
+
+// Native oracle for the signed owner-local command regressions in
+// budget_review_test.odin and dependency_budget_test.odin. These state checks
+// cover actual admission dispositions in addition to counter-only prefixes.
+@(test)
+test_owner_review_recovery_dependency_and_oscillation_native_oracles :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    expired:=[3]domain.Task_Event{{kind=EV_PUBLISHED,payload_json=`{}`},{kind=EV_LEASE_GRANTED,payload_json=`{"lease_id":"only"}`},{kind=EV_LEASE_EXPIRED,payload_json=`{"reason":"ttl"}`}}
+    recovered:=fold_task(expired[:],Fold_Input{kind=.Task,deps_done=true,review_roles_count=1,max_attempts=2})
+    testing.expect(t,recovered.state==.Ready && recovered.counting_attempts==1 && budget_allows_grant(recovered,2))
+    dependency:=[3]domain.Task_Event{{kind=EV_PUBLISHED,payload_json=`{}`},{kind=EV_LEASE_GRANTED,payload_json=`{"lease_id":"source_lease"}`},{kind=EV_LEASE_EXPIRED,payload_json=`{"lease_id":"source_lease","reason":"dep_added"}`}}
+    released:=fold_task(dependency[:],Fold_Input{kind=.Task,deps_done=false,review_roles_count=1,max_attempts=1})
+    testing.expect(t,released.counting_attempts==1 && !released.has_work_lease && !released.budget_exhausted && budget_allows_grant(released,1))
+    events:=make([dynamic]domain.Task_Event,context.temp_allocator)
+    append(&events,..dependency[:]);append(&events,domain.Task_Event{kind=EV_DEP_ADDED,payload_json=`{"depends_on":"dest"}`})
+    append(&events,domain.Task_Event{kind=EV_LEASE_GRANTED,payload_json=`{"lease_id":"source_next"}`})
+    continued:=fold_task(events[:],Fold_Input{kind=.Task,deps_done=true,review_roles_count=1,max_attempts=1})
+    testing.expect(t,continued.attempt_no==2 && continued.counting_attempts==1 && continued.has_work_lease)
+    clear(&events);append(&events,domain.Task_Event{kind=EV_PUBLISHED,payload_json=`{}`})
+    for _ in 0..<3 {
+        append(&events,domain.Task_Event{kind=EV_LEASE_GRANTED,payload_json=`{"lease_id":"reviewed"}`},domain.Task_Event{kind=EV_SUBMITTED,payload_json=`{}`},domain.Task_Event{kind=EV_CHANGES_REQUESTED,payload_json=`{}`})
+    }
+    oscillating:=fold_task(events[:],Fold_Input{kind=.Task,deps_done=true,review_roles_count=1,max_attempts=5})
+    testing.expect(t,oscillating.oscillating && oscillating.state==.Backlog && strings.contains(oscillating.blocked_on_json,"oscillation"))
+    append(&events,domain.Task_Event{kind=EV_ANSWERED,payload_json=`{}`})
+    answered:=fold_task(events[:],Fold_Input{kind=.Task,deps_done=true,review_roles_count=1,max_attempts=5})
+    testing.expect(t,!answered.oscillating && answered.counting_attempts==3 && answered.state==.Ready && budget_allows_grant(answered,5))
 }
 
 @(test)

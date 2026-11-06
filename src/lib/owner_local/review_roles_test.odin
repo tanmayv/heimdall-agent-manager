@@ -46,9 +46,13 @@ review_roles_require_every_pair_and_configured_user_approval :: proc(t:^testing.
     testing.expect_value(t,lifecycle_call(f,role_auditor(),"review.role.post","correctness",role_payload_test("correctness"),result_cap(audit),"8").code,"ok")
     state,_=query(f.store.db,"SELECT state FROM lifecycle_state")
     testing.expect(t,state[0][0]=="in_review","configured human gate still required")
+    checkpoint,_:=query(f.store.db,"SELECT commit_seq FROM runtime_database")
+    testing.expect(t,!overlap_approval_settled(&f.store,"chain","task",checkpoint[0][0],checkpoint[0][0],"1"),"overlap cannot waive the original human gate")
     testing.expect_value(t,invoke(f,command(f,"review.post","human","task",p,"9"),p).code,"ok")
     state,_=query(f.store.db,"SELECT state,(SELECT count(*) FROM local_role_reviews),(SELECT count(*) FROM source_consumptions) FROM lifecycle_state")
     testing.expect(t,state[0][0]=="done" && state[0][1]=="2" && state[0][2]=="4","each exact result consumes separately in the commit")
+    checkpoint,_=query(f.store.db,"SELECT commit_seq FROM runtime_database")
+    testing.expect(t,overlap_approval_settled(&f.store,"chain","task",checkpoint[0][0],checkpoint[0][0],"1"),"original accepted pair and human reviews prove gate settlement")
 }
 @(test)
 review_role_changes_win_author_exclusion_and_stale_attempt_rejection :: proc(t:^testing.T) {

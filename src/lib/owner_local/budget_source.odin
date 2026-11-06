@@ -132,15 +132,9 @@ budget_activate :: proc(s:^Store,c,p:json.Object,seq:i64)->string {
     config,_,configured:=lifecycle_config(s,chain,task)
     execution,execution_ok:=budget_execution(s,chain,task)
     if !has_req || !configured || !execution_ok || req[0]!=field(p,"requirements_revision") || field(config,"configuration_revision")!=field(p,"configuration_revision") || execution!=field(p,"execution") do return "stale_revision"
-    // Without an unambiguous shared identity boundary, combining independently
-    // executed local history would double count or erase real work. Fail closed.
-    local,read:=query(s.db,`SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=?
-      UNION ALL SELECT 1 FROM local_submissions WHERE chain_id=? AND task_id=? LIMIT 1`,chain,task,chain,task)
-    if !read do return "storage_error"
-    if len(local)>0 do return "recovery_required"
     projection,projected:=attempt_view(s,chain,task)
     if !projected do return "storage_error"
-    if projection.incomplete || projection.grants!=0 do return "recovery_required"
+    if projection.incomplete do return "recovery_required"
     digest,counts,valid:=budget_snapshot(s,chain,task,field(p,"source_revision"))
     if !valid || digest!=field(p,"snapshot_digest") || counts[0]!=number(field(p,"attempt_count")) || counts[1]!=number(field(p,"event_count")) || counts[2]!=number(field(p,"facet_count")) do return "recovery_required"
     input,input_ok:=budget_input(s,chain,task)
@@ -148,6 +142,7 @@ budget_activate :: proc(s:^Store,c,p:json.Object,seq:i64)->string {
     input.gate=field(p,"source_gate")=="1";input.no_review=field(p,"source_no_review")=="1"
     v,valid_source:=budget_source(s,chain,task,field(p,"source_revision"),field(p,"native_cutoff"),input)
     if !valid_source || v.live || v.in_review || v.held do return "recovery_required"
+    if !budget_reconcile_overlap(s,chain,task,field(p,"source_revision"),field(p,"native_cutoff"),field(p,"local_cutoff"),input) do return "recovery_required"
     _,inserted:=query(s.db,`INSERT INTO native_budget_baselines VALUES(?,?,?,?,?,?,?,?,?,?,?)`,chain,task,field(p,"source_revision"),digest,field(p,"native_cutoff"),field(p,"local_cutoff"),req[0],field(config,"configuration_revision"),execution,encode(p),fmt.tprintf("%d",seq))
     return ("ok" if inserted else "storage_error")
 }

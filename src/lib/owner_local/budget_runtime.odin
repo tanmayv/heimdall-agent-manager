@@ -34,6 +34,8 @@ budget_local_event :: proc(v:^Budget_State,pending:^bool,kind:string,c,p,content
     case "lease.handoff","lease.switch":budget_event(v,"handoff","{}",input)
     case "lease.block":budget_event(v,"blocked","{}",input)
     case "lease.expired":budget_event(v,"lease_expired",encode(content),input)
+    case "dependency.edit":
+        if field(content,"dependency_retired")!="" do budget_event(v,"lease_expired",`{"reason":"dep_added"}`,input)
     case "lease.submit":budget_event(v,"submitted","{}",input)
     case "task.cancel":budget_event(v,"cancelled","{}",input)
     case "task.reopen":budget_event(v,"reopened","{}",input)
@@ -98,7 +100,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2 AND kind IN(
             'lease.claim','lease.handoff','lease.switch','lease.block','lease.expired','lease.submit',
             'task.cancel','task.reopen','task.resolve','task.hold','task.release','fleet.edit','lifecycle.configure',
-            'review.roles','requirements.edit','review.post','review.role.post')) OR kind='lease.switch'
+            'review.roles','requirements.edit','review.post','review.role.post','dependency.edit')) OR kind='lease.switch'
             OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
@@ -107,7 +109,8 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
             COALESCE(json_extract(command,'$.lease_id'),''),COALESCE(json_extract(command,'$.instance_id'),''),
             COALESCE(json_extract(payload,'$.verdict'),''),COALESCE(json_extract(payload,'$.destination_lease_id'),''),
             COALESCE(json_extract(content,'$.reason'),''),
-            COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),'')
+            COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
+            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),'')
           FROM decoded WHERE chain_id=?1 AND task_id=?2 OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
@@ -119,7 +122,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
             if row[2]!="full" { document.reason="history_incomplete";continue }
             c:=doc(map[string]string{"lease_id"=row[5],"instance_id"=row[6]})
             p:=doc(map[string]string{"verdict"=row[7],"destination_lease_id"=row[8]})
-            content:=doc(map[string]string{"reason"=row[9]})
+            content:=doc(map[string]string{"reason"=row[9],"dependency_retired"=row[11]})
             destination:=row[3]!=chain || row[4]!=task
             if !destination || row[1]=="lease.switch" do budget_local_event(&v,&pending,row[1],c,p,content,input,destination)
             if row[10]!="" {
@@ -131,6 +134,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
     }
     document.attempt_no=fmt.tprintf("%d",v.attempt_no);document.counting_attempts=fmt.tprintf("%d",v.counting_attempts);document.last_release=v.last_release
     if document.reason=="" && (v.exhausted || (!v.live && !v.in_review && !v.done && !v.cancelled && !budget_allows(v,input.max_attempts))) do document.reason="budget_exhausted"
+    if document.reason=="" && v.oscillating do document.reason="oscillation"
     if document.reason=="" && document.source_revision!="" {
         if v.done || v.cancelled { document.reason="native_terminal" } else if v.blocked_on_json!="" || v.oscillating { document.reason="native_blocked" }
     }
@@ -143,7 +147,7 @@ budget_admit :: proc(s:^Store,chain,task:string)->string {
     if state.reason=="history_incomplete" || state.reason=="activation_required" do return "recovery_required"
     if v.attempt_no==0x7fffffffffffffff && v.last_release!="handoff" do return "recovery_required"
     if state.reason=="budget_exhausted" do return "budget_exhausted"
-    if state.reason=="native_blocked" do return "operation_conflict"
+    if state.reason=="native_blocked" || state.reason=="oscillation" do return "operation_conflict"
     if state.source_revision!="" && (v.done || v.cancelled) do return "operation_conflict"
     return "ok"
 }
@@ -156,15 +160,39 @@ budget_record :: proc(s:^Store,chain,task:string,seq:i64)->bool {
     state.local_cutoff=fmt.tprintf("%d",seq)
     _,ok=query(s.db,"INSERT INTO local_budget_evidence VALUES(?,?,?,?)",chain,task,fmt.tprintf("%d",seq),encode(state))
     if !ok do return false
-    if state.reason=="budget_exhausted" || state.reason=="native_blocked" {
-        // Preserve hold as an overlay while allowing an authorized resolution.
-        rows,read:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
-        if !read do return false
-        if len(rows)==1 && rows[0][0]=="held" {
-            _,ok=query(s.db,"UPDATE local_controls SET resume_state='blocked',reason=? WHERE chain_id=? AND task_id=?",state.reason,chain,task)
-        } else if len(rows)==0 || rows[0][0]!="cancelled" {
-            ok=control_mode(s,chain,task,"blocked","ready",state.reason,"human")
+    return budget_control_reconcile(s,chain,task,state.reason)
+}
+
+budget_control_reconcile :: proc(s:^Store,chain,task,reason:string)->bool {
+    controls,ok:=query(s.db,"SELECT mode,resume_state,reason,waiting_on FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+    if !ok do return false
+    owners,read:=query(s.db,"SELECT reason,prior_json FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
+    if !read do return false
+    required:=reason=="budget_exhausted" || reason=="native_blocked" || reason=="oscillation"
+    if len(controls)==1 && controls[0][0]=="cancelled" do required=false
+    if required {
+        if len(owners)==0 {
+            if _,ok=query(s.db,"INSERT INTO budget_control_owners VALUES(?,?,?,?)",chain,task,reason,encode(controls));!ok do return false
+        } else if _,ok=query(s.db,"UPDATE budget_control_owners SET reason=? WHERE chain_id=? AND task_id=?",reason,chain,task);!ok do return false
+        if len(controls)==1 && controls[0][0]=="held" {
+            _,ok=query(s.db,"UPDATE local_controls SET resume_state='blocked' WHERE chain_id=? AND task_id=?",chain,task)
+            return ok
         }
+        return control_mode(s,chain,task,"blocked","ready",reason,"human")
     }
+    if len(owners)==0 do return true
+    prior:[dynamic][]string
+    if json.unmarshal_string(owners[0][1],&prior,.JSON,context.temp_allocator)!=nil do return false
+    if len(prior)>1 || (len(prior)==1 && len(prior[0])!=4) do return false
+    if len(controls)==1 && controls[0][0]=="held" {
+        resume,waiting:="ready",""
+        if len(prior)==1 { resume=prior[0][0];waiting=prior[0][3];if resume=="held" do resume=prior[0][1] }
+        if _,ok=query(s.db,"UPDATE local_controls SET resume_state=?,waiting_on=? WHERE chain_id=? AND task_id=?",resume,waiting,chain,task);!ok do return false
+    } else if len(controls)==1 && controls[0][0]=="blocked" && controls[0][2]==owners[0][0] {
+        if len(prior)==0 {
+            if _,ok=query(s.db,"DELETE FROM local_controls WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
+        } else if !control_mode(s,chain,task,prior[0][0],prior[0][1],prior[0][2],prior[0][3]) do return false
+    }
+    _,ok=query(s.db,"DELETE FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
     return ok
 }

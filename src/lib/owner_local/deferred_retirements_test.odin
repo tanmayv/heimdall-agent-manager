@@ -58,7 +58,7 @@ deferred_retirement_test :: proc(t:^testing.T,legacy:bool) {
         // its known original request provenance existed in the older runtime.
         db:DB
         testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-        testing.expect(t,exec(db,`DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER deferred_prepared_merge_no_invalidation;
+        testing.expect(t,exec(db,`DROP TABLE IF EXISTS native_budget_overlap; DROP TABLE IF EXISTS budget_control_owners; DROP TABLE IF EXISTS local_dependency_retirements; DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER deferred_prepared_merge_no_invalidation;
           DROP TABLE deferred_workflow_dispositions; DROP TABLE deferred_workflow_retirements; DROP TABLE native_history_records;
           DROP TRIGGER local_events_no_update;
           UPDATE local_events SET evidence_json=json_remove(evidence_json,'$.deferred_retirements') WHERE json_type(evidence_json,'$.deferred_retirements') IS NOT NULL;

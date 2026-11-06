@@ -88,8 +88,10 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         // Pre-fix holds stored lifecycle state in resume_state; always retain
         // the current lifecycle state. A native block is a separate overlay.
         if resume=="blocked" do mode="blocked"
-        if mode=="blocked" && (controls[0][2]=="budget_exhausted" || controls[0][2]=="native_blocked") {
-            reason=controls[0][2]
+        owned,owned_ok:=query(s.db,"SELECT reason FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task)
+        if !owned_ok do return "storage_error"
+        if mode=="blocked" && len(owned)==1 {
+            reason=owned[0][0]
         } else if mode=="blocked" {
             blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
             if !found || len(blocks)!=1 do return "storage_error"
@@ -136,6 +138,9 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     }
     if method!="task.hold" {
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
+    }
+    if method=="task.resolve" || method=="task.cancel" || method=="task.reopen" {
+        if _,ok=query(s.db,"DELETE FROM budget_control_owners WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     }
     if !control_mode(s,chain,task,mode,resume,reason,waiting) do return "storage_error"
     if method=="task.release" && next=="in_review" {

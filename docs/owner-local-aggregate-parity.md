@@ -53,7 +53,7 @@ Each durable field declared in the original aggregate domain structs (including 
 | `kind` | `src/hub/domain/taskchain.odin:173` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `priority` | `src/hub/domain/taskchain.odin:174` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/attempts.odin:86`, `src/lib/owner_local/reads.odin:62`. runtime.read exposes a retained-event native attempt/counting projection with explicit completeness. V7 lease ordinals and V4 submission keys remain immutable compatibility identifiers, not native attempts. C1b archival records remain separate; C1c V16 unifies admission through an explicit sealed native baseline plus the later local event fold (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58). Operational cutover remains M4. |
-| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. C1c max_attempts admission uses logical outcomes (src/lib/owner_local/budget_runtime.odin:140); input-reference resolution remains separate. |
+| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. C1c max_attempts admission uses logical outcomes (src/lib/owner_local/budget_runtime.odin:144); input-reference resolution remains separate. |
 | `blocked_on_json` | `src/hub/domain/taskchain.odin:183` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `requires_user_approval` | `src/hub/domain/taskchain.odin:184` | **PARTIAL** `src/lib/owner_local/migration_009.sql:103`. Local independent-agent/role/user review records and immutable V13 evidence. Native findings_json and complete reviewer/time fields are not yet accepted by ordinary adapters. |
 | `ready_since` | `src/hub/domain/taskchain.odin:187` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
@@ -1129,7 +1129,7 @@ Budget state/reason/configuration/requirements/execution and the current
 owner-global checkpoint are visible through signed `runtime.read`
 (`src/lib/owner_local/reads.odin:74`). Immutable budget evidence is appended
 in the same transaction as its accepted cause event
-(`src/lib/owner_local/events.odin:26`, `budget_runtime.odin:153`,
+(`src/lib/owner_local/events.odin:26`, `budget_runtime.odin:157`,
 `migration_016.sql:72`). Failure rolls back the cause, lease retirement,
 receipt and budget evidence together. Holds remain overlays, including an
 expiry at the final attempt (`controls.odin:91`). Existing hard-deadline
@@ -1172,13 +1172,17 @@ The byte-preserving digest algorithm is defined in
    `[previous_digest,record_kind,record_key,exact_record_json]`.
 4. Sign the final digest and exact per-kind counts in the activation manifest.
 
-Activation is intentionally conservative: it supports an empty local work
-history. Any existing local work leases/submissions, incomplete evidence,
-unreconciled overlap, source live work/review/hold or stale checkpoint returns
-explicit recovery/stale-revision failure. It never merges independent local
-histories, renumbers IDs or guesses shared identity.
-This is the empty-runtime alternative authorized by coordinator comment
-`cmt_18e5803cc6ace19f`; no general overlap reconciliation is claimed.
+Activation accepts empty local work history and uniquely proven contiguous
+exact-ID overlap. Native and local lease-ID namespaces can overlap; the earlier
+empty-only interpretation was an acceptance gap, not an authorized waiver
+(coordinator `cmt_18e582d35466dd9b`). The implementation now compares the entire
+local budget-transition prefix with a contiguous source suffix, validates
+counter offsets and original attempt/lease/provenance facts, and records an
+immutable identity mapping (`src/lib/owner_local/budget_overlap.odin:179`).
+Disjoint, conflicting, incomplete or otherwise unprovable history remains
+`recovery_required`; no independent histories are guessed together, no IDs are
+renumbered, and no old native attempts are fabricated. Source live work/review/
+hold and stale checkpoints remain rejected.
 
 V16 keeps the activated baseline immutable and seals its selected source
 snapshot against additions (`src/lib/owner_local/migration_016.sql:56`).
@@ -1278,3 +1282,158 @@ Final parity/whitespace/immutable-migration checks:
 `git diff --exit-code c1016192 -- src/lib/owner_local/schema.sql src/lib/owner_local/migration_002.sql src/lib/owner_local/migration_003.sql src/lib/owner_local/migration_004.sql src/lib/owner_local/migration_005.sql src/lib/owner_local/migration_006.sql src/lib/owner_local/migration_007.sql src/lib/owner_local/migration_008.sql src/lib/owner_local/migration_009.sql src/lib/owner_local/migration_010.sql src/lib/owner_local/migration_011.sql src/lib/owner_local/migration_012.sql src/lib/owner_local/migration_013.sql src/lib/owner_local/migration_014.sql src/lib/owner_local/migration_015.sql`
 passes. No unrelated changes, package-lock changes, deployment, production
 restart or push. Independent named review is required; no self-review.
+
+## C1c review rework (lease 3, requirements revision 2)
+
+The independent review of `84576282` identified four real acceptance gaps.
+Its earlier green tests remain historical evidence for their recorded coverage;
+they did not establish these four paths. Coordinator
+`cmt_18e582d35466dd9b` requires reachable exact overlap reconciliation, and
+`cmt_18e582dc7cc651bf` keeps the real dependency route and oscillation in scope.
+
+### Budget-owned overlay recovery and ordinary oscillation
+
+`budget_control_owners` preserves the independent control below a generated
+budget/oscillation block. Current fold recovery restores that saved state,
+including the underlying resume mode while held, rather than leaving a stale
+budget block or erasing a separate human block
+(`src/lib/owner_local/budget_runtime.odin:166`;
+`migration_016.sql:83`). Explicit signed answer/cancel/reopen releases ownership
+in the same transaction; holds themselves remain overlays
+(`src/lib/owner_local/controls.odin:142`).
+
+Ordinary local tasks now expose durable `oscillation` after the third effective
+request-changes result, even without an imported baseline. Admission rejects
+the fourth work grant until explicit native recovery
+(`src/lib/owner_local/budget_runtime.odin:144`). A held verdict remains pending
+until release. Regression tests exercise actual signed claim/present/ACK/submit/
+independent-review cycles, restart, normal/held budget increases, preservation
+of an independent human block, and signed recovery
+(`src/lib/owner_local/budget_review_test.odin:8`).
+
+### Exact contiguous overlap proof
+
+The selected native snapshot must still pass complete-prefix/event-outcome
+validation. For a nonempty local work prefix, activation additionally proves:
+
+- Exact original lease identities, account/chain/task/Bridge, holder IDs,
+  accepted event milliseconds and work-end actor IDs.
+- A single contiguous source suffix covering all local budget-bearing
+  transitions through the signed local cutoff. Source audit-only events may
+  occur between those transitions.
+- A consistent original logical-attempt/counting offset for every transition,
+  plus matching original row outcomes, counting bits, start/end times, holder
+  and requirements/configuration provenance. Workflow execution and any
+  supplied head provenance must agree with retained local facts.
+- Approval settlement from immutable accepted independent/pair/human review
+  records at that event cutoff. Human or pair gates cannot be waived by
+  presenting matching work lease IDs
+  (`src/lib/owner_local/budget_overlap.odin:20`).
+
+The immutable `native_budget_overlap` records link existing local event IDs
+and logical attempts to original native event IDs and attempts. Baseline,
+mapping, receipt and budget evidence commit or roll back together
+(`src/lib/owner_local/migration_016.sql:96`;
+`budget_overlap.odin:179`). IDs and archived bytes are untouched. Exact positive,
+conflicting lease/time/actor/provenance, restart/replay, deferred-COMMIT rollback,
+approved-terminal and direct-reopen cases are tested in
+`src/lib/owner_local/budget_overlap_test.odin:1`.
+
+Native whole-second timestamps retain their declared precision, with exact
+native event milliseconds as anchors. The pinned Odin core parser accepts only
+hundredths; proof comparison therefore parses its whole-second calendar/offset
+form and validates the original fractional precision independently, retaining
+the original timestamp bytes (`budget_overlap.odin:139`). Milliseconds and
+timezone offsets are tested, and unprovable sub-millisecond/conflicting or
+malformed forms reject. The first real rework demo caught this fractional-time
+gap after its budget-recovery/oscillation/dependency cases passed; the corrected
+real rework flow passes at `sh_d0497bf53c10425cfab6e67be984b765`.
+
+### Real dependency mutation and non-counting recovery
+
+Signed `dependency.edit` can add an ordinary dependency after work has begun.
+It retires the exact current work lease and records a task-scoped
+`dep_added` disposition plus exact-child checkpoint notice atomically with the
+edge and accepted event (`src/lib/owner_local/workflows.odin:125`;
+`migration_016.sql:88`). Native attempt observations and budget folding consume
+this cause; old capabilities cannot renew, and the next grant is non-counting
+after prerequisite completion
+(`src/lib/owner_local/attempts.odin:170`;
+`budget_runtime.odin:27`). Workflow-generated private graph edges retain their
+existing plan ownership boundary; ordinary active and historical-work tasks
+are no longer rejected merely for having lease/submission rows.
+
+The signed route regression covers edge/event failure rollback, accepted replay,
+restart, stale capability denial, signed prerequisite submission/independent
+approval, then a non-counting source grant at max1
+(`src/lib/owner_local/dependency_budget_test.odin:21`).
+Native original-fold oracles independently confirm raised-budget readiness,
+dependency structural release/admission and oscillation/answer behavior
+(`src/hub/service/taskv2/owner_budget_test.odin:1`).
+
+V16 is still unmerged and unapproved during this rework, so its additive
+ownership/retirement/proof tables are added to that migration. V1-V15 remain
+byte-identical. No live store/schema rollout, push, deployment or production
+restart occurs. True historical-schema reconstruction drops all unapproved V16
+objects before applying migration tests.
+
+### Rework validation
+
+Final store command:
+`nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-rework-final-store151`
+passes **151/151**, exit0, `sh_83fe801e2a02ad44458ae866df1b7bcd`.
+
+Other checks (exit0):
+```bash
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_review_recovery_dependency_and_oscillation_native_oracles,taskv2.test_owner_budget_native_fold_and_admission_prefixes,taskv2.test_owner_budget_shared_migrated_fixture_matches_native_admission,taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1c-rework-native-four
+# 4/4; sh_a4d578c83edbaee4eab97bb257b45d56
+
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-rework-contracts
+# 21/21; sh_8d8a32d8acef38f0c2b4e214294977e2
+
+nix develop --command npm run typecheck
+# PASS; sh_5a6b856d86ef09bb0f7d491c3db6f00d
+
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+# 20/20; sh_b028f9937f058b75118743a3d8532bdb
+
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1c-rework-final-bins
+# all4; sh_089d36f682f0a1d937b2e46e784772ce
+```
+
+The new focused real flow is runnable with
+`HEIMDALL_E2E_OWNER_BUDGET_REWORK_ONLY=1`; the complete retained demonstration
+adds `HEIMDALL_E2E_OWNER_BUDGET_REWORK=1`. It uses disposable Hub/Bridge processes,
+actual CLI children, signed browser/CLI mutations and the production rendered
+panel for oscillation visibility
+(`tests/e2e/owner_local_budget_rework_flow.ts:6`).
+Final combined real demonstration and repository-check results follow below.
+
+
+The complete retained + rework real demonstration passed with exit0 and all
+steps PASSED at `sh_c31366251d4bb47869b1af3b655d58f7` (664 log lines).
+The final held recovery also restores prior `waiting_on`; its focused regression
+passes at `sh_e743a99f0ef0d00a91553b959a9ac138`.
+
+Final-source rebuild, **151/151** store tests, and the complete retained + rework
+real demonstration pass with exit0 in `sh_e5ea77b16243c1028711dfb70c7c9a74`
+(1262 lines, concluding `all steps PASSED`). The demonstration uses those exact
+rebuilt binaries. Exact combined command:
+
+```bash
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1c-rework-ready-bins && nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-rework-ready-store151 && nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1c-rework-ready-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1c-rework-ready-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1c-rework-ready-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1c-rework-ready-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 HEIMDALL_E2E_OWNER_BUDGET=1 HEIMDALL_E2E_OWNER_BUDGET_REWORK=1 HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+The final repository check command (exit0,
+`sh_635f5195eba21cf267113ac1ba6005a6`) was:
+
+```bash
+python3 scripts/check-owner-aggregate-parity.py
+git diff --exit-code c1016192 -- src/lib/owner_local/schema.sql src/lib/owner_local/migration_002.sql src/lib/owner_local/migration_003.sql src/lib/owner_local/migration_004.sql src/lib/owner_local/migration_005.sql src/lib/owner_local/migration_006.sql src/lib/owner_local/migration_007.sql src/lib/owner_local/migration_008.sql src/lib/owner_local/migration_009.sql src/lib/owner_local/migration_010.sql src/lib/owner_local/migration_011.sql src/lib/owner_local/migration_012.sql src/lib/owner_local/migration_013.sql src/lib/owner_local/migration_014.sql src/lib/owner_local/migration_015.sql
+git diff --check
+git diff --cached --check
+```
+
+The inventory remains 240 fields/23 structs; it is an inventory check, not a
+claim of completed aggregate parity. No broad unrelated suites were repeated;
+unchanged identity code uses the prior tested disposable identity binary.

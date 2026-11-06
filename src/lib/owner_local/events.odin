@@ -16,6 +16,9 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
     deferred,deferred_ok:=workflow_deferred_evidence(tx.store,seq)
     if !deferred_ok do return false
     evidence_doc:=doc(map[string]string{"command"=raw,"payload"=payload,"content"=content,"result"=result})
+    dependencies,dep_ok:=query(tx.store.db,"SELECT lease_id FROM local_dependency_retirements WHERE seq=? ORDER BY lease_id",fmt.tprintf("%d",seq))
+    if !dep_ok do return false
+    if len(dependencies)>0 do evidence_doc["dependency_retirements"]=json.String(encode(dependencies))
     if retirements!="[]" do evidence_doc["task_retirements"]=json.String(retirements)
     if deferred!="[]" do evidence_doc["deferred_retirements"]=json.String(deferred)
     evidence:=encode(evidence_doc)
