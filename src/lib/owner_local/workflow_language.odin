@@ -367,11 +367,16 @@ language_stop :: proc(s:^Store,c:json.Object,run,execution:string,seq:i64)->bool
     rows,ok:=query(s.db,"SELECT task_id FROM local_workflow_tasks WHERE chain_id=? AND run_id=? AND execution=?",field(c,"chain_id"),run,execution)
     if !ok do return false
     for row in rows {
-        merging,merge_read:=query(s.db,"SELECT 1 FROM runtime_intents n WHERE n.chain_id=? AND n.kind='merge' AND json_extract(n.exact_fence_json,'$.task_id')=? AND n.state!='settled' AND (n.state='claimed' OR NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=n.intent_id)) LIMIT 1",field(c,"chain_id"),row[0])
+        merging,merge_read:=query(s.db,"SELECT intent_id FROM runtime_intents n WHERE n.chain_id=? AND n.kind='merge' AND json_extract(n.exact_fence_json,'$.task_id')=? AND n.state!='settled' AND (n.state='claimed' OR NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=n.intent_id))",field(c,"chain_id"),row[0])
         if !merge_read do return false
         // A possible Git CAS must settle before retry. Revoking its evidence
         // would strand the callback and incorrectly release the generation.
-        if len(merging)>0 do continue
+        if len(merging)>0 {
+            for merge in merging {
+                if !workflow_defer_retirement(s,c,run,execution,row[0],merge[0],seq) do return false
+            }
+            continue
+        }
         command:=doc(map[string]string{"chain_id"=field(c,"chain_id"),"task_id"=row[0],"principal_id"=field(c,"principal_id"),"operation_id"=field(c,"operation_id")})
         command["method"]=json.String(field(c,"method"))
         if !workflow_retire_task(s,command,run,execution,row[0],seq) do return false

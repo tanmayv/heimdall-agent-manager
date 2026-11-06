@@ -59,6 +59,13 @@ export const ownerSchemas = {
   attempt_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["last_release", "attempt_release"], ["work_lease_id", "optional"], ["completeness", "history_completeness"]],
   attempt_read_payload: [["attempt", "positive"]],
   native_attempt: [["account_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["attempt_no", "positive"], ["started_ms", "counter"], ["ended_ms", "optional_counter"], ["holder_instance_id", "id"], ["outcome", "attempt_outcome"], ["counts_toward_budget", "flag"], ["work_lease_id", "id"], ["completeness", "history_completeness"]],
+  native_import_payload: [["body_cipher", "relay_cipher"]],
+  native_history_read: [["source_revision", "id"], ["kind", "native_history_kind"], ["cursor", "native_cursor"], ["limit", "positive"]],
+  native_history_fetch: [["source_revision", "id"], ["kind", "native_history_kind"], ["key", "document"], ["offset", "counter"]],
+  native_history_bundle: [["source_revision", "id"], ["owner_user_id", "id"], ["completeness", "history_completeness"], ["attempts", "document"], ["events", "document"], ["facets", "document"]],
+  native_history_attempt: [["task_id", "id"], ["attempt_no", "positive"], ["chain_id", "id"], ["owner_user_id", "id"], ["started_at", "document"], ["ended_at", "optional_document"], ["holder_instance_id", "optional"], ["outcome", "optional_document"], ["counts_toward_budget", "flag"], ["provenance_json", "document"]],
+  native_history_event: [["event_id", "positive"], ["task_id", "id"], ["chain_id", "id"], ["owner_user_id", "id"], ["ts_ms", "counter"], ["actor_kind", "native_event_actor"], ["actor_id", "optional"], ["kind", "document"], ["payload_json", "document"], ["provenance_json", "document"]],
+  native_history_facet: [["task_id", "id"], ["attempt_no", "positive"], ["chain_id", "id"], ["owner_user_id", "id"], ["kind", "facet_kind"], ["v", "positive"], ["body_json", "document"], ["writer", "native_actor"], ["written_at", "document"], ["references_json", "document"], ["provenance_json", "document"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -491,6 +498,66 @@ export interface OwnerNative_Attempt {
   work_lease_id: string;
   completeness: string;
 }
+export interface OwnerNative_Import_Payload {
+  body_cipher: string;
+}
+export interface OwnerNative_History_Read {
+  source_revision: string;
+  kind: string;
+  cursor: string;
+  limit: string;
+}
+export interface OwnerNative_History_Fetch {
+  source_revision: string;
+  kind: string;
+  key: string;
+  offset: string;
+}
+export interface OwnerNative_History_Bundle {
+  source_revision: string;
+  owner_user_id: string;
+  completeness: string;
+  attempts: string;
+  events: string;
+  facets: string;
+}
+export interface OwnerNative_History_Attempt {
+  task_id: string;
+  attempt_no: string;
+  chain_id: string;
+  owner_user_id: string;
+  started_at: string;
+  ended_at: string;
+  holder_instance_id: string;
+  outcome: string;
+  counts_toward_budget: string;
+  provenance_json: string;
+}
+export interface OwnerNative_History_Event {
+  event_id: string;
+  task_id: string;
+  chain_id: string;
+  owner_user_id: string;
+  ts_ms: string;
+  actor_kind: string;
+  actor_id: string;
+  kind: string;
+  payload_json: string;
+  provenance_json: string;
+}
+export interface OwnerNative_History_Facet {
+  task_id: string;
+  attempt_no: string;
+  chain_id: string;
+  owner_user_id: string;
+  kind: string;
+  v: string;
+  body_json: string;
+  writer: string;
+  written_at: string;
+  references_json: string;
+  provenance_json: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -551,4 +618,11 @@ export interface OwnerDocuments {
   attempt_state: OwnerAttempt_State;
   attempt_read_payload: OwnerAttempt_Read_Payload;
   native_attempt: OwnerNative_Attempt;
+  native_import_payload: OwnerNative_Import_Payload;
+  native_history_read: OwnerNative_History_Read;
+  native_history_fetch: OwnerNative_History_Fetch;
+  native_history_bundle: OwnerNative_History_Bundle;
+  native_history_attempt: OwnerNative_History_Attempt;
+  native_history_event: OwnerNative_History_Event;
+  native_history_facet: OwnerNative_History_Facet;
 }

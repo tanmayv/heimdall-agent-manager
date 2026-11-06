@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -25,6 +25,11 @@ function fieldValid(s: string, kind: string): boolean {
     case 'lifecycle_method': return ['workflow.gate.post','review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
+    case 'native_history_kind': return ['attempt','event','facet'].includes(s);
+    case 'native_cursor': return s.length <= 512;
+    case 'native_actor': return ['agent','user','hub','bridge'].includes(s);
+    case 'native_event_actor': return ['agent','user','hub','bridge','coordinator'].includes(s);
+    case 'facet_kind': return ['handoff','vcs','verify','output','runtime','artifacts'].includes(s);
     case 'optional_counter': return s === '' || decimal(s);
     case 'attempt_outcome': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'expired:ttl', 'expired:hard_cap', 'expired:cancelled', 'expired:replaced', 'expired:chain_closed'].includes(s);
     case 'history_completeness': return s === 'full' || s === 'incomplete';
@@ -53,7 +58,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
   if (kind === 'command') {
-    if (['attempt.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
+    if (['native.history.import','native.history.read','native.history.fetch','attempt.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
   }
   if (kind === 'native_attempt') {
     if ((o.ended_ms === '') !== (o.outcome === '')) return false;
@@ -68,7 +73,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (kind === 'receipt' && o.result_code === 'retired' && o.result_cipher !== '') return false;
   if (kind === 'capability' && BigInt(String(o.expires_ms)) > BigInt(String(o.hard_ms))) return false;
   if (kind === 'lease_input' && ((o.method === 'lease.claim') !== (o.capability === ''))) return false;
-  if (kind === 'read_payload' && BigInt(String(o.limit)) > 100n) return false;
+  if ((kind === 'read_payload' || kind === 'native_history_read') && BigInt(String(o.limit)) > 100n) return false;
   return true;
 }
 export function ownerPayloadKind(method: string): OwnerKind {
@@ -102,6 +107,9 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'requirements.present': case 'requirements.ack': return 'ack_payload';
     case 'lease.submit': return 'submit_payload';
     case 'review.open': case 'review.post': return 'review_payload';
+    case 'native.history.import': return 'native_import_payload';
+    case 'native.history.read': return 'native_history_read';
+    case 'native.history.fetch': return 'native_history_fetch';
     case 'attempt.read': return 'attempt_read_payload';
     case 'history.fetch': return 'history_fetch_payload';
     case 'history.read': case 'context.read': case 'chain.read': case 'task.read': case 'runtime.read': return 'read_payload';
@@ -178,7 +186,7 @@ export function ownerLiveAdmit(o: OwnerCommand, grant: OwnerReadGrant, nowMs: bi
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   const expires = BigInt(o.request_expires_ms);
   if (expires <= nowMs || expires - nowMs > OWNER_REQUEST_TTL_MS) return 'expired';
-  const read = ['attempt.read','history.read','history.fetch','context.read', 'grant.read','workflow.read','source.read','submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
+  const read = ['native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read', 'grant.read','workflow.read','source.read','submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
   if (!read && !grant.can_mutate) return 'invalid_scope';
   if (currentRevision < 0n) return 'stale_revision';
   if (read && o.expected_revision === '0') return 'none';

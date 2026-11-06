@@ -10,6 +10,29 @@ const creator: OwnerVerifiedKey = {account_id:'acct_1', principal_id:'dev_1', ke
 const bridge: OwnerVerifiedKey = {...creator,principal_id:'brg_1',key_id:'bridge_key',public_key:fixture.bridge_public_key,kind:'bridge'};
 const grant: OwnerReadGrant = {account_id:'acct_1', owner_bridge_id:'brg_1', chain_id:'chain_1',principal_id:'dev_1',key_id:'device_key',task_id:'task_1',method:'task.comment',revision:1n,expires_ms:1000000n,can_read:true,can_mutate:true,revoked:false};
 
+test('native history imports require mutation and snapshot reads bind typed bounded payloads', () => {
+  for (const method of ['native.history.read', 'native.history.fetch', 'native.history.import']) {
+    const c = { ...doc('command'), method, expected_revision:'0' } as OwnerCommand;
+    ownerParse(JSON.stringify(c), 'command');
+    const readonly = { ...grant, method, can_mutate:false };
+    assert.equal(ownerLiveAdmit(c, readonly, 1000n, 1n), method === 'native.history.import' ? 'invalid_scope' : 'none');
+    assert.throws(() => ownerParse(JSON.stringify({ ...c, task_id:'' }), 'command'));
+  }
+  const page = { source_revision:'original_7', kind:'facet', cursor:'', limit:'100' };
+  ownerParse(JSON.stringify(page), 'native_history_read');
+  ownerParse(JSON.stringify({ ...page, cursor:'hash:["3","output","2"]' }), 'native_history_read');
+  for (const patch of [{ kind:'summary' }, { limit:'101' }, { limit:'0' }, { cursor:'x'.repeat(513) }, { task_id:'forged' }])
+    assert.throws(() => ownerParse(JSON.stringify({ ...page, ...patch }), 'native_history_read'));
+  const read = { source_revision:'original_7', kind:'event', key:'9007199254740993', offset:'0' };
+  assert.equal(ownerParse(JSON.stringify(read), 'native_history_fetch').key, '9007199254740993');
+  assert.throws(() => ownerParse(JSON.stringify({ ...read, offset:'-1' }), 'native_history_fetch'));
+  const history = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-native-history.json', import.meta.url), 'utf8'));
+  const event = JSON.parse(JSON.parse(history.events).at(-1));
+  assert.equal(ownerParse(JSON.stringify(event), 'native_history_event').actor_kind, 'coordinator');
+  const facet = JSON.parse(JSON.parse(history.facets)[0]);
+  assert.throws(() => ownerParse(JSON.stringify({ ...facet, writer:'coordinator' }), 'native_history_facet'));
+});
+
 test('native attempt records keep decimal identities, strict times and task read authority', async () => {
   const { ownerPayloadKind } = await import('../src/ui/api/ownerLocal.ts');
   assert.equal(ownerPayloadKind('attempt.read'), 'attempt_read_payload');

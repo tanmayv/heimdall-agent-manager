@@ -8,7 +8,7 @@ export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; 
 export interface OwnerOperation { command: string; payload: string; genesis: string }
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
-  query?: string; limit?: number; offset?: string; eventSeq?: string;
+  query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   grantPrincipal?: string; grantExpiresMs?: string; grantCanMutate?: boolean; recoveryEnabled?: boolean; policyRevision?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
@@ -60,6 +60,9 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
   else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };
+  else if (method === 'native.history.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'native.history.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
+  else if (method === 'native.history.fetch') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', key: input.nativeHistoryKey ?? '', offset: input.offset ?? '0' };
   else if (method === 'attempt.read') payload = { attempt: input.attempt ?? '' };
   else if (method === 'history.fetch') payload = { seq: input.eventSeq ?? '', offset: input.offset ?? '0' };
   else if (method === 'submission.read') payload = { attempt: input.attempt ?? '', offset: input.offset ?? '0' };

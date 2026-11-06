@@ -270,3 +270,25 @@ native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome :: p
     r["outcome"]=json.String("");testing.expect(t,owner_document_valid("native_attempt",r))
     r["counts_toward_budget"]=json.String("assumed");testing.expect(t,!owner_document_valid("native_attempt",r))
 }
+
+@(test)
+native_history_contracts_bind_snapshot_scope_typed_keys_and_mutation :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    fixture:=owner_fixture(t);c:=owner_fixture_document(t,fixture,"command")
+    for method in ([3]string{"native.history.import","native.history.read","native.history.fetch"}) {
+        c["method"]=json.String(method);c["expected_revision"]=json.String("0")
+        g:=owner_fixture_grant();g.method=method;g.can_mutate=false
+        expected:=Owner_Auth_Error.None
+        if method=="native.history.import" do expected=.Invalid_Scope
+        testing.expect_value(t,owner_live_admit(c,g,1000,1),expected)
+    }
+    for raw in ([4]string{
+        `{"source_revision":"original_7","kind":"facet","cursor":"","limit":"101"}`,
+        `{"source_revision":"original_7","kind":"summary","cursor":"","limit":"1"}`,
+        `{"source_revision":"original_7","kind":"facet","cursor":"","limit":"0"}`,
+        `{"source_revision":"original_7","kind":"facet","cursor":"","limit":"1","task_id":"forged"}`}) {
+        _,ok:=owner_parse(raw,"native_history_read");testing.expect(t,!ok)
+    }
+    _,ok:=owner_parse(`{"source_revision":"original_7","kind":"facet","cursor":"hash:[\"3\",\"output\",\"2\"]","limit":"100"}`,"native_history_read")
+    testing.expect(t,ok)
+}

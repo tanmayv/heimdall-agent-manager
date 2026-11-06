@@ -75,6 +75,28 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   const evidence = JSON.parse(evidencePage.evidence);
   expect(evidence.command === comment.command && evidence.payload === comment.payload && JSON.parse(evidence.content).body === 'owner-private-comment', 'exact signed bytes and historical plaintext survive real owner restart and CLI read');
 
+  const nativeChain = ownerId('chain_'), nativeTask = ownerId('task_');
+  const nativeMake = (method: any, input: any) => prepareOwnerOperation(session,bridgeId,method,{chainId:nativeChain,...input});
+  await invoke(await nativeMake('chain.create',{expectedRevision:'0',title:'Historical import',description:'Disposable native history'}));
+  await invoke(await nativeMake('task.create',{taskId:nativeTask,expectedRevision:'1',title:'Imported original task',body:'Historical source fixture'}));
+  const nativeScope = { chain_id:nativeChain, task_id:nativeTask, owner_user_id:approver.userId };
+  const nativeProvenance = '{ "head":"original-head", "requirements_revision":7, "run_id":"original-run", "execution":2 }';
+  const nativeAttempt = JSON.stringify({ ...nativeScope, attempt_no:'19', started_at:'2025-04-03T12:00:00.123+05:30', ended_at:'2025-04-03T12:05:00.456+05:30', holder_instance_id:'original_instance', outcome:'expired:replaced', counts_toward_budget:'0', provenance_json:nativeProvenance });
+  const nativeEvent = JSON.stringify({ ...nativeScope, event_id:'9007199254740993', ts_ms:'1743670000123', actor_kind:'agent', actor_id:'original_instance', kind:'lease_expired', payload_json:'{ "reason": "replaced", "counting": false }', provenance_json:nativeProvenance });
+  const nativeFacet = JSON.stringify({ ...nativeScope, attempt_no:'19', kind:'artifacts', v:'2', writer:'agent', written_at:'2025-04-03T12:05:00.456+05:30', body_json:'{ "items": [{"artifact_id":"art_original","label":"Original artifact"}] }', references_json:JSON.stringify([{kind:'artifact',id:'art_original',revision:'7',provenance:'original-submit',state:'import_pending'}]), provenance_json:nativeProvenance });
+  const nativeBundle = JSON.stringify({ source_revision:'original_7', owner_user_id:approver.userId, completeness:'incomplete', attempts:JSON.stringify([nativeAttempt]), events:JSON.stringify([nativeEvent]), facets:JSON.stringify([nativeFacet]) });
+  const nativeImport = await nativeMake('native.history.import', { taskId:nativeTask, expectedRevision:'1', body:nativeBundle });
+  const nativeImported = await openOwnerReply(session,nativeImport,await cli(await ownerRelayFile(session,nativeImport)));
+  expect(nativeImported.code==='ok', 'actual CLI imports original native attempt/event/facet without changing runtime IDs');
+  expect((await invoke(nativeImport)).replay, 'signed native history import replays exact accepted operation');
+  const nativePage = JSON.parse((await invoke(await nativeMake('native.history.read',{taskId:nativeTask,expectedRevision:'0',nativeSourceRevision:'original_7',nativeHistoryKind:'facet'}))).body);
+  expect(nativePage.items.length===1 && nativePage.items[0].attempt_no==='19' && nativePage.items[0].v==='2' && nativePage.items[0].writer==='agent', 'signed browser inventory preserves typed native facet version and writer');
+  const nativeFetch = () => nativeMake('native.history.fetch',{taskId:nativeTask,expectedRevision:'0',nativeSourceRevision:'original_7',nativeHistoryKind:'facet',nativeHistoryKey:nativePage.items[0].key});
+  const nativeRead = await nativeFetch();
+  expect(JSON.parse((await openOwnerReply(session,nativeRead,await cli(await ownerRelayFile(session,nativeRead)))).body).record===nativeFacet, 'actual CLI fetch preserves original native facet body/time/typed unresolved reference exactly');
+  await stopOwner(); await restartOwner();
+  expect(JSON.parse((await invoke(await nativeFetch())).body).record===nativeFacet, 'native imported history survives actual owner cold restart unchanged');
+
   const cliChain = ownerId('chain_'), cliTask = ownerId('task_');
   const throughCli = async (method: any, input: any) => {
     const operation = await prepareOwnerOperation(session, bridgeId, method, { chainId: cliChain, ...input });

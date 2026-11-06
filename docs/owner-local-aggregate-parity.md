@@ -150,43 +150,43 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `event_id` | `src/hub/domain/taskv2.odin:10` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `task_id` | `src/hub/domain/taskv2.odin:11` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `chain_id` | `src/hub/domain/taskv2.odin:12` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `owner_user_id` | `src/hub/domain/taskv2.odin:13` | **LOCAL** `src/lib/owner_local/schema.sql:1`. Account/owner is pinned by runtime_database. Native user IDs still need explicit preservation on legacy import; do not infer ID equivalence. |
-| `ts_ms` | `src/hub/domain/taskv2.odin:14` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `actor_kind` | `src/hub/domain/taskv2.odin:17` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `actor_id` | `src/hub/domain/taskv2.odin:18` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `kind` | `src/hub/domain/taskv2.odin:19` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
-| `payload_json` | `src/hub/domain/taskv2.odin:20` | **LOCAL-NEW / IMPORT-OPEN** `src/lib/owner_local/migration_013.sql:55`. V13 local_events stores owner seq, actual actor/time and exact signed command/payload/content/result. Earlier local tags are explicitly legacy_tag with unknown actor/time; original Hub event IDs/payloads must be imported verbatim separately. |
+| `event_id` | `src/hub/domain/taskv2.odin:10` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `task_id` | `src/hub/domain/taskv2.odin:11` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `chain_id` | `src/hub/domain/taskv2.odin:12` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `owner_user_id` | `src/hub/domain/taskv2.odin:13` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `ts_ms` | `src/hub/domain/taskv2.odin:14` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `actor_kind` | `src/hub/domain/taskv2.odin:17` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `actor_id` | `src/hub/domain/taskv2.odin:18` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `kind` | `src/hub/domain/taskv2.odin:19` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `payload_json` | `src/hub/domain/taskv2.odin:20` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
 
 ### Task_Attempt
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `task_id` | `src/hub/domain/taskv2.odin:27` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `chain_id` | `src/hub/domain/taskv2.odin:29` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `owner_user_id` | `src/hub/domain/taskv2.odin:30` | **LOCAL** `src/lib/owner_local/schema.sql:1`. Account/owner is pinned by runtime_database. Native user IDs still need explicit preservation on legacy import; do not infer ID equivalence. |
-| `started_at` | `src/hub/domain/taskv2.odin:31` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `ended_at` | `src/hub/domain/taskv2.odin:32` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `outcome` | `src/hub/domain/taskv2.odin:36` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
-| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `task_id` | `src/hub/domain/taskv2.odin:27` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `chain_id` | `src/hub/domain/taskv2.odin:29` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `owner_user_id` | `src/hub/domain/taskv2.odin:30` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `started_at` | `src/hub/domain/taskv2.odin:31` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `ended_at` | `src/hub/domain/taskv2.odin:32` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `outcome` | `src/hub/domain/taskv2.odin:36` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
 
 ### Task_Attempt_Facet
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `task_id` | `src/hub/domain/taskv2.odin:43` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `attempt_no` | `src/hub/domain/taskv2.odin:44` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `chain_id` | `src/hub/domain/taskv2.odin:45` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `owner_user_id` | `src/hub/domain/taskv2.odin:46` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `kind` | `src/hub/domain/taskv2.odin:47` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `v` | `src/hub/domain/taskv2.odin:48` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `body_json` | `src/hub/domain/taskv2.odin:49` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `writer` | `src/hub/domain/taskv2.odin:51` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
-| `written_at` | `src/hub/domain/taskv2.odin:52` | **OPEN** `src/hub/service/taskv2/verbs_m2.odin:109`. Retain native kind/version/writer/written_at/body_json verbatim. Current output/handoff tables cover only a subset; C1 must add remaining typed facet commands/history. Original artifact/message IDs plus pinned revision/provenance stay native; C3 owns local_objects body/envelope/blob resolution. Unknown refs stay unresolved/import-pending. |
+| `task_id` | `src/hub/domain/taskv2.odin:43` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `attempt_no` | `src/hub/domain/taskv2.odin:44` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `chain_id` | `src/hub/domain/taskv2.odin:45` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `owner_user_id` | `src/hub/domain/taskv2.odin:46` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `kind` | `src/hub/domain/taskv2.odin:47` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `v` | `src/hub/domain/taskv2.odin:48` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `body_json` | `src/hub/domain/taskv2.odin:49` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `writer` | `src/hub/domain/taskv2.odin:51` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
+| `written_at` | `src/hub/domain/taskv2.odin:52` | **ARCHIVE-LOCAL / LINK-RESOLUTION-OPEN** V15 preserves original attempt/kind/version/writer/time and verbatim body, with immutable attempt linkage and typed original references (src/lib/owner_local/native_history.odin:33; migration_015.sql:56). One writer per native attempt/kind is enforced. C3 owns linked bodies/envelopes/blobs; unknown references stay unresolved/import_pending. Ordinary adapters/final parity remain required. |
 
 ### Task_Lease
 
@@ -851,3 +851,168 @@ Foundation acceptance does not authorize migration or ordinary route cutover.
 | Rich metadata/configuration | The 240-field inventory and command table require publication, priority, proposal/decision/publish, chain/task timestamps, membership/directories, provider/model/placement/fleet policy, curated summary, mixed-work graph/receipts/scope provenance and their strict ordinary adapters. Existing full brief validation is reusable; input-reference resolution remains required. |
 | Facets and final parity proof | Retain original facet kinds, IDs, versions, writer/time/body and pinned typed artifact/message provenance. C3 owns linked canonical bodies/envelopes/blobs; unresolved references stay explicitly unresolved/import-pending. Add the full rich native fixture and adapter proof for validation, authorization, replay, search, history, restart and migration rollback. Named independent review must assess final parity. |
 | Migration/cutover | Append V15+ for new schema; preserve V1–V14 and genuine historical reconstruction tests. `history.read`/`history.fetch` (`events.odin:26`, `events.odin:63`) expose current accepted evidence; legacy tags have no fabricated original provenance. M4 owns actual route cutover; no Hub writer fallback is introduced here. |
+
+## C1b archival native history and typed facets (revision 1)
+
+Task `task_18e57ad551f091b8` builds on accepted C1a `d78c6c54`.
+Coordinator resolution `msg_18e57cee061a250b` explicitly places **exact archival
+preservation/validation** in C1b, with **no automatic baseline activation**.
+C1c REQ-Pc4 owns signed source-snapshot/cutoff selection and local-history
+reconciliation, including fail-closed ambiguous overlap and no live boundary
+effects. M4 owns actual route cutover. An archived native record is not a new
+local work grant, a spent attempt, or permission to execute.
+
+### Native source mapping
+
+V15 `native_history_records` is an immutable archival store, keyed by current
+chain/task scope, pinned source revision, record kind and the original native
+key (`src/lib/owner_local/migration_015.sql:56`). The three native field families
+in the inventory above now describe that archival mapping. The transport keeps
+decimal identities/counting flags as strings; it preserves original timestamp
+spellings and JSON payload/body strings without parsing and re-serializing those
+stored values (`src/lib/owner_local/native_history.odin:33`).
+
+| Source | Preserved identity and facts |
+| --- | --- |
+| `src/hub/domain/taskv2.odin:27` | Attempt: original task/attempt number, chain, original owner user ID, started/ended timestamp strings, holder, exact outcome and counting bit. Snapshot revisions retain changes to a native attempt without rewriting an earlier snapshot. |
+| `src/hub/domain/taskv2.odin:9` | Event: original event ID, task/chain/owner, exact timestamp, actor kind/ID, kind and verbatim payload. Native event IDs remain distinct from owner accepted-command sequence numbers. The actual coordinator actor is retained (`src/hub/service/taskv2/events.odin:71`; `verbs_m2.odin:392`). |
+| `src/hub/domain/taskv2.odin:43` | Facet: original task/attempt/kind/version, owner, writer, written-at string and verbatim body. All six source kinds are retained, including legacy read-only `verify` (`src/hub/service/taskv2/facets.odin:15`). |
+
+Each record also retains caller-supplied pinned `provenance_json`; facet records
+carry typed artifact/message IDs, pinned revision/provenance and explicit
+`unresolved` or `import_pending` reference state. These are archival references,
+not a second object/body resolver (`src/lib/owner_local/native_history.odin:17`).
+C3 remains responsible for canonical linked bodies/envelopes/blobs. No path is
+opened to discover a body, and no Hub body/authority join is introduced.
+
+Facet-to-attempt linkage is checked before insertion and by a deferred foreign
+key. Original owner and one-writer-per-attempt/kind invariants are checked;
+conflicting reimports of the same source key fail, and known event/facet versions
+cannot silently change across snapshots (`src/lib/owner_local/native_history.odin:33`;
+`migration_015.sql:56`). `source_completeness` exposes the import declaration;
+it does not assert selected current-baseline completeness or budget eligibility.
+Missing history is not reconstructed from current runtime rows. Existing V13
+legacy tags and V7/V4 lease/submission identifiers remain untouched.
+
+### Authorized bounded API
+
+All three methods are task-scoped signed-device commands. Existing current
+read authorization precedes lookup or receipt replay; mutation is additionally
+required for import (`src/contracts/owner_local.odin:114`;
+`src/lib/owner_local/store.odin:127`).
+
+| Method | Payload and result |
+| --- | --- |
+| `native.history.import` | Encrypted `body_cipher`; a strict bundle with source revision, original owner, declared completeness and arrays of exact typed record documents. At most 100 records per family and 64 KiB plaintext per command. Batches can append to the same source revision without rewriting keys. The import's own accepted event retains current importer/time/request provenance. |
+| `native.history.read` | Source revision, `attempt`/`event`/`facet`, cursor and limit 1–100. Keyset inventory binds account/chain/task/source/kind; numeric native IDs and facet versions sort as SQLite i64, never JavaScript floats. Keys remain original native keys, not new IDs. |
+| `native.history.fetch` | Source revision, kind, exact inventory key and decimal byte offset. Returns UTF-8-safe record chunks of at most 8192 raw bytes, next offset and source completeness. |
+
+Implementation: `src/lib/owner_local/native_history.odin:104`; existing browser
+signer/client adapters: `src/ui/api/ownerLocalClient.ts:63`. Native source facts
+stay readable after task deletion and may be archived for retired workflow
+executions without reactivating those tasks (`src/lib/owner_local/store.odin:174`,
+`store.odin:231`; `native_history_test.odin`). Read revocation still denies them.
+
+### Deferred workflow merge settlement
+
+Native workflow stop skips terminal tasks
+(`src/hub/service/taskv2/workflow_execution.odin:196`). Locally, approved submitted
+work may still await a Git CAS. V15 records the workflow stop against the exact
+extant intent/task/run/execution and original accepted event instead of discarding
+the callback's identity (`src/lib/owner_local/workflow_retirements.odin:37`).
+Prepared head/fence/digest and native submitted outcome remain intact.
+
+Failed delivery keeps the same intent retryable. Obsolete incarnations, duplicate
+callbacks and mutations that would invalidate an unresolved deferred merge are
+rejected. After successful exact settlement, one immutable
+`preserved_terminal` disposition is linked to the new bridge completion event;
+it does not fabricate a second expiry for an already submitted attempt
+(`src/lib/owner_local/workflow_retirements.odin:45`; `outbox.odin:116`;
+`migration_015.sql:88`). Event-write failure rolls the disposition and settlement
+back together. The workflow can retry only once its old merge is settled.
+
+For pre-V15 failed/cancelled executions with a still-valid unsettled merge, the
+migration retains the observable exact binding while marking original request
+sequence **null**, cause **unknown**, and source completeness **incomplete**
+(`src/lib/owner_local/migration_015.sql:88`). It neither backfills old events nor
+invents their missing actor/time. Future settlement records its own accepted
+event exactly once. Genuine V14 reconstruction verifies this path alongside
+current-source deferral (`src/lib/owner_local/deferred_retirements_test.odin`).
+
+### C1b proof and successor boundary
+
+The shared synthetic source fixture
+`src/contracts/fixtures/owner-native-history.json` contains three logical attempts,
+eleven native events (including an ID above JavaScript's safe integer range and
+a coordinator actor), and two versions of every native facet kind. Four work
+leases include a handoff continuation and a structural replacement. The original
+native fold proves **three attempts / two counted** from the same fixture used
+by archival round-trip tests (`src/hub/service/taskv2/owner_native_history_test.odin`).
+This verifies fidelity, not activation of an imported baseline.
+
+Storage regressions cover exact records, provenance, writer/version/owner
+conflicts, invalid references, orphan facets, accepted-event and deferred-COMMIT
+rollback, paging/chunks/numeric ordering, partial snapshots, read revocation,
+restart, deleted tasks, retired workflows and genuine V14 collision/rollback/
+recovery (`src/lib/owner_local/native_history_test.odin`). Prepared-CAS regressions
+cover current and historical missing-request evidence, failure/restart, stale
+claim rejection, rollback and one final native terminal disposition
+(`src/lib/owner_local/deferred_retirements_test.odin`).
+
+The complete disposable demo adds actual CLI import/replay/fetch and signed
+browser typed-facet inventory/read after owner cold restart, while retaining all
+prior lifecycle, workflow, grant, controls, search and registry scenarios
+(`tests/e2e/owner_local_flow.ts:77`). The first draft reused the ordinary lease
+fixture's task and changed its expected revision; the final import scenario uses
+its own disposable chain/task. No production deployment or live restart is used.
+
+Successors must select/reconcile a signed snapshot and explicit cutoff before
+using archived facts for admission (C1c REQ-Pc4), retain all other OPEN/PARTIAL
+metadata/proposal/configuration/ordinary-adapter work, and complete the full rich
+aggregate parity proof. M4 cutover and C3 linked-body resolution remain separate.
+C1b does not waive any remaining field, activate a source snapshot, enforce a
+budget, or claim whole-C1 completion. Named independent review remains required.
+
+### Verification commands and outcomes
+
+Commands ran through managed shell in
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e57ad551f091b8`:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1b-complete-store-130
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1b-archival-contracts-final
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_native_import_fixture_matches_original_attempt_accounting,taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1b-archival-native-final
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts tests/ui_owner_controls_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1b-complete-bins
+nix develop --command odin build tools/owner_local_test_identity -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1b-identity
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1b-complete-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1b-complete-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1b-complete-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1b-complete-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1b-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+python3 scripts/generate-owner-local-contracts.py
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+git diff --exit-code d78c6c54 -- src/lib/owner_local/schema.sql src/lib/owner_local/migration_{002..014}.sql
+```
+
+All exit 0: store **130/130**, contracts **20/20**, native differential **2/2**,
+UI **18/18**, typecheck, four binary builds and the complete disposable demo.
+No allocator warnings. Final store/build/demo session:
+`sh_1a4a65c240fc3dd6f4b1d591fe67f991` (all steps passed);
+contracts/native: `sh_ba0593a18e148b4b7068b0f70a660470`;
+typecheck/UI: `sh_a768d079995b1197d52db801b6a7dce6`.
+
+After enriching only the shared fixture bodies with source-kind-specific fields,
+the focused eight archival tests and both native differential tests also passed
+in `sh_6d75cb75265d05f4a3e073eb6d08ab92`, using the same named tests in
+`native_history_test.odin` with output `c1b-typed-source-fixture`, followed by the
+two native tests with output `c1b-typed-source-native`. Production code remained
+unchanged by this fixture refinement. V1–V14 bytes match accepted C1a; inventory
+still accounts for 240 fields/23 structs, without claiming full implementation.
+
+Draft diagnostics were resolved: initial helper compile errors; rich bundles
+exceeding the ordinary 8 KiB prose cap; an unknown limit field type/cursor shape;
+one stale schema-version expectation; missing pinned `posthog-js` dependency
+(restored with `nix develop --command npm ci --ignore-scripts --no-audit --no-fund`,
+lockfile unchanged); a JSON envelope key-order assertion (corrected to compare
+the exact archived record); and historical reconstruction retaining a V15
+trigger (all V15 objects are now removed before reconstructing older schemas).
+The first real demo's revision collision was corrected using a separate chain.
