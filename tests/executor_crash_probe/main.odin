@@ -47,7 +47,7 @@ main :: proc() {
         if stage!="prepare" {
             require(executor.action(&s,sign(a,"action",&owner_private),owner,1100,current).code=="ok","activate")
         }
-        if stage=="launch" {_,ok:=executor.take_intent(&s,1200);require(ok,"claim intent")}
+        if stage=="launch" {intent,ok:=executor.take_intent(&s,1200);require(ok,"claim intent");require(executor.begin_dispatch(&s,intent,1200),"dispatch fence") }
         fmt.println("COMMITTED",stage)
         // Parent SIGKILLs here; no close, destructor or graceful shutdown runs.
         time.sleep(time.Minute)

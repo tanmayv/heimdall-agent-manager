@@ -83,7 +83,7 @@ take_intent :: proc(s:^Store,now:i64)->(Intent,bool) {
       ORDER BY CASE i.kind WHEN 'stop' THEN 0 ELSE 1 END,i.reservation_id LIMIT 1`,fmt.tprintf("%d",now))
     if !ok || len(rows)==0 do return {},false
     row:=rows[0]
-    if _,written:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=? WHERE reservation_id=? AND kind=?",fmt.tprintf("%d",s.incarnation),row[0],row[1]);!written do return {},false
+    if _,written:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=0 WHERE reservation_id=? AND kind=?",row[0],row[1]);!written do return {},false
     if row[1]=="launch" {
         if _,written:=query(s.db,"UPDATE executor_reservations SET launch_state='uncertain' WHERE reservation_id=?",row[0]);!written do return {},false
     }
@@ -127,5 +127,37 @@ complete_recovery :: proc(s:^Store,now:i64)->bool {
     rows,ok:=query(s.db,"SELECT count(*) FROM executor_reservations WHERE state IN ('active','stopping') AND observed_incarnation!=?",fmt.tprintf("%d",s.incarnation))
     if !ok || len(rows)!=1 || rows[0][0]!="0" do return false
     if !exec(s.db,"UPDATE executor_runtime SET recovery_state='ready' WHERE singleton=1") do return false
+    return commit(s)
+}
+
+// Revalidate the exact durable claim without holding a transaction during I/O.
+intent_current :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    return intent_current_locked(s,intent,now)
+}
+intent_current_locked :: proc(s:^Store,intent:Intent,now:i64)->(i64,bool) {
+    if s.db==nil || s.unusable || intent.incarnation!=s.incarnation || now<0 do return 0,false
+    rows,ok:=query(s.db,`SELECT r.instance_id,r.launch_key,r.document,r.state,r.expires_ms,r.executor_incarnation,i.claim_incarnation,
+      (SELECT clock_high_ms FROM executor_runtime),(SELECT recovery_state FROM executor_runtime)
+      FROM executor_intents i JOIN executor_reservations r USING(reservation_id)
+      WHERE i.reservation_id=? AND i.kind=? AND i.state='uncertain'`,intent.reservation,intent.kind)
+    if !ok || len(rows)!=1 do return 0,false
+    row:=rows[0]
+    if row[0]!=intent.instance || row[1]!=intent.launch_key || row[2]!=intent.document ||
+       (number(row[6])!=0 && number(row[6])!=s.incarnation) || now<number(row[7]) { return 0,false }
+    if intent.kind=="stop" do return 0,row[3]=="stopping"
+    remaining:=number(row[4])-now
+    return remaining,intent.kind=="launch" && row[3]=="active" && remaining>0 && row[8]=="ready" && number(row[5])==s.incarnation
+}
+// Exactly one claimant may cross into first dispatch. Retried calls query the
+// same daemon key only. An old runtime cannot acquire fresh I/O permission.
+begin_dispatch :: proc(s:^Store,intent:Intent,now:i64)->bool {
+    sync.mutex_lock(&s.mutex);defer sync.mutex_unlock(&s.mutex)
+    if !begin(s) do return false
+    defer rollback(s)
+    if _,current:=intent_current_locked(s,intent,now);!current do return false
+    rows,ok:=query(s.db,"SELECT claim_incarnation FROM executor_intents WHERE reservation_id=? AND kind=?",intent.reservation,intent.kind)
+    if !ok || len(rows)!=1 || rows[0][0]!="0" do return false
+    if _,written:=query(s.db,"UPDATE executor_intents SET claim_incarnation=? WHERE reservation_id=? AND kind=?",fmt.tprintf("%d",s.incarnation),intent.reservation,intent.kind);!written do return false
     return commit(s)
 }

@@ -368,3 +368,19 @@ executor_retention_capacity_preserves_replay_and_safety_stop :: proc(t:^testing.
     intent,ok:=take_intent(&f.store,6000);testing.expect(t,ok && intent.kind=="stop")
     testing.expect(t,observe_child(&f.store,"reservation",observation(f,"reservation",false)))
 }
+
+@(test)
+executor_first_dispatch_permission_is_durable_single_use_and_restart_fenced :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);policy(t,f)
+    p:=document("prepare");testing.expect_value(t,reserve(f,p,&f.owner1).code,"ok")
+    a:=activate_document(p);testing.expect_value(t,perform(f,a,&f.owner1).code,"ok")
+    intent,ok:=take_intent(&f.store,1200);testing.expect(t,ok)
+    remaining,current:=intent_current(&f.store,intent,1200);testing.expect(t,current && remaining==3800)
+    changed:=intent;changed.launch_key="other"
+    testing.expect(t,!begin_dispatch(&f.store,changed,1200))
+    testing.expect(t,begin_dispatch(&f.store,intent,1200))
+    testing.expect(t,!begin_dispatch(&f.store,intent,1200))
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    testing.expect(t,!begin_dispatch(&f.store,intent,1300))
+}

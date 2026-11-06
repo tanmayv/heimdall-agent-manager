@@ -47,6 +47,9 @@
 //! | 0xAE | StreamReady | stream attached and ready to accept input/output     |
 //! | 0xAF | StreamClosed| stream closed (child exited or teardown)             |
 //! | 0xB0 | AlreadyExited| Signal target had already exited (instance + code)  |
+//! | 0x3D | ExecutorReady | require exact-key fencing and absolute deadlines |
+//! | 0x3E | ExecutorClose | close only the matching executor launch key      |
+//! | 0x3F | ExecutorLaunch | query known executor launch; unknown is uncertain |
 //! | 0x3B | StartupLaunch | query actual live child by immutable spawn key   |
 //! | 0xB2 | StartupLaunch | reply with matching live pid, or 0 if absent     |
 //! | 0x3A | StartupInput | launch-fenced, idempotent startup instruction       |
@@ -310,6 +313,9 @@ pub enum CtlMsg {
     /// Confirm a successfully spawned, still-live child by its immutable spawn key.
     /// Unlike bridge token issuance, this evidence survives a bridge restart.
     StartupLaunch { instance: String, launch_key: String },
+    ExecutorReady,
+    ExecutorClose { instance: String, launch_key: String },
+    ExecutorLaunch { instance: String, launch_key: String },
     Key { instance: String, key: NamedKey },
     Resize { instance: String, rows: u16, cols: u16 },
     Capture { instance: String },
@@ -568,7 +574,7 @@ impl CtlMsg {
             CtlMsg::Attach { instance } => Some(instance),
             CtlMsg::Input { instance, .. } => Some(instance),
             CtlMsg::StartupInput { instance, .. } => Some(instance),
-            CtlMsg::StartupLaunch { instance, .. } => Some(instance),
+            CtlMsg::StartupLaunch { instance, .. } | CtlMsg::ExecutorClose { instance, .. } | CtlMsg::ExecutorLaunch { instance, .. } => Some(instance),
             CtlMsg::Key { instance, .. } => Some(instance),
             CtlMsg::Resize { instance, .. } => Some(instance),
             CtlMsg::Capture { instance } => Some(instance),
@@ -634,6 +640,11 @@ impl CtlMsg {
                 put_i32(&mut p, *pid);
                 put_str(&mut p, launch_key);
                 p.extend_from_slice(data);
+            }
+            CtlMsg::ExecutorReady => p.push(0x3d),
+            CtlMsg::ExecutorClose { instance, launch_key } | CtlMsg::ExecutorLaunch { instance, launch_key } => {
+                p.push(if matches!(self,CtlMsg::ExecutorClose{..}) {0x3e} else {0x3f});
+                put_str(&mut p,instance);put_str(&mut p,launch_key);
             }
             CtlMsg::StartupLaunch { instance, launch_key } => {
                 p.push(T_STARTUP_LAUNCH);
@@ -741,6 +752,20 @@ impl CtlMsg {
                 let launch_key = get_str(rest, &mut off)?;
                 CtlMsg::StartupInput { instance, pid, launch_key, data: rest[off..].to_vec() }
             }
+            0x3d => {
+                if !rest.is_empty() {return Err(bad("trailing executor handshake bytes"));}
+                CtlMsg::ExecutorReady
+            },
+            0x3e | 0x3f => {
+                let instance=get_str(rest,&mut off)?;
+                let launch_key=get_str(rest,&mut off)?;
+                if off!=rest.len() || instance.is_empty() || instance.len()>160 ||
+                    !instance.bytes().all(|b|b.is_ascii_alphanumeric() || b"_-.:".contains(&b)) ||
+                    launch_key.len()!=64 || !launch_key.bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                    return Err(bad("invalid exact executor control"));
+                }
+                if tag==0x3e {CtlMsg::ExecutorClose{instance,launch_key}} else {CtlMsg::ExecutorLaunch{instance,launch_key}}
+            },
             T_STARTUP_LAUNCH => CtlMsg::StartupLaunch {
                 instance: get_str(rest, &mut off)?,
                 launch_key: get_str(rest, &mut off)?,
@@ -1140,6 +1165,25 @@ mod tests {
         for pid in [0, 42] {
             round_reply(CtlReply::StartupLaunch { instance: "inst".into(), pid, launch_key: "spawn-key".into() });
         }
+    }
+
+    #[test]
+    fn executor_controls_roundtrip_reject_trailing_and_malformed_identity() {
+        round_msg(CtlMsg::ExecutorReady);
+        assert!(CtlMsg::decode_payload(&[0x3d,0]).is_err());
+        for message in [
+            CtlMsg::ExecutorClose{instance:"inst".into(),launch_key:"a".repeat(64)},
+            CtlMsg::ExecutorLaunch{instance:"inst".into(),launch_key:"b".repeat(64)},
+        ] {
+            round_msg(message.clone());
+            let encoded=message.encode();
+            let payload=&encoded[4..];
+            for end in 0..payload.len() {assert!(CtlMsg::decode_payload(&payload[..end]).is_err());}
+            let mut extra=payload.to_vec();extra.push(0);
+            assert!(CtlMsg::decode_payload(&extra).is_err());
+        }
+        let invalid=CtlMsg::ExecutorClose{instance:"inst".into(),launch_key:"wrong".into()}.encode();
+        assert!(CtlMsg::decode_payload(&invalid[4..]).is_err());
     }
 
     #[test]
