@@ -228,6 +228,27 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
         expect(unread.status!==0,'unpresented exact requirements ACK rejected');
         const presented=call(worker,'requirements.present',{requirements_revision:'2'},cap);
         expect(presented.status===0 && JSON.parse(presented.data.body).brief.includes('lifecycle-private-revised'),'real CLI reads exact immutable brief');
+        const delivered=JSON.parse(presented.data.body);
+        expect(delivered.chain_summary.length<=16384 && delivered.chain_summary.split('\n').length<=60,'real CLI delivers a bounded owner projection');
+        const provenance=JSON.parse(delivered.context_provenance);
+        expect(provenance.algorithm==='1' && provenance.source_digest && provenance.freshness==='snapshot','real requirements response includes versioned source provenance');
+        {
+          const md=worker.readTaskMd();
+          expect(md.includes(input.lease_id) && md.includes('lifecycle-private-revised-goal') && md.includes('## Chain summary') && md.includes('source_digest'),'real Bridge atomically writes exact lease/requirements and summary into TASK.md');
+        }
+        const chainContext=JSON.parse((await human('chain.read',{taskId:'',expectedRevision:'0'})).body);
+        expect(chainContext.context.body.includes(cid) && chainContext.context.fetch_method==='context.read','signed detail path delivers Bridge-owned context');
+        let contextCursor='',sourcePages=0,sawRequirements=false;
+        do {
+          const evidence=JSON.parse((await human('context.read',{taskId:'',expectedRevision:'0',cursor:contextCursor})).body);
+          expect(Buffer.byteLength(JSON.stringify(evidence))<=65536,'real source page obeys encoded byte budget');
+          if(evidence.source_kind==='requirements') sawRequirements=true;
+          expect(!evidence.next_cursor || evidence.next_cursor!==contextCursor,'real context evidence cursor advances');
+          contextCursor=evidence.next_cursor;sourcePages++;
+          expect(sourcePages<100,'disposable source traversal terminates');
+        } while(contextCursor);
+        expect(sawRequirements,'original immutable requirements remain fetchable through full-source pages');
+
         expect(call(worker,'requirements.ack',{requirements_revision:'2'},cap).status===0,'real CLI ACKs exact presented revision');
         const submit={...input,expected_revision:'5',operation_id:ownerId('op_'),method:'lease.submit',capability:cap,payload:JSON.stringify({requirements_revision:'2',head:git.head,summary:'lifecycle-private-checks-pass'})};
         const submitted=worker.call(submit);expect(submitted.status===0,'real CLI submits actual clean source head');

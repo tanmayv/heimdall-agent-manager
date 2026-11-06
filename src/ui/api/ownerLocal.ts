@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['grant.set', 'grant.revoke', 'grant.read', 'grant.policy', 'grant.recover', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['context.read', 'grant.set', 'grant.revoke', 'grant.read', 'grant.policy', 'grant.recover', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -86,7 +86,7 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'requirements.present': case 'requirements.ack': return 'ack_payload';
     case 'lease.submit': return 'submit_payload';
     case 'review.open': case 'review.post': return 'review_payload';
-    case 'chain.read': case 'task.read': case 'runtime.read': return 'read_payload';
+    case 'context.read': case 'chain.read': case 'task.read': case 'runtime.read': return 'read_payload';
     case 'receipt.read': return 'receipt_payload';
     default: throw new SyntaxError('Unsupported owner method');
   }
@@ -159,7 +159,7 @@ export function ownerLiveAdmit(o: OwnerCommand, grant: OwnerReadGrant, nowMs: bi
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   const expires = BigInt(o.request_expires_ms);
   if (expires <= nowMs || expires - nowMs > OWNER_REQUEST_TTL_MS) return 'expired';
-  const read = ['grant.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
+  const read = ['context.read', 'grant.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
   if (!read && !grant.can_mutate) return 'invalid_scope';
   if (currentRevision < 0n) return 'stale_revision';
   if (read && o.expected_revision === '0') return 'none';

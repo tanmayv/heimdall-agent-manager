@@ -105,7 +105,7 @@ Agents see only their `TASK.md`. Use the channels the Hub carries forward:
 | Extra context for one task | `brief.inputs` | that task |
 | Lessons that outlive the chain (build quirks, project rules) | `ham-ctl memory propose` (project scope) | future chains |
 
-The Hub keeps a mechanical chain summary (done tasks with their commit, open tasks, every dead end) and appends your curated notes. Keep yours short and current; compact it when you get `summary_overflow`.
+The runtime projects a bounded chain summary from retained source history and separate curated notes. Keep notes short and current. `summary set` edits notes; it cannot remove immutable handoff history. Successful automatic compaction needs no action. A source-read failure requires storage diagnosis and retry; fetch original task facets for evidence.
 ```bash
 ./bin/ham-ctl task-chain summary set --stdin <<'EOF'
 Conventions: tests with `pytest -q`; never edit legacy/.
@@ -129,7 +129,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
 | `merge_conflict` / `merge_failed` | a done task's branch did not merge; the task returns to its worker with a Merge Conflict section. For `merge_failed` (merge never ran, e.g. bridge offline) check the bridge |
 | `gate_rejected` | a workflow gate was rejected: inspect the feedback, talk to the user, and retry the whole run if appropriate |
-| `summary_overflow` | compact the chain summary (`task-chain summary set`) |
+| `summary_overflow` | inspect the reported context materialization/storage failure and retry after recovery; summary set only edits curated notes |
 | `work_batch_finished` / `workflow_complete` | assess the goal; add more work or explicitly complete the chain |
 
 ### Pausing vs deferring: when to `task hold`

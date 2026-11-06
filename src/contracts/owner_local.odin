@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -146,7 +146,7 @@ owner_payload_kind :: proc(method: string) -> string {
     case "requirements.present", "requirements.ack": return "ack_payload"
     case "lease.submit": return "submit_payload"
     case "review.open", "review.post": return "review_payload"
-    case "chain.read", "task.read", "runtime.read": return "read_payload"
+    case "context.read", "chain.read", "task.read", "runtime.read": return "read_payload"
     case "receipt.read": return "receipt_payload"
     }
     return ""
@@ -257,7 +257,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "grant.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "context.read" || method == "grant.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

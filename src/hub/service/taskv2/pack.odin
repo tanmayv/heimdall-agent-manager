@@ -7,6 +7,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import jsonx "odin_test:lib/jsonx"
+import compact "odin_test:lib/context_compaction"
 
 // Context pack (plan §3b / §4c) — M3 FULL PACK. The hub builds the complete
 // structure; the bridge decrypts vault tokens, applies the 8 k-token cap after
@@ -468,13 +469,13 @@ pack_why :: proc(view: Task_View, lease: domain.Task_Lease, prev_outcome: string
 
 // ---- Mechanical Chain Summary (plan §3b / §4c) ----------------------------------------
 
-// build_mechanical_chain_summary builds the <=60-line mechanical summary from
+// build_mechanical_chain_summary builds a bounded preview from
 // completed tasks (with vcs.head and 1-line handoff summaries), active/ready/blocked
 // tasks, and dead_ends preserved across all attempts, while preserving any
 // coordinator-curated summary lines (`coordinator_lines`). Returns (summary_body, overflowed).
 build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, coordinator_lines: []string = nil) -> (string, bool) {
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if terr.code != .None do return "", false
+	if terr.code != .None do return "", true
 
 	done_lines := make([dynamic]string, context.temp_allocator)
 	open_lines := make([dynamic]string, context.temp_allocator)
@@ -482,6 +483,7 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 
 	for t in tasks {
 		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, t.task_id, t.owner_user_id)
+		if ferr.code != .None do return "", true
 		latest_summary := ""
 		latest_attempt := -1
 		latest_head := ""
@@ -537,64 +539,28 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 		}
 	}
 
-	// Dead ends are NEVER dropped when trimming to 60 lines. If dead_ends alone
-	// exceed 60 lines, overflow=true so the caller emits EV_SUMMARY_OVERFLOW.
-	overflow := false
-	if len(dead_end_lines) + 2 > CHAIN_SUMMARY_MAX_LINES {
-		overflow = true
-	}
-
-	out := make([dynamic]string, context.temp_allocator)
-	append(&out, fmt.tprintf("# Chain %s: %s", chain.chain_id, first_line_trimmed(chain.title)))
-
-	// Reserve budget for dead_ends section first
-	reserved_for_dead_ends := 0
-	if len(dead_end_lines) > 0 {
-		reserved_for_dead_ends = min(len(dead_end_lines) + 1, CHAIN_SUMMARY_MAX_LINES - 1)
-	}
-	if len(coordinator_lines) > 0 {
-		max_coord := CHAIN_SUMMARY_MAX_LINES - len(out) - reserved_for_dead_ends
-		for cline in coordinator_lines {
-			if max_coord <= 0 do break
-			append(&out, cline)
-			max_coord -= 1
-		}
-	}
-	task_budget := CHAIN_SUMMARY_MAX_LINES - len(out) - reserved_for_dead_ends
-	if task_budget < 0 do task_budget = 0
-
-	// Prefer keeping open tasks visible + most recent completed tasks within budget
-	if len(open_lines) > 0 && task_budget > 1 {
-		append(&out, "## Active & Pending")
-		task_budget -= 1
-		for line in open_lines {
-			if task_budget <= 0 do break
-			append(&out, line)
-			task_budget -= 1
-		}
-	}
-	if len(done_lines) > 0 && task_budget > 1 {
-		append(&out, "## Completed")
-		task_budget -= 1
-		start_idx := 0
-		if len(done_lines) > task_budget do start_idx = len(done_lines) - task_budget
-		for line in done_lines[start_idx:] {
-			if task_budget <= 0 do break
-			append(&out, line)
-			task_budget -= 1
-		}
-	}
-	if len(dead_end_lines) > 0 && len(out) < CHAIN_SUMMARY_MAX_LINES {
-		append(&out, "## Dead Ends")
-		for line in dead_end_lines {
-			if len(out) >= CHAIN_SUMMARY_MAX_LINES {
-				overflow = true
-				break
-			}
-			append(&out, line)
-		}
-	}
-	return strings.join(out[:], "\n", context.temp_allocator), overflow
+    // Bounded projection is normal; immutable facets remain the evidence.
+    // The second result reports a source read failure, never mere history size.
+    items:=make([dynamic]string,context.temp_allocator)
+    append(&items,..coordinator_lines)
+    append(&items,"## Active & Pending")
+    append(&items,..open_lines[:])
+    append(&items,"## Recent lessons (original handoff facets retained)")
+    seen:=make(map[string]bool,context.temp_allocator)
+    for i:=len(dead_end_lines)-1;i>=0;i-=1 {
+        entry:=dead_end_lines[i]
+        // Dedup lesson prose independently of its task/attempt citation.
+        close:=strings.index(entry,"] ")
+        lesson:=entry[close+2:] if close>=0 else entry
+        if seen[lesson] do continue
+        seen[lesson]=true
+        append(&items,entry)
+    }
+    append(&items,"## Completed")
+    for i:=len(done_lines)-1;i>=0;i-=1 do append(&items,done_lines[i])
+    return compact.project(fmt.tprintf("# Chain %s: %s",chain.chain_id,chain.title),
+        fmt.tprintf("Projection v1; history: task-chain graph %s; task fetch TASK facet:TASK:ATTEMPT:handoff (original full text).",chain.chain_id),
+        items[:]),false
 }
 
 @(private = "file")
@@ -626,37 +592,43 @@ extract_coordinator_summary_lines :: proc(svc: ^Service, chain: domain.Task_Chai
 }
 
 rebuild_chain_summary_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) {
-	if svc == nil || svc.repo == nil do return
-	prev_ver := 0
-	var_coord_lines: []string = nil
-	if prev, pok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); pok {
-		prev_ver = prev.version
-		var_coord_lines = extract_coordinator_summary_lines(svc, chain, prev.body)
-	}
-	body, overflow := build_mechanical_chain_summary(svc, chain, var_coord_lines)
-	lines := strings.split_lines(body, context.temp_allocator) if body != "" else nil
-	now := platform.clock_now(svc.clock)
-	_, _, _ = iface.taskchain_save_chain_summary(svc.repo, domain.Chain_Summary{
-		chain_id      = chain.chain_id,
-		owner_user_id = chain.owner_user_id,
-		body          = body,
-		line_count    = len(lines),
-		version       = prev_ver + 1,
-		updated_at    = now,
-	})
-	if u != nil {
-		effect_publish_chain(u, chain.chain_id, chain.owner_user_id, "summary_updated")
-	}
-	if overflow {
-		if tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id); terr.code == .None && len(tasks) > 0 {
-			p := json_begin()
-			json_int(&p, "max_lines", CHAIN_SUMMARY_MAX_LINES)
-			_, _, _ = append_event(svc.repo, svc.clock, tasks[len(tasks)-1], hub_actor(), EV_SUMMARY_OVERFLOW, json_end(&p))
-		}
-		if u != nil {
-			effect_notify_coordinator(svc, u, chain.chain_id, chain.owner_user_id, "summary_overflow", fmt.tprintf("[taskv2] summary_overflow: chain %s dead_ends exceed %d lines; run `ham-ctl task-chain summary set` to compact", chain.chain_id, CHAIN_SUMMARY_MAX_LINES))
-		}
-	}
+    if svc == nil || svc.repo == nil do return
+    prev, pok, perr:=iface.taskchain_get_chain_summary(svc.repo,chain.chain_id,chain.owner_user_id)
+    if !pok && perr.code!=.Not_Found && perr.code!=.None do return
+    curated:=prev.curated_body
+    if pok && !prev.curated_initialized {
+        curated=strings.join(extract_coordinator_summary_lines(svc,chain,prev.body),"\n",context.temp_allocator)
+    }
+    body,failed:=build_mechanical_chain_summary(svc,chain,strings.split_lines(curated,context.temp_allocator))
+    fingerprint:=""
+    if failed {
+        fingerprint="source_read_failed:v1"
+        // Explicit stale state; never publish an empty success after a read error.
+        body=prev.body
+        if prev.failure_fingerprint=="" do body=compact.project("# Chain context unavailable (source read failed; previous projection is stale)",
+            "Fetch original task facets; retry after storage recovery. Curated summary edits cannot repair storage.",
+            strings.split_lines(prev.body,context.temp_allocator))
+    }
+    now:=platform.clock_now(svc.clock)
+    _,saved,_:=iface.taskchain_save_chain_summary(svc.repo,domain.Chain_Summary{
+        chain_id=chain.chain_id,owner_user_id=chain.owner_user_id,
+        body=body,line_count=len(strings.split_lines(body,context.temp_allocator)),
+        version=prev.version+1,updated_at=now,curated_body=curated,
+        curated_initialized=true,failure_fingerprint=fingerprint,
+    })
+    if !saved do return
+    if u!=nil do effect_publish_chain(u,chain.chain_id,chain.owner_user_id,"summary_updated")
+    // Persisted edge: unchanged failures survive unrelated mutations, curated
+    // edits and process restart. A successful projection clears it and rearms.
+    if failed && fingerprint!=prev.failure_fingerprint {
+        if tasks,terr:=iface.taskchain_list_tasks_by_chain(svc.repo,chain.chain_id,chain.owner_user_id);terr.code==.None && len(tasks)>0 {
+            p:=json_begin()
+            json_str(&p,"failure_fingerprint",fingerprint)
+            _,_,_=append_event(svc.repo,svc.clock,tasks[len(tasks)-1],hub_actor(),EV_SUMMARY_OVERFLOW,json_end(&p))
+        }
+        if u!=nil do effect_notify_coordinator(svc,u,chain.chain_id,chain.owner_user_id,"summary_overflow",
+            fmt.tprintf("[taskv2] summary_overflow: chain %s context source read failed; inspect storage health and retry. Original history is retained; summary set only edits curated notes.",chain.chain_id))
+    }
 }
 
 // chain_summary_set allows the coordinator or chain owner to set the chain
@@ -682,8 +654,8 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 
 	body := strings.trim_right_space(body_in)
 	lines := strings.split_lines(body, context.temp_allocator) if body != "" else nil
-	if len(lines) > CHAIN_SUMMARY_MAX_LINES {
-		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines (got %d)", CHAIN_SUMMARY_MAX_LINES, len(lines)))
+	if len(lines) > CHAIN_SUMMARY_MAX_LINES || len(body)>compact.MAX_BYTES {
+		return {}, false, domain.domain_error(.Validation_Failed, fmt.tprintf("chain summary must be at most %d lines and 16384 bytes (got %d lines)", CHAIN_SUMMARY_MAX_LINES, len(lines)))
 	}
 	u, uok, uerr := begin_uow(svc)
 	if !uok do return {}, false, uerr
@@ -692,17 +664,24 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 		_, _ = end_uow(svc, &u, false)
 		return {}, false, domain.domain_error(.Not_Found, "task chain not found")
 	}
-	prev_ver := 0
-	if prev, pok, _ := iface.taskchain_get_chain_summary(svc.repo, chain.chain_id, chain.owner_user_id); pok {
-		prev_ver = prev.version
-	}
+    prev,_,_:=iface.taskchain_get_chain_summary(svc.repo,chain.chain_id,chain.owner_user_id)
+    projected,failed:=build_mechanical_chain_summary(svc,chain,lines)
+    if failed {
+        // Curated edits remain useful while source storage is unhealthy. They
+        // neither acknowledge nor clear the separate actionable failure edge.
+        projected=prev.body
+        if projected=="" do projected="# Chain context unavailable; source read failed. Curated notes saved separately."
+    }
 	now := platform.clock_now(svc.clock)
 	saved, sok, serr := iface.taskchain_save_chain_summary(svc.repo, domain.Chain_Summary{
 		chain_id      = chain.chain_id,
 		owner_user_id = chain.owner_user_id,
-		body          = body,
-		line_count    = len(lines),
-		version       = prev_ver + 1,
+		body          = projected,
+        curated_body = body,
+        curated_initialized = true,
+        failure_fingerprint = prev.failure_fingerprint,
+		line_count    = len(strings.split_lines(projected,context.temp_allocator)),
+		version       = prev.version + 1,
 		updated_at    = now,
 	})
 	if sok do effect_publish_chain(&u, chain.chain_id, chain.owner_user_id, "summary_updated")

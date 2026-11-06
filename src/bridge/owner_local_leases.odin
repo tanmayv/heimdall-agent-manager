@@ -85,6 +85,14 @@ bridge_owner_agent :: proc(request_id,params:string,rec:Bridge_Local_Agent_Token
         result=owner.execute_lifecycle(&bridge_owner_store,bridge_owner_json(command),payload,cap,child,key,now,owner.Signer{nil,bridge_owner_sign},proof)
     } else { result=owner.execute_lease(&bridge_owner_store,bridge_owner_json(command),cap,child,key,now,owner.Signer{nil,bridge_owner_sign}) }
     if result.code!="ok" do return bridge_local_response_error(request_id,result.code,"owner-local lease rejected")
+    if lifecycle && contracts.owner_string(command,"method")=="requirements.present" && !result.replay {
+        launch,launched:=bridge_runtime_get_launch(child.instance)
+        if !launched || !bridge_owner_materialize_context(launch.run_dir,command,result.body) {
+            // The source commit and receipt already exist. Never imply a file
+            // was delivered when the atomic write failed.
+            return bridge_local_response_error(request_id,"context_delivery_failed","requirements committed; TASK.md write failed; retry with a new requirements.present operation")
+        }
+    }
     return bridge_local_response_data(request_id,bridge_owner_json(result))
 }
 

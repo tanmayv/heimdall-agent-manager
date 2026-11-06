@@ -48,7 +48,7 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 | Rejected At The Gate | why a workflow gate rejected your previous output |
 | Merge Conflict | your finished branch did not merge; reconcile it (see §2) |
 | Brief | goal and acceptance checklist (`ham-ctl task show <id>` has the full brief) |
-| Chain Summary | done tasks (+ commit), open tasks, **dead ends from every attempt in the chain**, coordinator notes |
+| Chain Summary | done tasks (+ commit), open tasks, a bounded recent lesson projection with fetch pointers to original attempts, coordinator notes |
 | From The Tasks This One Waits For | each dependency's handoff summary, decisions, dead ends, next steps, last commit, output |
 | Resolved Inputs | the refs your brief lists in `inputs`, resolved |
 | Where You Are / Previous Attempt | VCS state; the last attempt's outcome, handoff and heartbeat note |
@@ -82,7 +82,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 |---|---|
 | `--summary` (line 1 = what exists now) | chain summary for **every** later task; full text to dependents and the next attempt |
 | `--decision` (repeat per item) | dependents and the next attempt |
-| `--dead-end` (repeat per item) | chain summary for every task, dependents, next attempt; never dropped for size |
+| `--dead-end` (repeat per item) | immutable handoff history; bounded summaries link to full evidence |
 | `--next-steps` | dependents and the next attempt |
 | `--output-file` | dependents (inline when small), workflow fan-out / templates |
 

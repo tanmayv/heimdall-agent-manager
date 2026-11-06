@@ -107,6 +107,9 @@ Task_Review :: struct {
 }
 
 Chain_Summary :: struct {
+	curated_body: string,
+	curated_initialized: bool,
+	failure_fingerprint: string,
 	chain_id:      Task_Chain_ID,
 	owner_user_id: User_ID,
 	body:          string,
