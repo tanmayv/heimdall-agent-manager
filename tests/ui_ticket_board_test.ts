@@ -506,7 +506,7 @@ test('board render: empty chain offers New ticket', async () => {
   assert.match(html, /data-debug-id="task-board-empty-new-task-btn"/);
 });
 
-test('ticket tab render: toolbar, title, decision block, requirements, details and activity tabs', async () => {
+test('ticket tab render: toolbar, title, decision block, requirements and activity tabs, no Details card', async () => {
   const { TicketView } = await import('../src/ui/components/tasks/TicketView.tsx');
   const { tasksApi } = await import('../src/ui/api/endpoints/tasks.ts');
   const task = makeTask({
@@ -536,7 +536,8 @@ test('ticket tab render: toolbar, title, decision block, requirements, details a
   assert.match(html, /data-debug-id="ticket-view-requirements"/);
   assert.match(html, />Edited</);
   assert.match(html, />New</);
-  assert.match(html, /data-debug-id="ticket-view-details"/);
+  assert.doesNotMatch(html, /data-debug-id="ticket-view-details"/, "the Details card is gone");
+  assert.doesNotMatch(html, /data-debug-id="ticket-view-edit-bridge"/);
   assert.match(html, /data-debug-id="ticket-activity-tab-requirements"/);
   assert.match(html, /data-debug-id="comment-composer"/);
 });
@@ -569,7 +570,6 @@ const NEW_FILES = [
   'src/ui/components/tasks/TicketLinkedCard.tsx',
   'src/ui/components/tasks/TicketAttemptsCard.tsx',
   'src/ui/components/tasks/TicketChangesCard.tsx',
-  'src/ui/components/tasks/TicketDetailsCard.tsx',
   'src/ui/components/tasks/HoldReasonDialog.tsx',
   'src/ui/components/tasks/TicketActivity.tsx',
   'src/ui/components/tasks/RequirementsEditorModal.tsx',
@@ -599,4 +599,17 @@ test('REQ-Q1: every button, input, select and textarea in the new views has a da
     const tags = src.match(/<(button|input|select|textarea)\b(?:=>|[^>])*>/gs) || [];
     for (const tag of tags) assert.match(tag, /data-debug-id=/, `${rel}: ${tag.slice(0, 80)}`);
   }
+});
+
+test('avatar initials are one letter or digit, never a bracket from a "(model)" suffix', async () => {
+  const { initialsOf } = await import('../src/ui/components/ui/primitives/Avatar.tsx');
+  assert.equal(initialsOf('Safety Reviewer (gpt-6.1-sol)'), 'S');
+  assert.equal(initialsOf('coordinator'), 'C');
+  assert.equal(initialsOf('(gpt) helper'), 'G');
+  assert.equal(initialsOf('   '), '?');
+});
+
+test('activity rows top-align the avatar so a wrapped line does not stretch its ring', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/tasks/TicketActivity.tsx'), 'utf8');
+  assert.match(src, /data-debug-id="task-timeline-event" className="flex items-start gap-3"/);
 });
