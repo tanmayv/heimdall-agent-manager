@@ -70,6 +70,10 @@ test_summary_compaction_overflow_curated_edits_and_persisted_failure_rearm :: pr
     summary_test_rebuild(t,fx,chain)
     crowded,_,_:=iface.taskchain_get_chain_summary(&fx.repo,chain.chain_id,chain.owner_user_id)
     testing.expect(t,strings.contains(crowded.body,"lesson100") && strings.contains(crowded.body,"Decision: retain the ownership fence"),"task/notes volume cannot starve recent lessons and decisions")
+    // Genuine pre-upgrade persisted rows can contain a single enormous line.
+    old:=strings.repeat("old",20000,context.temp_allocator)
+    bounded:=chain_summary_preview(old)
+    testing.expect(t,len(bounded)<=compact.MAX_BYTES && len(strings.split_lines(bounded,context.temp_allocator))<=compact.MAX_LINES)
     // Genuine source failure is actionable and persists once per failure edge.
     testing.expect(t,exec_ok(t,fx,"ALTER TABLE task_attempt_facets RENAME TO unavailable_facets"))
     for _ in 0..<3 do summary_test_rebuild(t,fx,chain)

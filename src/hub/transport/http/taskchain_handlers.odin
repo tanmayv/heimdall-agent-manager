@@ -740,7 +740,7 @@ make_chain_detail_response_wire :: proc(
 	summary_text := ""
 	if h != nil && h.taskchains != nil && h.taskchains.repo != nil {
 		if srow, sok, _ := iface.taskchain_get_chain_summary(h.taskchains.repo, chain.chain_id, chain.owner_user_id); sok {
-			summary_text = srow.body
+			summary_text = taskv2.chain_summary_preview(srow.body)
 		}
 	}
 	prop_val: json.Value = nil
@@ -2861,10 +2861,10 @@ get_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	updated_at := chain.updated_at
 	if h.taskchains != nil && h.taskchains.repo != nil {
 		if row, sok, _ := iface.taskchain_get_chain_summary(h.taskchains.repo, chain.chain_id, chain.owner_user_id); sok {
-			summary_text = row.body
+			summary_text = taskv2.chain_summary_preview(row.body)
             curated_notes=row.curated_body
             projection_state="stale" if row.failure_fingerprint!="" else ("current" if row.curated_initialized else "legacy_unmaterialized")
-			line_count = row.line_count
+			line_count = len(strings.split_lines(summary_text,context.temp_allocator))
 			version = row.version
 			updated_at = row.updated_at
 		}

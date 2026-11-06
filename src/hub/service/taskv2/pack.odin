@@ -15,6 +15,15 @@ import compact "odin_test:lib/context_compaction"
 PACK_VERSION :: 1
 CHAIN_SUMMARY_MAX_LINES :: 60
 
+// Older persisted mixed summaries predate the byte budget. Bound read
+// projections too; their exact original remains available via chain-summary.
+chain_summary_preview :: proc(body:string) -> string {
+    lines:=strings.split_lines(body,context.temp_allocator)
+    if len(body)<=compact.MAX_BYTES && len(lines)<=compact.MAX_LINES do return body
+    return compact.project("# Chain context (bounded legacy projection)",
+        "Fetch original task handoff facets and task fetch TASK chain-summary for retained input.",lines)
+}
+
 build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task, lease: domain.Task_Lease, inst: domain.Agent_Instance) -> string {
 	evs, _ := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
 	view := fold_task(evs, fold_input_for_task(task, true))
@@ -116,6 +125,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
         summary=preview
         if failed do summary="# Chain context unavailable: source read failed. Original task facets remain retained; inspect storage health and retry."
 	}
+    summary=chain_summary_preview(summary)
 	json_str(&c, "summary", summary)
 	// Solo mode: the coordinator works its own chain (REQ-SOLO-1).
 	if chain_is_solo(svc, chain) do json_bool(&c, "solo", true)
