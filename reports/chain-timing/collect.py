@@ -34,4 +34,3 @@ for agent in agents:
   if d.get('has_more'):raise RuntimeError('Full-page limit exceeded; cursor is known unreliable. Obtain explicit read-only metadata; do not claim completeness.')
   cursor=d.get('next_cursor') or pag.get('next_cursor');page+=1
   if not cursor or page>30:break
-

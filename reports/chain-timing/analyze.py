@@ -232,4 +232,3 @@ def main():
     'shell_count':r['shell']['count'],'shell_sum_recorded_seconds':r['shell']['sum_recorded_span_seconds'],'shell_union_recorded_seconds':r['shell']['union_recorded_span_seconds'],'shell_nonzero_exit_count':r['shell']['nonzero_exit_count']})
  print(json.dumps(data['totals'],indent=2))
 if __name__=='__main__':main()
-

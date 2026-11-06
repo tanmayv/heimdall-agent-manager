@@ -44,4 +44,3 @@ cannot recreate historical overwritten facets, and must not replace the frozen c
   categories, subprocess-runtime/launch-queue split, uncommitted C1b changes, token usage and cost.
 - No application build/test rerun: this task changes reporting/scripts only. Runtime correctness claims
   are attributed to historical evidence and are not new blanket-green claims.
-

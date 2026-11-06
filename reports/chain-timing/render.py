@@ -110,4 +110,3 @@ for k,v in IMPROVEMENTS:h.append('<li><strong>'+e(k)+'</strong> '+e(v)+'</li>')
 h+=['</ol></section><section id="data"><h2>Data and independent audit</h2><p><a href="metrics.json">Frozen JSON metrics &amp; provenance</a> · <a href="tasks.csv">Task CSV</a> · <a href="report.md">Markdown report</a></p>'+para('JSON contains phase inputs, source IDs, shell records/confidence, Git parents/numstats, copy mappings and raw snapshot hashes. No private shell output or credentials are packaged. Reproduction commands are in the Markdown report.')+para('Independent review is the next gate; no self-approval is implied. Work on this report and later implementation activity are excluded.','note')+'</section><footer>Static HTML/CSS · no JavaScript or remote assets · UTC unless marked IST<br><code>'+d['chain_id']+'</code></footer></main></body></html>']
 (site/'index.html').write_text('\n'.join(h))
 print('Rendered',len(tasks),'task cards and Markdown.')
-

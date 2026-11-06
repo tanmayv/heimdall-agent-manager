@@ -139,4 +139,3 @@ def main():
   assert not re.search(r'https?:|@import|url\(', (site/'style.css').read_text()),'remote style dependency'
  print('PASS:25 tasks;1506 unique sessions; independent sweep/phase/attribution checks; exact Git numstats; all40 accepted commits;9 copy mappings; frozen hashes; static links and packaged data.')
 if __name__=='__main__':main()
-
