@@ -1,0 +1,161 @@
+{
+  "work_dependency": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_dependency",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "dependency_id": "original_edge",
+        "dependent": {
+          "kind": "task",
+          "id": "original_ticket"
+        },
+        "prerequisite": {
+          "kind": "workflow_run",
+          "id": "original_run"
+        },
+        "created_by_kind": "agent",
+        "created_by_id": "original_actor",
+        "created_at": "2001-02-03T04:05:06+05:30",
+        "removed_at": "2002-01-01Z",
+        "removed_by_kind": "user",
+        "removed_by_id": "original_user",
+        "removal_reason": "Original Unicode 界 reason"
+      }
+    ]
+  },
+  "work_receipt": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_receipt",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "receipt_id": "original_receipt",
+        "dependent": {
+          "kind": "task",
+          "id": "original_ticket"
+        },
+        "dependent_generation": 2,
+        "prerequisite": {
+          "kind": "workflow_run",
+          "id": "original_run"
+        },
+        "prerequisite_generation": 7,
+        "output_manifest_json": "{ \"original\": [\"facet:original:7:output\"], \"unicode\": \"界\" }",
+        "created_at": "2001-02-03T04:05:06.123456Z"
+      }
+    ]
+  },
+  "work_scope": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_scope",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "decision_id": 9007199254740993,
+        "item": {
+          "kind": "workflow_run",
+          "id": "original_run"
+        },
+        "action": "exclude",
+        "reason": "Source terminal scope",
+        "actor_kind": "user",
+        "actor_id": "original_user",
+        "created_at": "Original timestamp spelling"
+      }
+    ]
+  },
+  "work_run": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_run",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "run_id": "original_run",
+        "title": "Original run 界",
+        "definition_ref": "original_definition:7",
+        "spec_json": "{ \"schema\": \"workflow.v1\", \"stages\": [] }",
+        "inputs_json": "{ \"original\": true }",
+        "current_execution_no": 7,
+        "request_id": "original_request",
+        "request_hash": "exact_original_hash",
+        "created_by_kind": "agent",
+        "created_by_id": "original_actor",
+        "created_at": "2001-created",
+        "updated_at": "2002-updated",
+        "revision": 9007199254740993
+      }
+    ]
+  },
+  "work_execution": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_execution",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "run_id": "original_run",
+        "execution_no": 7,
+        "state": "cancelled",
+        "resolved_inputs_json": "[{\"original\":7}]",
+        "started_at": "2001-start",
+        "ended_at": "2002-end",
+        "failure_code": "original_cancelled",
+        "failure_detail": "Original cancellation detail",
+        "output_manifest_json": "{\"items\":[]}",
+        "revision": 9
+      }
+    ]
+  },
+  "work_stage": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_stage",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "run_id": "original_run",
+        "execution_no": 7,
+        "stage_key": "original_stage",
+        "item_count": 0,
+        "expanded_at": "2001-expand"
+      }
+    ]
+  },
+  "work_event": {
+    "chain_id": "chain",
+    "owner_user_id": "original_user",
+    "source_revision": "source_7",
+    "kind": "work_event",
+    "records": [
+      {
+        "chain_id": "chain",
+        "owner_user_id": "original_user",
+        "event_id": 9007199254740993,
+        "run_id": "original_run",
+        "execution_no": 7,
+        "ts_ms": 123456789,
+        "actor_kind": "agent",
+        "actor_id": "original_actor",
+        "kind": "original_event",
+        "payload_json": "{ \"original\": \"界\", \"execution\": 7 }"
+      }
+    ]
+  }
+}

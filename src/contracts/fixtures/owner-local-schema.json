@@ -72,5 +72,6 @@
   "fleet_policy_payload": "body_cipher:required_cipher",
   "native_metadata_read": "source_revision:id kind:metadata_kind cursor:native_cursor limit:positive",
   "member_payload": "instance_id:id agent_id:id role:id enabled:flag",
-  "directory_payload": "directory_id:id enabled:flag body_cipher:required_cipher"
+  "directory_payload": "directory_id:id enabled:flag body_cipher:required_cipher",
+  "work_read_payload": "cursor:native_cursor limit:positive"
 }

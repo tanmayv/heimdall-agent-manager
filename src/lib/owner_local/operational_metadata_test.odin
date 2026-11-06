@@ -139,6 +139,7 @@ operational_v21_upgrade_collision_and_commit_failure_preserve_capability :: proc
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    testing.expect(t,exec(db,V23_TEST_DROP))
     testing.expect(t,exec(db,"DROP TABLE local_metadata_retirements; DROP TABLE local_brief_inputs; DROP TABLE local_coordinator_revocations; DROP TABLE local_config_revocations; DROP TABLE local_chain_directory_versions; DROP TABLE local_chain_member_versions; DROP TABLE local_member_chains"))
     prefix:=string(MIGRATION_021)
     prefix=prefix[:strings.index(prefix,"CREATE TABLE local_chain_summary_versions")]

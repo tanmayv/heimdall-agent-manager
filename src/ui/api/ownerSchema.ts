@@ -74,6 +74,7 @@ export const ownerSchemas = {
   native_metadata_read: [["source_revision", "id"], ["kind", "metadata_kind"], ["cursor", "native_cursor"], ["limit", "positive"]],
   member_payload: [["instance_id", "id"], ["agent_id", "id"], ["role", "id"], ["enabled", "flag"]],
   directory_payload: [["directory_id", "id"], ["enabled", "flag"], ["body_cipher", "required_cipher"]],
+  work_read_payload: [["cursor", "native_cursor"], ["limit", "positive"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -619,6 +620,10 @@ export interface OwnerDirectory_Payload {
   enabled: string;
   body_cipher: string;
 }
+export interface OwnerWork_Read_Payload {
+  cursor: string;
+  limit: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -694,4 +699,5 @@ export interface OwnerDocuments {
   native_metadata_read: OwnerNative_Metadata_Read;
   member_payload: OwnerMember_Payload;
   directory_payload: OwnerDirectory_Payload;
+  work_read_payload: OwnerWork_Read_Payload;
 }

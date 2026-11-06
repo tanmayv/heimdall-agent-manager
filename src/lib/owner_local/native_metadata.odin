@@ -31,6 +31,7 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
     manifest:="native_metadata_snapshots"
     if kind=="fleet" do manifest="native_fleet_snapshots"
     if len(contracts.owner_metadata_fact_fields(kind))>0 do manifest="native_fact_snapshots"
+    if contracts.owner_work_source_kind(kind) do manifest="native_work_snapshots"
     prior,ok:=query(s.db,fmt.tprintf("SELECT content_digest FROM %s WHERE chain_id=? AND source_revision=? AND kind=?",manifest),chain,source,kind)
     if !ok do return "storage_error"
     digest:=contracts.owner_payload_digest(raw)
@@ -39,7 +40,7 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
         return "ok"
     }
     if code:=native_origin_accept(s,chain,owner,seq); code!="ok" do return code
-    count,count_ok:=query(s.db,"SELECT (SELECT count(*) FROM native_fleet_policies)+(SELECT count(*) FROM native_fleet_snapshots)+(SELECT count(*) FROM native_metadata_members)+(SELECT count(*) FROM native_metadata_directories)+(SELECT count(*) FROM native_metadata_snapshots)+(SELECT count(*) FROM native_fact_snapshots)+(SELECT count(*) FROM native_fact_chain)+(SELECT count(*) FROM native_fact_task)+(SELECT count(*) FROM native_fact_comment)+(SELECT count(*) FROM native_fact_summary)")
+    count,count_ok:=query(s.db,"SELECT (SELECT count(*) FROM native_work_records)+(SELECT count(*) FROM native_work_snapshots)+(SELECT count(*) FROM native_fleet_policies)+(SELECT count(*) FROM native_fleet_snapshots)+(SELECT count(*) FROM native_metadata_members)+(SELECT count(*) FROM native_metadata_directories)+(SELECT count(*) FROM native_metadata_snapshots)+(SELECT count(*) FROM native_fact_snapshots)+(SELECT count(*) FROM native_fact_chain)+(SELECT count(*) FROM native_fact_task)+(SELECT count(*) FROM native_fact_comment)+(SELECT count(*) FROM native_fact_summary)")
     if !count_ok do return "storage_error"
     if number(count[0][0])+i64(len(bundle.records))+1>MAX_RECORDS do return "retention_capacity"
     stamp:=fmt.tprintf("%d",seq)
@@ -49,6 +50,8 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
             policy,parsed:=contracts.owner_fleet_policy_parse(encode(row))
             if !parsed do return "invalid_content"
             if code:=native_fleet_insert(s,source,policy);code!="ok" do return code
+        } else if contracts.owner_work_source_kind(kind) {
+            _,ok=query(s.db,"INSERT INTO native_work_records VALUES(?,?,?,?,?)",chain,source,kind,contracts.owner_metadata_record_key(row,kind),encode(row))
         } else if len(contracts.owner_metadata_fact_fields(kind))>0 {
             code:=native_fact_insert(s,source,kind,row)
             if code!="ok" do return code
@@ -68,6 +71,7 @@ native_metadata_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64) -> str
 
 native_metadata_read :: proc(s:^Store,chain:string,p:json.Object) -> Result {
     source,kind:=field(p,"source_revision"),field(p,"kind")
+    if contracts.owner_work_source_kind(kind) do return native_work_read(s,chain,p)
     manifest:="native_metadata_snapshots"
     if kind=="fleet" do manifest="native_fleet_snapshots"
     fields:=contracts.owner_metadata_fact_fields(kind)

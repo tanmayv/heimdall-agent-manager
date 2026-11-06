@@ -99,7 +99,7 @@ owner_metadata_import_parse :: proc(raw:string) -> (Owner_Metadata_Import,bool) 
         key:=owner_string(record,"directory_id")
         if result.kind=="member" do key=owner_string(record,"agent_instance_id")
         if result.kind=="fleet" do key=owner_string(record,"agent_id")
-        if name:=owner_metadata_fact_key(result.kind); name!="" do key=owner_string(record,name)
+        if name:=owner_metadata_fact_key(result.kind); name!="" do key=owner_metadata_record_key(record,result.kind)
         if key in seen do return {},false
         seen[key]=true
         append(&records,record)

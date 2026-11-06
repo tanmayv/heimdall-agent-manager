@@ -37,7 +37,7 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
         value,parsed:=contracts.owner_request_document(payload);p,obj:=value.(json.Object)
         if !parsed || !obj || !budget_record(tx.store,field(p,"destination_chain_id"),field(p,"destination_task_id"),seq) do return false
     }
-    return true
+    return work_after_event(tx,chain,task,kind,actor_id,op,payload,seq,now)
 }
 
 // Keyset inventory is stable across appends. The scope binds the authorized

@@ -101,6 +101,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     }
     if !workflow_task_current(s,chain,task) do return fail("stale_revision")
     if method=="lease.claim" {
+        if !work_task_published(s,chain,task) do return fail("operation_conflict")
         if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
         if code:=budget_admit(s,chain,task);code!="ok" do return fail(code)
     }

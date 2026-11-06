@@ -1160,6 +1160,15 @@ owner_fields_directory_payload := [?]Owner_Field{
     {"enabled", "flag"},
     {"body_cipher", "required_cipher"},
 }
+Owner_Work_Read_Payload :: struct {
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_work_read_payload := [?]Owner_Field{
+    {"cursor", "native_cursor"},
+    {"limit", "positive"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1236,6 +1245,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "native_metadata_read": return owner_fields_native_metadata_read[:]
     case "member_payload": return owner_fields_member_payload[:]
     case "directory_payload": return owner_fields_directory_payload[:]
+    case "work_read_payload": return owner_fields_work_read_payload[:]
     }
     return nil
 }

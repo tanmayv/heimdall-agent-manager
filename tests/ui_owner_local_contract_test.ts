@@ -1,3 +1,4 @@
+import { ownerWorkDocumentValid } from '../src/ui/api/ownerWork.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -270,4 +271,15 @@ test('operational members and directories are strict chain mutations', () => {
 test('brief reference vocabulary mirrors immutable owner admission',()=>{
   for(const raw of ['#7','output:task:1:2','facet:task:1:handoff','facet:task:1:output:2','output:task:durable:1:2','facet:task:durable:1:output:2','facet:task:0:placement:1']) assert.ok(ownerPinnedRef(raw));
   for(const raw of ['output:task','output:task:1','output:task:01:1','#0','facet:task:1:unknown','facet:task:1:output:0','artifact:mutable',' file@main']) assert.equal(ownerPinnedRef(raw),null);
+});
+
+test('shared native work request documents reject unknown fields, duplicate keys and imprecise counters',()=>{
+  const cases=JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-work.json',import.meta.url),'utf8'));
+  for(const row of cases)assert.equal(ownerWorkDocumentValid(row.raw,row.method),row.valid,row.raw);
+  const c={...doc('command'),method:'work.read',task_id:'',expected_revision:'0'} as OwnerCommand;
+  ownerParse(JSON.stringify(c),'command');
+  assert.equal(ownerLiveAdmit(c,{...grant,task_id:'',method:c.method,can_mutate:false},1000n,1n),'none');
+  for(const method of ['chain.propose','chain.decide','chain.complete']){
+    assert.equal(ownerLiveAdmit({...c,method},{...grant,task_id:'',method,can_mutate:false},1000n,1n),'invalid_scope');
+  }
 });

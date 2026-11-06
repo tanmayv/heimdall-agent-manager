@@ -171,7 +171,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.priority" || method=="budget.activate" || method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.publish" || method=="task.priority" || method=="budget.activate" || method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found do return fail("storage_error")
         if len(tasks)==1 {
@@ -187,11 +187,14 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="work.read" || method=="chain.metadata.read" || method=="native.metadata.read" || method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
-        if method=="grant.read" {
+        if method=="work.read" {
+            read_p,_:=contracts.owner_parse(payload,"work_read_payload")
+            result=work_read(s,chain,read_p)
+        } else if method=="grant.read" {
             p,_:=contracts.owner_parse(payload,"read_payload")
             result=grant_read(s,c,p,revision,key,grant_proof)
         } else { result=search_result(s,c,payload,now,kr) if method=="chain.search" else read_result(s,c,payload,revision) }
@@ -229,10 +232,15 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         case "description_cipher": description=plain }
     }
     if task!="" && method!="task.comment" && method!="native.history.import" && !workflow_task_current(s,chain,task) do return fail("stale_revision")
+    if !creating && !strings.has_prefix(method,"grant.") && !work_chain_active(s,chain) do return fail("operation_conflict")
     seq:=number(state[0][0])+1
     next:=revision+1
     wrote:=false
     switch method {
+    case "chain.draft", "task.publish", "chain.propose", "chain.decide", "chain.publish", "work.dependency.add", "work.dependency.remove", "work.scope", "chain.complete", "workflow.draft":
+        code:=work_command(s,c,body,seq,now)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "chain.member.set", "chain.directory.set":
         code:=member_set(s,c,p,fleet_child,seq) if method=="chain.member.set" else directory_set(s,c,p,body,seq)
         if code!="ok" do return fail(code)
@@ -268,7 +276,14 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         if code!="ok" do return fail(code)
         wrote=true
     case "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry":
-        code:=workflow_command(s,c,body,seq)
+        code:string
+        if method=="workflow.run" {
+            publication,read:=query(s.db,"SELECT publish_state FROM local_work_chains WHERE chain_id=?",chain)
+            if !read || len(publication)!=1 do return fail("storage_error")
+            // Native workflow creation keeps an unpublished chain's run draft;
+            // expansion waits for publication and successful prerequisites.
+            if publication[0][0]=="draft" {code=work_queue_run(s,c,body,seq,now)} else {code=workflow_command(s,c,body,seq)}
+        } else {code=workflow_command(s,c,body,seq)}
         if code!="ok" do return fail(code)
         wrote=true
     case "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate":
@@ -305,12 +320,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             if _,ok=query(s.db,"DELETE FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
             _,wrote=query(s.db,"DELETE FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         }
-    case "task.create":
+    case "task.draft", "task.create":
         deleted,checked:=query(s.db,"SELECT 1 FROM task_deletions WHERE task_id=?",task)
         if !checked do return fail("storage_error")
         if len(deleted)>0 do return fail("retired")
         next=1
         _,wrote=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,title,body)
+        if wrote && method=="task.draft" {_,wrote=query(s.db,"INSERT INTO local_task_publications VALUES(?,?,?,\'draft\')",chain,task,fmt.tprintf("%d",seq))}
     case "fleet.edit":
         assigned_child:=fleet_child
         states,state_read:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
@@ -383,7 +399,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             if !lifecycle_merge_intent(&tx,c,bound,seq) do return fail("storage_error")
         }
     }
-    if method=="chain.create" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
+    if method=="chain.create" || method=="task.draft" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)
         if !found || len(genesis_rows)!=1 do return fail("storage_error")
         registry:=doc(map[string]string{"protocol_version"="1","account_id"=s.account,"chain_id"=chain,"owner_bridge_id"=s.owner,"key_id"=s.owner_key,"genesis_digest"=genesis_rows[0][0],"metadata_revision"=fmt.tprintf("%d",seq),"task_id"=task,

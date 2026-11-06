@@ -1,0 +1,127 @@
+[
+  {
+    "method": "chain.draft",
+    "raw": "{}",
+    "valid": true
+  },
+  {
+    "method": "chain.draft",
+    "raw": "{\"force\":true}",
+    "valid": false
+  },
+  {
+    "method": "chain.publish",
+    "raw": "{}",
+    "valid": true
+  },
+  {
+    "method": "chain.publish",
+    "raw": "{\"force\":true}",
+    "valid": false
+  },
+  {
+    "method": "task.publish",
+    "raw": "{}",
+    "valid": true
+  },
+  {
+    "method": "task.publish",
+    "raw": "{\"force\":true}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"task\",\"tasks\":[{\"id\":\"t\",\"title\":\"世界\",\"brief\":{\"goal\":\"Goal\",\"acceptance\":[\"Pass\"]},\"depends_on\":[\"before\"]}]}",
+    "valid": true
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"workflow_run\",\"workflow\":\"flow:1\",\"inputs\":{\"answer\":42}}",
+    "valid": true
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"other\"}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"task\",\"auto_approve\":\"true\"}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"task\",\"tasks\":[{\"title\":\"x\",\"unknown\":\"ignored\"}]}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"workflow_run\"}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"task\",\"inputs\":{}}",
+    "valid": false
+  },
+  {
+    "method": "chain.propose",
+    "raw": "{\"kind\":\"task\",\"tasks\":[{\"title\":\"t\",\"id\":\"one\",\"task_id\":\"two\"}]}",
+    "valid": false
+  },
+  {
+    "method": "chain.decide",
+    "raw": "{\"proposal_id\":\"op\",\"decision\":\"approve\",\"note\":\"Decision 界\"}",
+    "valid": true
+  },
+  {
+    "method": "chain.decide",
+    "raw": "{\"proposal_id\":\"op\",\"decision\":\"approve\",\"note\":\"\",\"force\":true}",
+    "valid": false
+  },
+  {
+    "method": "chain.complete",
+    "raw": "{\"expected_work_revision\":\"9007199254740993\",\"summary\":\"Final acceptance\"}",
+    "valid": true
+  },
+  {
+    "method": "chain.complete",
+    "raw": "{\"expected_work_revision\":9007199254740993,\"summary\":\"wrong type\"}",
+    "valid": false
+  },
+  {
+    "method": "chain.complete",
+    "raw": "{\"expected_work_revision\":\"1\",\"summary\":\"  \"}",
+    "valid": false
+  },
+  {
+    "method": "work.dependency.add",
+    "raw": "{\"dependency_id\":\"edge\",\"dependent\":{\"kind\":\"task\",\"id\":\"native_task\"},\"prerequisite\":{\"kind\":\"workflow_run\",\"id\":\"run\"}}",
+    "valid": true
+  },
+  {
+    "method": "work.dependency.add",
+    "raw": "{\"dependency_id\":\"edge\",\"dependent\":{\"kind\":\"task\",\"id\":\"native_task\",\"extra\":true},\"prerequisite\":{\"kind\":\"task\",\"id\":\"native_task\"}}",
+    "valid": false
+  },
+  {
+    "method": "work.scope",
+    "raw": "{\"item\":{\"kind\":\"task\",\"id\":\"native_task\"},\"action\":\"exclude\",\"reason\":\"Terminal out of scope\"}",
+    "valid": true
+  },
+  {
+    "method": "work.scope",
+    "raw": "{\"item\":{\"kind\":\"task\",\"id\":\"native_task\"},\"action\":\"exclude\",\"reason\":\"\"}",
+    "valid": false
+  },
+  {
+    "method": "work.dependency.remove",
+    "raw": "{\"dependency_id\":\"edge\",\"reason\":\"Explicit removal\"}",
+    "valid": true
+  },
+  {
+    "method": "chain.complete",
+    "raw": "{\"expected_work_revision\":\"1\",\"summary\":\"one\",\"summary\":\"two\"}",
+    "valid": false
+  }
+]

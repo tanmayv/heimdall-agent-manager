@@ -132,6 +132,7 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         mode="cancelled";next="ready";waiting=""
         if !control_revoke(s,c,seq,"stop") do return "storage_error"
     case "task.reopen":
+        if !work_unconsumed(s,chain,"task",task) do return "operation_conflict"
         generated,checked:=query(s.db,"SELECT 1 FROM local_workflow_language_items WHERE task_id=?",task)
         if !checked do return "storage_error"
         if len(generated)>0 do return "operation_conflict"

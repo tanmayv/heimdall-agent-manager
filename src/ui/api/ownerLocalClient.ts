@@ -1,3 +1,4 @@
+import { ownerWorkDocumentValid, ownerWorkMethods } from './ownerWork.ts';
 import { ownerCanonical, ownerDigest, ownerParse, ownerPayloadDigest, ownerPayloadKind, type OwnerCommand, type OwnerGenesis } from './ownerLocal.ts';
 import { signDeviceText, type DeviceIdentity } from '../utils/deviceIdentity.ts';
 import { encryptVaultText, decryptVaultText } from '../utils/vaultContent.ts';
@@ -21,6 +22,7 @@ async function signed(session: OwnerSession, kind: 'command' | 'genesis', value:
   return JSON.parse(await signDeviceText(session.identity, ownerCanonical(kind, value))).sig as string;
 }
 export async function prepareOwnerOperation(session: OwnerSession, bridgeId: string, method: OwnerCommand['method'], input: OwnerInput): Promise<OwnerOperation> {
+  if(ownerWorkMethods.has(method) && !ownerWorkDocumentValid(input.body ?? (['chain.draft','chain.publish','task.publish'].includes(method)?'{}':''),method))throw new Error('Invalid work document');
   const { identity, chain, keyring } = session;
   const bridge = [...chain.trusted.values()].find((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId);
   if (!bridge || !chain.trusted.has(identity.deviceId) || identity.userId !== chain.userId) throw new Error('Device and owner must be currently enrolled in this account');
@@ -36,7 +38,8 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;
-  if (['workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  if (['chain.draft','task.publish','chain.publish'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '{}', keyring) };
+  else if (['chain.propose','chain.decide','chain.publish','work.dependency.add','work.dependency.remove','work.scope','chain.complete','workflow.draft','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'workflow.coordinator') payload = { ...ownerParse(input.body ?? '', 'coordinator_payload') };
   else if (method === 'dependency.edit') payload = { ...ownerParse(input.body ?? '', 'dependency_payload') };
   else if (method === 'grant.set' || method === 'grant.recover') {
@@ -56,7 +59,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     g.creator_signature = await signed(session, 'genesis', g);
     genesis = JSON.stringify(g);
     payload = { genesis_digest: await ownerDigest('genesis', g), title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
-  } else if ((method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  } else if ((method === 'task.draft' || method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment' || method === 'chain.summary.set' || method === 'chain.defaults.set') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'chain.member.set') payload = { instance_id: input.instanceId ?? '', agent_id: input.agentId ?? '', role: input.memberRole ?? 'worker', enabled: input.enabled === false ? '0' : '1' };
   else if (method === 'chain.directory.set') payload = { directory_id: input.directoryId ?? '', enabled: input.enabled === false ? '0' : '1', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
@@ -71,7 +74,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'fleet.policy.set' && input.nativeSourceRevision) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring), source_revision: input.nativeSourceRevision };
   else if (method === 'fleet.policy.set' || method === 'native.history.import' || method === 'native.metadata.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'native.metadata.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
-  else if (method === 'fleet.policy.read' || method === 'chain.metadata.read') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
+  else if (method === 'work.read' || method === 'fleet.policy.read' || method === 'chain.metadata.read') payload = { cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
   else if (method === 'native.history.fetch') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', key: input.nativeHistoryKey ?? '', offset: input.offset ?? '0' };
   else if (method === 'attempt.read') payload = { attempt: input.attempt ?? '' };

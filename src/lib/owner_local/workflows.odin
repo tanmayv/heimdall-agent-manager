@@ -61,6 +61,14 @@ workflow_expand :: proc(s:^Store,chain,run,execution:string,stages:[]json.Object
     return ok
 }
 workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
+    if field(c,"method")=="workflow.cancel" {if handled,code:=work_cancel_pending(s,c,body,seq);handled do return code}
+    if field(c,"method")=="workflow.run" && field(c,"work_activation")!="1" {
+        value,valid:=contracts.owner_request_document(body);p,obj:=value.(json.Object)
+        if !valid || !obj do return "invalid_content"
+        pending,read:=query(s.db,"SELECT 1 FROM local_work_pending_runs WHERE chain_id=? AND run_id=?",field(c,"chain_id"),field(p,"run_id"))
+        if !read do return "storage_error"
+        if len(pending)>0 do return "operation_conflict"
+    }
     if handled,code:=language_command(s,c,body,seq);handled do return code
     chain,method:=field(c,"chain_id"),field(c,"method")
     kind:="workflow_run"
@@ -76,6 +84,7 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
     run,execution:=field(p,"run_id"),"1"
     workflow,version:=field(p,"workflow_id"),field(p,"version")
     if method=="workflow.retry" {
+        if !work_unconsumed(s,chain,"workflow_run",run) do return "operation_conflict"
         rows,ok:=query(s.db,"SELECT workflow_id,definition_version,current_execution FROM local_workflow_runs WHERE chain_id=? AND run_id=?",chain,run)
         if !ok do return "storage_error"
         if len(rows)!=1 || rows[0][2]!=field(p,"execution") do return "stale_revision"
@@ -119,7 +128,7 @@ workflow_task_current :: proc(s:^Store,chain,task:string)->bool {
     return read && len(stopped)==0
 }
 dependency_ready :: proc(s:^Store,chain,task:string)->bool {
-    if !workflow_task_current(s,chain,task) do return false
+    if !workflow_task_current(s,chain,task) || !work_inputs_ready(s,chain,"task",task) do return false
     rows,ok:=query(s.db,"SELECT 1 FROM local_dependencies d LEFT JOIN lifecycle_state s ON s.chain_id=d.chain_id AND s.task_id=d.prerequisite LEFT JOIN local_controls c ON c.chain_id=d.chain_id AND c.task_id=d.prerequisite WHERE d.chain_id=? AND d.task_id=? AND (s.state IS NULL OR s.state!='done' OR COALESCE(c.mode,'ready')!='ready') LIMIT 1",chain,task)
     return ok && len(rows)==0
 }
@@ -132,6 +141,7 @@ dependency_command :: proc(s:^Store,c,p:json.Object,seq:i64)->string {
     if len(generated)>0 do return "operation_conflict"
     ok:=true
     if field(p,"enabled")=="1" {
+        if !work_edge_acyclic(s,chain,"task",task,"task",field(p,"prerequisite")) do return "operation_conflict"
         if _,ok=query(s.db,"INSERT INTO local_dependencies VALUES(?,?,?)",chain,task,field(p,"prerequisite"));!ok do return "operation_conflict"
         leases,read:=query(s.db,"SELECT lease_id,instance_id,launch_epoch,token_generation,run_count FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
         if !read do return "storage_error"
@@ -157,6 +167,9 @@ workflow_refresh :: proc(s:^Store)->bool {
 workflow_publications :: proc(tx:^Transaction,c:json.Object,body:string,seq:i64,kr:^vault.Vault_Keyring,sign:Signer)->bool {
     method:=field(c,"method")
     if method!="workflow.run" && method!="workflow.retry" do return true
+    drafts,draft_read:=query(tx.store.db,"SELECT 1 FROM local_work_pending_runs r WHERE chain_id=? AND run_id=json_extract(?,'$.run_id') AND NOT EXISTS(SELECT 1 FROM local_work_run_starts x WHERE x.chain_id=r.chain_id AND x.run_id=r.run_id)",field(c,"chain_id"),body)
+    if !draft_read do return false
+    if len(drafts)>0 do return true
     language_rows,check:=query(tx.store.db,"SELECT 1 FROM local_workflow_language_runs WHERE chain_id=? AND run_id=json_extract(?,'$.run_id')",field(c,"chain_id"),body)
     if !check do return false
     if len(language_rows)>0 do return true

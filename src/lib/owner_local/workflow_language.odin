@@ -78,6 +78,7 @@ language_command :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->(bool,strin
         p,valid:=contracts.owner_parse(raw,"workflow_retry")
         if !valid do return false,""
         run:=field(p,"run_id")
+        if !work_unconsumed(s,chain,"workflow_run",run) do return true,"operation_conflict"
         rows,ok:=query(s.db,"SELECT r.current_execution FROM local_workflow_runs r JOIN local_workflow_language_runs l USING(chain_id,run_id) WHERE r.chain_id=? AND r.run_id=?",chain,run)
         if !ok do return true,"storage_error"
         if len(rows)==0 do return false,""
