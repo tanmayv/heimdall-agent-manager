@@ -11,12 +11,19 @@ import contracts "odin_test:contracts"
 // Store transaction AFTER chain read authorization. Never includes credentials.
 context_sources :: proc(s:^Store,chain:string) -> ([dynamic][]string,bool) {
     return query(s.db,`SELECT kind,ref,body FROM (
- SELECT 'task' kind,task_id ref,json_object('task_id',task_id,'title',title,'body',body,'revision',revision) body FROM tasks WHERE chain_id=?
- UNION ALL SELECT 'requirements',task_id||':'||revision,json_object('task_id',task_id,'revision',revision,'brief',brief_json) FROM task_requirements WHERE chain_id=?
- UNION ALL SELECT 'submission',task_id||':'||attempt,json_object('task_id',task_id,'attempt',attempt,'summary',summary,'head',head,'requirements_revision',requirements_revision) FROM local_submissions WHERE chain_id=?
- UNION ALL SELECT 'handoff',principal_id||':'||operation_id,json_object('task_id',task_id,'principal_id',principal_id,'operation_id',operation_id,'kind',kind,'summary',summary,'next_steps',next_steps,'waiting_on',waiting_on,'seq',seq) FROM local_handoffs WHERE chain_id=?
- UNION ALL SELECT 'comment',principal_id||':'||operation_id,json_object('task_id',task_id,'principal_id',principal_id,'operation_id',operation_id,'body',body,'seq',seq) FROM task_comments WHERE chain_id=?
- ) ORDER BY kind,ref`,chain,chain,chain,chain,chain)
+ SELECT 'task' kind,task_id ref,json_object('task_id',task_id,'title',title,'body',body,'revision',revision) body FROM tasks WHERE chain_id=?1
+ UNION ALL SELECT 'requirements',task_id||':'||revision,json_object('task_id',task_id,'revision',revision,'brief',brief_json) FROM task_requirements WHERE chain_id=?1
+ UNION ALL SELECT 'submission',task_id||':'||attempt,json_object('task_id',task_id,'attempt',attempt,'summary',summary,'head',head,'requirements_revision',requirements_revision) FROM local_submissions WHERE chain_id=?1
+ UNION ALL SELECT 'handoff',principal_id||':'||operation_id,json_object('task_id',task_id,'principal_id',principal_id,'operation_id',operation_id,'kind',kind,'summary',summary,'next_steps',next_steps,'waiting_on',waiting_on,'seq',seq) FROM local_handoffs WHERE chain_id=?1
+ UNION ALL SELECT 'comment',principal_id||':'||operation_id,json_object('task_id',task_id,'principal_id',principal_id,'operation_id',operation_id,'body',body,'seq',seq) FROM task_comments WHERE chain_id=?1
+ UNION ALL SELECT 'chain',chain_id,json_object('chain_id',chain_id,'title',title,'description',description,'revision',revision) FROM task_chains WHERE chain_id=?1
+ UNION ALL SELECT 'review',task_id||':'||attempt||':'||reviewer_agent_id,json_object('task_id',task_id,'attempt',attempt,'reviewer',reviewer_agent_id,'verdict',verdict,'summary',summary,'requirements_revision',requirements_revision) FROM local_reviews WHERE chain_id=?1
+ UNION ALL SELECT 'role_review',task_id||':'||attempt||':'||role||':'||agent_id,json_object('task_id',task_id,'attempt',attempt,'role',role,'agent_id',agent_id,'verdict',verdict,'summary',summary,'role_revision',role_revision) FROM local_role_reviews WHERE chain_id=?1
+ UNION ALL SELECT 'workflow_definition',workflow_id||':'||version,definition_json FROM local_workflow_definitions WHERE chain_id=?1
+ UNION ALL SELECT 'workflow_event',run_id||':'||event_seq,json_object('run_id',run_id,'execution',execution,'event_seq',event_seq,'kind',kind,'principal_id',principal_id,'operation_id',operation_id) FROM local_workflow_events WHERE chain_id=?1
+ UNION ALL SELECT 'source',origin_kind||':'||origin_id||':'||episode_id,json_object('origin_kind',origin_kind,'origin_id',origin_id,'episode_id',episode_id,'source_version',source_version,'resolved',resolved,'body',body,'card_id',card_id,'card_closed',card_closed) FROM source_episodes WHERE chain_id=?1
+ UNION ALL SELECT 'consumption',origin_kind||':'||origin_id||':'||episode_id||':'||consumer_fence_hash||':'||source_version,json_object('origin_kind',origin_kind,'origin_id',origin_id,'episode_id',episode_id,'source_version',source_version,'consumer_fence_hash',consumer_fence_hash,'result',result,'commit_seq',commit_seq) FROM source_consumptions WHERE chain_id=?1
+ ) ORDER BY kind,ref`,chain)
 }
 
 // Snapshot-coherent lazy materialization. Source checkpoint and projection are
@@ -42,7 +49,10 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
         digest=contracts.owner_payload_digest(encode(struct{account,chain,seq:string,header:[]string,sources:[dynamic][]string}{s.account,chain,seq,header[0],sources}))
         items:=make([dynamic]string,context.temp_allocator)
         append(&items,fmt.tprintf("Coordinator input (chain description): %s",header[0][1]))
-        active,active_ok:=query(s.db,"SELECT t.task_id,t.title,COALESCE(l.state,'unconfigured') FROM tasks t LEFT JOIN lifecycle_state l ON l.chain_id=t.chain_id AND l.task_id=t.task_id WHERE t.chain_id=? ORDER BY t.task_id",chain)
+        pending,pending_ok:=query(s.db,"SELECT origin_kind,origin_id,episode_id,body FROM source_episodes WHERE chain_id=? AND (resolved=0 OR (card_id!='' AND card_closed=0)) ORDER BY source_version DESC,origin_kind,origin_id,episode_id LIMIT 16",chain)
+        if !pending_ok do return nil,false
+        for row in pending do append(&items,fmt.tprintf("[unresolved %s:%s:%s] %s",row[0],row[1],row[2],row[3]))
+        active,active_ok:=query(s.db,"SELECT t.task_id,t.title,COALESCE(l.state,'unconfigured') FROM tasks t LEFT JOIN lifecycle_state l ON l.chain_id=t.chain_id AND l.task_id=t.task_id WHERE t.chain_id=? ORDER BY CASE WHEN l.state IN ('done','cancelled') THEN 1 ELSE 0 END,t.task_id LIMIT 16",chain)
         if !active_ok do return nil,false
         for row in active do append(&items,fmt.tprintf("[%s] %s: %s",row[0],row[2],row[1]))
         lessons,lessons_ok:=query(s.db,"SELECT task_id,kind,summary,next_steps FROM local_handoffs WHERE chain_id=? ORDER BY seq DESC LIMIT 256",chain)
@@ -68,6 +78,7 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
 // One bounded source chunk per page. Cursor binds account/chain/checkpoint,
 // row and byte offset, retrieving every original including giant one-liners.
 context_history :: proc(s:^Store,chain:string,p:json.Object) -> Result {
+    if s.active==nil || !transaction_current(s.active) do return fail("invalid_scope")
     sources,ok:=context_sources(s,chain)
     state,read:=query(s.db,"SELECT commit_seq FROM runtime_database WHERE singleton=1")
     if !ok || !read || len(state)!=1 do return fail("storage_error")

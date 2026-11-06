@@ -859,7 +859,7 @@ bridge_taskv2_materialize_task_md :: proc(run_dir, pack_json: string, max_bytes:
 	_ = bridge_make_directory_all(clean)
 	md := bridge_taskv2_render_task_md(pack_json, max_bytes)
 	defer delete(md)
-	if strings.trim_space(md) == "" do return false
+	if strings.trim_space(md) == "" || len(md)>max_bytes do return false
 	path := strings.concatenate({clean, "/TASK.md"})
 	defer delete(path)
 	sync.mutex_guard(&bridge_taskv2_task_md_mutex)

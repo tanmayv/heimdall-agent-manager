@@ -32,7 +32,9 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const operationId = input.operationId ?? ownerId('op_');
   let genesis = '';
   let payload: Record<string, string>;
-  if (method === 'grant.set' || method === 'grant.recover') {
+  if (['workflow.define','workflow.run','workflow.retry','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','review.roles'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'dependency.edit') payload = { ...ownerParse(input.body ?? '', 'dependency_payload') };
+  else if (method === 'grant.set' || method === 'grant.recover') {
     const target = chain.trusted.get(input.grantPrincipal ?? '');
     if (!target || target.kind !== 'browser') throw new Error('Grant recipient must be a currently enrolled browser');
     const expires = input.grantExpiresMs ?? '';

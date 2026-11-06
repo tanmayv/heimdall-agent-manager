@@ -111,7 +111,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 - A block parks the task in `backlog`; the answer arrives in `TASK.md` ("Your Block Was Answered"). `--waiting-on` is free text: `user` for the user, `task` for another task, anything else for external systems.
 
 ## 6. Fetch omitted or referenced context
-`TASK.md` is capped (~8k tokens). When it overflows, resolved inputs go first, then dependency outputs, then the previous handoff summary, then the description; each is replaced by a fetch pointer. The brief, dead ends and open findings are never dropped.
+`TASK.md` is capped (~8k tokens). When it overflows, resolved inputs go first, then dependency outputs, then the previous handoff summary, then the description; each is replaced by a fetch pointer. The brief and open findings are preserved. Historical chain lessons use a bounded recent projection; the immutable originals remain available through the supplied fetch pointers.
 ```bash
 ./bin/ham-ctl task fetch <task-id> "#123"                          # an event (integer id)
 ./bin/ham-ctl task fetch <task-id> "output:<other-task-id>"        # another task's output

@@ -472,7 +472,7 @@ pack_why :: proc(view: Task_View, lease: domain.Task_Lease, prev_outcome: string
 // build_mechanical_chain_summary builds a bounded preview from
 // completed tasks (with vcs.head and 1-line handoff summaries), active/ready/blocked
 // tasks, and dead_ends preserved across all attempts, while preserving any
-// coordinator-curated summary lines (`coordinator_lines`). Returns (summary_body, overflowed).
+// coordinator-curated input separately. Returns (summary_body, source_read_failed).
 build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, coordinator_lines: []string = nil) -> (string, bool) {
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if terr.code != .None do return "", true

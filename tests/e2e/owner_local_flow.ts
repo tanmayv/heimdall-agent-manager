@@ -354,6 +354,10 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
     const {ownerLocalControlsFlow}=await import('./owner_local_controls_flow.ts');
     await ownerLocalControlsFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver});
   }
+  if(process.env.HEIMDALL_E2E_OWNER_WORKFLOWS==='1'){
+    const {ownerLocalWorkflowsFlow}=await import('./owner_local_workflows_flow.ts');
+    await ownerLocalWorkflowsFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner,inspectHub});
+  }
   if(process.env.HEIMDALL_E2E_OWNER_GRANTS==='1'){
     const {ownerGrantsFlow}=await import('./owner_grants_flow.ts');
     await ownerGrantsFlow({hub,approver,bridgeId,http,expect,cli,stopOwner,restartOwner,rekeyOwner});

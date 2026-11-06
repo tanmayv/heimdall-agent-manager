@@ -107,3 +107,44 @@ context_write_failure_is_explicit_and_requirements_remain_exact :: proc(t:^testi
     count,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_handoffs),(SELECT count(*) FROM task_comments)")
     testing.expect(t,count[0][0]=="100" && count[0][1]=="1","projection never deletes originals")
 }
+
+@(test)
+context_v9_upgrade_collision_commit_failure_preserves_combined_lineage :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    cap:=lifecycle_ready(t,f)
+    if cap=="" do return
+    original,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_grant_policy),(SELECT count(*) FROM local_leases),(SELECT count(*) FROM command_receipts),(SELECT count(*) FROM task_requirements)")
+    close(&f.store)
+    db:DB
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    // Reconstruct genuine V9 while preserving grants8/workflows9 and live rows.
+    prefix:=string(MIGRATION_009);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_workflow_definitions")]
+    testing.expect(t,exec(db,"DROP TABLE local_chain_context;"))
+    testing.expect(t,exec(db,prefix))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=9; CREATE VIEW local_chain_context AS SELECT 1;"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"),"DDL collision rolls back header and marker")
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    rows,_:=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_workflow_definitions') FROM runtime_database")
+    testing.expect(t,rows[0][0]=="9" && rows[0][1]=="9" && rows[0][2]=="1")
+    testing.expect(t,exec(db,`DROP VIEW local_chain_context;
+      CREATE TABLE context_parent(id INTEGER PRIMARY KEY);
+      CREATE TABLE context_ref(id INTEGER REFERENCES context_parent(id) DEFERRABLE INITIALLY DEFERRED);
+      CREATE TRIGGER context_upgrade_failure AFTER UPDATE ON schema_migrations WHEN NEW.version=10 BEGIN INSERT INTO context_ref VALUES(1); END;`))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"),"COMMIT failure rolls back the entire migration")
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
+    rows,_=query(db,"SELECT schema_version,(SELECT version FROM schema_migrations),(SELECT count(*) FROM sqlite_master WHERE name='local_chain_context') FROM runtime_database")
+    testing.expect(t,rows[0][0]=="9" && rows[0][1]=="9" && rows[0][2]=="0")
+    testing.expect(t,exec(db,"DROP TRIGGER context_upgrade_failure"))
+    testing.expect_value(t,sqlite3_close(db),0)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    after,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_grant_policy),(SELECT count(*) FROM local_leases),(SELECT count(*) FROM command_receipts),(SELECT count(*) FROM task_requirements)")
+    for value,i in original[0] do testing.expect_value(t,after[0][i],value)
+    rows,_=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations) FROM runtime_database")
+    testing.expect(t,rows[0][0]=="10" && rows[0][1]=="10")
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","v10_present","{\"requirements_revision\":\"1\"}",cap).code,"ok")
+    rows,_=query(f.store.db,"PRAGMA foreign_key_check")
+    testing.expect_value(t,len(rows),0)
+}

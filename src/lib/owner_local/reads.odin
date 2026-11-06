@@ -11,6 +11,8 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     method,chain,task:=field(c,"method"),field(c,"chain_id"),field(c,"task_id")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
     if method=="context.read" do return context_history(s,chain,p)
+    if method=="source.read" do return source_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")))
+    if method=="workflow.read" do return workflow_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")),revision)
     if method=="receipt.read" {
         rows,ok:=query(s.db,"SELECT method,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(p,"operation_id"))
         if !ok do return fail("storage_error")

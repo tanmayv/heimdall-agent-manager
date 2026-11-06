@@ -580,6 +580,147 @@ owner_fields_merge_retry_payload := [?]Owner_Field{
     {"configuration_revision", "positive"},
     {"body_cipher", "required_cipher"},
 }
+Owner_Workflow_Definition :: struct {
+    workflow_id: string,
+    version: string,
+    title: string,
+    stages: string,
+}
+@(private)
+owner_fields_workflow_definition := [?]Owner_Field{
+    {"workflow_id", "id"},
+    {"version", "positive"},
+    {"title", "document"},
+    {"stages", "document"},
+}
+Owner_Workflow_Stage :: struct {
+    key: string,
+    title: string,
+    body: string,
+    brief: string,
+    depends_on: string,
+}
+@(private)
+owner_fields_workflow_stage := [?]Owner_Field{
+    {"key", "id"},
+    {"title", "document"},
+    {"body", "document"},
+    {"brief", "document"},
+    {"depends_on", "document"},
+}
+Owner_Workflow_Run :: struct {
+    run_id: string,
+    workflow_id: string,
+    version: string,
+}
+@(private)
+owner_fields_workflow_run := [?]Owner_Field{
+    {"run_id", "id"},
+    {"workflow_id", "id"},
+    {"version", "positive"},
+}
+Owner_Workflow_Retry :: struct {
+    run_id: string,
+    execution: string,
+}
+@(private)
+owner_fields_workflow_retry := [?]Owner_Field{
+    {"run_id", "id"},
+    {"execution", "positive"},
+}
+Owner_Dependency_Payload :: struct {
+    prerequisite: string,
+    enabled: string,
+}
+@(private)
+owner_fields_dependency_payload := [?]Owner_Field{
+    {"prerequisite", "id"},
+    {"enabled", "flag"},
+}
+Owner_Source_Fact :: struct {
+    origin_kind: string,
+    origin_id: string,
+    episode_id: string,
+    source_version: string,
+    resolved: string,
+    deadline_ms: string,
+    body: string,
+}
+@(private)
+owner_fields_source_fact := [?]Owner_Field{
+    {"origin_kind", "id"},
+    {"origin_id", "id"},
+    {"episode_id", "id"},
+    {"source_version", "positive"},
+    {"resolved", "flag"},
+    {"deadline_ms", "counter"},
+    {"body", "document"},
+}
+Owner_Source_Action :: struct {
+    origin_kind: string,
+    origin_id: string,
+    episode_id: string,
+    source_version: string,
+    consumer_fence_hash: string,
+    result: string,
+}
+@(private)
+owner_fields_source_action := [?]Owner_Field{
+    {"origin_kind", "id"},
+    {"origin_id", "id"},
+    {"episode_id", "id"},
+    {"source_version", "positive"},
+    {"consumer_fence_hash", "hash"},
+    {"result", "document"},
+}
+Owner_Source_Page :: struct {
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_source_page := [?]Owner_Field{
+    {"cursor", "optional"},
+    {"limit", "positive"},
+}
+Owner_Review_Roles :: struct {
+    configuration_revision: string,
+    requires_user_approval: string,
+    pairs: string,
+}
+@(private)
+owner_fields_review_roles := [?]Owner_Field{
+    {"configuration_revision", "positive"},
+    {"requires_user_approval", "flag"},
+    {"pairs", "document"},
+}
+Owner_Review_Pair :: struct {
+    role: string,
+    agent_id: string,
+    instance_id: string,
+}
+@(private)
+owner_fields_review_pair := [?]Owner_Field{
+    {"role", "id"},
+    {"agent_id", "id"},
+    {"instance_id", "id"},
+}
+Owner_Review_Role_Payload :: struct {
+    requirements_revision: string,
+    attempt: string,
+    head: string,
+    verdict: string,
+    summary: string,
+    role: string,
+}
+@(private)
+owner_fields_review_role_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"attempt", "positive"},
+    {"head", "optional_commit"},
+    {"verdict", "verdict"},
+    {"summary", "document"},
+    {"role", "id"},
+}
 Owner_Grant_Payload :: struct {
     principal_id: string,
     key_id: string,
@@ -649,6 +790,17 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "switch_payload": return owner_fields_switch_payload[:]
     case "checkpoint_payload": return owner_fields_checkpoint_payload[:]
     case "merge_retry_payload": return owner_fields_merge_retry_payload[:]
+    case "workflow_definition": return owner_fields_workflow_definition[:]
+    case "workflow_stage": return owner_fields_workflow_stage[:]
+    case "workflow_run": return owner_fields_workflow_run[:]
+    case "workflow_retry": return owner_fields_workflow_retry[:]
+    case "dependency_payload": return owner_fields_dependency_payload[:]
+    case "source_fact": return owner_fields_source_fact[:]
+    case "source_action": return owner_fields_source_action[:]
+    case "source_page": return owner_fields_source_page[:]
+    case "review_roles": return owner_fields_review_roles[:]
+    case "review_pair": return owner_fields_review_pair[:]
+    case "review_role_payload": return owner_fields_review_role_payload[:]
     case "grant_payload": return owner_fields_grant_payload[:]
     case "grant_revoke_payload": return owner_fields_grant_revoke_payload[:]
     case "grant_policy_payload": return owner_fields_grant_policy_payload[:]

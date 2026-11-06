@@ -79,16 +79,20 @@ lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool) -> st
     submitted,read:=query(s.db,"SELECT head,requirements_revision,author_agent_id,configuration_revision FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
     if !read || len(submitted)!=1 do return "storage_error"
     if submitted[0][0]!=field(p,"head") || submitted[0][1]!=req[0] || submitted[0][3]!=field(config,"configuration_revision") do return "stale_revision"
-    if !human && (agent!=field(config,"reviewer_agent_id") || agent==submitted[0][2]) do return "invalid_scope"
+    if !human && (agent==submitted[0][2] || (field(p,"role")=="" && agent!=field(config,"reviewer_agent_id"))) do return "invalid_scope"
     reviewer:=agent
     if human do reviewer=field(c,"principal_id")
-    if _,ok=query(s.db,"INSERT INTO local_reviews VALUES(?,?,?,?,?,?,?,?,?,?)",chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"));!ok do return "operation_conflict"
-    next:="in_review"
-    if field(p,"verdict")=="request_changes" { next="ready" } else if !human {
-        next="done"
-        if field(config,"merge_policy")=="git" do next="merge_pending"
+    if !human && field(p,"role")!="" {
+        if code:=role_record(s,c,p,agent);code!="ok" do return code
+    } else {
+        if _,ok=query(s.db,"INSERT INTO local_reviews VALUES(?,?,?,?,?,?,?,?,?,?)",chain,task,field(p,"attempt"),reviewer,field(c,"principal_id"),field(c,"operation_id"),req[0],field(p,"head"),field(p,"verdict"),field(p,"summary"));!ok do return "operation_conflict"
     }
+    next,gate_ok:=role_gate(s,chain,task,field(p,"attempt"))
+    if !gate_ok do return "storage_error"
     if _,ok=query(s.db,"UPDATE lifecycle_state SET state=? WHERE chain_id=? AND task_id=?",next,chain,task);!ok do return "storage_error"
+    if next!="in_review" {
+        if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
+    }
     if _,ok=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     return "ok"
 }

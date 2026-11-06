@@ -135,6 +135,7 @@ control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,si
     config,binding,configured:=lifecycle_config(s,dest_chain,dest)
     req,has_req:=lifecycle_requirements(s,dest_chain,dest)
     if !configured || !has_req || encode(child)!=binding[1] || child.agent_id!=field(config,"author_agent_id") do return "invalid_scope",false
+    if !dependency_ready(s,dest_chain,dest) do return "operation_conflict",false
     if !control_ready(s,dest_chain,dest) do return "operation_conflict",false
     if req[0]!=field(p,"destination_requirements_revision") do return "stale_revision",false
     states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",dest_chain,dest)

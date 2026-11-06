@@ -206,11 +206,11 @@ grants_v7_upgrade_bounds_legacy_authority_and_rolls_back_collision_and_commit_fa
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_chain_context; DROP TABLE local_grant_audit; DROP TABLE local_grant_policy;"))
+    testing.expect(t,exec(db,V9_TEST_DROP+"DROP TABLE IF EXISTS local_chain_context;"+"DROP TABLE local_grant_audit; DROP TABLE local_grant_policy;"))
     prefix:=string(MIGRATION_007)
     prefix=prefix[:strings.index(prefix,"CREATE TABLE local_controls")]
     testing.expect(t,exec(db,prefix))
-    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=7; UPDATE local_grants SET revision=revision+1,expires_ms=9223372036854775807; CREATE VIEW local_grant_policy AS SELECT 1;"))
+    testing.expect(t,exec(db,"UPDATE schema_migrations SET version=7; CREATE INDEX local_review_holder ON local_review_sessions(json_extract(child,'$.instance')); UPDATE local_grants SET revision=revision+1,expires_ms=9223372036854775807; CREATE VIEW local_grant_policy AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
     testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"))
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)

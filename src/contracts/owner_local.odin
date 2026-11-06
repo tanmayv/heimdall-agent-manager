@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -52,8 +52,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
     case "lease_method": return s=="lease.claim" || s=="lease.heartbeat"
-    case "lease_methods": return s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch" || s=="review.post,review.checkpoint" || s=="lease.claim,lease.heartbeat" || s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit" || s=="review.post"
-    case "lifecycle_method": return s=="lease.handoff" || s=="lease.block" || s=="lease.switch" || s=="review.checkpoint" || s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
+    case "lease_methods": return s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch" || s=="review.role.post,review.checkpoint" || s=="review.post,review.checkpoint" || s=="lease.claim,lease.heartbeat" || s=="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit" || s=="review.post"
+    case "lifecycle_method": return s=="review.role.open" || s=="review.role.post" || s=="lease.handoff" || s=="lease.block" || s=="lease.switch" || s=="review.checkpoint" || s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
     case "merge_policy": return s=="none" || s=="git"
     case "verdict": return s=="approve" || s=="request_changes"
     case "path": return len(s)<=4096 && (s=="" || (s[0]=='/' && !strings.contains(s,"..") && !strings.contains(s,"\\")))
@@ -95,7 +95,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
@@ -123,6 +123,10 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
 
 owner_payload_kind :: proc(method: string) -> string {
     switch method {
+    case "workflow.define", "workflow.run", "workflow.retry", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "review.roles": return "control_payload"
+    case "workflow.read", "source.read": return "read_payload"
+    case "dependency.edit": return "dependency_payload"
+    case "review.role.open", "review.role.post": return "review_role_payload"
     case "grant.set", "grant.recover": return "grant_payload"
     case "grant.revoke": return "grant_revoke_payload"
     case "grant.policy": return "grant_policy_payload"
@@ -257,7 +261,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "context.read" || method == "grant.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

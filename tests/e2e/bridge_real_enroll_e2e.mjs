@@ -425,19 +425,19 @@ print(json.dumps(out))
             withKeyringBytes: async fn => fn(Uint8Array.from(S.apA.keyringBytes)),
           });
         },
-        inspectHub: async (chainId) => {
+        inspectHub: async (chainId, expectedTitles = 2) => {
           const probe = spawnSync('python3', ['-c', `import sqlite3,sys
 c=sqlite3.connect(sys.argv[1])
 assert c.execute("select count(*) from tasks where chain_id=?",(sys.argv[2],)).fetchone()[0]==0
 assert c.execute("select count(*) from task_chains where chain_id=?",(sys.argv[2],)).fetchone()[0]==0
 r=c.execute("select registry_json from owner_local_titles where chain_id=?",(sys.argv[2],)).fetchall()
-assert len(r)==2 and all("owner-private" not in x[0] for x in r)
+assert len(r)==int(sys.argv[3]) and all("owner-private" not in x[0] for x in r)
 from pathlib import Path
 for dbfile in Path(sys.argv[1]).parent.glob("hub.db*"):
- if dbfile.is_file(): assert all(marker not in dbfile.read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword"))
-assert all(marker not in (Path(sys.argv[1]).parent/"hub.log").read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword"))
+ if dbfile.is_file(): assert all(marker not in dbfile.read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword", b"workflow-private", b"workflowprivateneedle", b"workflowoutputneedle", b"sourceprivateneedle"))
+assert all(marker not in (Path(sys.argv[1]).parent/"hub.log").read_bytes() for marker in (b"owner-private", b"lifecycle-private", b"uniquesearch", b"search-private", b"sharedsearchword", b"workflow-private", b"workflowprivateneedle", b"workflowoutputneedle", b"sourceprivateneedle"))
 print("metadata-only Hub SQLite and log verified")
-`, path.join(ROOT, 'hub-a', 'hub.db'), chainId], { encoding: 'utf8' });
+`, path.join(ROOT, 'hub-a', 'hub.db'), chainId, String(expectedTitles)], { encoding: 'utf8' });
           expect(probe.status === 0, 'Hub SQLite contains no local chain/task bodies: ' + probe.stderr);
         },
       });

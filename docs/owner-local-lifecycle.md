@@ -195,13 +195,15 @@ implemented; see [owner-local-search.md](owner-local-search.md).
 
 ## Remaining M2 expansion
 
-This is an explicit single-worker/single-reviewer, already-running-child slice.
-General unlaunched dispatch/provider scheduling remains M3 work. Workflow
-executions, dependencies and multiple review role folds remain M2c work. Local controls,
+The base lifecycle uses an already-running worker and named independent reviewer.
+Additional required role pairs and bounded static workflows are documented in
+[owner-local-workflows.md](owner-local-workflows.md).
+General unlaunched dispatch/provider scheduling remains M3 work. Bounded static workflow executions, dependencies, required role folds and source
+cold recovery are implemented by M2c. Full workflow.v1 language compatibility is
+a mandatory successor; this is not whole-product parity. Local controls,
 handoff/block/switch, assignment rebinding and merge repair are documented in
-[owner-local-controls.md](owner-local-controls.md). Unsupported workflow
-fields/methods reject at the strict contract boundary; no workflow authority is
-inferred. Remote execution/reservations remain M3 and migration/recovery
+[owner-local-controls.md](owner-local-controls.md). Unsupported dynamic workflow fields/methods reject at the strict contract
+boundary; no authority is inferred. Remote execution/reservations remain M3 and migration/recovery
 integration remains M4. Checked-out-target merge orchestration and other platforms
 need separate validation. No native provider interrupt behavior is established.
 

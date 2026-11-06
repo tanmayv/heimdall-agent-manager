@@ -24,7 +24,7 @@ bridge_owner_materialize_context :: proc(run_dir:string,command:json.Object,body
     clean:=strings.trim_right(strings.trim_space(run_dir),"/")
     if clean=="" do return false
     text:=bridge_owner_render_context(command,body)
-    if text=="" do return false
+    if text=="" || len(text)>BRIDGE_TASK_MD_MAX_BYTES do return false
     path:=strings.concatenate({clean,"/TASK.md"},context.temp_allocator)
     sync.mutex_guard(&bridge_taskv2_task_md_mutex)
     return bridge_retry_atomic_write(path,transmute([]byte)text)

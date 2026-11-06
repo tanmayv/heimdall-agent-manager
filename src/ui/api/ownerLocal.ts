@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['context.read', 'grant.set', 'grant.revoke', 'grant.read', 'grant.policy', 'grant.recover', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['context.read', 'grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -20,8 +20,8 @@ function fieldValid(s: string, kind: string): boolean {
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'method': return methods.has(s);
     case 'lease_method': return s === 'lease.claim' || s === 'lease.heartbeat';
-    case 'lease_methods': return ['lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch','review.post,review.checkpoint','lease.claim,lease.heartbeat','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit','review.post'].includes(s);
-    case 'lifecycle_method': return ['lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
+    case 'lease_methods': return ['review.role.post,review.checkpoint','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch','review.post,review.checkpoint','lease.claim,lease.heartbeat','lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit','review.post'].includes(s);
+    case 'lifecycle_method': return ['review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
     case 'path': return s.length <= 4096 && (s === '' || (s.startsWith('/') && !s.includes('..') && !s.includes('\\')));
@@ -47,7 +47,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
   if (kind === 'command') {
-    if (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
+    if (['dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.create', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(String(o.method)) !== (o.task_id !== '')) return false;
   }
   if (kind === 'registry' && o.deleted === '0') {
     if (o.task_id === '') {
@@ -63,6 +63,10 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
 }
 export function ownerPayloadKind(method: string): OwnerKind {
   switch (method) {
+    case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': case 'review.roles': return 'control_payload';
+    case 'workflow.read': case 'source.read': return 'read_payload';
+    case 'dependency.edit': return 'dependency_payload';
+    case 'review.role.open': case 'review.role.post': return 'review_role_payload';
     case 'grant.set': case 'grant.recover': return 'grant_payload';
     case 'grant.revoke': return 'grant_revoke_payload';
     case 'grant.policy': return 'grant_policy_payload';
@@ -159,7 +163,7 @@ export function ownerLiveAdmit(o: OwnerCommand, grant: OwnerReadGrant, nowMs: bi
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   const expires = BigInt(o.request_expires_ms);
   if (expires <= nowMs || expires - nowMs > OWNER_REQUEST_TTL_MS) return 'expired';
-  const read = ['context.read', 'grant.read', 'submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
+  const read = ['context.read', 'grant.read','workflow.read','source.read','submission.read', 'chain.search', 'chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
   if (!read && !grant.can_mutate) return 'invalid_scope';
   if (currentRevision < 0n) return 'stale_revision';
   if (read && o.expected_revision === '0') return 'none';

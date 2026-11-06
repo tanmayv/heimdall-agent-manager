@@ -58,6 +58,7 @@ bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,no
 
 bridge_owner_publish_registry :: proc(_:rawptr,s:^owner.Store,claim:owner.Intent_Claim) -> (bool,string,i64) {
     if claim.kind=="stop" || claim.kind=="checkpoint" do return bridge_owner_control_notice(s,claim)
+    if claim.kind=="source.delivery" do return true,"local_source_visible",time.to_unix_nanoseconds(time.now())/1000000
     if claim.kind=="merge" do return bridge_owner_merge(s,claim)
     // Future consumers must validate their own execution fences before I/O.
     if claim.kind!="registry" do return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000
@@ -143,6 +144,23 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             proof=bridge_owner_config_proof(&bridge_owner_store,p,contracts.owner_string(command,"chain_id"),contracts.owner_string(command,"task_id"))
         }
     }
+    role_children:=make([dynamic]owner.Child,context.temp_allocator)
+    if contracts.owner_string(command,"method")=="review.roles" {
+        if p,ok:=contracts.owner_parse(payload,"control_payload");ok {
+            if body,opened:=vault.open(contracts.owner_string(p,"body_cipher"),&kr,context.temp_allocator);opened==.Ok {
+                if config,parsed:=contracts.owner_parse(body,"review_roles");parsed {
+                    v,valid:=contracts.owner_request_document(contracts.owner_string(config,"pairs"))
+                    if a,array:=v.(json.Array);valid && array {
+                        for item in a {
+                            if pair,obj:=item.(json.Object);obj {
+                                if child,current:=bridge_owner_child_locked(contracts.owner_string(pair,"instance_id"),"");current do append(&role_children,child)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     grant_proof:=owner.Grant_Proof{root=floor.root}
     method:=contracts.owner_string(command,"method")
     if method=="grant.set" || method=="grant.recover" {
@@ -151,7 +169,7 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             if target_ok && target_version==version && target_head==head do grant_proof.target=target
         }
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,grant_proof)
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child,proof,role_children[:],grant_proof)
     sync.mutex_unlock(&bridge_local_token_mutex)
     sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)
