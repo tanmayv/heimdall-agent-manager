@@ -92,14 +92,26 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
 // explicit until its task-specific native mapping is implemented. Callers must
 // not use such a projection for budget enforcement or native migration export.
 attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
+    v,_,_,ok:=attempt_scan(s,chain,task)
+    return v,ok
+}
+
+// The immutable accepted event stream is the canonical source. Keep only one
+// selected native record in memory while scanning bounded pages. In particular,
+// a handoff continuation changes holder/end/outcome, never original start time
+// or counting status (native lease.odin:177-190).
+attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:string="") -> (Attempt_View,contracts.Owner_Native_Attempt,string,bool) {
     v:Attempt_View
+    record:contracts.Owner_Native_Attempt
+    record_incomplete:=false
+    mapped:=""
     after:="0"
     for {
         // Project only structural fields from trusted accepted evidence. Never
         // copy every historical summary/body into a runtime observation. Keyset
         // pages bound each database result even for long handoff histories.
         rows,ok:=query(s.db,`WITH candidates AS (
-          SELECT seq,chain_id,task_id,kind,completeness,
+          SELECT seq,chain_id,task_id,kind,completeness,ts_ms,
             CASE WHEN completeness='full' THEN evidence_json ELSE '{}' END AS evidence
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
@@ -113,26 +125,63 @@ attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
             COALESCE(json_extract(command,'$.lease_id'),''),
             COALESCE(json_extract(payload,'$.verdict'),''),
             COALESCE(json_extract(payload,'$.destination_lease_id'),''),
-            COALESCE(json_extract(content,'$.hold_semantics'),'')
+            COALESCE(json_extract(content,'$.hold_semantics'),''),
+            COALESCE(ts_ms,''),COALESCE(json_extract(command,'$.instance_id'),''),
+            COALESCE(json_extract(content,'$.reason'),'')
           FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
           ORDER BY seq LIMIT 128`,chain,task,after)
-        if !ok do return v,false
+        if !ok do return v,record,mapped,false
         for row in rows {
             after=row[0]
             if row[4]!="full" { v.incomplete=true;continue }
             c:=doc(map[string]string{"lease_id"=row[5]})
             p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7],"hold_semantics"=row[8]})
-            attempt_event(&v,row[3],c,p,row[1]!=chain || row[2]!=task)
+            previous:=v
+            destination:=row[1]!=chain || row[2]!=task
+            attempt_event(&v,row[3],c,p,destination)
+            if v.grants>previous.grants {
+                if v.work_lease_id==target_lease do mapped=fmt.tprintf("%d",v.attempt_no)
+                if selected==0 || selected==v.attempt_no {
+                    if v.attempt_no!=previous.attempt_no {
+                        record_incomplete=false
+                        record=contracts.Owner_Native_Attempt{
+                            account_id=s.account,chain_id=chain,task_id=task,
+                            attempt_no=fmt.tprintf("%d",v.attempt_no),started_ms=row[9],
+                            counts_toward_budget=("1" if v.counting_attempts>previous.counting_attempts else "0"),
+                        }
+                    }
+                    record.holder_instance_id=row[10];record.work_lease_id=v.work_lease_id
+                    record.ended_ms="";record.outcome=""
+                }
+            } else if previous.live && !v.live && record.attempt_no==fmt.tprintf("%d",previous.attempt_no) {
+                record.ended_ms=row[9]
+                record.outcome=v.last_release
+                // Native close_attempt stores expiry reasons verbatim with
+                // their prefix (lease.odin:407), separate from fold releases.
+                switch row[3] {
+                case "task.cancel": record.outcome="expired:cancelled"
+                case "fleet.edit","lifecycle.configure","review.roles": record.outcome="expired:replaced"
+                case "lease.expired":
+                    if row[11]=="ttl" || row[11]=="hard_cap" {
+                        record.outcome=fmt.tprintf("expired:%s",row[11])
+                    } else {
+                        // Older evidence retained no reason. Do not fabricate
+                        // the reason from a deadline observed much later.
+                        record_incomplete=true
+                    }
+                }
+            }
         }
         if len(rows)<128 do break
     }
     // Count is a completeness cross-check only, never the native attempt count.
     leases,read:=query(s.db,"SELECT count(*),COALESCE(MAX(CASE WHEN retired_seq IS NULL THEN lease_id END),'') FROM local_leases WHERE chain_id=? AND task_id=?",chain,task)
-    if !read || len(leases)!=1 do return v,false
+    if !read || len(leases)!=1 do return v,record,mapped,false
     if number(leases[0][0])!=v.grants || (v.live && leases[0][1]!=v.work_lease_id) || (!v.live && leases[0][1]!="") do v.incomplete=true
-    return v,true
+    record.completeness=("incomplete" if v.incomplete || record_incomplete else "full")
+    return v,record,mapped,true
 }
 
 attempt_document :: proc(v:Attempt_View) -> contracts.Owner_Attempt_State {

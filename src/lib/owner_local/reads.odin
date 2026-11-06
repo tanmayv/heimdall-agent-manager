@@ -12,6 +12,12 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
     if method=="history.read" do return event_inventory(s,chain,p)
     if method=="history.fetch" do return event_fetch(s,chain,p)
+    if method=="attempt.read" {
+        _,record,_,ok:=attempt_scan(s,chain,task,number(field(p,"attempt")))
+        if !ok do return fail("storage_error")
+        if record.attempt_no=="" do return fail("invalid_scope")
+        return Result{code="ok",body=encode(record)}
+    }
     if method=="context.read" do return context_history(s,chain,p)
     if method=="source.read" do return source_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")))
     if method=="workflow.read" do return workflow_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")),revision)
@@ -27,7 +33,7 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         return Result{code="ok",body=rows[0][1],seq=number(rows[0][2]),replay=true}
     }
     if method=="submission.read" {
-        rows,ok:=query(s.db,"SELECT summary,head,requirements_revision,configuration_revision,author_agent_id FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
+        rows,ok:=query(s.db,"SELECT summary,head,requirements_revision,configuration_revision,author_agent_id,lease_id FROM local_submissions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
         if !ok do return fail("storage_error")
         if len(rows)!=1 do return fail("invalid_scope")
         summary:=rows[0][0]
@@ -41,7 +47,10 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         if !output_read do return fail("storage_error")
         output_json:=""
         if len(output)==1 do output_json=output[0][0]
-        body:=encode(doc(map[string]string{"output"=output_json,"kind"="submission","chain_id"=chain,"task_id"=task,"attempt"=field(p,"attempt"),"summary"=summary[offset:end],"offset"=field(p,"offset"),"next_offset"=next,"head"=rows[0][1],"requirements_revision"=rows[0][2],"configuration_revision"=rows[0][3],"author_agent_id"=rows[0][4]}))
+        attempts,_,native_attempt,mapped:=attempt_scan(s,chain,task,0,rows[0][5])
+        if !mapped do return fail("storage_error")
+        if attempts.incomplete do native_attempt=""
+        body:=encode(doc(map[string]string{"native_attempt"=native_attempt,"attempt_completeness"=("incomplete" if attempts.incomplete else "full"),"output"=output_json,"kind"="submission","chain_id"=chain,"task_id"=task,"attempt"=field(p,"attempt"),"summary"=summary[offset:end],"offset"=field(p,"offset"),"next_offset"=next,"head"=rows[0][1],"requirements_revision"=rows[0][2],"configuration_revision"=rows[0][3],"author_agent_id"=rows[0][4]}))
         if len(body)>MAX_PAGE do return fail("invalid_content")
         return Result{code="ok",body=body}
     }

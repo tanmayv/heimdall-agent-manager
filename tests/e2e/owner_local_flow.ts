@@ -289,6 +289,9 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
           expect(hit?.attempt===attempt && hit?.object_id===tid+':'+attempt,'historical output search identifies exact attempt '+attempt);
           const old=JSON.parse((await human('submission.read',{expectedRevision:'0',attempt})).body);
           expect(old.kind==='submission' && old.attempt===attempt && old.summary===term,'signed exact-attempt read returns retained output '+attempt);
+          expect(old.native_attempt===attempt && old.attempt_completeness==='full','historical submission maps to native attempt '+attempt);
+          const native=JSON.parse((await human('attempt.read',{expectedRevision:'0',attempt})).body);
+          expect(native.task_id===tid && native.attempt_no===attempt && native.holder_instance_id===worker.instanceId && native.work_lease_id && native.outcome==='submitted' && native.counts_toward_budget==='1' && BigInt(native.ended_ms)>=BigInt(native.started_ms) && native.completeness==='full','real signed native attempt record retains holder, outcome and exact times '+attempt);
         }
 
         const verdict={requirements_revision:'2',attempt:'2',head:git.head,verdict:'approve',summary:'lifecycle-private-independent-review'};

@@ -160,15 +160,15 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `task_id` | `src/hub/domain/taskv2.odin:27` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `chain_id` | `src/hub/domain/taskv2.odin:29` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
+| `task_id` | `src/hub/domain/taskv2.odin:27` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `chain_id` | `src/hub/domain/taskv2.odin:29` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
 | `owner_user_id` | `src/hub/domain/taskv2.odin:30` | **LOCAL** `src/lib/owner_local/schema.sql:1`. Account/owner is pinned by runtime_database. Native user IDs still need explicit preservation on legacy import; do not infer ID equivalence. |
-| `started_at` | `src/hub/domain/taskv2.odin:31` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `ended_at` | `src/hub/domain/taskv2.odin:32` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `outcome` | `src/hub/domain/taskv2.odin:36` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
+| `started_at` | `src/hub/domain/taskv2.odin:31` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `ended_at` | `src/hub/domain/taskv2.odin:32` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `outcome` | `src/hub/domain/taskv2.odin:36` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
+| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **PARTIAL** `src/lib/owner_local/attempts.odin:103`, `src/lib/owner_local/reads.odin:15`. attempt.read projects a selected native record from immutable events, retaining original start, current holder/end/outcome and structural counting status. Submission reads map compatibility IDs to native attempts. Original-history import, task-specific workflow retirements and complete native facet linkage remain open; no budget/migration readiness is claimed. |
 
 ### Task_Attempt_Facet
 
@@ -611,3 +611,73 @@ all four binary builds, matrix check (240 fields / 23 structs) and diff check
 pass. The exact full-demo result is recorded in the task handoff.
 No new full taskv2 suite is claimed: the focused native-fold test covers the
 modified native comparison; unchanged native service code was not edited.
+
+## Native attempt record checkpoint (revision 2, attempt 4)
+
+The strict task-scoped device read `attempt.read` takes a positive decimal-string
+`attempt` and returns one `native_attempt` record
+(`src/contracts/fixtures/owner-local-schema.json:60`).
+It shares current read authorization and task-revision fences with the other
+owner reads; read-only grants work and revoked grants fail
+(`src/lib/owner_local/store.odin:174`;
+`src/contracts/owner_local.odin:290`).
+The original `Task_Attempt` identity, times, holder, outcome and counting flag
+remain the comparison source (`src/hub/domain/taskv2.odin:26`).
+
+Records are projections of immutable V13 evidence, with bounded keyset scan
+pages and one selected record retained in memory
+(`src/lib/owner_local/attempts.odin:103`).
+Handoff continuation clears end/outcome and updates holder/lease while retaining
+the original start and counting flag; this follows native continuation
+(`src/hub/service/taskv2/lease.odin:183`).
+Local times are exposed as exact decimal milliseconds in `started_ms` and
+`ended_ms`; import of original timestamp strings still needs its own
+lossless adapter. Native expiry outcome prefixes are retained, separate from
+the fold's release category (`src/lib/owner_local/attempts.odin:160`;
+`src/hub/service/taskv2/lease.odin:407`).
+New local expiry events retain `ttl` or `hard_cap` evidence
+(`src/lib/owner_local/leases.odin:197`).
+An older expiry without its reason yields an explicitly incomplete record;
+the reason is not invented from later observations.
+
+`submission.read` adds `native_attempt` and `attempt_completeness`
+(`src/lib/owner_local/reads.odin:52`).
+It maps the original submission's lease to its native grant; the V4 submission
+key and V7 lease ordinal remain unchanged. Incomplete structural history returns
+an empty native mapping and `incomplete`, not a guessed ordinal.
+A record's `completeness` concerns its available projection evidence only:
+it does not certify imported original history, facet parity, budget admission,
+or migration readiness.
+
+No database schema or historical event was rewritten. V13 and every earlier
+migration remain unchanged. Still required before C1 closure:
+original native history/attempt import, task-specific workflow-wide retirement
+evidence, typed native facets and their linkage, budget admission/exhaustion,
+metadata/publication/proposals/config, strict ordinary adapters, and the full
+rich legacy fixture. C3 continues to own linked bodies/blobs; M4 owns actual
+route cutover. No omitted field has been approved by this checkpoint.
+
+Verification commands (from this task Workdir, via managed shell):
+
+```bash
+python3 scripts/generate-owner-local-contracts.py
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-attempt4-records-final-store
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-attempt4-records-final-contracts
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1-attempt4-records-final-native
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1-attempt4-records-final-bins
+```
+
+Store: 116/116; contracts: 19/19; native differential: 1/1.
+Typecheck passes; retained UI tests: 17/17; all four binary builds pass.
+The exact disposable-demo result is recorded in the task handoff. Tests cover start/end/outcome preservation, continuation,
+submission 1 mapping to native attempt 2, cancellation, non-counting reopen,
+TTL/hard-cap expiry, incomplete old expiry evidence, atomic switch rollback,
+restart and current read revocation
+(`src/lib/owner_local/attempts_test.odin:8`).
+The disposable demo also asserts signed browser and actual CLI relay reads of
+native source/destination records and historical submission mapping
+(`tests/e2e/owner_local_controls_flow.ts:37`;
+`tests/e2e/owner_local_flow.ts:292`).
+No full C1 submission or independent-review approval is claimed.

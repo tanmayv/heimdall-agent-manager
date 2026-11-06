@@ -188,13 +188,15 @@ expire_leases :: proc(s:^Store,now:i64) -> bool {
         return false
     }
     if state[0][2]!="ready" do return false
-    rows,read:=query(s.db,"SELECT lease_id,chain_id,task_id FROM local_leases WHERE retired_seq IS NULL AND expires_ms<=? ORDER BY expires_ms LIMIT 100",fmt.tprintf("%d",now))
+    rows,read:=query(s.db,"SELECT lease_id,chain_id,task_id,hard_ms FROM local_leases WHERE retired_seq IS NULL AND expires_ms<=? ORDER BY expires_ms LIMIT 100",fmt.tprintf("%d",now))
     if !read do return false
     seq:=number(state[0][0])
     for row in rows {
         seq+=1
         if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),row[0]);!ok do return false
-        if !event_record(&tx,seq,now,row[1],row[2],"bridge",s.owner,"lease.expired",row[0],"","",encode(doc(map[string]string{"lease_id"=row[0]})),"") do return false
+        reason:="ttl"
+        if number(row[3])<=now do reason="hard_cap"
+        if !event_record(&tx,seq,now,row[1],row[2],"bridge",s.owner,"lease.expired",row[0],"","",encode(doc(map[string]string{"lease_id"=row[0],"reason"=reason})),"") do return false
         if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),row[1],"lease.expired",row[2],"1",row[0]);!ok do return false
     }
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false

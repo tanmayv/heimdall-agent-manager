@@ -33,6 +33,10 @@ export async function ownerLocalControlsFlow({session,bridgeId,hub,http,cli,laun
     let destinationCap=JSON.parse(switched.data.body).capability;
     state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
     expect(state.leases.length===1 && state.leases[0][0]===destinationLease,'real runtime observes destination lease');
+    const sourceAttempt=JSON.parse((await human('attempt.read',{expectedRevision:'0',attempt:'1'},true)).body);
+    expect(sourceAttempt.work_lease_id===input.lease_id && sourceAttempt.outcome==='handoff' && sourceAttempt.ended_ms && sourceAttempt.completeness==='full','real CLI relay reads switched source native record');
+    const destinationAttempt=JSON.parse((await human('attempt.read',{taskId:dest,expectedRevision:'0',attempt:'1'})).body);
+    expect(destinationAttempt.work_lease_id===destinationLease && destinationAttempt.outcome==='' && destinationAttempt.started_ms && destinationAttempt.counts_toward_budget==='1','real browser reads atomic switch destination native record');
 
     // Render the production panel and click real signed controls against Hub/Bridge.
     const {JSDOM}=await import('jsdom');

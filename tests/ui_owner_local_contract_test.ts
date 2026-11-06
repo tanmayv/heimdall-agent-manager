@@ -10,6 +10,23 @@ const creator: OwnerVerifiedKey = {account_id:'acct_1', principal_id:'dev_1', ke
 const bridge: OwnerVerifiedKey = {...creator,principal_id:'brg_1',key_id:'bridge_key',public_key:fixture.bridge_public_key,kind:'bridge'};
 const grant: OwnerReadGrant = {account_id:'acct_1', owner_bridge_id:'brg_1', chain_id:'chain_1',principal_id:'dev_1',key_id:'device_key',task_id:'task_1',method:'task.comment',revision:1n,expires_ms:1000000n,can_read:true,can_mutate:true,revoked:false};
 
+test('native attempt records keep decimal identities, strict times and task read authority', async () => {
+  const { ownerPayloadKind } = await import('../src/ui/api/ownerLocal.ts');
+  assert.equal(ownerPayloadKind('attempt.read'), 'attempt_read_payload');
+  const c = { ...doc('command'), method:'attempt.read', expected_revision:'0' } as OwnerCommand;
+  ownerParse(JSON.stringify(c), 'command');
+  const readonly = { ...grant, method:'attempt.read', can_mutate:false };
+  assert.equal(ownerLiveAdmit(c, readonly, 1000n, 99n), 'none');
+  assert.equal(ownerLiveAdmit(c, { ...readonly, revoked:true }, 1000n, 99n), 'invalid_scope');
+  assert.throws(() => ownerParse(JSON.stringify({ ...c, task_id:'' }), 'command'));
+  const record = { account_id:'account', chain_id:'chain', task_id:'task', attempt_no:'9007199254740993', started_ms:'1000', ended_ms:'1100', holder_instance_id:'instance', outcome:'submitted', counts_toward_budget:'1', work_lease_id:'lease', completeness:'full' };
+  assert.equal(ownerParse(JSON.stringify(record), 'native_attempt').attempt_no, '9007199254740993');
+  for (const patch of [{ ended_ms:'999' }, { ended_ms:'' }, { ended_ms:'unknown' }, { outcome:'assumed' }, { counts_toward_budget:'true' }])
+    assert.throws(() => ownerParse(JSON.stringify({ ...record, ...patch }), 'native_attempt'));
+  for (const payload of [{ attempt:'0' }, { attempt:'-1' }, { attempt:'1', lease_id:'forged' }])
+    assert.throws(() => ownerParse(JSON.stringify(payload), 'attempt_read_payload'));
+});
+
 test('native attempt projection has explicit completeness and strict release vocabulary', () => {
   const state = { attempt_no: '4', counting_attempts: '2', last_release: 'handoff', work_lease_id: 'lease_2', completeness: 'full' };
   assert.equal(ownerParse(JSON.stringify(state), 'attempt_state').attempt_no, '4');

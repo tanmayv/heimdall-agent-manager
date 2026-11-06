@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -55,6 +55,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         return true
     case "version": return s == "1"
     case "counter", "positive": return owner_decimal_valid(s) && (kind == "counter" || s != "0")
+    case "optional_counter": return s=="" || owner_decimal_valid(s)
+    case "attempt_outcome": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="expired:ttl" || s=="expired:hard_cap" || s=="expired:cancelled" || s=="expired:replaced"
     case "hash": return owner_hex(s, 64)
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
@@ -106,7 +108,15 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+    }
+    if kind=="native_attempt" {
+        ended,outcome:=owner_string(o,"ended_ms"),owner_string(o,"outcome")
+        if (ended=="") != (outcome=="") do return false
+        if ended!="" {
+            start,_:=strconv.parse_i64(owner_string(o,"started_ms"));end,_:=strconv.parse_i64(ended)
+            if end<start do return false
+        }
     }
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
@@ -163,6 +173,7 @@ owner_payload_kind :: proc(method: string) -> string {
     case "requirements.present", "requirements.ack": return "ack_payload"
     case "lease.submit": return "submit_payload"
     case "review.open", "review.post": return "review_payload"
+    case "attempt.read": return "attempt_read_payload"
     case "history.fetch": return "history_fetch_payload"
     case "history.read", "context.read", "chain.read", "task.read", "runtime.read": return "read_payload"
     case "receipt.read": return "receipt_payload"
@@ -276,7 +287,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
+    read := method == "attempt.read" || method == "history.read" || method == "history.fetch" || method == "context.read" || method == "grant.read" || method == "workflow.read" || method == "source.read" || method == "submission.read" || method == "chain.search" || method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

@@ -57,6 +57,8 @@ export const ownerSchemas = {
   coordinator_capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expires_ms", "positive"], ["allowed_methods", "coordinator_methods"], ["key_id", "id"], ["signature", "signature"]],
   history_fetch_payload: [["seq", "positive"], ["offset", "counter"]],
   attempt_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["last_release", "attempt_release"], ["work_lease_id", "optional"], ["completeness", "history_completeness"]],
+  attempt_read_payload: [["attempt", "positive"]],
+  native_attempt: [["account_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["attempt_no", "positive"], ["started_ms", "counter"], ["ended_ms", "optional_counter"], ["holder_instance_id", "id"], ["outcome", "attempt_outcome"], ["counts_toward_budget", "flag"], ["work_lease_id", "id"], ["completeness", "history_completeness"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -473,6 +475,22 @@ export interface OwnerAttempt_State {
   work_lease_id: string;
   completeness: string;
 }
+export interface OwnerAttempt_Read_Payload {
+  attempt: string;
+}
+export interface OwnerNative_Attempt {
+  account_id: string;
+  chain_id: string;
+  task_id: string;
+  attempt_no: string;
+  started_ms: string;
+  ended_ms: string;
+  holder_instance_id: string;
+  outcome: string;
+  counts_toward_budget: string;
+  work_lease_id: string;
+  completeness: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -531,4 +549,6 @@ export interface OwnerDocuments {
   coordinator_capability: OwnerCoordinator_Capability;
   history_fetch_payload: OwnerHistory_Fetch_Payload;
   attempt_state: OwnerAttempt_State;
+  attempt_read_payload: OwnerAttempt_Read_Payload;
+  native_attempt: OwnerNative_Attempt;
 }

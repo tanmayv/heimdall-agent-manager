@@ -248,3 +248,23 @@ history_contracts_are_read_only_chain_scoped_and_strict :: proc(t:^testing.T) {
     _,ok:=owner_parse(`{"seq":"9007199254740993","offset":"0"}`,"history_fetch_payload")
     testing.expect(t,ok)
 }
+
+@(test)
+native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=owner_fixture(t);c:=owner_fixture_document(t,f,"command")
+    c["method"]=json.String("attempt.read");c["expected_revision"]=json.String("0")
+    g:=owner_fixture_grant();g.method="attempt.read";g.can_mutate=false
+    testing.expect_value(t,owner_live_admit(c,g,1000,1),Owner_Auth_Error.None)
+    c["task_id"]=json.String("")
+    testing.expect(t,!owner_document_valid("command",c))
+    for raw in ([3]string{`{"attempt":"0"}`,`{"attempt":"-1"}`,`{"attempt":"1","lease_id":"forged"}`}) {
+        _,ok:=owner_parse(raw,"attempt_read_payload");testing.expect(t,!ok)
+    }
+    raw:=`{"account_id":"account","chain_id":"chain","task_id":"task","attempt_no":"1","started_ms":"1000","ended_ms":"1100","holder_instance_id":"instance","outcome":"submitted","counts_toward_budget":"1","work_lease_id":"lease","completeness":"full"}`
+    r,ok:=owner_parse(raw,"native_attempt");testing.expect(t,ok)
+    r["ended_ms"]=json.String("999");testing.expect(t,!owner_document_valid("native_attempt",r))
+    r["ended_ms"]=json.String("");testing.expect(t,!owner_document_valid("native_attempt",r))
+    r["outcome"]=json.String("");testing.expect(t,owner_document_valid("native_attempt",r))
+    r["counts_toward_budget"]=json.String("assumed");testing.expect(t,!owner_document_valid("native_attempt",r))
+}

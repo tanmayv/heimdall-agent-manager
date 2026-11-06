@@ -885,6 +885,40 @@ owner_fields_attempt_state := [?]Owner_Field{
     {"work_lease_id", "optional"},
     {"completeness", "history_completeness"},
 }
+Owner_Attempt_Read_Payload :: struct {
+    attempt: string,
+}
+@(private)
+owner_fields_attempt_read_payload := [?]Owner_Field{
+    {"attempt", "positive"},
+}
+Owner_Native_Attempt :: struct {
+    account_id: string,
+    chain_id: string,
+    task_id: string,
+    attempt_no: string,
+    started_ms: string,
+    ended_ms: string,
+    holder_instance_id: string,
+    outcome: string,
+    counts_toward_budget: string,
+    work_lease_id: string,
+    completeness: string,
+}
+@(private)
+owner_fields_native_attempt := [?]Owner_Field{
+    {"account_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"attempt_no", "positive"},
+    {"started_ms", "counter"},
+    {"ended_ms", "optional_counter"},
+    {"holder_instance_id", "id"},
+    {"outcome", "attempt_outcome"},
+    {"counts_toward_budget", "flag"},
+    {"work_lease_id", "id"},
+    {"completeness", "history_completeness"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -944,6 +978,8 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "coordinator_capability": return owner_fields_coordinator_capability[:]
     case "history_fetch_payload": return owner_fields_history_fetch_payload[:]
     case "attempt_state": return owner_fields_attempt_state[:]
+    case "attempt_read_payload": return owner_fields_attempt_read_payload[:]
+    case "native_attempt": return owner_fields_native_attempt[:]
     }
     return nil
 }
