@@ -9,6 +9,28 @@ import contracts "odin_test:contracts"
 LEASE_TTL_MS :: i64(15*60*1000)
 LEASE_HARD_MS :: i64(60*60*1000)
 
+// Native budget.hard_deadline is measured in seconds. Both ordinary claim
+// and atomic switch use the same destination snapshot; heartbeat retains the
+// originally signed hard deadline even when requirements change later.
+lease_deadlines :: proc(s:^Store,chain,task:string,now:i64) -> (i64,i64,bool) {
+    if now<0 || now>0x7fffffffffffffff-LEASE_HARD_MS do return 0,0,false
+    expires,hard:=now+LEASE_TTL_MS,now+LEASE_HARD_MS
+    if req,has_req:=lifecycle_requirements(s,chain,task);has_req {
+        value,valid:=contracts.owner_request_document(req[1]);brief,obj:=value.(json.Object)
+        if !valid || !obj do return 0,0,false
+        if value,present:=brief["budget"];present {
+            budget,obj:=value.(json.Object)
+            if !obj do return 0,0,false
+            if value,present:=budget["hard_deadline"];present {
+                seconds,integer:=value.(json.Integer)
+                if !integer || seconds<=0 || i64(seconds)>(0x7fffffffffffffff-now)/1000 do return 0,0,false
+                hard=now+i64(seconds)*1000
+            }
+        }
+    }
+    return min(expires,hard),hard,true
+}
+
 // These facts come from the local Bridge's current token+child validation,
 // never from JSON or a Hub assertion. The signed command binds the same facts.
 Child :: struct {
@@ -102,6 +124,9 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     version:=i64(1)
     if method=="lease.claim" {
         if !dependency_ready(s,chain,task) || !language_claim_ready(s,chain,task) do return fail("operation_conflict")
+        deadline_ok:bool
+        expires,hard,deadline_ok=lease_deadlines(s,chain,task,now)
+        if !deadline_ok do return fail("invalid_content")
         if config,binding,configured:=lifecycle_config(s,chain,task);configured {
             if child.agent_id!=field(config,"author_agent_id") || encode(child)!=binding[1] do return fail("invalid_scope")
             states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)

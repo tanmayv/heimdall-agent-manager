@@ -53,6 +53,27 @@ brief_shape :: proc(o:json.Object)->bool {
     if !keys_allowed(o,"goal|acceptance|inputs|review_roles|assignee|reviewers|budget|output|on_output|requires_user_approval|approver|gate") do return false
     for key in ([3]string{"goal","assignee","approver"}) { if !string_member(o,key) do return false }
     for key in ([3]string{"acceptance","review_roles","reviewers"}) { if a,present:=o[key];present && !array_strings(a) do return false }
+    if refs,present:=o["inputs"];present && !array_strings(refs) do return false
+    if value,present:=o["budget"];present {
+        budget,obj:=value.(json.Object)
+        if !obj || !keys_allowed(budget,"max_attempts|hard_deadline") do return false
+        for _,raw in budget {
+            n,integer:=raw.(json.Integer)
+            if !integer || n<=0 do return false
+        }
+    }
+    if value,present:=o["gate"];present {
+        gate,obj:=value.(json.Object)
+        if !obj || !keys_allowed(gate,"approver|prompt") || !string_member(gate,"approver") || !string_member(gate,"prompt") do return false
+        if value,present:=gate["approver"];present {
+            approver,_:=value.(json.String)
+            if approver!="user" && approver!="user_or_coordinator" do return false
+        }
+    }
+    if value,present:=o["approver"];present {
+        approver,_:=value.(json.String)
+        if approver!="user" && approver!="user_or_coordinator" do return false
+    }
     if out,present:=o["output"];present && !output_shape(out) do return false
     if trigger,present:=o["on_output"];present {
         t,obj:=trigger.(json.Object)

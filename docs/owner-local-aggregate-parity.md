@@ -49,7 +49,7 @@ Each durable field declared in the original aggregate domain structs is listed o
 | `kind` | `src/hub/domain/taskchain.odin:173` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `priority` | `src/hub/domain/taskchain.odin:174` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
-| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full top-level vocabulary is accepted; deep inputs/budget/gate validation and enforcement remain C1 work. |
+| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. max_attempts accounting and input-reference resolution remain C1 work. |
 | `blocked_on_json` | `src/hub/domain/taskchain.odin:183` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `requires_user_approval` | `src/hub/domain/taskchain.odin:184` | **PARTIAL** `src/lib/owner_local/migration_009.sql:103`. Local independent-agent/role/user review records and immutable V13 evidence. Native findings_json and complete reviewer/time fields are not yet accepted by ordinary adapters. |
 | `ready_since` | `src/hub/domain/taskchain.odin:187` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
@@ -319,7 +319,7 @@ Each durable field declared in the original aggregate domain structs is listed o
 | --- | --- | --- |
 | Chain/task create, edit, publish | `src/hub/service/taskchain/taskchain_service.odin:450`, `:973`, `:1222` | chain.create/edit and task.create/edit retain prose and publish title intents (`src/lib/owner_local/store.odin:236`). OPEN: draft/publication/priority/native metadata commands and publication claim fences. |
 | Propose, decide, publish plan | `src/hub/service/taskv2/verbs_m2.odin:965`, `:1096`, `:841` | OPEN: native pending proposal, immutable decision history, validated task materialization and publication in one local UoW. Workflow expansion is not proposal parity. |
-| Full brief + requirement revisions | `src/hub/service/taskv2/brief_schema.odin:16` | requirements.edit retains raw brief+cipher (`src/lib/owner_local/lifecycle.odin:49`); W2 validates top-level shape. OPEN: strict deep inputs/budget/gate validation and ordinary matching policy consistency. |
+| Full brief + requirement revisions | `src/hub/service/taskv2/brief_schema.odin:16` | requirements.edit retains raw brief+cipher (`src/lib/owner_local/lifecycle.odin:49`); Nested inputs/budget/gate shape validation and native hard_deadline now apply locally. OPEN: input-reference resolution, native max_attempts accounting and ordinary matching policy consistency. |
 | Claim, heartbeat, present, acknowledge | `src/hub/domain/taskv2.odin:64` | Exact-child signed lease commands (`src/lib/owner_local/leases.odin:45`), snapshot presentation/ACK (`src/lib/owner_local/lifecycle_agent.odin:94`). OPEN: native attempt budgets/structural outcomes, placement/provider/model evidence. Automatic matching stays M3. |
 | Submit, handoff, block, switch | `src/hub/service/taskv2/verbs_m2.odin:63`, `:136`, `:269`, `:226` | local lifecycle commands and structured output validation retained. OPEN: full handoff/decisions/dead_ends/VCS/artifact/runtime facets and reference resolution through C3. |
 | Review, checkpoint, hold, release, cancel, reopen, answer | `src/hub/service/taskv2/verbs_m2.odin:328`, `:625`, `:674`, `:553`, `:584` | Independent named review, role gates and local controls retained (`src/lib/owner_local/review_roles.odin:75`; `controls.odin:55`). OPEN: native findings payload/time and exact ordinary command adapters. No user gate is added to this ticket. |
@@ -346,3 +346,26 @@ V13 is additive after V12. It copies existing local_changes only as legacy_tag w
 - Preserve all native facet kinds/versions/writers/times and references under the shared C3 contract.
 - Add a genuinely rich native synthetic fixture and ordinary command adapters; demonstrate restart, validation failures, migration rollback, exact history, auth/replay/search and retained demos.
 - Have independent named code review judge any explicit disposition. This ledger alone does not approve omissions or complete REQ-P1/P2/P3.
+
+
+## Nested brief policy and lease deadlines
+
+The shared strict brief boundary now validates input-reference string arrays,
+positive integer budget.max_attempts/budget.hard_deadline, and exact gate
+approver/prompt shapes. Unsupported budget keys and invalid approvers are
+rejected rather than silently ignored (src/lib/workflow_v1/boundary.odin:50).
+This strengthens ordinary/static requirements and workflow definition
+admission through the existing shared boundary.
+
+The native deadline unit is seconds
+(src/hub/service/taskv2/lease.odin:114).
+Claim and atomic switch use the same owner helper and the destination's current
+requirement snapshot; initial TTL clamps to the hard deadline and arithmetic
+overflow rejects. Heartbeat retains the originally signed hard deadline
+(src/lib/owner_local/leases.odin:15;
+src/lib/owner_local/controls.odin:161).
+This does **not** claim max_attempts parity: original handoff continuations reuse
+an attempt number, and replaced/dependency-added/reopened releases have
+different counting semantics (src/hub/service/taskv2/fold.odin:138;
+src/hub/service/taskv2/fold.odin:377). Counting local_work_attempts rows would be
+incorrect. That native attempt model remains required work.

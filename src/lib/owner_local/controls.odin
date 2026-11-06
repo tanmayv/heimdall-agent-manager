@@ -159,9 +159,11 @@ control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,si
     for key,value in c do target[key]=value
     target["chain_id"]=json.String(dest_chain);target["task_id"]=json.String(dest);target["lease_id"]=p["destination_lease_id"]
     target["configuration_revision"]=p["destination_configuration_revision"]
-    cap,signed:=lease_capability(s,target,now+LEASE_TTL_MS,now+LEASE_HARD_MS,sign)
+    expires,hard,deadline_ok:=lease_deadlines(s,dest_chain,dest,now)
+    if !deadline_ok do return "invalid_content",false
+    cap,signed:=lease_capability(s,target,expires,hard,sign)
     if !signed do return "storage_error",false
-    if _,ok=query(s.db,"INSERT INTO local_leases VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,NULL)",field(p,"destination_lease_id"),dest_chain,dest,child.instance,child.epoch,fmt.tprintf("%d",child.run_count),child.token_generation,field(p,"destination_configuration_revision"),req[0],fmt.tprintf("%d",now+LEASE_TTL_MS),fmt.tprintf("%d",now+LEASE_HARD_MS),cap);!ok do return "storage_error",false
+    if _,ok=query(s.db,"INSERT INTO local_leases VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,NULL)",field(p,"destination_lease_id"),dest_chain,dest,child.instance,child.epoch,fmt.tprintf("%d",child.run_count),child.token_generation,field(p,"destination_configuration_revision"),req[0],fmt.tprintf("%d",expires),fmt.tprintf("%d",hard),cap);!ok do return "storage_error",false
     attempt,recorded:=work_attempt_record(s,dest_chain,dest,field(p,"destination_lease_id"))
     if !recorded do return "storage_error",false
     // Deliberately no stop/checkpoint notice for the child now holding dest.

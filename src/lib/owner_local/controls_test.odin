@@ -237,3 +237,22 @@ controls_new_work_attempt_records_current_requirements_revision :: proc(t:^testi
     rows,_:=query(f.store.db,"SELECT requirements_revision,(SELECT attempt FROM local_work_attempts WHERE lease_id='new_lease') FROM local_leases WHERE lease_id='new_lease'")
     testing.expect(t,rows[0][0]=="2" && rows[0][1]=="1")
 }
+
+
+@(test)
+controls_switch_uses_destination_brief_deadline :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
+    cap:=lifecycle_ready(t,f);control_destination_seed(t,f)
+    p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,`{"goal":"Short target","acceptance":["done"],"budget":{"hard_deadline":2}}`)}))
+    testing.expect_value(t,invoke(f,command(f,"requirements.edit","short_dest","dest",p,"4"),p).code,"ok")
+    value,_:=contracts.owner_parse(control_switch_payload("5"),"switch_payload")
+    value["destination_requirements_revision"]=json.String("2")
+    result:=lifecycle_call(f,lease_child(),"lease.switch","short_switch",encode(value),cap)
+    testing.expect_value(t,result.code,"ok")
+    rows,_:=query(f.store.db,"SELECT expires_ms,hard_ms FROM local_leases WHERE lease_id='destination_lease'")
+    if testing.expect_value(t,len(rows),1) {
+        testing.expect_value(t,rows[0][0],"3000")
+        testing.expect_value(t,rows[0][1],"3000")
+    }
+}
