@@ -204,6 +204,12 @@ execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(curren
     tx:Transaction
     if !transaction_begin(s,&tx) do return false,"",0,0
     defer transaction_rollback(&tx)
+    current,digest,owner_incarnation,commit_seq=execution_activation_fence_locked(s,claim,now)
+    if !current || !transaction_commit(&tx) do return false,"",0,0
+    return
+}
+execution_activation_fence_locked :: proc(s:^Store,claim:Intent_Claim,now:i64)->(current:bool,digest:string,owner_incarnation,commit_seq:i64) {
+    if !transaction_current(s.active) do return false,"",0,0
     if claim.kind!="executor.activate" || claim.incarnation!=s.incarnation || claim.digest!=contracts.owner_payload_digest(claim.payload) do return false,"",0,0
     rows,ok:=query(s.db, `SELECT j.prepare_json,j.lease_command,j.activation_json,j.grant_seq,l.expires_ms,l.hard_ms,l.deadline_version,
         (SELECT clock_high_ms FROM runtime_database),(SELECT recovery_state FROM runtime_database)
@@ -228,8 +234,57 @@ execution_activation_fence :: proc(s:^Store,claim:Intent_Claim,now:i64)->(curren
     if !current || !control_active(s,claim.chain,field(p,"task_id")) || !workflow_task_current(s,claim.chain,field(p,"task_id")) do return false,"",0,0
     tasks,read:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",claim.chain,field(p,"task_id"))
     if !read || len(tasks)!=1 || tasks[0][0]!=field(c,"expected_revision") do return false,"",0,0
-    if !transaction_commit(&tx) do return false,"",0,0
     return true,field(a,"prepare_digest"),s.incarnation,number(row[3])
+}
+
+// The executor key is resolved from the current enrolled directory before this
+// call. Claimed intent data is loaded locally, never supplied by the requester.
+// This read signs no negative answer and creates no task/resource authority.
+execution_fence_reply :: proc(s:^Store,request_raw:string,executor_key,owner_key:contracts.Owner_Verified_Key,
+    directory_version:i64,directory_hash:string,now:i64,sign:Signer)->Result {
+    context.allocator=context.temp_allocator
+    request,valid:=contracts.executor_parse(request_raw,"fence_request")
+    if !valid do return fail("malformed")
+    if !execution_owner_key(s,owner_key) || !contracts.executor_verify("fence_request",request,executor_key) ||
+       field(request,"account_id")!=s.account || field(request,"owner_bridge_id")!=s.owner ||
+       field(request,"owner_incarnation")!=fmt.tprintf("%d",s.incarnation) {return fail("invalid_scope")}
+    if now<contracts.executor_number(request,"issued_ms") || now>=contracts.executor_number(request,"request_expires_ms") do return fail("expired")
+    tx:Transaction
+    if !transaction_begin(s,&tx) do return fail("storage_error")
+    defer transaction_rollback(&tx)
+    directory,read:=query(s.db,"SELECT directory_version,directory_hash FROM runtime_database WHERE singleton=1")
+    if !read || len(directory)!=1 do return fail("storage_error")
+    if number(directory[0][0])!=directory_version || directory[0][1]!=directory_hash do return fail("invalid_scope")
+    rows,ok:=query(s.db,`SELECT chain_id,kind,destination_bridge,exact_fence_json,payload_json,payload_digest,claim_incarnation,attempts
+      FROM runtime_intents WHERE intent_id=? AND state='claimed'`,field(request,"intent_id"))
+    if !ok do return fail("storage_error")
+    if len(rows)!=1 do return fail("invalid_scope")
+    row:=rows[0]
+    claim:=Intent_Claim{field(request,"intent_id"),row[0],row[1],row[2],row[3],row[4],row[5],number(row[6]),number(row[7])}
+    action,a_ok:=contracts.executor_parse(claim.payload,"action")
+    if !a_ok || !contracts.executor_verify("action",action,owner_key) || field(request,"claim_attempt")!=row[7] do return fail("invalid_scope")
+    for name in ([7]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation","owner_incarnation"}) {
+        if field(request,name)!=field(action,name) do return fail("invalid_scope")
+    }
+    digest,_:=contracts.executor_digest("action",action)
+    if field(request,"action_digest")!=digest do return fail("invalid_scope")
+    current,prepare,incarnation,seq:=execution_activation_fence_locked(s,claim,now)
+    if !current do return fail("owner_fence_not_current")
+    request_digest,_:=contracts.executor_digest("fence_request",request)
+    reply:=doc(map[string]string{
+        "protocol_version"="1","account_id"=s.account,"executor_bridge_id"=field(request,"executor_bridge_id"),
+        "owner_bridge_id"=s.owner,"chain_id"=claim.chain,"reservation_id"=field(request,"reservation_id"),
+        "executor_incarnation"=field(request,"executor_incarnation"),"owner_incarnation"=fmt.tprintf("%d",incarnation),
+        "request_digest"=request_digest,"action_digest"=digest,"prepare_digest"=prepare,"challenge"=field(request,"challenge"),
+        "owner_commit_seq"=fmt.tprintf("%d",seq),"checked_ms"=fmt.tprintf("%d",now),
+        "request_expires_ms"=field(request,"request_expires_ms"),"key_id"=s.owner_key,"signature"=strings.repeat("0",128,context.temp_allocator)})
+    if sign.sign==nil do return fail("storage_error")
+    signature,signed:=sign.sign(sign.ctx,"executor.fence_reply",reply)
+    if !signed do return fail("storage_error")
+    reply["signature"]=json.String(signature)
+    if !contracts.executor_fence_reply_matches(reply,request,action,owner_key,executor_key,now) do return fail("storage_error")
+    if !transaction_commit(&tx) do return fail("storage_error")
+    return Result{code="ok",body=encode(reply),seq=seq}
 }
 
 // Expiring an uncommitted preparation spends no lease/attempt and grants no

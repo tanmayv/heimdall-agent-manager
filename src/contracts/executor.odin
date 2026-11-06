@@ -11,6 +11,25 @@ import vault "odin_test:lib/vault"
 EXECUTOR_DOCUMENT_MAX :: 32768
 EXECUTOR_CAPACITY_MAX :: 128
 EXECUTOR_PREPARE_TTL_MS :: 30000
+// A fence response is evidence for one outstanding random challenge only.
+// Transport callers must consume the challenge and recheck local intent state.
+EXECUTOR_FENCE_TTL_MS :: 5000
+executor_fence_request_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"reservation_id","id"},
+    {"executor_incarnation","positive"},{"owner_incarnation","positive"},
+    {"intent_id","hash"},{"claim_attempt","positive"},{"action_digest","hash"},
+    {"challenge","hash"},{"issued_ms","positive"},{"request_expires_ms","positive"},
+    {"key_id","id"},{"signature","signature"},
+}
+executor_fence_reply_fields := [?]Owner_Field{
+    {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
+    {"owner_bridge_id","id"},{"chain_id","id"},{"reservation_id","id"},
+    {"executor_incarnation","positive"},{"owner_incarnation","positive"},
+    {"request_digest","hash"},{"action_digest","hash"},{"prepare_digest","hash"},
+    {"challenge","hash"},{"owner_commit_seq","positive"},{"checked_ms","positive"},
+    {"request_expires_ms","positive"},{"key_id","id"},{"signature","signature"},
+}
 executor_policy_fields := [?]Owner_Field{
     {"protocol_version","version"},{"account_id","id"},{"executor_bridge_id","id"},
     {"policy_revision","positive"},{"device_capacity","positive"},{"slots_json","document"},
@@ -51,6 +70,8 @@ executor_schema :: proc(kind:string)->[]Owner_Field {
     case "prepare":return executor_prepare_fields[:]
     case "action":return executor_action_fields[:]
     case "receipt":return executor_receipt_fields[:]
+    case "fence_request":return executor_fence_request_fields[:]
+    case "fence_reply":return executor_fence_reply_fields[:]
     }
     return nil
 }
@@ -100,6 +121,11 @@ executor_valid :: proc(o:json.Object,kind:string)->bool {
         if directory!="" && !owner_field_valid(directory,"hash") do return false
     }
     if (kind=="action" || kind=="receipt") && executor_number(o,"expires_ms")>executor_number(o,"hard_ms") do return false
+    if kind=="fence_request" || kind=="fence_reply" {
+        start:=executor_number(o,"issued_ms" if kind=="fence_request" else "checked_ms")
+        end:=executor_number(o,"request_expires_ms")
+        if end<=start || end-start>EXECUTOR_FENCE_TTL_MS do return false
+    }
     return true
 }
 executor_parse :: proc(raw,kind:string)->(json.Object,bool) {
@@ -128,12 +154,35 @@ executor_verify :: proc(kind:string,o:json.Object,key:Owner_Verified_Key)->bool 
     if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=owner_string(o,"account_id") ||
        key.key_id!=owner_string(o,"key_id") { return false }
     identity:="owner_bridge_id"
-    if kind=="policy" || kind=="receipt" do identity="executor_bridge_id"
+    if kind=="policy" || kind=="receipt" || kind=="fence_request" do identity="executor_bridge_id"
     if key.principal_id!=owner_string(o,identity) do return false
     canonical,ok:=executor_canonical(kind,o)
     if !ok do return false
     sig,valid:=vault.signature_text_from_parts("ecdsa-p256-sha256",owner_string(o,"signature"),context.temp_allocator)
     return valid && vault.verify("ecdsa-p256-sha256",key.public_key,transmute([]byte)canonical,sig)
+}
+
+// Both signatures and the exact pending request are required. This helper is
+// stateless; the executor consumes its locally held nonce after success.
+executor_fence_reply_matches :: proc(reply,request,action:json.Object,owner_key,executor_key:Owner_Verified_Key,now:i64)->bool {
+    if !executor_verify("fence_request",request,executor_key) || !executor_verify("fence_reply",reply,owner_key) ||
+       !executor_verify("action",action,owner_key) || owner_string(action,"method")!="activate" {return false}
+    for name in ([8]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation","owner_incarnation","request_expires_ms"}) {
+        if owner_string(reply,name)!=owner_string(request,name) do return false
+    }
+    for name in ([7]string{"account_id","executor_bridge_id","owner_bridge_id","chain_id","reservation_id","executor_incarnation","owner_incarnation"}) {
+        if owner_string(request,name)!=owner_string(action,name) do return false
+    }
+    request_digest,_:=executor_digest("fence_request",request)
+    action_digest,_:=executor_digest("action",action)
+    return owner_string(reply,"request_digest")==request_digest &&
+       owner_string(reply,"challenge")==owner_string(request,"challenge") &&
+       owner_string(request,"action_digest")==action_digest && owner_string(reply,"action_digest")==action_digest &&
+       owner_string(reply,"prepare_digest")==owner_string(action,"prepare_digest") &&
+       owner_string(reply,"owner_commit_seq")==owner_string(action,"owner_commit_seq") &&
+       now>=executor_number(reply,"checked_ms") && executor_number(reply,"checked_ms")>=executor_number(request,"issued_ms") &&
+       now<executor_number(request,"request_expires_ms") && now<executor_number(action,"request_expires_ms") &&
+       now<executor_number(action,"expires_ms") && now<executor_number(action,"hard_ms")
 }
 
 // Exact signed receipt binding. Historical results are useful for recovery,

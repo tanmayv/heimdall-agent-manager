@@ -23,6 +23,18 @@
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner1\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"operation_id\":\"prepare\",\"method\":\"prepare\",\"input_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"prepare_digest\":\"111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772\",\"executor_incarnation\":\"1\",\"child_incarnation\":\"1\",\"grant_generation\":\"1\",\"deadline_version\":\"1\",\"expires_ms\":\"3000\",\"hard_ms\":\"10000\",\"launch_key\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"state\":\"prepared\",\"historical\":\"0\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
       "canonical": "heimdall-executor/receipt/v1\n1:1,7:account,8:executor,6:owner1,5:chain,11:reservation,7:prepare,7:prepare,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,64:111554cc3fd15e8a53597b2018b87a4ea91398c9d192532e79614852ce396772,1:1,1:1,1:1,1:1,4:3000,5:10000,64:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,8:prepared,1:0,8:operator,",
       "digest": "0ad3452d25e43fe76fd0b66ee2cbbb5a1704a78a818333723c330b2012127954"
+    },
+    {
+      "kind": "fence_request",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"intent_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"claim_attempt\":\"1\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}",
+      "canonical": "heimdall-executor/fence_request/v1\n1:1,7:account,8:executor,5:owner,5:chain,11:reservation,1:1,1:1,64:1111111111111111111111111111111111111111111111111111111111111111,1:1,64:2222222222222222222222222222222222222222222222222222222222222222,64:3333333333333333333333333333333333333333333333333333333333333333,4:1000,4:2000,8:operator,",
+      "digest": "7ab83c9df56a423d5c4e4bad9dbf9b589ac25756b54d10e9fa41140f92e278d2"
+    },
+    {
+      "kind": "fence_reply",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"owner_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"request_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"prepare_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"owner_commit_seq\":\"1\",\"checked_ms\":\"1100\",\"request_expires_ms\":\"2000\"}",
+      "canonical": "heimdall-executor/fence_reply/v1\n1:1,7:account,8:executor,5:owner,5:chain,11:reservation,1:1,1:1,64:4444444444444444444444444444444444444444444444444444444444444444,64:2222222222222222222222222222222222222222222222222222222222222222,64:5555555555555555555555555555555555555555555555555555555555555555,64:3333333333333333333333333333333333333333333333333333333333333333,1:1,4:1100,4:2000,9:owner_key,",
+      "digest": "6888efc39e6c401c22a1e3dd40cf955fcf6519a2c8f02faf56737a8cdc6786eb"
     }
   ],
   "invalid": [
@@ -105,6 +117,46 @@
       "name": "unknown-slot-field",
       "kind": "policy",
       "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"policy_revision\":\"1\",\"device_capacity\":\"2\",\"slots_json\":\"[{\\\"slot_id\\\":\\\"slot1\\\",\\\"provider_profile\\\":\\\"default\\\",\\\"enabled\\\":\\\"1\\\",\\\"secret\\\":\\\"bad\\\"}]\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}"
+    },
+    {
+      "kind": "fence_request",
+      "name": "fence_request rejects unknown",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"intent_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"claim_attempt\":\"1\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\",\"unknown\":\"x\"}"
+    },
+    {
+      "kind": "fence_request",
+      "name": "fence_request rejects request_expires_ms",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"intent_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"claim_attempt\":\"1\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"999999\"}"
+    },
+    {
+      "kind": "fence_request",
+      "name": "fence_request rejects challenge",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"intent_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"claim_attempt\":\"1\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"challenge\":\"nonce\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "fence_request",
+      "name": "fence_request rejects executor_incarnation",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"01\",\"owner_incarnation\":\"1\",\"key_id\":\"operator\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"intent_id\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"claim_attempt\":\"1\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"issued_ms\":\"1000\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "fence_reply",
+      "name": "fence_reply rejects unknown",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"owner_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"request_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"prepare_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"owner_commit_seq\":\"1\",\"checked_ms\":\"1100\",\"request_expires_ms\":\"2000\",\"unknown\":\"x\"}"
+    },
+    {
+      "kind": "fence_reply",
+      "name": "fence_reply rejects request_expires_ms",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"owner_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"request_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"prepare_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"owner_commit_seq\":\"1\",\"checked_ms\":\"1100\",\"request_expires_ms\":\"999999\"}"
+    },
+    {
+      "kind": "fence_reply",
+      "name": "fence_reply rejects challenge",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"1\",\"owner_incarnation\":\"1\",\"key_id\":\"owner_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"request_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"prepare_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"challenge\":\"nonce\",\"owner_commit_seq\":\"1\",\"checked_ms\":\"1100\",\"request_expires_ms\":\"2000\"}"
+    },
+    {
+      "kind": "fence_reply",
+      "name": "fence_reply rejects executor_incarnation",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"account\",\"executor_bridge_id\":\"executor\",\"owner_bridge_id\":\"owner\",\"chain_id\":\"chain\",\"reservation_id\":\"reservation\",\"executor_incarnation\":\"01\",\"owner_incarnation\":\"1\",\"key_id\":\"owner_key\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"request_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"prepare_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"owner_commit_seq\":\"1\",\"checked_ms\":\"1100\",\"request_expires_ms\":\"2000\"}"
     }
   ]
 }

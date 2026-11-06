@@ -258,6 +258,98 @@ actual command-specific evidence. These were corrected, not waived.
 No global production route, deployment, live restart or push occurred. No
 unrelated boy-scout changes were included. M3 remains unfinished.
 
+## Continuation: bilateral signed fence challenges
+
+Coordinator approved this bounded step in `msg_18e59949a8d52e41`, followed by
+remote enrollment and production transport/reconciliation. This checkpoint
+implements the signed exchange core; it does not mount a remote route or replace
+the injected production owner-check boundary.
+
+`src/contracts/executor.odin:167` and `src/ui/api/executor.ts:406` verify both
+enrolled Bridge signatures, the original activation signature, exact account,
+owner/executor identities and incarnations, chain/reservation, action and prepare
+digests, owner commit sequence, request digest, nonce and deadlines. Strict shared
+wire vectors include the new domain-separated request/reply documents and
+malformed/unknown-field/TTL cases. The request also binds the exact owner outbox
+intent ID and claim attempt. A reply is evidence for one outstanding challenge,
+never a reusable capability.
+
+`src/lib/owner_local/execution.odin:243` authenticates the requesting executor,
+rechecks the externally verified directory version/hash under the owner
+transaction, loads the claimed activation from durable owner storage and checks
+the existing authoritative fence guards before signing. The requester cannot
+supply a replacement claim or activation. Reads create no lease, receipt, event
+or outbox effect; unsuccessful checks return no signed positive answer.
+
+`src/lib/executor_local/fence.odin:18` generates 32 bytes from the fail-closed OS
+CSPRNG and retains the original request/action for one serialized exchange.
+`src/lib/executor_local/fence.odin:45` consumes successful or expired challenges
+and checks a monotonic timeout as well as signed wall-clock bounds. Restart
+cannot adopt a pending challenge; current executor incarnation is checked again.
+The Bridge signer explicitly supports the two new domains while retaining its
+preloaded-identity requirement and refusal to sign executor capacity policies.
+
+Tests at `src/lib/owner_local/execution_test.odin:98` exercise two independent
+SQLite stores and real P256 signatures: valid activation, fresh nonce isolation,
+single use, scope/digest/incarnation substitution, revoked keys, mismatched
+directory pins, expiry/clock rollback, retired/retried claims, both runtime
+restarts and monotonic expiry with a frozen wall clock. These are core tests,
+not evidence for an enrolled network transport or real-provider support.
+
+### Fence checkpoint verification
+
+All commands ran through `ham-ctl shell run --cwd` with this task worktree:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-fence-owner-final-20261106-2351
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-fence-contracts-20261106-2348
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-fence-executor-20261106-2350
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_NAMES=main.test_owner_local_executor_signer_domains_and_missing_identity -out:$HOME/.cache/heimdall-tests/m3-fence-signer-20261106-2350
+node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_executor_contract_test.ts
+npm run typecheck
+nix build .#ham-bridge -o $HOME/.cache/heimdall-tests/m3-fence-bridge-20261106-2350
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Final owner suite: **231 PASS**, `sh_d53e1fad9079bdd481235dbc6049c074`.
+Contracts: **32 PASS**, `sh_3a4f76bb8192abf892d124b157d69c94`.
+Executor: **16 PASS**, `sh_d716dc284b4d6c8bfd9dab401811c9b5`.
+Bridge signer: **1 PASS**, `sh_d9750799f2457fc9a6e241c55a74ac3f`.
+TS: **4 PASS**, `sh_d5ed39ed495f3652b2ec53ad0abb90c8`.
+Typecheck: PASS, `sh_970f35c360f6153e050861a26e07d6ec`.
+Bridge build: PASS, `sh_44ac8f84a80402e9f86b44e39ed58743`.
+Aggregate parity: PASS, 240 fields/23 structs and 73 signed device methods,
+`sh_de710b30a04c9d8a7fd0e2c7c563f4ef`.
+
+Draft corrections: Odin test failure-helper syntax and temporary allocator
+setup; TS tests require the existing vaultEndpointHarness; a fixture owner ID
+and a mutation that accidentally retained the original digest were corrected.
+No check was waived. Rust, actual provider/platform and network transport tests
+were not rerun because this checkpoint changes no daemon or mounted transport.
+
+Remaining work is the production list above: explicit reserved-remote enrollment
+and current enrolled-key verification at both transport ends, encrypted relay,
+matcher and saved-identity prepare/activation reconciliation, exact committed
+grant failure disposition, device-wide manual/warm admission, physical renewal,
+encrypted notifications/results/tickets and real provider/platform evidence.
+The serialized dispatcher must recheck the exact local ledger intent after an
+exchange; returned core proof values must never be cached as launch permission.
+M3 remains unfinished and requires independent and explicit user review.
+
+Exact signed-fence modified paths:
+
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/executor.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/contracts/fixtures/executor-v1.json`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/ui/api/executor.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tests/ui_executor_contract_test.ts`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/executor_local/fence.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/lib/owner_local/execution_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/unseal_protocol.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/src/bridge/vault_v2_bridge_test.odin`
+- `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`
+
 ### Exact owner-journal modified paths
 
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/docs/executor-dispatch-checkpoint.md`

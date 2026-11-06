@@ -3,6 +3,22 @@ import { parseOwnerRequestDocument } from './ownerJson.ts';
 
 // Mirrored executor resource contracts; no task command or launch authority.
 export const executorSchemas = {
+  fence_request: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['owner_bridge_id','id'],['chain_id','id'],['reservation_id','id'],
+    ['executor_incarnation','positive'],['owner_incarnation','positive'],
+    ['intent_id','hash'],['claim_attempt','positive'],['action_digest','hash'],
+    ['challenge','hash'],['issued_ms','positive'],['request_expires_ms','positive'],
+    ['key_id','id'],['signature','signature'],
+  ],
+  fence_reply: [
+    ['protocol_version','version'],['account_id','id'],['executor_bridge_id','id'],
+    ['owner_bridge_id','id'],['chain_id','id'],['reservation_id','id'],
+    ['executor_incarnation','positive'],['owner_incarnation','positive'],
+    ['request_digest','hash'],['action_digest','hash'],['prepare_digest','hash'],
+    ['challenge','hash'],['owner_commit_seq','positive'],['checked_ms','positive'],
+    ['request_expires_ms','positive'],['key_id','id'],['signature','signature'],
+  ],
   "policy": [
     [
       "protocol_version",
@@ -317,6 +333,7 @@ export type ExecutorDocument = Record<string, string>;
 export const EXECUTOR_DOCUMENT_MAX = 32768;
 export const EXECUTOR_CAPACITY_MAX = 128;
 export const EXECUTOR_PREPARE_TTL_MS = 30000n;
+export const EXECUTOR_FENCE_TTL_MS = 5000n;
 const integer = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
 const id = (s: string) => s.length <= 160 && /^[a-zA-Z0-9_.:-]+$/.test(s);
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -361,6 +378,11 @@ export function executorParse(raw: string, kind: ExecutorKind): ExecutorDocument
   }
   if (kind === 'prepare' && (BigInt(o.prepare_until_ms) > BigInt(o.hard_ms) || (o.directory_key !== '' && !/^[0-9a-f]{64}$/.test(o.directory_key)))) throw new SyntaxError('Executor prepare bounds');
   if ((kind === 'action' || kind === 'receipt') && BigInt(o.expires_ms) > BigInt(o.hard_ms)) throw new SyntaxError('Executor action bounds');
+  if (kind === 'fence_request' || kind === 'fence_reply') {
+    const start = BigInt(kind === 'fence_request' ? o.issued_ms : o.checked_ms);
+    const end = BigInt(o.request_expires_ms);
+    if (end <= start || end - start > EXECUTOR_FENCE_TTL_MS) throw new SyntaxError('Executor fence bounds');
+  }
   return o;
 }
 export function executorCanonical(kind: ExecutorKind, value: ExecutorDocument): string {
@@ -372,11 +394,34 @@ const unhex = (hex: string): Uint8Array<ArrayBuffer> => Uint8Array.from(hex.matc
 export async function executorVerify(kind: ExecutorKind, value: ExecutorDocument, key: OwnerVerifiedKey): Promise<boolean> {
   try {
     const o = executorParse(JSON.stringify(value), kind);
-    const principal = kind === 'policy' || kind === 'receipt' ? o.executor_bridge_id : o.owner_bridge_id;
+    const principal = kind === 'policy' || kind === 'receipt' || kind === 'fence_request' ? o.executor_bridge_id : o.owner_bridge_id;
     if (!key.enrolled || key.revoked || key.kind !== 'bridge' || key.account_id !== o.account_id ||
         key.principal_id !== principal || key.key_id !== o.key_id || !/^04[0-9a-f]{128}$/.test(key.public_key)) return false;
     const pub = await crypto.subtle.importKey('raw', unhex(key.public_key), {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
     return await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'}, pub, unhex(o.signature), new TextEncoder().encode(executorCanonical(kind,o)));
+  } catch { return false; }
+}
+
+// Callers must consume the locally pending challenge once this succeeds.
+export async function executorFenceReplyMatches(reply: ExecutorDocument, request: ExecutorDocument, action: ExecutorDocument,
+  ownerKey: OwnerVerifiedKey, executorKey: OwnerVerifiedKey, now: bigint): Promise<boolean> {
+  try {
+    if (!await executorVerify('fence_request',request,executorKey) || !await executorVerify('fence_reply',reply,ownerKey) ||
+        !await executorVerify('action',action,ownerKey) || action.method !== 'activate') return false;
+    for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','executor_incarnation','owner_incarnation','request_expires_ms']) {
+      if (reply[name] !== request[name]) return false;
+    }
+    for (const name of ['account_id','executor_bridge_id','owner_bridge_id','chain_id','reservation_id','executor_incarnation','owner_incarnation']) {
+      if (request[name] !== action[name]) return false;
+    }
+    const requestDigest = await ownerPayloadDigest(executorCanonical('fence_request',request));
+    const actionDigest = await ownerPayloadDigest(executorCanonical('action',action));
+    return reply.request_digest === requestDigest && reply.challenge === request.challenge &&
+      request.action_digest === actionDigest && reply.action_digest === actionDigest &&
+      reply.prepare_digest === action.prepare_digest && reply.owner_commit_seq === action.owner_commit_seq &&
+      now >= BigInt(reply.checked_ms) && BigInt(reply.checked_ms) >= BigInt(request.issued_ms) &&
+      now < BigInt(request.request_expires_ms) && now < BigInt(action.request_expires_ms) &&
+      now < BigInt(action.expires_ms) && now < BigInt(action.hard_ms);
   } catch { return false; }
 }
 export async function executorReceiptMatches(receipt: ExecutorDocument, request: ExecutorDocument, kind: 'prepare' | 'action', key: OwnerVerifiedKey, now: bigint, currentAdmission = true): Promise<boolean> {

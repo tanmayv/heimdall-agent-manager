@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import contracts "odin_test:contracts"
 import executor "odin_test:lib/executor_local"
 import vault "odin_test:lib/vault"
@@ -76,6 +77,141 @@ execution_test_query :: proc(t:^testing.T,x:^Execution_Test,now:i64=1200)->(stri
     receipt,ok:=executor.seal_receipt(&x.host,q,"action",r,{&x.owner.creator_priv,execution_test_seal})
     testing.expect(t,ok)
     return raw,receipt
+}
+
+execution_test_claim :: proc(t:^testing.T,f:^Fixture)->Intent_Claim {
+    claims,ok:=intent_claim_due(&f.store,1100)
+    testing.expect(t,ok)
+    for c in claims do if c.kind=="executor.activate" do return c
+    testing.fail_now(t,"missing activation claim")
+}
+execution_test_challenge :: proc(t:^testing.T,x:^Execution_Test,claim:Intent_Claim)->executor.Fence_Challenge {
+    pending,ok:=executor.fence_challenge(&x.host,claim.payload,claim.id,claim.attempt,x.owner.owner,x.host_key,1150,{&x.owner.creator_priv,execution_test_seal})
+    testing.expect(t,ok)
+    return pending
+}
+execution_test_fence_reply :: proc(x:^Execution_Test,request:string,now:i64=1200)->Result {
+    return execution_fence_reply(&x.owner.store,request,x.host_key,x.owner.owner,1,"head",now,{&x.owner.owner_priv,execution_test_sign})
+}
+
+@(test)
+owner_execution_signed_fence_exchange_is_exact_and_single_use :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    grant:=execution_test_commit(x)
+    if !testing.expect_value(t,grant.code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    pending:=execution_test_challenge(t,x,claim);defer executor.fence_challenge_destroy(&pending)
+    other:=execution_test_challenge(t,x,claim);defer executor.fence_challenge_destroy(&other)
+    testing.expect(t,pending.request!=other.request,"each exchange uses fresh OS entropy")
+    before:=fleet_policy_test_state(f)
+    reply:=execution_test_fence_reply(x,pending.request)
+    if !testing.expect_value(t,reply.code,"ok") do return
+    testing.expect_value(t,fleet_policy_test_state(f),before)
+    mismatch:=executor.fence_accept(&x.host,&other,reply.body,f.owner,x.host_key,1200)
+    testing.expect(t,!mismatch.current && !other.consumed)
+    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    testing.expect(t,proof.current && pending.consumed && proof.commit_seq==grant.seq)
+    again:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    testing.expect(t,!again.current)
+    testing.expect_value(t,executor.action(&x.host,grant.body,f.owner,1200,proof).code,"ok")
+}
+
+@(test)
+owner_execution_signed_fence_rejects_substitution_revocation_and_expiry :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    pending:=execution_test_challenge(t,x,claim);defer executor.fence_challenge_destroy(&pending)
+    reply:=execution_test_fence_reply(x,pending.request)
+    if !testing.expect_value(t,reply.code,"ok") do return
+    for pair in ([9][2]string{{"account_id","other"},{"executor_bridge_id","other"},{"owner_bridge_id","other"},
+        {"chain_id","other"},{"reservation_id","other"},{"executor_incarnation","2"},{"owner_incarnation","2"},
+        {"intent_id",strings.repeat("b",64,context.temp_allocator)},{"claim_attempt","2"}}) {
+        request,_:=contracts.executor_parse(pending.request,"fence_request")
+        request[pair[0]]=json.String(pair[1])
+        raw:=execution_test_signed(f,request,"fence_request",true)
+        testing.expect(t,execution_test_fence_reply(x,raw).code!="ok",pair[0])
+    }
+    request,_:=contracts.executor_parse(pending.request,"fence_request")
+    request["action_digest"]=json.String(strings.repeat("b",64,context.temp_allocator))
+    testing.expect_value(t,execution_test_fence_reply(x,execution_test_signed(f,request,"fence_request",true)).code,"invalid_scope")
+    revoked:=x.host_key;revoked.revoked=true
+    denied:=execution_fence_reply(&f.store,pending.request,revoked,f.owner,1,"head",1200,{&f.owner_priv,execution_test_sign})
+    testing.expect_value(t,denied.code,"invalid_scope")
+    denied=execution_fence_reply(&f.store,pending.request,x.host_key,f.owner,2,"head",1200,{&f.owner_priv,execution_test_sign})
+    testing.expect_value(t,denied.code,"invalid_scope")
+    denied=execution_fence_reply(&f.store,pending.request,x.host_key,f.owner,1,"other",1200,{&f.owner_priv,execution_test_sign})
+    testing.expect_value(t,denied.code,"invalid_scope")
+    revoked=f.owner;revoked.revoked=true
+    denied_proof:=executor.fence_accept(&x.host,&pending,reply.body,revoked,x.host_key,1200)
+    testing.expect(t,!denied_proof.current && !pending.consumed)
+    for now in ([3]i64{1149,3000,10000}) {
+        testing.expect(t,execution_test_fence_reply(x,pending.request,now).code!="ok")
+        timed:=pending
+        proof:=executor.fence_accept(&x.host,&timed,reply.body,f.owner,x.host_key,now)
+        testing.expect(t,!proof.current)
+        if now>=3000 {
+            testing.expect(t,timed.consumed)
+            proof=executor.fence_accept(&x.host,&timed,reply.body,f.owner,x.host_key,1200)
+            testing.expect(t,!proof.current,"clock rollback cannot revive an expired exchange")
+        }
+    }
+    response,_:=contracts.executor_parse(reply.body,"fence_reply")
+    response["owner_commit_seq"]=json.String("999")
+    forged:=execution_test_signed(f,response,"fence_reply")
+    proof:=executor.fence_accept(&x.host,&pending,forged,f.owner,x.host_key,1200)
+    testing.expect(t,!proof.current && !pending.consumed)
+    // A validly signed response from the wrong domain cannot pass verification.
+    testing.expect(t,!contracts.executor_verify("fence_reply",response,x.host_key))
+}
+
+@(test)
+owner_execution_signed_fence_rejects_retired_claim_and_both_runtime_restarts :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    pending:=execution_test_challenge(t,x,claim);defer executor.fence_challenge_destroy(&pending)
+    reply:=execution_test_fence_reply(x,pending.request)
+    if !testing.expect_value(t,reply.code,"ok") do return
+    testing.expect(t,intent_result(&f.store,claim,false,"lost_reply",1200))
+    testing.expect_value(t,execution_test_fence_reply(x,pending.request).code,"invalid_scope")
+    retry_claims,retried:=intent_claim_due(&f.store,2200)
+    testing.expect(t,retried && len(retry_claims)>0)
+    testing.expect_value(t,execution_test_fence_reply(x,pending.request,2200).code,"invalid_scope")
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    testing.expect_value(t,execution_test_fence_reply(x,pending.request).code,"invalid_scope")
+    executor.close(&x.host);testing.expect(t,executor.open(&x.host,x.path,"account","executor","operator"))
+    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    testing.expect(t,!proof.current && !pending.consumed)
+}
+
+@(test)
+owner_execution_signed_fence_monotonic_timeout_survives_frozen_wall_clock :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    x:=execution_test_fixture(t);defer execution_test_destroy(x);f:=x.owner
+    testing.expect_value(t,execution_prepare_start(&f.store,x.prepare,x.lease,f.owner,1000).code,"ok")
+    x.receipt=execution_test_prepare(t,x)
+    if !testing.expect_value(t,execution_test_commit(x).code,"ok") do return
+    claim:=execution_test_claim(t,f)
+    pending:=execution_test_challenge(t,x,claim);defer executor.fence_challenge_destroy(&pending)
+    request,_:=contracts.executor_parse(pending.request,"fence_request")
+    request["request_expires_ms"]=json.String("1201")
+    delete(pending.request)
+    pending.request=strings.clone(execution_test_signed(f,request,"fence_request",true))
+    reply:=execution_test_fence_reply(x,pending.request)
+    if !testing.expect_value(t,reply.code,"ok") do return
+    time.sleep(75*time.Millisecond)
+    proof:=executor.fence_accept(&x.host,&pending,reply.body,f.owner,x.host_key,1200)
+    testing.expect(t,!proof.current && pending.consumed)
 }
 @(test)
 owner_execution_prepare_and_atomic_grant_activation_outbox :: proc(t:^testing.T) {
