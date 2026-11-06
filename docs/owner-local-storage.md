@@ -40,6 +40,16 @@ pending; an obsolete callback cannot settle a new claim. Registry publication
 uses the existing signed revision-idempotent Hub receiver. Future launch/stop
 consumers must additionally revalidate their exact execution fence.
 
+Delivery owners must retain external outcomes until result persistence succeeds.
+`Intent_Completions` holds at most one 20-item batch, cloning only claim IDs,
+digests and bounded results into a process-lifetime allocator. Flush this queue
+before claiming another batch. A temporary result write or commit failure keeps
+the original fenced completion for a later request; it does not repeat network
+I/O. A durable claim recheck discards obsolete completions without overwriting a
+new attempt or settled result. Process death still uses the durable abandoned
+claim recovery described above. The queue must be serialized with its store;
+destroy it only after delivery workers drain or the process shuts down.
+
 Backward clock observations block new mutations and claims; reads and receipt
 replay remain available. Clock high watermarks never decrease. `reconcile_clock`
 requires the current incarnation, expected clock generation, and a trusted time
@@ -58,8 +68,9 @@ Integration entrypoints (all paths relative to the repository):
 | `src/lib/owner_local/transaction.odin:14` `transaction_begin`, `:31` `transaction_savepoint`, `:41` `transaction_commit`, `:53` `transaction_rollback` | Thread-bound, explicit nested UoW. A same-thread nested begin fails; use a savepoint. SQL/cryptography only inside the transaction. Failed rollback quarantines uncertain connection state until reopen. |
 | `src/lib/owner_local/outbox.odin:20` `intent_enqueue` | Enqueue under the current UoW after inserting its source receipt. One immutable effect per principal/operation/kind/destination. A repeated enqueue must match payload digest, fence and sequence. |
 | `src/lib/owner_local/outbox.odin:36` `intent_claim_due`, `:64` `intent_result` | Claim at most 20 due effects, perform I/O outside the UoW, then settle or schedule retry with the exact claim. Claim failure returns no work. Unknown external outcomes must be queried/retried using the same ID. |
+| `src/lib/owner_local/completions.odin:22` `intent_completion_keep`, `:58` `intent_completions_flush`, `:37` `intent_completions_destroy` | Retain and retry fenced result persistence across requests. Flush before claiming another batch; storage failure keeps ownership in memory, and restart recovers the persisted claim. |
 | `src/lib/owner_local/retention.odin:18` `compact_receipts`, `:42` `reconcile_clock` | Bounded maintenance and trusted local clock-recovery APIs; neither is remotely exposed as a user command. |
-| `src/bridge/owner_local.odin:33` `bridge_owner_publish` | Existing request-driven registry publication now uses durable claims and fenced results. The signer at `src/bridge/unseal_protocol.odin:848` uses only the already-loaded identity. |
+| `src/bridge/owner_local.odin:35` `bridge_owner_publish`, `:41` `bridge_owner_publish_batch` | Request-driven registry publication retains completions and retries persistence before further delivery. The signer at `src/bridge/unseal_protocol.odin:848` uses only the already-loaded identity. |
 
 M1c must add the actual agent capability/fence contracts, local pinned instance
 and configuration inputs, lease/fleet/review schema and guards, matching/gates,
@@ -78,3 +89,7 @@ Focused evidence lives beside the implementation in `store_test.odin` and
 SIGKILL immediately before SQLite commit, immediately after commit before reply,
 and after a durable outbox claim. The driver checks integrity, foreign keys,
 exact row counts, replay and stable recovered effect identities.
+`src/bridge/owner_local_delivery_test.odin:37` exercises the production delivery
+batch with HTTP503/200 outcomes and both result-write and deferred-FK commit
+failures, followed by storage recovery and eventual settlement without reopening
+the store or repeating a successful POST.

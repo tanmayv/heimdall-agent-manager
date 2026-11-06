@@ -237,6 +237,82 @@ outbox_claim_retry_restart_and_obsolete_results :: proc(t:^testing.T) {
 }
 
 @(test)
+retained_delivery_results_recover_write_and_commit_failures_without_reopen :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    for commit_failure in ([2]bool{false,true}) {
+        f:=fixture(t);defer destroy(f);seed(t,f)
+        q:Intent_Completions
+        defer intent_completions_destroy(&q)
+        incarnation:=f.store.incarnation
+        claims,ok:=intent_claim_due(&f.store,1000,1)
+        if !testing.expect(t,ok && len(claims)==1) do continue
+        first:=claims[0]
+        // Simulate an HTTP503 outcome; the queue must own its strings beyond
+        // the request that performed the I/O, including a failed result COMMIT.
+        testing.expect(t,intent_completion_keep(&q,first,false,"503",1000))
+        if commit_failure {
+            testing.expect(t,exec(f.store.db,`CREATE TABLE result_parent(id INTEGER PRIMARY KEY);
+              CREATE TABLE result_child(id INTEGER REFERENCES result_parent(id) DEFERRABLE INITIALLY DEFERRED);
+              CREATE TRIGGER fail_result AFTER UPDATE OF state ON runtime_intents WHEN OLD.state='claimed' AND NEW.state='pending'
+              BEGIN INSERT INTO result_child VALUES(99); END;`))
+        } else {
+            testing.expect(t,exec(f.store.db,`CREATE TRIGGER fail_result BEFORE UPDATE OF state ON runtime_intents
+              WHEN OLD.state='claimed' AND NEW.state='pending' BEGIN SELECT RAISE(ABORT,'temporary storage error'); END;`))
+        }
+        testing.expect(t,!intent_completions_flush(&f.store,&q))
+        testing.expect_value(t,q.count,1)
+        current,read:=intent_claim_current(&f.store,first)
+        testing.expect(t,read && current,"failed result persistence retains the same claimed row")
+        testing.expect(t,exec(f.store.db,"DROP TRIGGER fail_result"))
+        testing.expect(t,intent_completions_flush(&f.store,&q),"storage recovers without Store.open")
+        testing.expect_value(t,q.count,0)
+        claims,ok=intent_claim_due(&f.store,2000)
+        testing.expect(t,ok && len(claims)==2)
+        deliveries:=0
+        for claim in claims {
+            // Eventual successful publication uses the same effect ID/digest.
+            if claim.id==first.id {
+                deliveries+=1
+                testing.expect(t,claim.attempt==2 && claim.digest==first.digest && claim.payload==first.payload)
+            }
+            testing.expect(t,intent_completion_keep(&q,claim,true,"200",2000))
+        }
+        testing.expect(t,intent_completions_flush(&f.store,&q))
+        testing.expect_value(t,deliveries,1)
+        testing.expect_value(t,f.store.incarnation,incarnation)
+        rows,_:=query(f.store.db,"SELECT count(*) FROM runtime_intents WHERE state='settled'")
+        testing.expect_value(t,rows[0][0],"2")
+        testing.expect_value(t,q.count,0)
+    }
+}
+
+@(test)
+retained_success_results_and_stale_completions_do_not_redeliver :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    q:Intent_Completions;defer intent_completions_destroy(&q)
+    claims,ok:=intent_claim_due(&f.store,1000,1)
+    if !testing.expect(t,ok && len(claims)==1) do return
+    claim:=claims[0]
+    testing.expect(t,intent_completion_keep(&q,claim,true,"200",1000))
+    testing.expect(t,exec(f.store.db,`CREATE TRIGGER fail_settle BEFORE UPDATE OF state ON runtime_intents
+      WHEN NEW.state='settled' BEGIN SELECT RAISE(ABORT,'temporary storage error'); END;`))
+    testing.expect(t,!intent_completions_flush(&f.store,&q))
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER fail_settle"))
+    testing.expect(t,intent_completions_flush(&f.store,&q))
+    current,read:=intent_claim_current(&f.store,claim)
+    testing.expect(t,read && !current)
+    // A delayed duplicate completion is safely discarded after checking the
+    // durable claim, rather than overwriting an immutable successful result.
+    testing.expect(t,intent_completion_keep(&q,claim,false,"stale503",1000))
+    testing.expect(t,intent_completions_flush(&f.store,&q))
+    rows,_:=query(f.store.db,"SELECT state,result_json FROM runtime_intents WHERE intent_id=?",claim.id)
+    testing.expect(t,rows[0][0]=="settled" && rows[0][1]=="200")
+    more,more_ok:=intent_claim_due(&f.store,1000000)
+    testing.expect(t,more_ok && len(more)==1 && more[0].id!=claim.id,"settled effect never redelivers")
+}
+
+@(test)
 tombstones_expired_misses_and_read_revocation :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);seed(t,f)

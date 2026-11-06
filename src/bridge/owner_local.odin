@@ -15,6 +15,8 @@ import ws "odin_test:lib/ws"
 
 bridge_owner_store:owner.Store
 bridge_owner_mutex:sync.Mutex
+// Protected by bridge_owner_mutex; retained across request allocator resets.
+bridge_owner_completions:owner.Intent_Completions
 
 bridge_owner_json :: proc(v:$T)->string { b,_:=json.marshal(v,allocator=context.temp_allocator);return string(b) }
 
@@ -31,25 +33,35 @@ bridge_owner_open :: proc(account,key_id:string)->bool {
     return opened
 }
 bridge_owner_publish :: proc() {
-    now:=time.to_unix_nanoseconds(time.now())/1000000
-    pending,ok:=owner.intent_claim_due(&bridge_owner_store,now)
-    if !ok do return
+    _=bridge_owner_publish_batch(&bridge_owner_store,&bridge_owner_completions,time.to_unix_nanoseconds(time.now())/1000000,nil,bridge_owner_publish_registry)
+}
+
+// The injected transport keeps result-persistence fault tests on the exact
+// production delivery path. Caller serializes this queue for its Store.
+bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,now:i64,ctx:rawptr,
+    send:proc(rawptr,^owner.Store,owner.Intent_Claim)->(bool,string,i64)) -> bool {
+    // No new delivery while a previous outcome still cannot be persisted.
+    if !owner.intent_completions_flush(s,q) do return false
+    pending,ok:=owner.intent_claim_due(s,now)
+    if !ok do return false
+    for claim in pending {
+        success,result,completed:=send(ctx,s,claim)
+        if !owner.intent_completion_keep(q,claim,success,result,completed,runtime.default_allocator()) do panic("owner-local completion capacity invariant")
+    }
+    // Failure leaves every unresolved completion retained for the next request.
+    return owner.intent_completions_flush(s,q)
+}
+
+bridge_owner_publish_registry :: proc(_:rawptr,s:^owner.Store,claim:owner.Intent_Claim) -> (bool,string,i64) {
+    // Future consumers must validate their own execution fences before I/O.
+    if claim.kind!="registry" do return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000
     token:=bridge_credential_snapshot();defer delete(token)
     headers:=[?]httpc.Header{httpc.bearer(token)}
-    for claim in pending {
-        // Only registry effects are handled here. Future consumers must validate
-        // their own exact execution fences before any launch/stop I/O.
-        if claim.kind!="registry" {
-            _=owner.intent_result(&bridge_owner_store,claim,false,"unsupported_kind",now)
-            continue
-        }
-        genesis:=owner.genesis_for(&bridge_owner_store,claim.chain)
-        publication:=contracts.Owner_Publication{genesis,claim.payload}
-        response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","registry"},headers=headers[:],body=httpc.json_body(publication)})
-        completed:=time.to_unix_nanoseconds(time.now())/1000000
-        _=owner.intent_result(&bridge_owner_store,claim,err==.None && response.status==200,fmt.tprintf("%d",response.status),completed)
-        httpc.response_destroy(&response)
-    }
+    genesis:=owner.genesis_for(s,claim.chain)
+    publication:=contracts.Owner_Publication{genesis,claim.payload}
+    response,err:=bridge_http_request_retry({method=.POST,url=bridge_hub_url(),path={"api","v1","owner-local","registry"},headers=headers[:],body=httpc.json_body(publication)})
+    defer httpc.response_destroy(&response)
+    return err==.None && response.status==200,fmt.tprintf("%d",response.status),time.to_unix_nanoseconds(time.now())/1000000
 }
 Owner_Bridge_Command :: struct {
     type,command_id,account_id,relay:string,
