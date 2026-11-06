@@ -81,7 +81,7 @@ event_history_pages_and_chunked_evidence_are_lossless :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);seed(t,f)
     for i in 0..<3 {
-        p:=encode(doc(map[string]string{"body_cipher"=cipher(f,strings.repeat("x",8000,context.temp_allocator))}))
+        p:=encode(doc(map[string]string{"body_cipher"=cipher(f,fmt.tprintf("%s%s",strings.repeat("x",4000,context.temp_allocator),strings.repeat("世",1333,context.temp_allocator)))}))
         testing.expect_value(t,invoke(f,command(f,"task.comment",fmt.tprintf("long_%d",i),"task",p,fmt.tprintf("%d",i+1)),p).code,"ok")
     }
     page:=history_call(f,"history.read",`{"cursor":"","limit":"2"}`)
@@ -111,6 +111,31 @@ event_history_pages_and_chunked_evidence_are_lossless :: proc(t:^testing.T) {
     rows,_:=query(f.store.db,"SELECT evidence_json FROM local_events WHERE seq=3")
     testing.expect(t,chunks>1)
     testing.expect_value(t,strings.to_string(all),rows[0][0])
+    // Odin's event encoder escapes Unicode. A native import may instead retain
+    // verbatim UTF-8 JSON; exercise that boundary with synthetic historical bytes.
+    native:=strings.concatenate({`{"payload":"`,strings.repeat("x",8001,context.temp_allocator),strings.repeat("世",1000,context.temp_allocator),`"}`},context.temp_allocator)
+    _,inserted:=query(f.store.db,"INSERT INTO local_events VALUES(70,'chain','task',1000,'device','device','fixture','utf8_import',?,'full')",native)
+    testing.expect(t,inserted)
+    native_all:=strings.builder_make(context.temp_allocator)
+    offset="0"
+    for i in 0..<5 {
+        fetched:=history_call(f,"history.fetch",encode(doc(map[string]string{"seq"="70","offset"=offset})))
+        if !testing.expect_value(t,fetched.code,"ok") do break
+        v,_:=json.parse_string(fetched.body,.JSON,true,context.temp_allocator);part,_:=v.(json.Object)
+        strings.write_string(&native_all,field(part,"evidence"))
+        offset=field(part,"next_offset")
+        if offset=="" do break
+    }
+    testing.expect_value(t,strings.to_string(native_all),native)
+    checked_utf8:=false
+    for byte,i in transmute([]u8)native {
+        if byte&0xc0==0x80 {
+            bad:=encode(doc(map[string]string{"seq"="70","offset"=fmt.tprintf("%d",i)}))
+            testing.expect_value(t,history_call(f,"history.fetch",bad).code,"malformed")
+            checked_utf8=true;break
+        }
+    }
+    testing.expect(t,checked_utf8,"fixture exercises a UTF-8 continuation offset")
     testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"999","offset":"0"}`).code,"invalid_scope")
     testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"3","offset":"9999999"}`).code,"malformed")
 }
@@ -177,4 +202,25 @@ event_v12_upgrade_collision_and_commit_rollback_preserve_live_runtime :: proc(t:
     testing.expect_value(t,lifecycle_call(f,lease_child(),"requirements.present","event_after_upgrade",`{"requirements_revision":"1"}`,cap).code,"ok")
     rows,_=query(f.store.db,"PRAGMA foreign_key_check")
     testing.expect_value(t,len(rows),0)
+}
+
+
+@(test)
+event_history_survives_canonical_task_deletion :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    p:=encode(doc(map[string]string{"body_cipher"=cipher(f,"retained historical comment")}))
+    testing.expect_value(t,invoke(f,command(f,"task.comment","retained_comment","task",p,"1"),p).code,"ok")
+    p=`{"protocol_version":"1"}`
+    testing.expect_value(t,invoke(f,command(f,"task.delete","history_delete","task",p,"2"),p).code,"ok")
+    rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM tasks),(SELECT count(*) FROM local_events),(SELECT count(*) FROM task_comments)")
+    testing.expect(t,rows[0][0]=="0" && rows[0][1]=="4" && rows[0][2]=="0")
+    fetched:=history_call(f,"history.fetch",`{"seq":"3","offset":"0"}`)
+    testing.expect_value(t,fetched.code,"ok")
+    testing.expect(t,strings.contains(fetched.body,"retained historical comment"))
+    close(&f.store)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    rows,_=query(f.store.db,"PRAGMA foreign_key_check")
+    testing.expect_value(t,len(rows),0)
+    testing.expect_value(t,history_call(f,"history.fetch",`{"seq":"4","offset":"0"}`).code,"ok")
 }

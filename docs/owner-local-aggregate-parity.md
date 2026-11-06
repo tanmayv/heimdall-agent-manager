@@ -425,3 +425,78 @@ an attempt number, and replaced/dependency-added/reopened releases have
 different counting semantics (src/hub/service/taskv2/fold.odin:138;
 src/hub/service/taskv2/fold.odin:377). Counting local_work_attempts rows would be
 incorrect. That native attempt model remains required work.
+
+## Verified implementation checkpoint (requirements revision 1, attempt 2)
+
+Commits: f2b0a40e (V13 events/initial ledger), d331951c (nested brief policy and
+deadline handling), fae3a837 (mixed-work field coverage), followed by the
+UTF-8/deletion regression and this verification record. Work is scoped to
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e569e48d6b5532`.
+This is a checkpoint of unfinished C1 work, not a request to accept the full
+aggregate. All OPEN/PARTIAL rows remain binding.
+
+Exact successful commands, run in that Workdir through managed shell:
+
+```bash
+python3 scripts/generate-owner-local-contracts.py
+python3 scripts/check-owner-aggregate-parity.py
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-store-final99
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-events-contracts
+nix develop --command odin test src/lib/workflow_v1 -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-policy-language-final
+nix develop --command npm ci --ignore-scripts --no-audit --no-fund
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1-policy-bins
+nix develop --command odin build tools/owner_local_test_identity -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-events-identity
+nix develop --command env \
+  HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1-policy-bins-1/bin/ham-hub \
+  HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1-policy-bins/bin/ham-bridge \
+  HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1-policy-bins-2/bin/ham-ctl \
+  HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1-policy-bins-3/bin/ham-pty-host \
+  HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1-events-identity \
+  HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 \
+  HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 \
+  HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 \
+  HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 \
+  node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+git diff --check
+```
+
+The matrix check accounts for 240 fields across 23 native structs. Contracts:
+18/18; workflow language: 10/10; retained UI contracts: 15/15. Typecheck,
+all four binary builds and the final real disposable demo pass.
+The final demo is managed session `sh_b3ff73443bb29f7bcd8aca0b82949c47`,
+exit 0, all steps passed; the event-checkpoint demo also passed as
+`sh_2007a293a1458ffe8eb4d15b2fcb0b38`.
+Final store suite count/result is recorded in the task handoff.
+
+The real demo exercises production browser signing, actual CLI requests,
+authenticated Hub relay, actual local owner restart, synthetic child PTYs,
+Git merge paths, rendered controls, static/language workflows, search,
+grants and registry pagination/revocation using disposable identities only.
+It proves the new event transport through the real route and preserves
+existing demos. It does not prove the missing native aggregate adapters or
+a rich full-legacy import; those remain required. No production deployment,
+live service restart, credential experiment or push was performed.
+No unrelated boy-scout edits were made.
+
+Corrected development dead ends: event INSERT initially had one extra
+placeholder; an Odin test initially used unsupported multiline-do syntax;
+typecheck initially lacked the already-pinned posthog-js dependency (npm ci
+restored it without lock changes); the first broad demo omitted OWNER_LEASE
+and therefore had no launchChild for controls (correct flags above pass).
+The Unicode regression initially assumed the event encoder emitted literal
+UTF-8; it actually escapes Unicode, so the final regression uses synthetic
+verbatim native UTF-8 evidence to exercise continuation offsets and chunk
+boundaries. These failures were corrected; do not infer remaining runtime
+defects from their earlier logs.
+
+Continue with the native attempt/outcome/counting model before max_attempts
+enforcement; then integrate full metadata, publication/proposal decisions,
+membership/directories/fleet policy, curated-summary metadata, all typed
+facets/reference provenance, mixed-work records and strict ordinary adapters.
+Use the OPEN/PARTIAL ledger rows as the acceptance checklist. Preserve V13
+and its historical reconstruction helpers, shared W2 output validation,
+current read authorization before replay, and the C1/C3 reference contract.
+Full aggregate readiness is still below submission confidence. Independent
+named code review remains required after completing C1.
