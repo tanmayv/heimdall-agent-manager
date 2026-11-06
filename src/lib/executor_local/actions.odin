@@ -77,13 +77,18 @@ take_intent :: proc(s:^Store,now:i64)->(Intent,bool) {
     if code:=clock(s,now,false);code!="" do return {},false
     rows,ok:=query(s.db,`SELECT i.reservation_id,i.kind,r.instance_id,r.launch_key,r.document
       FROM executor_intents i JOIN executor_reservations r USING(reservation_id)
-      WHERE i.state='pending' AND ((i.kind='stop' AND r.state='stopping') OR
-        (i.kind='launch' AND r.state='active' AND r.expires_ms>CAST(? AS INTEGER) AND
+      WHERE ((i.kind='stop' AND r.state='stopping' AND (i.state='pending' OR
+          (i.state='uncertain' AND i.claim_incarnation!=CAST(? AS INTEGER)))) OR
+        (i.kind='launch' AND i.state='pending' AND r.state='active' AND r.expires_ms>CAST(? AS INTEGER) AND
          (SELECT recovery_state FROM executor_runtime WHERE singleton=1)='ready'))
-      ORDER BY CASE i.kind WHEN 'stop' THEN 0 ELSE 1 END,i.reservation_id LIMIT 1`,fmt.tprintf("%d",now))
+      ORDER BY CASE i.kind WHEN 'stop' THEN 0 ELSE 1 END,i.reservation_id LIMIT 1`,fmt.tprintf("%d",s.incarnation),fmt.tprintf("%d",now))
     if !ok || len(rows)==0 do return {},false
     row:=rows[0]
-    if _,written:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=0 WHERE reservation_id=? AND kind=?",row[0],row[1]);!written do return {},false
+    // Exact stops may be adopted once by each new serving runtime. Consuming
+    // their claim here prevents an uncertain stop starving later pending work.
+    // Launch permission remains single-use and is never adopted after restart.
+    claim:=s.incarnation if row[1]=="stop" else i64(0)
+    if _,written:=query(s.db,"UPDATE executor_intents SET state='uncertain',claim_incarnation=? WHERE reservation_id=? AND kind=?",fmt.tprintf("%d",claim),row[0],row[1]);!written do return {},false
     if row[1]=="launch" {
         if _,written:=query(s.db,"UPDATE executor_reservations SET launch_state='uncertain' WHERE reservation_id=?",row[0]);!written do return {},false
     }

@@ -97,3 +97,50 @@ No live restart, deployment, push, production cutover, Hub task authority or fin
 - `/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/tools/pty_host/src/dproto.rs`
 
 Step 2 deliberately keeps the production owner/matcher/legacy launch callsites untouched until resource admission and owner reconciliation are complete. The daemon and tested Bridge adapter have real physical effects; they do not grant or fold task state. Continue the same task branch and preserve checkpoint 1.
+
+## Continuation: uncertain safety-stop adoption
+
+Coordinator approved continuation in `msg_18e5980a25560a75`. Before mounting the
+production reconciliation worker, closed the restart gap in
+`src/lib/executor_local/actions.odin:79`: stop intents in uncertain state can be
+claimed once by each new serving incarnation. The claim is committed before I/O,
+preserves the saved reservation/instance/document/launch key, and leaves uncertain
+launch intents untouched. Existing exact observations remain the only way to
+release an active/stopping resource; an unknown daemon key still retains charge.
+
+Regression tests in `src/lib/executor_local/store_test.odin:389` cover two
+successive restarts, rejection of old claims/observations, absence of launch
+reissue, retention until trusted absence, and deferred COMMIT failure with retry.
+The existing real daemon test at `src/bridge/executor_runtime_test.odin:117` now
+reopens the ledger with an uncertain stop while the daemon survives, rejects the
+old dispatcher claim, adopts the exact stop, verifies physical absence, and then
+launches a replacement under incarnation 2. It retains the real daemon SIGKILL
+and unknown-key resource-retention phase.
+
+All commands below ran through managed shell sessions from the task worktree:
+
+```bash
+nix develop --command odin test src/lib/executor_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/m3-stop-adoption-20261106-2324
+nix develop --command env HEIMDALL_EXECUTOR_TEST_PTY=$HOME/.cache/heimdall-tests/m3-dispatch-bins-1/bin/ham-pty-host HEIMDALL_EXECUTOR_OLD_PTY=$HOME/.cache/heimdall-tests/c1f-v24-bins-3/bin/ham-pty-host odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_FANCY=false -define:EXECUTOR_TEST_REQUIRED=true -define:ODIN_TEST_NAMES=main.pty_executor_exact_control_wire_shape_and_invalid_identity,main.bridge_executor_real_daemon_ledger_dispatch_and_stale_stop,main.bridge_executor_expiry_during_owner_check_and_clock_regression_fail_before_io -out:$HOME/.cache/heimdall-tests/m3-stop-adoption-bridge-20261106-2325
+git diff --check
+```
+
+Executor suite: **16 PASS**, session `sh_635677b8f9592184d2be6cdc58cadb7a`.
+Required real daemon Bridge suite: **3 PASS**, session
+`sh_3024947b91604f167161a1b1a598b0ba`. No daemon or wire change was needed;
+the prior packaged daemon was used. Draft test compilation failed on Odin's
+no-redeclaration rule; a subsequent draft exposed shell-stripped SQL quotes in
+test fixtures. Both were corrected before the reported passing runs.
+
+Additional modified paths, all under
+`/var/home/tanmay/heimdall-agent-manager/.heimdall/worktrees/task_18e556f90cfa1e9c/`:
+
+- `src/lib/executor_local/actions.odin`
+- `src/lib/executor_local/store_test.odin`
+- `src/bridge/executor_runtime_test.odin`
+- `docs/executor-dispatch-checkpoint.md`
+
+No unrelated cleanup was included. This is a bounded recovery correction;
+production owner reconciliation/global manual-warm admission, physical renewal,
+encrypted delivery, real provider/platform evidence and independent acceptance
+remain required. M3 is not submitted as complete.

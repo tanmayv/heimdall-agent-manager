@@ -384,3 +384,62 @@ executor_first_dispatch_permission_is_durable_single_use_and_restart_fenced :: p
     close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
     testing.expect(t,!begin_dispatch(&f.store,intent,1300))
 }
+
+@(test)
+executor_uncertain_stop_adopted_once_per_runtime_without_relaunch_or_refund :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);policy(t,f)
+    p:=document("prepare");testing.expect_value(t,reserve(f,p,&f.owner1).code,"ok")
+    a:=activate_document(p);testing.expect_value(t,perform(f,a,&f.owner1).code,"ok")
+    launch,taken:=take_intent(&f.store,1200);testing.expect(t,taken && launch.kind=="launch")
+    testing.expect(t,begin_dispatch(&f.store,launch,1200))
+    testing.expect(t,expire(&f.store,6000))
+    stop:Intent;stop,taken=take_intent(&f.store,6000);testing.expect(t,taken && stop.kind=="stop")
+    _,taken=take_intent(&f.store,6000);testing.expect(t,!taken)
+    // Crash before any stop I/O. A new runtime adopts the same exact key;
+    // it cannot adopt a launch or treat an empty daemon cache as absence.
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    recovered:Intent;recovered,taken=take_intent(&f.store,6100)
+    testing.expect(t,taken && recovered.kind=="stop" && recovered.incarnation==2)
+    testing.expect_value(t,recovered.reservation,stop.reservation)
+    testing.expect_value(t,recovered.instance,stop.instance)
+    testing.expect_value(t,recovered.launch_key,stop.launch_key)
+    testing.expect_value(t,recovered.document,stop.document)
+    _,current:=intent_current(&f.store,stop,6100);testing.expect(t,!current)
+    _,current=intent_current(&f.store,recovered,6100);testing.expect(t,current)
+    testing.expect(t,!begin_dispatch(&f.store,launch,6100))
+    testing.expect(t,!observe_child(&f.store,"reservation",{stop.instance,stop.launch_key,stop.incarnation,false}))
+    _,taken=take_intent(&f.store,6100);testing.expect(t,!taken,"same runtime cannot repeatedly take uncertain stop")
+    testing.expect(t,!complete_recovery(&f.store,6100),"uncertain stop retains charge")
+    rows,ok:=query(f.store.db,"SELECT state,(SELECT state FROM executor_intents WHERE kind='launch') FROM executor_reservations")
+    testing.expect(t,ok);testing.expect_value(t,encode(rows),encode([1][2]string{{"stopping","uncertain"}}))
+    // A second crash after possible I/O is still an exact stop, never spawn.
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    again:Intent;again,taken=take_intent(&f.store,6200)
+    testing.expect(t,taken && again.kind=="stop" && again.incarnation==3)
+    testing.expect_value(t,again.launch_key,stop.launch_key)
+    testing.expect(t,!observe_child(&f.store,"reservation",{recovered.instance,recovered.launch_key,recovered.incarnation,false}))
+    testing.expect(t,observe_child(&f.store,"reservation",{again.instance,again.launch_key,again.incarnation,false}))
+    testing.expect(t,complete_recovery(&f.store,6200))
+    _,taken=take_intent(&f.store,6200);testing.expect(t,!taken)
+    rows,ok=query(f.store.db,"SELECT state FROM executor_reservations")
+    testing.expect(t,ok);testing.expect_value(t,rows[0][0],"released")
+}
+
+@(test)
+executor_stop_adoption_failure_rolls_back_claim_and_allows_retry :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);policy(t,f)
+    p:=document("prepare");testing.expect_value(t,reserve(f,p,&f.owner1).code,"ok")
+    a:=activate_document(p);testing.expect_value(t,perform(f,a,&f.owner1).code,"ok")
+    testing.expect(t,expire(&f.store,6000))
+    stop,taken:=take_intent(&f.store,6000);testing.expect(t,taken && stop.kind=="stop")
+    close(&f.store);testing.expect(t,open(&f.store,f.path,"account","executor","operator"))
+    testing.expect(t,exec(f.store.db,"CREATE TABLE fault_parent(id INTEGER PRIMARY KEY); CREATE TABLE fault_ref(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fault_adopt AFTER UPDATE ON executor_intents BEGIN INSERT INTO fault_ref VALUES(1); END"))
+    _,taken=take_intent(&f.store,6100);testing.expect(t,!taken)
+    rows,ok:=query(f.store.db,"SELECT state,claim_incarnation FROM executor_intents WHERE kind='stop'")
+    testing.expect(t,ok);testing.expect_value(t,encode(rows),encode([1][2]string{{"uncertain","1"}}))
+    testing.expect(t,exec(f.store.db,"DROP TRIGGER fault_adopt"))
+    recovered:Intent;recovered,taken=take_intent(&f.store,6100)
+    testing.expect(t,taken && recovered.kind=="stop" && recovered.launch_key==stop.launch_key && recovered.incarnation==2)
+}
