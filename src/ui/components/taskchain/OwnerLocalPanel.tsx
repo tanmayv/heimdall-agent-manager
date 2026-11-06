@@ -23,6 +23,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
   const [body, setBody] = useState('');
   const [instanceId, setInstanceId] = useState('');
   const [enabled, setEnabled] = useState(true);
+  const [fleetPolicy, setFleetPolicy] = useState('{}');
   const [configRevision, setConfigRevision] = useState('1');
   const [lifecycleConfig, setLifecycleConfig] = useState('{}');
   const [requirementsRevision, setRequirementsRevision] = useState('1');
@@ -64,11 +65,11 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     }));
     if (getKeyringSession() === before) setListing(visible);
   }
-  async function perform(method: 'context.read' | 'grant.set' | 'grant.revoke' | 'grant.read' | 'grant.policy' | 'grant.recover' | 'workflow.coordinator' | 'workflow.cancel' | 'workflow.gate' | 'workflow.define' | 'workflow.run' | 'workflow.retry' | 'workflow.read' | 'source.observe' | 'source.consume' | 'source.ack' | 'source.retire' | 'source.resolve' | 'source.escalate' | 'source.read' | 'dependency.edit' | 'review.roles' | 'task.hold' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.resolve' | 'merge.retry' | 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId?: string; attempt?: string; offset?: string; contextCursor?: string; cursor?: string; grantCursor?: string }) {
+  async function perform(method: 'fleet.policy.set' | 'fleet.policy.read' | 'context.read' | 'grant.set' | 'grant.revoke' | 'grant.read' | 'grant.policy' | 'grant.recover' | 'workflow.coordinator' | 'workflow.cancel' | 'workflow.gate' | 'workflow.define' | 'workflow.run' | 'workflow.retry' | 'workflow.read' | 'source.observe' | 'source.consume' | 'source.ack' | 'source.retire' | 'source.resolve' | 'source.escalate' | 'source.read' | 'dependency.edit' | 'review.roles' | 'task.hold' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.resolve' | 'merge.retry' | 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId?: string; attempt?: string; offset?: string; contextCursor?: string; cursor?: string; grantCursor?: string }) {
     const s = await current(); const before = getKeyringSession();
     const cid = method === 'chain.create' ? ownerId('chain_') : chainId;
     const tid = target?.taskId ?? (method === 'task.create' ? ownerId('task_') : (['dependency.edit', 'review.roles', 'task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : ''));
-    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, enabled, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, cursor: target?.contextCursor ?? target?.cursor ?? target?.grantCursor, head, verdict, grantPrincipal, grantExpiresMs: grantExpires, grantCanMutate, recoveryEnabled, policyRevision });
+    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body: method === 'fleet.policy.set' ? fleetPolicy : body, query: body, description: body, enabled, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, cursor: target?.contextCursor ?? target?.cursor ?? target?.grantCursor, head, verdict, grantPrincipal, grantExpiresMs: grantExpires, grantCanMutate, recoveryEnabled, policyRevision });
     setPending(op); setChainId(cid); if (tid) setTaskId(tid);
     const result = await sendOwnerOperation(s, op, (relay) => cookieMutation('/api/v1/owner-local/relay', 'POST', relay));
     if (getKeyringSession() !== before) return;
@@ -104,6 +105,14 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       <select data-debug-id="owner-local-verdict" aria-label="Human verdict" className={inputClass} value={verdict} onChange={(e) => setVerdict(e.target.value as 'approve' | 'request_changes')}><option value="approve">Approve</option><option value="request_changes">Request changes</option></select>
       <textarea data-debug-id="owner-local-body" aria-label="Body or comment" placeholder="Description, task body, or comment" className={inputClass} value={body} onChange={(e) => setBody(e.target.value)} />
     </div>
+    <fieldset className="border border-subtle p-3 my-3">
+      <legend>Durable fleet policy</legend>
+      <p>Save a durable agent’s roles, capacity and placement preferences. Existing running assignments continue. Automatic dispatch is not enabled by saving this policy.</p>
+      <textarea data-debug-id="owner-local-fleet-policy" aria-label="Durable fleet policy JSON" className={inputClass} value={fleetPolicy} onChange={(e) => setFleetPolicy(e.target.value)} />
+      <button data-debug-id="owner-local-fleet-policy-read" disabled={busy || !bridge || !chainId} onClick={() => void run(() => perform('fleet.policy.read'))}>Read fleet policy</button>
+      <button data-debug-id="owner-local-fleet-policy-save" disabled={busy || !bridge || !chainId} onClick={() => void run(() => perform('fleet.policy.set'))}>Save fleet policy</button>
+      {detail?.items?.some((item: any) => item.policy) && detail.next_cursor && <button data-debug-id="owner-local-fleet-policy-next" disabled={busy} onClick={() => void run(() => perform('fleet.policy.read', {cursor: detail.next_cursor}))}>Next fleet policy page</button>}
+    </fieldset>
     <fieldset className="border border-subtle p-3 my-3">
       <legend>Chain device access</legend>
       <p>The creator administers access. Recovery requires the currently enrolled paired root and an enabled policy. Grants expire within 30 days. Revocation stops future owner requests; it cannot erase previously decrypted copies.</p>

@@ -175,3 +175,16 @@ test('event history uses strict chain-scoped read contracts', async () => {
   for(const raw of ['{"seq":"0","offset":"0"}','{"seq":"1","offset":"-1"}','{"seq":"1","offset":"0","task_id":"other"}'])
     assert.throws(()=>ownerParse(raw,'history_fetch_payload'));
 });
+
+test('durable fleet policy is chain scoped and signed mutation differs from read authority', async () => {
+  const { ownerPayloadKind } = await import('../src/ui/api/ownerLocal.ts');
+  for (const method of ['fleet.policy.set', 'fleet.policy.read']) {
+    const command = { ...doc('command'), method, task_id:'', expected_revision:'0' };
+    ownerParse(JSON.stringify(command), 'command');
+    assert.throws(() => ownerParse(JSON.stringify({...command,task_id:'task_1'}), 'command'));
+    const readonly = {...grant,method,task_id:'',can_mutate:false};
+    assert.equal(ownerLiveAdmit(command, readonly, 1000n, 1n), method === 'fleet.policy.set' ? 'invalid_scope' : 'none');
+  }
+  assert.equal(ownerPayloadKind('fleet.policy.set'), 'fleet_policy_payload');
+  assert.equal(ownerPayloadKind('fleet.policy.read'), 'read_payload');
+});

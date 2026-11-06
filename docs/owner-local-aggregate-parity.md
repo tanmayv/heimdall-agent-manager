@@ -123,28 +123,28 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `provider_profile` | `src/hub/domain/taskchain.odin:269` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `provider` | `src/hub/domain/taskchain.odin:270` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `model` | `src/hub/domain/taskchain.odin:271` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
+| `provider_profile` | `src/hub/domain/taskchain.odin:269` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `provider` | `src/hub/domain/taskchain.odin:270` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `model` | `src/hub/domain/taskchain.odin:271` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
 
 ### Task_Chain_Fleet
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `provider_profile` | `src/hub/domain/taskchain.odin:300` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `task_chain_id` | `src/hub/domain/taskchain.odin:301` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `agent_id` | `src/hub/domain/taskchain.odin:302` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `capacity` | `src/hub/domain/taskchain.odin:303` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `min_warm` | `src/hub/domain/taskchain.odin:304` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `idle_ttl_seconds` | `src/hub/domain/taskchain.odin:307` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `bridge_models_json` | `src/hub/domain/taskchain.odin:308` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `provider` | `src/hub/domain/taskchain.odin:311` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `model` | `src/hub/domain/taskchain.odin:312` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `roles_json` | `src/hub/domain/taskchain.odin:314` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `bridge_id` | `src/hub/domain/taskchain.odin:317` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `paused_roles_json` | `src/hub/domain/taskchain.odin:321` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `created_at` | `src/hub/domain/taskchain.odin:322` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
-| `updated_at` | `src/hub/domain/taskchain.odin:323` | **PARTIAL** `src/lib/owner_local/migration_003.sql:49`. local_fleet is an exact launched-child assignment, not native fleet policy. local_assignment_history preserves changes. Native provider/model/budget/placement policy belongs in C1 metadata; automatic execution is M3. |
+| `provider_profile` | `src/hub/domain/taskchain.odin:300` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `task_chain_id` | `src/hub/domain/taskchain.odin:301` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `agent_id` | `src/hub/domain/taskchain.odin:302` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `capacity` | `src/hub/domain/taskchain.odin:303` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `min_warm` | `src/hub/domain/taskchain.odin:304` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `idle_ttl_seconds` | `src/hub/domain/taskchain.odin:307` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `bridge_models_json` | `src/hub/domain/taskchain.odin:308` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `provider` | `src/hub/domain/taskchain.odin:311` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `model` | `src/hub/domain/taskchain.odin:312` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `roles_json` | `src/hub/domain/taskchain.odin:314` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `bridge_id` | `src/hub/domain/taskchain.odin:317` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `paused_roles_json` | `src/hub/domain/taskchain.odin:321` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `created_at` | `src/hub/domain/taskchain.odin:322` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
+| `updated_at` | `src/hub/domain/taskchain.odin:323` | **PARTIAL** `src/contracts/owner_fleet_policy.odin:8` and `src/lib/owner_local/fleet_policy.odin:11` implement typed durable policy with normalized immutable V17 roles/models, signed chain CAS, original timestamps and ordinary read/list/UI consumption. Existing local_fleet child assignments stay independent. Native source-revision import linkage, account-owned resource/catalog validation at activation, and broader aggregate metadata remain required; automatic dispatch is M3. |
 
 ### Task_Event
 
@@ -1522,3 +1522,103 @@ binaries with this exact command:
 ```bash
 nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1c-hold-release-final-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 HEIMDALL_E2E_OWNER_BUDGET=1 HEIMDALL_E2E_OWNER_BUDGET_REWORK=1 HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
 ```
+
+
+## C1d attempt 2 fleet-policy continuation checkpoint (requirements revision 1)
+
+This is a **partial continuation checkpoint**, not a C1d submission or parity
+closure. Every remaining OPEN/PARTIAL row is binding. The coordinator clarified
+on 2026-11-06 that native lifecycle statuses must remain typed source snapshots
+until coherent M4 activation, including unlaunched targets; generic metadata
+edits may never rewrite leases, reviews, workflows or budget. C1e owns operational
+publication. C1d still owes the rest of its operational metadata and import work.
+
+The first implemented vertical is ordinary native fleet policy. The source
+authority is `src/hub/domain/taskchain.odin:269` and
+`src/hub/service/taskchain/taskchain_service.odin:1891`; editing a row preserves
+live leases (`src/hub/service/taskchain/taskchain_service.odin:1975`).
+`src/contracts/owner_fleet_policy.odin:8` preserves every field of the native
+fleet and bridge-model shapes, including original timestamp strings and raw
+nested JSON string values. Strict content parsing permits Unicode without
+relaxing ASCII-only signed authority envelopes
+(`src/contracts/owner_json.odin:31`). Duplicate decoded keys, unknown fields,
+noncanonical integer slots, invalid roles and duplicate roles fail closed.
+Integer policy values are exact i64 in the owner and raw signed/read documents;
+browser callers must retain raw response bytes for values above JS safe integer.
+
+V17 adds normalized immutable version/role/model rows and a current-version view;
+prior V1–V16 SQL files remain unchanged. Each version links to its accepted
+signed event, retaining actor/request/time/exact input in existing event history.
+`fleet.policy.set` is a chain-scoped mutation with ordinary encrypted fleet
+JSON; `fleet.policy.read` returns paged source-shaped current rows plus accepted
+sequence. Chain CAS protects writes; chain revision binds cursors. Creation
+timestamp changes for an existing agent conflict. Statement/COMMIT rejection
+rolls back policy, normalized children, event, receipt and chain revision.
+Both APIs retain the common current-read-scope-before-historical-replay rule.
+No live assignment/capability is created or retired by policy updates
+(`src/lib/owner_local/fleet_policy.odin:11`). Provider availability and
+resource ownership at actual activation remain for coherent later integration;
+this checkpoint proves structural policy validation, not dispatch readiness.
+
+The owner-local panel can read/save policy and follow list pages
+(`src/ui/components/taskchain/OwnerLocalPanel.tsx:107`). Its real rendered
+test uses the existing browser signer and actual disposable relay; CLI observes
+the UI's accepted update. No production deployment/restart/push was performed.
+
+Checks from the assigned C1d Workdir:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1d-policy-store-all
+# 159/159 PASS (sh_b34780fa63936e3d68cb314e0c7336f9)
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1d-policy-contracts-all
+# 23/23 PASS (same session)
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1d-fleet-policy-bins
+# All four PASS exit0 (sh_db93629275df855a44fa44ff79f72964)
+nix develop --command npm ci --ignore-scripts --no-audit --no-fund
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts
+# Typecheck + 21/21 PASS exit0 (sh_608419267e595908f0a85b1f5efed814)
+# Final panel typecheck PASS exit0 (sh_d437df6c3fb79292ece36cadca844ab7)
+```
+
+The new fourth policy storage regression reconstructs actual V16, tests schema
+collision and deferred-COMMIT rollback without changing old evidence or live
+capabilities, then migrates and proves a policy edit leaves the live child
+capability usable. Historical migration fixtures drop V17 additions before
+reconstruction and assert final schema17. Other retained packages were not
+rerun; changed contracts/store and the retained real demo supply relevant checks.
+
+Initial fixture generation overescaped JSON strings; corrected only the
+fixtures. Initial typecheck found the known absent pinned posthog-js dependency;
+npm ci restored it without a lockfile change. The first focused real demo
+attempted CLI before the disposable token was provisioned; its fixture now
+restarts the disposable owner first, following the existing budget-only harness.
+The next comparison used property-order-sensitive JSON.stringify; replaced it
+with exact key/value comparison. The final focused real CLI+rendered UI demo
+passes all steps with exit0 (`sh_5c88b33d7a19516629437728ac796615`):
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_FLEET_POLICY_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+The complete retained demo additionally uses this command (result recorded below):
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d-fleet-policy-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 HEIMDALL_E2E_OWNER_BUDGET=1 HEIMDALL_E2E_OWNER_BUDGET_REWORK=1 HEIMDALL_E2E_OWNER_FLEET_POLICY=1 HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+The additional content-parser regression rejects invalid UTF-8, overlong UTF-8 and malformed Unicode hex escapes with no production changes (1/1 PASS exit0, `sh_152b3b7b77c7647e81afcb7797b5a94a`):
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_NAMES=contracts.owner_content_json_rejects_invalid_utf8_and_hex_escapes -out:$HOME/.cache/heimdall-tests/c1d-content-invalid-bytes-red2
+```
+
+Final contract package: **24/24 PASS**, exit0 (`sh_aa12368c07f27a2b8dd507d319f13c72`):
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1d-policy-contracts-final24
+```
+
+The complete retained compatibility demo above passes all steps with **exit0**, 687 log lines (`sh_b8873369578548df11b58b8ef2286ba3`). Its `HEIMDALL_E2E_OWNER_FLEET_POLICY` flag is not a harness selector: the new fleet cases are proven separately by the explicit `HEIMDALL_E2E_OWNER_FLEET_POLICY_ONLY=1` focused CLI/rendered-UI demo. No new-case coverage is inferred from the retained run. Reuse these exact passing results; do not repeat unchanged suites.
+
+Final inventory and whitespace checks pass (`sh_7624208bf3a4b867b22d4bc9a54f076e`): `python3 scripts/check-owner-aggregate-parity.py` reports240 fields/23 structs; `git diff --check` passes; explicit `git diff --exit-code HEAD --` over schema.sql and migrations002–016 confirms those files remain unchanged. No unrelated boy-scout edits were made.

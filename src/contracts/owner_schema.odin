@@ -1100,6 +1100,13 @@ owner_fields_budget_state := [?]Owner_Field{
     {"execution", "id"},
     {"local_cutoff", "counter"},
 }
+Owner_Fleet_Policy_Payload :: struct {
+    body_cipher: string,
+}
+@(private)
+owner_fields_fleet_policy_payload := [?]Owner_Field{
+    {"body_cipher", "required_cipher"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1170,6 +1177,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "native_history_facet": return owner_fields_native_history_facet[:]
     case "budget_activation_payload": return owner_fields_budget_activation_payload[:]
     case "budget_state": return owner_fields_budget_state[:]
+    case "fleet_policy_payload": return owner_fields_fleet_policy_payload[:]
     }
     return nil
 }

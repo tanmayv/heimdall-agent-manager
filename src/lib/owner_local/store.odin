@@ -187,7 +187,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="fleet.policy.read" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -233,6 +233,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
+    case "fleet.policy.set":
+        code:=fleet_policy_set(s,c,body,seq)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "budget.activate":
         code:=budget_activate(s,c,p,seq)
         if code!="ok" do return fail(code)

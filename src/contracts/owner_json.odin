@@ -16,13 +16,26 @@ OWNER_JSON_MAX_DEPTH :: 32
 @(private = "file")
 Owner_JSON_Reader :: struct {
     raw: string,
+    content_strings: bool,
     previous_end: int,
     tokenizer: json.Tokenizer,
     token: json.Token,
 }
 
 owner_request_document :: proc(raw: string) -> (json.Value, bool) {
-    r := Owner_JSON_Reader{raw = raw, tokenizer = json.make_tokenizer(raw, .JSON, true)}
+    return owner_json_document(raw, false)
+}
+
+// Content lives inside authenticated encrypted payloads. Unlike authority
+// envelopes it may contain Unicode, while retaining strict grammar,
+// decoded-key uniqueness, depth and exact integer rules.
+owner_content_document :: proc(raw: string) -> (json.Value, bool) {
+    return owner_json_document(raw, true)
+}
+
+@(private = "file")
+owner_json_document :: proc(raw: string, content_strings: bool) -> (json.Value, bool) {
+    r := Owner_JSON_Reader{raw = raw, content_strings = content_strings, tokenizer = json.make_tokenizer(raw, .JSON, true)}
     if !owner_json_advance(&r) do return nil, false
     value, ok := owner_json_value(&r, 0)
     return value, ok && r.token.kind == .EOF
@@ -44,8 +57,14 @@ owner_json_advance :: proc(r: ^Owner_JSON_Reader) -> bool {
 }
 
 @(private = "file")
-owner_json_string :: proc(token: json.Token) -> (string, bool) {
+owner_json_string :: proc(token: json.Token, content_strings: bool) -> (string, bool) {
     text := token.text
+    if content_strings {
+        if !owner_content_string_valid(text) do return "", false
+        value: string
+        err := json.unmarshal_string(text, &value, allocator=context.temp_allocator)
+        return value, err == nil
+    }
     // The core JSON tokenizer also accepts backslash-apostrophe; RFC JSON does
     // not. Check escapes independently before the safe byte-preserving decoder.
     for i := 1; i < len(text) - 1; i += 1 {
@@ -80,7 +99,7 @@ owner_json_value :: proc(r: ^Owner_JSON_Reader, depth: int) -> (json.Value, bool
     token := r.token
     #partial switch token.kind {
     case .String:
-        s, ok := owner_json_string(token)
+        s, ok := owner_json_string(token, r.content_strings)
         if !ok || !owner_json_advance(r) do return nil, false
         return json.String(s), true
     case .Integer:
@@ -112,7 +131,7 @@ owner_json_value :: proc(r: ^Owner_JSON_Reader, depth: int) -> (json.Value, bool
         }
         for {
             if r.token.kind != .String do return nil, false
-            key, ok := owner_json_string(r.token)
+            key, ok := owner_json_string(r.token, r.content_strings)
             if !ok || !owner_json_advance(r) || r.token.kind != .Colon do return nil, false
             if key in o do return nil, false
             if !owner_json_advance(r) do return nil, false
@@ -152,4 +171,33 @@ owner_decimal_valid :: proc(s: string) -> bool {
     if s[0] < '1' || s[0] > '9' do return false
     for b in s do if b < '0' || b > '9' do return false
     return len(s) < 19 || s <= "9223372036854775807"
+}
+
+// Reject permissive tokenizer escapes and isolated UTF-16 surrogate halves
+// before the content decoder can replace or normalize them.
+@(private = "file")
+owner_content_string_valid :: proc(text: string) -> bool {
+    for i:=1; i<len(text)-1; i+=1 {
+        if text[i]<0x20 do return false
+        if text[i]!='\\' do continue
+        i+=1
+        if i>=len(text)-1 do return false
+        switch text[i] {
+        case '"','\\','/','b','f','n','r','t':
+        case 'u':
+            if i+4>=len(text)-1 do return false
+            unit,ok:=strconv.parse_u64(text[i+1:i+5],16)
+            if !ok do return false
+            i+=4
+            if unit>=0xdc00 && unit<=0xdfff do return false
+            if unit>=0xd800 && unit<=0xdbff {
+                if i+6>=len(text)-1 || text[i+1:i+3]!="\\u" do return false
+                low,valid:=strconv.parse_u64(text[i+3:i+7],16)
+                if !valid || low<0xdc00 || low>0xdfff do return false
+                i+=6
+            }
+        case: return false
+        }
+    }
+    return true
 }
