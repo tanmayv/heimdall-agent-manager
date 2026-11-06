@@ -3,7 +3,7 @@ import { prepareOwnerOperation, sendOwnerOperation, openOwnerReply, ownerRelayFi
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/deviceIdentity.ts';
 
-export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli }: any) {
+export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
   const chainId = ownerId('chain_'), taskId = ownerId('task_');
   const send = async (body: unknown) => {
@@ -91,5 +91,30 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   const unsigned = { ...relay, envelope: 'not-ciphertext' };
   let rejected = false; try { const reply = await cli(unsigned); rejected = reply?.code !== 'ok'; } catch { rejected = true; }
   expect(rejected, 'CLI rejects unsigned/invalid request file');
+
+  if (launchChild) {
+    const child = await launchChild();
+    try {
+      const fleet=await make('fleet.edit',{taskId,expectedRevision:'2',instanceId:child.instanceId,configurationRevision:'1'});
+      expect(JSON.parse((await invoke(fleet)).body).revision==='3','signed UI fleet edit pins actual launched child in owner SQLite');
+      const input={protocol_version:'1',chain_id:chainId,task_id:taskId,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:'3',operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
+      const claimed=child.call(input);
+      expect(claimed.status===0 && claimed.data?.code==='ok','real agent CLI claims local lease with exact-child proof: '+JSON.stringify({status:claimed.status,ok:claimed.reply?.ok,error:claimed.reply?.error,stderr:claimed.error}));
+      const result=JSON.parse(claimed.data.body);
+      const cap=JSON.parse(result.capability);
+      expect(cap.instance_id===child.instanceId && cap.chain_id===chainId && cap.task_id===taskId && cap.allowed_methods==='lease.claim,lease.heartbeat','owner-signed capability binds child and scope');
+      const replay=child.call(input);
+      expect(replay.status===0 && replay.data.replay && replay.data.body===claimed.data.body,'real CLI claim retry returns identical historical result');
+      const heartbeat={...input,operation_id:ownerId('op_'),method:'lease.heartbeat',capability:result.capability};
+      const renewed=child.call(heartbeat);
+      expect(renewed.status===0 && renewed.data.code==='ok','real agent CLI heartbeat renews bounded local deadline');
+      const observation=JSON.parse((await invoke(await make('runtime.read',{taskId,expectedRevision:'0'}))).body);
+      expect(observation.leases.length===1 && observation.leases[0][0]===input.lease_id && observation.leases[0][4]==='2','UI owner relay observes exact lease and renewed deadline version');
+      await inspectHub(chainId);
+      await child.stop();
+      const stale=child.call(heartbeat);
+      expect(stale.status!==0,'stopped child token cannot replay or renew local lease');
+    } finally { await child.stop(); }
+  }
   return { chainId, taskId };
 }

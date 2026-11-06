@@ -15,7 +15,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     legacy:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
     testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
-      DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
+      DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
       DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
       DROP TABLE local_grants; DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis;
       DROP TABLE task_chains; DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
@@ -30,7 +30,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
       (SELECT title FROM task_chains),(SELECT result_json FROM command_receipts),
       (SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),database_id FROM runtime_database`)
     if testing.expect(t,ok && len(rows)==1) {
-        expected:=[7]string{"2","8","1","old title","historical result","signed old payload","settled"}
+        expected:=[7]string{"3","8","1","old title","historical result","signed old payload","settled"}
         for value,i in expected do testing.expect_value(t,rows[0][i],value)
         testing.expect_value(t,len(rows[0][7]),32)
     }
@@ -49,7 +49,7 @@ additive_migration_preserves_v1_and_rolls_back_partial_ddl :: proc(t:^testing.T)
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(broken.path,context.temp_allocator),&legacy),0)
     // Force a V1 migration failure after several ALTERs. The transaction must
     // undo both DDL and the migration marker; subsequent repair can retry.
-    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF; DROP TABLE runtime_intents; DROP TABLE local_changes;
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF; DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet; DROP TABLE runtime_intents; DROP TABLE local_changes;
       DROP TABLE command_receipts; DROP TABLE task_comments; DROP TABLE tasks; DROP TABLE local_grants;
       DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis; DROP TABLE task_chains;
       DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
@@ -159,7 +159,7 @@ real_commit_failure_and_sqlite_full_never_report_success :: proc(t:^testing.T) {
     testing.expect(t,invoke(f,c,p).code=="ok","next transaction remains usable")
     testing.expect(t,exec(f.store.db,"CREATE TABLE failure_pages(body BLOB)"))
     pages,_:=query(f.store.db,"PRAGMA page_count")
-    testing.expect(t,exec(f.store.db,fmt.tprintf("PRAGMA max_page_count=%s",pages[0][0])))
+    testing.expect(t,exec(f.store.db,fmt.tprintf("PRAGMA max_page_count=%d",number(pages[0][0])+4)))
     testing.expect(t,exec(f.store.db,`CREATE TRIGGER disk_full AFTER INSERT ON command_receipts
       BEGIN INSERT INTO failure_pages VALUES(zeroblob(8388608)); END;`))
     c=command(f,"task.comment","disk_full","task",p,"2")
@@ -169,7 +169,7 @@ real_commit_failure_and_sqlite_full_never_report_success :: proc(t:^testing.T) {
     testing.expect(t,exec(f.store.db,"DROP TRIGGER disk_full; PRAGMA max_page_count=1073741823"))
     testing.expect_value(t,invoke(f,c,p).code,"ok")
     pages,_=query(f.store.db,"PRAGMA page_count")
-    testing.expect(t,exec(f.store.db,fmt.tprintf("PRAGMA max_page_count=%s",pages[0][0])))
+    testing.expect(t,exec(f.store.db,fmt.tprintf("PRAGMA max_page_count=%d",number(pages[0][0])+4)))
     testing.expect(t,exec(f.store.db,`CREATE TRIGGER first_write_full BEFORE INSERT ON task_comments
       BEGIN INSERT INTO failure_pages VALUES(zeroblob(8388608)); END;`))
     c=command(f,"task.comment","first_write_full","task",p,"3")
@@ -372,4 +372,46 @@ retention_quota_counts_tombstones_and_keeps_historical_replay :: proc(t:^testing
     // The existing create result remains available despite full retention.
     p=encode(doc(map[string]string{"operation_id"="task"}))
     testing.expect_value(t,invoke(f,command(f,"receipt.read","receipt_at_capacity","",p,"0"),p).code,"ok")
+}
+
+@(test)
+v2_runtime_identity_upgrade_is_atomic_and_preserves_clocks_and_intents :: proc(t:^testing.T) {
+    saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
+    f:=fixture(t);defer destroy(f)
+    close(&f.store)
+    legacy:DB
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
+    testing.expect(t,exec(legacy,`PRAGMA foreign_keys=OFF;
+      DROP TABLE lease_receipt_pins; DROP TABLE local_leases; DROP TABLE local_fleet;
+      DROP TABLE runtime_intents; DROP TABLE local_changes; DROP TABLE command_receipts;
+      DROP TABLE operation_tombstones; DROP TABLE task_comments; DROP TABLE tasks;
+      DROP TABLE local_grants; DROP TRIGGER genesis_immutable_delete; DROP TABLE chain_genesis;
+      DROP TABLE task_chains; DROP TABLE runtime_database; DROP TABLE schema_migrations;`))
+    testing.expect(t,exec(legacy,string(SCHEMA)))
+    testing.expect(t,exec(legacy,string(MIGRATION_002)))
+    testing.expect(t,exec(legacy,INTENT_IDENTITY_TRIGGER))
+    testing.expect(t,exec(legacy,`CREATE TABLE schema_migrations(singleton INTEGER PRIMARY KEY,version INTEGER NOT NULL);
+      INSERT INTO schema_migrations VALUES(1,2);
+      INSERT INTO runtime_database(singleton,account_id,owner_bridge_id,owner_key_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash,database_id)
+       VALUES(1,'account','bridge','bridge_key',7,5,4000,2,'head','stable_database');
+      INSERT INTO task_chains VALUES('chain','device','device','preserved title','preserved description',1);
+      INSERT INTO tasks VALUES('chain','task','preserved task','preserved body',1);
+      INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq)
+       VALUES('device','old_operation','chain','','chain.create','digest','device',2000,'original receipt',5);
+      INSERT INTO runtime_intents(intent_id,chain_id,commit_seq,payload_json,principal_id,operation_id,state,attempts,claim_incarnation)
+       VALUES('old_intent','chain',5,'original signed intent','device','old_operation','claimed',1,7);
+      CREATE VIEW local_fleet AS SELECT 1;`))
+    testing.expect_value(t,sqlite3_close(legacy),0)
+    testing.expect(t,!open(&f.store,f.path,"account","bridge","bridge_key"),"collision rolls back runtime table rebuild too")
+    testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&legacy),0)
+    rows,ok:=query(legacy,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash FROM runtime_database")
+    testing.expect(t,ok && len(rows)==1 && rows[0][0]=="2" && rows[0][1]=="2" && rows[0][2]=="stable_database")
+    testing.expect(t,exec(legacy,"DROP VIEW local_fleet"))
+    testing.expect_value(t,sqlite3_close(legacy),0)
+    testing.expect(t,open(&f.store,f.path,"account","bridge","bridge_key"))
+    rows,ok=query(f.store.db,"SELECT schema_version,(SELECT version FROM schema_migrations),database_id,incarnation,commit_seq,clock_high_ms,directory_version,directory_hash,(SELECT body FROM tasks),(SELECT payload_json FROM runtime_intents),(SELECT state FROM runtime_intents),(SELECT attempts FROM runtime_intents),(SELECT claim_incarnation FROM runtime_intents) FROM runtime_database")
+    expected:=[13]string{"3","3","stable_database","8","5","4000","2","head","preserved body","original signed intent","pending","1","0"}
+    if testing.expect(t,ok && len(rows)==1) do for value,i in expected do testing.expect_value(t,rows[0][i],value)
+    testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET account_id='other'"),"rebuilt identity guard remains active")
+    testing.expect(t,!exec(f.store.db,"UPDATE runtime_database SET commit_seq=0"),"rebuilt monotonic guard remains active")
 }

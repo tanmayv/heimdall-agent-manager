@@ -9,6 +9,7 @@ export interface OwnerOperation { command: string; payload: string; genesis: str
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
+  instanceId?: string; configurationRevision?: string; enabled?: boolean;
 }
 export const ownerId = (prefix: string) => prefix + crypto.randomUUID().replaceAll('-', '');
 const zeros = '0'.repeat(128);
@@ -33,6 +34,7 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     payload = { genesis_digest: await ownerDigest('genesis', g), title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
   } else if (method === 'task.create') payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
   else if (method === 'receipt.read') payload = { operation_id: input.operationId ?? '' };
   else payload = { cursor: input.cursor ?? '', limit: '20' };
   const payloadRaw = JSON.stringify(payload);

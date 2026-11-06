@@ -25,11 +25,14 @@ compact_receipts :: proc(s:^Store,now:i64,limit:=100) -> (int,bool) {
     rows,ok:=query(s.db,`SELECT principal_id,operation_id FROM command_receipts r
       WHERE created_ms<=? AND request_expires_ms<? AND NOT EXISTS(SELECT 1 FROM runtime_intents i
        WHERE i.principal_id=r.principal_id AND i.operation_id=r.operation_id AND i.state!='settled')
+      AND NOT EXISTS(SELECT 1 FROM lease_receipt_pins p JOIN local_leases l ON l.lease_id=p.lease_id WHERE p.principal_id=r.principal_id AND p.operation_id=r.operation_id AND l.retired_seq IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM local_fleet f WHERE f.principal_id=r.principal_id AND f.operation_id=r.operation_id)
       ORDER BY commit_seq LIMIT ?`,fmt.tprintf("%d",now-RECEIPT_RETENTION_MS),fmt.tprintf("%d",now),fmt.tprintf("%d",limit))
     if !ok do return 0,false
     for row in rows {
         if _,ok=query(s.db,`INSERT INTO operation_tombstones SELECT principal_id,operation_id,chain_id,task_id,method,
           input_digest,digest_key_id,request_expires_ms,commit_seq FROM command_receipts WHERE principal_id=? AND operation_id=?`,row[0],row[1]);!ok do return 0,false
+        if _,ok=query(s.db,"DELETE FROM lease_receipt_pins WHERE principal_id=? AND operation_id=?",row[0],row[1]);!ok do return 0,false
         if _,ok=query(s.db,"DELETE FROM command_receipts WHERE principal_id=? AND operation_id=?",row[0],row[1]);!ok do return 0,false
     }
     if _,ok=query(s.db,"UPDATE runtime_database SET clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",now));!ok do return 0,false

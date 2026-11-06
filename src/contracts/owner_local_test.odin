@@ -164,3 +164,19 @@ owner_vertical_slice_methods_and_creation_binding :: proc(t: ^testing.T) {
         testing.expect_value(t, owner_authenticate_command(o, payload, key, g, 1000), Owner_Auth_Error.Invalid_Scope)
     }
 }
+
+@(test)
+owner_runtime_proof_vectors_bind_all_child_fields :: proc(t:^testing.T) {
+    f:=owner_fixture(t)
+    _,bridge:=owner_fixture_keys(f)
+    for kind in ([2]string{"capability","lease_command"}) {
+        o:=owner_fixture_document(t,f,kind)
+        testing.expect(t,owner_verify_signature(kind,o,"signature",bridge))
+        for name in ([8]string{"account_id","chain_id","task_id","lease_id","instance_id","launch_epoch","token_generation","configuration_revision"}) {
+            original:=o[name]
+            if name=="token_generation" {o[name]=json.String(strings.repeat("b",64,context.temp_allocator))} else if name=="configuration_revision" {o[name]=json.String("4")} else {o[name]=json.String("other")}
+            testing.expectf(t,!owner_verify_signature(kind,o,"signature",bridge),"tampered %s %s",kind,name)
+            o[name]=original
+        }
+    }
+}

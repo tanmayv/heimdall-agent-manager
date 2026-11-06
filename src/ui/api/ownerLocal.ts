@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read']);
+const methods = new Set(['chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -19,6 +19,8 @@ function fieldValid(s: string, kind: string): boolean {
     case 'hash': return /^[0-9a-f]{64}$/.test(s);
     case 'signature': return /^[0-9a-f]{128}$/.test(s);
     case 'method': return methods.has(s);
+    case 'lease_method': return s === 'lease.claim' || s === 'lease.heartbeat';
+    case 'lease_methods': return s === 'lease.claim,lease.heartbeat';
     case 'flag': return s === '0' || s === '1';
     case 'relay_cipher':
       if (s.length > 196608) return false;
@@ -39,7 +41,7 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   if (Object.keys(o).length !== fields.length) return false;
   for (const [name, type] of fields) if (!Object.hasOwn(o, name) || typeof o[name] !== 'string' || !fieldValid(o[name], type)) return false;
   if (kind === 'command') {
-    if (['task.create', 'task.comment', 'task.read'].includes(String(o.method)) !== (o.task_id !== '')) return false;
+    if (['task.create', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read'].includes(String(o.method)) !== (o.task_id !== '')) return false;
   }
   if (kind === 'registry' && o.deleted === '0') {
     if (o.task_id === '') {
@@ -48,6 +50,8 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
   }
   if (kind === 'registry' && o.deleted === '1' && (o.chain_title_cipher !== '' || o.chain_description_cipher !== '' || o.task_title_cipher !== '')) return false;
   if (kind === 'receipt' && o.result_code === 'retired' && o.result_cipher !== '') return false;
+  if (kind === 'capability' && BigInt(String(o.expires_ms)) > BigInt(String(o.hard_ms))) return false;
+  if (kind === 'lease_input' && ((o.method === 'lease.claim') !== (o.capability === ''))) return false;
   if (kind === 'read_payload' && BigInt(String(o.limit)) > 100n) return false;
   return true;
 }
@@ -56,7 +60,8 @@ export function ownerPayloadKind(method: string): OwnerKind {
     case 'chain.create': return 'chain_create_payload';
     case 'task.create': return 'task_create_payload';
     case 'task.comment': return 'comment_payload';
-    case 'chain.read': case 'task.read': return 'read_payload';
+    case 'fleet.edit': return 'fleet_payload';
+    case 'chain.read': case 'task.read': case 'runtime.read': return 'read_payload';
     case 'receipt.read': return 'receipt_payload';
     default: throw new SyntaxError('Unsupported owner method');
   }
@@ -129,7 +134,7 @@ export function ownerLiveAdmit(o: OwnerCommand, grant: OwnerReadGrant, nowMs: bi
   if (o.immutable_owner_bridge !== grant.owner_bridge_id) return 'owner_mismatch';
   const expires = BigInt(o.request_expires_ms);
   if (expires <= nowMs || expires - nowMs > OWNER_REQUEST_TTL_MS) return 'expired';
-  const read = ['chain.read', 'task.read', 'receipt.read'].includes(o.method);
+  const read = ['chain.read', 'task.read', 'receipt.read', 'runtime.read'].includes(o.method);
   if (!read && !grant.can_mutate) return 'invalid_scope';
   if (currentRevision < 0n) return 'stale_revision';
   if (read && o.expected_revision === '0') return 'none';

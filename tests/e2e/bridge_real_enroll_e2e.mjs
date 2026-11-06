@@ -70,7 +70,8 @@ const HOME = REAL_HOME ? os.homedir() : path.join(ROOT, 'home');
 scrubHeimdallEnv();
 if (REAL_HOME) refuseLegacyInstall(HOME);
 fs.mkdirSync(HOME, { recursive: true });
-const ENV = { ...process.env, HOME, USERPROFILE: HOME, APPDATA: path.join(HOME, 'AppData'), LOCALAPPDATA: path.join(HOME, 'Local'), XDG_CONFIG_HOME: path.join(HOME, '.config') };
+const ENV = { ...process.env, PATH: ROOT + path.delimiter + process.env.PATH, HOME, USERPROFILE: HOME, APPDATA: path.join(HOME, 'AppData'), LOCALAPPDATA: path.join(HOME, 'Local'), XDG_CONFIG_HOME: path.join(HOME, '.config') };
+if (process.env.HEIMDALL_E2E_PTY_BIN) ENV.HEIMDALL_HAM_PTY_HOST_BIN=process.env.HEIMDALL_E2E_PTY_BIN;
 const children = [];
 const CREATED = []; // bridge ids whose scoped credentials this run wrote
 
@@ -236,6 +237,26 @@ async function main() {
     S.cfgA = await newBridgeDirs('bridge-a');
     S.a = await enroll(hubA, S.apA, S.cfgA);
   });
+  if (process.env.HEIMDALL_E2E_OWNER_LEASE === '1') {
+    const fixture = path.join(ROOT, 'owner-lease-provider');
+    fs.writeFileSync(fixture, '#!/usr/bin/env python3\n' +
+      'import os,sys,json,subprocess,time\n' +
+      "if '--version' in sys.argv: print('codex-cli 0.162.0');sys.exit()\n" +
+      "if 'plugin' in sys.argv: print('{\"installed\":[],\"available\":[]}');sys.exit()\n" +
+      'i=os.environ.get("HEIMDALL_AGENT_INSTANCE_ID","unknown")\n' +
+      'p=' + JSON.stringify(ROOT) + '+"/"+i+".env.json"\n' +
+      'open(p,"w").write(json.dumps({k:v for k,v in os.environ.items() if k.startswith("HEIMDALL_")}))\n' +
+      'subprocess.run([' + JSON.stringify(process.env.HEIMDALL_E2E_CTL_BIN) + ',"start-success"])\n' +
+      'print("Owner lease synthetic child ready",flush=True)\n' +
+      'while True: time.sleep(1)\n', { mode: 0o700 });
+    const configured = spawnSync('python3', ['-c', `import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+c.execute("update provider_catalog set binary='owner-lease-provider',base_args='[]',yolo_args='[]',ask_args='[]',extension='{}' where provider='codex'")
+c.execute("update provider_catalog_meta set catalog_etag='owner-lease-synthetic'")
+c.commit()
+`, path.join(ROOT, 'hub-a', 'hub.db')], { encoding: 'utf8' });
+    if (configured.status !== 0) throw new Error(configured.stderr);
+  }
   await step('2 the enrolled runtime starts bound to hub A and connects', async () => {
     const r = await runtime(S.cfgA, [], online(hubA, S.a.bridgeId));
     expect(!r.refused && !r.timeout, `runtime A is online on hub A (${r.refused ? 'refused: ' + r.out : 'ok'})`);
@@ -261,6 +282,41 @@ async function main() {
           const response = JSON.parse(called.stdout);
           return response.data?.data ?? response.data;
         },
+        launchChild: process.env.HEIMDALL_E2E_OWNER_LEASE === '1' ? async () => {
+          const discovered = await http(hubA, 'POST', '/api/v1/bridges/' + S.a.bridgeId + '/providers/discover', {body:{}});
+          expect(discovered.status === 200, 'synthetic provider discovered on disposable Bridge');
+          const enabled = await http(hubA, 'PUT', '/api/v1/bridges/' + S.a.bridgeId + '/providers/codex', {body:{enabled:true}});
+          expect(enabled.status === 200, 'synthetic provider enabled');
+          const created = await http(hubA, 'POST', '/api/v1/agents', {body:{name:'Owner lease fixture',slug:'owner-lease-fixture',instructions:'Disposable integration fixture'}});
+          expect(created.status === 200 || created.status === 201, 'created disposable agent');
+          const models = spawnSync('python3', ['-c', 'import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute("select model_id from provider_models where provider=\'codex\' and state=\'active\' order by rank limit 1").fetchone()[0])', path.join(ROOT,'hub-a','hub.db')], {encoding:'utf8'});
+          if (models.status !== 0) throw new Error(models.stderr);
+          const started = await http(hubA, 'POST', '/api/v1/agent-instances', {body:{agent_id:created.data.agent_id,bridge_id:S.a.bridgeId,provider:'codex',model:models.stdout.trim(),display_name:'Owner lease child'}});
+          expect(started.status === 200 || started.status === 201, 'started actual synthetic PTY child');
+          const iid=started.data.agent_instance_id;
+          let socket=path.join(S.cfgA.local,'pty-host-'+S.a.bridgeId+'.sock');
+          if (Buffer.byteLength(socket)>103) {
+            let hash=14695981039346656037n;
+            for (const b of Buffer.from(socket)) hash=BigInt.asUintN(64,(hash^BigInt(b))*1099511628211n);
+            const tmp=ENV.TMPDIR?.startsWith('/')?ENV.TMPDIR.replace(/\/+$/,''):'/tmp';
+            socket=path.join(tmp,'heimdall-'+process.getuid(),hash.toString(16).padStart(16,'0')+'.sock');
+          }
+          children.push({kill:()=>spawnSync(process.env.HEIMDALL_E2E_PTY_BIN,['--socket',socket,'stop'],{env:ENV,timeout:5000})});
+          let env;
+          for (const deadline=Date.now()+45000;;await sleep(200)) {
+            try {env=JSON.parse(fs.readFileSync(path.join(ROOT,iid+'.env.json'),'utf8'));} catch {}
+            const state=await http(hubA,'GET','/api/v1/agent-instances/'+iid);
+            if (env && state.data?.runtime_status==='running') break;
+            if (Date.now()>deadline) throw new Error('synthetic child never became ready: '+JSON.stringify(state));
+          }
+          const call = (input) => {
+            const filename=path.join(ROOT,'lease-input.json');fs.writeFileSync(filename,JSON.stringify(input),{mode:0o600});
+            const called=spawnSync(process.env.HEIMDALL_E2E_CTL_BIN,['agent','task-chain','owner-local','lease','--request-file',filename],{env:{...ENV,...env},encoding:'utf8',timeout:20000});
+            const reply=called.stdout.trim()?JSON.parse(called.stdout):{};
+            return {status:called.status,reply,data:reply.data?.data ?? reply.data,error:called.stderr};
+          };
+          return {instanceId:iid,call,stop:async()=>{await http(hubA,'POST','/api/v1/agent-instances/'+iid+'/stop',{body:{}});await sleep(1500);}};
+        } : undefined,
         stopOwner: async () => {
           S.runA.kill(); await sleep(1500);
           // Seed an authorized disposable transport instance, bypassing provider

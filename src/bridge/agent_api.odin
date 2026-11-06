@@ -55,6 +55,8 @@ Bridge_Agent_Route :: struct {
 // method not in the allowlist. Path/query slices are temp-allocated.
 bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	switch method {
+    case "agent.owner_local.lease":
+        return Bridge_Agent_Route{kind=.Local,local_op="owner_local.lease"}
 	// ---- bridge discovery -------------------------------------------------
 	case "agent.bridge.list":
 		// scope hub|configured|all (default all) decided bridge-side; the local
@@ -321,7 +323,7 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 // (start_success, activity, permission, rest.request) are also allowed.
 bridge_agent_method_allowed :: proc(method: string) -> bool {
 	switch method {
-	case "agent.start_success", "agent.activity.report",
+	case "agent.owner_local.lease", "agent.start_success", "agent.activity.report",
 	     "agent.permission.request", "agent.permission.reply",
 	     "agent.extension.event", "agent.extension.status", "agent.extension.permission", "agent.extension.permission.cancel",
 	     "agent.rest.request",
@@ -437,6 +439,7 @@ bridge_agent_rewrite_params :: proc(method, params: string) -> string {
 // were removed in favor of the star topology), search (hub relay + local
 // decrypted task-chain hits), and the shell/vault/telemetry ops below.
 bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+    if op=="owner_local.lease" do return bridge_owner_agent(request_id,params,rec)
 	if op == "bridge.list" {
 		scope := strings.trim_space(bridge_local_extract_json_string(params, "scope", "all"))
 		if scope == "" do scope = "all"

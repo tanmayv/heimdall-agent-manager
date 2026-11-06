@@ -32,7 +32,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read": return true
+    case "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read": return true
     }
     return false
 }
@@ -51,6 +51,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "hash": return owner_hex(s, 64)
     case "signature": return owner_hex(s, 128)
     case "method": return owner_method_valid(s)
+    case "lease_method": return s=="lease.claim" || s=="lease.heartbeat"
+    case "lease_methods": return s=="lease.claim,lease.heartbeat"
     case "flag": return s == "0" || s == "1"
     case "relay_cipher":
         if len(s)>196608 do return false
@@ -83,7 +85,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "task.create" || method == "task.comment" || method == "task.read") != (task != "") do return false
+        if (method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read") != (task != "") do return false
     }
     if kind == "registry" && owner_string(o, "deleted") == "0" {
         if owner_string(o, "task_id") == "" {
@@ -96,6 +98,12 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
         if owner_string(o, "chain_title_cipher") != "" || owner_string(o, "chain_description_cipher") != "" || owner_string(o, "task_title_cipher") != "" do return false
     }
     if kind == "receipt" && owner_string(o, "result_code") == "retired" && owner_string(o, "result_cipher") != "" do return false
+    if kind=="capability" {
+        expires,_:=strconv.parse_i64(owner_string(o,"expires_ms"))
+        hard,_:=strconv.parse_i64(owner_string(o,"hard_ms"))
+        if expires>hard do return false
+    }
+    if kind=="lease_input" && ((owner_string(o,"method")=="lease.claim") != (owner_string(o,"capability")=="")) do return false
     if kind == "read_payload" {
         limit, _ := strconv.parse_i64(owner_string(o, "limit"))
         if limit > 100 do return false
@@ -108,7 +116,8 @@ owner_payload_kind :: proc(method: string) -> string {
     case "chain.create": return "chain_create_payload"
     case "task.create": return "task_create_payload"
     case "task.comment": return "comment_payload"
-    case "chain.read", "task.read": return "read_payload"
+    case "fleet.edit": return "fleet_payload"
+    case "chain.read", "task.read", "runtime.read": return "read_payload"
     case "receipt.read": return "receipt_payload"
     }
     return ""
@@ -148,8 +157,8 @@ owner_digest :: proc(kind: string, o: json.Object) -> (string, bool) {
 
 // These records are TRUSTED INPUT from current enrolled directory verification and
 // local grant storage, never deserialized from an envelope or granted by a vault key.
-// This slice accepts human device commands only. Agent/executor commands fail closed
-// until capability and runtime fencing contracts are introduced.
+// This verifier remains device-only. Local agent commands use the separate
+// lease_command/capability domains and require Bridge-authenticated child facts.
 Owner_Verified_Key :: struct {
     account_id, principal_id, key_id, public_key: string,
     kind: string, // "device" or "bridge"; never "content"
@@ -219,7 +228,7 @@ owner_live_admit :: proc(o: json.Object, grant: Owner_Read_Grant, now_ms, curren
     expires, _ := strconv.parse_i64(owner_string(o, "request_expires_ms"))
     if expires <= now_ms || expires - now_ms > OWNER_REQUEST_TTL_MS do return .Expired
     method := owner_string(o, "method")
-    read := method == "chain.read" || method == "task.read" || method == "receipt.read"
+    read := method == "chain.read" || method == "task.read" || method == "receipt.read" || method == "runtime.read"
     if !read && !grant.can_mutate do return .Invalid_Scope
     expected, _ := strconv.parse_i64(owner_string(o, "expected_revision"))
     if current_revision < 0 do return .Stale_Revision

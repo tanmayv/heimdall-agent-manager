@@ -1,8 +1,7 @@
 package owner_local
 
-import "core:fmt"
-
-SCHEMA_VERSION :: 2
+SCHEMA_VERSION :: 3
+MIGRATION_003 :: #load("migration_003.sql")
 MIGRATION_002 :: #load("migration_002.sql")
 
 // Called only while the lifetime writer lock is held, before exposing Store.
@@ -36,7 +35,11 @@ migrate :: proc(db:DB) -> bool {
         }
         if !exec(db,INTENT_IDENTITY_TRIGGER) do return false
         if !exec(db,"CREATE TRIGGER intent_settled_immutable BEFORE UPDATE ON runtime_intents WHEN OLD.state='settled' BEGIN SELECT RAISE(ABORT,'settled intent'); END;") do return false
-        if _,ok=query(db,"UPDATE schema_migrations SET version=? WHERE singleton=1",fmt.tprintf("%d",SCHEMA_VERSION));!ok do return false
+        if _,ok=query(db,"UPDATE schema_migrations SET version=? WHERE singleton=1","2");!ok do return false
+    }
+    if version<=2 {
+        if !exec(db,string(MIGRATION_003)) do return false
+        if !exec(db,"UPDATE schema_migrations SET version=3 WHERE singleton=1") do return false
     }
     if !exec(db,"COMMIT") do return false
     committed=true

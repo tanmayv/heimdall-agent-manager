@@ -207,6 +207,122 @@ owner_fields_publication := [?]Owner_Field{
     {"genesis", "document"},
     {"registry", "document"},
 }
+Owner_Fleet_Payload :: struct {
+    instance_id: string,
+    configuration_revision: string,
+    enabled: string,
+}
+@(private)
+owner_fields_fleet_payload := [?]Owner_Field{
+    {"instance_id", "id"},
+    {"configuration_revision", "positive"},
+    {"enabled", "flag"},
+}
+Owner_Capability :: struct {
+    protocol_version: string,
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    task_id: string,
+    lease_id: string,
+    instance_id: string,
+    launch_epoch: string,
+    run_count: string,
+    token_generation: string,
+    configuration_revision: string,
+    requirements_revision: string,
+    expires_ms: string,
+    hard_ms: string,
+    allowed_methods: string,
+    key_id: string,
+    signature: string,
+}
+@(private)
+owner_fields_capability := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"lease_id", "id"},
+    {"instance_id", "id"},
+    {"launch_epoch", "id"},
+    {"run_count", "positive"},
+    {"token_generation", "hash"},
+    {"configuration_revision", "positive"},
+    {"requirements_revision", "positive"},
+    {"expires_ms", "positive"},
+    {"hard_ms", "positive"},
+    {"allowed_methods", "lease_methods"},
+    {"key_id", "id"},
+    {"signature", "signature"},
+}
+Owner_Lease_Command :: struct {
+    protocol_version: string,
+    account_id: string,
+    owner_bridge_id: string,
+    chain_id: string,
+    task_id: string,
+    lease_id: string,
+    instance_id: string,
+    launch_epoch: string,
+    run_count: string,
+    token_generation: string,
+    configuration_revision: string,
+    expected_revision: string,
+    operation_id: string,
+    method: string,
+    request_expires_ms: string,
+    capability_digest: string,
+    key_id: string,
+    signature: string,
+}
+@(private)
+owner_fields_lease_command := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"account_id", "id"},
+    {"owner_bridge_id", "id"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"lease_id", "id"},
+    {"instance_id", "id"},
+    {"launch_epoch", "id"},
+    {"run_count", "positive"},
+    {"token_generation", "hash"},
+    {"configuration_revision", "positive"},
+    {"expected_revision", "counter"},
+    {"operation_id", "id"},
+    {"method", "lease_method"},
+    {"request_expires_ms", "positive"},
+    {"capability_digest", "hash"},
+    {"key_id", "id"},
+    {"signature", "signature"},
+}
+Owner_Lease_Input :: struct {
+    protocol_version: string,
+    chain_id: string,
+    task_id: string,
+    lease_id: string,
+    configuration_revision: string,
+    expected_revision: string,
+    operation_id: string,
+    method: string,
+    request_expires_ms: string,
+    capability: string,
+}
+@(private)
+owner_fields_lease_input := [?]Owner_Field{
+    {"protocol_version", "version"},
+    {"chain_id", "id"},
+    {"task_id", "id"},
+    {"lease_id", "id"},
+    {"configuration_revision", "positive"},
+    {"expected_revision", "counter"},
+    {"operation_id", "id"},
+    {"method", "lease_method"},
+    {"request_expires_ms", "positive"},
+    {"capability", "optional_document"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -222,6 +338,10 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "relay": return owner_fields_relay[:]
     case "request": return owner_fields_request[:]
     case "publication": return owner_fields_publication[:]
+    case "fleet_payload": return owner_fields_fleet_payload[:]
+    case "capability": return owner_fields_capability[:]
+    case "lease_command": return owner_fields_lease_command[:]
+    case "lease_input": return owner_fields_lease_input[:]
     }
     return nil
 }

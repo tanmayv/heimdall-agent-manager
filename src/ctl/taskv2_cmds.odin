@@ -1334,6 +1334,18 @@ print_help_workflow :: proc() {
 // Relays an opaque human-device-signed request. The instance token authenticates
 // transport only; it cannot sign, create grants, or authorize owner mutations.
 ctl_v2_owner_local :: proc(endpoint,token:string,tokens,args:[]string) {
+    if pos(tokens,1)=="lease" {
+        path:=option_value(args,"--request-file","")
+        if path=="" do ctl_print_error_exit("--request-file is required")
+        bytes,err:=os.read_entire_file(path,context.temp_allocator)
+        if err!=nil do ctl_print_error_exit("cannot read owner-local lease input")
+        if _,valid:=contracts.owner_parse(string(bytes),"lease_input");!valid do ctl_print_error_exit("invalid owner-local lease input")
+        response,sent:=ctl_agent_local_call(endpoint,token,"agent.owner_local.lease",string(bytes))
+        if !sent do ctl_print_error_exit("local Bridge endpoint is not reachable")
+        fmt.println(response)
+        if strings.contains(response,`"ok":false`) do os.exit(1)
+        return
+    }
     if pos(tokens,1)!="relay" { ctl_print_error_exit("usage: task-chain owner-local relay --request-file <browser-export.json>") }
     path:=option_value(args,"--request-file","")
     if path=="" do ctl_print_error_exit("--request-file is required")

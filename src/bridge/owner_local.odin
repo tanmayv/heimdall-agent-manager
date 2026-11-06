@@ -118,7 +118,19 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
         genesis["owner_signature"]=json.String(signature)
         genesis_raw=bridge_owner_json(genesis)
     }
-    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign})
+    sync.mutex_lock(&bridge_startup_io_mutex)
+    sync.mutex_lock(&bridge_local_token_mutex)
+    fleet_child:owner.Child
+    if contracts.owner_string(command,"method")=="fleet.edit" {
+        p,ok:=contracts.owner_parse(payload,"fleet_payload")
+        if !ok { sync.mutex_unlock(&bridge_local_token_mutex);sync.mutex_unlock(&bridge_startup_io_mutex);return }
+        current:bool
+        fleet_child,current=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
+        if !current do fleet_child={} // Historical device receipts remain readable after child exit.
+    }
+    result:=owner.execute(&bridge_owner_store,command_raw,payload,genesis_raw,key,owner_key,version,head,now,&kr,owner.Signer{nil,bridge_owner_sign},fleet_child)
+    sync.mutex_unlock(&bridge_local_token_mutex)
+    sync.mutex_unlock(&bridge_startup_io_mutex)
     digest,_:=contracts.owner_digest("command",command)
     response:=Owner_Result_Plain{request_id,digest,result.code,result.body,fmt.tprintf("%d",result.seq),result.replay}
     sealed,sealed_ok:=bridge_encrypt_vault_text(bridge_owner_json(response),&kr,context.temp_allocator)

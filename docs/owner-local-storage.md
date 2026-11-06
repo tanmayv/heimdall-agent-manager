@@ -61,25 +61,23 @@ Integration entrypoints (all paths relative to the repository):
 
 | API | Contract |
 | --- | --- |
-| `src/lib/owner_local/store.odin:41` `open` | Hold the profile writer lock, check identity before migration, apply version 2 atomically, advance incarnation and recover abandoned claims. Caller provides a private directory and closes only after request/delivery workers drain. |
-| `src/lib/owner_local/migrations.odin:10` `migrate` | Transactional V1 upgrade; existing canonical rows, receipt results and signed publication bytes survive. Unsupported future versions or orphaned intent provenance reject startup. |
+| `src/lib/owner_local/store.odin:41` `open` | Hold the profile writer lock, check identity before migration, apply version 3 atomically, advance incarnation and recover abandoned claims. Caller provides a private directory and closes only after request/delivery workers drain. |
+| `src/lib/owner_local/migrations.odin:8` `migrate` | Transactional V1 upgrade; existing canonical rows, receipt results and signed publication bytes survive. Unsupported future versions or orphaned intent provenance reject startup. |
 | `src/lib/owner_local/directory.odin:26` `verify_directory`, `:10` `observe_directory` | Verify paired root/enrollment/keyring and persist the monotonic security pin before execution. |
-| `src/lib/owner_local/store.odin:99` `execute` | Current read authorization under the UoW, exact receipt/tombstone digest lookup, then live miss admission. Returns success only after commit. |
+| `src/lib/owner_local/store.odin:100` `execute` | Current read authorization under the UoW, exact receipt/tombstone digest lookup, then live miss admission. Returns success only after commit. |
 | `src/lib/owner_local/transaction.odin:14` `transaction_begin`, `:31` `transaction_savepoint`, `:41` `transaction_commit`, `:53` `transaction_rollback` | Thread-bound, explicit nested UoW. A same-thread nested begin fails; use a savepoint. SQL/cryptography only inside the transaction. Failed rollback quarantines uncertain connection state until reopen. |
 | `src/lib/owner_local/outbox.odin:20` `intent_enqueue` | Enqueue under the current UoW after inserting its source receipt. One immutable effect per principal/operation/kind/destination. A repeated enqueue must match payload digest, fence and sequence. |
 | `src/lib/owner_local/outbox.odin:36` `intent_claim_due`, `:64` `intent_result` | Claim at most 20 due effects, perform I/O outside the UoW, then settle or schedule retry with the exact claim. Claim failure returns no work. Unknown external outcomes must be queried/retried using the same ID. |
 | `src/lib/owner_local/completions.odin:22` `intent_completion_keep`, `:58` `intent_completions_flush`, `:37` `intent_completions_destroy` | Retain and retry fenced result persistence across requests. Flush before claiming another batch; storage failure keeps ownership in memory, and restart recovers the persisted claim. |
-| `src/lib/owner_local/retention.odin:18` `compact_receipts`, `:42` `reconcile_clock` | Bounded maintenance and trusted local clock-recovery APIs; neither is remotely exposed as a user command. |
+| `src/lib/owner_local/retention.odin:18` `compact_receipts`, `:45` `reconcile_clock` | Bounded maintenance and trusted local clock-recovery APIs; neither is remotely exposed as a user command. |
 | `src/bridge/owner_local.odin:35` `bridge_owner_publish`, `:41` `bridge_owner_publish_batch` | Request-driven registry publication retains completions and retries persistence before further delivery. The signer at `src/bridge/unseal_protocol.odin:848` uses only the already-loaded identity. |
 
-M1c must add the actual agent capability/fence contracts, local pinned instance
-and configuration inputs, lease/fleet/review schema and guards, matching/gates,
-and periodic outbox startup/drain integration. Before using receipt compaction
-with executions, extend its retention pin to every active execution related to
-the operation; V1 has no executions. This foundation recovers pending work when
-the store opens and retries registry publication on requests; it does not add a
-background scheduler or change Hub authority routes. M2 supplies workflow schema,
-search and deletion/retention policies for the expanded aggregate. Remote
+M1c adds the minimal one-device fleet/configuration, exact-child lease capability,
+claim/heartbeat and periodic expiry/outbox worker described in
+[owner-local-leases.md](owner-local-leases.md). Current configuration receipts and
+all active lease-related receipts are pinned before compaction. The broader
+task/review/ACK/gate and workflow schema remains outside this lease slice.
+Search and expanded deletion/retention policies follow separately. Remote
 execution consumers must prove fence/deadline validity and exact effect
 deduplication before acting; a replay result is never a launch authorization.
 

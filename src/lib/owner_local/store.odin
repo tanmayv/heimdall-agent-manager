@@ -97,7 +97,7 @@ grant :: proc(s:^Store, command:json.Object, now:i64) -> (contracts.Owner_Read_G
 // entering here. Its pinned sequence/hash is rechecked under the write lock.
 // The key is a verified current directory member, never a request assertion.
 execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:contracts.Owner_Verified_Key,
-    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer) -> Result {
+    directory_version:i64,directory_hash:string, now:i64, kr:^vault.Vault_Keyring, sign:Signer, fleet_child:Child={}) -> Result {
     context.allocator=context.temp_allocator
     c,parsed:=contracts.owner_parse(command_raw,"command")
     if !parsed do return fail("malformed")
@@ -149,13 +149,13 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="task.comment" || method=="task.read" {
+    if method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(tasks)!=1 do return fail("invalid_scope")
         revision=number(tasks[0][0])
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="chain.read" || method=="task.read" || method=="receipt.read"
+    read:=method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         result:=read_result(s,c,payload,revision)
         if result.code!="ok" do return result
@@ -193,6 +193,16 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "task.create":
         next=1
         _,wrote=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,title,body)
+    case "fleet.edit":
+        if fleet_child.instance!=field(p,"instance_id") || fleet_child.epoch=="" || fleet_child.run_count<=0 || !contracts.owner_field_valid(fleet_child.token_generation,"hash") do return fail("invalid_scope")
+        active,checked:=query(s.db,"SELECT lease_id FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
+        if !checked do return fail("storage_error")
+        if len(active)>0 do return fail("operation_conflict")
+        previous,looked:=query(s.db,"SELECT configuration_revision FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+        if !looked do return fail("storage_error")
+        if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return fail("stale_revision")
+        _,wrote=query(s.db,"INSERT INTO local_fleet VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET instance_id=excluded.instance_id,configuration_revision=excluded.configuration_revision,enabled=excluded.enabled,principal_id=excluded.principal_id,operation_id=excluded.operation_id,configuration_command=excluded.configuration_command,configuration_payload=excluded.configuration_payload,launch_epoch=excluded.launch_epoch,run_count=excluded.run_count,token_generation=excluded.token_generation",chain,task,field(p,"instance_id"),field(p,"configuration_revision"),field(p,"enabled"),principal,op,command_raw,payload,fleet_child.epoch,fmt.tprintf("%d",fleet_child.run_count),fleet_child.token_generation)
+        if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }
     case "task.comment":
         _,wrote=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,task,op,principal,body,fmt.tprintf("%d",seq))
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }

@@ -82,6 +82,32 @@ main :: proc() {
         command=signed_command(&creator_priv,"task.create","task_create","task",payload,"1")
         request:=owner.encode(owner.doc(map[string]string{"command"=command,"payload"=payload}))
         if os.write_entire_file(fmt.tprintf("%s.request",path),transmute([]byte)request)!=nil do os.exit(7)
+    } else if strings.has_prefix(mode,"lease_") {
+        child:=owner.Child{"instance","epoch",strings.repeat("a",64,context.temp_allocator),1}
+        if mode=="lease_seed" {
+            p:=owner.encode(owner.doc(map[string]string{"instance_id"="instance","configuration_revision"="1","enabled"="1"}))
+            c:=signed_command(&creator_priv,"fleet.edit","fleet","task",p,"1")
+            r:=owner.execute(&s,c,p,"",creator,bridge,1,"head",1000,&kr,signer,child)
+            if r.code!="ok" {fmt.println(r.code);os.exit(13)}
+            command:=owner.doc(map[string]string{"protocol_version"="1","account_id"="account","owner_bridge_id"="bridge","chain_id"="chain","task_id"="task",
+                "lease_id"="lease","instance_id"="instance","launch_epoch"="epoch","run_count"="1","token_generation"=child.token_generation,
+                "configuration_revision"="1","expected_revision"="2","operation_id"="claim","method"="lease.claim","request_expires_ms"="2000",
+                "capability_digest"=contracts.owner_payload_digest(""),"key_id"="bridge_key","signature"=strings.repeat("0",128,context.temp_allocator)})
+            sig,_:=sign(&owner_priv,"lease_command",command);command["signature"]=json.String(sig)
+            if os.write_entire_file(fmt.tprintf("%s.lease",path),transmute([]byte)owner.encode(command))!=nil do os.exit(14)
+        } else if mode=="lease_expire" {
+            if !owner.expire_leases(&s,901001) do os.exit(15)
+        } else {
+            bytes,err:=os.read_entire_file(fmt.tprintf("%s.lease",path),context.temp_allocator)
+            if err!=nil do os.exit(16)
+            if mode=="lease_before" do _=sqlite3_commit_hook(s.db,before_commit,nil)
+            now:=i64(1000)
+            if mode=="lease_replay" do now=901002
+            r:=owner.execute_lease(&s,string(bytes),"",child,bridge,now,signer)
+            if r.code!="ok" {fmt.println(r.code);os.exit(17)}
+            if mode=="lease_after" do boundary("after_commit")
+            fmt.println(owner.encode(r))
+        }
     } else if mode=="claim_kill" || mode=="settle" {
         claims,ok:=owner.intent_claim_due(&s,1000)
         if !ok || len(claims)==0 do os.exit(8)

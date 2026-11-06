@@ -275,6 +275,7 @@ main :: proc() {
 	// already failed. No-ops for a non-expiring legacy credential.
 	bridge_credential_refresh_start(bridge_config.credential_file)
 	bridge_task_chain_search_start()
+    bridge_owner_maintenance_start()
 	bridge_action_scheduler_start()
 	bridge_auto_update_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES

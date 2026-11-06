@@ -13,6 +13,10 @@ export const ownerSchemas = {
   relay: [["protocol_version", "version"], ["chain_id", "id"], ["bridge_id", "id"], ["request_id", "id"], ["expires_ms", "positive"], ["envelope", "relay_cipher"]],
   request: [["command", "document"], ["payload", "document"], ["genesis", "optional_document"]],
   publication: [["genesis", "document"], ["registry", "document"]],
+  fleet_payload: [["instance_id", "id"], ["configuration_revision", "positive"], ["enabled", "flag"]],
+  capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["requirements_revision", "positive"], ["expires_ms", "positive"], ["hard_ms", "positive"], ["allowed_methods", "lease_methods"], ["key_id", "id"], ["signature", "signature"]],
+  lease_command: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lease_method"], ["request_expires_ms", "positive"], ["capability_digest", "hash"], ["key_id", "id"], ["signature", "signature"]],
+  lease_input: [["protocol_version", "version"], ["chain_id", "id"], ["task_id", "id"], ["lease_id", "id"], ["configuration_revision", "positive"], ["expected_revision", "counter"], ["operation_id", "id"], ["method", "lease_method"], ["request_expires_ms", "positive"], ["capability", "optional_document"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -112,6 +116,62 @@ export interface OwnerPublication {
   genesis: string;
   registry: string;
 }
+export interface OwnerFleet_Payload {
+  instance_id: string;
+  configuration_revision: string;
+  enabled: string;
+}
+export interface OwnerCapability {
+  protocol_version: string;
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  task_id: string;
+  lease_id: string;
+  instance_id: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_revision: string;
+  requirements_revision: string;
+  expires_ms: string;
+  hard_ms: string;
+  allowed_methods: string;
+  key_id: string;
+  signature: string;
+}
+export interface OwnerLease_Command {
+  protocol_version: string;
+  account_id: string;
+  owner_bridge_id: string;
+  chain_id: string;
+  task_id: string;
+  lease_id: string;
+  instance_id: string;
+  launch_epoch: string;
+  run_count: string;
+  token_generation: string;
+  configuration_revision: string;
+  expected_revision: string;
+  operation_id: string;
+  method: string;
+  request_expires_ms: string;
+  capability_digest: string;
+  key_id: string;
+  signature: string;
+}
+export interface OwnerLease_Input {
+  protocol_version: string;
+  chain_id: string;
+  task_id: string;
+  lease_id: string;
+  configuration_revision: string;
+  expected_revision: string;
+  operation_id: string;
+  method: string;
+  request_expires_ms: string;
+  capability: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -126,4 +186,8 @@ export interface OwnerDocuments {
   relay: OwnerRelay;
   request: OwnerRequest;
   publication: OwnerPublication;
+  fleet_payload: OwnerFleet_Payload;
+  capability: OwnerCapability;
+  lease_command: OwnerLease_Command;
+  lease_input: OwnerLease_Input;
 }

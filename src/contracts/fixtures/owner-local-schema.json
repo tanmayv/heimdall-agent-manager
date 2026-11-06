@@ -11,5 +11,9 @@
   "receipt_payload": "operation_id:id",
   "relay": "protocol_version:version chain_id:id bridge_id:id request_id:id expires_ms:positive envelope:relay_cipher",
   "request": "command:document payload:document genesis:optional_document",
-  "publication": "genesis:document registry:document"
+  "publication": "genesis:document registry:document",
+  "fleet_payload": "instance_id:id configuration_revision:positive enabled:flag",
+  "capability": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive requirements_revision:positive expires_ms:positive hard_ms:positive allowed_methods:lease_methods key_id:id signature:signature",
+  "lease_command": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id task_id:id lease_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expected_revision:counter operation_id:id method:lease_method request_expires_ms:positive capability_digest:hash key_id:id signature:signature",
+  "lease_input": "protocol_version:version chain_id:id task_id:id lease_id:id configuration_revision:positive expected_revision:counter operation_id:id method:lease_method request_expires_ms:positive capability:optional_document"
 }

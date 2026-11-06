@@ -21,6 +21,15 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         if len(rows)!=1 || rows[0][3]!=chain do return fail("invalid_scope")
         return Result{code="ok",body=rows[0][1],seq=number(rows[0][2]),replay=true}
     }
+    if method=="runtime.read" {
+        fleet,ok:=query(s.db,"SELECT instance_id,configuration_revision,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+        if !ok do return fail("storage_error")
+        leases,read:=query(s.db,"SELECT lease_id,instance_id,expires_ms,hard_ms,deadline_version FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
+        if !read do return fail("storage_error")
+        // Fixed-size one-task observation; capabilities/token generations are
+        // deliberately excluded from the human observation response.
+        return Result{code="ok",body=encode(struct { revision:string, fleet,leases:[dynamic][]string, }{fmt.tprintf("%d",revision),fleet,leases})}
+    }
     scope:=contracts.owner_payload_digest(encode([5]string{s.account,chain,task,method,fmt.tprintf("%d",revision)}))
     cursor:=field(p,"cursor")
     offset:i64

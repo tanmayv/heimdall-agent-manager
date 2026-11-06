@@ -1,3 +1,5 @@
+For the additive single-device fleet/lease/heartbeat flow, see [owner-local-leases.md](owner-local-leases.md).
+
 # Owner-local V1 task demo
 
 This opt-in slice supports chain creation, task creation, comment append and

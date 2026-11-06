@@ -75,7 +75,28 @@ def main():
             assert after == before, "recovery preserves exact effect identity"
             assert db.execute("SELECT state,attempts FROM runtime_intents").fetchall() == [("settled", 2)] * 2
         assert snapshot(path) == (2, 1, 2, 2, 2)
-    print("PASS: SIGKILL before commit, after commit/lost reply, and after outbox claim; replay and recovery preserve exact effects")
+        run(args.probe, "lease_seed", path)
+        baseline = snapshot(path)
+        kill_at(args.probe, "lease_before", path, "before_commit")
+        assert snapshot(path) == baseline, "failed lease commit leaves no receipt/fence/pin"
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT count(*) FROM local_leases").fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM lease_receipt_pins").fetchone() == (0,)
+        kill_at(args.probe, "lease_after", path, "after_commit")
+        committed = snapshot(path)
+        assert committed == tuple(n + d for n, d in zip(baseline, (1, 0, 1, 1, 0)))
+        replay = json.loads(run(args.probe, "lease_replay", path))
+        assert replay["code"] == "ok" and replay["replay"] is True
+        assert snapshot(path) == committed
+        run(args.probe, "lease_expire", path)
+        expired = snapshot(path)
+        replay = json.loads(run(args.probe, "lease_replay", path))
+        assert replay["code"] == "ok" and replay["replay"] is True
+        assert snapshot(path) == expired, "lost claim reply replays after durable expiry without fresh authority"
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT count(*) FROM local_leases").fetchone() == (1,)
+            assert db.execute("SELECT count(*) FROM local_leases WHERE retired_seq IS NULL").fetchone() == (0,)
+    print("PASS: SIGKILL before commit, after commit/lost reply, and after outbox claim; lease grant/receipt/pin SIGKILL boundaries and post-expiry replay preserve exact effects")
 
 
 if __name__ == "__main__":

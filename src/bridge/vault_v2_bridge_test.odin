@@ -7,6 +7,7 @@ package main
 //   odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_NAMES=main.test_v2_...
 
 import "core:crypto/ecdsa"
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -73,6 +74,26 @@ test_owner_local_signer_never_loads_keystore_inside_transaction :: proc(t:^testi
     testing.expect(t,bridge_identity_public_key_hex(f.id_a)!="","identity record still exists")
     _,signed=bridge_owner_sign(nil,"genesis",object)
     testing.expect(t,signed,"explicit pre-transaction load restores signing")
+    fixture_value,fixture_err:=json.parse_string(#load("../contracts/fixtures/owner-local-v1.json",string),.JSON,true,context.temp_allocator)
+    if !testing.expect(t,fixture_err==.None) do return
+    fixture,_:=fixture_value.(json.Object)
+    vectors,_:=fixture["valid"].(json.Array)
+    for vector in vectors {
+        entry,_:=vector.(json.Object)
+        kind:=contracts.owner_string(entry,"kind")
+        if kind!="capability" && kind!="lease_command" do continue
+        proof,valid:=contracts.owner_parse(contracts.owner_string(entry,"raw"),kind)
+        if !testing.expect(t,valid) do continue
+        signature,ok:=bridge_owner_sign(nil,kind,proof)
+        testing.expect(t,ok,"runtime proof kind is explicitly allowed by production signer")
+        proof["signature"]=json.String(signature)
+        key:=contracts.Owner_Verified_Key{public_key=bridge_identity_public_key_hex(f.id_a),kind="bridge",enrolled=true}
+        testing.expect(t,contracts.owner_verify_signature(kind,proof,"signature",key))
+        bridge_unseal_forget_identity()
+        _,ok=bridge_owner_sign(nil,kind,proof)
+        testing.expect(t,!ok,"runtime proof signing never loads a missing key inside UoW")
+        testing.expect(t,bridge_identity_public_key_hex(f.id_a)!="")
+    }
 }
 
 @(test)

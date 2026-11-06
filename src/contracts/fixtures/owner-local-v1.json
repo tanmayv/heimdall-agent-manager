@@ -62,6 +62,30 @@
       "raw": "{\"operation_id\":\"op_1\"}",
       "canonical": "heimdall-owner-local/receipt_payload/v1\n4:op_1,",
       "digest": "e40f8c9940b1b3f2b3d8a2ab1add4cfe6671be920a6dc8a1aef40187eb1f8f47"
+    },
+    {
+      "kind": "fleet_payload",
+      "raw": "{\"instance_id\":\"inst_1\",\"configuration_revision\":\"2\",\"enabled\":\"1\"}",
+      "canonical": "heimdall-owner-local/fleet_payload/v1\n6:inst_1,1:2,1:1,",
+      "digest": "8cf6ff1b0db10c270e2414adbc844fb26c00ffea124c520f2808ddbdd9f14264"
+    },
+    {
+      "kind": "capability",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"requirements_revision\":\"1\",\"expires_ms\":\"10000\",\"hard_ms\":\"20000\",\"allowed_methods\":\"lease.claim,lease.heartbeat\",\"key_id\":\"bridge_key\",\"signature\":\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\"}",
+      "canonical": "heimdall-owner-local/capability/v1\n1:1,6:acct_1,5:brg_1,7:chain_1,6:task_1,7:lease_1,6:inst_1,7:epoch_1,16:9007199254740993,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:2,1:1,5:10000,5:20000,27:lease.claim,lease.heartbeat,10:bridge_key,",
+      "digest": "5bb274914cafccd26866661fdd611e7f76a1f30efa131a33f6200e7600a6c077"
+    },
+    {
+      "kind": "lease_command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability_digest\":\"f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731\",\"key_id\":\"bridge_key\",\"signature\":\"6ec0b80446dc14db97b8047760e20d7d4181ee4084858097f2b455fb61274a85cb42fdeac233716ff99f872c0e1e7e31bfd43bb6fa04ac60345c4023ed1896a8\"}",
+      "canonical": "heimdall-owner-local/lease_command/v1\n1:1,6:acct_1,5:brg_1,7:chain_1,6:task_1,7:lease_1,6:inst_1,7:epoch_1,16:9007199254740993,64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,1:2,1:3,8:lease_op,15:lease.heartbeat,4:9000,64:f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731,10:bridge_key,",
+      "digest": "19009f17912a920aa57d33b3ea090106c70758a93686387ef98a9898bd5a3a7e"
+    },
+    {
+      "kind": "lease_input",
+      "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability\":\"{\\\"protocol_version\\\":\\\"1\\\",\\\"account_id\\\":\\\"acct_1\\\",\\\"owner_bridge_id\\\":\\\"brg_1\\\",\\\"chain_id\\\":\\\"chain_1\\\",\\\"task_id\\\":\\\"task_1\\\",\\\"lease_id\\\":\\\"lease_1\\\",\\\"instance_id\\\":\\\"inst_1\\\",\\\"launch_epoch\\\":\\\"epoch_1\\\",\\\"run_count\\\":\\\"9007199254740993\\\",\\\"token_generation\\\":\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"configuration_revision\\\":\\\"2\\\",\\\"requirements_revision\\\":\\\"1\\\",\\\"expires_ms\\\":\\\"10000\\\",\\\"hard_ms\\\":\\\"20000\\\",\\\"allowed_methods\\\":\\\"lease.claim,lease.heartbeat\\\",\\\"key_id\\\":\\\"bridge_key\\\",\\\"signature\\\":\\\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\\\"}\"}",
+      "canonical": "heimdall-owner-local/lease_input/v1\n1:1,7:chain_1,6:task_1,7:lease_1,1:2,1:3,8:lease_op,15:lease.heartbeat,4:9000,607:{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"requirements_revision\":\"1\",\"expires_ms\":\"10000\",\"hard_ms\":\"20000\",\"allowed_methods\":\"lease.claim,lease.heartbeat\",\"key_id\":\"bridge_key\",\"signature\":\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\"},",
+      "digest": "c7f45bf0482bfdcb7264569dc5a93adb4c59626c0287a82e4e4f6b2bca551b3c"
     }
   ],
   "invalid": [
@@ -118,7 +142,7 @@
     {
       "name": "strict-10",
       "kind": "command",
-      "raw": "\ufeff{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+      "raw": "﻿{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
     },
     {
       "name": "strict-11",
@@ -143,7 +167,7 @@
     {
       "name": "strict-15",
       "kind": "command",
-      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"cha\u00efn_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chaïn_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
     },
     {
       "name": "strict-16",
@@ -209,6 +233,31 @@
       "name": "bad-version",
       "kind": "genesis",
       "raw": "{\"protocol_version\":\"2\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"creation_op\":\"op_create\",\"owner_bridge_id\":\"brg_1\",\"owner_key_id\":\"bridge_key\",\"creator_id\":\"dev_1\",\"creator_key_id\":\"device_key\",\"schema_version\":\"1\",\"creator_signature\":\"6cbae2cee1a7979eb1a45bc6dcf3c21beadfdc736c27076b2da365f63acb35677ead28fe5d8272b8617cbd76c4dab20d29301970445923c5e8768c2b9764b9a3\",\"owner_signature\":\"542fdb0b11603dab90549047463e02475f39af4843ba43e037476aecd5f8a0a831e9a9bed7ffeaabe187a6d67f00ddc0604e40d9f100a1022fae8ee646a17aa6\"}"
+    },
+    {
+      "name": "unbounded capability",
+      "kind": "capability",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"requirements_revision\":\"1\",\"expires_ms\":\"20001\",\"hard_ms\":\"20000\",\"allowed_methods\":\"lease.claim,lease.heartbeat\",\"key_id\":\"bridge_key\",\"signature\":\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\"}"
+    },
+    {
+      "name": "unknown capability field",
+      "kind": "capability",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"requirements_revision\":\"1\",\"expires_ms\":\"10000\",\"hard_ms\":\"20000\",\"allowed_methods\":\"lease.claim,lease.heartbeat\",\"key_id\":\"bridge_key\",\"signature\":\"82333b3ea339f6d5114bfc2cbf115f9006d2e6418bdabc3fd9da30556b1b562f0efc7f12579db2af45680eee557e61f2d9e982992a99d3b5be3657363fc2477e\",\"role\":\"admin\"}"
+    },
+    {
+      "name": "unsupported method",
+      "kind": "lease_command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9007199254740993\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.submit\",\"request_expires_ms\":\"9000\",\"capability_digest\":\"f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731\",\"key_id\":\"bridge_key\",\"signature\":\"6ec0b80446dc14db97b8047760e20d7d4181ee4084858097f2b455fb61274a85cb42fdeac233716ff99f872c0e1e7e31bfd43bb6fa04ac60345c4023ed1896a8\"}"
+    },
+    {
+      "name": "unsafe child counter",
+      "kind": "lease_command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"owner_bridge_id\":\"brg_1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"instance_id\":\"inst_1\",\"launch_epoch\":\"epoch_1\",\"run_count\":\"9223372036854775808\",\"token_generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability_digest\":\"f2ac00640a6f2393dc00200a69219d8609af6c6a0a26a083571d5815a3092731\",\"key_id\":\"bridge_key\",\"signature\":\"6ec0b80446dc14db97b8047760e20d7d4181ee4084858097f2b455fb61274a85cb42fdeac233716ff99f872c0e1e7e31bfd43bb6fa04ac60345c4023ed1896a8\"}"
+    },
+    {
+      "name": "missing heartbeat capability",
+      "kind": "lease_input",
+      "raw": "{\"protocol_version\":\"1\",\"chain_id\":\"chain_1\",\"task_id\":\"task_1\",\"lease_id\":\"lease_1\",\"configuration_revision\":\"2\",\"expected_revision\":\"3\",\"operation_id\":\"lease_op\",\"method\":\"lease.heartbeat\",\"request_expires_ms\":\"9000\",\"capability\":\"\"}"
     }
   ],
   "commands": [

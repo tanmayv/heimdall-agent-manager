@@ -1,7 +1,9 @@
 # Owner-local V1 contracts
 
-This is the minimal **device-only** create/task/comment/read protocol. It does not
-advertise runtime, agent capability, remote execution, or migration support.
+The original V1 is the minimal **device-only** create/task/comment/read protocol.
+The additive single-device fleet/claim/heartbeat schemas and Bridge-attested
+capabilities are documented in [owner-local-leases.md](owner-local-leases.md).
+Remote execution and migration remain outside these contracts.
 Legacy Hub writer and transport routes are unchanged.
 
 ## Wire and signing
