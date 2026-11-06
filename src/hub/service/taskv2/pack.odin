@@ -112,7 +112,9 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		summary = s.body
 	}
 	if summary == "" {
-		summary, _ = build_mechanical_chain_summary(svc, chain)
+        preview,failed:=build_mechanical_chain_summary(svc,chain)
+        summary=preview
+        if failed do summary="# Chain context unavailable: source read failed. Original task facets remain retained; inspect storage health and retry."
 	}
 	json_str(&c, "summary", summary)
 	// Solo mode: the coordinator works its own chain (REQ-SOLO-1).

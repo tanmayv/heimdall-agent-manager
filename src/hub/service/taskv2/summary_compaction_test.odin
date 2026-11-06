@@ -102,6 +102,10 @@ test_summary_compaction_overflow_curated_edits_and_persisted_failure_rearm :: pr
     testing.expect(t,exec_ok(t,fx,"ALTER TABLE task_attempt_facets RENAME TO unavailable_facets"))
     summary_test_rebuild(t,fx,chain)
     testing.expect_value(t,scalar_text(fx,"SELECT count(*) FROM task_events WHERE kind='summary_overflow'"),"2")
+    testing.expect(t,exec_ok(t,fx,"DELETE FROM chain_summaries"))
+    unavailable_pack:=build_pack_json(&fx.svc,chain,task,domain.Task_Lease{},domain.Agent_Instance{})
+    testing.expect(t,strings.contains(unavailable_pack,"Chain context unavailable"),"missing projection plus source failure must not look like an empty successful context")
+
 }
 
 @(test)
