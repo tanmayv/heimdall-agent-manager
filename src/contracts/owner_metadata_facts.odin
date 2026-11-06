@@ -1,7 +1,6 @@
 package contracts
 
 import "core:encoding/json"
-import "core:fmt"
 
 // Native source facts; never live projections or C3 local_objects.
 @(private)
@@ -175,8 +174,65 @@ owner_native_work_event_fields := [?]Owner_Field{
     {"kind", "id"},
     {"payload_json", "object"},
 }
+@(private)
+owner_native_lease_fields := [?]Owner_Field{
+    {"provider_profile", "text"},
+    {"lease_id", "id"},
+    {"task_id", "id"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"attempt_no", "positive_integer"},
+    {"holder_instance_id", "id"},
+    {"kind", "lease_kind"},
+    {"review_role", "text"},
+    {"bridge_id", "id"},
+    {"provider", "text"},
+    {"model", "text"},
+    {"granted_at", "timestamp"},
+    {"confirmed_at", "timestamp"},
+    {"expires_at", "timestamp"},
+    {"hard_deadline_at", "timestamp"},
+    {"last_beat_at", "timestamp"},
+    {"delivery", "lease_delivery"},
+    {"extended_at", "timestamp"},
+}
+@(private)
+owner_native_review_fields := [?]Owner_Field{
+    {"task_id", "id"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"attempt_no", "positive_integer"},
+    {"role", "optional"},
+    {"reviewer_kind", "reviewer_kind"},
+    {"reviewer_agent_id", "optional"},
+    {"reviewer_instance_id", "optional"},
+    {"verdict", "verdict"},
+    {"findings_json", "document"},
+    {"created_at", "timestamp"},
+}
+@(private)
+owner_native_definition_fields := [?]Owner_Field{
+    {"def_id", "id"},
+    {"owner_user_id", "id"},
+    {"name", "text"},
+    {"version", "positive_integer"},
+    {"body_json", "object"},
+    {"created_at", "timestamp"},
+}
+@(private)
+owner_native_dependency_fields := [?]Owner_Field{
+    {"task_id", "id"},
+    {"depends_on_task_id", "id"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"created_at", "timestamp"},
+}
 owner_metadata_fact_fields :: proc(kind:string) -> []Owner_Field {
     switch kind {
+    case "lease": return owner_native_lease_fields[:]
+    case "review": return owner_native_review_fields[:]
+    case "definition": return owner_native_definition_fields[:]
+    case "dependency": return owner_native_dependency_fields[:]
     case "work_dependency": return owner_native_work_dependency_fields[:]
     case "work_receipt": return owner_native_work_receipt_fields[:]
     case "work_scope": return owner_native_work_scope_fields[:]
@@ -193,6 +249,9 @@ owner_metadata_fact_fields :: proc(kind:string) -> []Owner_Field {
 }
 owner_metadata_fact_key :: proc(kind:string) -> string {
     switch kind {
+    case "lease": return "lease_id"
+    case "review", "dependency": return "task_id"
+    case "definition": return "def_id"
     case "work_dependency": return "dependency_id"
     case "work_receipt": return "receipt_id"
     case "work_scope": return "decision_id"
@@ -216,9 +275,9 @@ owner_metadata_fact_valid :: proc(row:json.Object,kind:string) -> bool {
             if !owner_work_item(row[f.name]) do return false
             continue
         }
-        if f.kind=="integer" {
+        if f.kind=="integer" || f.kind=="positive_integer" {
             n,ok:=row[f.name].(json.Integer)
-            if !ok || n<0 do return false
+            if !ok || n<0 || (f.kind=="positive_integer" && n==0) do return false
             continue
         }
         if f.kind=="boolean" {
@@ -226,7 +285,7 @@ owner_metadata_fact_valid :: proc(row:json.Object,kind:string) -> bool {
             continue
         }
         v,ok:=row[f.name].(json.String)
-        long_document:=f.kind=="document" || (owner_work_source_kind(kind) && (f.kind=="object" || f.kind=="object_optional"))
+        long_document:=f.kind=="document" || ((owner_work_source_kind(kind) || owner_record_source_kind(kind)) && (f.kind=="object" || f.kind=="object_optional"))
         if !ok || (!long_document && len(v)>4096) || len(v)>65536 do return false
         text:=string(v)
         switch f.kind {
@@ -236,6 +295,10 @@ owner_metadata_fact_valid :: proc(row:json.Object,kind:string) -> bool {
             if text=="" && f.kind=="object_optional" do continue
             value,valid:=owner_content_document(text)
             if _,obj:=value.(json.Object); !valid || !obj do return false
+        case "lease_kind": if text!="work" && text!="review" do return false
+        case "lease_delivery": if text!="wake" && text!="inline" do return false
+        case "reviewer_kind": if text!="agent" && text!="user" do return false
+        case "verdict": if text!="approve" && text!="request_changes" do return false
         case "scope_action": if text!="include" && text!="exclude" do return false
         case "execution_state": if text!="draft" && text!="pending" && text!="running" && text!="succeeded" && text!="failed" && text!="cancelled" do return false
         case "document":
@@ -259,10 +322,22 @@ owner_metadata_record_key :: proc(row:json.Object,kind:string)->string {
     if n,integer:=row[owner_metadata_fact_key(kind)].(json.Integer);integer {
         raw,_:=json.marshal(n,allocator=context.temp_allocator);key=string(raw)
     }
-    if kind=="work_execution" || kind=="work_stage" {
-        raw,_:=json.marshal(row["execution_no"],allocator=context.temp_allocator)
-        key=fmt.tprintf("%s:%s",key,string(raw))
-        if kind=="work_stage" {key=fmt.tprintf("%s:%s",key,owner_string(row,"stage_key"))}
+    names:[]string
+    switch kind {
+    case "work_execution": names=[]string{"run_id","execution_no"}
+    case "work_stage": names=[]string{"run_id","execution_no","stage_key"}
+    case "review": names=[]string{"task_id","attempt_no","role","reviewer_kind","reviewer_agent_id","reviewer_instance_id"}
+    case "dependency": names=[]string{"task_id","depends_on_task_id"}
+    case "definition": names=[]string{"def_id","version"}
+    }
+    if len(names)>0 {
+        tuple:=make(json.Array,0,len(names),context.temp_allocator)
+        for name in names do append(&tuple,row[name])
+        raw,_:=json.marshal(tuple,allocator=context.temp_allocator)
+        return string(raw)
     }
     return key
+}
+owner_record_source_kind :: proc(kind:string)->bool {
+    return kind=="lease" || kind=="review" || kind=="definition" || kind=="dependency"
 }

@@ -283,3 +283,14 @@ test('shared native work request documents reject unknown fields, duplicate keys
     assert.equal(ownerLiveAdmit({...c,method},{...grant,task_id:'',method,can_mutate:false},1000n,1n),'invalid_scope');
   }
 });
+
+test('rich aggregate metadata kinds retain strict read scope and preserve raw numeric source documents',()=>{
+  const fixture=JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-native-aggregate.json',import.meta.url),'utf8'));
+  assert.equal(Object.keys(fixture.structs).length,23);
+  for(const entry of fixture.metadata){
+    ownerParse(JSON.stringify({source_revision:'rich_source_7',kind:entry.kind,cursor:'',limit:'1'}),'native_metadata_read');
+    assert.equal(typeof entry.raw,'string');
+  }
+  assert(fixture.metadata.some((entry:any)=>entry.raw.includes('9007199254740993')));
+  assert.throws(()=>ownerParse(JSON.stringify({source_revision:'rich_source_7',kind:'unknown_native',cursor:'',limit:'1'}),'native_metadata_read'));
+});

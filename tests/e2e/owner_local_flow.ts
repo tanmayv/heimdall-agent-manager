@@ -6,6 +6,12 @@ import { readFileSync } from 'node:fs';
 
 export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
+  if(process.env.HEIMDALL_E2E_OWNER_AGGREGATE_ONLY==='1'){
+    await stopOwner();await restartOwner();
+    const {ownerLocalAggregateFlow}=await import('./owner_local_aggregate_flow.ts');
+    await ownerLocalAggregateFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,launchChild,otherAccount,http,hub});
+    return;
+  }
   if(process.env.HEIMDALL_E2E_OWNER_WORK_GRAPH_ONLY==='1'){
     await stopOwner();await restartOwner();
     const {ownerLocalWorkGraphFlow}=await import('./owner_local_work_graph_flow.ts');

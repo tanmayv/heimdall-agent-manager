@@ -93,7 +93,7 @@ owner_metadata_import_parse :: proc(raw:string) -> (Owner_Metadata_Import,bool) 
         if !valid || !owner_metadata_record_valid(record,result.kind) do return {},false
         if result.kind=="fleet" {
             if owner_string(record,"task_chain_id")!=result.chain_id do return {},false
-        } else if owner_string(record,"chain_id")!=result.chain_id || owner_string(record,"owner_user_id")!=result.owner_user_id { return {},false }
+        } else if owner_string(record,"owner_user_id")!=result.owner_user_id || (result.kind!="definition" && owner_string(record,"chain_id")!=result.chain_id) { return {},false }
         // Native key: (chain_id, agent_instance_id), including an empty
         // historical instance value; durable agent IDs do not replace it.
         key:=owner_string(record,"directory_id")

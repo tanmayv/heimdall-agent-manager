@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS native_record_values;
+DROP TABLE IF EXISTS native_record_snapshots;
 DROP TRIGGER IF EXISTS work_revision_local_controls_update;
 DROP TRIGGER IF EXISTS work_revision_local_controls_insert;
 DROP TRIGGER IF EXISTS work_revision_local_workflow_language_executions_update;

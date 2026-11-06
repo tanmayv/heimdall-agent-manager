@@ -26,7 +26,7 @@ function fieldValid(s: string, kind: string): boolean {
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
     case 'priority': return ['p0','p1','p2'].includes(s);
-    case 'metadata_kind': return ['fleet', 'member', 'directory', 'chain', 'task', 'comment', 'summary','work_dependency','work_receipt','work_scope','work_run','work_execution','work_stage','work_event'].includes(s);
+    case 'metadata_kind': return ['lease', 'review', 'definition', 'dependency', 'fleet', 'member', 'directory', 'chain', 'task', 'comment', 'summary','work_dependency','work_receipt','work_scope','work_run','work_execution','work_stage','work_event'].includes(s);
     case 'native_history_kind': return ['attempt','event','facet'].includes(s);
     case 'native_cursor': return s.length <= 512;
     case 'native_actor': return ['agent','user','hub','bridge'].includes(s);
