@@ -58,7 +58,7 @@ owner_registry_list :: proc(ctx:rawptr,account,chain,after_chain,after_task:stri
     stmt:sqlite3_stmt
     if sqlite3_prepare_v2(impl.conn.db,strings.clone_to_cstring(sql,context.temp_allocator),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"registry read failed")
     defer sqlite3_finalize(stmt)
-    bind_text(stmt,1,account);bind_text(stmt,2,chain);bind_text(stmt,3,chain);bind_text(stmt,4,after_chain);bind_text(stmt,5,after_chain);bind_text(stmt,6,after_task);sqlite3_bind_int(stmt,7,1 if headers_only else 0);sqlite3_bind_int(stmt,8,i32(clamp(limit,1,101 if headers_only else 100)))
+    bind_text(stmt,1,account);bind_text(stmt,2,chain);bind_text(stmt,3,chain);bind_text(stmt,4,after_chain);bind_text(stmt,5,after_chain);bind_text(stmt,6,after_task);sqlite3_bind_int(stmt,7,1 if headers_only else 0);sqlite3_bind_int(stmt,8,i32(clamp(limit,1,101)))
     out:=make([dynamic]domain.Owner_Registry_Record)
     for {
         rc:=sqlite3_step(stmt)

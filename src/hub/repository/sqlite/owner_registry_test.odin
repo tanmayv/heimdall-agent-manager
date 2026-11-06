@@ -34,7 +34,11 @@ owner_registry_is_immutable_account_scoped_and_monotonic :: proc(t:^testing.T) {
     testing.expect_value(t,len(rows),0);delete(rows)
     r.account_id="b"
     testing.expect_value(t,repo.owner_registry_publish(repo.ctx,r).code,domain.Error_Code.Conflict)
-    r.account_id="a";r.owner_bridge_id="another"
+    r.account_id="a";r.genesis_digest="conflicting-genesis"
+    testing.expect_value(t,repo.owner_registry_publish(repo.ctx,r).code,domain.Error_Code.Conflict)
+    r.genesis_digest="digest";r.owner_key_id="other-key"
+    testing.expect_value(t,repo.owner_registry_publish(repo.ctx,r).code,domain.Error_Code.Conflict)
+    r.owner_key_id="key";r.owner_bridge_id="another"
     testing.expect_value(t,repo.owner_registry_publish(repo.ctx,r).code,domain.Error_Code.Conflict)
 }
 
