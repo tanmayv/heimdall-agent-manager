@@ -48,7 +48,7 @@ Each durable field declared in the original aggregate domain structs (including 
 | `state` | `src/hub/domain/taskchain.odin:172` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `kind` | `src/hub/domain/taskchain.odin:173` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `priority` | `src/hub/domain/taskchain.odin:174` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/migration_007.sql:101`. local_work_attempts records one row per lease; submission attempts are a separate counter. Original counts_toward_budget/outcome and structural-attempt semantics are not yet equivalent. |
+| `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/attempts.odin:86`, `src/lib/owner_local/reads.odin:62`. runtime.read exposes a retained-event native attempt/counting projection with explicit completeness. V7 lease ordinals and V4 submission keys remain immutable compatibility identifiers, not native attempts. Original per-attempt facets/outcomes/import and budget enforcement remain open; see checkpoint below. |
 | `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. max_attempts accounting and input-reference resolution remain C1 work. |
 | `blocked_on_json` | `src/hub/domain/taskchain.odin:183` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `requires_user_approval` | `src/hub/domain/taskchain.odin:184` | **PARTIAL** `src/lib/owner_local/migration_009.sql:103`. Local independent-agent/role/user review records and immutable V13 evidence. Native findings_json and complete reviewer/time fields are not yet accepted by ordinary adapters. |
@@ -500,3 +500,39 @@ and its historical reconstruction helpers, shared W2 output validation,
 current read authorization before replay, and the C1/C3 reference contract.
 Full aggregate readiness is still below submission confidence. Independent
 named code review remains required after completing C1.
+
+## Native attempt projection checkpoint (attempt 3)
+
+`runtime.read.attempts` is an additive observation, with the generated
+`attempt_state` contract in `src/contracts/fixtures/owner-local-schema.json`.
+It contains decimal-string `attempt_no` and `counting_attempts`, `last_release`,
+the last granted `work_lease_id`, and `completeness` (`full` or `incomplete`).
+`full` describes evidence for this projection, not completion of C1 or proof
+that all native aggregate fields have been imported. Never enable migration
+cutover or budget enforcement merely because that string is `full`.
+
+The projection folds retained accepted events rather than counting leases or
+submissions (`src/lib/owner_local/attempts.odin:86`). Handoff continues the same
+attempt; a structural release affects whether the next grant spends budget
+(`src/lib/owner_local/attempts.odin:18`). Both halves of an atomic switch are
+read from its single retained event. Native grant counters are compared against
+the original fold after every prefix of a synthetic event sequence
+(`src/hub/service/taskv2/owner_attempt_projection_test.odin:13`). Existing V7
+lease ordinals, V4 submission keys, their references, and V13 event/schema
+history remain untouched. This checkpoint requires no database migration.
+
+Required gaps remain explicit. V13 `legacy_tag` events lack native evidence;
+the projection marks them incomplete instead of fabricating outcomes. A
+workflow-wide retirement without a task-specific native event mapping also
+marks the projection incomplete (`src/lib/owner_local/attempts.odin:122`).
+Native per-attempt facets and submission-to-native-attempt mapping still need
+implementation; `max_attempts` enforcement is not enabled by this checkpoint.
+
+Source comparison uncovered an additional controls parity question. Native
+hold never revokes a lease (`src/hub/service/taskv2/verbs_m2.odin:622`); current
+local hold immediately retires execution and retains a checkpoint-only
+capability (`src/lib/owner_local/controls.odin:62`,
+`src/lib/owner_local/controls.odin:180`). The projection marks this path
+incomplete (`src/lib/owner_local/attempts.odin:65`). A task comment asks the
+coordinator whether C1 or the controls/route successor should own the behavior
+correction. There is no approved omission or inferred structural release.

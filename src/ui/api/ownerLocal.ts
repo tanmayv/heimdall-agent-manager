@@ -25,6 +25,8 @@ function fieldValid(s: string, kind: string): boolean {
     case 'lifecycle_method': return ['workflow.gate.post','review.role.open','review.role.post','lease.handoff','lease.block','lease.switch','review.checkpoint','requirements.present','requirements.ack','lease.submit','review.open','review.post'].includes(s);
     case 'merge_policy': return s === 'none' || s === 'git';
     case 'verdict': return s === 'approve' || s === 'request_changes';
+    case 'history_completeness': return s === 'full' || s === 'incomplete';
+    case 'attempt_release': return ['', 'handoff', 'submitted', 'blocked', 'expired', 'changes_requested', 'replaced', 'dep_added', 'reopened', 'user_stopped', 'released_noncounting'].includes(s);
     case 'path': return s.length <= 4096 && (s === '' || (s.startsWith('/') && !s.includes('..') && !s.includes('\\')));
     case 'optional_commit': return s === '' || /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s);
     case 'optional_ref': return s === '' || (s.length <= 160 && !s.startsWith('-') && !s.includes('..') && !s.includes('//') && /^[a-zA-Z0-9_./-]+$/.test(s));

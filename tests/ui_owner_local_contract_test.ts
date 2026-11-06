@@ -10,6 +10,15 @@ const creator: OwnerVerifiedKey = {account_id:'acct_1', principal_id:'dev_1', ke
 const bridge: OwnerVerifiedKey = {...creator,principal_id:'brg_1',key_id:'bridge_key',public_key:fixture.bridge_public_key,kind:'bridge'};
 const grant: OwnerReadGrant = {account_id:'acct_1', owner_bridge_id:'brg_1', chain_id:'chain_1',principal_id:'dev_1',key_id:'device_key',task_id:'task_1',method:'task.comment',revision:1n,expires_ms:1000000n,can_read:true,can_mutate:true,revoked:false};
 
+test('native attempt projection has explicit completeness and strict release vocabulary', () => {
+  const state = { attempt_no: '4', counting_attempts: '2', last_release: 'handoff', work_lease_id: 'lease_2', completeness: 'full' };
+  assert.equal(ownerParse(JSON.stringify(state), 'attempt_state').attempt_no, '4');
+  assert.equal(ownerParse(JSON.stringify({ ...state, completeness: 'incomplete' }), 'attempt_state').completeness, 'incomplete');
+  for (const patch of [{ completeness: 'assumed' }, { last_release: 'unknown' }, { attempt_no: '-1' }, { counting_attempts: '2.5' }, { budget_allowed: '1' }]) {
+    assert.throws(() => ownerParse(JSON.stringify({ ...state, ...patch }), 'attempt_state'));
+  }
+});
+
 test('shared strict wire and canonical digest fixtures', async () => {
   for (const v of fixture.valid) {
     const o = ownerParse(v.raw,v.kind);

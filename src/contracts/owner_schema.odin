@@ -870,6 +870,21 @@ owner_fields_history_fetch_payload := [?]Owner_Field{
     {"seq", "positive"},
     {"offset", "counter"},
 }
+Owner_Attempt_State :: struct {
+    attempt_no: string,
+    counting_attempts: string,
+    last_release: string,
+    work_lease_id: string,
+    completeness: string,
+}
+@(private)
+owner_fields_attempt_state := [?]Owner_Field{
+    {"attempt_no", "counter"},
+    {"counting_attempts", "counter"},
+    {"last_release", "attempt_release"},
+    {"work_lease_id", "optional"},
+    {"completeness", "history_completeness"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -928,6 +943,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "coordinator_payload": return owner_fields_coordinator_payload[:]
     case "coordinator_capability": return owner_fields_coordinator_capability[:]
     case "history_fetch_payload": return owner_fields_history_fetch_payload[:]
+    case "attempt_state": return owner_fields_attempt_state[:]
     }
     return nil
 }

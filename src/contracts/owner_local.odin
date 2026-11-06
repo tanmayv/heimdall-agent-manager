@@ -57,6 +57,8 @@ owner_field_valid :: proc(s, kind: string) -> bool {
     case "lifecycle_method": return s=="workflow.gate.post" || s=="review.role.open" || s=="review.role.post" || s=="lease.handoff" || s=="lease.block" || s=="lease.switch" || s=="review.checkpoint" || s=="requirements.present" || s=="requirements.ack" || s=="lease.submit" || s=="review.open" || s=="review.post"
     case "merge_policy": return s=="none" || s=="git"
     case "verdict": return s=="approve" || s=="request_changes"
+    case "history_completeness": return s=="full" || s=="incomplete"
+    case "attempt_release": return s=="" || s=="handoff" || s=="submitted" || s=="blocked" || s=="expired" || s=="changes_requested" || s=="replaced" || s=="dep_added" || s=="reopened" || s=="user_stopped" || s=="released_noncounting"
     case "path": return len(s)<=4096 && (s=="" || (s[0]=='/' && !strings.contains(s,"..") && !strings.contains(s,"\\")))
     case "optional_commit": return s=="" || owner_hex(s,40) || owner_hex(s,64)
     case "optional_ref":

@@ -56,6 +56,7 @@ export const ownerSchemas = {
   coordinator_payload: [["configuration_revision", "positive"], ["agent_id", "id"], ["instance_id", "id"]],
   coordinator_capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expires_ms", "positive"], ["allowed_methods", "coordinator_methods"], ["key_id", "id"], ["signature", "signature"]],
   history_fetch_payload: [["seq", "positive"], ["offset", "counter"]],
+  attempt_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["last_release", "attempt_release"], ["work_lease_id", "optional"], ["completeness", "history_completeness"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -465,6 +466,13 @@ export interface OwnerHistory_Fetch_Payload {
   seq: string;
   offset: string;
 }
+export interface OwnerAttempt_State {
+  attempt_no: string;
+  counting_attempts: string;
+  last_release: string;
+  work_lease_id: string;
+  completeness: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -522,4 +530,5 @@ export interface OwnerDocuments {
   coordinator_payload: OwnerCoordinator_Payload;
   coordinator_capability: OwnerCoordinator_Capability;
   history_fetch_payload: OwnerHistory_Fetch_Payload;
+  attempt_state: OwnerAttempt_State;
 }
