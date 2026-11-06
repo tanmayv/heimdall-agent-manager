@@ -71,18 +71,18 @@ export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOw
     history[kind]=JSON.stringify(JSON.parse(history[kind]).map((raw:string)=>JSON.stringify({...JSON.parse(raw),chain_id:chainId,task_id:taskId,owner_user_id:history.owner_user_id})));
   }
   await call('native.history.import',{taskId,expectedRevision:'2',body:JSON.stringify(history)});
-  const fleet=JSON.parse(readFileSync(new URL('../../src/contracts/fixtures/owner-fleet-policy.json',import.meta.url),'utf8'));
-  fleet.task_chain_id=chainId;
+  const fleetRaw=readFileSync(new URL('../../src/contracts/fixtures/owner-fleet-policy.json',import.meta.url),'utf8').replace(/"task_chain_id":\s*"chain"/,'"task_chain_id":'+JSON.stringify(chainId));
+  const fleet=JSON.parse(fleetRaw);
   const fleetSource='fleet_source_7';
-  const fleetBundle={chain_id:chainId,owner_user_id:members.owner_user_id,source_revision:fleetSource,kind:'fleet',records:[fleet]};
+  const fleetBundle=JSON.stringify({chain_id:chainId,owner_user_id:members.owner_user_id,source_revision:fleetSource,kind:'fleet'}).slice(0,-1)+',"records":['+fleetRaw+']}';
   let liveRevision=JSON.parse((await call('chain.read')).body).revision;
-  await call('native.metadata.import',{expectedRevision:liveRevision,body:JSON.stringify(fleetBundle)});
+  await call('native.metadata.import',{expectedRevision:liveRevision,body:fleetBundle});
   expect(JSON.parse((await call('fleet.policy.read')).body).items.length===0,'fleet source import preserves snapshot without activating operational policy');
   const sourceFleet=await read('fleet',{nativeSourceRevision:fleetSource});
   expect(sourceFleet.items.length===1 && Object.entries(fleet).every(([key,value])=>sourceFleet.items[0][key]===value),'fleet snapshot preserves every ordinary source field');
   liveRevision=JSON.parse((await call('chain.read')).body).revision;
-  await denied('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:JSON.stringify({...fleet,capacity:fleet.capacity+1})},'source-linked activation rejects policy drift');
-  await call('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:JSON.stringify(fleet)});
+  await denied('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:fleetRaw.replace('9007199254740993','9007199254740994')},'source-linked activation rejects policy drift');
+  await call('fleet.policy.set',{expectedRevision:liveRevision,nativeSourceRevision:fleetSource,body:fleetRaw});
   expect(JSON.parse((await call('fleet.policy.read')).body).items[0].source_revision===fleetSource,'signed activation records pinned fleet source revision');
   await stopOwner();await restartOwner();
   expect(JSON.parse((await call('fleet.policy.read')).body).items[0].source_revision===fleetSource,'restart preserves fleet activation provenance');

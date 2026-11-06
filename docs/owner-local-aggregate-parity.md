@@ -1741,3 +1741,86 @@ Verified continuation, all exit 0:
   and `node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs`.
 - `python3 scripts/check-owner-aggregate-parity.py`: 240 fields / 23 structs;
   `git diff --check`: clean.
+## C1d-2 attempt 2 V20 continuation checkpoint
+
+This checkpoint is partial: operational defaults, members, directories, curated
+summary, typed authorized brief input/output resolution and the complete rich
+aggregate composition remain required. Do not submit the whole task on this
+checkpoint or interpret existing OPEN/PARTIAL rows as omissions.
+
+`task.priority` accepts a strict native `p0`/`p1`/`p2` payload, writes immutable
+normalized priority history and advances task/chain CAS
+(`src/lib/owner_local/store.odin:236`). Task reads and chain listings consume the
+current value. Existing live capabilities retain their exact binding and TTL;
+listing cursors become stale. V20 preserves V1-V19 migrations and their retained
+history (`src/lib/owner_local/migration_020.sql:1`).
+
+One original chain owner now spans native history and metadata, including legacy
+history imported before origins existed
+(`src/lib/owner_local/native_metadata.odin:12`). V20 reconciles missing origins
+and fails atomically on conflicting historical ownership. Imports preserve exact
+native source documents and acceptance history.
+
+Fleet source import uses `native.metadata.import` with `kind=fleet`: its records
+are ordinary native fleet rows, while original owner and source revision live in
+the signed import envelope. Import retains an immutable source snapshot without
+installing operational policy (`src/lib/owner_local/native_fleet.odin:9`).
+`fleet.policy.set` optionally binds a `source_revision` in its signed payload;
+the decrypted ordinary policy must match that exact same-chain/agent snapshot
+(`src/lib/owner_local/native_fleet.odin:22`). Accepted operational history and
+ordinary policy reads retain the source link. Legacy unlinked sets remain
+available. No capability enrollment or dispatch was added.
+
+Coordinator decisions:
+
+- `cmt_18e58b5c17004f02` / `msg_18e58b5d98757871`: source fleet import stays
+  immutable; operational activation is separate. C1d-2 validates structural
+  roles/capacity/bridge/provider/model contracts. Live catalog/slot activation
+  remains M3.
+- `msg_18e58bc86162ed29`: approved the next operational metadata command work,
+  curated_summary in CONTEXT_SOURCE_SQL, curated notes in context_materialize,
+  and priority in the task context row. These context changes are **not yet
+  implemented** here. FTS and artifact indexing remain deferred.
+
+Verification from the assigned Workdir:
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d2-fleet-contract-final-a2
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d2-fleet-origin-store-final-a2
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts
+nix develop --command npm run typecheck
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins
+```
+
+Results: 27 contract tests, 176 storage tests, 14 UI contract tests, typecheck
+and all four binary builds pass. Storage includes both import orders, legacy
+origin reconciliation, V19 migration collision and deferred-COMMIT rollback,
+statement/COMMIT failure for imports and activation, priority replay/restart,
+live capability preservation and stale cursor rejection. Exact sessions:
+`sh_716808d9a364123b45c6efe7339ce325`,
+`sh_039b9b722bf0e71f865be7f9945f57f7`,
+`sh_226d0216c77fd2bc285ad3a7f92c3d3f`,
+`sh_6354a417ece75a272a35caf8ec3e3511`.
+
+The initial typecheck lacked pinned posthog-js. The existing lockfile install
+restored it without dependency-source edits:
+
+```bash
+nix develop --command npm ci --ignore-scripts --no-audit --no-fund
+```
+
+The real relay demo is extended in
+`tests/e2e/owner_local_metadata_flow.ts:1`. Its first fleet drift assertion used
+JavaScript Number arithmetic above 2^53, which did not change the payload.
+The corrected fixture retains the original raw decimal bytes and changes them
+explicitly. Production pinned-source mismatch tests already passed; no authority
+validation was relaxed to accommodate the fixture.
+
+Corrected real CLI/Hub/Bridge relay demo: PASS, exit 0
+(`sh_f5972c4fe7d7cd7475997749c20a32fa`), preserving all six existing metadata
+source kinds and proving operational priority and pinned fleet activation through
+restart:
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d2-fleet-origin-a2-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_METADATA_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
