@@ -479,7 +479,7 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 
 	done_lines := make([dynamic]string, context.temp_allocator)
 	open_lines := make([dynamic]string, context.temp_allocator)
-	dead_end_lines := make([dynamic]string, context.temp_allocator)
+	lesson_lines := make([dynamic]string, context.temp_allocator)
 
 	for t in tasks {
 		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, t.task_id, t.owner_user_id)
@@ -503,17 +503,22 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 						latest_attempt = f.attempt_no
 					}
 				}
+                // Decisions remain immutable and fetchable with their handoff;
+                // include recent decision previews alongside lessons.
+                for decision in jsonx.extract_string_array(f.body_json,"decisions",true,context.temp_allocator) {
+                    if clean:=first_line_trimmed(decision);clean!="" do append(&lesson_lines,fmt.tprintf("- [%s#%d] Decision: %s",t.task_id,f.attempt_no,clean))
+                }
 				// Collect dead_ends from every attempt's handoff facet
 				de_arr := jsonx.extract_string_array(f.body_json, "dead_ends", true, context.temp_allocator)
 				for de in de_arr {
 					clean := first_line_trimmed(de)
 					if clean != "" {
-						append(&dead_end_lines, fmt.tprintf("- [%s#%d] %s", t.task_id, f.attempt_no, clean))
+						append(&lesson_lines, fmt.tprintf("- [%s#%d] %s", t.task_id, f.attempt_no, clean))
 					}
 				}
 				if len(de_arr) == 0 {
 					if de_str := first_line_trimmed(jsonx.extract_string(f.body_json, "dead_ends", "", true, context.temp_allocator)); de_str != "" {
-						append(&dead_end_lines, fmt.tprintf("- [%s#%d] %s", t.task_id, f.attempt_no, de_str))
+						append(&lesson_lines, fmt.tprintf("- [%s#%d] %s", t.task_id, f.attempt_no, de_str))
 					}
 				}
 			}
@@ -542,24 +547,27 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
     // Bounded projection is normal; immutable facets remain the evidence.
     // The second result reports a source read failure, never mere history size.
     items:=make([dynamic]string,context.temp_allocator)
-    append(&items,..coordinator_lines)
+    append(&items,..coordinator_lines[:min(8,len(coordinator_lines))])
     append(&items,"## Active & Pending")
-    append(&items,..open_lines[:])
+    append(&items,..open_lines[:min(12,len(open_lines))])
     append(&items,"## Recent lessons (original handoff facets retained)")
     seen:=make(map[string]bool,context.temp_allocator)
-    for i:=len(dead_end_lines)-1;i>=0;i-=1 {
-        entry:=dead_end_lines[i]
+    kept_lessons:=0
+    for i:=len(lesson_lines)-1;i>=0;i-=1 {
+        entry:=lesson_lines[i]
         // Dedup lesson prose independently of its task/attempt citation.
         close:=strings.index(entry,"] ")
         lesson:=entry[close+2:] if close>=0 else entry
         if seen[lesson] do continue
         seen[lesson]=true
         append(&items,entry)
+        kept_lessons+=1
+        if kept_lessons>=24 do break
     }
     append(&items,"## Completed")
-    for i:=len(done_lines)-1;i>=0;i-=1 do append(&items,done_lines[i])
+    for i:=len(done_lines)-1;i>=max(0,len(done_lines)-8);i-=1 do append(&items,done_lines[i])
     return compact.project(fmt.tprintf("# Chain %s: %s",chain.chain_id,chain.title),
-        fmt.tprintf("Projection v1; history: task-chain graph %s; task fetch TASK facet:TASK:ATTEMPT:handoff (original full text).",chain.chain_id),
+        fmt.tprintf("Projection v1; history: task-chain graph %s; task fetch TASK facet:TASK:ATTEMPT:handoff; task fetch TASK chain-summary (curated input).",chain.chain_id),
         items[:]),false
 }
 
@@ -666,6 +674,10 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 	}
     prev,_,_:=iface.taskchain_get_chain_summary(svc.repo,chain.chain_id,chain.owner_user_id)
     projected,failed:=build_mechanical_chain_summary(svc,chain,lines)
+    if failed && prev.failure_fingerprint=="" {
+        _,_=end_uow(svc,&u,false)
+        return {},false,domain.domain_error(.Conflict,"context source unavailable; retry after storage recovery")
+    }
     if failed {
         // Curated edits remain useful while source storage is unhealthy. They
         // neither acknowledge nor clear the separate actionable failure edge.
@@ -679,7 +691,7 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 		body          = projected,
         curated_body = body,
         curated_initialized = true,
-        failure_fingerprint = prev.failure_fingerprint,
+        failure_fingerprint = prev.failure_fingerprint if failed else "",
 		line_count    = len(strings.split_lines(projected,context.temp_allocator)),
 		version       = prev.version + 1,
 		updated_at    = now,

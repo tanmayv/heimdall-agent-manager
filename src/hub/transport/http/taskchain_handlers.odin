@@ -2854,12 +2854,16 @@ get_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, chain_id)
 	if !got do return respond_error(err, req.request_id)
 	summary_text := ""
+    curated_notes:=""
+    projection_state:="absent"
 	line_count := 0
 	version := 0
 	updated_at := chain.updated_at
 	if h.taskchains != nil && h.taskchains.repo != nil {
 		if row, sok, _ := iface.taskchain_get_chain_summary(h.taskchains.repo, chain.chain_id, chain.owner_user_id); sok {
 			summary_text = row.body
+            curated_notes=row.curated_body
+            projection_state="stale" if row.failure_fingerprint!="" else ("current" if row.curated_initialized else "legacy_unmaterialized")
 			line_count = row.line_count
 			version = row.version
 			updated_at = row.updated_at
@@ -2868,6 +2872,8 @@ get_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	o := taskv2.json_begin()
 	taskv2.json_str(&o, "chain_id", string(chain.chain_id))
 	taskv2.json_str(&o, "summary", summary_text)
+    taskv2.json_str(&o,"curated_notes",curated_notes)
+    taskv2.json_str(&o,"projection_state",projection_state)
 	taskv2.json_str(&o, "body", summary_text)
 	taskv2.json_int(&o, "line_count", i64(line_count))
 	taskv2.json_int(&o, "version", i64(version))
@@ -2944,6 +2950,8 @@ put_task_chain_summary_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	taskv2.json_str(&o, "chain_id", string(row.chain_id))
 	taskv2.json_str(&o, "summary", row.body)
 	taskv2.json_str(&o, "body", row.body)
+    taskv2.json_str(&o,"curated_notes",row.curated_body)
+    taskv2.json_str(&o,"projection_state","stale" if row.failure_fingerprint!="" else "current")
 	taskv2.json_int(&o, "line_count", i64(row.line_count))
 	taskv2.json_int(&o, "version", i64(row.version))
 	taskv2.json_str(&o, "updated_at", row.updated_at)

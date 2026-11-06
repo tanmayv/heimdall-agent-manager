@@ -271,6 +271,17 @@ validate_artifacts_facet_json :: proc(raw_in: string) -> (string, bool, domain.D
 fetch_ref :: proc(svc: ^Service, task: domain.Task, ref: string) -> (string, bool, domain.Domain_Error) {
 	r := strings.trim_space(ref)
 	if r == "" do return "", false, domain.domain_error(.Validation_Failed, "ref is required")
+    if r=="chain-summary" {
+        row,ok,err:=iface.taskchain_get_chain_summary(svc.repo,task.chain_id,task.owner_user_id)
+        if !ok do return "",false,err
+        o:=json_begin()
+        json_str(&o,"chain_id",string(task.chain_id))
+        json_str(&o,"curated_notes",row.curated_body)
+        json_str(&o,"legacy_body",row.body if !row.curated_initialized else "")
+        json_int(&o,"version",i64(row.version))
+        json_str(&o,"projection_state","stale" if row.failure_fingerprint!="" else "current")
+        return json_end(&o),true,{}
+    }
 	if strings.has_prefix(r, "#") {
 		want := r[1:]
 		evs, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)

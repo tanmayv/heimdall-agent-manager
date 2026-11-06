@@ -32,7 +32,7 @@ test_summary_compaction_overflow_curated_edits_and_persisted_failure_rearm :: pr
     _,_,_=iface.taskchain_save_chain(&fx.repo,chain)
     task:=seed_task(t,fx,chain,"history_task")
     for i in 1..=100 {
-        raw,_:=json.marshal(struct{summary:string,dead_ends:[]string}{"handoff",[]string{fmt.tprintf("lesson%d %s",i,strings.repeat("detail",300,context.temp_allocator))}},allocator=context.temp_allocator)
+        raw,_:=json.marshal(struct{summary:string,dead_ends,decisions:[]string}{"handoff",[]string{fmt.tprintf("lesson%d %s",i,strings.repeat("detail",300,context.temp_allocator))},[]string{"retain the ownership fence"}},allocator=context.temp_allocator)
         written,err:=iface.taskchain_save_facet(&fx.repo,domain.Task_Attempt_Facet{
             task_id=task.task_id,chain_id=chain.chain_id,owner_user_id=chain.owner_user_id,
             attempt_no=i,kind=FACET_HANDOFF,v=1,body_json=string(raw),writer=FACET_WRITER_AGENT,written_at=platform.clock_now(&fx.clock),
@@ -52,6 +52,24 @@ test_summary_compaction_overflow_curated_edits_and_persisted_failure_rearm :: pr
     testing.expect(t,strings.contains(summary.body,"short curated note"))
     testing.expect_value(t,scalar_text(fx,"SELECT count(*) FROM task_events WHERE kind='summary_overflow'"),"0")
     testing.expect_value(t,scalar_text(fx,"SELECT count(*) FROM task_attempt_facets WHERE kind='handoff'"),"100")
+    for i in 1..=100 {
+        original,has_original:=get_facet(&fx.svc,task,i,FACET_HANDOFF)
+        fetched,fetch_ok,_:=task_fetch(&fx.svc,task,fmt.tprintf("facet:history_task:%d:handoff",i))
+        testing.expect(t,has_original && fetch_ok && strings.contains(fetched,original.body_json),"all original attempts remain fetchable verbatim")
+    }
+    long_note:=strings.concatenate({strings.repeat("curated",200,context.temp_allocator),"CURATED_TAIL"},context.temp_allocator)
+    _,notes_saved,_:=chain_summary_set(&fx.svc,user_auth(),chain.chain_id,long_note)
+    testing.expect(t,notes_saved)
+    original_notes,notes_fetch_ok,_:=task_fetch(&fx.svc,task,"chain-summary")
+    testing.expect(t,notes_fetch_ok && strings.contains(original_notes,long_note),"curated input is fetchable beyond the preview budget")
+    for i in 0..<30 do _=seed_task(t,fx,chain,fmt.tprintf("pending_task_%d",i))
+    notes:=make([dynamic]string,context.temp_allocator)
+    for i in 0..<60 do append(&notes,fmt.tprintf("curated note %d",i))
+    _,crowded_ok,_:=chain_summary_set(&fx.svc,user_auth(),chain.chain_id,strings.join(notes[:],"\n",context.temp_allocator))
+    testing.expect(t,crowded_ok)
+    summary_test_rebuild(t,fx,chain)
+    crowded,_,_:=iface.taskchain_get_chain_summary(&fx.repo,chain.chain_id,chain.owner_user_id)
+    testing.expect(t,strings.contains(crowded.body,"lesson100") && strings.contains(crowded.body,"Decision: retain the ownership fence"),"task/notes volume cannot starve recent lessons and decisions")
     // Genuine source failure is actionable and persists once per failure edge.
     testing.expect(t,exec_ok(t,fx,"ALTER TABLE task_attempt_facets RENAME TO unavailable_facets"))
     for _ in 0..<3 do summary_test_rebuild(t,fx,chain)

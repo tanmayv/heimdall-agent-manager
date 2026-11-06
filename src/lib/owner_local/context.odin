@@ -2,6 +2,9 @@
 package owner_local
 
 import "core:encoding/json"
+import "core:c"
+import "core:crypto/sha2"
+import vault "odin_test:lib/vault"
 import "core:fmt"
 import "core:strings"
 import compact "odin_test:lib/context_compaction"
@@ -9,8 +12,7 @@ import contracts "odin_test:contracts"
 
 // Complete source index, ordered by immutable reference. Only called under the
 // Store transaction AFTER chain read authorization. Never includes credentials.
-context_sources :: proc(s:^Store,chain:string) -> ([dynamic][]string,bool) {
-    return query(s.db,`SELECT kind,ref,body FROM (
+CONTEXT_SOURCE_SQL :: `SELECT kind,ref,body FROM (
  SELECT 'task' kind,task_id ref,json_object('task_id',task_id,'title',title,'body',body,'revision',revision) body FROM tasks WHERE chain_id=?1
  UNION ALL SELECT 'requirements',task_id||':'||revision,json_object('task_id',task_id,'revision',revision,'brief',brief_json) FROM task_requirements WHERE chain_id=?1
  UNION ALL SELECT 'submission',task_id||':'||attempt,json_object('task_id',task_id,'attempt',attempt,'summary',summary,'head',head,'requirements_revision',requirements_revision) FROM local_submissions WHERE chain_id=?1
@@ -23,7 +25,41 @@ context_sources :: proc(s:^Store,chain:string) -> ([dynamic][]string,bool) {
  UNION ALL SELECT 'workflow_event',run_id||':'||event_seq,json_object('run_id',run_id,'execution',execution,'event_seq',event_seq,'kind',kind,'principal_id',principal_id,'operation_id',operation_id) FROM local_workflow_events WHERE chain_id=?1
  UNION ALL SELECT 'source',origin_kind||':'||origin_id||':'||episode_id,json_object('origin_kind',origin_kind,'origin_id',origin_id,'episode_id',episode_id,'source_version',source_version,'resolved',resolved,'body',body,'card_id',card_id,'card_closed',card_closed) FROM source_episodes WHERE chain_id=?1
  UNION ALL SELECT 'consumption',origin_kind||':'||origin_id||':'||episode_id||':'||consumer_fence_hash||':'||source_version,json_object('origin_kind',origin_kind,'origin_id',origin_id,'episode_id',episode_id,'source_version',source_version,'consumer_fence_hash',consumer_fence_hash,'result',result,'commit_seq',commit_seq) FROM source_consumptions WHERE chain_id=?1
- ) ORDER BY kind,ref`,chain)
+ )`
+context_sources :: proc(s:^Store,chain:string,offset:i64=0,limit:i64=MAX_RECORDS) -> ([dynamic][]string,bool) {
+    return query(s.db,fmt.tprintf("%s ORDER BY kind,ref LIMIT ?2 OFFSET ?3",CONTEXT_SOURCE_SQL),chain,fmt.tprintf("%d",limit),fmt.tprintf("%d",offset))
+}
+
+// Stream exact framed source bytes directly from SQLite. A large retained
+// history never becomes a giant allocated JSON array just to hash provenance.
+context_source_digest :: proc(s:^Store,chain,seq:string) -> (string,i64,bool) {
+    stmt:Stmt
+    sql:=fmt.tprintf("%s ORDER BY kind,ref",CONTEXT_SOURCE_SQL)
+    if sqlite3_prepare_v2(s.db,strings.clone_to_cstring(sql,context.temp_allocator),-1,&stmt,nil)!=0 do return "",0,false
+    defer sqlite3_finalize(stmt)
+    if sqlite3_bind_text(stmt,1,strings.clone_to_cstring(chain,context.temp_allocator),c.int(len(chain)),rawptr(~uintptr(0)))!=0 do return "",0,false
+    hash:sha2.Context_256
+    sha2.init_256(&hash)
+    prefix:=encode([4]string{"heimdall-context-source-v1",s.account,chain,seq})
+    sha2.update(&hash,transmute([]byte)prefix)
+    count:i64
+    for {
+        rc:=sqlite3_step(stmt)
+        if rc==101 do break
+        if rc!=100 do return "",0,false
+        for i in 0..<3 {
+            n:=int(sqlite3_column_bytes(stmt,c.int(i)))
+            frame:[8]byte
+            for j in 0..<8 do frame[j]=byte(u64(n)>>u64(j*8))
+            sha2.update(&hash,frame[:])
+            bytes:=([^]byte)(rawptr(sqlite3_column_text(stmt,c.int(i))))[:n]
+            sha2.update(&hash,bytes)
+        }
+        count+=1
+    }
+    digest:[32]byte
+    sha2.final(&hash,digest[:])
+    return vault.hex_encode_lower(digest[:],context.temp_allocator),count,true
 }
 
 // Snapshot-coherent lazy materialization. Source checkpoint and projection are
@@ -42,11 +78,11 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
     if len(old)==1 && old[0][0]=="1" && old[0][2]==seq {
         version=number(old[0][1]);digest=old[0][3];count=old[0][4];body=old[0][5]
     } else {
-        sources,source_ok:=context_sources(s,chain)
+        source_hash,source_count,source_ok:=context_source_digest(s,chain,seq)
         if !source_ok do return nil,false
         if len(old)==1 do version=number(old[0][1])+1
-        count=fmt.tprintf("%d",len(sources))
-        digest=contracts.owner_payload_digest(encode(struct{account,chain,seq:string,header:[]string,sources:[dynamic][]string}{s.account,chain,seq,header[0],sources}))
+        count=fmt.tprintf("%d",source_count)
+        digest=source_hash
         items:=make([dynamic]string,context.temp_allocator)
         append(&items,fmt.tprintf("Coordinator input (chain description): %s",header[0][1]))
         pending,pending_ok:=query(s.db,"SELECT origin_kind,origin_id,episode_id,body FROM source_episodes WHERE chain_id=? AND (resolved=0 OR (card_id!='' AND card_closed=0)) ORDER BY source_version DESC,origin_kind,origin_id,episode_id LIMIT 16",chain)
@@ -79,9 +115,12 @@ context_materialize :: proc(s:^Store,chain:string) -> (json.Object,bool) {
 // row and byte offset, retrieving every original including giant one-liners.
 context_history :: proc(s:^Store,chain:string,p:json.Object) -> Result {
     if s.active==nil || !transaction_current(s.active) do return fail("invalid_scope")
-    sources,ok:=context_sources(s,chain)
+    counts,ok:=query(s.db,fmt.tprintf("SELECT count(*) FROM (%s)",CONTEXT_SOURCE_SQL),chain)
     state,read:=query(s.db,"SELECT commit_seq FROM runtime_database WHERE singleton=1")
-    if !ok || !read || len(state)!=1 do return fail("storage_error")
+    if !ok || len(counts)!=1 || !read || len(state)!=1 do return fail("storage_error")
+    chains,chain_ok:=query(s.db,"SELECT revision FROM task_chains WHERE chain_id=?",chain)
+    if !chain_ok || len(chains)!=1 do return fail("invalid_scope")
+    source_count:=number(counts[0][0])
     scope:=contracts.owner_payload_digest(encode([3]string{s.account,chain,state[0][0]}))
     index,offset:i64
     cursor:=field(p,"cursor")
@@ -89,16 +128,18 @@ context_history :: proc(s:^Store,chain:string,p:json.Object) -> Result {
         parts:=strings.split(cursor,":",context.temp_allocator)
         if len(parts)!=3 || parts[0]!=scope do return fail("stale_cursor")
         index=number(parts[1]);offset=number(parts[2])
-        if index<0 || index>=i64(len(sources)) || offset<0 || fmt.tprintf("%d",index)!=parts[1] || fmt.tprintf("%d",offset)!=parts[2] do return fail("malformed")
+        if index<0 || index>=source_count || offset<0 || fmt.tprintf("%d",index)!=parts[1] || fmt.tprintf("%d",offset)!=parts[2] do return fail("malformed")
     }
-    if len(sources)==0 do return Result{code="ok",body=encode(doc(map[string]string{"kind"="context_source","next_cursor"="","source_count"="0","revision"=state[0][0]}))}
-    row:=sources[index]
+    if source_count==0 do return Result{code="ok",body=encode(doc(map[string]string{"kind"="context_source","next_cursor"="","source_count"="0","revision"=chains[0][0],"source_seq"=state[0][0]}))}
+    sources,source_ok:=context_sources(s,chain,index,1)
+    if !source_ok || len(sources)!=1 do return fail("storage_error")
+    row:=sources[0]
     if offset>i64(len(row[2])) || (offset<i64(len(row[2])) && row[2][offset]&0xc0==0x80) do return fail("malformed")
     end:=min(i64(len(row[2])),offset+8192)
     for end>offset && end<i64(len(row[2])) && row[2][end]&0xc0==0x80 {end-=1}
     next:=""
-    if end<i64(len(row[2])) {next=fmt.tprintf("%s:%d:%d",scope,index,end)} else if index+1<i64(len(sources)) {next=fmt.tprintf("%s:%d:0",scope,index+1)}
-    body:=encode(doc(map[string]string{"kind"="context_source","source_kind"=row[0],"source_ref"=row[1],"body"=row[2][offset:end],"offset"=fmt.tprintf("%d",offset),"next_cursor"=next,"source_count"=fmt.tprintf("%d",len(sources)),"revision"=state[0][0]}))
+    if end<i64(len(row[2])) {next=fmt.tprintf("%s:%d:%d",scope,index,end)} else if index+1<source_count {next=fmt.tprintf("%s:%d:0",scope,index+1)}
+    body:=encode(doc(map[string]string{"kind"="context_source","source_kind"=row[0],"source_ref"=row[1],"body"=row[2][offset:end],"offset"=fmt.tprintf("%d",offset),"next_cursor"=next,"source_count"=fmt.tprintf("%d",source_count),"revision"=chains[0][0],"source_seq"=state[0][0]}))
     if len(body)>MAX_PAGE do return fail("invalid_content")
     return Result{code="ok",body=body}
 }
