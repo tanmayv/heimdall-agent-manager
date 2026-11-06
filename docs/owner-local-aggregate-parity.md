@@ -671,7 +671,9 @@ nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimda
 
 Store: 116/116; contracts: 19/19; native differential: 1/1.
 Typecheck passes; retained UI tests: 17/17; all four binary builds pass.
-The exact disposable-demo result is recorded in the task handoff. Tests cover start/end/outcome preservation, continuation,
+The complete disposable demo passed (exit 0, all steps) in managed session
+`sh_bb45fb95ba0e364ecd76f59d21aecfed`, including the new signed browser
+and actual CLI native record reads. Its exact command is in the task handoff. Tests cover start/end/outcome preservation, continuation,
 submission 1 mapping to native attempt 2, cancellation, non-counting reopen,
 TTL/hard-cap expiry, incomplete old expiry evidence, atomic switch rollback,
 restart and current read revocation
