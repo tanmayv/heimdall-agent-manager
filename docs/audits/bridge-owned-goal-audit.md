@@ -108,3 +108,31 @@ A Python3 in-memory SQLite probe executed actual `202_owner_local_registry.sql`,
 No production test/build rerun was needed for this documentation-only change. Existing nearby test sources/docs were inspected as prior evidence, not relabeled as tests run by this audit. No live credential, HTTP revocation experiment, platform/provider run or full failure/resource test was performed. Read-only source coverage is focused, not exhaustive proof of every old Hub endpoint/log, OS ACL, key-loss behavior or candidate branch. Full-run success on prior slices cannot establish whole-goal completion.
 
 Independent reviewer should verify F1 against current-vs-historical directory trust and unchanged owner binding; repeat F2 with reachable tombstones; check C1 payload parity and C2 grant writers; confirm the matrix and pending M4 revision2 without treating unfinished work as a delivered regression. Author confidence is high for these source conclusions and synthetic SQL behavior; full product readiness remains unestablished.
+
+## F1/F2 remediation follow-up
+
+Task `task_18e569e455cd82bb` addresses the two delivered defects above. The audit
+and its pinned source citations remain historical evidence at `37495ef4`.
+Current behavior and reproduction commands are documented in
+[the owner-local demo](../owner-local-v1-demo.md#protected-registry-listing-and-creator-revocation).
+
+- **F1:** current approved owner/enrollment and each registry signature remain
+  mandatory. Subsequent publication compares the exact stored immutable genesis
+  binding without requiring the creator to remain approved. An unregistered
+  genesis still requires current creator approval and both signatures; first
+  publication after creator revocation fails closed. Current command authorization
+  and owner revocation remain independent denial boundaries.
+- **F2:** the panel follows explicit bounded pages through live titles and
+  tombstones. Cursors advance over the last examined raw row, with explicit
+  terminal state and live keyset concurrency semantics. Whole encoded data pages
+  are capped at 262144 bytes and 100 examined rows, with one unconsumed lookahead.
+  Header-only legacy search discovery keeps its separate 101-header sentinel.
+
+Focused signed-publication and real authenticated listing-handler tests cover
+creator/owner revocation, initial registration, immutable conflicts, 105 live
+tasks, 104 tombstones, empty nonterminal pages, byte-split continuation and
+cross-account cursors. The isolated enrollment regression additionally exercises
+actual HTTP owner publication/relay and the rendered production panel. Exact run
+results and commit are recorded in the remediation task's submission; independent
+named review remains required. This follow-up does not dispose of C1–C3 or mark
+the overall Bridge-owned product complete.

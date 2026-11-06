@@ -21,8 +21,43 @@ These limits leave room for a complete header and at least one maximum-size
 item on every nonterminal page. Incompatible oversized data from earlier draft
 builds fails explicitly instead of returning a non-advancing cursor. Read results include
 `next_cursor`; callers pass it in the next signed read and restart on
-`stale_cursor`. Hub listing pages use `after_chain` and `after_task` from the
-last returned entry, with at most 100 entries per request.
+`stale_cursor`. Hub listing pagination is described below; its cursor advances over raw rows,
+including hidden deletion tombstones.
+
+## Protected registry listing and creator revocation
+
+The panel consumes `GET /api/v1/owner-local/chains?page=1` until the response's
+`terminal` is true. Each response contains `items`, `next_cursor` (an object with
+`after_chain` and `after_task`), and `terminal`. Pass both cursor fields unchanged
+on the next request, together with the same `chain_id` / `headers_only` filters.
+A terminal response has empty cursor fields. Never infer completion from the
+visible item count: an empty page can advance past 100 deletion tombstones.
+Pages examine at most 100 raw rows (plus one unconsumed lookahead row) and the
+encoded data object is at most 262144 bytes, including items and cursor framing.
+A row that cannot fit alone fails explicitly, without returning a stuck cursor.
+
+These are **live keyset cursors**, not snapshot cursors. Registry keys and deletion
+tombstones are retained permanently: edits, deletion, and later publication do
+not expire a position or produce `stale_cursor`. Concurrent insertion at or before
+a consumed position requires a fresh listing from the beginning. An old or
+cross-account position grants no access: each page applies current account
+authentication and filtering. The panel discards in-flight pages when the vault
+session changes and rejects non-advancing/malformed cursors. Owner-local signed
+detail reads retain their separate snapshot/`stale_cursor` protocol.
+
+The array response without `page=1` remains for existing callers, including the
+separate header-only search discovery limit; it is not the complete panel listing.
+
+First registry registration verifies both creator and owner signatures against
+currently approved enrolled identities. If the creator is revoked before first
+publication, registration fails closed; this patch adds no recovery or key
+substitution path. Once registered, each publication verifies the current owner
+and its exact enrolled Bridge signing identity, the new registry signature,
+and the persisted account/chain/owner/key/creator/genesis digest and exact genesis
+bytes. Creator revocation therefore cannot prevent an approved owner publishing
+newer committed metadata or tombstones for that bound chain. It still denies the
+creator's commands and receipt reads; revoking the owner still denies publication.
+This addresses audit F1 and F2; it does not add general device grants.
 
 ## CLI and signing/export
 
@@ -102,7 +137,7 @@ nix develop --command odin test src/lib/owner_local \
 nix develop --command odin test src/hub/repository/sqlite \
   -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/owner-v1-registry
 node --import ./tests/helpers/vaultEndpointHarness.ts \
-  --test tests/ui_owner_local_contract_test.ts
+  --test tests/ui_owner_local_contract_test.ts tests/ui_owner_registry_listing_test.ts
 npm run typecheck
 ```
 
@@ -134,3 +169,25 @@ retries. No migration of existing chains is performed.
 Leases, fleet, scheduling, reviews, workflows, search/FTS, remote execution,
 general grant management, backup/restore, key rotation and legacy migration
 remain later expansion. This slice is not full M1 completion.
+
+## Audit regression option
+
+Add `HEIMDALL_E2E_OWNER_REGISTRY=1` to the disposable enrollment command above.
+It creates 105 tasks through the real owner relay, renders the production panel,
+deletes 104 tasks, and renders it again to verify the survivor behind tombstones.
+It then enrolls synthetic creator/backup browsers, captures actual owner-signed
+publications, rewinds only disposable Hub title metadata to simulate delayed
+delivery, and revokes the creating browser through the signed directory API.
+The real publication endpoint must accept the newer bound metadata and reject
+a valid signed first publication whose creator was revoked. The actual owner
+relay must reject a command signed by that revoked creator. No live database,
+credentials, service, or deployment is used.
+
+Focused HTTP regression command:
+
+```bash
+nix develop --command odin test src/hub/transport/http \
+  -collection:odin_test=src \
+  -define:ODIN_TEST_NAMES=owner_registry_bound_publication_survives_creator_revocation,owner_registry_http_pages_live_tombstones_bytes_and_accounts \
+  -out:/tmp/owner-fixes-http-test
+```

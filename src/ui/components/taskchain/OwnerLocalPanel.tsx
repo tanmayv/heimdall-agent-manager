@@ -1,3 +1,4 @@
+import { listOwnerRegistryPages } from '../../api/ownerRegistryListing';
 import React, { useEffect, useState } from 'react';
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { prepareOwnerOperation, ownerRelayFile, sendOwnerOperation, openOwnerReply, ownerId, type OwnerOperation, type OwnerSession } from '../../api/ownerLocalClient';
@@ -42,7 +43,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
   }
   async function list() {
     const s = await current(); const before = getKeyringSession();
-    const rows = await cookieJsonFetch('/api/v1/owner-local/chains');
+    const rows = await listOwnerRegistryPages(cookieJsonFetch, () => getKeyringSession() === before);
     const visible = await Promise.all(rows.map(async (r: any) => {
       const registry = JSON.parse(r.registry_json);
       return { ...r, title: await decryptVaultText(registry.task_title_cipher || registry.chain_title_cipher, s.keyring) };

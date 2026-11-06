@@ -268,6 +268,7 @@ c.commit()
   if (process.env.HEIMDALL_E2E_OWNER_LOCAL === '1') {
     await step('owner-local V1 real relay, persistence, retries and offline listing', async () => {
       const { ownerLocalFlow } = await import('./owner_local_flow.ts');
+      const registrySaved = new Map();
       await ownerLocalFlow({
         hub: hubA, approver: S.apA, bridgeId: S.a.bridgeId, http, expect,
         otherAccount: async () => ({ ...hubA, session: await hubLogin(hubA.base, 'owner-local-other-account') }),
@@ -371,6 +372,57 @@ c.commit()
           const restarted = await runtime({ ...S.cfgA, port: await freePort() }, [], online(hubA, S.a.bridgeId));
           expect(!restarted.refused && !restarted.timeout, 'isolated owner restarted');
           S.runA = restarted.child;
+        },
+        registryFixture: async (action, chainId) => {
+          // Fixture control only: no live DBs or credentials are accepted here.
+          if (action === 'publish') {
+            const owned = fs.readFileSync(S.cfgA.token, 'utf8').trim();
+            const token = owned.includes('\n') ? owned.slice(owned.indexOf('\n') + 1).trim() : owned;
+            const response = await fetch(hubA.base + '/api/v1/owner-local/registry', {
+              method:'POST', headers:{Authorization:'Bearer ' + token, 'Content-Type':'application/json'},
+              body:JSON.stringify(registrySaved.get(chainId).publication),
+            });
+            return {status:response.status};
+          }
+          const prior = registrySaved.get(chainId) ?? {};
+          const probe = spawnSync('python3', ['-c', `import sqlite3,sys,json
+c=sqlite3.connect(sys.argv[1])
+action,chain,prior=sys.argv[2],sys.argv[3],json.loads(sys.argv[4])
+g=c.execute("select genesis_json from owner_local_chains where chain_id=?",(chain,)).fetchone()[0]
+r,rev=c.execute("select registry_json,metadata_revision from owner_local_titles where chain_id=? and task_id=''",(chain,)).fetchone()
+if action=="save": out={"previous":{"registry":r,"revision":rev}}
+else:
+ out={"publication":{"genesis":g,"registry":r}}
+ if action=="rewind":
+  old=prior["previous"]
+  c.execute("update owner_local_titles set registry_json=?,metadata_revision=? where chain_id=? and task_id=''",(old["registry"],old["revision"],chain))
+ elif action=="unregister":
+  c.execute("delete from owner_local_titles where chain_id=?",(chain,))
+  c.execute("delete from owner_local_chains where chain_id=?",(chain,))
+ else: raise ValueError(action)
+c.commit()
+print(json.dumps(out))
+`, path.join(ROOT,'hub-a','hub.db'), action, chainId, JSON.stringify(prior)], {encoding:'utf8'});
+          if (probe.status !== 0) throw new Error('Synthetic registry fixture failed: ' + probe.stderr);
+          registrySaved.set(chainId, {...prior,...JSON.parse(probe.stdout)});
+        },
+        rekeyOwner: async () => {
+          const signed = await signedRequestHeaders(S.apA.identity, S.apA.userId, 'GET', '/api/v1/vault/devices/self', '');
+          const self = await http(hubA,'GET','/api/v1/vault/devices/self',{headers:signed});
+          S.apA.wrap = self.data.wrap;
+          const chain = await S.apA.chain();
+          await deliverKeyringToBridge(S.a.bridgeId, chain, {
+            fetchTarget: async () => {
+              const r = await http(hubA,'GET','/api/v1/bridges/' + S.a.bridgeId + '/public-key');
+              return bridgeUnsealTargetFromRecord(S.a.bridgeId,r.data);
+            },
+            dispatch: async (id,payload) => {
+              const r=await http(hubA,'POST','/api/v1/bridges/' + id + '/unseal',{body:payload});
+              if(r.status!==200 || r.data?.ok===false) throw new Error('Synthetic rekey refused');
+              return r.data;
+            },
+            withKeyringBytes: async fn => fn(Uint8Array.from(S.apA.keyringBytes)),
+          });
         },
         inspectHub: async (chainId) => {
           const probe = spawnSync('python3', ['-c', `import sqlite3,sys

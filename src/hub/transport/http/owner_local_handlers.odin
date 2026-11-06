@@ -73,28 +73,53 @@ owner_local_publish_handler :: proc(ctx:rawptr,req:Request)->Response {
     if !gok || !rok do return respond_error(domain.domain_error(.Validation_Failed,"invalid registry documents"),req.request_id)
     account:=contracts.owner_string(genesis,"account_id")
     if auth.user_id!=account || auth.bridge_id!=contracts.owner_string(genesis,"owner_bridge_id") do return respond_error(domain.domain_error(.Forbidden,"publication owner mismatch"),req.request_id)
+    chain:=contracts.owner_string(genesis,"chain_id")
+    existing,read_err:=owner_registry_rows(h,account,chain,"","",1)
+    if read_err.code!=.None do return respond_error(read_err,req.request_id)
     d,available:=owner_directory(h,account)
     dir,verified:=vault.directory_verify(d)
     creator,approved:=dir.trusted[contracts.owner_string(genesis,"creator_id")]
     owner,enrolled:=dir.trusted[contracts.owner_string(genesis,"owner_key_id")]
-    if !available || !verified || !approved || creator.kind!="browser" || !enrolled || owner.kind!="bridge" do return respond_error(domain.domain_error(.Forbidden,"unapproved signer"),req.request_id)
+    if !available || !verified || !enrolled || owner.kind!="bridge" do return respond_error(domain.domain_error(.Forbidden,"unapproved signer"),req.request_id)
     // The enrolled Bridge row must name this exact directory signing identity.
     snapshot,serr:=vd.get_directory(h.vault,account)
     bound:=false
     for dev in snapshot.devices { if dev.bridge_id==auth.bridge_id && dev.device_id==owner.id && dev.sign_public_key==owner.sign_public_key && dev.status==.Approved do bound=true }
     if serr.code!=.None || !bound do return respond_error(domain.domain_error(.Forbidden,"owner identity mismatch"),req.request_id)
-    ck:=contracts.Owner_Verified_Key{account,creator.id,creator.id,creator.sign_public_key,"device",true,false}
     bk:=contracts.Owner_Verified_Key{account,auth.bridge_id,owner.id,owner.sign_public_key,"bridge",true,false}
     digest,_:=contracts.owner_digest("genesis",genesis)
-    signatures_ok:=contracts.owner_verify_genesis(genesis,account,auth.bridge_id,ck,bk)==.None && contracts.owner_verify_registry(registry,account,auth.bridge_id,digest,bk)==.None
-    if !signatures_ok || contracts.owner_string(registry,"chain_id")!=contracts.owner_string(genesis,"chain_id") { return respond_error(domain.domain_error(.Forbidden,"invalid owner signatures"),req.request_id) }
-    chain:=contracts.owner_string(genesis,"chain_id")
+    ck:=contracts.Owner_Verified_Key{account,creator.id,creator.id,creator.sign_public_key,"device",approved && creator.kind=="browser",false}
+    if !owner_publication_verified(genesis,registry,contracts.owner_string(publication,"genesis"),account,auth.bridge_id,ck,bk,existing) do return respond_error(domain.domain_error(.Forbidden,"invalid owner signatures"),req.request_id)
     if _,exists,_:=h.taskchains.repo.get_chain(h.taskchains.repo.ctx,domain.Task_Chain_ID(chain));exists do return respond_error(domain.domain_error(.Conflict,"legacy chain requires explicit migration"),req.request_id)
     revision,_:=strconv.parse_i64(contracts.owner_string(registry,"metadata_revision"))
-    r:=domain.Owner_Registry_Record{account_id=account,chain_id=chain,owner_bridge_id=auth.bridge_id,owner_key_id=owner.id,creator_id=creator.id,genesis_digest=digest,genesis_json=contracts.owner_string(publication,"genesis"),task_id=contracts.owner_string(registry,"task_id"),registry_json=contracts.owner_string(publication,"registry"),metadata_revision=revision}
+    r:=domain.Owner_Registry_Record{account_id=account,chain_id=chain,owner_bridge_id=auth.bridge_id,owner_key_id=owner.id,creator_id=contracts.owner_string(genesis,"creator_id"),genesis_digest=digest,genesis_json=contracts.owner_string(publication,"genesis"),task_id=contracts.owner_string(registry,"task_id"),registry_json=contracts.owner_string(publication,"registry"),metadata_revision=revision}
     err:=h.taskchains.repo.owner_registry_publish(h.taskchains.repo.ctx,r)
     if err.code!=.None do return respond_error(err,req.request_id)
     return respond_success(`{"published":true}`,req.request_id,auth_ctx_server_time(req))
+}
+// A bound genesis is authenticated historical evidence. Never reconstruct it
+// using a different key or promote a revoked creator into a current command key.
+owner_publication_verified :: proc(genesis,registry:json.Object,raw_genesis,account,bridge:string,creator,owner:contracts.Owner_Verified_Key,existing:[]domain.Owner_Registry_Record)->bool {
+    digest,ok:=contracts.owner_digest("genesis",genesis)
+    if !ok || contracts.owner_string(genesis,"account_id")!=account || contracts.owner_string(genesis,"owner_bridge_id")!=bridge || contracts.owner_string(genesis,"owner_key_id")!=owner.key_id do return false
+    if len(existing)>0 {
+        r:=existing[0]
+        if r.account_id!=account || r.chain_id!=contracts.owner_string(genesis,"chain_id") || r.owner_bridge_id!=bridge || r.owner_key_id!=owner.key_id || r.creator_id!=contracts.owner_string(genesis,"creator_id") || r.genesis_digest!=digest || r.genesis_json!=raw_genesis do return false
+    } else {
+        // First publication after creator revocation fails closed. It needs a
+        // separate authenticated recovery policy; a submitted genesis is no proof.
+        if contracts.owner_verify_genesis(genesis,account,bridge,creator,owner)!=.None do return false
+    }
+    return contracts.owner_string(registry,"chain_id")==contracts.owner_string(genesis,"chain_id") && contracts.owner_verify_registry(registry,account,bridge,digest,owner)==.None
+}
+
+Owner_Listing_Cursor :: struct {
+    after_chain,after_task:string,
+}
+Owner_Listing_Page :: struct {
+    items:[]Owner_Listing,
+    next_cursor:Owner_Listing_Cursor,
+    terminal:bool,
 }
 Owner_Listing :: struct {
     chain_id,owner_bridge_id,owner_key_id,task_id,registry_json:string,
@@ -109,12 +134,29 @@ owner_local_list_handler :: proc(ctx:rawptr,req:Request)->Response {
     chain:=query_value(req.query,"chain_id")
     rows,err:=owner_registry_rows(h,auth.user_id,chain,query_value(req.query,"after_chain"),query_value(req.query,"after_task"),101,query_value(req.query,"headers_only")=="1")
     if err.code!=.None do return respond_error(err,req.request_id)
+    paged:=query_value(req.query,"page")=="1"
     out:=make([dynamic]Owner_Listing,context.temp_allocator)
-    for row in rows {
-        if row.registry_json=="" do continue
+    cursor:=Owner_Listing_Cursor{}
+    terminal:=true
+    for row,i in rows {
+        if i==(101 if !paged && query_value(req.query,"headers_only")=="1" else 100) { terminal=false;break }
         registry,valid:=contracts.owner_parse(row.registry_json,"registry")
-        if !valid || contracts.owner_string(registry,"deleted")=="1" do continue
-        append(&out,Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)})
+        live:=valid && contracts.owner_string(registry,"deleted")!="1"
+        if live {
+            entry:=Owner_Listing{row.chain_id,row.owner_bridge_id,row.owner_key_id,row.task_id,row.registry_json,project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry,row.owner_bridge_id)}
+            append(&out,entry)
+            if paged && len(owner_json(Owner_Listing_Page{out[:],Owner_Listing_Cursor{row.chain_id,row.task_id},false}))>262144 {
+                resize(&out,len(out)-1)
+                if i==0 do return respond_error(domain.domain_error(.Validation_Failed,"registry entry exceeds page byte limit"),req.request_id)
+                terminal=false
+                break
+            }
+        }
+        // Advance over examined raw rows, including tombstones. The extra row
+        // is lookahead only; never advance over a byte-limited unreturned row.
+        cursor={row.chain_id,row.task_id}
     }
-    return respond_success(owner_json(out[:]),req.request_id,auth_ctx_server_time(req))
+    if !paged do return respond_success(owner_json(out[:]),req.request_id,auth_ctx_server_time(req))
+    if terminal do cursor={}
+    return respond_success(owner_json(Owner_Listing_Page{out[:],cursor,terminal}),req.request_id,auth_ctx_server_time(req))
 }

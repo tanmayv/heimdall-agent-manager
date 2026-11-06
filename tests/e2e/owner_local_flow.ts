@@ -3,7 +3,7 @@ import { prepareOwnerOperation, sendOwnerOperation, openOwnerReply, ownerRelayFi
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/deviceIdentity.ts';
 
-export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit }: any) {
+export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
   const chainId = ownerId('chain_'), taskId = ownerId('task_');
   const send = async (body: unknown) => {
@@ -309,6 +309,12 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
                 if(Date.now()>deadline)throw new Error('historical panel did not open exact attempt: '+dom.window.document.body.textContent);
                 await React.act(async()=>{await new Promise(r=>setTimeout(r,50));});
               }
+              // Detail arrives before the post-operation paginated listing.
+              // Keep the browser environment until that refresh has settled.
+              for(const deadline=Date.now()+15000;(dom.window.document.querySelector('[data-debug-id="owner-local-list"]') as HTMLButtonElement)?.disabled;){
+                if(Date.now()>deadline)throw new Error('historical listing refresh did not settle');
+                await React.act(async()=>{await new Promise(r=>setTimeout(r,50));});
+              }
               expect(dom.window.document.querySelector('pre')?.textContent?.includes(term),'rendered UI reads exact historical summary '+attempt);
               if(attempt==='1')expect(!dom.window.document.querySelector('pre')?.textContent?.includes('lifecycle-private-second-checks-pass'),'old output is not replaced by current submission');
             }
@@ -326,6 +332,10 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_CONTROLS==='1'){
     const {ownerLocalControlsFlow}=await import('./owner_local_controls_flow.ts');
     await ownerLocalControlsFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver});
+  }
+  if(process.env.HEIMDALL_E2E_OWNER_REGISTRY==='1'){
+    const {ownerRegistryFlow}=await import('./owner_registry_flow.ts');
+    await ownerRegistryFlow({hub,approver,bridgeId,http,expect,registryFixture,rekeyOwner});
   }
   return { chainId, taskId };
 }
