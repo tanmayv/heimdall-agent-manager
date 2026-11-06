@@ -90,3 +90,22 @@ test('runtime proof signatures bind exact child and scoped resource', async () =
     }
   }
 });
+
+
+test('event history uses strict chain-scoped read contracts', async () => {
+  const { ownerPayloadKind } = await import('../src/ui/api/ownerLocal.ts');
+  assert.equal(ownerPayloadKind('history.read'), 'read_payload');
+  assert.equal(ownerPayloadKind('history.fetch'), 'history_fetch_payload');
+  const c = doc('command') as OwnerCommand;
+  for (const method of ['history.read', 'history.fetch']) {
+    const command = {...c, method, task_id:'', expected_revision:'0'};
+    ownerParse(JSON.stringify(command), 'command');
+    const readonly = {...grant, method, task_id:'', can_mutate:false};
+    assert.equal(ownerLiveAdmit(command, readonly, 1000n, 99n), 'none');
+    assert.equal(ownerLiveAdmit(command, {...readonly,revoked:true}, 1000n, 99n), 'invalid_scope');
+    assert.throws(()=>ownerParse(JSON.stringify({...command,task_id:'task_1'}),'command'));
+  }
+  assert.equal(ownerParse('{"seq":"9007199254740993","offset":"0"}','history_fetch_payload').seq,'9007199254740993');
+  for(const raw of ['{"seq":"0","offset":"0"}','{"seq":"1","offset":"-1"}','{"seq":"1","offset":"0","task_id":"other"}'])
+    assert.throws(()=>ownerParse(raw,'history_fetch_payload'));
+});

@@ -53,5 +53,6 @@
   "submit_output_payload": "requirements_revision:positive head:optional_commit summary:document output:document",
   "workflow_control": "run_id:id execution:positive reason:document",
   "coordinator_payload": "configuration_revision:positive agent_id:id instance_id:id",
-  "coordinator_capability": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expires_ms:positive allowed_methods:coordinator_methods key_id:id signature:signature"
+  "coordinator_capability": "protocol_version:version account_id:id owner_bridge_id:id chain_id:id instance_id:id launch_epoch:id run_count:positive token_generation:hash configuration_revision:positive expires_ms:positive allowed_methods:coordinator_methods key_id:id signature:signature",
+  "history_fetch_payload": "seq:positive offset:counter"
 }

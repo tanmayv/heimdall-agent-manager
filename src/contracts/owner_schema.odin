@@ -861,6 +861,15 @@ owner_fields_coordinator_capability := [?]Owner_Field{
     {"key_id", "id"},
     {"signature", "signature"},
 }
+Owner_History_Fetch_Payload :: struct {
+    seq: string,
+    offset: string,
+}
+@(private)
+owner_fields_history_fetch_payload := [?]Owner_Field{
+    {"seq", "positive"},
+    {"offset", "counter"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -918,6 +927,7 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "workflow_control": return owner_fields_workflow_control[:]
     case "coordinator_payload": return owner_fields_coordinator_payload[:]
     case "coordinator_capability": return owner_fields_coordinator_capability[:]
+    case "history_fetch_payload": return owner_fields_history_fetch_payload[:]
     }
     return nil
 }

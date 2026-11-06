@@ -180,6 +180,7 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     if !workflow_refresh(s) do return fail("storage_error")
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if (method=="review.post" || method=="review.role.post") && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,task,"agent",child.instance,method,op,raw,payload,encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,req[0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")

@@ -55,6 +55,7 @@ export const ownerSchemas = {
   workflow_control: [["run_id", "id"], ["execution", "positive"], ["reason", "document"]],
   coordinator_payload: [["configuration_revision", "positive"], ["agent_id", "id"], ["instance_id", "id"]],
   coordinator_capability: [["protocol_version", "version"], ["account_id", "id"], ["owner_bridge_id", "id"], ["chain_id", "id"], ["instance_id", "id"], ["launch_epoch", "id"], ["run_count", "positive"], ["token_generation", "hash"], ["configuration_revision", "positive"], ["expires_ms", "positive"], ["allowed_methods", "coordinator_methods"], ["key_id", "id"], ["signature", "signature"]],
+  history_fetch_payload: [["seq", "positive"], ["offset", "counter"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -460,6 +461,10 @@ export interface OwnerCoordinator_Capability {
   key_id: string;
   signature: string;
 }
+export interface OwnerHistory_Fetch_Payload {
+  seq: string;
+  offset: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -516,4 +521,5 @@ export interface OwnerDocuments {
   workflow_control: OwnerWorkflow_Control;
   coordinator_payload: OwnerCoordinator_Payload;
   coordinator_capability: OwnerCoordinator_Capability;
+  history_fetch_payload: OwnerHistory_Fetch_Payload;
 }

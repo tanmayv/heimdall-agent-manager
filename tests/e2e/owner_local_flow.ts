@@ -61,6 +61,20 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   const cliResult = await openOwnerReply(session, cliOp, await cli(relay));
   expect(JSON.parse(cliResult.body).items.length === 1, 'real CLI signed file traverses real local Bridge and Hub relay');
 
+
+  // New immutable evidence traverses the production browser signer, real CLI,
+  // authenticated Hub relay and owner store after an actual owner restart.
+  const historyOp = await make('history.read', { expectedRevision: '0' });
+  const history = JSON.parse((await openOwnerReply(session, historyOp, await cli(await ownerRelayFile(session, historyOp)))).body);
+  expect(history.items.length === 3 && history.items.every((e: any) => e.completeness === 'full'), 'real immutable history has one event per accepted mutation, none for replay/read/rejection');
+  const event = history.items.find((e: any) => e.kind === 'task.comment');
+  expect(event.actor_kind === 'device' && event.actor_id === session.identity.deviceId && Number(event.ts_ms) > 0, 'history records actual enrolled device and commit time');
+  const evidenceOp = await make('history.fetch', { expectedRevision:'0', eventSeq:event.seq, offset:'0' });
+  const evidencePage = JSON.parse((await openOwnerReply(session, evidenceOp, await cli(await ownerRelayFile(session, evidenceOp)))).body);
+  expect(evidencePage.next_offset === '', 'small real evidence fits one chunk');
+  const evidence = JSON.parse(evidencePage.evidence);
+  expect(evidence.command === comment.command && evidence.payload === comment.payload && JSON.parse(evidence.content).body === 'owner-private-comment', 'exact signed bytes and historical plaintext survive real owner restart and CLI read');
+
   const cliChain = ownerId('chain_'), cliTask = ownerId('task_');
   const throughCli = async (method: any, input: any) => {
     const operation = await prepareOwnerOperation(session, bridgeId, method, { chainId: cliChain, ...input });

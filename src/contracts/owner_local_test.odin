@@ -234,3 +234,17 @@ owner_workflow_language_shapes_and_output_variant_bind_all_fields :: proc(t:^tes
     testing.expect(t,owner_field_valid("workflow.gate.post","lifecycle_method"))
     testing.expect(t,!owner_field_valid("workflow.gate.post,task.reopen","coordinator_methods"))
 }
+
+@(test)
+history_contracts_are_read_only_chain_scoped_and_strict :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    for method in ([2]string{"history.read","history.fetch"}) {
+        testing.expect(t,owner_method_valid(method))
+        testing.expect_value(t,owner_payload_kind(method),("read_payload" if method=="history.read" else "history_fetch_payload"))
+    }
+    for raw in ([3]string{`{"seq":"0","offset":"0"}`,`{"seq":"1","offset":"-1"}`,`{"seq":"1","offset":"0","task_id":"other"}`}) {
+        _,ok:=owner_parse(raw,"history_fetch_payload");testing.expect(t,!ok)
+    }
+    _,ok:=owner_parse(`{"seq":"9007199254740993","offset":"0"}`,"history_fetch_payload")
+    testing.expect(t,ok)
+}

@@ -177,7 +177,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         revision=number(tasks[0][0])
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -313,6 +313,8 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         result=encode(doc(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"capability"=bound[0][0]}))
     }
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
+    content:=encode(doc(map[string]string{"title"=title,"description"=description,"body"=body}))
+    if !event_record(&tx,seq,now,chain,task,"device",principal,method,op,command_raw,payload,content,result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if !workflow_publications(&tx,c,body,seq,kr,sign) do return fail("storage_error")
     if !source_intent(&tx,c,body,seq) do return fail("storage_error")

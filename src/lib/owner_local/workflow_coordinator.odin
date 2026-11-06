@@ -83,6 +83,7 @@ execute_coordinator_gate :: proc(s:^Store,raw,payload,cap_raw:string,child:Child
     result:=encode(doc(map[string]string{"run_id"=field(p,"run_id"),"execution"=field(p,"execution"),"stage_key"=field(p,"stage_key"),"verdict"=field(p,"verdict")}))
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",child.instance,op,chain,task,"workflow.gate.post",digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !control_intents(&tx,command,seq) || !workflow_refresh(s) do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,task,"agent",child.instance,"workflow.gate.post",op,raw,payload,encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,"workflow.gate.post",task,field(c,"configuration_revision"),op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")

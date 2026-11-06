@@ -143,6 +143,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     if _,ok=query(s.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,instance,op,chain,task,method,digest,s.owner_key,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",instance,op,lease);!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT OR IGNORE INTO lease_receipt_pins SELECT principal_id,operation_id,? FROM local_fleet WHERE chain_id=? AND task_id=?",lease,chain,task);!ok do return fail("storage_error")
+    if !event_record(&tx,seq,now,chain,task,"agent",instance,method,op,raw,"",encode(child),result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,tasks[0][0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !transaction_commit(&tx) do return fail("storage_error")
@@ -168,6 +169,7 @@ expire_leases :: proc(s:^Store,now:i64) -> bool {
     for row in rows {
         seq+=1
         if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),row[0]);!ok do return false
+        if !event_record(&tx,seq,now,row[1],row[2],"bridge",s.owner,"lease.expired",row[0],"","",encode(doc(map[string]string{"lease_id"=row[0]})),"") do return false
         if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),row[1],"lease.expired",row[2],"1",row[0]);!ok do return false
     }
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return false

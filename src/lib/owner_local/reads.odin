@@ -10,6 +10,8 @@ import contracts "odin_test:contracts"
 read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Result {
     method,chain,task:=field(c,"method"),field(c,"chain_id"),field(c,"task_id")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
+    if method=="history.read" do return event_inventory(s,chain,p)
+    if method=="history.fetch" do return event_fetch(s,chain,p)
     if method=="context.read" do return context_history(s,chain,p)
     if method=="source.read" do return source_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")))
     if method=="workflow.read" do return workflow_inventory(s,chain,field(p,"cursor"),number(field(p,"limit")),revision)
