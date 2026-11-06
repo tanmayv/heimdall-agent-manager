@@ -116,3 +116,8 @@ queries, source update/delete/replay, tombstone resurrection rejection, readonly
 revoked scope, missing key, failed repair, failed COMMIT/disk-full and current
 requirements/submission indexing. Workflow/source episodes and R2C regressions
 remain explicit successor work; this search slice does not claim them.
+
+V7 adds immutable handoff/control prose (summary, next steps and waiting reason)
+to scoped search. Changes and documents commit with the command receipt and
+rebuild from canonical handoff rows after restart. See
+[owner-local-controls.md](owner-local-controls.md).

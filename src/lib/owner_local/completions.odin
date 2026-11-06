@@ -44,8 +44,9 @@ intent_claim_current :: proc(s:^Store,claim:Intent_Claim) -> (bool,bool) {
     tx:Transaction
     if !transaction_begin(s,&tx) do return false,false
     defer transaction_rollback(&tx)
-    rows,ok:=query(s.db,"SELECT state,claim_incarnation,attempts,payload_digest FROM runtime_intents WHERE intent_id=?",claim.id)
-    if !ok || len(rows)!=1 do return false,false
+    rows,ok:=query(s.db,"SELECT state,claim_incarnation,attempts,payload_digest FROM runtime_intents WHERE intent_id=? AND NOT EXISTS(SELECT 1 FROM intent_invalidations x WHERE x.intent_id=runtime_intents.intent_id)",claim.id)
+    if !ok do return false,false
+    if len(rows)==0 { if !transaction_commit(&tx) do return false,false; return false,true }
     row:=rows[0]
     current:=row[0]=="claimed" && row[1]==fmt.tprintf("%d",claim.incarnation) && row[2]==fmt.tprintf("%d",claim.attempt) && row[3]==claim.digest
     if !transaction_commit(&tx) do return false,false

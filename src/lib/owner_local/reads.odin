@@ -48,7 +48,9 @@ read_result :: proc(s:^Store,c:json.Object,payload:string,revision:i64) -> Resul
         states,sok:=query(s.db,"SELECT state,attempt,merge_receipt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         submissions,aok:=query(s.db,"SELECT attempt,head,requirements_revision,summary,author_agent_id FROM local_submissions WHERE chain_id=? AND task_id=? ORDER BY attempt DESC LIMIT 1",chain,task)
         if !cok || !rok || !sok || !aok do return fail("storage_error")
-        return Result{code="ok",body=encode(struct { revision:string, fleet,leases,config,requirements,state,submission:[dynamic][]string, }{fmt.tprintf("%d",revision),fleet,leases,configs,req,states,submissions})}
+        controls,controls_ok:=query(s.db,"SELECT mode,resume_state,reason,waiting_on FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+        if !controls_ok do return fail("storage_error")
+        return Result{code="ok",body=encode(struct { revision:string, fleet,leases,config,requirements,state,submission,controls:[dynamic][]string, }{fmt.tprintf("%d",revision),fleet,leases,configs,req,states,submissions,controls})}
     }
     scope:=contracts.owner_payload_digest(encode([5]string{s.account,chain,task,method,fmt.tprintf("%d",revision)}))
     cursor:=field(p,"cursor")

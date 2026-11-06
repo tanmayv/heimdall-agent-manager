@@ -41,6 +41,8 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   } else if ((method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
+  else if (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'merge.retry') payload = { attempt: input.attempt ?? '', requirements_revision: input.requirementsRevision ?? '', head: input.head ?? '', configuration_revision: input.configurationRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
   else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };

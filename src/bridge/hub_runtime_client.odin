@@ -3105,6 +3105,9 @@ bridge_runtime_mark_stop_intent :: proc(instance_id: string) {
 	// is never held while waiting for the delivery to finish.
 	sync.mutex_lock(&bridge_startup_io_mutex)
 	defer sync.mutex_unlock(&bridge_startup_io_mutex)
+    bridge_runtime_mark_stop_intent_io_locked(instance_id)
+}
+bridge_runtime_mark_stop_intent_io_locked :: proc(instance_id:string) {
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)

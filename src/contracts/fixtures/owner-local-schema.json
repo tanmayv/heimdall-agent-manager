@@ -26,5 +26,11 @@
   "search_payload": "query_cipher:required_cipher limit:positive",
   "delete_payload": "protocol_version:version",
   "chain_edit_payload": "title_cipher:required_cipher description_cipher:required_cipher",
-  "submission_read_payload": "attempt:positive offset:counter"
+  "submission_read_payload": "attempt:positive offset:counter",
+  "control_payload": "body_cipher:required_cipher",
+  "handoff_payload": "requirements_revision:positive summary:document next_steps:optional_document",
+  "block_payload": "requirements_revision:positive summary:document next_steps:optional_document waiting_on:id",
+  "switch_payload": "requirements_revision:positive summary:document next_steps:optional_document destination_chain_id:id destination_task_id:id destination_revision:positive destination_configuration_revision:positive destination_requirements_revision:positive destination_lease_id:id",
+  "checkpoint_payload": "requirements_revision:positive attempt:positive head:optional_commit summary:document next_steps:optional_document",
+  "merge_retry_payload": "attempt:positive requirements_revision:positive head:optional_commit configuration_revision:positive body_cipher:required_cipher"
 }

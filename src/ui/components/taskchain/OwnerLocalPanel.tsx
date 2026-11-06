@@ -12,6 +12,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [instanceId, setInstanceId] = useState('');
+  const [enabled, setEnabled] = useState(true);
   const [configRevision, setConfigRevision] = useState('1');
   const [lifecycleConfig, setLifecycleConfig] = useState('{}');
   const [requirementsRevision, setRequirementsRevision] = useState('1');
@@ -48,11 +49,11 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
     }));
     if (getKeyringSession() === before) setListing(visible);
   }
-  async function perform(method: 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId: string; attempt: string; offset?: string }) {
+  async function perform(method: 'task.hold' | 'task.release' | 'task.cancel' | 'task.reopen' | 'task.resolve' | 'merge.retry' | 'submission.read' | 'chain.edit' | 'task.edit' | 'task.delete' | 'chain.search' | 'chain.create' | 'task.create' | 'task.comment' | 'chain.read' | 'task.read' | 'fleet.edit' | 'runtime.read' | 'lifecycle.configure' | 'requirements.edit' | 'review.post', target?: { taskId: string; attempt: string; offset?: string }) {
     const s = await current(); const before = getKeyringSession();
     const cid = method === 'chain.create' ? ownerId('chain_') : chainId;
-    const tid = target?.taskId ?? (method === 'task.create' ? ownerId('task_') : (['submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : ''));
-    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, head, verdict });
+    const tid = target?.taskId ?? (method === 'task.create' ? ownerId('task_') : (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'task.edit', 'task.delete', 'task.comment', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'].includes(method) ? taskId : ''));
+    const op = await prepareOwnerOperation(s, bridge, method, { chainId: cid, taskId: tid, expectedRevision: method === "chain.create" || (method.endsWith(".read") || method === "chain.search") ? "0" : revision, title, body, query: body, description: body, enabled, instanceId, configurationRevision: configRevision, lifecycleConfig: method === 'lifecycle.configure' ? JSON.parse(lifecycleConfig) : undefined, requirementsRevision, attempt: target?.attempt ?? attempt, offset: target?.offset, head, verdict });
     setPending(op); setChainId(cid); if (tid) setTaskId(tid);
     const result = await sendOwnerOperation(s, op, (relay) => cookieMutation('/api/v1/owner-local/relay', 'POST', relay));
     if (getKeyringSession() !== before) return;
@@ -79,6 +80,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       <input data-debug-id="owner-local-revision" aria-label="Expected revision" className={inputClass} value={revision} onChange={(e) => setRevision(e.target.value)} />
       <input data-debug-id="owner-local-title" aria-label="Title" placeholder="Title" className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} />
       <input data-debug-id="owner-local-fleet-instance" aria-label="Fleet instance ID" placeholder="Running instance ID" className={inputClass} value={instanceId} onChange={(e) => setInstanceId(e.target.value)} />
+      <label><input data-debug-id="owner-local-fleet-enabled" type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enable assignment</label>
       <input data-debug-id="owner-local-config-revision" aria-label="Configuration revision" className={inputClass} value={configRevision} onChange={(e) => setConfigRevision(e.target.value)} />
       <textarea data-debug-id="owner-local-lifecycle-config" aria-label="Lifecycle configuration JSON" placeholder="Device-signed lifecycle configuration" className={inputClass} value={lifecycleConfig} onChange={(e) => setLifecycleConfig(e.target.value)} />
       <input data-debug-id="owner-local-requirements-revision" aria-label="Requirements revision" className={inputClass} value={requirementsRevision} onChange={(e) => setRequirementsRevision(e.target.value)} />
@@ -88,7 +90,7 @@ export default function OwnerLocalPanel({ onClose, initialChainId = "", initialB
       <textarea data-debug-id="owner-local-body" aria-label="Body or comment" placeholder="Description, task body, or comment" className={inputClass} value={body} onChange={(e) => setBody(e.target.value)} />
     </div>
     <div className="flex flex-wrap gap-3">
-      {(['submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'submission.read': 'Read submission attempt', 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
+      {(['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post'] as const).map((method) => <button key={method} data-debug-id={'owner-local-' + method.replace('.', '-')} disabled={busy || !bridge} onClick={() => void run(() => perform(method))}>{{ 'task.hold': 'Hold task', 'task.release': 'Release hold', 'task.cancel': 'Cancel task', 'task.reopen': 'Reopen task', 'task.resolve': 'Resolve human block', 'merge.retry': 'Retry unchanged merge', 'submission.read': 'Read submission attempt', 'chain.edit': 'Edit chain', 'task.edit': 'Edit task', 'task.delete': 'Delete unstarted task', 'chain.search': 'Search chain', 'chain.create': 'Create chain', 'task.create': 'Create task', 'task.comment': 'Add comment', 'chain.read': 'Read chain', 'task.read': 'Read task', 'fleet.edit': 'Assign local instance', 'runtime.read': 'Read runtime', 'lifecycle.configure': 'Configure review and merge', 'requirements.edit': 'Save requirements', 'review.post': 'Record human verdict' }[method]}</button>)}
       <button data-debug-id="owner-local-list" disabled={busy} onClick={() => void run(list)}>Refresh listing</button>
       <button data-debug-id="owner-local-retry" disabled={busy || !pending} onClick={() => void run(retry)}>Retry same operation</button>
       <button data-debug-id="owner-local-export" disabled={busy || !pending} onClick={() => void run(async () => {

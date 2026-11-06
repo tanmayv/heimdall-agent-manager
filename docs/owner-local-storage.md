@@ -91,3 +91,8 @@ exact row counts, replay and stable recovered effect identities.
 batch with HTTP503/200 outcomes and both result-write and deferred-FK commit
 failures, followed by storage recovery and eventual settlement without reopening
 the store or repeating a successful POST.
+
+V7 adds local control modes, immutable signed assignment and work-attempt
+history, handoff/search producers, exact-child notices, one-shot held checkpoints
+and merge-intent invalidation. V6 live leases/receipts and immutable submission
+attempts are preserved; see [owner-local-controls.md](owner-local-controls.md).

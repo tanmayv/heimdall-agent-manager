@@ -190,3 +190,30 @@ owner_lifecycle_signature_binds_payload_and_child :: proc(t:^testing.T) {
     c["payload_digest"]=json.String(strings.repeat("b",64,context.temp_allocator))
     testing.expect(t,!owner_verify_signature("lifecycle_command",c,"signature",bridge))
 }
+
+@(test)
+owner_controls_require_task_mutation_and_switch_exact_fields :: proc(t:^testing.T) {
+    f:=owner_fixture(t)
+    o:=owner_fixture_document(t,f,"command")
+    for method in ([6]string{"task.hold","task.release","task.cancel","task.reopen","task.resolve","merge.retry"}) {
+        o["method"]=json.String(method)
+        g:=owner_fixture_grant();g.method=method;g.can_mutate=false
+        testing.expect(t,owner_document_valid("command",o))
+        testing.expect_value(t,owner_live_admit(o,g,1000,9007199254740993),Owner_Auth_Error.Invalid_Scope)
+        g.can_mutate=true
+        testing.expect_value(t,owner_live_admit(o,g,1000,9007199254740993),Owner_Auth_Error.None)
+        o["task_id"]=json.String("")
+        testing.expect(t,!owner_document_valid("command",o))
+        o["task_id"]=json.String("task_1")
+    }
+    raw:=`{"requirements_revision":"1","summary":"switch","next_steps":"","destination_chain_id":"chain","destination_task_id":"task","destination_revision":"4","destination_configuration_revision":"2","destination_requirements_revision":"3","destination_lease_id":"lease"}`
+    p,ok:=owner_parse(raw,"switch_payload");testing.expect(t,ok)
+    p["destination_revision"]=json.String("0")
+    testing.expect(t,!owner_document_valid("switch_payload",p))
+    p["destination_revision"]=json.String("4");p["owner_bridge_id"]=json.String("other")
+    testing.expect(t,!owner_document_valid("switch_payload",p))
+    p,ok=owner_parse(`{"requirements_revision":"1","attempt":"1","head":"","summary":"unfinished review","next_steps":"continue"}`,"checkpoint_payload")
+    testing.expect(t,ok)
+    p["verdict"]=json.String("approve")
+    testing.expect(t,!owner_document_valid("checkpoint_payload",p),"checkpoint cannot carry a verdict")
+}

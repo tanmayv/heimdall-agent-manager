@@ -36,20 +36,18 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
            proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
            proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance ||
            proof.author.epoch=="" || proof.reviewer.epoch=="" { return "invalid_scope" }
-        active,ok:=query(s.db,"SELECT lease_id FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
-        if !ok do return "storage_error"
-        if len(active)>0 do return "operation_conflict"
         previous,read:=query(s.db,"SELECT revision FROM lifecycle_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
         if !read do return "storage_error"
         if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return "stale_revision"
         states,looked:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
         if !looked do return "storage_error"
-        if len(states)>0 && states[0][0]!="ready" do return "operation_conflict"
+        if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return "operation_conflict"
         fleet,found:=query(s.db,"SELECT instance_id,launch_epoch,run_count,token_generation,enabled FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(fleet)!=1 || fleet[0][0]!=proof.author.instance || fleet[0][1]!=proof.author.epoch ||
            number(fleet[0][2])!=proof.author.run_count || fleet[0][3]!=proof.author.token_generation || fleet[0][4]!="1" {return "invalid_scope"}
-        if _,ok=query(s.db,"INSERT INTO lifecycle_configs VALUES(?,?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),payload,raw,field(c,"principal_id"),field(c,"operation_id"),encode(proof.author),encode(proof.reviewer));!ok do return "storage_error"
-        if _,ok=query(s.db,"INSERT OR IGNORE INTO lifecycle_state(chain_id,task_id,state) VALUES(?,?,'ready')",chain,task);!ok do return "storage_error"
+        if _,ok:=query(s.db,"INSERT INTO lifecycle_configs VALUES(?,?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),payload,raw,field(c,"principal_id"),field(c,"operation_id"),encode(proof.author),encode(proof.reviewer));!ok do return "storage_error"
+        if _,ok:=query(s.db,"INSERT OR IGNORE INTO lifecycle_state(chain_id,task_id,state) VALUES(?,?,'ready')",chain,task);!ok do return "storage_error"
+        if _,ok:=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     case "requirements.edit":
         if !brief_valid(body) do return "invalid_content"
         prior:i64
@@ -72,6 +70,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
 // separately and never satisfies the required independent agent pair.
 lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool) -> string {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
+    if !control_ready(s,chain,task) do return "operation_conflict"
     config,_,configured:=lifecycle_config(s,chain,task)
     req,has_req:=lifecycle_requirements(s,chain,task)
     state,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
@@ -106,7 +105,7 @@ lifecycle_merge_intent :: proc(tx:^Transaction,c,p:json.Object,seq:i64) -> bool 
 }
 
 merge_claim_current :: proc(s:^Store,claim:Intent_Claim) -> bool {
-    rows,ok:=query(s.db,"SELECT exact_fence_json FROM runtime_intents WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=?",claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
+    rows,ok:=query(s.db,"SELECT exact_fence_json FROM runtime_intents WHERE intent_id=? AND state='claimed' AND claim_incarnation=? AND attempts=? AND payload_digest=? AND NOT EXISTS(SELECT 1 FROM intent_invalidations WHERE intent_id=runtime_intents.intent_id)",claim.id,fmt.tprintf("%d",claim.incarnation),fmt.tprintf("%d",claim.attempt),claim.digest)
     if !ok || len(rows)!=1 || rows[0][0]!=claim.fence do return false
     v,valid:=contracts.owner_request_document(claim.fence);f,obj:=v.(json.Object)
     if !valid || !obj do return false

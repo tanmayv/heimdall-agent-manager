@@ -496,6 +496,90 @@ owner_fields_submission_read_payload := [?]Owner_Field{
     {"attempt", "positive"},
     {"offset", "counter"},
 }
+Owner_Control_Payload :: struct {
+    body_cipher: string,
+}
+@(private)
+owner_fields_control_payload := [?]Owner_Field{
+    {"body_cipher", "required_cipher"},
+}
+Owner_Handoff_Payload :: struct {
+    requirements_revision: string,
+    summary: string,
+    next_steps: string,
+}
+@(private)
+owner_fields_handoff_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"summary", "document"},
+    {"next_steps", "optional_document"},
+}
+Owner_Block_Payload :: struct {
+    requirements_revision: string,
+    summary: string,
+    next_steps: string,
+    waiting_on: string,
+}
+@(private)
+owner_fields_block_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"summary", "document"},
+    {"next_steps", "optional_document"},
+    {"waiting_on", "id"},
+}
+Owner_Switch_Payload :: struct {
+    requirements_revision: string,
+    summary: string,
+    next_steps: string,
+    destination_chain_id: string,
+    destination_task_id: string,
+    destination_revision: string,
+    destination_configuration_revision: string,
+    destination_requirements_revision: string,
+    destination_lease_id: string,
+}
+@(private)
+owner_fields_switch_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"summary", "document"},
+    {"next_steps", "optional_document"},
+    {"destination_chain_id", "id"},
+    {"destination_task_id", "id"},
+    {"destination_revision", "positive"},
+    {"destination_configuration_revision", "positive"},
+    {"destination_requirements_revision", "positive"},
+    {"destination_lease_id", "id"},
+}
+Owner_Checkpoint_Payload :: struct {
+    requirements_revision: string,
+    attempt: string,
+    head: string,
+    summary: string,
+    next_steps: string,
+}
+@(private)
+owner_fields_checkpoint_payload := [?]Owner_Field{
+    {"requirements_revision", "positive"},
+    {"attempt", "positive"},
+    {"head", "optional_commit"},
+    {"summary", "document"},
+    {"next_steps", "optional_document"},
+}
+Owner_Merge_Retry_Payload :: struct {
+    attempt: string,
+    requirements_revision: string,
+    head: string,
+    configuration_revision: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_merge_retry_payload := [?]Owner_Field{
+    {"attempt", "positive"},
+    {"requirements_revision", "positive"},
+    {"head", "optional_commit"},
+    {"configuration_revision", "positive"},
+    {"body_cipher", "required_cipher"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -526,6 +610,12 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "delete_payload": return owner_fields_delete_payload[:]
     case "chain_edit_payload": return owner_fields_chain_edit_payload[:]
     case "submission_read_payload": return owner_fields_submission_read_payload[:]
+    case "control_payload": return owner_fields_control_payload[:]
+    case "handoff_payload": return owner_fields_handoff_payload[:]
+    case "block_payload": return owner_fields_block_payload[:]
+    case "switch_payload": return owner_fields_switch_payload[:]
+    case "checkpoint_payload": return owner_fields_checkpoint_payload[:]
+    case "merge_retry_payload": return owner_fields_merge_retry_payload[:]
     }
     return nil
 }

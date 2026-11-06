@@ -55,7 +55,9 @@ The owner verifies the current human device directory and local read/mutation
 grant before changing fleet configuration. The fleet row retains the original
 signed command and exact payload, its configuration revision, and the locally
 observed instance/run/launch/token binding. Configuration revisions must increase;
-an assignment cannot change while its task has a live lease.
+live reassignment now retires old authority and records exact-child checkpoint
+intents plus immutable signed assignment history. See
+[owner-local-controls.md](owner-local-controls.md).
 
 The Bridge verifies the agent token again under the token mutex and asks the
 actual PTY daemon for that instance's exact launch key. A running status flag,

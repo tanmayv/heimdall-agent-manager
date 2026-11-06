@@ -57,6 +57,7 @@ bridge_owner_publish_batch :: proc(s:^owner.Store,q:^owner.Intent_Completions,no
 }
 
 bridge_owner_publish_registry :: proc(_:rawptr,s:^owner.Store,claim:owner.Intent_Claim) -> (bool,string,i64) {
+    if claim.kind=="stop" || claim.kind=="checkpoint" do return bridge_owner_control_notice(s,claim)
     if claim.kind=="merge" do return bridge_owner_merge(s,claim)
     // Future consumers must validate their own execution fences before I/O.
     if claim.kind!="registry" do return false,"unsupported_kind",time.to_unix_nanoseconds(time.now())/1000000

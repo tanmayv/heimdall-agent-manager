@@ -13,21 +13,23 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lifecycle_command")
     if !valid do return fail("malformed")
-    if key.kind!="bridge" || key.account_id!=s.account || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
+    if !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=s.account || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
        field(c,"account_id")!=s.account || field(c,"owner_bridge_id")!=s.owner || field(c,"key_id")!=s.owner_key ||
        !lease_scope(c,child) || !contracts.owner_field_valid(child.agent_id,"id") { return fail("invalid_scope") }
     if !contracts.owner_verify_signature("lifecycle_command",c,"signature",key) do return fail("bad_signature")
     if field(c,"payload_digest")!=contracts.owner_payload_digest(payload) || field(c,"capability_digest")!=contracts.owner_payload_digest(cap_raw) do return fail("digest_mismatch")
     p,parsed:=contracts.owner_parse(payload,contracts.owner_payload_kind(field(c,"method")))
     if !parsed do return fail("malformed")
-    if len(field(p,"summary"))>MAX_BODY || len(encode(field(p,"summary")))>MAX_ENCODED_FIELD do return fail("invalid_content")
+    for name in ([2]string{"summary","next_steps"}) {
+        if len(field(p,name))>MAX_BODY || len(encode(field(p,name)))>MAX_ENCODED_FIELD do return fail("invalid_content")
+    }
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
     chain,task,op,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"operation_id"),field(c,"method")
     config,binding,configured:=lifecycle_config(s,chain,task)
     if !configured do return fail("invalid_scope")
-    reviewer:=method=="review.open" || method=="review.post"
+    reviewer:=method=="review.open" || method=="review.post" || method=="review.checkpoint"
     if reviewer {
         if child.agent_id!=field(config,"reviewer_agent_id") || encode(child)!=binding[2] || child.agent_id==field(config,"author_agent_id") do return fail("invalid_scope")
     } else {
@@ -50,6 +52,8 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
         if tomb[0][0]!=digest do return fail("operation_conflict")
         return fail("retired")
     }
+    held_checkpoint:=control_checkpoint_authorized(s,c,child,cap_raw,now)
+    if !control_ready(s,chain,task) && !held_checkpoint do return fail("operation_conflict")
     if now<0 || now>0x7fffffffffffffff-LEASE_HARD_MS || number(field(c,"request_expires_ms"))<=now || number(field(c,"request_expires_ms"))-now>contracts.OWNER_REQUEST_TTL_MS do return fail("expired")
     state,looked:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
     if !looked || len(state)!=1 do return fail("storage_error")
@@ -67,8 +71,8 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     result:=""
     if !reviewer {
         cap,cap_ok:=contracts.owner_parse(cap_raw,"capability")
-        if !cap_ok || !contracts.owner_verify_signature("capability",cap,"signature",key) || field(cap,"allowed_methods")!="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit" do return fail("invalid_scope")
-        leases,lease_ok:=query(s.db,"SELECT capability_json,expires_ms,hard_ms,configuration_revision FROM local_leases WHERE lease_id=? AND chain_id=? AND task_id=? AND instance_id=? AND retired_seq IS NULL",lease,chain,task,child.instance)
+        if !cap_ok || !contracts.owner_verify_signature("capability",cap,"signature",key) || !strings.contains(fmt.tprintf(",%s,",field(cap,"allowed_methods")),fmt.tprintf(",%s,",method)) do return fail("invalid_scope")
+        leases,lease_ok:=query(s.db,"SELECT capability_json,expires_ms,hard_ms,configuration_revision FROM local_leases WHERE lease_id=? AND chain_id=? AND task_id=? AND instance_id=? AND (retired_seq IS NULL OR ?='1')",lease,chain,task,child.instance,("1" if held_checkpoint else "0"))
         if !lease_ok || len(leases)!=1 || leases[0][0]!=cap_raw || !lease_scope(cap,child) || leases[0][3]!=field(c,"configuration_revision") do return fail("invalid_scope")
         fleet,ok:=query(s.db,"SELECT configuration_revision FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !ok || len(fleet)!=1 || fleet[0][0]!=leases[0][3] do return fail("invalid_scope")
@@ -82,6 +86,10 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
             if !ok do return fail("storage_error")
             if len(rows)!=1 do return fail("stale_revision")
             result=encode(doc(map[string]string{"requirements_revision"=req[0],"acknowledged"="1","revision"=tasks[0][0]}))
+        case "lease.handoff", "lease.block", "lease.switch":
+            c["principal_id"]=json.String(child.instance)
+            result,valid=control_agent(&tx,c,p,child,seq,now,sign)
+            if !valid do return fail(result)
         case "lease.submit":
             ack,ok:=query(s.db,"SELECT revision FROM requirement_ack WHERE lease_id=? AND revision=? AND acknowledged=1",lease,req[0])
             if !ok do return fail("storage_error")
@@ -105,24 +113,44 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
         if !state_ok || len(states)!=1 || states[0][0]!="in_review" || states[0][1]!=field(p,"attempt") || submitted[0][0]!=lease || submitted[0][1]!=field(p,"head") || submitted[0][2]!=req[0] do return fail("stale_revision")
         if method=="review.open" {
             if cap_raw!="" do return fail("invalid_scope")
-            cap,signed:=lease_capability(s,c,now+LEASE_TTL_MS,now+LEASE_TTL_MS,sign,"review.post")
+            cap,signed:=lease_capability(s,c,now+LEASE_TTL_MS,now+LEASE_TTL_MS,sign,"review.post,review.checkpoint")
             if !signed do return fail("storage_error")
             if _,ok=query(s.db,"INSERT INTO local_review_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(chain_id,task_id,attempt) DO UPDATE SET child=excluded.child,capability_json=excluded.capability_json,expires_ms=excluded.expires_ms",chain,task,field(p,"attempt"),encode(child),cap,fmt.tprintf("%d",now+LEASE_TTL_MS));!ok do return fail("storage_error")
             result=encode(doc(map[string]string{"capability"=cap,"summary"=submitted[0][3],"brief"=submitted[0][4],"revision"=tasks[0][0]}))
         } else {
+            rcap,cap_valid:=contracts.owner_parse(cap_raw,"capability")
+            if !cap_valid || !contracts.owner_verify_signature("capability",rcap,"signature",key) || !strings.contains(fmt.tprintf(",%s,",field(rcap,"allowed_methods")),fmt.tprintf(",%s,",method)) do return fail("invalid_scope")
             sessions,read:=query(s.db,"SELECT child,capability_json,expires_ms FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"))
+            if held_checkpoint {
+                sessions,read=query(s.db,"SELECT child_json,capability_json,expires_ms FROM local_checkpoints WHERE chain_id=? AND task_id=? AND lease_id=? AND child_json=?",chain,task,lease,encode(child))
+            }
             if !read || len(sessions)!=1 || sessions[0][0]!=encode(child) || sessions[0][1]!=cap_raw do return fail("invalid_scope")
             if number(sessions[0][2])<=now do return fail("expired")
             c["principal_id"]=json.String(child.instance)
-            if code:=lifecycle_review(s,c,p,child.agent_id,false);code!="ok" do return fail(code)
-            result=encode(doc(map[string]string{"verdict"=field(p,"verdict"),"revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
+            if method=="review.checkpoint" {
+                if !control_record(s,c,p,seq) do return fail("storage_error")
+                if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=? AND lease_id=? AND child_json=?",chain,task,lease,encode(child));!ok do return fail("storage_error")
+                if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,field(p,"attempt"));!ok do return fail("storage_error")
+                if !control_notice(s,c,child,"stop") do return fail("storage_error")
+                if _,ok=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+                result=encode(doc(map[string]string{"state"="in_review","checkpoint"="1","revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
+            } else {
+                if code:=lifecycle_review(s,c,p,child.agent_id,false);code!="ok" do return fail(code)
+                result=encode(doc(map[string]string{"verdict"=field(p,"verdict"),"revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
+            }
         }
     }
     if result=="" do return fail("malformed")
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",child.instance,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if !reviewer {
         if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",child.instance,op,lease);!ok do return fail("storage_error")
+        if method=="lease.switch" {
+            if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",child.instance,op,field(p,"destination_lease_id"));!ok do return fail("storage_error")
+            if _,ok=query(s.db,"INSERT OR IGNORE INTO lease_receipt_pins SELECT principal_id,operation_id,? FROM local_fleet WHERE chain_id=? AND task_id=?",field(p,"destination_lease_id"),field(p,"destination_chain_id"),field(p,"destination_task_id"));!ok do return fail("storage_error")
+        }
     }
+    c["principal_id"]=json.String(child.instance)
+    if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,req[0],op);!ok do return fail("storage_error")
     if _,ok=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")

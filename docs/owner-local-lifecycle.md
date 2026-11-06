@@ -35,7 +35,10 @@ Set the current task revision and choose **Configure review and merge**. The
 device signs the complete configuration. The owner binds the durable IDs to
 actual launch records, tokens, run counts and exact PTY children. A different
 instance of the same author agent cannot self-review. Config revisions increase;
-configuration changes require a ready task without a live work lease.
+configuration changes on ready/in-review work retire old leases and review
+sessions atomically. Completed or merge-blocked work must be reopened before
+rebinding; unsettled old merge intents are invalidated. See
+[owner-local-controls.md](owner-local-controls.md).
 
 For Git, use `merge_policy: "git"` and supply a canonical local repository,
 its task worktree at `<repository>/.heimdall/worktrees/<task_id>`, source branch
@@ -193,9 +196,10 @@ implemented; see [owner-local-search.md](owner-local-search.md).
 ## Remaining M2 expansion
 
 This is an explicit single-worker/single-reviewer, already-running-child slice.
-General directory/fleet management, provider scheduling, workflow executions,
-dependencies, handoff/block/switch, review role sets, reopen/retry and
-operator repair/rebinding of blocked merges remain M2 work. Unsupported workflow
+General unlaunched dispatch/provider scheduling remains M3 work. Workflow
+executions, dependencies and multiple review role folds remain M2c work. Local controls,
+handoff/block/switch, assignment rebinding and merge repair are documented in
+[owner-local-controls.md](owner-local-controls.md). Unsupported workflow
 fields/methods reject at the strict contract boundary; no workflow authority is
 inferred. Remote execution/reservations remain M3 and migration/recovery
 integration remains M4. Checked-out-target merge orchestration and other platforms

@@ -26,7 +26,7 @@ lease_capability :: proc(s:^Store,c:json.Object,expires,hard:i64,sign:Signer,met
     allowed:=methods
     if allowed=="" {
         allowed="lease.claim,lease.heartbeat"
-        if _,_,ok:=lifecycle_config(s,field(c,"chain_id"),field(c,"task_id"));ok do allowed="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit"
+        if _,_,ok:=lifecycle_config(s,field(c,"chain_id"),field(c,"task_id"));ok do allowed="lease.claim,lease.heartbeat,requirements.present,requirements.ack,lease.submit,lease.handoff,lease.block,lease.switch"
     }
     cap:=doc(map[string]string{
         "protocol_version"="1","account_id"=s.account,"owner_bridge_id"=s.owner,
@@ -50,7 +50,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     context.allocator=context.temp_allocator
     c,valid:=contracts.owner_parse(raw,"lease_command")
     if !valid do return fail("malformed")
-    if now<0 || key.kind!="bridge" || key.account_id!=s.account || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
+    if now<0 || !key.enrolled || key.revoked || key.kind!="bridge" || key.account_id!=s.account || key.principal_id!=s.owner || key.key_id!=s.owner_key ||
        field(c,"account_id")!=s.account || field(c,"owner_bridge_id")!=s.owner || field(c,"key_id")!=s.owner_key ||
        !lease_scope(c,child) { return fail("invalid_scope") }
     if !contracts.owner_verify_signature("lease_command",c,"signature",key) do return fail("bad_signature")
@@ -60,7 +60,8 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     chain,task,instance,op,method:=field(c,"chain_id"),field(c,"task_id"),child.instance,field(c,"operation_id"),field(c,"method")
     fleet,found:=query(s.db,"SELECT instance_id,configuration_revision,enabled,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     if !found do return fail("storage_error")
-    if len(fleet)!=1 || fleet[0][0]!=instance || fleet[0][2]!="1" || fleet[0][3]!=child.epoch || number(fleet[0][4])!=child.run_count || fleet[0][5]!=child.token_generation { return fail("invalid_scope") }
+    current:=len(fleet)==1 && fleet[0][0]==instance && fleet[0][2]=="1" && fleet[0][3]==child.epoch && number(fleet[0][4])==child.run_count && fleet[0][5]==child.token_generation
+    if !current do return fail("invalid_scope")
     digest,_:=contracts.owner_digest("lease_command",c)
     receipts,ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",instance,op)
     if !ok do return fail("storage_error")
@@ -76,6 +77,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         if retired[0][0]!=digest do return fail("operation_conflict")
         return fail("retired")
     }
+    if !current || !control_ready(s,chain,task) do return fail("invalid_scope")
     if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
     state,state_ok:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
     if !state_ok || len(state)!=1 do return fail("storage_error")
@@ -123,13 +125,19 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     }
     cap,signed:=lease_capability(s,c,expires,hard,sign)
     if !signed do return fail("storage_error")
+    work_attempt:=""
     if method=="lease.claim" {
-        if _,ok=query(s.db,`INSERT INTO local_leases VALUES(?,?,?,?,?,?,?,?,1,?,?,1,?,NULL)`,
-          lease,chain,task,instance,child.epoch,fmt.tprintf("%d",child.run_count),child.token_generation,field(c,"configuration_revision"),fmt.tprintf("%d",expires),fmt.tprintf("%d",hard),cap);!ok do return fail("storage_error")
+        initial_req:="1"
+        if req,has_req:=lifecycle_requirements(s,chain,task);has_req do initial_req=req[0]
+        if _,ok=query(s.db,`INSERT INTO local_leases VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,NULL)`,
+          lease,chain,task,instance,child.epoch,fmt.tprintf("%d",child.run_count),child.token_generation,field(c,"configuration_revision"),initial_req,fmt.tprintf("%d",expires),fmt.tprintf("%d",hard),cap);!ok do return fail("storage_error")
+        recorded:bool
+        work_attempt,recorded=work_attempt_record(s,chain,task,lease)
+        if !recorded do return fail("storage_error")
     } else {
         if _,ok=query(s.db,"UPDATE local_leases SET expires_ms=?,deadline_version=?,capability_json=? WHERE lease_id=?",fmt.tprintf("%d",expires),fmt.tprintf("%d",version),cap,lease);!ok do return fail("storage_error")
     }
-    result:=encode(map[string]string{"lease_id"=lease,"capability"=cap,"deadline_version"=fmt.tprintf("%d",version),"revision"=tasks[0][0]})
+    result:=encode(map[string]string{"work_attempt"=work_attempt,"lease_id"=lease,"capability"=cap,"deadline_version"=fmt.tprintf("%d",version),"revision"=tasks[0][0]})
     if _,ok=query(s.db,`INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,instance,op,chain,task,method,digest,s.owner_key,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO lease_receipt_pins VALUES(?,?,?)",instance,op,lease);!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT OR IGNORE INTO lease_receipt_pins SELECT principal_id,operation_id,? FROM local_fleet WHERE chain_id=? AND task_id=?",lease,chain,task);!ok do return fail("storage_error")

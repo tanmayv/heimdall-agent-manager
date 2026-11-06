@@ -161,7 +161,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
         if !found || len(tasks)!=1 do return fail("invalid_scope")
         revision=number(tasks[0][0])
@@ -206,7 +206,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     case "chain.edit":
         _,wrote=query(s.db,"UPDATE task_chains SET title=?,description=?,revision=revision+1 WHERE chain_id=?",title,description,chain)
     case "task.edit", "task.delete":
-        protected,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM lifecycle_configs WHERE chain_id=? AND task_id=? LIMIT 1",chain,task,chain,task)
+        protected,checked:=query(s.db,"SELECT 1 FROM local_leases WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM lifecycle_configs WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_assignment_history WHERE chain_id=? AND task_id=? UNION ALL SELECT 1 FROM local_handoffs WHERE chain_id=? AND task_id=? LIMIT 1",chain,task,chain,task,chain,task,chain,task)
         if !checked do return fail("storage_error")
         if len(protected)>0 do return fail("operation_conflict")
         if method=="task.edit" {
@@ -224,18 +224,39 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         next=1
         _,wrote=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,title,body)
     case "fleet.edit":
-        if fleet_child.instance!=field(p,"instance_id") || fleet_child.epoch=="" || fleet_child.run_count<=0 || !contracts.owner_field_valid(fleet_child.token_generation,"hash") do return fail("invalid_scope")
-        active,checked:=query(s.db,"SELECT lease_id FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
-        if !checked do return fail("storage_error")
-        if len(active)>0 do return fail("operation_conflict")
+        assigned_child:=fleet_child
+        states,state_read:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+        if !state_read do return fail("storage_error")
+        if len(states)>0 && states[0][0]!="ready" && states[0][0]!="in_review" do return fail("operation_conflict")
+        if field(p,"enabled")=="0" && assigned_child.instance=="" {
+            prior,found:=query(s.db,"SELECT instance_id,launch_epoch,token_generation,run_count FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
+            if !found || len(prior)!=1 || prior[0][0]!=field(p,"instance_id") do return fail("invalid_scope")
+            assigned_child=Child{prior[0][0],prior[0][1],prior[0][2],number(prior[0][3]),""}
+        }
+        if assigned_child.instance!=field(p,"instance_id") || assigned_child.epoch=="" || assigned_child.run_count<=0 || !contracts.owner_field_valid(assigned_child.token_generation,"hash") do return fail("invalid_scope")
         previous,looked:=query(s.db,"SELECT configuration_revision FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !looked do return fail("storage_error")
         if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return fail("stale_revision")
-        _,wrote=query(s.db,"INSERT INTO local_fleet VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET instance_id=excluded.instance_id,configuration_revision=excluded.configuration_revision,enabled=excluded.enabled,principal_id=excluded.principal_id,operation_id=excluded.operation_id,configuration_command=excluded.configuration_command,configuration_payload=excluded.configuration_payload,launch_epoch=excluded.launch_epoch,run_count=excluded.run_count,token_generation=excluded.token_generation",chain,task,field(p,"instance_id"),field(p,"configuration_revision"),field(p,"enabled"),principal,op,command_raw,payload,fleet_child.epoch,fmt.tprintf("%d",fleet_child.run_count),fleet_child.token_generation)
+        if !control_revoke(s,c,seq,"checkpoint") do return fail("storage_error")
+        if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+        if _,ok=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=? AND state='in_review'",chain,task);!ok do return fail("storage_error")
+        _,wrote=query(s.db,"INSERT INTO local_fleet VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,task_id) DO UPDATE SET instance_id=excluded.instance_id,configuration_revision=excluded.configuration_revision,enabled=excluded.enabled,principal_id=excluded.principal_id,operation_id=excluded.operation_id,configuration_command=excluded.configuration_command,configuration_payload=excluded.configuration_payload,launch_epoch=excluded.launch_epoch,run_count=excluded.run_count,token_generation=excluded.token_generation",chain,task,field(p,"instance_id"),field(p,"configuration_revision"),field(p,"enabled"),principal,op,command_raw,payload,assigned_child.epoch,fmt.tprintf("%d",assigned_child.run_count),assigned_child.token_generation)
+        if wrote { _,wrote=query(s.db,"INSERT INTO local_assignment_history VALUES(?,?,?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),principal,op,command_raw,payload,encode(assigned_child)) }
+        if wrote { _,wrote=query(s.db,"UPDATE local_controls SET resume_state='ready' WHERE chain_id=? AND task_id=?",chain,task) }
         if wrote { _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task) }
+    case "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry":
+        if (method=="task.resolve" || method=="task.hold" || method=="task.cancel" || method=="merge.retry") && strings.trim_space(body)=="" do return fail("invalid_content")
+        code:=control_human(s,c,p,body,seq)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "lifecycle.configure", "requirements.edit", "review.post":
         code:=lifecycle_human(s,c,p,body,command_raw,payload,lifecycle_proof)
         if code!="ok" do return fail(code)
+        if method=="lifecycle.configure" || method=="requirements.edit" {
+            if _,ok=query(s.db,"UPDATE local_controls SET resume_state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+            if !control_revoke(s,c,seq,"checkpoint",true,method!="requirements.edit") do return fail("storage_error")
+            if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return fail("storage_error")
+        }
         wrote=true
     case "task.comment":
         _,wrote=query(s.db,"INSERT INTO task_comments VALUES(?,?,?,?,?,?)",chain,task,op,principal,body,fmt.tprintf("%d",seq))
@@ -249,6 +270,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     result:=encode(map[string]string{"chain_id"=chain,"task_id"=task,"operation_id"=op,"revision"=fmt.tprintf("%d",next)})
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
+    if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
     if method=="chain.create" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)

@@ -95,6 +95,8 @@ search_rebuild :: proc(s:^Store)->bool {
         WHERE revision=(SELECT MAX(b.revision) FROM task_requirements b WHERE b.chain_id=a.chain_id AND b.task_id=a.task_id);
       INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
         SELECT chain_id,task_id,'output',task_id||':'||attempt,attempt,'',summary FROM local_submissions;
+      INSERT INTO search_docs(chain_id,task_id,kind,object_id,revision,title,body)
+        SELECT chain_id,task_id,'handoff',principal_id||':'||operation_id,seq,kind,summary||char(10)||next_steps||char(10)||waiting_on FROM local_handoffs;
       INSERT INTO search_fts(search_fts,rank) VALUES('integrity-check',1);
       COMMIT;`) { return false }
     committed=true

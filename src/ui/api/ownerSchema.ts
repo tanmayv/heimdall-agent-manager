@@ -28,6 +28,12 @@ export const ownerSchemas = {
   delete_payload: [["protocol_version", "version"]],
   chain_edit_payload: [["title_cipher", "required_cipher"], ["description_cipher", "required_cipher"]],
   submission_read_payload: [["attempt", "positive"], ["offset", "counter"]],
+  control_payload: [["body_cipher", "required_cipher"]],
+  handoff_payload: [["requirements_revision", "positive"], ["summary", "document"], ["next_steps", "optional_document"]],
+  block_payload: [["requirements_revision", "positive"], ["summary", "document"], ["next_steps", "optional_document"], ["waiting_on", "id"]],
+  switch_payload: [["requirements_revision", "positive"], ["summary", "document"], ["next_steps", "optional_document"], ["destination_chain_id", "id"], ["destination_task_id", "id"], ["destination_revision", "positive"], ["destination_configuration_revision", "positive"], ["destination_requirements_revision", "positive"], ["destination_lease_id", "id"]],
+  checkpoint_payload: [["requirements_revision", "positive"], ["attempt", "positive"], ["head", "optional_commit"], ["summary", "document"], ["next_steps", "optional_document"]],
+  merge_retry_payload: [["attempt", "positive"], ["requirements_revision", "positive"], ["head", "optional_commit"], ["configuration_revision", "positive"], ["body_cipher", "required_cipher"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -264,6 +270,45 @@ export interface OwnerSubmission_Read_Payload {
   attempt: string;
   offset: string;
 }
+export interface OwnerControl_Payload {
+  body_cipher: string;
+}
+export interface OwnerHandoff_Payload {
+  requirements_revision: string;
+  summary: string;
+  next_steps: string;
+}
+export interface OwnerBlock_Payload {
+  requirements_revision: string;
+  summary: string;
+  next_steps: string;
+  waiting_on: string;
+}
+export interface OwnerSwitch_Payload {
+  requirements_revision: string;
+  summary: string;
+  next_steps: string;
+  destination_chain_id: string;
+  destination_task_id: string;
+  destination_revision: string;
+  destination_configuration_revision: string;
+  destination_requirements_revision: string;
+  destination_lease_id: string;
+}
+export interface OwnerCheckpoint_Payload {
+  requirements_revision: string;
+  attempt: string;
+  head: string;
+  summary: string;
+  next_steps: string;
+}
+export interface OwnerMerge_Retry_Payload {
+  attempt: string;
+  requirements_revision: string;
+  head: string;
+  configuration_revision: string;
+  body_cipher: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -293,4 +338,10 @@ export interface OwnerDocuments {
   delete_payload: OwnerDelete_Payload;
   chain_edit_payload: OwnerChain_Edit_Payload;
   submission_read_payload: OwnerSubmission_Read_Payload;
+  control_payload: OwnerControl_Payload;
+  handoff_payload: OwnerHandoff_Payload;
+  block_payload: OwnerBlock_Payload;
+  switch_payload: OwnerSwitch_Payload;
+  checkpoint_payload: OwnerCheckpoint_Payload;
+  merge_retry_payload: OwnerMerge_Retry_Payload;
 }
