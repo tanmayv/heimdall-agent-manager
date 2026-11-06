@@ -2,6 +2,7 @@
 import { prepareOwnerOperation, sendOwnerOperation, openOwnerReply, ownerRelayFile, ownerId } from '../../src/ui/api/ownerLocalClient.ts';
 import { importKeyring } from '../../src/ui/utils/vaultKeyring.ts';
 import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/deviceIdentity.ts';
+import { readFileSync } from 'node:fs';
 
 export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
@@ -74,6 +75,53 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   expect(evidencePage.next_offset === '', 'small real evidence fits one chunk');
   const evidence = JSON.parse(evidencePage.evidence);
   expect(evidence.command === comment.command && evidence.payload === comment.payload && JSON.parse(evidence.content).body === 'owner-private-comment', 'exact signed bytes and historical plaintext survive real owner restart and CLI read');
+
+  const nativeChain = ownerId('chain_'), nativeTask = ownerId('task_');
+  const nativeMake = (method: any, input: any) => prepareOwnerOperation(session,bridgeId,method,{chainId:nativeChain,...input});
+  await invoke(await nativeMake('chain.create',{expectedRevision:'0',title:'Historical import',description:'Disposable native history'}));
+  await invoke(await nativeMake('task.create',{taskId:nativeTask,expectedRevision:'1',title:'Imported original task',body:'Historical source fixture'}));
+  const nativeScope = { chain_id:nativeChain, task_id:nativeTask, owner_user_id:approver.userId };
+  const nativeProvenance = '{ "head":"original-head", "requirements_revision":7, "run_id":"original-run", "execution":2 }';
+  const nativeAttempt = JSON.stringify({ ...nativeScope, attempt_no:'19', started_at:'2025-04-03T12:00:00.123+05:30', ended_at:'2025-04-03T12:05:00.456+05:30', holder_instance_id:'original_instance', outcome:'expired:replaced', counts_toward_budget:'0', provenance_json:nativeProvenance });
+  const nativeEvent = JSON.stringify({ ...nativeScope, event_id:'9007199254740993', ts_ms:'1743670000123', actor_kind:'agent', actor_id:'original_instance', kind:'lease_expired', payload_json:'{ "reason": "replaced", "counting": false }', provenance_json:nativeProvenance });
+  const nativeFacet = JSON.stringify({ ...nativeScope, attempt_no:'19', kind:'artifacts', v:'2', writer:'agent', written_at:'2025-04-03T12:05:00.456+05:30', body_json:'{ "items": [{"artifact_id":"art_original","label":"Original artifact 世界😀"}] }', references_json:JSON.stringify([{kind:'artifact',id:'art_original',revision:'7',provenance:'original-submit',state:'import_pending'}]), provenance_json:nativeProvenance });
+  const nativeBundle = JSON.stringify({ source_revision:'original_7', owner_user_id:approver.userId, completeness:'incomplete', attempts:JSON.stringify([nativeAttempt]), events:JSON.stringify([nativeEvent]), facets:JSON.stringify([nativeFacet]) });
+  const nativeImport = await nativeMake('native.history.import', { taskId:nativeTask, expectedRevision:'1', body:nativeBundle });
+  const nativeImported = await openOwnerReply(session,nativeImport,await cli(await ownerRelayFile(session,nativeImport)));
+  expect(nativeImported.code==='ok', 'actual CLI imports original native attempt/event/facet without changing runtime IDs');
+  expect((await invoke(nativeImport)).replay, 'signed native history import replays exact accepted operation');
+  const nativePage = JSON.parse((await invoke(await nativeMake('native.history.read',{taskId:nativeTask,expectedRevision:'0',nativeSourceRevision:'original_7',nativeHistoryKind:'facet'}))).body);
+  expect(nativePage.items.length===1 && nativePage.items[0].attempt_no==='19' && nativePage.items[0].v==='2' && nativePage.items[0].writer==='agent', 'signed browser inventory preserves typed native facet version and writer');
+  const nativeFetch = () => nativeMake('native.history.fetch',{taskId:nativeTask,expectedRevision:'0',nativeSourceRevision:'original_7',nativeHistoryKind:'facet',nativeHistoryKey:nativePage.items[0].key});
+  const nativeRead = await nativeFetch();
+  expect(JSON.parse((await openOwnerReply(session,nativeRead,await cli(await ownerRelayFile(session,nativeRead)))).body).record===nativeFacet, 'actual CLI fetch preserves original native facet body/time/typed unresolved reference exactly');
+  await stopOwner(); await restartOwner();
+  expect(JSON.parse((await invoke(await nativeFetch())).body).record===nativeFacet, 'native imported history survives actual owner cold restart unchanged');
+
+  // These source captures come from the native matcher: attempt-zero placement
+  // versions exist before any task_attempts row, followed by attempt-one data.
+  const placementChain = 'chain', placementTask = 'task';
+  const placementMake = (method:any,input:any) => prepareOwnerOperation(session,bridgeId,method,{chainId:placementChain,...input});
+  await invoke(await placementMake('chain.create',{expectedRevision:'0',title:'Original native placement',description:'Synthetic source history'}));
+  await invoke(await placementMake('task.create',{taskId:placementTask,expectedRevision:'1',title:'Original task',body:'Preserved native task identifier'}));
+  const placementBefore = readFileSync(new URL('../../src/contracts/fixtures/owner-native-placement-pregrant.json',import.meta.url),'utf8');
+  const placementLater = readFileSync(new URL('../../src/contracts/fixtures/owner-native-placement-later.json',import.meta.url),'utf8');
+  const placementImport = await placementMake('native.history.import',{taskId:placementTask,expectedRevision:'1',body:placementBefore});
+  await openOwnerReply(session,placementImport,await cli(await ownerRelayFile(session,placementImport)));
+  expect((await invoke(placementImport)).replay,'actual CLI native placement pre-grant import replays without a work attempt');
+  await invoke(await placementMake('native.history.import',{taskId:placementTask,expectedRevision:'2',body:placementLater}));
+  await stopOwner(); await restartOwner();
+  for (const source of [placementBefore,placementLater]) {
+    const original=JSON.parse(source);
+    for (const raw of JSON.parse(original.facets)) {
+      const f=JSON.parse(raw);
+      const op=await placementMake('native.history.fetch',{taskId:placementTask,expectedRevision:'0',nativeSourceRevision:original.source_revision,nativeHistoryKind:'facet',nativeHistoryKey:JSON.stringify([f.attempt_no,'placement',f.v])});
+      const fetched=JSON.parse((await openOwnerReply(session,op,await cli(await ownerRelayFile(session,op)))).body);
+      expect(fetched.record===raw,'actual CLI preserves native placement attempt '+f.attempt_no+' version '+f.v+' writer/time/body after restart');
+    }
+  }
+  const placementState=JSON.parse((await invoke(await placementMake('runtime.read',{taskId:placementTask,expectedRevision:'0'}))).body);
+  expect(placementState.attempts.attempt_no==='0' && placementState.attempts.counting_attempts==='0' && placementState.leases.length===0,'archival placement zero/later records never grant work or activate native accounting');
 
   const cliChain = ownerId('chain_'), cliTask = ownerId('task_');
   const throughCli = async (method: any, input: any) => {

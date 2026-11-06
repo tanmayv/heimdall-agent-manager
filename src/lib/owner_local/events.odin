@@ -13,8 +13,11 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
     if !transaction_current(tx) || seq<1 || now<0 do return false
     retirements,read:=workflow_retirement_evidence(tx.store,seq)
     if !read do return false
+    deferred,deferred_ok:=workflow_deferred_evidence(tx.store,seq)
+    if !deferred_ok do return false
     evidence_doc:=doc(map[string]string{"command"=raw,"payload"=payload,"content"=content,"result"=result})
     if retirements!="[]" do evidence_doc["task_retirements"]=json.String(retirements)
+    if deferred!="[]" do evidence_doc["deferred_retirements"]=json.String(deferred)
     evidence:=encode(evidence_doc)
     _,ok:=query(tx.store.db,"INSERT INTO local_events VALUES(?,?,?,?,?,?,?,?,?,'full')",
         fmt.tprintf("%d",seq),chain,task,fmt.tprintf("%d",now),actor_kind,actor_id,kind,op,evidence)

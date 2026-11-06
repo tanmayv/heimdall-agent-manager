@@ -919,6 +919,133 @@ owner_fields_native_attempt := [?]Owner_Field{
     {"work_lease_id", "id"},
     {"completeness", "history_completeness"},
 }
+Owner_Native_Import_Payload :: struct {
+    body_cipher: string,
+}
+@(private)
+owner_fields_native_import_payload := [?]Owner_Field{
+    {"body_cipher", "relay_cipher"},
+}
+Owner_Native_History_Read :: struct {
+    source_revision: string,
+    kind: string,
+    cursor: string,
+    limit: string,
+}
+@(private)
+owner_fields_native_history_read := [?]Owner_Field{
+    {"source_revision", "id"},
+    {"kind", "native_history_kind"},
+    {"cursor", "native_cursor"},
+    {"limit", "positive"},
+}
+Owner_Native_History_Fetch :: struct {
+    source_revision: string,
+    kind: string,
+    key: string,
+    offset: string,
+}
+@(private)
+owner_fields_native_history_fetch := [?]Owner_Field{
+    {"source_revision", "id"},
+    {"kind", "native_history_kind"},
+    {"key", "document"},
+    {"offset", "counter"},
+}
+Owner_Native_History_Bundle :: struct {
+    source_revision: string,
+    owner_user_id: string,
+    completeness: string,
+    attempts: string,
+    events: string,
+    facets: string,
+}
+@(private)
+owner_fields_native_history_bundle := [?]Owner_Field{
+    {"source_revision", "id"},
+    {"owner_user_id", "id"},
+    {"completeness", "history_completeness"},
+    {"attempts", "document"},
+    {"events", "document"},
+    {"facets", "document"},
+}
+Owner_Native_History_Attempt :: struct {
+    task_id: string,
+    attempt_no: string,
+    chain_id: string,
+    owner_user_id: string,
+    started_at: string,
+    ended_at: string,
+    holder_instance_id: string,
+    outcome: string,
+    counts_toward_budget: string,
+    provenance_json: string,
+}
+@(private)
+owner_fields_native_history_attempt := [?]Owner_Field{
+    {"task_id", "id"},
+    {"attempt_no", "positive"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"started_at", "document"},
+    {"ended_at", "optional_document"},
+    {"holder_instance_id", "optional"},
+    {"outcome", "optional_document"},
+    {"counts_toward_budget", "flag"},
+    {"provenance_json", "document"},
+}
+Owner_Native_History_Event :: struct {
+    event_id: string,
+    task_id: string,
+    chain_id: string,
+    owner_user_id: string,
+    ts_ms: string,
+    actor_kind: string,
+    actor_id: string,
+    kind: string,
+    payload_json: string,
+    provenance_json: string,
+}
+@(private)
+owner_fields_native_history_event := [?]Owner_Field{
+    {"event_id", "positive"},
+    {"task_id", "id"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"ts_ms", "counter"},
+    {"actor_kind", "native_event_actor"},
+    {"actor_id", "optional"},
+    {"kind", "document"},
+    {"payload_json", "document"},
+    {"provenance_json", "document"},
+}
+Owner_Native_History_Facet :: struct {
+    task_id: string,
+    attempt_no: string,
+    chain_id: string,
+    owner_user_id: string,
+    kind: string,
+    v: string,
+    body_json: string,
+    writer: string,
+    written_at: string,
+    references_json: string,
+    provenance_json: string,
+}
+@(private)
+owner_fields_native_history_facet := [?]Owner_Field{
+    {"task_id", "id"},
+    {"attempt_no", "counter"},
+    {"chain_id", "id"},
+    {"owner_user_id", "id"},
+    {"kind", "facet_kind"},
+    {"v", "positive"},
+    {"body_json", "document"},
+    {"writer", "native_actor"},
+    {"written_at", "document"},
+    {"references_json", "document"},
+    {"provenance_json", "document"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -980,6 +1107,13 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "attempt_state": return owner_fields_attempt_state[:]
     case "attempt_read_payload": return owner_fields_attempt_read_payload[:]
     case "native_attempt": return owner_fields_native_attempt[:]
+    case "native_import_payload": return owner_fields_native_import_payload[:]
+    case "native_history_read": return owner_fields_native_history_read[:]
+    case "native_history_fetch": return owner_fields_native_history_fetch[:]
+    case "native_history_bundle": return owner_fields_native_history_bundle[:]
+    case "native_history_attempt": return owner_fields_native_history_attempt[:]
+    case "native_history_event": return owner_fields_native_history_event[:]
+    case "native_history_facet": return owner_fields_native_history_facet[:]
     }
     return nil
 }

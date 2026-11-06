@@ -8,7 +8,7 @@ export interface OwnerSession { identity: DeviceIdentity; chain: VerifiedChain; 
 export interface OwnerOperation { command: string; payload: string; genesis: string }
 export interface OwnerInput {
   chainId: string; taskId?: string; expectedRevision: string;
-  query?: string; limit?: number; offset?: string; eventSeq?: string;
+  query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   grantPrincipal?: string; grantExpiresMs?: string; grantCanMutate?: boolean; recoveryEnabled?: boolean; policyRevision?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
@@ -23,9 +23,12 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   const { identity, chain, keyring } = session;
   const bridge = [...chain.trusted.values()].find((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId);
   if (!bridge || !chain.trusted.has(identity.deviceId) || identity.userId !== chain.userId) throw new Error('Device and owner must be currently enrolled in this account');
-  for (const text of [input.title, input.description, input.body]) {
+  for (const [field,text] of [['title',input.title],['description',input.description],['body',input.body]] as const) {
     if (text === undefined) continue;
-    if (new TextEncoder().encode(text).length > 8192 || new TextEncoder().encode(JSON.stringify(text)).length > 16384) throw new Error('V1 fields are limited to 8192 UTF-8 bytes and 16384 JSON-encoded bytes');
+    const nativeImportBody = method === 'native.history.import' && field === 'body';
+    const plainLimit = nativeImportBody ? 65536 : 8192;
+    const encodedLimit = nativeImportBody ? 131072 : 16384;
+    if (new TextEncoder().encode(text).length > plainLimit || new TextEncoder().encode(JSON.stringify(text)).length > encodedLimit) throw new Error(`Owner ${field} is limited to ${plainLimit} UTF-8 bytes and ${encodedLimit} JSON-encoded bytes`);
   }
   if (method === "chain.search" && (new TextEncoder().encode(input.query ?? "").length > 256 || (input.query ?? "").trim().length < 2 || !Number.isInteger(input.limit ?? 20) || (input.limit ?? 20) < 1 || (input.limit ?? 20) > 50)) throw new Error("Search requires 2–256 UTF-8 bytes and a limit of 1–50");
   if (method === 'grant.recover' && identity.deviceId !== chain.rootDeviceId) throw new Error('Recovery requires the currently enrolled paired root');
@@ -60,6 +63,9 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
   else if (method === 'lifecycle.configure') payload = input.lifecycleConfig ?? {};
   else if (method === 'requirements.edit') payload = { requirements_revision: input.requirementsRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'review.post') payload = { requirements_revision: input.requirementsRevision ?? '', attempt: input.attempt ?? '', head: input.head ?? '', verdict: input.verdict ?? 'approve', summary: input.body ?? '' };
+  else if (method === 'native.history.import') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'native.history.read') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', cursor: input.cursor ?? '', limit: String(input.limit ?? 20) };
+  else if (method === 'native.history.fetch') payload = { source_revision: input.nativeSourceRevision ?? '', kind: input.nativeHistoryKind ?? '', key: input.nativeHistoryKey ?? '', offset: input.offset ?? '0' };
   else if (method === 'attempt.read') payload = { attempt: input.attempt ?? '' };
   else if (method === 'history.fetch') payload = { seq: input.eventSeq ?? '', offset: input.offset ?? '0' };
   else if (method === 'submission.read') payload = { attempt: input.attempt ?? '', offset: input.offset ?? '0' };

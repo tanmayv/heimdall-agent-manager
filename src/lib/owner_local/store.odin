@@ -171,13 +171,23 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if len(chains)>0 do revision=number(chains[0][0])
     if creating && revision>0 do return fail("operation_conflict")
     if !creating && revision==0 do return fail("invalid_scope")
-    if method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
+    if method=="native.history.import" || method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="dependency.edit" || method=="review.roles" || method=="task.hold" || method=="task.release" || method=="task.cancel" || method=="task.reopen" || method=="task.resolve" || method=="merge.retry" || method=="submission.read" || method=="task.edit" || method=="task.delete" || method=="task.comment" || method=="task.read" || method=="fleet.edit" || method=="runtime.read" || method=="lifecycle.configure" || method=="requirements.edit" || method=="review.post" {
         tasks,found:=query(s.db,"SELECT revision FROM tasks WHERE chain_id=? AND task_id=?",chain,task)
-        if !found || len(tasks)!=1 do return fail("invalid_scope")
-        revision=number(tasks[0][0])
+        if !found do return fail("storage_error")
+        if len(tasks)==1 {
+            revision=number(tasks[0][0])
+        } else {
+            // Imported evidence outlives a canonical task deletion. Current
+            // signed task/chain read scope still precedes this retained read.
+            if method!="native.history.read" && method!="native.history.fetch" do return fail("invalid_scope")
+            retained,read:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? LIMIT 1",chain,task)
+            if !read do return fail("storage_error")
+            if len(retained)==0 do return fail("invalid_scope")
+            revision=0
+        }
     }
     if e:=contracts.owner_live_admit(c,g,now,revision);e!=.None do return auth_fail(e)
-    read:=method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
+    read:=method=="native.history.read" || method=="native.history.fetch" || method=="attempt.read" || method=="history.read" || method=="history.fetch" || method=="context.read" || method=="grant.read" || method=="workflow.read" || method=="source.read" || method=="submission.read" || method=="chain.search" || method=="chain.read" || method=="task.read" || method=="receipt.read" || method=="runtime.read"
     if read {
         if method=="chain.search" && (kr==nil || kr.current_epoch==0) do return fail("invalid_content")
         result:Result
@@ -194,26 +204,39 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         return fail("clock_uncertain")
     }
     if state[0][4]!="ready" do return fail("clock_uncertain")
+    if method=="task.cancel" || method=="task.reopen" || method=="fleet.edit" || method=="lifecycle.configure" || method=="review.roles" || method=="dependency.edit" || method=="merge.retry" {
+        pending,read:=query(s.db,"SELECT 1 FROM deferred_workflow_retirements d WHERE d.chain_id=? AND d.task_id=? AND NOT EXISTS(SELECT 1 FROM deferred_workflow_dispositions r WHERE r.intent_id=d.intent_id) LIMIT 1",chain,task)
+        if !read do return fail("storage_error")
+        if len(pending)>0 do return fail("operation_conflict")
+    }
     quota,quota_ok:=query(s.db,"SELECT (SELECT COUNT(*) FROM command_receipts)+(SELECT COUNT(*) FROM operation_tombstones),(SELECT COUNT(*) FROM local_changes)")
     if !quota_ok || number(quota[0][0])>=MAX_RECORDS || number(quota[0][1])>=1000000 do return fail("retention_capacity")
     p,_:=contracts.owner_parse(payload,contracts.owner_payload_kind(method))
     title,body,description:string
+    body_limit,encoded_limit:=MAX_BODY,MAX_ENCODED_FIELD
+    // Historical bundles carry several independently typed records. Keep a
+    // separate bounded admission size; ordinary prose limits stay unchanged.
+    if method=="native.history.import" { body_limit=65536;encoded_limit=131072 }
     for name in ([3]string{"title_cipher","body_cipher","description_cipher"}) {
         cipher:=field(p,name)
         if cipher=="" do continue
         plain,opened:=vault.open(cipher,kr,context.temp_allocator)
-        if opened!=.Ok || len(plain)>MAX_BODY do return fail("invalid_content")
+        if opened!=.Ok || len(plain)>body_limit do return fail("invalid_content")
         encoded_field:=encode(plain)
-        if encoded_field=="" || len(encoded_field)>MAX_ENCODED_FIELD do return fail("invalid_content")
+        if encoded_field=="" || len(encoded_field)>encoded_limit do return fail("invalid_content")
         switch name { case "title_cipher": title=plain
         case "body_cipher": body=plain
         case "description_cipher": description=plain }
     }
-    if task!="" && method!="task.comment" && !workflow_task_current(s,chain,task) do return fail("stale_revision")
+    if task!="" && method!="task.comment" && method!="native.history.import" && !workflow_task_current(s,chain,task) do return fail("stale_revision")
     seq:=number(state[0][0])+1
     next:=revision+1
     wrote:=false
     switch method {
+    case "native.history.import":
+        code:=native_history_import(s,c,body,seq)
+        if code!="ok" do return fail(code)
+        _,wrote=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task)
     case "workflow.coordinator":
         code:=coordinator_configure(s,c,p,fleet_child,now,sign)
         if code!="ok" do return fail(code)
