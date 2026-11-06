@@ -1,0 +1,456 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Where the chain time went</title><link rel="stylesheet" href="style.css"></head><body><main>
+<header><div class="eyebrow">Engineering delivery · measured snapshot</div><h1>Where the chain<br>time went</h1><p class="lead">At the cutoff, the chain had elapsed 11h 57m 26s: 15 tasks done, 2 cancelled, 7 queued and 1 in progress. Its 1,506 recorded shell sessions sum to 3h 57m 26s, or 3h 16m 20s after overlap. The accepted tree changes 161 files, +20,621/−145 LOC. Scope expansion, serial implementation, real regressions and integration work explain measured delays; missing phase data prevents attributing all remaining time.</p><p class="stamp">Cutoff <strong>6 November 2026 · 14:44:57 UTC</strong><br>20:14:57 IST · <code>chain_18e554c99be21d02</code></p></header>
+<nav aria-label="Sections"><a href="#findings">Findings</a><a href="#tasks">All 25 tasks</a><a href="#shell">Shell evidence</a><a href="#git">Git provenance</a><a href="#limits">Limits</a><a href="#improvements">Improvements</a><a href="#data">Data &amp; audit</a></nav>
+<section class="grid hero" aria-label="Summary metrics">
+<article class="card"><span class="metric-label">Chain wall-clock age</span><strong class="metric">11h 57m</strong><p class="note">15 done · 2 cancelled · 7 queued · 1 active</p></article>
+<article class="card"><span class="metric-label">Shell span, overlap removed</span><strong class="metric">3h 16m</strong><p class="note">3h 57m summed across 1,506 session records</p></article>
+<article class="card"><span class="metric-label">Accepted net change</span><strong class="metric">161 files</strong><p class="note">+20,621 / −145 LOC · duplicate lineage excluded</p></article>
+<article class="card"><span class="metric-label">Attribution gap</span><strong class="metric">25 records</strong><p class="note">41 seconds remain unassigned</p></article>
+</section><aside class="callout"><strong>Elapsed, sum and union are different.</strong> Elapsed is wall-clock age. Shell sum adds session spans; union removes overlap. Hub spans include launch and exit-delivery latency. Actual subprocess runtime, queue and CPU use are unknown. Remaining time is unclassified—not measured thinking or idle time.</aside>
+<section id="findings"><h2>What kept the chain open</h2>
+<article class="card story"><h3>Scope expanded from a vertical slice to native parity.</h3><p>The original broad M1 was replaced before implementation. Later audits established that narrow owner-local slices lacked full native task and workflow parity. Broad C1 grew to a 240-field/23-struct ledger and six attempts, then became C1a–C1f with its checkpoint preserved. C1&#x27;s 5h 25m created-to-cancellation age includes 3h 01m before first start; first-start-to-cancellation was 2h 24m, not 5h of uninterrupted coding.</p><p class="source">Evidence: task_18e556f8ef2f0c8d; task_18e569e48d6b5532 runtime/handoff facets; cmt_18e5754ba6b1830f</p></article>
+<article class="card story"><h3>Most elapsed time followed one implementation stream.</h3><p>The primary worker has10h 16m 31s of recorded attempt envelopes inside 11h 57m 26s of chain age. The second worker contributes 1h 49m 38s, mostly overlapping. The observed order was plan → contracts → V1 → foundations → leases → lifecycle → search → controls → static workflows → full workflow language → C1 → C1a → C1b. Adding task ages would count dependencies and parallel time repeatedly.</p><p class="source">Evidence: All runtime facets; task timestamps/dependencies. Exact historical dependency revisions are unavailable.</p></article>
+<article class="card story"><h3>Independent review caught concrete correctness defects.</h3><p>Findings included receipt replay ordering, publication-result persistence, encoded response overflow, historical output indexing, source ACK/retry recovery, ordinary/static on_output coverage, and submitted human approval binding. C1a also fixed a retirement outcome missing from both wire validators. Their regression runs were validation of real fixes, not automatically waste.</p><p class="source">Evidence: Plan attempt3; M1b attempt2; V1 attempt4; M2 attempt3; M2c attempt4; workflow language attempts4/5; C1a d78c6c54</p></article>
+<article class="card story"><h3>Integration caused distinct rework.</h3><p>M2c attempts5/6 resolved two shared harness conflicts, then fourteen grants/workflow conflicts including competing migration_008.sql files. Later compaction/workflow integration had to preserve accepted migration lineage. These were integration changes after parallel work, distinct from new product review defects.</p><p class="source">Evidence: task_18e562f7b94d63bb handoff facets attempts5/6; cmt_18e56d1a80a6993d; task_18e56a0d15295083 attempt6</p></article>
+<article class="card story"><h3>Real demos were expensive, but do not explain all elapsed time.</h3><p>Nine evidence-linked demos among the ten largest shell records sum to 34m 12s of recorded spans. They followed changed source, held-lease/retirement/history fixes and committed/release binary verification. Child stages are not added again. Dependency installs, fixture repairs and failed drafts recur in handoffs, but unavailable command metadata prevents reliable full category costs.</p><p class="source">Evidence: Top sessions below; C1 attempts2–6; compaction handoff; known baseline failures remain qualified</p></article>
+<h3>Measured spans compared</h3><p class="note">These sets overlap. They are not slices to add together.</p>
+<div class="rowbar"><p><span>Chain elapsed</span><strong>11h 57m 26s</strong></p><div class="bar"><span class="queue" style="width:100.000%"></span></div></div>
+<div class="rowbar"><p><span>Any worker attempt envelope</span><strong>10h 25m 43s</strong></p><div class="bar"><span class="work" style="width:87.216%"></span></div></div>
+<div class="rowbar"><p><span>Any recorded shell session</span><strong>3h 16m 20s</strong></p><div class="bar"><span class="review" style="width:27.366%"></span></div></div>
+</section><section id="tasks"><h2>Every task at the cutoff</h2><p>Ages run from creation to completion/cancellation or cutoff. First-start elapsed excludes pre-start wait. Attempt envelopes may span renewed leases/restarts; review bounds use comments, not exact closed leases. Task LOC rows show retained net and overlap for old C1/C1a. Queued tasks have waiting age, not completed duration.</p>
+<div class="legend"><span><i class="queue"></i>Pre-start wait</span><span><i class="work"></i>Attempt envelope</span><span><i class="review"></i>Review bounds</span><span><i class="unknown"></i>Unclassified</span></div>
+<article class="card task" id="task_18e554dbf43e7642"><div class="task-head"><h3>Plan Bridge-owned runtime and searchable local storage</h3><span class="badge done">done</span></div><code class="task-id">task_18e554dbf43e7642</code>
+<div class="numbers"><div><strong>37m 36s</strong><span>Created-to-end / age</span></div><div><strong>37m 14s</strong><span>First-start elapsed</span></div><div><strong>0m 22s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 22s; Attempt envelope: 31m 35s; Review bounds: 0m 53s; Unclassified after start: 4m 46s"><span class="queue" style="width:0.975%"></span><span class="work" style="width:83.998%"></span><span class="review" style="width:2.349%"></span><span class="unknown" style="width:12.677%"></span></div>
+<div class="numbers"><div><strong>1 / +211 / −0</strong><span>Files / + / −</span></div><div><strong>0m 03s</strong><span>Shell sum</span></div><div><strong>0m 03s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 22s</strong></li>
+<li>Attempt envelope: <strong>31m 35s</strong></li>
+<li>Review bounds: <strong>0m 53s</strong></li>
+<li>Unclassified after start: <strong>4m 46s</strong></li>
+<li>33 shell records; 6 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 33}</code>.</li><li>Shell union within attempt envelopes: 0m 02s.</li>
+<li>Created <code>2026-11-06T02:48:50Z</code>; first start <code>2026-11-06T02:49:12Z</code>; completed/cancelled <code>2026-11-06T03:26:26Z</code>.</li>
+<li>Net base <code>ada2d4c8e76fdfaaf98f41e5f4ad96ded206cf04</code> → head <code>1c83a464f19ded8ba967ecda24130d9e12fa4ef4</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T02:49:12Z</code> → <code>2026-11-06T03:09:40Z</code>: 20m 28s. Source <code>facet:task_18e554dbf43e7642:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T03:09:40Z</code> → <code>2026-11-06T03:18:59Z</code>: 9m 19s. Source <code>facet:task_18e554dbf43e7642:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T03:21:08Z</code> → <code>2026-11-06T03:22:56Z</code>: 1m 48s. Source <code>facet:task_18e554dbf43e7642:3:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e556f8ef2f0c8d"><div class="task-head"><h3>M1: Owner-local runtime end to end</h3><span class="badge cancelled">cancelled</span></div><code class="task-id">task_18e556f8ef2f0c8d</code>
+<div class="numbers"><div><strong>3m 55s</strong><span>Created-to-end / age</span></div><div><strong>3m 55s</strong><span>First-start elapsed</span></div><div><strong>0m 00s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 00s; Attempt envelope: 1m 16s; Review bounds: 0m 00s; Unclassified after start: 2m 39s"><span class="work" style="width:32.340%"></span><span class="unknown" style="width:67.660%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 00s</strong></li>
+<li>Attempt envelope: <strong>1m 16s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>2m 39s</strong></li>
+<li>2 shell records; 0 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 2}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T03:27:33Z</code>; first start <code>2026-11-06T03:27:33Z</code>; completed/cancelled <code>2026-11-06T03:31:28Z</code>.</li>
+<li>Attempt 1: <code>2026-11-06T03:27:33Z</code> → <code>2026-11-06T03:28:49Z</code>: 1m 16s. Source <code>facet:task_18e556f8ef2f0c8d:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e556f901cbcf41"><div class="task-head"><h3>M2: Complete local commands and scoped search</h3><span class="badge done">done</span></div><code class="task-id">task_18e556f901cbcf41</code>
+<div class="numbers"><div><strong>4h 38m 30s</strong><span>Created-to-end / age</span></div><div><strong>1h 01m 14s</strong><span>First-start elapsed</span></div><div><strong>3h 37m 16s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 3h 37m 16s; Attempt envelope: 52m 17s; Review bounds: 6m 35s; Unclassified after start: 2m 22s"><span class="queue" style="width:78.013%"></span><span class="work" style="width:18.773%"></span><span class="review" style="width:2.364%"></span><span class="unknown" style="width:0.850%"></span></div>
+<div class="numbers"><div><strong>36 / +1207 / −75</strong><span>Files / + / −</span></div><div><strong>18m 16s</strong><span>Shell sum</span></div><div><strong>16m 02s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>3h 37m 16s</strong></li>
+<li>Attempt envelope: <strong>52m 17s</strong></li>
+<li>Review bounds: <strong>6m 35s</strong></li>
+<li>Unclassified after start: <strong>2m 22s</strong></li>
+<li>108 shell records; 15 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 100, &quot;high_link_and_window&quot;: 8}</code>.</li><li>Shell union within attempt envelopes: 15m 43s.</li>
+<li>Created <code>2026-11-06T03:27:34Z</code>; first start <code>2026-11-06T07:04:50Z</code>; completed/cancelled <code>2026-11-06T08:06:04Z</code>.</li>
+<li>Net base <code>21072f5cad30853c314627cdc852588827de763b</code> → head <code>6e87ca20afcd0682670b171a107ef8cbe01b53dd</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T07:04:50Z</code> → <code>2026-11-06T07:06:07Z</code>: 1m 17s. Source <code>facet:task_18e556f901cbcf41:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T07:07:23Z</code> → <code>2026-11-06T07:38:14Z</code>: 30m 51s. Source <code>facet:task_18e556f901cbcf41:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T07:43:54Z</code> → <code>2026-11-06T08:04:03Z</code>: 20m 09s. Source <code>facet:task_18e556f901cbcf41:3:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e556f90cfa1e9c"><div class="task-head"><h3>M3: Fenced remote execution and slot reservations</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e556f90cfa1e9c</code>
+<div class="numbers"><div><strong>11h 17m 23s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>11h 17m 23s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 11h 17m 23s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>11h 17m 23s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T03:27:34Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e556f919c82490"><div class="task-head"><h3>M4: Migration and recovery integration gate</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e556f919c82490</code>
+<div class="numbers"><div><strong>11h 17m 23s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>11h 17m 23s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 11h 17m 23s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>11h 17m 23s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T03:27:34Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e55714c3bb18ea"><div class="task-head"><h3>M1a: Strict owner and command contracts</h3><span class="badge done">done</span></div><code class="task-id">task_18e55714c3bb18ea</code>
+<div class="numbers"><div><strong>36m 49s</strong><span>Created-to-end / age</span></div><div><strong>36m 49s</strong><span>First-start elapsed</span></div><div><strong>0m 00s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 00s; Attempt envelope: 17m 17s; Review bounds: 1m 37s; Unclassified after start: 17m 55s"><span class="work" style="width:46.944%"></span><span class="review" style="width:4.391%"></span><span class="unknown" style="width:48.665%"></span></div>
+<div class="numbers"><div><strong>13 / +1573 / −1</strong><span>Files / + / −</span></div><div><strong>1m 05s</strong><span>Shell sum</span></div><div><strong>1m 05s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 00s</strong></li>
+<li>Attempt envelope: <strong>17m 17s</strong></li>
+<li>Review bounds: <strong>1m 37s</strong></li>
+<li>Unclassified after start: <strong>17m 55s</strong></li>
+<li>42 shell records; 8 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 42}</code>.</li><li>Shell union within attempt envelopes: 1m 03s.</li>
+<li>Created <code>2026-11-06T03:29:33Z</code>; first start <code>2026-11-06T03:29:33Z</code>; completed/cancelled <code>2026-11-06T04:06:22Z</code>.</li>
+<li>Net base <code>1c83a464f19ded8ba967ecda24130d9e12fa4ef4</code> → head <code>b4b34929cbaf41ade476732527104543c3b45e39</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T03:29:33Z</code> → <code>2026-11-06T03:46:50Z</code>: 17m 17s. Source <code>facet:task_18e55714c3bb18ea:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e55714d71968b1"><div class="task-head"><h3>M1b: Local transactional admission and receipts</h3><span class="badge done">done</span></div><code class="task-id">task_18e55714d71968b1</code>
+<div class="numbers"><div><strong>2h 17m 49s</strong><span>Created-to-end / age</span></div><div><strong>36m 25s</strong><span>First-start elapsed</span></div><div><strong>1h 41m 24s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 1h 41m 24s; Attempt envelope: 32m 50s; Review bounds: 2m 46s; Unclassified after start: 0m 49s"><span class="queue" style="width:73.576%"></span><span class="work" style="width:23.824%"></span><span class="review" style="width:2.007%"></span><span class="unknown" style="width:0.593%"></span></div>
+<div class="numbers"><div><strong>20 / +1301 / −49</strong><span>Files / + / −</span></div><div><strong>6m 13s</strong><span>Shell sum</span></div><div><strong>5m 56s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>1h 41m 24s</strong></li>
+<li>Attempt envelope: <strong>32m 50s</strong></li>
+<li>Review bounds: <strong>2m 46s</strong></li>
+<li>Unclassified after start: <strong>0m 49s</strong></li>
+<li>49 shell records; 8 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 30, &quot;high_link_and_window&quot;: 19}</code>.</li><li>Shell union within attempt envelopes: 5m 33s.</li>
+<li>Created <code>2026-11-06T03:29:33Z</code>; first start <code>2026-11-06T05:10:57Z</code>; completed/cancelled <code>2026-11-06T05:47:22Z</code>.</li>
+<li>Net base <code>47ee1544bb89c163496586751fbef6187621c15d</code> → head <code>f4cd91d93bd2c198c641d69390c1ec011d2fcb32</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T05:10:57Z</code> → <code>2026-11-06T05:36:48Z</code>: 25m 51s. Source <code>facet:task_18e55714d71968b1:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T05:39:18Z</code> → <code>2026-11-06T05:46:17Z</code>: 6m 59s. Source <code>facet:task_18e55714d71968b1:2:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e5571bd785f30b"><div class="task-head"><h3>M1c: Integrate owner-local runtime end to end</h3><span class="badge done">done</span></div><code class="task-id">task_18e5571bd785f30b</code>
+<div class="numbers"><div><strong>2h 56m 23s</strong><span>Created-to-end / age</span></div><div><strong>39m 03s</strong><span>First-start elapsed</span></div><div><strong>2h 17m 20s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 2h 17m 20s; Attempt envelope: 34m 48s; Review bounds: 2m 27s; Unclassified after start: 1m 48s"><span class="queue" style="width:77.861%"></span><span class="work" style="width:19.730%"></span><span class="review" style="width:1.389%"></span><span class="unknown" style="width:1.021%"></span></div>
+<div class="numbers"><div><strong>35 / +1320 / −50</strong><span>Files / + / −</span></div><div><strong>12m 25s</strong><span>Shell sum</span></div><div><strong>10m 34s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>2h 17m 20s</strong></li>
+<li>Attempt envelope: <strong>34m 48s</strong></li>
+<li>Review bounds: <strong>2m 27s</strong></li>
+<li>Unclassified after start: <strong>1m 48s</strong></li>
+<li>64 shell records; 9 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 59, &quot;high_link_and_window&quot;: 5}</code>.</li><li>Shell union within attempt envelopes: 10m 28s.</li>
+<li>Created <code>2026-11-06T03:30:03Z</code>; first start <code>2026-11-06T05:47:23Z</code>; completed/cancelled <code>2026-11-06T06:26:26Z</code>.</li>
+<li>Net base <code>f4cd91d93bd2c198c641d69390c1ec011d2fcb32</code> → head <code>233014ae66cc48f6cf8a45c158282ed48ab22e7f</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T05:47:23Z</code> → <code>2026-11-06T05:48:54Z</code>: 1m 31s. Source <code>facet:task_18e5571bd785f30b:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T05:50:05Z</code> → <code>2026-11-06T06:23:22Z</code>: 33m 17s. Source <code>facet:task_18e5571bd785f30b:2:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e55735054e37f6"><div class="task-head"><h3>V1: Runnable owner-local task and comment slice</h3><span class="badge done">done</span></div><code class="task-id">task_18e55735054e37f6</code>
+<div class="numbers"><div><strong>1h 39m 03s</strong><span>Created-to-end / age</span></div><div><strong>1h 04m 29s</strong><span>First-start elapsed</span></div><div><strong>34m 34s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 34m 34s; Attempt envelope: 53m 31s; Review bounds: 8m 10s; Unclassified after start: 2m 48s"><span class="queue" style="width:34.898%"></span><span class="work" style="width:54.030%"></span><span class="review" style="width:8.245%"></span><span class="unknown" style="width:2.827%"></span></div>
+<div class="numbers"><div><strong>34 / +1622 / −6</strong><span>Files / + / −</span></div><div><strong>11m 28s</strong><span>Shell sum</span></div><div><strong>9m 27s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>34m 34s</strong></li>
+<li>Attempt envelope: <strong>53m 31s</strong></li>
+<li>Review bounds: <strong>8m 10s</strong></li>
+<li>Unclassified after start: <strong>2m 48s</strong></li>
+<li>170 shell records; 35 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 164, &quot;high_link_and_window&quot;: 6}</code>.</li><li>Shell union within attempt envelopes: 9m 14s.</li>
+<li>Created <code>2026-11-06T03:31:51Z</code>; first start <code>2026-11-06T04:06:25Z</code>; completed/cancelled <code>2026-11-06T05:10:54Z</code>.</li>
+<li>Net base <code>b4b34929cbaf41ade476732527104543c3b45e39</code> → head <code>47ee1544bb89c163496586751fbef6187621c15d</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T04:06:25Z</code> → <code>2026-11-06T04:11:52Z</code>: 5m 27s. Source <code>facet:task_18e55735054e37f6:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T04:11:52Z</code> → <code>2026-11-06T04:20:58Z</code>: 9m 06s. Source <code>facet:task_18e55735054e37f6:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T04:22:43Z</code> → <code>2026-11-06T04:52:49Z</code>: 30m 06s. Source <code>facet:task_18e55735054e37f6:3:runtime</code>.</li>
+<li>Attempt 4: <code>2026-11-06T05:01:09Z</code> → <code>2026-11-06T05:10:01Z</code>: 8m 52s. Source <code>facet:task_18e55735054e37f6:4:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e55eb775acfc0f"><div class="task-head"><h3>M1d: Complete local submit and review lifecycle</h3><span class="badge done">done</span></div><code class="task-id">task_18e55eb775acfc0f</code>
+<div class="numbers"><div><strong>1h 15m 19s</strong><span>Created-to-end / age</span></div><div><strong>38m 18s</strong><span>First-start elapsed</span></div><div><strong>37m 01s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 37m 01s; Attempt envelope: 34m 20s; Review bounds: 3m 10s; Unclassified after start: 0m 48s"><span class="queue" style="width:49.148%"></span><span class="work" style="width:45.585%"></span><span class="review" style="width:4.204%"></span><span class="unknown" style="width:1.062%"></span></div>
+<div class="numbers"><div><strong>37 / +1629 / −49</strong><span>Files / + / −</span></div><div><strong>8m 13s</strong><span>Shell sum</span></div><div><strong>7m 28s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>37m 01s</strong></li>
+<li>Attempt envelope: <strong>34m 20s</strong></li>
+<li>Review bounds: <strong>3m 10s</strong></li>
+<li>Unclassified after start: <strong>0m 48s</strong></li>
+<li>49 shell records; 11 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 49}</code>.</li><li>Shell union within attempt envelopes: 7m 06s.</li>
+<li>Created <code>2026-11-06T05:49:28Z</code>; first start <code>2026-11-06T06:26:29Z</code>; completed/cancelled <code>2026-11-06T07:04:47Z</code>.</li>
+<li>Net base <code>233014ae66cc48f6cf8a45c158282ed48ab22e7f</code> → head <code>21072f5cad30853c314627cdc852588827de763b</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T06:26:29Z</code> → <code>2026-11-06T07:00:49Z</code>: 34m 20s. Source <code>facet:task_18e55eb775acfc0f:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e562f7a4bb62aa"><div class="task-head"><h3>M2b: Local controls and assignment lifecycle</h3><span class="badge done">done</span></div><code class="task-id">task_18e562f7a4bb62aa</code>
+<div class="numbers"><div><strong>1h 43m 37s</strong><span>Created-to-end / age</span></div><div><strong>44m 52s</strong><span>First-start elapsed</span></div><div><strong>58m 45s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 58m 45s; Attempt envelope: 33m 21s; Review bounds: 9m 44s; Unclassified after start: 1m 47s"><span class="queue" style="width:56.699%"></span><span class="work" style="width:32.186%"></span><span class="review" style="width:9.394%"></span><span class="unknown" style="width:1.721%"></span></div>
+<div class="numbers"><div><strong>35 / +1300 / −57</strong><span>Files / + / −</span></div><div><strong>12m 21s</strong><span>Shell sum</span></div><div><strong>10m 37s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>58m 45s</strong></li>
+<li>Attempt envelope: <strong>33m 21s</strong></li>
+<li>Review bounds: <strong>9m 44s</strong></li>
+<li>Unclassified after start: <strong>1m 47s</strong></li>
+<li>54 shell records; 5 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 52, &quot;high_link_and_window&quot;: 2}</code>.</li><li>Shell union within attempt envelopes: 10m 28s.</li>
+<li>Created <code>2026-11-06T07:07:22Z</code>; first start <code>2026-11-06T08:06:07Z</code>; completed/cancelled <code>2026-11-06T08:50:59Z</code>.</li>
+<li>Net base <code>6e87ca20afcd0682670b171a107ef8cbe01b53dd</code> → head <code>37495ef4a17223a65983ece3099d9e78a7f27d75</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T08:06:07Z</code> → <code>2026-11-06T08:08:41Z</code>: 2m 34s. Source <code>facet:task_18e562f7a4bb62aa:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T08:09:06Z</code> → <code>2026-11-06T08:39:53Z</code>: 30m 47s. Source <code>facet:task_18e562f7a4bb62aa:2:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e562f7b94d63bb"><div class="task-head"><h3>M2c: Workflows and source episode recovery</h3><span class="badge done">done</span></div><code class="task-id">task_18e562f7b94d63bb</code>
+<div class="numbers"><div><strong>3h 18m 24s</strong><span>Created-to-end / age</span></div><div><strong>1h 34m 44s</strong><span>First-start elapsed</span></div><div><strong>1h 43m 40s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 1h 43m 40s; Attempt envelope: 1h 23m 20s; Review bounds: 7m 54s; Unclassified after start: 3m 30s"><span class="queue" style="width:52.251%"></span><span class="work" style="width:42.003%"></span><span class="review" style="width:3.982%"></span><span class="unknown" style="width:1.764%"></span></div>
+<div class="numbers"><div><strong>39 / +1962 / −57</strong><span>Files / + / −</span></div><div><strong>28m 56s</strong><span>Shell sum</span></div><div><strong>26m 15s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>1h 43m 40s</strong></li>
+<li>Attempt envelope: <strong>1h 23m 20s</strong></li>
+<li>Review bounds: <strong>7m 54s</strong></li>
+<li>Unclassified after start: <strong>3m 30s</strong></li>
+<li>146 shell records; 20 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 129, &quot;high_link_and_window&quot;: 17}</code>.</li><li>Shell union within attempt envelopes: 25m 36s.</li>
+<li>Created <code>2026-11-06T07:07:22Z</code>; first start <code>2026-11-06T08:51:02Z</code>; completed/cancelled <code>2026-11-06T10:25:46Z</code>.</li>
+<li>Net base <code>ec3bdaab4f45d79b352b763daa2be26a6e8d59cb</code> → head <code>a1ff381b94523d616d34f68ee7ebb18bf251e17c</code>. last accepted incoming integration parent; removes inherited work.</li>
+<li>Attempt 1: <code>2026-11-06T08:51:02Z</code> → <code>2026-11-06T08:57:19Z</code>: 6m 17s. Source <code>facet:task_18e562f7b94d63bb:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T08:57:19Z</code> → <code>2026-11-06T09:05:31Z</code>: 8m 12s. Source <code>facet:task_18e562f7b94d63bb:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T09:05:31Z</code> → <code>2026-11-06T09:43:22Z</code>: 37m 51s. Source <code>facet:task_18e562f7b94d63bb:3:runtime</code>.</li>
+<li>Attempt 4: <code>2026-11-06T09:48:25Z</code> → <code>2026-11-06T10:04:26Z</code>: 16m 01s. Source <code>facet:task_18e562f7b94d63bb:4:runtime</code>.</li>
+<li>Attempt 5: <code>2026-11-06T10:06:17Z</code> → <code>2026-11-06T10:11:52Z</code>: 5m 35s. Source <code>facet:task_18e562f7b94d63bb:5:runtime</code>.</li>
+<li>Attempt 6: <code>2026-11-06T10:13:45Z</code> → <code>2026-11-06T10:23:09Z</code>: 9m 24s. Source <code>facet:task_18e562f7b94d63bb:6:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e568efcfe3e1c6"><div class="task-head"><h3>Audit merged runtime against overall Bridge-owned goal</h3><span class="badge done">done</span></div><code class="task-id">task_18e568efcfe3e1c6</code>
+<div class="numbers"><div><strong>15m 48s</strong><span>Created-to-end / age</span></div><div><strong>15m 48s</strong><span>First-start elapsed</span></div><div><strong>0m 00s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 00s; Attempt envelope: 14m 16s; Review bounds: 1m 08s; Unclassified after start: 0m 24s"><span class="work" style="width:90.295%"></span><span class="review" style="width:7.173%"></span><span class="unknown" style="width:2.532%"></span></div>
+<div class="numbers"><div><strong>1 / +110 / −0</strong><span>Files / + / −</span></div><div><strong>0m 06s</strong><span>Shell sum</span></div><div><strong>0m 06s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 00s</strong></li>
+<li>Attempt envelope: <strong>14m 16s</strong></li>
+<li>Review bounds: <strong>1m 08s</strong></li>
+<li>Unclassified after start: <strong>0m 24s</strong></li>
+<li>52 shell records; 2 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 48, &quot;high_link_and_window&quot;: 4}</code>.</li><li>Shell union within attempt envelopes: 0m 04s.</li>
+<li>Created <code>2026-11-06T08:56:45Z</code>; first start <code>2026-11-06T08:56:45Z</code>; completed/cancelled <code>2026-11-06T09:12:33Z</code>.</li>
+<li>Net base <code>37495ef4a17223a65983ece3099d9e78a7f27d75</code> → head <code>f3cc56d1fed9406198fa57f07ef4cb5a5f93016e</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T08:56:45Z</code> → <code>2026-11-06T09:09:53Z</code>: 13m 08s. Source <code>facet:task_18e568efcfe3e1c6:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T09:09:53Z</code> → <code>2026-11-06T09:11:01Z</code>: 1m 08s. Source <code>facet:task_18e568efcfe3e1c6:2:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e569e455cd82bb"><div class="task-head"><h3>Fix audited owner publication and registry pagination</h3><span class="badge done">done</span></div><code class="task-id">task_18e569e455cd82bb</code>
+<div class="numbers"><div><strong>24m 50s</strong><span>Created-to-end / age</span></div><div><strong>24m 49s</strong><span>First-start elapsed</span></div><div><strong>0m 01s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 01s; Attempt envelope: 23m 08s; Review bounds: 1m 17s; Unclassified after start: 0m 24s"><span class="queue" style="width:0.067%"></span><span class="work" style="width:93.154%"></span><span class="review" style="width:5.168%"></span><span class="unknown" style="width:1.611%"></span></div>
+<div class="numbers"><div><strong>14 / +593 / −19</strong><span>Files / + / −</span></div><div><strong>11m 42s</strong><span>Shell sum</span></div><div><strong>10m 37s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 01s</strong></li>
+<li>Attempt envelope: <strong>23m 08s</strong></li>
+<li>Review bounds: <strong>1m 17s</strong></li>
+<li>Unclassified after start: <strong>0m 24s</strong></li>
+<li>42 shell records; 7 nonzero exits. Confidence: <code>{&quot;high_link_and_window&quot;: 11, &quot;medium_agent_window&quot;: 31}</code>.</li><li>Shell union within attempt envelopes: 10m 36s.</li>
+<li>Created <code>2026-11-06T09:14:15Z</code>; first start <code>2026-11-06T09:14:16Z</code>; completed/cancelled <code>2026-11-06T09:39:05Z</code>.</li>
+<li>Net base <code>f3cc56d1fed9406198fa57f07ef4cb5a5f93016e</code> → head <code>6bb3864d749499e9cd95e94528ac2c730e0b646d</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T09:14:16Z</code> → <code>2026-11-06T09:37:24Z</code>: 23m 08s. Source <code>facet:task_18e569e455cd82bb:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e569e4750fe9fd"><div class="task-head"><h3>Implement audited signed device-grant lifecycle</h3><span class="badge done">done</span></div><code class="task-id">task_18e569e4750fe9fd</code>
+<div class="numbers"><div><strong>53m 26s</strong><span>Created-to-end / age</span></div><div><strong>28m 34s</strong><span>First-start elapsed</span></div><div><strong>24m 52s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 24m 52s; Attempt envelope: 25m 47s; Review bounds: 2m 14s; Unclassified after start: 0m 33s"><span class="queue" style="width:46.538%"></span><span class="work" style="width:48.253%"></span><span class="review" style="width:4.180%"></span><span class="unknown" style="width:1.029%"></span></div>
+<div class="numbers"><div><strong>24 / +942 / −27</strong><span>Files / + / −</span></div><div><strong>10m 01s</strong><span>Shell sum</span></div><div><strong>7m 51s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>24m 52s</strong></li>
+<li>Attempt envelope: <strong>25m 47s</strong></li>
+<li>Review bounds: <strong>2m 14s</strong></li>
+<li>Unclassified after start: <strong>0m 33s</strong></li>
+<li>103 shell records; 13 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 89, &quot;high_link_and_window&quot;: 14}</code>.</li><li>Shell union within attempt envelopes: 7m 46s.</li>
+<li>Created <code>2026-11-06T09:14:16Z</code>; first start <code>2026-11-06T09:39:08Z</code>; completed/cancelled <code>2026-11-06T10:07:42Z</code>.</li>
+<li>Net base <code>6bb3864d749499e9cd95e94528ac2c730e0b646d</code> → head <code>ec3bdaab4f45d79b352b763daa2be26a6e8d59cb</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T09:39:08Z</code> → <code>2026-11-06T10:04:55Z</code>: 25m 47s. Source <code>facet:task_18e569e4750fe9fd:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e569e48d6b5532"><div class="task-head"><h3>Close audited full task aggregate and command parity</h3><span class="badge cancelled">cancelled</span></div><code class="task-id">task_18e569e48d6b5532</code>
+<div class="numbers"><div><strong>5h 25m 25s</strong><span>Created-to-end / age</span></div><div><strong>2h 23m 56s</strong><span>First-start elapsed</span></div><div><strong>3h 01m 29s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 3h 01m 29s; Attempt envelope: 2h 03m 57s; Review bounds: 0m 00s; Unclassified after start: 19m 59s"><span class="queue" style="width:55.770%"></span><span class="work" style="width:38.090%"></span><span class="unknown" style="width:6.141%"></span></div>
+<div class="numbers"><div><strong>49 / +2784 / −100</strong><span>Files / + / −</span></div><div><strong>44m 44s</strong><span>Shell sum</span></div><div><strong>39m 25s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>3h 01m 29s</strong></li>
+<li>Attempt envelope: <strong>2h 03m 57s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>19m 59s</strong></li>
+<li>165 shell records; 17 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 143, &quot;high_link_and_window&quot;: 22}</code>.</li><li>Shell union within attempt envelopes: 39m 25s.</li>
+<li>Created <code>2026-11-06T09:14:16Z</code>; first start <code>2026-11-06T12:15:45Z</code>; completed/cancelled <code>2026-11-06T14:39:41Z</code>.</li>
+<li>Net base <code>6b076ac70b439e0dc22d344fe344fbb7572e9d6e</code> → head <code>bfac0d0d38f2293ba475b1ddbb8c4b654248e9a8</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T12:15:45Z</code> → <code>2026-11-06T12:20:54Z</code>: 5m 09s. Source <code>facet:task_18e569e48d6b5532:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T12:20:54Z</code> → <code>2026-11-06T12:49:18Z</code>: 28m 24s. Source <code>facet:task_18e569e48d6b5532:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T12:49:18Z</code> → <code>2026-11-06T13:31:30Z</code>: 42m 12s. Source <code>facet:task_18e569e48d6b5532:3:runtime</code>.</li>
+<li>Attempt 4: <code>2026-11-06T13:31:31Z</code> → <code>2026-11-06T13:54:12Z</code>: 22m 41s. Source <code>facet:task_18e569e48d6b5532:4:runtime</code>.</li>
+<li>Attempt 5: <code>2026-11-06T13:54:12Z</code> → <code>2026-11-06T14:04:40Z</code>: 10m 28s. Source <code>facet:task_18e569e48d6b5532:5:runtime</code>.</li>
+<li>Attempt 6: <code>2026-11-06T14:06:51Z</code> → <code>2026-11-06T14:21:54Z</code>: 15m 03s. Source <code>facet:task_18e569e48d6b5532:6:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e569e4a29a0fbe"><div class="task-head"><h3>Preserve audited canonical linked content and envelopes</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e569e4a29a0fbe</code>
+<div class="numbers"><div><strong>5h 30m 40s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>5h 30m 40s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 5h 30m 40s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>5h 30m 40s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T09:14:17Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e56a0d15295083"><div class="task-head"><h3>Complete owner-local workflow.v1 language parity</h3><span class="badge done">done</span></div><code class="task-id">task_18e56a0d15295083</code>
+<div class="numbers"><div><strong>2h 58m 32s</strong><span>Created-to-end / age</span></div><div><strong>1h 49m 53s</strong><span>First-start elapsed</span></div><div><strong>1h 08m 39s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 1h 08m 39s; Attempt envelope: 1h 41m 03s; Review bounds: 5m 14s; Unclassified after start: 3m 36s"><span class="queue" style="width:38.452%"></span><span class="work" style="width:56.600%"></span><span class="review" style="width:2.931%"></span><span class="unknown" style="width:2.016%"></span></div>
+<div class="numbers"><div><strong>42 / +3549 / −38</strong><span>Files / + / −</span></div><div><strong>44m 06s</strong><span>Shell sum</span></div><div><strong>37m 54s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>1h 08m 39s</strong></li>
+<li>Attempt envelope: <strong>1h 41m 03s</strong></li>
+<li>Review bounds: <strong>5m 14s</strong></li>
+<li>Unclassified after start: <strong>3m 36s</strong></li>
+<li>206 shell records; 40 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 176, &quot;high_link_and_window&quot;: 30}</code>.</li><li>Shell union within attempt envelopes: 34m 41s.</li>
+<li>Created <code>2026-11-06T09:17:10Z</code>; first start <code>2026-11-06T10:25:49Z</code>; completed/cancelled <code>2026-11-06T12:15:42Z</code>.</li>
+<li>Net base <code>c04b56101f3ace4176b90391ff8c9539616d80ea</code> → head <code>6b076ac70b439e0dc22d344fe344fbb7572e9d6e</code>. last accepted incoming integration parent; removes inherited work.</li>
+<li>Attempt 1: <code>2026-11-06T10:25:49Z</code> → <code>2026-11-06T10:31:07Z</code>: 5m 18s. Source <code>facet:task_18e56a0d15295083:1:runtime</code>.</li>
+<li>Attempt 2: <code>2026-11-06T10:31:07Z</code> → <code>2026-11-06T11:31:07Z</code>: 1h 00m 00s. Source <code>facet:task_18e56a0d15295083:2:runtime</code>.</li>
+<li>Attempt 3: <code>2026-11-06T11:31:07Z</code> → <code>2026-11-06T11:35:13Z</code>: 4m 06s. Source <code>facet:task_18e56a0d15295083:3:runtime</code>.</li>
+<li>Attempt 4: <code>2026-11-06T11:37:52Z</code> → <code>2026-11-06T11:55:08Z</code>: 17m 16s. Source <code>facet:task_18e56a0d15295083:4:runtime</code>.</li>
+<li>Attempt 5: <code>2026-11-06T11:56:46Z</code> → <code>2026-11-06T12:03:51Z</code>: 7m 05s. Source <code>facet:task_18e56a0d15295083:5:runtime</code>.</li>
+<li>Attempt 6: <code>2026-11-06T12:05:24Z</code> → <code>2026-11-06T12:12:42Z</code>: 7m 18s. Source <code>facet:task_18e56a0d15295083:6:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e56d155e88f266"><div class="task-head"><h3>Bridge-owned chain compaction and overflow notification fix</h3><span class="badge done">done</span></div><code class="task-id">task_18e56d155e88f266</code>
+<div class="numbers"><div><strong>49m 34s</strong><span>Created-to-end / age</span></div><div><strong>49m 34s</strong><span>First-start elapsed</span></div><div><strong>0m 00s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 00s; Attempt envelope: 46m 27s; Review bounds: 2m 44s; Unclassified after start: 0m 23s"><span class="work" style="width:93.712%"></span><span class="review" style="width:5.514%"></span><span class="unknown" style="width:0.773%"></span></div>
+<div class="numbers"><div><strong>36 / +950 / −140</strong><span>Files / + / −</span></div><div><strong>26m 34s</strong><span>Shell sum</span></div><div><strong>20m 38s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 00s</strong></li>
+<li>Attempt envelope: <strong>46m 27s</strong></li>
+<li>Review bounds: <strong>2m 44s</strong></li>
+<li>Unclassified after start: <strong>0m 23s</strong></li>
+<li>164 shell records; 13 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 142, &quot;high_link_and_window&quot;: 22}</code>.</li><li>Shell union within attempt envelopes: 20m 07s.</li>
+<li>Created <code>2026-11-06T10:12:45Z</code>; first start <code>2026-11-06T10:12:45Z</code>; completed/cancelled <code>2026-11-06T11:02:19Z</code>.</li>
+<li>Net base <code>a1ff381b94523d616d34f68ee7ebb18bf251e17c</code> → head <code>c04b56101f3ace4176b90391ff8c9539616d80ea</code>. last accepted incoming integration parent; removes inherited work.</li>
+<li>Attempt 1: <code>2026-11-06T10:12:45Z</code> → <code>2026-11-06T10:59:12Z</code>: 46m 27s. Source <code>facet:task_18e56d155e88f266:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad52bb4ea63"><div class="task-head"><h3>C1a: Review preserved event and hold foundation</h3><span class="badge done">done</span></div><code class="task-id">task_18e57ad52bb4ea63</code>
+<div class="numbers"><div><strong>9m 33s</strong><span>Created-to-end / age</span></div><div><strong>9m 33s</strong><span>First-start elapsed</span></div><div><strong>0m 00s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 0m 00s; Attempt envelope: 6m 16s; Review bounds: 2m 53s; Unclassified after start: 0m 24s"><span class="work" style="width:65.620%"></span><span class="review" style="width:30.192%"></span><span class="unknown" style="width:4.188%"></span></div>
+<div class="numbers"><div><strong>49 / +2875 / −100</strong><span>Files / + / −</span></div><div><strong>0m 18s</strong><span>Shell sum</span></div><div><strong>0m 18s</strong><span>Shell union</span></div></div>
+<p class="note">Copied lineage: retained row includes old C1 checkpoint. New correction only:5 files, +93/−2. Chain totals count preserved work once.</p>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>0m 00s</strong></li>
+<li>Attempt envelope: <strong>6m 16s</strong></li>
+<li>Review bounds: <strong>2m 53s</strong></li>
+<li>Unclassified after start: <strong>0m 24s</strong></li>
+<li>25 shell records; 1 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 22, &quot;high_link_and_window&quot;: 3}</code>.</li><li>Shell union within attempt envelopes: 0m 16s.</li>
+<li>Created <code>2026-11-06T14:24:42Z</code>; first start <code>2026-11-06T14:24:42Z</code>; completed/cancelled <code>2026-11-06T14:34:15Z</code>.</li>
+<li>Net base <code>6b076ac70b439e0dc22d344fe344fbb7572e9d6e</code> → head <code>d78c6c54e659f3f939cd39e4b19aeb494ba37450</code>. first owned commit parent.</li>
+<li>Attempt 1: <code>2026-11-06T14:24:42Z</code> → <code>2026-11-06T14:30:58Z</code>: 6m 16s. Source <code>facet:task_18e57ad52bb4ea63:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad551f091b8"><div class="task-head"><h3>C1b: Native attempt history and typed facet parity</h3><span class="badge in_progress">in progress</span></div><code class="task-id">task_18e57ad551f091b8</code>
+<div class="numbers"><div><strong>20m 14s</strong><span>Created-to-end / age</span></div><div><strong>10m 40s</strong><span>First-start elapsed</span></div><div><strong>9m 34s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 9m 34s; Attempt envelope: 10m 40s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:47.282%"></span><span class="work" style="width:52.718%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 14s</strong><span>Shell sum</span></div><div><strong>0m 14s</strong><span>Shell union</span></div></div>
+<p class="note">Partial snapshot:0 committed changes; uncommitted working delta is N/A.</p>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>9m 34s</strong></li>
+<li>Attempt envelope: <strong>10m 40s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>7 shell records; 2 nonzero exits. Confidence: <code>{&quot;medium_agent_window&quot;: 7}</code>.</li><li>Shell union within attempt envelopes: 0m 14s.</li>
+<li>Created <code>2026-11-06T14:24:43Z</code>; first start <code>2026-11-06T14:34:17Z</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Attempt 1: <code>2026-11-06T14:34:17Z</code> → <code>2026-11-06T14:44:57Z (clipped)</code>: 10m 40s. Source <code>facet:task_18e57ad551f091b8:1:runtime</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad568e635ed"><div class="task-head"><h3>C1c: Native attempt-budget admission parity</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e57ad568e635ed</code>
+<div class="numbers"><div><strong>20m 14s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>20m 14s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 20m 14s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>20m 14s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T14:24:43Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad57cef82ce"><div class="task-head"><h3>C1d: Complete canonical metadata and configuration</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e57ad57cef82ce</code>
+<div class="numbers"><div><strong>20m 14s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>20m 14s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 20m 14s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>20m 14s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T14:24:43Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad591fe06b0"><div class="task-head"><h3>C1e: Local proposals publication and mixed-work graph</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e57ad591fe06b0</code>
+<div class="numbers"><div><strong>20m 13s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>20m 13s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 20m 13s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>20m 13s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T14:24:44Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<article class="card task" id="task_18e57ad5a65c6c86"><div class="task-head"><h3>C1f: Rich aggregate proof and final parity gate</h3><span class="badge backlog">queued</span></div><code class="task-id">task_18e57ad5a65c6c86</code>
+<div class="numbers"><div><strong>20m 13s</strong><span>Created-to-end / age</span></div><div><strong>N/A</strong><span>First-start elapsed</span></div><div><strong>20m 13s</strong><span>Pre-start wait</span></div></div>
+<div class="bar" role="img" aria-label="Pre-start wait: 20m 13s; Attempt envelope: 0m 00s; Review bounds: 0m 00s; Unclassified after start: 0m 00s"><span class="queue" style="width:100.000%"></span></div>
+<div class="numbers"><div><strong>0 / +0 / −0</strong><span>Files / + / −</span></div><div><strong>0m 00s</strong><span>Shell sum</span></div><div><strong>0m 00s</strong><span>Shell union</span></div></div>
+<details><summary>Phase details and provenance</summary><ul>
+<li>Pre-start wait: <strong>20m 13s</strong></li>
+<li>Attempt envelope: <strong>0m 00s</strong></li>
+<li>Review bounds: <strong>0m 00s</strong></li>
+<li>Unclassified after start: <strong>0m 00s</strong></li>
+<li>0 shell records; 0 nonzero exits. Confidence: <code>{}</code>.</li><li>Shell union within attempt envelopes: 0m 00s.</li>
+<li>Created <code>2026-11-06T14:24:44Z</code>; first start <code>not started</code>; completed/cancelled <code>not terminal at cutoff</code>.</li>
+<li>Exact closed review-lease, hold/block/outage and launch/runtime splits: N/A. Review shown is comment-bound evidence only.</li></ul></details></article>
+<details><summary>Wide audit table (optional; scroll horizontally)</summary><div class="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Age min</th><th>First-start min</th><th>Pre-wait min</th><th>Attempt min</th><th>Review min</th><th>Gap min</th><th>Files</th><th>+LOC</th><th>−LOC</th><th>Shell count</th><th>Shell sum min</th><th>Shell union min</th></tr></thead><tbody>
+<tr><td>Plan Bridge-owned runtime and searchable local storage (task_18e554dbf43e7642)</td><td>done</td><td>37.6</td><td>37.2</td><td>0.4</td><td>31.6</td><td>0.9</td><td>4.8</td><td>1</td><td>211</td><td>0</td><td>33</td><td>0.1</td><td>0.1</td></tr>
+<tr><td>M1: Owner-local runtime end to end (task_18e556f8ef2f0c8d)</td><td>cancelled</td><td>3.9</td><td>3.9</td><td>0.0</td><td>1.3</td><td>0.0</td><td>2.6</td><td>0</td><td>0</td><td>0</td><td>2</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>M2: Complete local commands and scoped search (task_18e556f901cbcf41)</td><td>done</td><td>278.5</td><td>61.2</td><td>217.3</td><td>52.3</td><td>6.6</td><td>2.4</td><td>36</td><td>1207</td><td>75</td><td>108</td><td>18.3</td><td>16.0</td></tr>
+<tr><td>M3: Fenced remote execution and slot reservations (task_18e556f90cfa1e9c)</td><td>backlog</td><td>677.4</td><td>N/A</td><td>677.4</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>M4: Migration and recovery integration gate (task_18e556f919c82490)</td><td>backlog</td><td>677.4</td><td>N/A</td><td>677.4</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>M1a: Strict owner and command contracts (task_18e55714c3bb18ea)</td><td>done</td><td>36.8</td><td>36.8</td><td>0.0</td><td>17.3</td><td>1.6</td><td>17.9</td><td>13</td><td>1573</td><td>1</td><td>42</td><td>1.1</td><td>1.1</td></tr>
+<tr><td>M1b: Local transactional admission and receipts (task_18e55714d71968b1)</td><td>done</td><td>137.8</td><td>36.4</td><td>101.4</td><td>32.8</td><td>2.8</td><td>0.8</td><td>20</td><td>1301</td><td>49</td><td>49</td><td>6.2</td><td>5.9</td></tr>
+<tr><td>M1c: Integrate owner-local runtime end to end (task_18e5571bd785f30b)</td><td>done</td><td>176.4</td><td>39.0</td><td>137.3</td><td>34.8</td><td>2.5</td><td>1.8</td><td>35</td><td>1320</td><td>50</td><td>64</td><td>12.4</td><td>10.6</td></tr>
+<tr><td>V1: Runnable owner-local task and comment slice (task_18e55735054e37f6)</td><td>done</td><td>99.0</td><td>64.5</td><td>34.6</td><td>53.5</td><td>8.2</td><td>2.8</td><td>34</td><td>1622</td><td>6</td><td>170</td><td>11.5</td><td>9.4</td></tr>
+<tr><td>M1d: Complete local submit and review lifecycle (task_18e55eb775acfc0f)</td><td>done</td><td>75.3</td><td>38.3</td><td>37.0</td><td>34.3</td><td>3.2</td><td>0.8</td><td>37</td><td>1629</td><td>49</td><td>49</td><td>8.2</td><td>7.5</td></tr>
+<tr><td>M2b: Local controls and assignment lifecycle (task_18e562f7a4bb62aa)</td><td>done</td><td>103.6</td><td>44.9</td><td>58.8</td><td>33.4</td><td>9.7</td><td>1.8</td><td>35</td><td>1300</td><td>57</td><td>54</td><td>12.3</td><td>10.6</td></tr>
+<tr><td>M2c: Workflows and source episode recovery (task_18e562f7b94d63bb)</td><td>done</td><td>198.4</td><td>94.7</td><td>103.7</td><td>83.3</td><td>7.9</td><td>3.5</td><td>39</td><td>1962</td><td>57</td><td>146</td><td>28.9</td><td>26.2</td></tr>
+<tr><td>Audit merged runtime against overall Bridge-owned goal (task_18e568efcfe3e1c6)</td><td>done</td><td>15.8</td><td>15.8</td><td>0.0</td><td>14.3</td><td>1.1</td><td>0.4</td><td>1</td><td>110</td><td>0</td><td>52</td><td>0.1</td><td>0.1</td></tr>
+<tr><td>Fix audited owner publication and registry pagination (task_18e569e455cd82bb)</td><td>done</td><td>24.8</td><td>24.8</td><td>0.0</td><td>23.1</td><td>1.3</td><td>0.4</td><td>14</td><td>593</td><td>19</td><td>42</td><td>11.7</td><td>10.6</td></tr>
+<tr><td>Implement audited signed device-grant lifecycle (task_18e569e4750fe9fd)</td><td>done</td><td>53.4</td><td>28.6</td><td>24.9</td><td>25.8</td><td>2.2</td><td>0.6</td><td>24</td><td>942</td><td>27</td><td>103</td><td>10.0</td><td>7.8</td></tr>
+<tr><td>Close audited full task aggregate and command parity (task_18e569e48d6b5532)</td><td>cancelled</td><td>325.4</td><td>143.9</td><td>181.5</td><td>124.0</td><td>0.0</td><td>20.0</td><td>49</td><td>2784</td><td>100</td><td>165</td><td>44.7</td><td>39.4</td></tr>
+<tr><td>Preserve audited canonical linked content and envelopes (task_18e569e4a29a0fbe)</td><td>backlog</td><td>330.7</td><td>N/A</td><td>330.7</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>Complete owner-local workflow.v1 language parity (task_18e56a0d15295083)</td><td>done</td><td>178.5</td><td>109.9</td><td>68.7</td><td>101.0</td><td>5.2</td><td>3.6</td><td>42</td><td>3549</td><td>38</td><td>206</td><td>44.1</td><td>37.9</td></tr>
+<tr><td>Bridge-owned chain compaction and overflow notification fix (task_18e56d155e88f266)</td><td>done</td><td>49.6</td><td>49.6</td><td>0.0</td><td>46.5</td><td>2.7</td><td>0.4</td><td>36</td><td>950</td><td>140</td><td>164</td><td>26.6</td><td>20.6</td></tr>
+<tr><td>C1a: Review preserved event and hold foundation (task_18e57ad52bb4ea63)</td><td>done</td><td>9.6</td><td>9.6</td><td>0.0</td><td>6.3</td><td>2.9</td><td>0.4</td><td>49</td><td>2875</td><td>100</td><td>25</td><td>0.3</td><td>0.3</td></tr>
+<tr><td>C1b: Native attempt history and typed facet parity (task_18e57ad551f091b8)</td><td>in_progress</td><td>20.2</td><td>10.7</td><td>9.6</td><td>10.7</td><td>0.0</td><td>0.0</td><td>0 committed; working N/A</td><td>0</td><td>0</td><td>7</td><td>0.2</td><td>0.2</td></tr>
+<tr><td>C1c: Native attempt-budget admission parity (task_18e57ad568e635ed)</td><td>backlog</td><td>20.2</td><td>N/A</td><td>20.2</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>C1d: Complete canonical metadata and configuration (task_18e57ad57cef82ce)</td><td>backlog</td><td>20.2</td><td>N/A</td><td>20.2</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>C1e: Local proposals publication and mixed-work graph (task_18e57ad591fe06b0)</td><td>backlog</td><td>20.2</td><td>N/A</td><td>20.2</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+<tr><td>C1f: Rich aggregate proof and final parity gate (task_18e57ad5a65c6c86)</td><td>backlog</td><td>20.2</td><td>N/A</td><td>20.2</td><td>0.0</td><td>0.0</td><td>N/A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.0</td><td>0.0</td></tr>
+</tbody></table></div></details></section><section id="shell"><h2>The ten largest shell records</h2><p>Nine are documented real demos:34m 12s of summed spans. The tenth has no command category. Each wrapper is counted once; child stages are not added.</p>
+<article class="top-session"><strong>01 · 4m 15s</strong><p>Close audited full task aggregate and command parity</p><code>sh_89b935730f7edd8a64b3d9a08dbf79d0</code><p class="source">2026-11-06T12:59:37Z → 2026-11-06T13:03:52Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e576a45c6f446c</p></article>
+<article class="top-session"><strong>02 · 3m 48s</strong><p>Close audited full task aggregate and command parity</p><code>sh_41d90a59840bde07efde87b5becce2a8</code><p class="source">2026-11-06T14:10:42Z → 2026-11-06T14:14:30Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e57a53fec92a44</p></article>
+<article class="top-session"><strong>03 · 3m 47s</strong><p>Close audited full task aggregate and command parity</p><code>sh_a99440d70ac86a250d1f84345eda8f1c</code><p class="source">2026-11-06T13:20:17Z → 2026-11-06T13:24:04Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e5778943098d67</p></article>
+<article class="top-session"><strong>04 · 3m 46s</strong><p>Close audited full task aggregate and command parity</p><code>sh_1681df9dd0e44a4745b90f2ee84af722</code><p class="source">2026-11-06T13:03:10Z → 2026-11-06T13:06:56Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e576a45c6f446c</p></article>
+<article class="top-session"><strong>05 · 3m 46s</strong><p>Close audited full task aggregate and command parity</p><code>sh_bb45fb95ba0e364ecd76f59d21aecfed</code><p class="source">2026-11-06T13:43:15Z → 2026-11-06T13:47:01Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e578cf990a27ce</p></article>
+<article class="top-session"><strong>06 · 3m 45s</strong><p>Close audited full task aggregate and command parity</p><code>sh_2007a293a1458ffe8eb4d15b2fcb0b38</code><p class="source">2026-11-06T12:32:47Z → 2026-11-06T12:36:32Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e574fd4a8fea55</p></article>
+<article class="top-session"><strong>07 · 3m 43s</strong><p>Close audited full task aggregate and command parity</p><code>sh_b3ff73443bb29f7bcd8aca0b82949c47</code><p class="source">2026-11-06T12:38:18Z → 2026-11-06T12:42:01Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e5754ba6b1830f</p></article>
+<article class="top-session"><strong>08 · 3m 41s</strong><p>Bridge-owned chain compaction and overflow notification fix</p><code>sh_a05b7f280555b9b777933b25c6cec1dc</code><p class="source">2026-11-06T10:47:55Z → 2026-11-06T10:51:36Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e56f42fcf85dea</p></article>
+<article class="top-session"><strong>09 · 3m 41s</strong><p>Bridge-owned chain compaction and overflow notification fix</p><code>sh_9c093bafbdc09c18bf01c2ff68b64921</code><p class="source">2026-11-06T10:52:05Z → 2026-11-06T10:55:46Z · exit 0 · high_link_and_window</p><p class="source">Demo evidence: cmt_18e56f42fcf85dea</p></article>
+<article class="top-session"><strong>10 · 3m 41s</strong><p>Complete owner-local workflow.v1 language parity</p><code>sh_ea11b6d3f28680a3230f92cf5c6e6554</code><p class="source">2026-11-06T11:34:12Z → 2026-11-06T11:37:53Z · exit 0 · medium_agent_window</p><p class="source">Demo evidence: unknown command category; agent-window attribution only</p></article>
+</section><section id="git"><h2>Code size without duplicate credit</h2><p>Exact accepted net: ada2d4c8 → d78c6c54,161 files, +20,621/−145 = +20,476 lines. Integration bases remove inherited work: ec3bdaab→a1ff381b (M2c), a1ff381b→c04b5610 (compaction), c04b5610→6b076ac7 (workflow language). Other bases are the first owned commit&#x27;s parent. Per-task new net line deltas reconcile to+20,476.</p><aside class="callout"><p>Old C1:6b076ac7→bfac0d0d,+2,784/−100 across 49 files. Its nine commits were copied into C1a: bfac0d0d and 4867e4fa have identical trees. C1a retained net is+2,875/−100; its new correction bfac0d0d→d78c6c54 is only+93/−2 across 5 files. Count preserved work once.</p></aside><p>Deduplicated nonmerge authored gross churn:+21,234/−877 across 157 unique paths. Merge resolution-only remerge diffs are separate diagnostics, not added to gross totals because they include synthetic conflict cleanup. Final accepted net is the authoritative unique-chain size.</p><div class="grid">
+<article class="card"><span class="metric-label">docs</span><strong class="metric">18 files</strong><p>+2,938 / −5</p></article>
+<article class="card"><span class="metric-label">source/tooling</span><strong class="metric">95 files</strong><p>+8,921 / −136</p></article>
+<article class="card"><span class="metric-label">tests</span><strong class="metric">46 files</strong><p>+7,223 / −4</p></article>
+<article class="card"><span class="metric-label">generated</span><strong class="metric">2 files</strong><p>+1,539 / −0</p></article>
+</div></section><section id="limits"><h2>Coverage and honest gaps</h2><div class="grid">
+<article class="card"><code>inst_18e554c99e0743ee</code><p>12 in full page · 12 in cutoff range</p><p class="note">0 after cutoff · 0 before chain · has_more=false</p></article>
+<article class="card"><code>inst_18e554e13ee165a7</code><p>966 in full page · 959 in cutoff range</p><p class="note">7 after cutoff · 0 before chain · has_more=false</p></article>
+<article class="card"><code>inst_18e5568123390193</code><p>174 in full page · 174 in cutoff range</p><p class="note">0 after cutoff · 0 before chain · has_more=false</p></article>
+<article class="card"><code>inst_18e568efd2a64539</code><p>316 in full page · 301 in cutoff range</p><p class="note">15 after cutoff · 0 before chain · has_more=false</p></article>
+<article class="card"><code>inst_18e569b6fc61248b</code><p>60 in full page · 60 in cutoff range</p><p class="note">0 after cutoff · 0 before chain · has_more=false</p></article>
+</div><ul>
+<li>Cutoff: 2026-11-06T14:44:57Z (20:14:57 IST). Metadata was fetched approximately14:48–14:51 UTC and reconstructed using timestamps and immutable facets/commits. The report task was created14:46:45 UTC and is excluded, as are later implementation commits.</li>
+<li>All five historical instances were confirmed through task/comment/review identities. Each full shell page returned has_more=false; chain-scoped server listing was empty. Deduplication uses session_id.22 post-cutoff records were excluded. Ordinary200-record cursor pages demonstrably repeated/skipped records; a10,000-record single-page read recovered full authorized listings.</li>
+<li>Command/cwd/label fields are blank in authorized list/show. Old Bridge spawn specs had been removed; only the current post-cutoff spec remained. Most task attribution therefore uses agent plus attempt/review-comment time windows. Confidence and an unassigned bucket are explicit; same-instance/time-range membership alone is not proof of chain ownership.</li>
+<li>The 1,506 entries are session records, not individual child commands. Nested build/test/demo stages are not summed. Unmanaged direct terminal commands are unmeasured. Second-resolution zero spans indicate insufficient granularity, not zero execution cost.</li>
+<li>Exact historical review leases, every submit/rework transition, hold/block/outage intervals and launch/runtime splits were not exposed by list/show/facet records. Some handoffs are truncated; facets expose their latest version only. Narrative restarts/connectivity cannot be converted into precise outage seconds.</li>
+<li>214 records have nonzero exit codes; five statuses are failed and 1,501 exited. Nonzero exits include intentional rejection probes and drafts, not 214 product regressions. Compaction&#x27;s handoff records three unchanged taskv2 baseline failures: clock-jump expiry, removed-verify migration, fleet-delete gate (184-test baseline versus186-test changed suite). No blanket suite-green claim is made.</li>
+<li>C1b had no committed checkpoint before cutoff. Committed delta is 0; its uncommitted working delta is N/A. M3/M4/C3/C1c–f were unstarted with 0 committed changes; their waiting ages are not execution estimates.</li>
+<li>Token usage and monetary cost are unmeasured. Mutable current dependencies do not recover the exact historical critical-path graph. The observed serial stream is reported without invented exact critical-path attribution.</li>
+</ul></section><section><h2>Metric definitions</h2><dl>
+<dt>Chain elapsed</dt><dd>Cutoff minus chain creation: wall-clock age, not a sum of task durations.</dd>
+<dt>Created / first-start elapsed</dt><dd>Creation or first task start to completion/cancellation; unfinished tasks stop at cutoff. Queue-only tasks show waiting age, not a completed duration.</dd>
+<dt>Pre-start wait</dt><dd>First start minus creation, or cutoff minus creation when unstarted. Dependency, dispatch and hold wait cannot be split from these records.</dd>
+<dt>Attempt envelope</dt><dd>Union of Hub runtime-facet started_at/ended_at intervals clipped at cutoff. A logical attempt can span restarts/renewed leases; this is not exact live-lease or productive time.</dd>
+<dt>Review bounds / unclassified</dt><dd>Earliest-to-latest reviewer comments in the same gap between attempt envelopes. These are observed bounds, not full review lease durations. Remaining first-start elapsed is unclassified, not measured model thinking.</dd>
+<dt>Shell sum / union</dt><dd>Sum of unique Hub session spans; union removes overlap. Includes launch and exit-delivery latency. Separate subprocess runtime, launch queue and CPU use are unknown.</dd>
+<dt>Files / added / deleted LOC</dt><dd>Exact retained net diff between the task-specific Git base and checkpoint/submitted head, with rename detection. Integration bases remove inherited changes. Old C1/C1a retained rows overlap and must not be added.</dd>
+<dt>Gross churn</dt><dd>Deduplicated nonmerge first-parent commit diffs. Merge resolution-only remerge diffs are separate diagnostics because synthetic conflict cleanup is not authored LOC.</dd>
+</dl></section><section id="improvements"><h2>Five changes worth making next</h2><ol>
+<li><strong>Define parity before implementing the first slice.</strong> Inventory native fields/commands up front. Give each bounded task an explicit accepted subset and mandatory successor; distinguish a usable vertical slice from full migration readiness. This targets the M1/C1/workflow scope revisions.</li>
+<li><strong>Coordinate migration numbering and shared harness edits.</strong> Reserve migration numbers in a small integration ledger, or rebase a schema-changing task onto the accepted incoming parent before its final demo. Preserve independent review while reducing migration collisions and combined reruns.</li>
+<li><strong>Reuse exact-head verification evidence.</strong> Attach source head, toolchain, fixture hash, session ID and nonzero test count. Recheck affected suites after source changes and one combined final smoke path; reuse unchanged evidence in delta reviews. Keep known baseline failures explicit.</li>
+<li><strong>Persist boundary measurement metadata.</strong> Record task/lease/worktree IDs on shell sessions, actual process start/end and launch queue, plus immutable review/hold/block/outage intervals. Fix the pagination cursor separately. This improves attribution without storing private output.</li>
+<li><strong>Checkpoint bounded deliverables before context churn.</strong> Use a native handoff with a small verified checkpoint and precise remaining ledger. Cache pinned worktree dependencies and supply focused test/demo commands. Keep independent reviewers; avoid re-reading whole history each continuation.</li>
+</ol></section><section id="data"><h2>Data and independent audit</h2><p><a href="metrics.json">Frozen JSON metrics &amp; provenance</a> · <a href="tasks.csv">Task CSV</a> · <a href="report.md">Markdown report</a></p><p>JSON contains phase inputs, source IDs, shell records/confidence, Git parents/numstats, copy mappings and raw snapshot hashes. No private shell output or credentials are packaged. Reproduction commands are in the Markdown report.</p><p class="note">Independent review is the next gate; no self-approval is implied. Work on this report and later implementation activity are excluded.</p></section><footer>Static HTML/CSS · no JavaScript or remote assets · UTC unless marked IST<br><code>chain_18e554c99be21d02</code></footer></main></body></html>
