@@ -1,0 +1,240 @@
+{
+  "creator_public_key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+  "bridge_public_key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+  "payload": "{\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}",
+  "valid": [
+    {
+      "kind": "genesis",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"creation_op\":\"op_create\",\"owner_bridge_id\":\"brg_1\",\"owner_key_id\":\"bridge_key\",\"creator_id\":\"dev_1\",\"creator_key_id\":\"device_key\",\"schema_version\":\"1\",\"creator_signature\":\"6cbae2cee1a7979eb1a45bc6dcf3c21beadfdc736c27076b2da365f63acb35677ead28fe5d8272b8617cbd76c4dab20d29301970445923c5e8768c2b9764b9a3\",\"owner_signature\":\"542fdb0b11603dab90549047463e02475f39af4843ba43e037476aecd5f8a0a831e9a9bed7ffeaabe187a6d67f00ddc0604e40d9f100a1022fae8ee646a17aa6\"}",
+      "canonical": "heimdall-owner-local/genesis/v1\n1:1,6:acct_1,7:chain_1,9:op_create,5:brg_1,10:bridge_key,5:dev_1,10:device_key,1:1,",
+      "digest": "d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb"
+    },
+    {
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}",
+      "canonical": "heimdall-owner-local/command/v1\n1:1,6:acct_1,7:chain_1,5:brg_1,5:dev_1,4:op_1,12:task.comment,6:task_1,16:9007199254740993,5:10000,64:1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7,10:device_key,",
+      "digest": "4e9389c71de36b10f101b74ca3d28168784ca48629a55a40a7f9961c9d0b06ef"
+    },
+    {
+      "kind": "registry",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"owner_bridge_id\":\"brg_1\",\"key_id\":\"bridge_key\",\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"metadata_revision\":\"1\",\"task_id\":\"\",\"chain_title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"chain_description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"task_title_cipher\":\"\",\"deleted\":\"0\",\"signature\":\"99a55e72bfdbc0c179957965bde99bff2f2784365dad7735eb6d58650031a07bc622c7ef8dd293318b33f1bc0a4d63e0fe3f6202f13efdc4ccbf42ad345a32b2\"}",
+      "canonical": "heimdall-owner-local/registry/v1\n1:1,6:acct_1,7:chain_1,5:brg_1,10:bridge_key,64:d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb,1:1,0:,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,0:,1:0,",
+      "digest": "f80ba4454bb40be48455043627d0dbb9ecdd7dc0c949bc5584cb344219225931"
+    },
+    {
+      "kind": "receipt",
+      "raw": "{\"protocol_version\":\"1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"input_digest\":\"4e9389c71de36b10f101b74ca3d28168784ca48629a55a40a7f9961c9d0b06ef\",\"digest_key_id\":\"device_key\",\"request_expires_ms\":\"10000\",\"result_code\":\"ok\",\"result_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"commit_seq\":\"1\",\"replay\":\"1\"}",
+      "canonical": "heimdall-owner-local/receipt/v1\n1:1,5:dev_1,4:op_1,12:task.comment,64:4e9389c71de36b10f101b74ca3d28168784ca48629a55a40a7f9961c9d0b06ef,10:device_key,5:10000,2:ok,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,1:1,1:1,",
+      "digest": "a425b566c9c3f66e6d63f2486cf60d808b85c750eb5ad5b16afbc98a241b02b3"
+    },
+    {
+      "kind": "error",
+      "raw": "{\"protocol_version\":\"1\",\"code\":\"owner_unavailable\",\"operation_id\":\"op_1\"}",
+      "canonical": "heimdall-owner-local/error/v1\n1:1,17:owner_unavailable,4:op_1,",
+      "digest": "62fe49b5f63ba6b75507c009858c7913fb43abc848215b19df60a83bd6cbcb42"
+    },
+    {
+      "kind": "chain_create_payload",
+      "raw": "{\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}",
+      "canonical": "heimdall-owner-local/chain_create_payload/v1\n64:d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,",
+      "digest": "467f7c4d9e062aa542a17c94e5f34aaede8a223935bd8738d787b2117e0ae896"
+    },
+    {
+      "kind": "task_create_payload",
+      "raw": "{\"title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}",
+      "canonical": "heimdall-owner-local/task_create_payload/v1\n69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,",
+      "digest": "59dbfddfdbb9fb52575736e996781d065e6571b1718b11fe5ec7d0ddcf0c2981"
+    },
+    {
+      "kind": "comment_payload",
+      "raw": "{\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}",
+      "canonical": "heimdall-owner-local/comment_payload/v1\n69:vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==,",
+      "digest": "e45a06cf290d8484d84394208f969de500c2656d4f9ce6a7c891607fb33b0a3c"
+    },
+    {
+      "kind": "read_payload",
+      "raw": "{\"cursor\":\"\",\"limit\":\"100\"}",
+      "canonical": "heimdall-owner-local/read_payload/v1\n0:,3:100,",
+      "digest": "1d3ffc79540027c1cf8b27bdef5dcd88d5510bd33c4f3eb73cc7378a4f70a4c1"
+    },
+    {
+      "kind": "receipt_payload",
+      "raw": "{\"operation_id\":\"op_1\"}",
+      "canonical": "heimdall-owner-local/receipt_payload/v1\n4:op_1,",
+      "digest": "e40f8c9940b1b3f2b3d8a2ab1add4cfe6671be920a6dc8a1aef40187eb1f8f47"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "strict-0",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-1",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"protocol_\\u0076ersion\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-2",
+      "kind": "command",
+      "raw": "{\"protocol_version\":1,\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-3",
+      "kind": "command",
+      "raw": "{\"protocol_version\":1e0,\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-4",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9223372036854775808\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-5",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"01\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-6",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":-0,\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-7",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"unknown\":\"x\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-8",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"\":\"x\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-9",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}{}"
+    },
+    {
+      "name": "strict-10",
+      "kind": "command",
+      "raw": "\ufeff{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-11",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\u000b\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-12",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\",}"
+    },
+    {
+      "name": "strict-13",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain\\'1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-14",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"\\ud800\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-15",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"cha\u00efn_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-16",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":null,\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-17",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":[\"chain_1\"],\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-18",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"lease.submit\",\"task_id\":\"task_1\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "strict-19",
+      "kind": "command",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"task_id\":\"\",\"expected_revision\":\"9007199254740993\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"f346ada692cc5bae3d6b341275fb122447b5d3dbf76ac5072c0272ce0fe37d2a1674a3e1947cefe158edf0b6f0ceca964b31274a40fe07f3e28f91a78c19e367\"}"
+    },
+    {
+      "name": "plaintext-registry",
+      "kind": "registry",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"owner_bridge_id\":\"brg_1\",\"key_id\":\"bridge_key\",\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"metadata_revision\":\"1\",\"task_id\":\"\",\"chain_title_cipher\":\"title\",\"chain_description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"task_title_cipher\":\"\",\"deleted\":\"0\",\"signature\":\"99a55e72bfdbc0c179957965bde99bff2f2784365dad7735eb6d58650031a07bc622c7ef8dd293318b33f1bc0a4d63e0fe3f6202f13efdc4ccbf42ad345a32b2\"}"
+    },
+    {
+      "name": "fake-vault-prefix",
+      "kind": "registry",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"owner_bridge_id\":\"brg_1\",\"key_id\":\"bridge_key\",\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"metadata_revision\":\"1\",\"task_id\":\"\",\"chain_title_cipher\":\"vault:v2:plaintext\",\"chain_description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"task_title_cipher\":\"\",\"deleted\":\"0\",\"signature\":\"99a55e72bfdbc0c179957965bde99bff2f2784365dad7735eb6d58650031a07bc622c7ef8dd293318b33f1bc0a4d63e0fe3f6202f13efdc4ccbf42ad345a32b2\"}"
+    },
+    {
+      "name": "page-limit",
+      "kind": "read_payload",
+      "raw": "{\"cursor\":\"\",\"limit\":\"101\"}"
+    },
+    {
+      "name": "zero-limit",
+      "kind": "read_payload",
+      "raw": "{\"cursor\":\"\",\"limit\":\"0\"}"
+    },
+    {
+      "name": "unknown-read",
+      "kind": "read_payload",
+      "raw": "{\"cursor\":\"\",\"limit\":\"100\",\"status\":\"ready\"}"
+    },
+    {
+      "name": "plaintext-body",
+      "kind": "task_create_payload",
+      "raw": "{\"title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"body_cipher\":\"plaintext\"}"
+    },
+    {
+      "name": "deleted-title",
+      "kind": "registry",
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"owner_bridge_id\":\"brg_1\",\"key_id\":\"bridge_key\",\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"metadata_revision\":\"1\",\"task_id\":\"\",\"chain_title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"chain_description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"task_title_cipher\":\"\",\"deleted\":\"1\",\"signature\":\"99a55e72bfdbc0c179957965bde99bff2f2784365dad7735eb6d58650031a07bc622c7ef8dd293318b33f1bc0a4d63e0fe3f6202f13efdc4ccbf42ad345a32b2\"}"
+    },
+    {
+      "name": "retired-body",
+      "kind": "receipt",
+      "raw": "{\"protocol_version\":\"1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_1\",\"method\":\"task.comment\",\"input_digest\":\"4e9389c71de36b10f101b74ca3d28168784ca48629a55a40a7f9961c9d0b06ef\",\"digest_key_id\":\"device_key\",\"request_expires_ms\":\"10000\",\"result_code\":\"retired\",\"result_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"commit_seq\":\"1\",\"replay\":\"1\"}"
+    },
+    {
+      "name": "bad-version",
+      "kind": "genesis",
+      "raw": "{\"protocol_version\":\"2\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"creation_op\":\"op_create\",\"owner_bridge_id\":\"brg_1\",\"owner_key_id\":\"bridge_key\",\"creator_id\":\"dev_1\",\"creator_key_id\":\"device_key\",\"schema_version\":\"1\",\"creator_signature\":\"6cbae2cee1a7979eb1a45bc6dcf3c21beadfdc736c27076b2da365f63acb35677ead28fe5d8272b8617cbd76c4dab20d29301970445923c5e8768c2b9764b9a3\",\"owner_signature\":\"542fdb0b11603dab90549047463e02475f39af4843ba43e037476aecd5f8a0a831e9a9bed7ffeaabe187a6d67f00ddc0604e40d9f100a1022fae8ee646a17aa6\"}"
+    }
+  ],
+  "commands": [
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_create\",\"method\":\"chain.create\",\"task_id\":\"\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"670d51f507dc7bd0cda4ad5b8d870534feecdbbb8dd470d05af2be9974c83820\",\"key_id\":\"device_key\",\"signature\":\"712688168ac8113fccf7a1a9cf506fcd35e3a8d92b07a4876cd9bb982e7530eef6c23e1e9e20e105b7da2c8bfe4c231c8ae68edbf5934c4846f0f9c74bdef8bb\"}",
+      "payload": "{\"genesis_digest\":\"d5adc74c9e19bc1d644359a52a937ab2eeefda6b762cf1b9bd1498321c75f5cb\",\"title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"description_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+    },
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_task.create\",\"method\":\"task.create\",\"task_id\":\"task_1\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"5209bd0b71c3b00bdf4ef46ec56af7d169154051be08038d92d704cb4566091c\",\"key_id\":\"device_key\",\"signature\":\"3c33232df16276ec79795e2e1e9ddd0caf233eef8ee3cfc37219304104ebd946f1c8533e138228e4acf21bab3f8d12dec42ec346c66d60409926b1b949186998\"}",
+      "payload": "{\"title_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+    },
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_task.comment\",\"method\":\"task.comment\",\"task_id\":\"task_1\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"1f1cacc270dd7535eecb7bbd1b20a084b557b1bbb7432bc246bdd613868170c7\",\"key_id\":\"device_key\",\"signature\":\"a113855c71847e9504305418880f2ab789e9b1c17594a308006398b4bf4288ddc963281ea839207f760f1a2c6157e1a9404f876533afc310081488b2a9c0d2f7\"}",
+      "payload": "{\"body_cipher\":\"vault:v2:0123456789abcdef:e1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}"
+    },
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_chain.read\",\"method\":\"chain.read\",\"task_id\":\"\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"e0377aad1f1406845ea8fb224b25509c1640184305ac41605dc4493001802285\",\"key_id\":\"device_key\",\"signature\":\"251bd28020cec55412ddbbc6e5b9892ab6830b1fa4fb9f03d1efd0141f74bcb6724625516d77721e76771594022611af780c6364a12890bdf14523110016af1f\"}",
+      "payload": "{\"cursor\":\"\",\"limit\":\"100\"}"
+    },
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_task.read\",\"method\":\"task.read\",\"task_id\":\"task_1\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"e0377aad1f1406845ea8fb224b25509c1640184305ac41605dc4493001802285\",\"key_id\":\"device_key\",\"signature\":\"48fa6da3c0c81c1a84f421f43b2edaa487c60182505db02c6e749af258f0fc154c750cc31627be0d8535681008cfcff80c8ffadada3154cddc2f686f5fcf7bda\"}",
+      "payload": "{\"cursor\":\"\",\"limit\":\"100\"}"
+    },
+    {
+      "raw": "{\"protocol_version\":\"1\",\"account_id\":\"acct_1\",\"chain_id\":\"chain_1\",\"immutable_owner_bridge\":\"brg_1\",\"principal_id\":\"dev_1\",\"operation_id\":\"op_receipt.read\",\"method\":\"receipt.read\",\"task_id\":\"\",\"expected_revision\":\"0\",\"request_expires_ms\":\"10000\",\"payload_digest\":\"d829d4b223301778be0fb3098752926b819c98e03a57531833c978207bc1f446\",\"key_id\":\"device_key\",\"signature\":\"1d9473449a9be012c2c1bb3a7772956f86c308387f3561e7d9be5cf89a00338b6d3f3519f17138679ac13da30ecb6e2c29102f4170e34c9a1e45ac3acb70696d\"}",
+      "payload": "{\"operation_id\":\"op_1\"}"
+    }
+  ]
+}
