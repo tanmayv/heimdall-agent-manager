@@ -3,16 +3,93 @@ package owner_local
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
+
+// Archival documents are content, not authority envelopes. Keep their flat
+// string-field grammar/decoded-key uniqueness strict while permitting Unicode
+// inside opaque document values. Authority identifiers still use contracts'
+// ASCII field validators. Never use this decoder for signed command envelopes.
+native_content_grammar :: proc(raw:string,object:bool)->bool {
+    tokenizer:=json.make_tokenizer(raw,.JSON,true)
+    previous,state,count:=0,0,0
+    names:=make(map[string]bool,context.temp_allocator)
+    for {
+        token,err:=json.get_token(&tokenizer)
+        if err!=.None && err!=.EOF do return false
+        if token.offset<previous || token.offset>len(raw) do return false
+        for b in raw[previous:token.offset] { if b!=' ' && b!='\t' && b!='\r' && b!='\n' do return false }
+        previous=token.offset+len(token.text)
+        if token.kind==.EOF do return state==5
+        switch state {
+        case 0:
+            if (object && token.kind!=.Open_Brace) || (!object && token.kind!=.Open_Bracket) do return false
+            state=1
+        case 1:
+            if count==0 && ((object && token.kind==.Close_Brace) || (!object && token.kind==.Close_Bracket)) { state=5;continue }
+            if token.kind!=.String do return false
+            if object {
+                value,ok:=contracts.owner_request_document(token.text);name,str:=value.(json.String)
+                if !ok || !str || string(name) in names do return false
+                names[string(name)]=true;state=2
+            } else {
+                if !native_content_string(token.text) do return false
+                count+=1;state=4
+            }
+        case 2:
+            if token.kind!=.Colon do return false
+            state=3
+        case 3:
+            if token.kind!=.String || !native_content_string(token.text) do return false
+            count+=1;state=4
+        case 4:
+            if (object && token.kind==.Close_Brace) || (!object && token.kind==.Close_Bracket) { state=5;continue }
+            if token.kind!=.Comma do return false
+            state=1
+        case: return false
+        }
+    }
+}
+native_content_string :: proc(text:string)->bool {
+    for i:=1;i<len(text)-1;i+=1 {
+        if text[i]<0x20 do return false
+        if text[i]!='\\' do continue
+        i+=1;if i>=len(text)-1 do return false
+        switch text[i] {
+        case '"','\\','/','b','f','n','r','t':
+        case 'u':
+            if i+4>=len(text)-1 do return false
+            unit,err:=strconv.parse_u64(text[i+1:i+5],16)
+            if !err do return false
+            i+=4
+            if unit>=0xdc00 && unit<=0xdfff do return false
+            if unit>=0xd800 && unit<=0xdbff {
+                if i+6>=len(text)-1 || text[i+1:i+3]!="\\u" do return false
+                low,err:=strconv.parse_u64(text[i+3:i+7],16)
+                if !err || low<0xdc00 || low>0xdfff do return false
+                i+=6
+            }
+        case: return false
+        }
+    }
+    return true
+}
+native_content_parse :: proc(raw,kind:string)->(json.Object,bool) {
+    if len(raw)>contracts.OWNER_DOCUMENT_MAX || !native_content_grammar(raw,true) do return nil,false
+    v,err:=json.parse_string(raw,.JSON,true,context.temp_allocator);o,obj:=v.(json.Object)
+    return o,err==nil && obj && contracts.owner_document_valid(kind,o)
+}
 
 // Import source facts, not a reconstruction from today's runtime rows. Native
 // timestamps and payload/body documents remain verbatim strings. Snapshot
 // revisions distinguish historical attempt updates without rewriting history.
 native_json_object :: proc(raw:string)->bool {
-    v,ok:=contracts.owner_request_document(raw)
+    // Authority envelopes remain ASCII-strict. Opaque historical JSON bodies
+    // may contain Unicode; validate their shape without rewriting their bytes.
+    v,err:=json.parse_string(raw,.JSON,true,context.temp_allocator)
     _,obj:=v.(json.Object)
-    return ok && obj
+    return err==nil && obj
 }
 native_references_valid :: proc(raw:string)->bool {
     v,ok:=contracts.owner_request_document(raw);items,arr:=v.(json.Array)
@@ -32,7 +109,7 @@ native_references_valid :: proc(raw:string)->bool {
 
 native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string {
     if !transaction_current(s.active) do return "storage_error"
-    bundle,valid:=contracts.owner_parse(raw,"native_history_bundle")
+    bundle,valid:=native_content_parse(raw,"native_history_bundle")
     if !valid do return "invalid_content"
     chain,task,source,owner:=field(c,"chain_id"),field(c,"task_id"),field(bundle,"source_revision"),field(bundle,"owner_user_id")
     owners,owners_ok:=query(s.db,"SELECT 1 FROM native_history_records WHERE chain_id=? AND task_id=? AND owner_user_id!=? LIMIT 1",chain,task,owner)
@@ -44,15 +121,16 @@ native_history_import :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->string
     total:=0
     for kind in ([3]string{"attempt","event","facet"}) {
         plural:=fmt.tprintf("%ss",kind)
-        value,parsed:=contracts.owner_request_document(field(bundle,plural));items,arr:=value.(json.Array)
-        if !parsed || !arr || len(items)>100 do return "invalid_content"
+        records:=field(bundle,plural)
+        value,parse_err:=json.parse_string(records,.JSON,true,context.temp_allocator);items,arr:=value.(json.Array)
+        if parse_err!=nil || !arr || !native_content_grammar(records,false) || len(items)>100 do return "invalid_content"
         for item in items {
             // The record itself is a document string so its original encoding
             // survives envelope parsing, replay, persistence and chunked reads.
             text,str:=item.(json.String)
             if !str do return "invalid_content"
             record_raw:=string(text)
-            record,ok:=contracts.owner_parse(record_raw,fmt.tprintf("native_history_%s",kind))
+            record,ok:=native_content_parse(record_raw,fmt.tprintf("native_history_%s",kind))
             if !ok || field(record,"chain_id")!=chain || field(record,"task_id")!=task || field(record,"owner_user_id")!=owner || !native_json_object(field(record,"provenance_json")) do return "invalid_content"
             key,attempt,facet,version,writer:="",field(record,"attempt_no"),"","",""
             switch kind {

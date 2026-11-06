@@ -61,6 +61,30 @@ native_history_rich_import_exact_facets_replay_restart_and_auth :: proc(t:^testi
 }
 
 @(test)
+native_archival_unicode_content_retains_bytes_and_strict_metadata_grammar :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    f:=fixture(t);defer destroy(f);seed(t,f)
+    b,_:=contracts.owner_parse(native_history_fixture(),"native_history_bundle")
+    value,_:=contracts.owner_request_document(field(b,"facets"));items,_:=value.(json.Array)
+    text,_:=items[0].(json.String);facet,_:=native_content_parse(string(text),"native_history_facet")
+    body:=`{ "text":"世界😀", "number":9007199254740993 }`
+    facet["body_json"]=json.String(body)
+    record:=encode(facet);b["facets"]=json.String(encode([1]string{record}))
+    testing.expect_value(t,native_import_call(f,encode(b),"unicode_original","1").code,"ok")
+    key:=encode([3]string{"3",field(facet,"kind"),field(facet,"v")})
+    got:=native_fetch_call(f,"facet",key)
+    if !testing.expect_value(t,got.code,"ok") do return
+    value,_=contracts.owner_request_document(got.body);page,_:=value.(json.Object)
+    testing.expect_value(t,field(page,"record"),record)
+    decoded,valid:=native_content_parse(field(page,"record"),"native_history_facet")
+    testing.expect(t,valid);testing.expect_value(t,field(decoded,"body_json"),body)
+    for raw in ([5]string{`{"a":"x","a":"y"}`,`{"a":"x","\u0061":"y"}`,`{"a":"\ud800"}`,`{"a":"\udc00"}`,`{"a":"x",}`}) {
+        testing.expect(t,!native_content_grammar(raw,true))
+    }
+    testing.expect(t,!native_content_grammar(`["x",]`,false))
+}
+
+@(test)
 native_history_import_rollback_conflicts_and_missing_attempt_are_explicit :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);seed(t,f)
