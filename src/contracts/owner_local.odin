@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -96,7 +96,7 @@ owner_field_valid :: proc(s, kind: string) -> bool {
         case "malformed", "bad_signature", "invalid_scope", "owner_mismatch",
              "digest_mismatch", "operation_conflict", "expired", "retired",
              "stale_revision", "owner_unavailable", "retention_capacity",
-             "storage_error", "invalid_content", "clock_uncertain", "stale_cursor": return true
+             "storage_error", "invalid_content", "clock_uncertain", "stale_cursor", "recovery_required", "budget_exhausted": return true
         }
     }
     return false
@@ -113,7 +113,7 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
     }
     if kind == "command" {
         method, task := owner_string(o, "method"), owner_string(o, "task_id")
-        if (method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
+        if (method == "budget.activate" || method == "native.history.import" || method == "native.history.read" || method == "native.history.fetch" || method == "attempt.read" || method == "dependency.edit" || method == "review.roles" || method == "task.hold" || method == "task.release" || method == "task.cancel" || method == "task.reopen" || method == "task.resolve" || method == "merge.retry" || method == "submission.read" || method == "task.edit" || method == "task.delete" || method == "task.create" || method == "task.comment" || method == "task.read" || method == "fleet.edit" || method == "runtime.read" || method == "lifecycle.configure" || method == "requirements.edit" || method == "review.post") != (task != "") do return false
     }
     if kind=="native_attempt" {
         ended,outcome:=owner_string(o,"ended_ms"),owner_string(o,"outcome")
@@ -181,6 +181,7 @@ owner_payload_kind :: proc(method: string) -> string {
     case "requirements.present", "requirements.ack": return "ack_payload"
     case "lease.submit": return "submit_payload"
     case "review.open", "review.post": return "review_payload"
+    case "budget.activate": return "budget_activation_payload"
     case "native.history.import": return "native_import_payload"
     case "native.history.read": return "native_history_read"
     case "native.history.fetch": return "native_history_fetch"

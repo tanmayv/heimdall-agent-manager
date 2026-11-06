@@ -88,13 +88,18 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         // Pre-fix holds stored lifecycle state in resume_state; always retain
         // the current lifecycle state. A native block is a separate overlay.
         if resume=="blocked" do mode="blocked"
-        if mode=="blocked" {
+        if mode=="blocked" && (controls[0][2]=="budget_exhausted" || controls[0][2]=="native_blocked") {
+            reason=controls[0][2]
+        } else if mode=="blocked" {
             blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
             if !found || len(blocks)!=1 do return "storage_error"
             reason=blocks[0][0]
         }
     case "task.cancel":
         if mode=="cancelled" || state=="done" do return "operation_conflict"
+        source_view,source_state,source_ok:=budget_view(s,chain,task)
+        if !source_ok do return "storage_error"
+        if source_state.source_revision!="" && source_view.done do return "operation_conflict"
         mode="cancelled";next="ready";waiting=""
         if !control_revoke(s,c,seq,"stop") do return "storage_error"
     case "task.reopen":
@@ -104,7 +109,11 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         consumed,read_consumed:=query(s.db,"SELECT 1 FROM local_workflow_output_triggers WHERE chain_id=? AND source_task=? AND consumed=1 LIMIT 1",chain,task)
         if !read_consumed do return "storage_error"
         if len(consumed)>0 do return "operation_conflict"
-        if mode!="cancelled" && state!="done" && state!="merge_blocked" do return "operation_conflict"
+        if mode!="cancelled" && state!="done" && state!="merge_blocked" {
+            source_view,source_state,source_ok:=budget_view(s,chain,task)
+            if !source_ok do return "storage_error"
+            if source_state.source_revision=="" || (!source_view.done && !source_view.cancelled) do return "operation_conflict"
+        }
         mode="ready";next="ready";waiting=""
         if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"
     case "task.resolve":
@@ -175,6 +184,7 @@ control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,si
     req,has_req:=lifecycle_requirements(s,dest_chain,dest)
     if !configured || !has_req || encode(child)!=binding[1] || child.agent_id!=field(config,"author_agent_id") do return "invalid_scope",false
     if !dependency_ready(s,dest_chain,dest) do return "operation_conflict",false
+    if code:=budget_admit(s,dest_chain,dest);code!="ok" do return code,false
     if !control_ready(s,dest_chain,dest) do return "operation_conflict",false
     if req[0]!=field(p,"destination_requirements_revision") do return "stale_revision",false
     states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",dest_chain,dest)

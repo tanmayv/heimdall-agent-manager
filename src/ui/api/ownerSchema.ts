@@ -66,6 +66,8 @@ export const ownerSchemas = {
   native_history_attempt: [["task_id", "id"], ["attempt_no", "positive"], ["chain_id", "id"], ["owner_user_id", "id"], ["started_at", "document"], ["ended_at", "optional_document"], ["holder_instance_id", "optional"], ["outcome", "optional_document"], ["counts_toward_budget", "flag"], ["provenance_json", "document"]],
   native_history_event: [["event_id", "positive"], ["task_id", "id"], ["chain_id", "id"], ["owner_user_id", "id"], ["ts_ms", "counter"], ["actor_kind", "native_event_actor"], ["actor_id", "optional"], ["kind", "document"], ["payload_json", "document"], ["provenance_json", "document"]],
   native_history_facet: [["task_id", "id"], ["attempt_no", "counter"], ["chain_id", "id"], ["owner_user_id", "id"], ["kind", "facet_kind"], ["v", "positive"], ["body_json", "document"], ["writer", "native_actor"], ["written_at", "document"], ["references_json", "document"], ["provenance_json", "document"]],
+  budget_activation_payload: [["source_revision", "id"], ["snapshot_digest", "hash"], ["native_cutoff", "positive"], ["local_cutoff", "counter"], ["event_count", "positive"], ["attempt_count", "counter"], ["facet_count", "counter"], ["requirements_revision", "positive"], ["configuration_revision", "positive"], ["execution", "id"], ["source_gate", "flag"], ["source_no_review", "flag"]],
+  budget_state: [["attempt_no", "counter"], ["counting_attempts", "counter"], ["max_attempts", "positive"], ["last_release", "attempt_release"], ["reason", "optional"], ["source_revision", "optional"], ["requirements_revision", "counter"], ["configuration_revision", "counter"], ["execution", "id"], ["local_cutoff", "counter"]],
 } as const;
 export type OwnerKind = keyof typeof ownerSchemas;
 export interface OwnerGenesis {
@@ -558,6 +560,32 @@ export interface OwnerNative_History_Facet {
   references_json: string;
   provenance_json: string;
 }
+export interface OwnerBudget_Activation_Payload {
+  source_revision: string;
+  snapshot_digest: string;
+  native_cutoff: string;
+  local_cutoff: string;
+  event_count: string;
+  attempt_count: string;
+  facet_count: string;
+  requirements_revision: string;
+  configuration_revision: string;
+  execution: string;
+  source_gate: string;
+  source_no_review: string;
+}
+export interface OwnerBudget_State {
+  attempt_no: string;
+  counting_attempts: string;
+  max_attempts: string;
+  last_release: string;
+  reason: string;
+  source_revision: string;
+  requirements_revision: string;
+  configuration_revision: string;
+  execution: string;
+  local_cutoff: string;
+}
 export interface OwnerDocuments {
   genesis: OwnerGenesis;
   command: OwnerCommand;
@@ -625,4 +653,6 @@ export interface OwnerDocuments {
   native_history_attempt: OwnerNative_History_Attempt;
   native_history_event: OwnerNative_History_Event;
   native_history_facet: OwnerNative_History_Facet;
+  budget_activation_payload: OwnerBudget_Activation_Payload;
+  budget_state: OwnerBudget_State;
 }

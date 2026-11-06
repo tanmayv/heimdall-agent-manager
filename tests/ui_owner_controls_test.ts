@@ -7,6 +7,25 @@ import { decryptVaultText } from '../src/ui/utils/vaultContent.ts';
 import { prepareOwnerOperation } from '../src/ui/api/ownerLocalClient.ts';
 import { ownerParse, ownerCanonical, ownerLiveAdmit, ownerPayloadKind, ownerVerifySignature } from '../src/ui/api/ownerLocal.ts';
 
+test('budget activation signs immutable snapshot and both cutoffs with current scope and no read-only shortcut', async () => {
+  const identity=await createDeviceIdentity(memoryDeviceStore(),USER);
+  const hub=new FakeHub();await hub.genesis(identity);
+  const verified=await hub.chain(),keyring=await importKeyring(await hub.keyringBytes(identity),USER);
+  const chain={...verified,trusted:new Map(verified.trusted)};
+  chain.trusted.set('bridge_key',{kind:'bridge',device_id:'bridge_key',row:{bridge_id:'bridge'}} as any);
+  const manifest={source_revision:'snapshot',snapshot_digest:'a'.repeat(64),native_cutoff:'9007199254740993',local_cutoff:'7',event_count:'3',attempt_count:'1',facet_count:'0',requirements_revision:'4',configuration_revision:'2',execution:'run:3',source_gate:'0',source_no_review:'0'};
+  const operation=await prepareOwnerOperation({identity,chain,keyring},'bridge','budget.activate',{chainId:'chain',taskId:'task',expectedRevision:'9',body:JSON.stringify(manifest)});
+  const command=ownerParse(operation.command,'command');
+  assert.deepEqual({...ownerParse(operation.payload,'budget_activation_payload')},manifest);
+  const key={account_id:USER,principal_id:identity.deviceId,key_id:identity.deviceId,public_key:identity.signPub,kind:'device',enrolled:true,revoked:false};
+  assert.equal(await ownerVerifySignature('command',command,'signature',key),true);
+  assert.throws(()=>ownerParse(JSON.stringify({...command,task_id:''}),'command'));
+  const grant={account_id:USER,owner_bridge_id:'bridge',chain_id:'chain',task_id:'task',principal_id:identity.deviceId,key_id:identity.deviceId,method:'budget.activate',revision:1n,expires_ms:BigInt(Date.now()+600000),can_read:true,can_mutate:false,revoked:false};
+  assert.equal(ownerLiveAdmit(command,grant,BigInt(Date.now()),9n),'invalid_scope');
+  assert.equal(ownerLiveAdmit(command,{...grant,can_mutate:true},BigInt(Date.now()),8n),'stale_revision');
+  for(const patch of [{native_cutoff:'090'},{event_count:'0'},{source_gate:'yes'},{snapshot_digest:'bad'},{cutoff:'invented'}])assert.throws(()=>ownerParse(JSON.stringify({...manifest,...patch}),'budget_activation_payload'));
+});
+
 test('control preparation encrypts reasons, signs exact CAS and keeps every control a mutation', async () => {
   const identity = await createDeviceIdentity(memoryDeviceStore(), USER);
   const hub = new FakeHub(); await hub.genesis(identity);

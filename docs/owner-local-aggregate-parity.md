@@ -52,8 +52,8 @@ Each durable field declared in the original aggregate domain structs (including 
 | `state` | `src/hub/domain/taskchain.odin:172` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `kind` | `src/hub/domain/taskchain.odin:173` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
 | `priority` | `src/hub/domain/taskchain.odin:174` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
-| `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/attempts.odin:86`, `src/lib/owner_local/reads.odin:62`. runtime.read exposes a retained-event native attempt/counting projection with explicit completeness. V7 lease ordinals and V4 submission keys remain immutable compatibility identifiers, not native attempts. Original per-attempt facets/outcomes/import and budget enforcement remain open; see checkpoint below. |
-| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. max_attempts accounting and input-reference resolution remain C1 work. |
+| `attempt_no` | `src/hub/domain/taskchain.odin:176` | **PARTIAL** `src/lib/owner_local/attempts.odin:86`, `src/lib/owner_local/reads.odin:62`. runtime.read exposes a retained-event native attempt/counting projection with explicit completeness. V7 lease ordinals and V4 submission keys remain immutable compatibility identifiers, not native attempts. C1b archival records remain separate; C1c V16 unifies admission through an explicit sealed native baseline plus the later local event fold (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58). Operational cutover remains M4. |
+| `brief_json` | `src/hub/domain/taskchain.odin:179` | **PARTIAL** `src/lib/owner_local/migration_004.sql:56`. Immutable revisioned brief_json+cipher, principal/operation. Full vocabulary and nested inputs/budget/gate shapes are validated. Native hard_deadline is applied to claim/switch and pinned across heartbeat. C1c max_attempts admission uses logical outcomes (src/lib/owner_local/budget_runtime.odin:140); input-reference resolution remains separate. |
 | `blocked_on_json` | `src/hub/domain/taskchain.odin:183` | **PARTIAL** `src/lib/owner_local/migration_007.sql:53`. local_controls plus lifecycle_state fold cover hold/block/cancel/ready/review/done; native projection and vocabulary conversion need explicit ordinary adapters. |
 | `requires_user_approval` | `src/hub/domain/taskchain.odin:184` | **PARTIAL** `src/lib/owner_local/migration_009.sql:103`. Local independent-agent/role/user review records and immutable V13 evidence. Native findings_json and complete reviewer/time fields are not yet accepted by ordinary adapters. |
 | `ready_since` | `src/hub/domain/taskchain.odin:187` | **OPEN** Required native field has no complete canonical local equivalent yet. Preserve and implement before C1 closure; this is not an approved omission. |
@@ -150,29 +150,29 @@ Each durable field declared in the original aggregate domain structs (including 
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `event_id` | `src/hub/domain/taskv2.odin:10` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `task_id` | `src/hub/domain/taskv2.odin:11` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `chain_id` | `src/hub/domain/taskv2.odin:12` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `owner_user_id` | `src/hub/domain/taskv2.odin:13` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `ts_ms` | `src/hub/domain/taskv2.odin:14` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `actor_kind` | `src/hub/domain/taskv2.odin:17` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `actor_id` | `src/hub/domain/taskv2.odin:18` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `kind` | `src/hub/domain/taskv2.odin:19` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
-| `payload_json` | `src/hub/domain/taskv2.odin:20` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c baseline reconciliation and M4 cutover remain required. |
+| `event_id` | `src/hub/domain/taskv2.odin:10` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `task_id` | `src/hub/domain/taskv2.odin:11` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `chain_id` | `src/hub/domain/taskv2.odin:12` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `owner_user_id` | `src/hub/domain/taskv2.odin:13` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `ts_ms` | `src/hub/domain/taskv2.odin:14` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `actor_kind` | `src/hub/domain/taskv2.odin:17` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `actor_id` | `src/hub/domain/taskv2.odin:18` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `kind` | `src/hub/domain/taskv2.odin:19` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
+| `payload_json` | `src/hub/domain/taskv2.odin:20` | **ARCHIVE-LOCAL / CUTOVER-OPEN** V15 native.history.import preserves original event ID, owner, actor (including coordinator), timestamp, kind and verbatim payload separately from V13 owner sequences (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). Source snapshot inventory/fetch is bounded and authorized; legacy tags remain incomplete. C1c validates explicit signed activation and rejects ambiguous local overlap (src/lib/owner_local/budget_source.odin:123); M4 operational cutover remains required. |
 
 ### Task_Attempt
 
 | Native field | Original source | Local status and mapping |
 | --- | --- | --- |
-| `task_id` | `src/hub/domain/taskv2.odin:27` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `chain_id` | `src/hub/domain/taskv2.odin:29` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `owner_user_id` | `src/hub/domain/taskv2.odin:30` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `started_at` | `src/hub/domain/taskv2.odin:31` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `ended_at` | `src/hub/domain/taskv2.odin:32` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `outcome` | `src/hub/domain/taskv2.odin:36` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
-| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **ARCHIVE-LOCAL / BASELINE-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. Current runtime observations remain separate; C1c owns signed snapshot/cutoff reconciliation and budget admission. |
+| `task_id` | `src/hub/domain/taskv2.odin:27` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `attempt_no` | `src/hub/domain/taskv2.odin:28` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `chain_id` | `src/hub/domain/taskv2.odin:29` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `owner_user_id` | `src/hub/domain/taskv2.odin:30` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `started_at` | `src/hub/domain/taskv2.odin:31` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `ended_at` | `src/hub/domain/taskv2.odin:32` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `holder_instance_id` | `src/hub/domain/taskv2.odin:33` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `outcome` | `src/hub/domain/taskv2.odin:36` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
+| `counts_toward_budget` | `src/hub/domain/taskv2.odin:37` | **ARCHIVE-LOCAL / BASELINE-LOCAL / CUTOVER-OPEN** V15 immutable source snapshots preserve original task/attempt key, owner, timestamp strings, holder, outcome and counting bit (src/lib/owner_local/native_history.odin:110; migration_015.sql:56). V7 lease ordinals and V4 submissions are unchanged. V16 C1c selects a sealed signed baseline for logical admission while preserving separate compatibility IDs (src/lib/owner_local/budget_source.odin:123; budget_runtime.odin:58); ambiguous overlap rejects, and M4 operational cutover remains open. |
 
 ### Task_Attempt_Facet
 
@@ -1103,3 +1103,178 @@ nix develop --command env \
   HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 \
   node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
 ```
+
+## C1c revision 2: native budget admission and explicit baseline activation
+
+This section supersedes earlier checkpoint statements that budget enforcement or
+C1c activation is still unimplemented. It does not close unrelated aggregate
+metadata/body/cutover rows or claim whole-C1 completion.
+
+The budget fold follows the original native transitions and grant predicate
+(`src/hub/service/taskv2/fold.odin:97`, `fold.odin:138`,
+`fold.odin:362`, `fold.odin:377`). The source-backed implementation
+(`src/lib/owner_local/budget.odin:10`) keeps logical attempt number,
+counting attempts, current counting bit, review/infrastructure distinctions,
+holds, reopen and terminal outcomes. Handoff continues the logical attempt.
+Structural releases make the next attempt non-counting; they do not refund an
+already spent attempt. The original default remains five attempts.
+The shared migrated-seed fixture is checked against the original fold at every
+prefix (`src/hub/service/taskv2/owner_budget_test.odin:81`); it declares seed4
+and retains only the real post-seed attempt5 row, never invented rows1-4.
+
+`lease.claim` and atomic switch admission consult the logical budget
+(`src/lib/owner_local/leases.odin:103`, `controls.odin:187`).
+Receipt replay remains ahead of mutation fences and creates no new authority.
+Budget state/reason/configuration/requirements/execution and the current
+owner-global checkpoint are visible through signed `runtime.read`
+(`src/lib/owner_local/reads.odin:74`). Immutable budget evidence is appended
+in the same transaction as its accepted cause event
+(`src/lib/owner_local/events.odin:26`, `budget_runtime.odin:153`,
+`migration_016.sql:72`). Failure rolls back the cause, lease retirement,
+receipt and budget evidence together. Holds remain overlays, including an
+expiry at the final attempt (`controls.odin:91`). Existing hard-deadline
+clamping and heartbeat behavior are reused (`leases.odin:15`).
+
+### Activation contract and boundaries
+
+Archival import alone has no budget authority: a task with imported source
+records reports `activation_required` and refuses another grant with
+`recovery_required`. A new `budget.activate` is a normal task-scoped,
+device-signed mutation requiring current mutation permission and task revision
+(`src/contracts/owner_local.odin:42`, `owner_local.odin:116`,
+`src/lib/owner_local/store.odin:236`). Its exact manifest binds:
+
+- `source_revision`, `snapshot_digest`, counts of attempts/events/facets,
+  and the final original `native_cutoff` event ID;
+- the observed owner-global `local_cutoff` returned by
+  `runtime.read.budget.local_cutoff`;
+- current requirements/configuration revisions and exact workflow
+  `run_id:execution` (or `standalone`);
+- original source task gate/no-review facts used by the native fold.
+
+The signer explicitly asserts a complete source prefix. The implementation
+verifies all imported selected-snapshot records are full, counts/digest/cutoffs
+match, the prefix starts at original `created` or valid `migrated`, and
+post-seed attempt counting bits/outcomes match the native event fold.
+Native event IDs need not be contiguous because IDs are shared across tasks.
+Native dispatch failures retain the original `dispatch_failed` row outcome and refunded counting bit (native `src/hub/service/taskv2/dispatch.odin:77`). An imported native block still requires a signed answer before a future grant; source-blocked/oscillating state cannot disappear during activation.
+Original `migrated` seeds are preserved even when no earlier attempt rows
+exist; large valid seeds are not rejected by an invented cap. Counter overflow
+fails closed (`src/lib/owner_local/budget_source.odin:35`).
+
+The byte-preserving digest algorithm is defined in
+`src/lib/owner_local/budget_source.odin:11`:
+
+1. Start with SHA-256 of UTF-8 JSON
+   `["native.budget.snapshot.v1",chain_id,task_id,source_revision]`.
+2. Sort all exact archived records by binary `(record_kind,record_key)`.
+3. For each record, replace the digest with SHA-256 of UTF-8 JSON
+   `[previous_digest,record_kind,record_key,exact_record_json]`.
+4. Sign the final digest and exact per-kind counts in the activation manifest.
+
+Activation is intentionally conservative: it supports an empty local work
+history. Any existing local work leases/submissions, incomplete evidence,
+unreconciled overlap, source live work/review/hold or stale checkpoint returns
+explicit recovery/stale-revision failure. It never merges independent local
+histories, renumbers IDs or guesses shared identity.
+This is the empty-runtime alternative authorized by coordinator comment
+`cmt_18e5803cc6ace19f`; no general overlap reconciliation is claimed.
+
+V16 keeps the activated baseline immutable and seals its selected source
+snapshot against additions (`src/lib/owner_local/migration_016.sql:56`).
+Later archival snapshots cannot replace that baseline or reset the count.
+Requirements/configuration edits recompute against retained evidence; workflow
+generation and exact-child fences remain authoritative. Operational source
+freeze/export/cutover remains M4; this task performs no live cutover, deployment,
+push or production restart.
+
+### Verification
+
+Final-source store suite:
+`nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-budget-final142-store`
+passed **142/142**, exit0, session
+`sh_3e6407974468de330f05bd6738e335da`.
+It covers manifest/fence rejection, statement and deferred-COMMIT activation
+rollback, exhaustion retirement rollback, held expiry/release, incomplete
+history, exact replay/restart, large migrated seeds, ambiguous preexisting local
+work, atomic exhausted-destination switch rollback, dispatch refunds with original row bits/outcomes, signed answers to imported native blocks, and direct non-counting reopen of imported done/cancelled baselines. Genuine V15 upgrade
+collision/COMMIT recovery preserves old authority and history; prior V1-V15 SQL
+files are byte-identical to the reviewed C1b head.
+
+Other checks (all exit0):
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-budget-final-contracts
+# 21/21; sh_b801a5b847e77b16c7148c17da2fb437
+
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_budget_native_fold_and_admission_prefixes,taskv2.test_owner_budget_shared_migrated_fixture_matches_native_admission,taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1c-budget-native-three
+# 3/3; sh_c578b63132245e5c32a881ab2d9a381b
+
+nix develop --command npm run typecheck
+# PASS; sh_459f8cb4aa8d7e018c99be2ad5340248
+
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+# 20/20; sh_33d3632fdef11c6df66c64552b08d7d4
+
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1c-budget-final142-bins
+# all four PASS; sh_52f56b1f738561d74417850ee8047c92
+
+nix develop --command odin build tools/owner_local_test_identity -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1c-budget-identity
+# PASS; sh_ea629aff541e0ea1210f21f39f89a03a
+```
+
+The unchanged full native-service suite was not repeated: the original fold is
+unchanged, and the three source-backed differentials exercise its relevant
+prefixes, including a shared fixture, migrated seed, work/review/handoff/hold,
+structural dependency/replacement/reopen, expiry, infrastructure and dispatch
+refund semantics. Store tests retain static/language workflow retry, retirement
+and stale-execution coverage.
+
+The first focused real harness run omitted the existing initial transport-token
+provisioning and returned `owner_unavailable`; the harness now calls its existing
+isolated stop/restart setup before launching children. The corrected budget-only
+real demo passed at `sh_0e372f6f9bb2557f2bfa86cac32dcdf4`. The subsequent complete
+retained demo (including the budget flow) also passed at
+`sh_2aedcf0dfa59c4600ac7b9b02ce2152b` before the final narrow dispatch/terminal
+source-reconciliation additions.
+
+Initial typecheck lacked the already pinned `posthog-js`; the ordinary
+`nix develop --command npm ci --ignore-scripts --no-audit --no-fund`
+restored dependencies (exit0, `sh_39c7aa99807e5bacc24a95f05d9d113a`), with no
+lockfile changes. Draft migration fixtures retained additive V16 objects/seal
+trigger while reconstructing old schemas; corrected reconstruction and final
+142 tests pass. Draft compiler-only name/redeclaration and shell-quoting failures
+were corrected before verification; none remain.
+
+The final-source full retained demonstration is recorded below.
+
+
+```bash
+nix develop --command env \
+  HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1c-budget-final142-bins-1/bin/ham-hub \
+  HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1c-budget-final142-bins/bin/ham-bridge \
+  HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1c-budget-final142-bins-2/bin/ham-ctl \
+  HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-final142-bins-3/bin/ham-pty-host \
+  HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity \
+  HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 \
+  HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 \
+  HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 \
+  HEIMDALL_E2E_OWNER_BUDGET=1 HEIMDALL_E2E_OWNER_GRANTS=1 \
+  HEIMDALL_E2E_OWNER_REGISTRY=1 \
+  node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+Final-source result: **all steps PASSED**, exit0, session
+`sh_10b1d57b2c0cba957b9c9d4033b3831d`. This includes every retained real lease,
+lifecycle, controls, workflow, language, grants/recovery and registry flow plus
+the new signed budget activation/exhaustion/restart/rendered-recovery flow
+(`tests/e2e/owner_local_budget_flow.ts:7`). The budget-only shortcut remains
+available with `HEIMDALL_E2E_OWNER_BUDGET_ONLY=1`.
+
+Final parity/whitespace/immutable-migration checks:
+`python3 scripts/check-owner-aggregate-parity.py` reports
+**240 fields / 23 structs**, `git diff --check` and
+`git diff --cached --check` pass, and
+`git diff --exit-code c1016192 -- src/lib/owner_local/schema.sql src/lib/owner_local/migration_002.sql src/lib/owner_local/migration_003.sql src/lib/owner_local/migration_004.sql src/lib/owner_local/migration_005.sql src/lib/owner_local/migration_006.sql src/lib/owner_local/migration_007.sql src/lib/owner_local/migration_008.sql src/lib/owner_local/migration_009.sql src/lib/owner_local/migration_010.sql src/lib/owner_local/migration_011.sql src/lib/owner_local/migration_012.sql src/lib/owner_local/migration_013.sql src/lib/owner_local/migration_014.sql src/lib/owner_local/migration_015.sql`
+passes. No unrelated changes, package-lock changes, deployment, production
+restart or push. Independent named review is required; no self-review.

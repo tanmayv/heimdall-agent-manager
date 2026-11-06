@@ -275,11 +275,11 @@ native_attempt_contract_is_task_scoped_read_only_and_validates_time_outcome :: p
 native_history_contracts_bind_snapshot_scope_typed_keys_and_mutation :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     fixture:=owner_fixture(t);c:=owner_fixture_document(t,fixture,"command")
-    for method in ([3]string{"native.history.import","native.history.read","native.history.fetch"}) {
+    for method in ([4]string{"budget.activate","native.history.import","native.history.read","native.history.fetch"}) {
         c["method"]=json.String(method);c["expected_revision"]=json.String("0")
         g:=owner_fixture_grant();g.method=method;g.can_mutate=false
         expected:=Owner_Auth_Error.None
-        if method=="native.history.import" do expected=.Invalid_Scope
+        if method=="native.history.import" || method=="budget.activate" do expected=.Invalid_Scope
         testing.expect_value(t,owner_live_admit(c,g,1000,1),expected)
     }
     for raw in ([4]string{

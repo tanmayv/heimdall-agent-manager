@@ -264,7 +264,7 @@ native_v14_upgrade_collision_deferred_commit_and_live_history_preservation :: pr
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     prefix:=string(MIGRATION_014);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_task_retirements")]
-    testing.expect(t,exec(db,"DROP TRIGGER deferred_prepared_merge_no_invalidation; DROP TABLE deferred_workflow_dispositions; DROP TABLE deferred_workflow_retirements; DROP TABLE native_history_records"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_budget_evidence; DROP TABLE IF EXISTS native_budget_baselines; DROP TRIGGER deferred_prepared_merge_no_invalidation; DROP TABLE deferred_workflow_dispositions; DROP TABLE deferred_workflow_retirements; DROP TABLE native_history_records"))
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=14; CREATE VIEW native_history_records AS SELECT 1"))
     testing.expect_value(t,sqlite3_close(db),0)
