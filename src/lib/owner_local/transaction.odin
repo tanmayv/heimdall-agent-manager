@@ -10,17 +10,18 @@ Transaction :: struct {
     parent:^Transaction,
     thread:int,
     serial:i64,
+    base_seq:i64,
 }
 transaction_begin :: proc(s:^Store,tx:^Transaction) -> bool {
     if tx.store!=nil || sync.atomic_load(&s.tx_thread)==sync.current_thread_id() do return false
     sync.mutex_lock(&s.mutex)
     if s.db==nil || s.unusable || s.tx_serial==0x7fffffffffffffff || !exec(s.db,"BEGIN IMMEDIATE") { sync.mutex_unlock(&s.mutex);return false }
-    rows,ok:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id,incarnation FROM runtime_database WHERE singleton=1")
+    rows,ok:=query(s.db,"SELECT account_id,owner_bridge_id,owner_key_id,incarnation,commit_seq FROM runtime_database WHERE singleton=1")
     if !ok || len(rows)!=1 || rows[0][0]!=s.account || rows[0][1]!=s.owner || rows[0][2]!=s.owner_key || number(rows[0][3])!=s.incarnation {
         _=exec(s.db,"ROLLBACK");sync.mutex_unlock(&s.mutex);return false
     }
     s.tx_serial+=1
-    tx^=Transaction{s,nil,sync.current_thread_id(),s.tx_serial}
+    tx^=Transaction{s,nil,sync.current_thread_id(),s.tx_serial,number(rows[0][4])}
     s.active=tx
     sync.atomic_store(&s.tx_thread,tx.thread)
     return true
@@ -34,7 +35,7 @@ transaction_savepoint :: proc(parent,child:^Transaction) -> bool {
     if s.tx_failed || s.tx_serial==0x7fffffffffffffff do return false
     s.tx_serial+=1
     if !exec(s.db,fmt.tprintf("SAVEPOINT candidate_%d",s.tx_serial)) do return false
-    child^=Transaction{s,parent,parent.thread,s.tx_serial}
+    child^=Transaction{s,parent,parent.thread,s.tx_serial,parent.base_seq}
     s.active=child
     return true
 }

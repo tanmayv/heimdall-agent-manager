@@ -1,6 +1,6 @@
 # Owner-local aggregate parity ledger
 
-Task: task_18e569e48d6b5532, requirements revision 1. Baseline: 6b076ac70b439e0dc22d344fe344fbb7572e9d6e (W2/V12).
+Task: task_18e569e48d6b5532, requirements revision 2. Baseline: 6b076ac70b439e0dc22d344fe344fbb7572e9d6e (W2/V12).
 
 This is a field-by-field implementation ledger, **not a completion claim**. OPEN and PARTIAL rows are required work, not approved dispositions. C1 may not close, and M4 may not cut over an aggregate, while a required row is silently missing. Native values, authors, timestamps, facet versions and IDs must survive migration; do not reconstruct historical facts from current rows.
 
@@ -683,3 +683,85 @@ native source/destination records and historical submission mapping
 (`tests/e2e/owner_local_controls_flow.ts:37`;
 `tests/e2e/owner_local_flow.ts:292`).
 No full C1 submission or independent-review approval is claimed.
+
+## Workflow retirement evidence checkpoint (revision 2, attempts 5/6)
+
+The original workflow stop expires work leases with `chain_closed`, then
+cancels each nonterminal task (`src/hub/service/taskv2/workflow_execution.odin:192`).
+The native attempt outcome is `expired:chain_closed`, retaining its prefix
+(`src/hub/service/taskv2/lease.odin:407`). V14 adds immutable
+`local_task_retirements`, keyed by accepted event sequence and task, with the
+workflow run/execution, exact work lease, reason and cause
+(`src/lib/owner_local/migration_014.sql:55`). Its deferred parent-event foreign
+key keeps task evidence and the accepted command in the same transaction.
+V1–V13 migrations and all historical event bytes remain unchanged.
+
+Static retry, language retry/cancel/gate rejection, and implicit expansion
+failure record this evidence before revoking authority
+(`src/lib/owner_local/workflow_retirements.odin:10`). Completed or already
+cancelled tasks retain their existing history. The enclosing immutable event
+retains the accepted time, actor and exact signed request, plus a serialized
+`task_retirements` inventory (`src/lib/owner_local/events.odin:14`).
+Automatic failure is marked `workflow.failed` independently of the enclosing
+triggering command. Reconciliation binds evidence to the current transaction,
+never retroactively to the original run command
+(`src/lib/owner_local/workflow_language.odin:391`).
+
+The existing bounded native-attempt projection consumes task-scoped evidence
+after the enclosing command. It retains the original start/holder/counting
+status and closes the exact live work lease at the accepted event time with
+`expired:chain_closed` (`src/lib/owner_local/attempts.odin:178`). Cancellation
+does not turn a submitted attempt into a second expiry. Native attempt numbers,
+V7 work-lease ordinals and V4 submission keys remain distinct and unchanged.
+Older unrepresented retirements remain incomplete; V14 does not invent history.
+
+Four focused regressions cover static retry, language cancel/gate rejection,
+implicit 257-item expansion failure, immutable evidence, exact replay,
+event-write and deferred-COMMIT rollback, cold restart, and genuine V13
+migration collision/rollback/recovery preserving exact events, receipts,
+requirements and live capability (`src/lib/owner_local/workflow_retirements_test.odin:22`).
+The retained disposable demo adds real signed browser and CLI native-record
+reads around live sibling retirement and cold restart
+(`tests/e2e/owner_local_language_flow.ts:145`).
+
+This checkpoint does **not** close C1. Original native attempt/history import,
+typed facets and linkage, budgets, metadata/publication/proposals/config,
+strict ordinary adapters and the full rich legacy fixture remain required.
+The existing language-stop exception for unsettled merge CAS remains unchanged
+(`src/lib/owner_local/workflow_language.odin:373`); its eventual retirement
+disposition still needs explicit reconciliation before claiming whole native
+workflow parity. C3 owns linked bodies/blobs; M4 owns route cutover. No OPEN
+or PARTIAL field row is approved for omission.
+
+Verification from this task Workdir through managed shell:
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-attempt6-retirement-store
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-attempt6-retirement-contracts
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1-attempt6-retirement-native
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1-attempt6-retirement-bins
+nix develop --command odin build tools/owner_local_test_identity -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-attempt6-retirement-identity
+nix develop --command env \
+  HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1-attempt6-retirement-bins-1/bin/ham-hub \
+  HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1-attempt6-retirement-bins/bin/ham-bridge \
+  HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1-attempt6-retirement-bins-2/bin/ham-ctl \
+  HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1-attempt6-retirement-bins-3/bin/ham-pty-host \
+  HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1-attempt6-retirement-identity \
+  HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 \
+  HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 \
+  HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 \
+  HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 \
+  node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Store: 120/120; contracts: 19/19; retained native differential: 1/1; UI: 17/17.
+Typecheck and all four binary builds pass. No allocator warnings. The matrix
+checker accounts for 240 fields in 23 structs; this is an inventory check,
+not an implementation-completeness claim. The complete disposable demo passed
+with exit 0 in managed session `sh_41d90a59840bde07efde87b5becce2a8`, including
+the new native retirement CLI/browser reads and cold restart. Its exact command
+appears above.

@@ -87,6 +87,8 @@ workflow_command :: proc(s:^Store,c:json.Object,body:string,seq:i64)->string {
         if !read do return "storage_error"
         for row in old {
             command:=doc(map[string]string{"chain_id"=chain,"task_id"=row[0],"principal_id"=field(c,"principal_id"),"operation_id"=field(c,"operation_id")})
+            command["method"]=json.String(method)
+            if !workflow_retire_task(s,command,run,rows[0][2],row[0],seq) do return "storage_error"
             if !control_revoke(s,command,seq,"checkpoint") do return "storage_error"
             if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,row[0]);!ok do return "storage_error"
             // No future verdict may complete an obsolete execution's review.

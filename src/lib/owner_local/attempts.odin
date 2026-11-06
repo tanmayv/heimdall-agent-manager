@@ -88,9 +88,9 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
 
 // This projection deliberately reports incomplete historical evidence. V13
 // legacy_tag rows do not contain enough data to reconstruct native outcomes.
-// An unrepresented retirement (for example a workflow-wide retry) is likewise
-// explicit until its task-specific native mapping is implemented. Callers must
-// not use such a projection for budget enforcement or native migration export.
+// An older unrepresented workflow retirement remains explicitly incomplete;
+// V14 records task-specific retirement evidence without repairing old events.
+// Callers must not use this for budget enforcement or native migration export.
 attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
     v,_,_,ok:=attempt_scan(s,chain,task)
     return v,ok
@@ -117,7 +117,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','lifecycle.configure',
               'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post'))
-            OR kind='lease.switch')),
+            OR kind='lease.switch' OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
             NULLIF(json_extract(evidence,'$.content'),'') AS content FROM candidates)
@@ -127,8 +127,10 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             COALESCE(json_extract(payload,'$.destination_lease_id'),''),
             COALESCE(json_extract(content,'$.hold_semantics'),''),
             COALESCE(ts_ms,''),COALESCE(json_extract(command,'$.instance_id'),''),
-            COALESCE(json_extract(content,'$.reason'),'')
-          FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR
+            COALESCE(json_extract(content,'$.reason'),''),
+            COALESCE((SELECT lease_id FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
+            COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),'')
+          FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
           ORDER BY seq LIMIT 128`,chain,task,after)
@@ -140,7 +142,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7],"hold_semantics"=row[8]})
             previous:=v
             destination:=row[1]!=chain || row[2]!=task
-            attempt_event(&v,row[3],c,p,destination)
+            if !destination || row[3]=="lease.switch" do attempt_event(&v,row[3],c,p,destination)
             if v.grants>previous.grants {
                 if v.work_lease_id==target_lease do mapped=fmt.tprintf("%d",v.attempt_no)
                 if selected==0 || selected==v.attempt_no {
@@ -172,6 +174,19 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                         record_incomplete=true
                     }
                 }
+            }
+            if row[13]!="" {
+                // The parent command may concern a different task. Apply its
+                // task-scoped native expiry then cancellation after the parent.
+                if v.live {
+                    if row[12]!=v.work_lease_id { v.incomplete=true } else {
+                        if record.attempt_no==fmt.tprintf("%d",v.attempt_no) {
+                            record.ended_ms=row[9];record.outcome="expired:chain_closed"
+                        }
+                        attempt_release(&v,"expired")
+                    }
+                } else if row[12]!="" { v.incomplete=true }
+                v.in_review=false;v.held=false;v.pending_changes=false
             }
         }
         if len(rows)<128 do break

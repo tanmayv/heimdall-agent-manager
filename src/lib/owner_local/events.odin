@@ -11,7 +11,11 @@ import contracts "odin_test:contracts"
 // Exact signed bytes remain verbatim strings inside this owner-only document.
 event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,kind,op,raw,payload,content,result:string) -> bool {
     if !transaction_current(tx) || seq<1 || now<0 do return false
-    evidence:=encode(doc(map[string]string{"command"=raw,"payload"=payload,"content"=content,"result"=result}))
+    retirements,read:=workflow_retirement_evidence(tx.store,seq)
+    if !read do return false
+    evidence_doc:=doc(map[string]string{"command"=raw,"payload"=payload,"content"=content,"result"=result})
+    if retirements!="[]" do evidence_doc["task_retirements"]=json.String(retirements)
+    evidence:=encode(evidence_doc)
     _,ok:=query(tx.store.db,"INSERT INTO local_events VALUES(?,?,?,?,?,?,?,?,?,'full')",
         fmt.tprintf("%d",seq),chain,task,fmt.tprintf("%d",now),actor_kind,actor_id,kind,op,evidence)
     return ok

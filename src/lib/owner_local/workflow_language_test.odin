@@ -455,7 +455,7 @@ language_v12_upgrade_preserves_trigger_receipts_and_live_capability :: proc(t:^t
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     // Reconstruct the genuine V11 header and non-null workflow prerequisites.
-    testing.expect(t,exec(db,"DROP TABLE local_events; CREATE TEMP TABLE saved_triggers AS SELECT * FROM local_workflow_output_triggers; DROP TABLE local_workflow_output_triggers;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_task_retirements; DROP TABLE local_events; CREATE TEMP TABLE saved_triggers AS SELECT * FROM local_workflow_output_triggers; DROP TABLE local_workflow_output_triggers;"))
     m10:=string(MIGRATION_011)
     start:=strings.index(m10,"CREATE TABLE local_workflow_output_triggers(")
     end:=strings.index(m10,"CREATE TABLE local_workflow_registry_envelopes(")

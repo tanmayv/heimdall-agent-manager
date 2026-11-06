@@ -90,6 +90,7 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
         runtime,read:=query(s.db,"SELECT commit_seq,clock_high_ms,(SELECT count(*) FROM local_changes) FROM runtime_database")
         if !read || len(runtime)!=1 || number(runtime[0][2])>=1000000 do return false
         seq:=number(runtime[0][0])+1
+        if !workflow_refresh(s) do return false
         if !event_record(&tx,seq,now,rows[0][2],"","bridge",s.owner,"source.delivered",claim.id,"",rows[0][3],"",result) do return false
         if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],"source.delivered",claim.id,"1",claim.id);!ok do return false
         if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
@@ -112,10 +113,10 @@ intent_result :: proc(s:^Store,claim:Intent_Claim,success:bool,result:string,now
         seq:=number(runtime[0][0])+1
         kind:="merge.failed"
         if success do kind="merge.merged"
-        if !event_record(&tx,seq,now,rows[0][2],field(f,"task_id"),"bridge",s.owner,kind,claim.id,"",rows[0][3],"",result) do return false
         if _,ok:=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),rows[0][2],kind,field(f,"task_id"),task_rows[0][0],claim.id);!ok do return false
         if _,ok:=query(s.db,"UPDATE runtime_database SET commit_seq=?,clock_high_ms=? WHERE singleton=1",fmt.tprintf("%d",seq),fmt.tprintf("%d",max(now,number(runtime[0][1]))));!ok do return false
         if !workflow_refresh(s) do return false
+        if !event_record(&tx,seq,now,rows[0][2],field(f,"task_id"),"bridge",s.owner,kind,claim.id,"",rows[0][3],"",result) do return false
         command:=doc(map[string]string{"chain_id"=rows[0][2],"task_id"=field(f,"task_id"),"method"="merge.result"})
         if !source_lifecycle(&tx,command,nil,seq,now) do return false
     }

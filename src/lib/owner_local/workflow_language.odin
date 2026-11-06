@@ -93,6 +93,8 @@ language_command :: proc(s:^Store,c:json.Object,raw:string,seq:i64)->(bool,strin
         if !old_read do return true,"storage_error"
         for row in old {
             command:=doc(map[string]string{"chain_id"=chain,"task_id"=row[0],"principal_id"=field(c,"principal_id"),"operation_id"=field(c,"operation_id")})
+            command["method"]=json.String(method)
+            if !workflow_retire_task(s,command,run,execution,row[0],seq) do return true,"storage_error"
             if !control_revoke(s,command,seq,"checkpoint") do return true,"storage_error"
             if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,row[0]);!ok do return true,"storage_error"
             if _,ok=query(s.db,"UPDATE source_episodes SET resolved=1,source_version=? WHERE chain_id=? AND origin_kind='local.review' AND origin_id=? AND resolved=0",fmt.tprintf("%d",seq),chain,row[0]);!ok do return true,"storage_error"
@@ -371,6 +373,8 @@ language_stop :: proc(s:^Store,c:json.Object,run,execution:string,seq:i64)->bool
         // would strand the callback and incorrectly release the generation.
         if len(merging)>0 do continue
         command:=doc(map[string]string{"chain_id"=field(c,"chain_id"),"task_id"=row[0],"principal_id"=field(c,"principal_id"),"operation_id"=field(c,"operation_id")})
+        command["method"]=json.String(field(c,"method"))
+        if !workflow_retire_task(s,command,run,execution,row[0],seq) do return false
         if !control_revoke(s,command,seq,"checkpoint") do return false
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",field(c,"chain_id"),row[0]);!ok do return false
         if _,ok=query(s.db,"UPDATE source_episodes SET resolved=1,source_version=? WHERE chain_id=? AND origin_kind='local.review' AND origin_id=? AND resolved=0",fmt.tprintf("%d",seq),field(c,"chain_id"),row[0]);!ok do return false
@@ -384,7 +388,11 @@ language_fail :: proc(s:^Store,row:[]string,reason:string)->bool {
     receipt,read:=query(s.db,"SELECT commit_seq FROM command_receipts WHERE principal_id=? AND operation_id=?",row[6],row[7])
     if !ok || !read || len(current)!=1 || len(receipt)!=1 do return false
     c:=doc(map[string]string{"chain_id"=row[0],"principal_id"=row[6],"operation_id"=row[7],"method"="workflow.failed","task_id"=""})
-    if !language_stop(s,c,row[1],row[2],number(current[0][0])) || !control_intents(s.active,c,number(receipt[0][0])) do return false
+    // Outbox reconciliation can run before its new runtime watermark/event is
+    // written. Bind failure evidence to this transaction's new accepted event,
+    // never to the last committed event from the original workflow launch.
+    seq:=max(number(current[0][0]),s.active.base_seq+1)
+    if !language_stop(s,c,row[1],row[2],seq) || !control_intents(s.active,c,number(receipt[0][0])) do return false
     _,ok=query(s.db,"UPDATE local_workflow_language_executions SET state='failed',failure=? WHERE chain_id=? AND run_id=? AND execution=?",reason,row[0],row[1],row[2])
     return ok
 }

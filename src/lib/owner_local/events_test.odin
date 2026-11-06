@@ -173,7 +173,7 @@ event_v12_upgrade_collision_and_commit_rollback_preserve_live_runtime :: proc(t:
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
     prefix:=string(MIGRATION_012);prefix=prefix[:strings.index(prefix,"CREATE TABLE local_workflow_output_triggers_v12")]
-    testing.expect(t,exec(db,"DROP TABLE local_events;"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_task_retirements; DROP TABLE local_events;"))
     testing.expect(t,exec(db,prefix))
     testing.expect(t,exec(db,"UPDATE schema_migrations SET version=12; CREATE VIEW local_events AS SELECT 1;"))
     testing.expect_value(t,sqlite3_close(db),0)
