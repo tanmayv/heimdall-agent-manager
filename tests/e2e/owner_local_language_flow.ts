@@ -27,7 +27,16 @@ export async function ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,laun
   await mutate('workflow.define',{workflow_id:'dynamic',version:'1',title:'dynamic-private-definition',spec:JSON.stringify(spec)});
   await mutate('workflow.run',{run_id:'dynamic',workflow_id:'dynamic',version:'1',inputs:JSON.stringify({goal:'real demo'})});
   const worker=await launchChild(),reviewer=await launchChild(),coordinator=await launchChild();
-  const inventory=()=>detail('workflow.read',{limit:100});
+  const inventory=async()=>{
+    const result:any={runs:[],tasks:[],events:[]};let cursor='';
+    for(let page=0;page<100;page++){
+      const data=await detail('workflow.read',{cursor});
+      for(const kind of ['runs','tasks','events'])result[kind].push(...data[kind]);
+      if(!data.next_cursor)return result;
+      cursor=data.next_cursor;
+    }
+    throw new Error('workflow inventory did not terminate');
+  };
   const tasks=async(run:string,execution:string,stage:string)=>(await inventory()).tasks.filter((r:any)=>r[0]===run && r[1]===execution && r[2].startsWith(stage+':'));
   const finish=async(taskId:string,output?:any)=>{
     await human('fleet.edit',{taskId,expectedRevision:await revision(taskId),instanceId:worker.instanceId,configurationRevision:'1'});

@@ -5,6 +5,11 @@ import { createDeviceIdentity, memoryDeviceStore } from '../../src/ui/utils/devi
 
 export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, stopOwner, restartOwner, inspectHub, otherAccount, cli, launchChild, prepareGit, registryFixture, rekeyOwner }: any) {
   const session = { identity: approver.identity, chain: await approver.chain(), keyring: await importKeyring(Uint8Array.from(approver.keyringBytes), approver.userId) };
+  if(process.env.HEIMDALL_E2E_OWNER_LANGUAGE_ONLY==='1'){
+    const {ownerLocalLanguageFlow}=await import('./owner_local_language_flow.ts');
+    await ownerLocalLanguageFlow({session,bridgeId,hub,http,cli,launchChild,expect,approver,stopOwner,restartOwner});
+    return;
+  }
   const chainId = ownerId('chain_'), taskId = ownerId('task_');
   const send = async (body: unknown) => {
     const r = await http(hub, 'POST', '/api/v1/owner-local/relay', { body });
