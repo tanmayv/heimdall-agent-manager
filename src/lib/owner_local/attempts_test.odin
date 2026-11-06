@@ -112,6 +112,12 @@ attempts_incomplete_history_is_never_reconstructed_from_rows :: proc(t:^testing.
     attempt_expect(t,g,1,1,"",false)
     h:=fixture(t);defer destroy(h);lifecycle_seed(t,h);_=lifecycle_ready(t,h)
     testing.expect_value(t,control_call(h,"task.hold","hold","4").code,"ok")
+    attempt_expect(t,h,1,1,"")
+    // Reconstruct old full-but-revoking hold evidence without rewriting its
+    // interpretation to the newly accepted semantics.
+    testing.expect(t,exec(h.store.db,`DROP TRIGGER local_events_no_update;
+      UPDATE local_events SET evidence_json=json_set(evidence_json,'$.content','{}') WHERE kind='task.hold';
+      CREATE TRIGGER local_events_no_update BEFORE UPDATE ON local_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`))
     attempt_expect(t,h,1,1,"",false)
 }
 

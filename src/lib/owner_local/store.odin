@@ -313,7 +313,9 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
         result=encode(doc(map[string]string{"chain_id"=chain,"task_id"="","operation_id"=op,"revision"=fmt.tprintf("%d",next),"capability"=bound[0][0]}))
     }
     if _,ok=query(s.db,"INSERT INTO command_receipts(principal_id,operation_id,chain_id,task_id,method,input_digest,digest_key_id,request_expires_ms,result_json,commit_seq,created_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",principal,op,chain,task,method,digest,key.key_id,field(c,"request_expires_ms"),result,fmt.tprintf("%d",seq),fmt.tprintf("%d",now));!ok do return fail("storage_error")
-    content:=encode(doc(map[string]string{"title"=title,"description"=description,"body"=body}))
+    content_doc:=doc(map[string]string{"title"=title,"description"=description,"body"=body})
+    if method=="task.hold" do content_doc["hold_semantics"]=json.String(contracts.OWNER_HOLD_SEMANTICS)
+    content:=encode(content_doc)
     if !event_record(&tx,seq,now,chain,task,"device",principal,method,op,command_raw,payload,content,result) do return fail("storage_error")
     if _,ok=query(s.db,"INSERT INTO local_changes VALUES(?,?,?,?,?,?)",fmt.tprintf("%d",seq),chain,method,task,fmt.tprintf("%d",next),op);!ok do return fail("storage_error")
     if !workflow_publications(&tx,c,body,seq,kr,sign) do return fail("storage_error")
@@ -322,6 +324,16 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     if !source_lifecycle(&tx,c,p,seq,now) do return fail("storage_error")
     if !control_intents(&tx,c,seq) do return fail("storage_error")
     if method=="review.post" && !lifecycle_merge_intent(&tx,c,p,seq) do return fail("storage_error")
+    if method=="task.release" {
+        // A release may settle verdicts recorded under the hold. Bind a new
+        // merge intent to that immutable submission, never to release input.
+        submitted,read:=query(s.db,"SELECT attempt,head,requirements_revision FROM local_submissions WHERE chain_id=? AND task_id=? ORDER BY attempt DESC LIMIT 1",chain,task)
+        if !read do return fail("storage_error")
+        if len(submitted)==1 {
+            bound:=doc(map[string]string{"attempt"=submitted[0][0],"head"=submitted[0][1],"requirements_revision"=submitted[0][2]})
+            if !lifecycle_merge_intent(&tx,c,bound,seq) do return fail("storage_error")
+        }
+    }
     if method=="chain.create" || method=="task.create" || method=="chain.edit" || method=="task.edit" || method=="task.delete" {
         genesis_rows,found:=query(s.db,"SELECT genesis_digest FROM chain_genesis WHERE chain_id=?",chain)
         if !found || len(genesis_rows)!=1 do return fail("storage_error")

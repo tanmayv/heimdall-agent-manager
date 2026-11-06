@@ -15,7 +15,9 @@ test_owner_attempt_projection_matches_native_fold_prefixes :: proc(t:^testing.T)
     Step :: struct { native_kind,native_payload,local_kind,local_payload:string }
     steps:=[?]Step{
         {EV_LEASE_GRANTED,`{"lease_id":"a"}`,"lease.claim",`{}`},
+        {EV_HELD,`{"reason":"checkpoint"}`,"task.hold",`{"hold_semantics":"live_lease_v1"}`},
         {EV_HANDOFF,`{}`,"lease.handoff",`{}`},
+        {EV_HOLD_RELEASED,`{}`,"task.release",`{}`},
         {EV_LEASE_GRANTED,`{"lease_id":"b"}`,"lease.claim",`{}`},
         {EV_LEASE_EXPIRED,`{}`,"lease.expired",`{}`},
         {EV_LEASE_GRANTED,`{"lease_id":"c"}`,"lease.claim",`{}`},

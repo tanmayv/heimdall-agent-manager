@@ -23,8 +23,8 @@ The CLI transport token does not authorize a device control.
 
 | Panel control / signed method | Behavior |
 | --- | --- |
-| Hold task / `task.hold` | Save the current review/ready state, revoke current lease/session authority, and enqueue exact-child checkpoint notices. |
-| Release hold / `task.release` | Restore the saved state; old capabilities remain retired. A new claim/review session is required. |
+| Hold task / `task.hold` | Pause new dispatch and gate settlement; preserve live leases/sessions and TTL, and enqueue exact-child checkpoint notices. |
+| Release hold / `task.release` | Remove the hold overlay without reviving retired authority; evaluate any verdicts recorded while held. |
 | Cancel task / `task.cancel` | Revoke authority, invalidate unsettled merge intents, and enqueue exact-child stops. Preserve submissions, verdicts, handoffs and assignment history. |
 | Reopen task / `task.reopen` | Reopen cancelled, completed or merge-blocked work for a new submission/review. Never reuse an earlier approval for the next submission. |
 | Resolve human block / `task.resolve` | Require a nonempty device-signed answer. Release the human block without treating the answer as a review verdict. |
@@ -38,13 +38,22 @@ previously recorded assignment even after its child has exited; disabling cannot
 mint a new capability. Re-enabling requires fresh observed-child validation.
 
 Current control mode is separate from the submission/merge state in runtime
-observations. A held, blocked or cancelled task cannot claim, heartbeat, submit
-or post a new verdict. A hold retains one exact, unexpired checkpoint-only
-binding: the old worker may save one handoff, or the old reviewer may save one
-review checkpoint, with the new task revision. This does not revive its lease
-or permit a verdict. Release, cancellation, rebinding or a requirements edit
-clears unused checkpoint-only authority. Editing requirements or assignment while held changes
-its saved resume state to ready, so release cannot revive a stale review.
+observations. Hold is a dispatch overlay, not revocation or an attempt outcome.
+It prevents new work claims and review sessions. Existing exact holders retain
+their lease/session until checkpoint, submit/verdict, expiry or an independent
+revocation; workers may heartbeat and present/ACK updated requirements. A live
+holder can still submit or post a verdict, but the review gate waits for release.
+A work handoff keeps its native attempt open; release followed by claim continues
+that attempt. Expiry still closes it normally. A block recorded while held stays
+blocked after release. Release uses the current lifecycle state, not a stale
+pre-hold snapshot.
+
+The existing checkpoint-only bindings from older runtimes remain narrowly
+authorized for one unexpired handoff/checkpoint; no retired lease is resurrected.
+New holds create no checkpoint-only authority. Their immutable event content
+carries `hold_semantics: live_lease_v1`; older hold evidence remains incomplete
+for native projection/export. Rebinding and requirements edits retain their
+independent revision/revocation rules.
 
 Requirements edits retain the worker lease so the holder can present and ACK
 the new exact revision. They invalidate review sessions and enqueue checkpoint

@@ -62,6 +62,8 @@ role_record :: proc(s:^Store,c,p:json.Object,agent:string)->string {
     return "ok"
 }
 role_gate :: proc(s:^Store,chain,task,attempt:string)->(string,bool) {
+    // Native hold defers gate settlement, not the recording of a live verdict.
+    if control_held(s,chain,task) do return "in_review",true
     config,_,valid:=lifecycle_config(s,chain,task)
     if !valid do return "",false
     reviews,ok:=query(s.db,"SELECT reviewer_agent_id,principal_id,verdict FROM local_reviews WHERE chain_id=? AND task_id=? AND attempt=?",chain,task,attempt)

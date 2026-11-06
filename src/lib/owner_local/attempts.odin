@@ -12,7 +12,7 @@ import contracts "odin_test:contracts"
 Attempt_View :: struct {
     attempt_no,counting_attempts,grants:i64,
     last_release,work_lease_id:string,
-    live,in_review,incomplete:bool,
+    live,in_review,incomplete,held,pending_changes:bool,
 }
 
 attempt_grant :: proc(v:^Attempt_View,lease:string) {
@@ -32,6 +32,7 @@ attempt_grant :: proc(v:^Attempt_View,lease:string) {
 
 attempt_release :: proc(v:^Attempt_View,release:string) {
     v.live=false
+    v.pending_changes=false
     v.last_release=release
 }
 
@@ -45,9 +46,8 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
     switch kind {
     case "lease.claim": attempt_grant(v,field(c,"lease_id"))
     case "lease.handoff","lease.switch":
-        // A held-work checkpoint can follow the owner's retirement decision.
-        // It still represents a native handoff continuation, unlike a reviewer
-        // checkpoint, which has its own method and never reaches this branch.
+        // A requested checkpoint is an ordinary handoff continuation.
+        // Reviewer checkpoints never reach this work-attempt branch.
         if v.attempt_no==0 { v.incomplete=true;return }
         attempt_release(v,"handoff")
     case "lease.block": attempt_release(v,"blocked")
@@ -61,19 +61,27 @@ attempt_event :: proc(v:^Attempt_View,kind:string,c,p:json.Object,destination:=f
             attempt_release(v,"replaced");v.in_review=false
         }
     case "task.cancel":
-        v.live=false;v.in_review=false
+        v.live=false;v.in_review=false;v.held=false;v.pending_changes=false
     case "task.hold":
-        // Native hold retains its work lease until checkpoint or TTL expiry
-        // (taskv2/verbs_m2.odin:622-625). The current local hold retires it
-        // immediately. Do not invent a structural native release for that gap.
-        if v.live do v.incomplete=true
+        v.held=true
+        // Pre-fix hold evidence revoked authority immediately. Keep that
+        // historical gap explicit even after a later checkpoint or release.
+        if v.live && field(p,"hold_semantics")!=contracts.OWNER_HOLD_SEMANTICS do v.incomplete=true
+    case "task.release":
+        v.held=false
+        if v.pending_changes {
+            attempt_release(v,"changes_requested");v.in_review=false
+            v.pending_changes=false
+        }
     case "requirements.edit":
         // Editing a live brief does not retire the work lease. Replacing a
         // submitted brief does invalidate its review, without spending budget.
         if v.in_review { attempt_release(v,"replaced");v.in_review=false }
     case "review.post","review.role.post":
         if field(p,"verdict")=="request_changes" {
-            attempt_release(v,"changes_requested");v.in_review=false
+            if v.held { v.pending_changes=true } else {
+                attempt_release(v,"changes_requested");v.in_review=false
+            }
         }
     }
 }
@@ -96,14 +104,16 @@ attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
           FROM local_events WHERE seq>?3 AND ((chain_id=?1 AND task_id=?2
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','lifecycle.configure',
-              'review.roles','task.hold','task.cancel','requirements.edit','review.post','review.role.post'))
+              'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post'))
             OR kind='lease.switch')),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
-            NULLIF(json_extract(evidence,'$.payload'),'') AS payload FROM candidates)
+            NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
+            NULLIF(json_extract(evidence,'$.content'),'') AS content FROM candidates)
           SELECT seq,chain_id,task_id,kind,completeness,
             COALESCE(json_extract(command,'$.lease_id'),''),
             COALESCE(json_extract(payload,'$.verdict'),''),
-            COALESCE(json_extract(payload,'$.destination_lease_id'),'')
+            COALESCE(json_extract(payload,'$.destination_lease_id'),''),
+            COALESCE(json_extract(content,'$.hold_semantics'),'')
           FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
@@ -113,7 +123,7 @@ attempt_view :: proc(s:^Store,chain,task:string) -> (Attempt_View,bool) {
             after=row[0]
             if row[4]!="full" { v.incomplete=true;continue }
             c:=doc(map[string]string{"lease_id"=row[5]})
-            p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7]})
+            p:=doc(map[string]string{"verdict"=row[6],"destination_lease_id"=row[7],"hold_semantics"=row[8]})
             attempt_event(&v,row[3],c,p,row[1]!=chain || row[2]!=task)
         }
         if len(rows)<128 do break

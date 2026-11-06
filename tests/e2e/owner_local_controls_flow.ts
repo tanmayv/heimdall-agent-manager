@@ -75,14 +75,29 @@ export async function ownerLocalControlsFlow({session,bridgeId,hub,http,cli,laun
       await React.act(async()=>root.unmount());globalThis.fetch=originalFetch;clearKeyringSession();dom.window.close();
       keys.forEach((key,i)=>{if(descriptors[i])Object.defineProperty(globalThis,key,descriptors[i]!);else delete(globalThis as any)[key];});
     }
-    const heartbeat={...input,task_id:dest,lease_id:destinationLease,operation_id:ownerId('op_'),method:'lease.heartbeat',capability:destinationCap};
-    const renewed=worker.call(heartbeat);expect(renewed.status===0,'source control effects do not stop child transferred to destination');
+    // Hold a live destination lease. The actual provider receives the checkpoint
+    // notice and can renew without a new claim or a changed hard deadline.
+    await human('task.hold',{taskId:dest,expectedRevision:'4',body:'Native live hold'});
+    state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
+    expect(state.controls[0][0]==='held' && state.leases[0][0]===destinationLease && state.attempts.completeness==='full','hold retains live owner lease and native attempt evidence');
+    const hard=state.leases[0][3];
+    for(const end=Date.now()+15000;!worker.readNotices().includes('task.hold on task '+dest);){
+      if(Date.now()>end)throw new Error('live holder did not receive exact task hold checkpoint');
+      await new Promise(r=>setTimeout(r,100));
+    }
+    expect(worker.readNotices().includes('task.hold on task '+dest),'real PTY live holder receives checkpoint notification');
+    const heartbeat={...input,task_id:dest,lease_id:destinationLease,expected_revision:'5',operation_id:ownerId('op_'),method:'lease.heartbeat',capability:destinationCap};
+    const renewed=worker.call(heartbeat);expect(renewed.status===0,'live held child renews exact lease after checkpoint notification');
     destinationCap=JSON.parse(renewed.data.body).capability;
+    state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
+    expect(state.leases[0][3]===hard && state.attempts.attempt_no==='1' && state.attempts.counting_attempts==='1','hold and heartbeat preserve native attempt and hard deadline');
+    await human('task.release',{taskId:dest,expectedRevision:'5',body:'Continue live lease'},true);
+    heartbeat.expected_revision='6';
     const blocked=worker.call({...heartbeat,operation_id:ownerId('op_'),method:'lease.block',capability:destinationCap,payload:JSON.stringify({requirements_revision:'1',summary:'controls-private-blockneedle',next_steps:'Await explicit answer',waiting_on:'human'})});
     expect(blocked.status===0,'real CLI records human block and releases exact child');
     state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
     expect(state.controls[0][0]==='blocked' && state.leases.length===0,'real block state remains visible');
-    await human('task.resolve',{taskId:dest,expectedRevision:'5',body:'Signed explicit controls answer'},true);
+    await human('task.resolve',{taskId:dest,expectedRevision:'7',body:'Signed explicit controls answer'},true);
     state=JSON.parse((await human('runtime.read',{taskId:dest,expectedRevision:'0'})).body);
     expect(state.controls[0][0]==='ready','real signed CLI relay resolves block explicitly');
 

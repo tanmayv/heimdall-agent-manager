@@ -36,3 +36,18 @@ test_owner_local_control_notice_rejects_new_child_and_retries_unverified_child :
     success,result,_=bridge_owner_control_notice(nil,owner.Intent_Claim{kind="stop",fence=string(bytes)})
     testing.expect(t,!success && result=="child_unverified","missing runtime binding does not prove old child absent")
 }
+
+@(test)
+test_owner_local_hold_notice_targets_current_live_holder_without_stopping_transferred_child :: proc(t:^testing.T) {
+    context.allocator=context.temp_allocator
+    work:=[][]string{{"task"}}
+    review:=[][]string{{"task"}}
+    other:=[][]string{{"destination"}}
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","task.hold","task",work,nil),"")
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","task.hold","task",nil,review),"")
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","requirements.edit","task",work,nil),"")
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","task.hold","task",other,nil),"child_has_new_lease")
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","task.hold","task",nil,other),"child_has_review_session")
+    testing.expect_value(t,bridge_owner_control_notice_scope("stop","task.cancel","task",work,nil),"child_has_new_lease")
+    testing.expect_value(t,bridge_owner_control_notice_scope("checkpoint","fleet.edit","task",work,nil),"child_has_new_lease")
+}

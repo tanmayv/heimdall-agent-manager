@@ -100,7 +100,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
         return fail("retired")
     }
     if !workflow_task_current(s,chain,task) do return fail("stale_revision")
-    if !current || !control_ready(s,chain,task) do return fail("invalid_scope")
+    if !control_active(s,chain,task) || (method=="lease.claim" && !control_ready(s,chain,task)) do return fail("invalid_scope")
     if fleet[0][1]!=field(c,"configuration_revision") do return fail("invalid_scope")
     state,state_ok:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
     if !state_ok || len(state)!=1 do return fail("storage_error")

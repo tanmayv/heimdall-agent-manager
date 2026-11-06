@@ -7,6 +7,13 @@ import "core:strconv"
 import "core:strings"
 import vault "odin_test:lib/vault"
 
+// task.hold is a dispatch overlay: live capabilities retain authority and TTL.
+// Current holders may heartbeat, submit/vote or checkpoint. No fresh work/review
+// capability is issued while held; gates settle only after task.release.
+// Retained event content records this marker so older revoke-on-hold evidence
+// remains explicitly incomplete rather than acquiring fabricated semantics.
+OWNER_HOLD_SEMANTICS :: "live_lease_v1"
+
 // Minimal owner-local v1. Decimal strings preserve SQLite i64 across JS.
 // Raw envelope input is bounded before allocation. Bodies travel separately,
 // sealed end-to-end; payload_digest binds their exact UTF-8 transport bytes.

@@ -64,7 +64,8 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     if !workflow_task_current(s,chain,task) do return fail("stale_revision")
     if !dependency_ready(s,chain,task) do return fail("operation_conflict")
     held_checkpoint:=control_checkpoint_authorized(s,c,child,cap_raw,now)
-    if !control_ready(s,chain,task) && !held_checkpoint do return fail("operation_conflict")
+    if !control_active(s,chain,task) && !held_checkpoint do return fail("operation_conflict")
+    if (method=="review.open" || method=="review.role.open") && !control_ready(s,chain,task) do return fail("operation_conflict")
     if now<0 || now>0x7fffffffffffffff-LEASE_HARD_MS || number(field(c,"request_expires_ms"))<=now || number(field(c,"request_expires_ms"))-now>contracts.OWNER_REQUEST_TTL_MS do return fail("expired")
     state,looked:=query(s.db,"SELECT commit_seq,clock_high_ms,recovery_state FROM runtime_database WHERE singleton=1")
     if !looked || len(state)!=1 do return fail("storage_error")
@@ -162,6 +163,20 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
                 result=encode(doc(map[string]string{"state"="in_review","checkpoint"="1","revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
             } else {
                 if code:=lifecycle_review(s,c,p,child.agent_id,false);code!="ok" do return fail(code)
+                // One local role session may carry multiple configured roles
+                // for the same child. Retire only after its final owed result.
+                retire:=!role_method
+                if role_method {
+                    owed,read:=query(s.db,`SELECT 1 FROM local_role_pairs p WHERE chain_id=? AND task_id=? AND child_json=?
+                      AND revision=(SELECT max(revision) FROM local_role_configs c WHERE c.chain_id=p.chain_id AND c.task_id=p.task_id)
+                      AND NOT EXISTS(SELECT 1 FROM local_role_reviews r WHERE r.chain_id=p.chain_id AND r.task_id=p.task_id
+                        AND r.attempt=? AND r.role_revision=p.revision AND r.role=p.role AND r.agent_id=p.agent_id) LIMIT 1`,chain,task,encode(child),field(p,"attempt"))
+                    if !read do return fail("storage_error")
+                    retire=len(owed)==0
+                }
+                if retire {
+                    if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=? AND attempt=? AND child=?",chain,task,field(p,"attempt"),encode(child));!ok do return fail("storage_error")
+                }
                 result=encode(doc(map[string]string{"verdict"=field(p,"verdict"),"revision"=fmt.tprintf("%d",number(tasks[0][0])+1)}))
             }
         }

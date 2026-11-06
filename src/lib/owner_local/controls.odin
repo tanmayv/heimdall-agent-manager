@@ -9,30 +9,44 @@ control_ready :: proc(s:^Store,chain,task:string) -> bool {
     rows,ok:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
     return ok && (len(rows)==0 || rows[0][0]=="ready")
 }
+// Existing holders keep authority under a hold. New dispatch still requires
+// control_ready; blocked/cancelled authority is never admitted by this helper.
+control_active :: proc(s:^Store,chain,task:string) -> bool {
+    rows,ok:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+    return ok && (len(rows)==0 || rows[0][0]=="ready" || rows[0][0]=="held")
+}
+control_held :: proc(s:^Store,chain,task:string) -> bool {
+    rows,ok:=query(s.db,"SELECT mode FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+    return ok && len(rows)==1 && rows[0][0]=="held"
+}
 control_notice :: proc(s:^Store,c:json.Object,child:Child,kind:string) -> bool {
     _,ok:=query(s.db,"INSERT OR IGNORE INTO control_notices VALUES(?,?,?,?,?,?)",field(c,"chain_id"),field(c,"task_id"),field(c,"principal_id"),field(c,"operation_id"),encode(child),kind)
     return ok
 }
-// Evidence remains immutable. Revocation changes only current authority and
-// writes exact-child notices in the same caller transaction.
-control_revoke :: proc(s:^Store,c:json.Object,seq:i64,kind:string,notify:=true,retire:=true) -> bool {
+control_notify :: proc(s:^Store,c:json.Object,kind:string) -> bool {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
     rows,ok:=query(s.db,"SELECT instance_id,launch_epoch,token_generation,run_count FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
     if !ok do return false
     agent:=""
     if config,_,found:=lifecycle_config(s,chain,task);found do agent=field(config,"author_agent_id")
-    if notify {
-        for row in rows {
-            if !control_notice(s,c,Child{row[0],row[1],row[2],number(row[3]),agent},kind) do return false
-        }
-        sessions,read:=query(s.db,"SELECT child FROM local_review_sessions WHERE chain_id=? AND task_id=? UNION SELECT child_json FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task,chain,task)
-        if !read do return false
-        for row in sessions {
-            child:Child
-            if json.unmarshal_string(row[0],&child,.JSON,context.temp_allocator)!=nil do return false
-            if !control_notice(s,c,child,kind) do return false
-        }
+    for row in rows {
+        if !control_notice(s,c,Child{row[0],row[1],row[2],number(row[3]),agent},kind) do return false
     }
+    sessions,read:=query(s.db,"SELECT child FROM local_review_sessions WHERE chain_id=? AND task_id=? UNION SELECT child_json FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task,chain,task)
+    if !read do return false
+    for row in sessions {
+        child:Child
+        if json.unmarshal_string(row[0],&child,.JSON,context.temp_allocator)!=nil do return false
+        if !control_notice(s,c,child,kind) do return false
+    }
+    return true
+}
+// Evidence remains immutable. Revocation changes only current authority and
+// writes exact-child notices in the same caller transaction.
+control_revoke :: proc(s:^Store,c:json.Object,seq:i64,kind:string,notify:=true,retire:=true) -> bool {
+    chain,task:=field(c,"chain_id"),field(c,"task_id")
+    if notify && !control_notify(s,c,kind) do return false
+    ok:=true
     if retire { if _,ok=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),chain,task);!ok do return false }
     if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
     // Do not mutate or delete the old intent/result. It may already have
@@ -53,26 +67,35 @@ control_mode :: proc(s:^Store,chain,task,mode,resume,reason,waiting:string) -> b
 control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
     state:="ready"
-    states,ok:=query(s.db,"SELECT state FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
+    states,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)
     if !ok do return "storage_error"
     if len(states)==1 do state=states[0][0]
-    controls,read:=query(s.db,"SELECT mode,resume_state FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
+    controls,read:=query(s.db,"SELECT mode,resume_state,reason,waiting_on FROM local_controls WHERE chain_id=? AND task_id=?",chain,task)
     if !read do return "storage_error"
-    mode,resume:="ready",state
-    if len(controls)==1 { mode=controls[0][0];resume=controls[0][1] }
+    mode,resume,reason,waiting:="ready","ready",body,""
+    if len(controls)==1 { mode=controls[0][0];resume=controls[0][1];waiting=controls[0][3] }
     next:=state
     switch method {
     case "task.hold":
-        if mode!="ready" || state=="done" || state=="merge_pending" || state=="merge_blocked" do return "operation_conflict"
-        mode="held";resume=state
-        if !control_hold_checkpoints(s,chain,task) do return "storage_error"
-        if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"
+        if (mode!="ready" && mode!="blocked") || state=="done" || state=="merge_pending" || state=="merge_blocked" do return "operation_conflict"
+        resume=mode;mode="held"
+        // A hold asks for a checkpoint; it neither retires capabilities nor
+        // invalidates review/merge evidence. TTL and exact-child fences remain.
+        if !control_notify(s,c,"checkpoint") do return "storage_error"
     case "task.release":
         if mode!="held" do return "operation_conflict"
-        mode="ready";next=resume
+        mode="ready"
+        // Pre-fix holds stored lifecycle state in resume_state; always retain
+        // the current lifecycle state. A native block is a separate overlay.
+        if resume=="blocked" do mode="blocked"
+        if mode=="blocked" {
+            blocks,found:=query(s.db,"SELECT summary FROM local_handoffs WHERE chain_id=? AND task_id=? AND kind='lease.block' ORDER BY seq DESC LIMIT 1",chain,task)
+            if !found || len(blocks)!=1 do return "storage_error"
+            reason=blocks[0][0]
+        }
     case "task.cancel":
         if mode=="cancelled" || state=="done" do return "operation_conflict"
-        mode="cancelled";next="ready"
+        mode="cancelled";next="ready";waiting=""
         if !control_revoke(s,c,seq,"stop") do return "storage_error"
     case "task.reopen":
         generated,checked:=query(s.db,"SELECT 1 FROM local_workflow_language_items WHERE task_id=?",task)
@@ -82,11 +105,11 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
         if !read_consumed do return "storage_error"
         if len(consumed)>0 do return "operation_conflict"
         if mode!="cancelled" && state!="done" && state!="merge_blocked" do return "operation_conflict"
-        mode="ready";next="ready"
+        mode="ready";next="ready";waiting=""
         if !control_revoke(s,c,seq,"checkpoint") do return "storage_error"
     case "task.resolve":
         if mode!="blocked" do return "operation_conflict"
-        mode="ready";next="ready"
+        mode="ready";next="ready";waiting=""
     case "merge.retry":
         if mode!="ready" || state!="merge_blocked" do return "operation_conflict"
         config,_,found:=lifecycle_config(s,chain,task)
@@ -105,7 +128,15 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     if method!="task.hold" {
         if _,ok=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     }
-    if !control_mode(s,chain,task,mode,resume,body,"") do return "storage_error"
+    if !control_mode(s,chain,task,mode,resume,reason,waiting) do return "storage_error"
+    if method=="task.release" && next=="in_review" {
+        gate,valid:=role_gate(s,chain,task,states[0][1])
+        if !valid do return "storage_error"
+        next=gate
+        if next!="in_review" {
+            if _,ok=query(s.db,"DELETE FROM local_review_sessions WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
+        }
+    }
     event:=doc(map[string]string{"summary"=body})
     if !control_record(s,c,event,seq) do return "storage_error"
     if _,ok=query(s.db,"UPDATE lifecycle_state SET state=? WHERE chain_id=? AND task_id=?",next,chain,task);!ok do return "storage_error"
@@ -128,7 +159,9 @@ control_agent :: proc(tx:^Transaction,c,p:json.Object,child:Child,seq,now:i64,si
     if _,ok:=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=? AND lease_id=? AND child_json=?",chain,task,field(c,"lease_id"),encode(child));!ok do return "storage_error",false
     if _,ok:=query(s.db,"UPDATE local_leases SET retired_seq=? WHERE lease_id=? AND retired_seq IS NULL",fmt.tprintf("%d",seq),field(c,"lease_id"));!ok do return "storage_error",false
     if method=="lease.block" {
-        if !control_mode(s,chain,task,"blocked","ready",field(p,"summary"),field(p,"waiting_on")) do return "storage_error",false
+        if control_held(s,chain,task) {
+            if _,ok:=query(s.db,"UPDATE local_controls SET resume_state='blocked',waiting_on=? WHERE chain_id=? AND task_id=?",field(p,"waiting_on"),chain,task);!ok do return "storage_error",false
+        } else if !control_mode(s,chain,task,"blocked","ready",field(p,"summary"),field(p,"waiting_on")) do return "storage_error",false
     }
     if _,ok:=query(s.db,"UPDATE tasks SET revision=revision+1 WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error",false
     if method!="lease.switch" {
@@ -176,21 +209,8 @@ work_attempt_record :: proc(s:^Store,chain,task,lease:string) -> (string,bool) {
     return rows[0][0],true
 }
 
-// A hold retires execution/review authority but retains one narrowly scoped
-// exact-child checkpoint. It can save handoff prose, never submit or vote.
-control_hold_checkpoints :: proc(s:^Store,chain,task:string) -> bool {
-    if _,ok:=query(s.db,"DELETE FROM local_checkpoints WHERE chain_id=? AND task_id=?",chain,task);!ok do return false
-    config,_,configured:=lifecycle_config(s,chain,task)
-    if !configured do return true
-    rows,ok:=query(s.db,"SELECT lease_id,instance_id,launch_epoch,token_generation,run_count,capability_json,expires_ms FROM local_leases WHERE chain_id=? AND task_id=? AND retired_seq IS NULL",chain,task)
-    if !ok do return false
-    for row in rows {
-        child:=Child{row[1],row[2],row[3],number(row[4]),field(config,"author_agent_id")}
-        if _,ok=query(s.db,"INSERT INTO local_checkpoints VALUES(?,?,?,?,?,?)",chain,task,row[0],encode(child),row[5],row[6]);!ok do return false
-    }
-    _,ok=query(s.db,"INSERT INTO local_checkpoints SELECT r.chain_id,r.task_id,a.lease_id,r.child,r.capability_json,r.expires_ms FROM local_review_sessions r JOIN local_submissions a ON a.chain_id=r.chain_id AND a.task_id=r.task_id AND a.attempt=r.attempt WHERE r.chain_id=? AND r.task_id=?",chain,task)
-    return ok
-}
+// Compatibility only: pre-fix runtimes retired holds and saved one narrowly
+// scoped checkpoint. Never resurrect those leases or mint new such bindings.
 control_checkpoint_authorized :: proc(s:^Store,c:json.Object,child:Child,cap:string,now:i64) -> bool {
     method:=field(c,"method")
     if method!="lease.handoff" && method!="review.checkpoint" do return false

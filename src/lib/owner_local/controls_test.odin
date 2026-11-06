@@ -19,8 +19,7 @@ controls_hold_release_cancel_reopen_replay_and_revocation :: proc(t:^testing.T) 
     raw:=command(f,"task.hold","hold","task",payload,"4")
     testing.expect_value(t,invoke(f,raw,payload).code,"ok")
     rows,_:=query(f.store.db,"SELECT (SELECT count(*) FROM local_leases WHERE retired_seq IS NULL),(SELECT mode FROM local_controls),(SELECT count(*) FROM runtime_intents WHERE kind='checkpoint')")
-    testing.expect(t,rows[0][0]=="0" && rows[0][1]=="held" && rows[0][2]=="1")
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.submit","late",`{"requirements_revision":"1","head":"","summary":"late"}`,cap,"5").code,"operation_conflict")
+    testing.expect(t,rows[0][0]=="1" && rows[0][1]=="held" && rows[0][2]=="1")
     testing.expect_value(t,control_call(f,"task.release","stale","4").code,"stale_revision")
     testing.expect_value(t,control_call(f,"task.release","release","5").code,"ok")
     testing.expect_value(t,control_call(f,"task.cancel","cancel","6").code,"ok")
@@ -193,17 +192,16 @@ controls_merge_retry_preserves_exact_fence_and_reopen_invalidates_old_results ::
 }
 
 @(test)
-controls_hold_allows_only_one_exact_work_checkpoint_and_cancel_stops_held_child :: proc(t:^testing.T) {
+controls_hold_retains_live_authority_until_one_exact_checkpoint_or_cancel :: proc(t:^testing.T) {
     saved:=context.allocator;context.allocator=context.temp_allocator;defer {context.allocator=saved}
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f);cap:=lifecycle_ready(t,f)
     testing.expect_value(t,control_call(f,"task.hold","hold","4").code,"ok")
     payload:=`{"requirements_revision":"1","summary":"Saved held checkpoint","next_steps":"Resume after release"}`
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.block","not_block",`{"requirements_revision":"1","summary":"blocked","next_steps":"","waiting_on":"human"}`,cap,"5").code,"operation_conflict")
     first:=lifecycle_call(f,lease_child(),"lease.handoff","checkpoint",payload,cap,"5")
     testing.expect_value(t,first.code,"ok")
     rows,_:=query(f.store.db,"SELECT (SELECT mode FROM local_controls),(SELECT count(*) FROM local_checkpoints),(SELECT count(*) FROM local_leases WHERE retired_seq IS NULL),(SELECT count(*) FROM local_handoffs WHERE kind='lease.handoff')")
     testing.expect(t,rows[0][0]=="held" && rows[0][1]=="0" && rows[0][2]=="0" && rows[0][3]=="1")
-    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.handoff","second_checkpoint",payload,cap,"6").code,"operation_conflict")
+    testing.expect_value(t,lifecycle_call(f,lease_child(),"lease.handoff","second_checkpoint",payload,cap,"6").code,"invalid_scope")
     replay:=lifecycle_call(f,lease_child(),"lease.handoff","checkpoint",payload,cap,"5",{},4000000)
     testing.expect(t,replay.code=="ok" && replay.replay && replay.body==first.body)
     g:=fixture(t);defer destroy(g);lifecycle_seed(t,g);_=lifecycle_ready(t,g)

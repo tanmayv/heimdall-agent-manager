@@ -71,7 +71,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
 // separately and never satisfies the required independent agent pair.
 lifecycle_review :: proc(s:^Store,c,p:json.Object,agent:string,human:bool) -> string {
     chain,task:=field(c,"chain_id"),field(c,"task_id")
-    if !control_ready(s,chain,task) do return "operation_conflict"
+    if !control_active(s,chain,task) do return "operation_conflict"
     config,_,configured:=lifecycle_config(s,chain,task)
     req,has_req:=lifecycle_requirements(s,chain,task)
     state,ok:=query(s.db,"SELECT state,attempt FROM lifecycle_state WHERE chain_id=? AND task_id=?",chain,task)

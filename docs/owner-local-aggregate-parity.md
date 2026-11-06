@@ -378,7 +378,7 @@ These are also part of the original full aggregate. Internal local task DAGs and
 | Full brief + requirement revisions | `src/hub/service/taskv2/brief_schema.odin:16` | requirements.edit retains raw brief+cipher (`src/lib/owner_local/lifecycle.odin:49`); Nested inputs/budget/gate shape validation and native hard_deadline now apply locally. OPEN: input-reference resolution, native max_attempts accounting and ordinary matching policy consistency. |
 | Claim, heartbeat, present, acknowledge | `src/hub/domain/taskv2.odin:64` | Exact-child signed lease commands (`src/lib/owner_local/leases.odin:71`), snapshot presentation/ACK (`src/lib/owner_local/lifecycle_agent.odin:94`). OPEN: native attempt budgets/structural outcomes, placement/provider/model evidence. Automatic matching stays M3. |
 | Submit, handoff, block, switch | `src/hub/service/taskv2/verbs_m2.odin:63`, `:136`, `:269`, `:226` | local lifecycle commands and structured output validation retained. OPEN: full handoff/decisions/dead_ends/VCS/artifact/runtime facets and reference resolution through C3. |
-| Review, checkpoint, hold, release, cancel, reopen, answer | `src/hub/service/taskv2/verbs_m2.odin:328`, `:625`, `:674`, `:553`, `:584` | Independent named review, role gates and local controls retained (`src/lib/owner_local/review_roles.odin:75`; `controls.odin:55`). OPEN: native findings payload/time and exact ordinary command adapters. No user gate is added to this ticket. |
+| Review, checkpoint, hold, release, cancel, reopen, answer | `src/hub/service/taskv2/verbs_m2.odin:328`, `:625`, `:674`, `:553`, `:584` | Independent named review, role gates and local controls retained (`src/lib/owner_local/review_roles.odin:64`; `controls.odin:67`). OPEN: native findings payload/time and exact ordinary command adapters. No user gate is added to this ticket. |
 | Members, directories, fleet policy | `src/hub/domain/taskchain.odin:239`, `:256`, `:299` | OPEN: full metadata records and commands. Existing exact-child fleet assignment/configure is not capacity/provider/model/membership policy parity. |
 | Curated summary / fetch | `src/hub/domain/taskv2.odin:109`; `src/hub/service/taskv2/facets.odin:279` | V10 context.read/compaction retained. OPEN: curated-vs-projection metadata and native event/facet/directory references. |
 | Task event history | `src/hub/domain/taskv2.odin:9` | V13 immutable local_events; history.read inventory and history.fetch byte chunks (`src/lib/owner_local/events.odin:13`). Exact raw command/payload plus decrypted device content and result; actual child/Bridge identity/time. Old tags explicitly incomplete. Native imported IDs/timestamps/payloads remain import work. |
@@ -528,11 +528,86 @@ marks the projection incomplete (`src/lib/owner_local/attempts.odin:122`).
 Native per-attempt facets and submission-to-native-attempt mapping still need
 implementation; `max_attempts` enforcement is not enabled by this checkpoint.
 
-Source comparison uncovered an additional controls parity question. Native
-hold never revokes a lease (`src/hub/service/taskv2/verbs_m2.odin:622`); current
-local hold immediately retires execution and retains a checkpoint-only
-capability (`src/lib/owner_local/controls.odin:62`,
-`src/lib/owner_local/controls.odin:180`). The projection marks this path
-incomplete (`src/lib/owner_local/attempts.odin:65`). A task comment asks the
-coordinator whether C1 or the controls/route successor should own the behavior
-correction. There is no approved omission or inferred structural release.
+The controls question above was resolved by requirements revision 2 (REQ-P4):
+C1 owns the correction. The new hold checkpoint below supersedes the old local
+revocation behavior; old retained evidence is not rewritten.
+
+## Native hold checkpoint (revision 2)
+
+Native hold preserves live leases and asks for a checkpoint
+(`src/hub/service/taskv2/verbs_m2.odin:622`). The owner now preserves live
+work/review capabilities and deadlines while sending an exact-child notice
+(`src/lib/owner_local/controls.odin:79`). New work/review admission remains
+blocked; current holders may heartbeat, present/ACK requirements, submit, vote,
+or checkpoint (`src/lib/owner_local/leases.odin:103`,
+`src/lib/owner_local/lifecycle_agent.odin:66`). Work handoff continues its native
+attempt; ordinary expiry still closes it. Hold alone spends nothing.
+
+The hold is an overlay over the current lifecycle state. Release never restores
+a stale pre-submit state, and a block saved while held remains blocked
+(`src/lib/owner_local/controls.odin:85`). Verdicts are recorded while held;
+the gate waits (`src/lib/owner_local/review_roles.odin:64`). Release evaluates
+the retained gate and, if needed, creates a merge intent pinned to the original
+submission (`src/lib/owner_local/store.odin:327`). Existing exact-child, current
+read authorization, expiry, independent-review and replay boundaries remain.
+
+New holds create no checkpoint-only capability. Old retired checkpoint bindings
+remain narrowly usable for one unexpired checkpoint, never heartbeat/submit
+(`src/lib/owner_local/controls.odin:212`). New immutable hold-event content
+records `hold_semantics: live_lease_v1` (`src/contracts/owner_local.odin:15`,
+`src/lib/owner_local/store.odin:317`); pre-fix held-work history stays explicitly
+incomplete (`src/lib/owner_local/attempts.odin:66`). No migration or historical
+rewrite is needed. V13 and every earlier migration remain unchanged.
+
+The production Bridge notice consumer now permits a hold checkpoint directed
+at its existing live holder/session, while skipping transferred/replaced children
+and obsolete released holds (`src/bridge/owner_local_controls.odin:54`,
+`src/bridge/owner_local_controls.odin:86`). The real synthetic provider records
+incoming PTY notices so the disposable demo proves actual delivery as well as
+a successful local storage command.
+
+Signed regressions in `src/lib/owner_local/hold_test.odin` cover restart,
+heartbeat renewal with pinned hard deadline, no new dispatch, one checkpoint,
+native continuation, expiry, legacy compatibility, nested block preservation,
+held submission, deferred approval/request-changes, exact merge binding and
+release rollback/replay. Native-fold prefix comparison includes hold/checkpoint/
+release (`src/hub/service/taskv2/owner_attempt_projection_test.odin:13`).
+Full aggregate parity is still incomplete: native attempt records/facets/import,
+budget enforcement, metadata/publication/config, strict ordinary adapters and
+the rich full-legacy fixture remain required. This checkpoint does not authorize
+migration cutover or C1 submission.
+
+Checkpoint checks (all from the task Workdir):
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-r2-store-final
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_NAMES=owner_local.hold_requirements_rework_clears_deferred_rejection_without_counting_new_budget -out:$HOME/.cache/heimdall-tests/c1-r2-rework
+nix develop --command odin test src/contracts -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-r2-contracts
+nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -define:ODIN_TEST_NAMES=taskv2.test_owner_attempt_projection_matches_native_fold_prefixes -out:$HOME/.cache/heimdall-tests/c1-r2-native-hold
+nix develop --command odin test src/bridge -collection:odin_test=src -define:ODIN_TEST_NAMES=main.test_owner_local_control_notice_rejects_new_child_and_retries_unverified_child,main.test_owner_local_hold_notice_targets_current_live_holder_without_stopping_transferred_child -out:$HOME/.cache/heimdall-tests/c1-r2-bridge-hold2
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_controls_test.ts tests/ui_owner_grants_test.ts tests/ui_owner_registry_listing_test.ts tests/ui_owner_submission_history_test.ts tests/ui_owner_local_contract_test.ts
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1-r2-bins
+nix develop --command odin build tools/owner_local_test_identity -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/c1-r2-identity
+nix develop --command env \
+  HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1-r2-bins-1/bin/ham-hub \
+  HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1-r2-bins/bin/ham-bridge \
+  HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1-r2-bins-2/bin/ham-ctl \
+  HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1-r2-bins-3/bin/ham-pty-host \
+  HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1-r2-identity \
+  HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 \
+  HEIMDALL_E2E_OWNER_LIFECYCLE=1 HEIMDALL_E2E_OWNER_CONTROLS=1 \
+  HEIMDALL_E2E_OWNER_WORKFLOWS=1 HEIMDALL_E2E_OWNER_LANGUAGE=1 \
+  HEIMDALL_E2E_OWNER_GRANTS=1 HEIMDALL_E2E_OWNER_REGISTRY=1 \
+  node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+python3 scripts/check-owner-aggregate-parity.py
+git diff --check
+```
+
+Store: 112/112 plus the final added requirements-rework regression 1/1;
+contracts: 18/18; native differential: 1/1; Bridge notice tests: 2/2;
+retained UI tests: 16/16. No allocator warnings. Typecheck, identity build,
+all four binary builds, matrix check (240 fields / 23 structs) and diff check
+pass. The exact full-demo result is recorded in the task handoff.
+No new full taskv2 suite is claimed: the focused native-fold test covers the
+modified native comparison; unchanged native service code was not edited.

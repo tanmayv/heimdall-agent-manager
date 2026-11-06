@@ -50,10 +50,15 @@ bridge_owner_control_notice :: proc(s:^owner.Store,claim:owner.Intent_Claim) -> 
     if !read do return false,"storage_error",now
     payload,valid:=contracts.owner_request_document(claim.payload);p,obj:=payload.(json.Object)
     if !valid || !obj do return false,"malformed_notice",now
-    if len(active)>0 && (claim.kind=="stop" || contracts.owner_string(p,"method")!="requirements.edit" || active[0][0]!=contracts.owner_string(p,"task_id")) do return true,"child_has_new_lease",now
-    reviews,reviews_ok:=owner.query(s.db,"SELECT 1 FROM local_review_sessions WHERE json_extract(child,'$.instance')=? AND json_extract(child,'$.epoch')=? AND json_extract(child,'$.run_count')=CAST(? AS INTEGER) AND json_extract(child,'$.token_generation')=? LIMIT 1",expected.instance,expected.epoch,fmt.tprintf("%d",expected.run_count),expected.token_generation)
+    method,task:=contracts.owner_string(p,"method"),contracts.owner_string(p,"task_id")
+    if method=="task.hold" {
+        held,read:=owner.query(s.db,"SELECT 1 FROM local_controls WHERE task_id=? AND mode='held'",task)
+        if !read do return false,"storage_error",now
+        if len(held)==0 do return true,"obsolete_checkpoint",now
+    }
+    reviews,reviews_ok:=owner.query(s.db,"SELECT task_id FROM local_review_sessions WHERE json_extract(child,'$.instance')=? AND json_extract(child,'$.epoch')=? AND json_extract(child,'$.run_count')=CAST(? AS INTEGER) AND json_extract(child,'$.token_generation')=?",expected.instance,expected.epoch,fmt.tprintf("%d",expected.run_count),expected.token_generation)
     if !reviews_ok do return false,"storage_error",now
-    if len(reviews)>0 do return true,"child_has_review_session",now
+    if reason:=bridge_owner_control_notice_scope(claim.kind,method,task,active[:],reviews[:]);reason!="" do return true,reason,now
     if claim.kind=="checkpoint" {
         // Notification asks the child to inspect authoritative local state; it
         // conveys no approval, lease or capability.
@@ -74,4 +79,16 @@ bridge_owner_control_stopped :: proc(instance:string) {
     _=bridge_agent_token_invalidate_instance(instance)
     bridge_runtime_remove_launch(instance)
     bridge_runtime_set_status(instance,"stopped","idle")
+}
+
+// Hold notifications address the existing live holder. Other stale stop or
+// checkpoint intents must never interrupt a child transferred to another task.
+bridge_owner_control_notice_scope :: proc(kind,method,task:string,work,reviews:[][]string) -> string {
+    for row in work {
+        if kind!="checkpoint" || (method!="requirements.edit" && method!="task.hold") || row[0]!=task do return "child_has_new_lease"
+    }
+    for row in reviews {
+        if kind!="checkpoint" || method!="task.hold" || row[0]!=task do return "child_has_review_session"
+    }
+    return ""
 }
