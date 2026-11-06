@@ -49,6 +49,7 @@ workflow_expand :: proc(s:^Store,chain,run,execution:string,stages:[]json.Object
         if _,ok:=query(s.db,"INSERT INTO tasks VALUES(?,?,?,?,1)",chain,task,field(stage,"title"),field(stage,"body"));!ok do return false
         if _,ok:=query(s.db,"INSERT INTO local_workflow_tasks VALUES(?,?,?,?,?)",chain,run,execution,field(stage,"key"),task);!ok do return false
         if _,ok:=query(s.db,"INSERT INTO task_requirements VALUES(?,?,1,?,?,?,?)",chain,task,field(stage,"brief"),"",field(c,"principal_id"),field(c,"operation_id"));!ok do return false
+        if brief_inputs_pin(s,chain,task,"1",field(stage,"brief"))!="ok" do return false
         if _,ok:=query(s.db,"INSERT INTO lifecycle_state VALUES(?,?,'ready',0,'')",chain,task);!ok do return false
         v,_:=contracts.owner_request_document(field(stage,"depends_on"));deps,_:=v.(json.Array)
         for dep in deps {

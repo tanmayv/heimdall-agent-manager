@@ -119,7 +119,7 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             AND kind IN('lease.claim','lease.handoff','lease.switch','lease.block',
               'lease.expired','lease.submit','task.reopen','fleet.edit','lifecycle.configure',
               'review.roles','task.hold','task.release','task.cancel','requirements.edit','review.post','review.role.post','dependency.edit'))
-            OR kind='lease.switch' OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
+            OR kind='lease.switch' OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR (chain_id=?1 AND EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2)))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
             NULLIF(json_extract(evidence,'$.content'),'') AS content FROM candidates)
@@ -132,8 +132,10 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
             COALESCE(json_extract(content,'$.reason'),''),
             COALESCE((SELECT lease_id FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
             COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
-            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),'')
-          FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR
+            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),''),
+            COALESCE((SELECT lease_id FROM local_metadata_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
+            COALESCE((SELECT cause FROM local_metadata_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),'')
+          FROM decoded WHERE (chain_id=?1 AND task_id=?2) OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
           ORDER BY seq LIMIT 128`,chain,task,after)
@@ -176,6 +178,15 @@ attempt_scan :: proc(s:^Store,chain,task:string,selected:i64=0,target_lease:stri
                         // Older evidence retained no reason. Do not fabricate
                         // the reason from a deadline observed much later.
                         record_incomplete=true
+                    }
+                }
+            }
+            if row[16]!="" {
+                if v.live && row[15]!=v.work_lease_id { v.incomplete=true } else {
+                    was_live:=v.live
+                    attempt_event(&v,"fleet.edit",c,p,false)
+                    if was_live && record.attempt_no==fmt.tprintf("%d",v.attempt_no) {
+                        record.ended_ms=row[9];record.outcome="expired:replaced"
                     }
                 }
             }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ownerParse, ownerCanonical, ownerDigest, ownerAuthenticateCommand, ownerLiveAdmit, ownerVerifyGenesis, ownerVerifyRegistry, ownerCreateBinding } from '../src/ui/api/ownerLocal.ts';
+import { ownerPinnedRef, ownerParse, ownerCanonical, ownerDigest, ownerAuthenticateCommand, ownerLiveAdmit, ownerVerifyGenesis, ownerVerifyRegistry, ownerCreateBinding } from '../src/ui/api/ownerLocal.ts';
 import type { OwnerKind, OwnerCommand, OwnerGenesis, OwnerRegistry, OwnerVerifiedKey, OwnerReadGrant } from '../src/ui/api/ownerLocal.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('../src/contracts/fixtures/owner-local-v1.json', import.meta.url), 'utf8'));
@@ -251,4 +251,23 @@ test('defaults is a chain-scoped mutation distinct from review-role installation
   assert.equal(ownerLiveAdmit(c,{...g,can_mutate:false},1000n,1n),'invalid_scope');
   assert.equal(ownerLiveAdmit(c,g,1000n,2n),'stale_revision');
   assert.equal(ownerLiveAdmit(c,g,1000n,1n),'none');
+});
+
+test('operational members and directories are strict chain mutations', () => {
+  for (const method of ['chain.member.set','chain.directory.set']) {
+    ownerParse(JSON.stringify({...doc('command'),method,task_id:''}),'command');
+    assert.throws(()=>ownerParse(JSON.stringify({...doc('command'),method,task_id:'task'}),'command'));
+  }
+  const member={instance_id:'instance',agent_id:'agent',role:'worker',enabled:'1'};
+  ownerParse(JSON.stringify(member),'member_payload');
+  ownerParse(JSON.stringify({...member,role:'security'}),'member_payload');
+  for(const patch of [{role:'security role'},{enabled:true},{capability:'grant'}]) assert.throws(()=>ownerParse(JSON.stringify({...member,...patch}),'member_payload'));
+  const registry=doc('registry');
+  ownerParse(JSON.stringify({directory_id:'directory',enabled:'1',body_cipher:registry.chain_title_cipher || registry.task_title_cipher}),'directory_payload');
+  assert.throws(()=>ownerParse('{"directory_id":"directory","enabled":"1","body_cipher":""}','directory_payload'));
+});
+
+test('brief reference vocabulary mirrors immutable owner admission',()=>{
+  for(const raw of ['#7','output:task:1:2','facet:task:1:handoff','facet:task:1:output:2','output:task:durable:1:2','facet:task:durable:1:output:2','facet:task:0:placement:1']) assert.ok(ownerPinnedRef(raw));
+  for(const raw of ['output:task','output:task:1','output:task:01:1','#0','facet:task:1:unknown','facet:task:1:output:0','artifact:mutable',' file@main']) assert.equal(ownerPinnedRef(raw),null);
 });

@@ -233,6 +233,10 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
     next:=revision+1
     wrote:=false
     switch method {
+    case "chain.member.set", "chain.directory.set":
+        code:=member_set(s,c,p,fleet_child,seq) if method=="chain.member.set" else directory_set(s,c,p,body,seq)
+        if code!="ok" do return fail(code)
+        wrote=true
     case "chain.defaults.set":
         value,valid:=contracts.owner_content_document(body)
         _,object:=value.(json.Object)
@@ -317,7 +321,7 @@ execute :: proc(s:^Store, command_raw,payload,genesis_raw:string, key,owner_key:
             if !found || len(prior)!=1 || prior[0][0]!=field(p,"instance_id") do return fail("invalid_scope")
             assigned_child=Child{prior[0][0],prior[0][1],prior[0][2],number(prior[0][3]),""}
         }
-        if assigned_child.instance!=field(p,"instance_id") || assigned_child.epoch=="" || assigned_child.run_count<=0 || !contracts.owner_field_valid(assigned_child.token_generation,"hash") do return fail("invalid_scope")
+        if (field(p,"enabled")=="1" && !member_authorized(s,chain,assigned_child)) || assigned_child.instance!=field(p,"instance_id") || assigned_child.epoch=="" || assigned_child.run_count<=0 || !contracts.owner_field_valid(assigned_child.token_generation,"hash") do return fail("invalid_scope")
         previous,looked:=query(s.db,"SELECT configuration_revision FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
         if !looked do return fail("storage_error")
         if len(previous)>0 && number(previous[0][0])>=number(field(p,"configuration_revision")) do return fail("stale_revision")

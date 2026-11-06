@@ -18,6 +18,9 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
     evidence_doc:=doc(map[string]string{"command"=raw,"payload"=payload,"content"=content,"result"=result})
     dependencies,dep_ok:=query(tx.store.db,"SELECT lease_id FROM local_dependency_retirements WHERE seq=? ORDER BY lease_id",fmt.tprintf("%d",seq))
     if !dep_ok do return false
+    metadata,metadata_ok:=query(tx.store.db,"SELECT chain_id,task_id,lease_id,cause FROM local_metadata_retirements WHERE seq=? ORDER BY chain_id,task_id",fmt.tprintf("%d",seq))
+    if !metadata_ok do return false
+    if len(metadata)>0 do evidence_doc["metadata_retirements"]=json.String(encode(metadata))
     if len(dependencies)>0 do evidence_doc["dependency_retirements"]=json.String(encode(dependencies))
     if retirements!="[]" do evidence_doc["task_retirements"]=json.String(retirements)
     if deferred!="[]" do evidence_doc["deferred_retirements"]=json.String(deferred)
@@ -27,7 +30,7 @@ event_record :: proc(tx:^Transaction,seq,now:i64,chain,task,actor_kind,actor_id,
     if !ok do return false
     // The current event and any task-scoped workflow retirements share one
     // immutable budget disposition. The same transaction owns all these rows.
-    affected,affected_ok:=query(tx.store.db,`SELECT ?1 WHERE ?1!='' UNION SELECT task_id FROM local_task_retirements WHERE seq=?2 AND chain_id=?3`,task,fmt.tprintf("%d",seq),chain)
+    affected,affected_ok:=query(tx.store.db,`SELECT ?1 WHERE ?1!='' UNION SELECT task_id FROM local_task_retirements WHERE seq=?2 AND chain_id=?3 UNION SELECT task_id FROM local_metadata_retirements WHERE seq=?2 AND chain_id=?3`,task,fmt.tprintf("%d",seq),chain)
     if !affected_ok do return false
     for row in affected { if !budget_record(tx.store,chain,row[0],seq) do return false }
     if kind=="lease.switch" {

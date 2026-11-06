@@ -310,3 +310,32 @@ native_placement_facet_zero_is_not_a_work_attempt :: proc(t:^testing.T) {
     facet["attempt_no"]=json.String("-1");testing.expect(t,!owner_document_valid("native_history_facet",facet))
     testing.expect(t,!owner_field_valid("0","positive"))
 }
+
+@(test)
+operational_metadata_contracts_are_chain_scoped_strict_mutations :: proc(t:^testing.T) {
+    f:=owner_fixture(t)
+    for method in ([2]string{"chain.member.set","chain.directory.set"}) {
+        c:=owner_fixture_document(t,f,"command")
+        c["method"]=json.String(method);c["task_id"]=json.String("")
+        testing.expect(t,owner_document_valid("command",c))
+        c["task_id"]=json.String("task")
+        testing.expect(t,!owner_document_valid("command",c))
+    }
+    _,valid:=owner_parse("{\"instance_id\":\"instance\",\"agent_id\":\"agent\",\"role\":\"worker\",\"enabled\":\"1\"}","member_payload")
+    testing.expect(t,valid)
+    for raw in ([3]string{
+        "{\"instance_id\":\"instance\",\"agent_id\":\"agent\",\"role\":\"security role\",\"enabled\":\"1\"}",
+        "{\"instance_id\":\"instance\",\"agent_id\":\"agent\",\"role\":\"worker\",\"enabled\":true}",
+        "{\"instance_id\":\"instance\",\"agent_id\":\"agent\",\"role\":\"worker\",\"enabled\":\"1\",\"capability\":\"grant\"}",
+    }) { _,ok:=owner_parse(raw,"member_payload");testing.expect(t,!ok) }
+}
+
+@(test)
+brief_pinned_reference_vocabulary_rejects_mutable_latest_and_unknown_types :: proc(t:^testing.T) {
+    for raw in ([7]string{"#7","output:task:1:2","facet:task:1:handoff","facet:task:1:output:2","output:task:durable:1:2","facet:task:durable:1:output:2","facet:task:0:placement:1"}) {
+        _,ok:=owner_pinned_ref(raw);testing.expect(t,ok)
+    }
+    for raw in ([8]string{"output:task","output:task:1","output:task:01:1","#0","facet:task:1:unknown","facet:task:1:output:0","artifact:mutable"," file@main"}) {
+        _,ok:=owner_pinned_ref(raw);testing.expect(t,!ok)
+    }
+}

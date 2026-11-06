@@ -1902,3 +1902,125 @@ defines the next implementation:
 
 These member/directory rules are approved but not yet implemented here.
 FTS/artifact indexing remains deferred under the earlier coordinator decision.
+
+
+## C1d-2 completion: operational members, directories, and immutable input pins (V22)
+
+Coordinator decisions: `msg_18e58cc85d025237` separates operational membership
+from coordinator capability enrollment; `cmt_18e58d747d1b50f1` keeps string
+brief references with immutable pins; `cmt_18e58df40f408030` assigns provider
+catalog launchability and placement validation to M3. C1d-2 preserves strict
+policy shape, pinned source linkage, and exact-child lifecycle enrollment.
+
+Implementation and evidence:
+
+- Signed `chain.member.set` and `chain.directory.set` run under the existing
+  chain CAS, receipt, accepted-event, and transaction boundary
+  (`src/lib/owner_local/store.odin:236`). V22 adds immutable operational
+  histories and revocation evidence without rewriting V1–V21
+  (`src/lib/owner_local/migration_022.sql:1`,
+  `src/lib/owner_local/migrations.odin:3`).
+- Membership retains arbitrary native role identifiers. A role does not enroll
+  a coordinator capability. Exact local child proof, lifetime single-chain
+  binding, sole coordinator protection, and current launch authorization are
+  enforced in `src/lib/owner_local/operational_metadata.odin:10` and
+  `src/lib/owner_local/operational_metadata.odin:34`.
+- Removal/rebinding retires affected leases, disables fleet assignments with
+  an advanced configuration revision, revokes current lifecycle/coordinator
+  authority, and preserves exact-child checkpoint notices and merge evidence
+  (`src/lib/owner_local/operational_metadata.odin:20`). Rejoin alone cannot
+  revive a prior capability. Explicit fresh fleet/lifecycle enrollment is
+  required; revoked lifecycle bindings cannot fall back to generic claims
+  (`src/lib/owner_local/lifecycle.odin:149`).
+- Directory configuration preserves exact native-shaped JSON, including Unicode
+  paths and VCS JSON. Updates/removal invalidate current bindings for that
+  directory ID; unrelated active bindings survive. Current resolution reads
+  the latest operational version, and a fresh Git lifecycle activation must
+  match its enabled path (`src/lib/owner_local/operational_metadata.odin:67`,
+  `src/lib/owner_local/operational_metadata.odin:90`).
+- `chain.metadata.read` pages summary/defaults/member/directory history with
+  revision-bound cursors and explicit `entity_id`, `enabled`, and `current`
+  fields (`src/lib/owner_local/chain_metadata.odin:10`). Imported source
+  snapshots remain provenance and never silently enroll operational authority.
+- Brief input strings support `#<event_id>`, `output:<task>:<attempt>:<version>`,
+  and `facet:<task>:<attempt>:<kind>[:<version>]`. Task IDs can contain colons;
+  placement facets retain native attempt zero. A versionless facet spelling
+  requires one immutable version at admission, then persists that exact pin.
+  Mutable latest-output and unknown references fail closed
+  (`src/contracts/owner_brief_refs.odin:9`).
+- Immutable local rows are resolved only within the authorized Store account
+  and chain. Accepted requirements persist bounded exact input bodies and
+  digests; later source imports cannot change those pins. Both workflow
+  expansion paths use the same pin boundary
+  (`src/lib/owner_local/brief_refs.odin:9`,
+  `src/lib/owner_local/brief_refs.odin:48`).
+  `requirements.present` returns them as `resolved_inputs`
+  (`src/lib/owner_local/lifecycle_agent.odin:103`). Old unpinned mutable
+  requirements require an explicit edit; no mutable Hub lookup is used.
+  Artifact/message references within source facets remain unresolved/import_pending
+  provenance; C3 still owns their body import/indexing.
+
+Metadata revocation also appends task/lease retirement evidence to the parent
+accepted event (`src/lib/owner_local/events.odin:21`). Attempt and budget
+scans consume that evidence as an explicit local replacement expiry, preserving
+full history and native counting semantics
+(`src/lib/owner_local/attempts.odin:184`,
+`src/lib/owner_local/budget_runtime.odin:129`).
+
+Final checks, all exit 0:
+
+```bash
+nix develop --command odin test src/contracts -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d-v22-final-contracts
+nix develop --command npm run typecheck
+nix develop --command node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_owner_local_contract_test.ts
+```
+
+Session `sh_01e547ab255dcacfcc05f7a0b831d41f`: 29 contracts, typecheck,
+18 TypeScript contract tests pass, including colon-containing task IDs,
+placement attempt zero, arbitrary native member roles, strict mutation scope,
+and pinned reference grammar.
+
+```bash
+nix develop --command odin test src/lib/owner_local -collection:odin_test=src -define:ODIN_TEST_FANCY=false -out:$HOME/.cache/heimdall-tests/c1d-v22-history-final-store190
+nix build .#ham-bridge .#ham-hub .#ham-ctl .#ham-pty-host -o $HOME/.cache/heimdall-tests/c1d-v22-history-final-bins
+```
+
+Full 190 storage tests pass (`sh_a983cf5411182f173475db4843ac71d0`).
+Four binary builds pass (`sh_ec5ba88e4bc84bc593bab77119ac55b3`).
+This includes signed CAS/replay/current authority, source-version pinning,
+restart, statement and deferred-COMMIT rollback, genuine historical migrations,
+coordinator revocation, unrelated-directory preservation, and complete
+metadata-caused attempt/budget projections.
+
+```bash
+nix develop --command env HEIMDALL_E2E_HUB_BIN=$HOME/.cache/heimdall-tests/c1d-v22-history-final-bins-1/bin/ham-hub HEIMDALL_E2E_BRIDGE_BIN=$HOME/.cache/heimdall-tests/c1d-v22-history-final-bins/bin/ham-bridge HEIMDALL_E2E_CTL_BIN=$HOME/.cache/heimdall-tests/c1d-v22-history-final-bins-2/bin/ham-ctl HEIMDALL_E2E_PTY_BIN=$HOME/.cache/heimdall-tests/c1d-v22-history-final-bins-3/bin/ham-pty-host HEIMDALL_E2E_IDENTITY_BIN=$HOME/.cache/heimdall-tests/c1c-budget-identity HEIMDALL_E2E_OWNER_LOCAL=1 HEIMDALL_E2E_OWNER_LEASE=1 HEIMDALL_E2E_OWNER_METADATA_ONLY=1 node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/bridge_real_enroll_e2e.mjs
+```
+
+Session `sh_dae8cecc222ce025a1e76ceaa00e297a`: all steps PASSED.
+Actual enrolled disposable Hub/Bridge/CLI and live PTY children demonstrate
+strict member identity, sole coordinator protection, exact receipts, typed
+source output pins, member removal/rejoin, explicit fresh enrollment, directory
+path revocation, complete attempt expiry evidence, full retained V18–V21
+composition, and owner restart. No live deployment/restart or push occurred.
+
+Generated mirrors and whitespace pass
+(`sh_210510f5f725ccf9a47ad3c6227f9ac2`):
+
+```bash
+python3 scripts/generate-owner-local-contracts.py
+git diff --exit-code -- src/contracts/owner_schema.odin src/ui/api/ownerSchema.ts
+git diff --check
+git diff --cached --check
+```
+
+Earlier draft failures were corrected: Odin parameter/redeclaration/string
+syntax; updating the schema JSON before regenerating mirrors; advancing the
+fleet revision on disable; task-scoped rather than taskless control notices;
+replaying original signed bytes; replacing fabricated unresolved fixture inputs
+with immutable admitted facts; enabling the real-child harness; matching fresh
+fleet/lifecycle configuration revisions; and extending exact retirement evidence
+to attempt/budget scans. The last audit also restricted directory invalidation
+to the current configuration rather than historical directory bindings.
+Broader unrelated UI/Bridge suites were not repeated: focused contract tests,
+typechecking, full owner-local storage, all builds, and actual enrolled relay
+cover the changed boundaries. Named independent review remains required.

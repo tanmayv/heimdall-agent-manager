@@ -11,6 +11,7 @@ export interface OwnerInput {
   priority?: 'p0' | 'p1' | 'p2'; query?: string; limit?: number; offset?: string; eventSeq?: string; nativeSourceRevision?: string; nativeHistoryKind?: string; nativeHistoryKey?: string;
   title?: string; description?: string; body?: string; cursor?: string; operationId?: string;
   grantPrincipal?: string; grantExpiresMs?: string; grantCanMutate?: boolean; recoveryEnabled?: boolean; policyRevision?: string;
+  directoryId?: string; agentId?: string; memberRole?: string;
   instanceId?: string; configurationRevision?: string; enabled?: boolean;
   lifecycleConfig?: Record<string, string>; requirementsRevision?: string; attempt?: string; head?: string; verdict?: 'approve' | 'request_changes';
 }
@@ -57,6 +58,8 @@ export async function prepareOwnerOperation(session: OwnerSession, bridgeId: str
     payload = { genesis_digest: await ownerDigest('genesis', g), title_cipher: await encryptVaultText(input.title ?? '', keyring), description_cipher: await encryptVaultText(input.description ?? '', keyring) };
   } else if ((method === 'task.create' || method === 'task.edit')) payload = { title_cipher: await encryptVaultText(input.title ?? '', keyring), body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'task.comment' || method === 'chain.summary.set' || method === 'chain.defaults.set') payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
+  else if (method === 'chain.member.set') payload = { instance_id: input.instanceId ?? '', agent_id: input.agentId ?? '', role: input.memberRole ?? 'worker', enabled: input.enabled === false ? '0' : '1' };
+  else if (method === 'chain.directory.set') payload = { directory_id: input.directoryId ?? '', enabled: input.enabled === false ? '0' : '1', body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'fleet.edit') payload = { instance_id: input.instanceId ?? '', configuration_revision: input.configurationRevision ?? '', enabled: input.enabled === false ? '0' : '1' };
   else if (['task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve'].includes(method)) payload = { body_cipher: await encryptVaultText(input.body ?? '', keyring) };
   else if (method === 'merge.retry') payload = { attempt: input.attempt ?? '', requirements_revision: input.requirementsRevision ?? '', head: input.head ?? '', configuration_revision: input.configurationRevision ?? '', body_cipher: await encryptVaultText(input.body ?? '', keyring) };

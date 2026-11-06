@@ -1136,6 +1136,30 @@ owner_fields_native_metadata_read := [?]Owner_Field{
     {"cursor", "native_cursor"},
     {"limit", "positive"},
 }
+Owner_Member_Payload :: struct {
+    instance_id: string,
+    agent_id: string,
+    role: string,
+    enabled: string,
+}
+@(private)
+owner_fields_member_payload := [?]Owner_Field{
+    {"instance_id", "id"},
+    {"agent_id", "id"},
+    {"role", "id"},
+    {"enabled", "flag"},
+}
+Owner_Directory_Payload :: struct {
+    directory_id: string,
+    enabled: string,
+    body_cipher: string,
+}
+@(private)
+owner_fields_directory_payload := [?]Owner_Field{
+    {"directory_id", "id"},
+    {"enabled", "flag"},
+    {"body_cipher", "required_cipher"},
+}
 owner_schema :: proc(kind: string) -> []Owner_Field {
     switch kind {
     case "genesis": return owner_fields_genesis[:]
@@ -1210,6 +1234,8 @@ owner_schema :: proc(kind: string) -> []Owner_Field {
     case "budget_state": return owner_fields_budget_state[:]
     case "fleet_policy_payload": return owner_fields_fleet_policy_payload[:]
     case "native_metadata_read": return owner_fields_native_metadata_read[:]
+    case "member_payload": return owner_fields_member_payload[:]
+    case "directory_payload": return owner_fields_directory_payload[:]
     }
     return nil
 }

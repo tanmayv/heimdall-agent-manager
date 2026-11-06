@@ -83,7 +83,7 @@ execute_lease :: proc(s:^Store,raw,cap_raw:string,child:Child,key:contracts.Owne
     fleet,found:=query(s.db,"SELECT instance_id,configuration_revision,enabled,launch_epoch,run_count,token_generation FROM local_fleet WHERE chain_id=? AND task_id=?",chain,task)
     if !found do return fail("storage_error")
     current:=len(fleet)==1 && fleet[0][0]==instance && fleet[0][2]=="1" && fleet[0][3]==child.epoch && number(fleet[0][4])==child.run_count && fleet[0][5]==child.token_generation
-    if !current do return fail("invalid_scope")
+    if !current || !member_authorized(s,chain,child) || !lifecycle_path_current(s,chain,task) do return fail("invalid_scope")
     digest,_:=contracts.owner_digest("lease_command",c)
     receipts,ok:=query(s.db,"SELECT method,input_digest,result_json,commit_seq,chain_id,task_id FROM command_receipts WHERE principal_id=? AND operation_id=?",instance,op)
     if !ok do return fail("storage_error")

@@ -9,7 +9,7 @@ export async function ownerLocalFlow({ hub, approver, bridgeId, http, expect, st
   if(process.env.HEIMDALL_E2E_OWNER_METADATA_ONLY==='1'){
     await stopOwner();await restartOwner();
     const {ownerLocalMetadataFlow}=await import('./owner_local_metadata_flow.ts');
-    await ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOwner,restartOwner});
+    await ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,launchChild});
     return;
   }
   if(process.env.HEIMDALL_E2E_OWNER_FLEET_POLICY_ONLY==='1'){

@@ -81,7 +81,7 @@ native_origin_v19_migration_rejects_conflicting_legacy_owner_atomically :: proc(
     close(&f.store)
     db:DB
     testing.expect_value(t,sqlite3_open(strings.clone_to_cstring(f.path,context.temp_allocator),&db),0)
-    testing.expect(t,exec(db,"DROP TABLE local_chain_defaults_versions; DROP TABLE local_chain_summary_versions; DROP TRIGGER native_history_origin; DROP TABLE local_fleet_policy_sources; DROP TABLE native_fleet_policies; DROP TABLE native_fleet_snapshots; DROP TABLE local_task_priority_versions"))
+    testing.expect(t,exec(db,"DROP TABLE IF EXISTS local_metadata_retirements; DROP TABLE IF EXISTS local_brief_inputs; DROP TABLE IF EXISTS local_coordinator_revocations; DROP TABLE IF EXISTS local_config_revocations; DROP TABLE IF EXISTS local_chain_directory_versions; DROP TABLE IF EXISTS local_chain_member_versions; DROP TABLE IF EXISTS local_member_chains; DROP TABLE local_chain_defaults_versions; DROP TABLE local_chain_summary_versions; DROP TRIGGER native_history_origin; DROP TABLE local_fleet_policy_sources; DROP TABLE native_fleet_policies; DROP TABLE native_fleet_snapshots; DROP TABLE local_task_priority_versions"))
     prefix:=string(MIGRATION_019);prefix=prefix[:strings.index(prefix,"CREATE TABLE native_fact_snapshots")]
     testing.expect(t,exec(db,prefix))
     // Older code allowed a history owner different from the metadata origin.

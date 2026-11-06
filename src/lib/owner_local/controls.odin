@@ -188,10 +188,10 @@ control_human :: proc(s:^Store,c,p:json.Object,body:string,seq:i64) -> string {
     return "ok"
 }
 control_intents :: proc(tx:^Transaction,c:json.Object,seq:i64) -> bool {
-    rows,ok:=query(tx.store.db,"SELECT child_json,kind FROM control_notices WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(c,"operation_id"))
+    rows,ok:=query(tx.store.db,"SELECT child_json,kind,task_id FROM control_notices WHERE principal_id=? AND operation_id=?",field(c,"principal_id"),field(c,"operation_id"))
     if !ok do return false
     for row in rows {
-        if !intent_enqueue(tx,Intent_Input{chain=field(c,"chain_id"),principal=field(c,"principal_id"),operation=field(c,"operation_id"),seq=seq,kind=row[1],destination=payload_hash(row[0]),fence=row[0],payload=encode(doc(map[string]string{"task_id"=field(c,"task_id"),"method"=field(c,"method")}))}) do return false
+        if !intent_enqueue(tx,Intent_Input{chain=field(c,"chain_id"),principal=field(c,"principal_id"),operation=field(c,"operation_id"),seq=seq,kind=row[1],destination=payload_hash(row[0]),fence=row[0],payload=encode(doc(map[string]string{"task_id"=row[2],"method"=field(c,"method")}))}) do return false
     }
     return true
 }

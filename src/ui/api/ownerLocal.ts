@@ -8,7 +8,7 @@ export const OWNER_DOCUMENT_MAX = 256 * 1024;
 export const OWNER_REQUEST_TTL_MS = 300000n;
 const ascii = (s: string) => /^[\x20-\x7e]*$/.test(s);
 const decimal = (s: string) => /^(0|[1-9][0-9]*)$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
-const methods = new Set(['chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','budget.activate','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
+const methods = new Set(['chain.member.set','chain.directory.set','chain.defaults.set','chain.summary.set','chain.metadata.read','task.priority','native.metadata.import','native.metadata.read','fleet.policy.set','fleet.policy.read','budget.activate','native.history.import','native.history.read','native.history.fetch','attempt.read','history.read','history.fetch','context.read','workflow.coordinator','grant.set','grant.revoke','grant.read','grant.policy','grant.recover','workflow.cancel','workflow.gate','workflow.define','workflow.run','workflow.retry','workflow.read','source.observe','source.consume','source.ack','source.retire','source.resolve','source.escalate','source.read','dependency.edit','review.roles','task.hold', 'task.release', 'task.cancel', 'task.reopen', 'task.resolve', 'merge.retry', 'submission.read', 'chain.edit', 'task.edit', 'task.delete', 'chain.search', 'chain.create', 'task.create', 'task.comment', 'chain.read', 'task.read', 'receipt.read', 'fleet.edit', 'runtime.read', 'lifecycle.configure', 'requirements.edit', 'review.post']);
 function fieldValid(s: string, kind: string): boolean {
   if (kind === "document" || kind === "optional_document") return new TextEncoder().encode(s).length <= OWNER_DOCUMENT_MAX && (s !== "" || kind === "optional_document");
   if (!ascii(s)) return false;
@@ -82,6 +82,8 @@ export function ownerDocumentValid<K extends OwnerKind>(kind: K, value: unknown)
 }
 export function ownerPayloadKind(method: string): OwnerKind {
   switch (method) {
+    case 'chain.member.set': return 'member_payload';
+    case 'chain.directory.set': return 'directory_payload';
     case 'workflow.coordinator': return 'coordinator_payload';
     case 'workflow.gate.post': return 'workflow_gate';
     case 'workflow.cancel': case 'workflow.gate': case 'workflow.define': case 'workflow.run': case 'workflow.retry': case 'source.observe': case 'source.consume': case 'source.ack': case 'source.retire': case 'source.resolve': case 'source.escalate': case 'review.roles': return 'control_payload';
@@ -220,4 +222,26 @@ export async function ownerCreateBinding(command: OwnerCommand, genesis: OwnerGe
     const p = ownerParse(payload, 'chain_create_payload');
     return p.genesis_digest === await ownerDigest('genesis', genesis) && command.payload_digest === await ownerPayloadDigest(payload);
   } catch { return false; }
+}
+
+// Immutable brief input vocabulary. Four-part facet refs require the owner to
+// prove uniqueness and persist the chosen version with the accepted brief.
+export function ownerPinnedRef(raw: string) {
+  if(raw.length>512 || raw.trim()!==raw) return null;
+  if(raw.startsWith('#')) return fieldValid(raw.slice(1),'positive') ? {kind:'event',key:raw.slice(1),task:'',attempt:'',version:''} : null;
+
+  const p=raw.split(':');
+  if(p.length<4) return null;
+  if(p[0]==='output') {
+    const task=p.slice(1,-2).join(':'),attempt=p.at(-2)!,version=p.at(-1)!;
+    return fieldValid(task,'id') && fieldValid(attempt,'positive') && fieldValid(version,'positive') ? {kind:'facet',task,attempt,key:'output',version} : null;
+  }
+  if(p[0]!=='facet') return null;
+  let k=p.length-1,version='';
+  if(!fieldValid(p[k],'facet_kind')) {
+    version=p[k--];
+    if(p.length<5 || !fieldValid(version,'positive')) return null;
+  }
+  const task=p.slice(1,k-1).join(':'),attempt=p[k-1],key=p[k];
+  return fieldValid(task,'id') && fieldValid(key,'facet_kind') && fieldValid(attempt,key==='placement'?'counter':'positive') ? {kind:'facet',task,attempt,key,version} : null;
 }

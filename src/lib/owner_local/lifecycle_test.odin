@@ -187,7 +187,7 @@ lifecycle_review_commit_failure_rolls_back_verdict_gate_and_intent :: proc(t:^te
 rich_requirements_validate_nested_policy_and_apply_lease_deadline :: proc(t:^testing.T) {
     context.allocator=context.temp_allocator
     f:=fixture(t);defer destroy(f);lifecycle_seed(t,f)
-    raw:=`{"goal":"Rich native brief","acceptance":["Round trip"],"inputs":["#7","facet:task:1:artifacts"],"budget":{"max_attempts":9,"hard_deadline":2},"reviewers":["reviewer"],"review_roles":[],"output":{"schema":"inline","required":["summary"]}}`
+    raw:=`{"goal":"Rich native brief","acceptance":["Round trip"],"inputs":["#1"],"budget":{"max_attempts":9,"hard_deadline":2},"reviewers":["reviewer"],"review_roles":[],"output":{"schema":"inline","required":["summary"]}}`
     p:=encode(doc(map[string]string{"requirements_revision"="2","body_cipher"=cipher(f,raw)}))
     testing.expect_value(t,invoke(f,command(f,"requirements.edit","rich_req","task",p,"4"),p).code,"ok")
     req,_:=lifecycle_requirements(&f.store,"chain","task")

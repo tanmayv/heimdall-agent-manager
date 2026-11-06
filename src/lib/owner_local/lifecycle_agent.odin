@@ -30,6 +30,7 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
     chain,task,op,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"operation_id"),field(c,"method")
+    if !member_authorized(s,chain,child) do return fail("invalid_scope")
     config,binding,configured:=lifecycle_config(s,chain,task)
     if !configured do return fail("invalid_scope")
     role_method:=method=="review.role.open" || method=="review.role.post"
@@ -97,7 +98,9 @@ execute_lifecycle :: proc(s:^Store,raw,payload,cap_raw:string,child:Child,key:co
             ack,ack_ok:=query(s.db,"SELECT acknowledged FROM requirement_ack WHERE lease_id=? AND revision=?",lease,req[0])
             if !ack_ok || len(ack)!=1 do return fail("storage_error")
             provenance:=doc(map[string]string{"algorithm"=field(projection,"algorithm"),"version"=field(projection,"version"),"source_seq"=field(projection,"source_seq"),"source_digest"=field(projection,"source_digest"),"source_count"=field(projection,"source_count"),"freshness"="snapshot","fetch_method"="context.read"})
-            result=encode(doc(map[string]string{"requirements_revision"=req[0],"acknowledged"=ack[0][0],"brief"=req[1],"revision"=tasks[0][0],"chain_summary"=field(projection,"body"),"context_provenance"=encode(provenance)}))
+            inputs,inputs_ok:=brief_inputs_read(s,chain,task,req[0],req[1])
+            if !inputs_ok do return fail("invalid_content")
+            result=encode(doc(map[string]string{"resolved_inputs"=inputs,"requirements_revision"=req[0],"acknowledged"=ack[0][0],"brief"=req[1],"revision"=tasks[0][0],"chain_summary"=field(projection,"body"),"context_provenance"=encode(provenance)}))
         case "requirements.ack":
             rows,ok:=query(s.db,"UPDATE requirement_ack SET acknowledged=1 WHERE lease_id=? AND revision=? AND presented=1 RETURNING revision",lease,req[0])
             if !ok do return fail("storage_error")

@@ -150,6 +150,11 @@ bridge_owner_handle :: proc(conn:^ws.Connection,text:string) {
             fleet_child,_=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
         }
     }
+    if contracts.owner_string(command,"method")=="chain.member.set" {
+        if p,ok:=contracts.owner_parse(payload,"member_payload");ok {
+            fleet_child,_=bridge_owner_child_locked(contracts.owner_string(p,"instance_id"),"")
+        }
+    }
     proof:owner.Lifecycle_Proof
     if contracts.owner_string(command,"method")=="lifecycle.configure" {
         if p,ok:=contracts.owner_parse(payload,"lifecycle_config_payload");ok {

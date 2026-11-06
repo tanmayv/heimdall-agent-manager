@@ -2,7 +2,7 @@ import { prepareOwnerOperation, ownerId, ownerRelayFile, openOwnerReply } from '
 import { readFileSync } from 'node:fs';
 
 // Actual CLI -> Hub relay -> enrolled disposable Bridge, using UI signatures.
-export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOwner,restartOwner}:any) {
+export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOwner,restartOwner,launchChild}:any) {
   const chainId=ownerId('chain_');
   const prepare=(method:string,input:any={})=>prepareOwnerOperation(session,bridgeId,method,{chainId,expectedRevision:'0',...input});
   const invoke=async(op:any)=>openOwnerReply(session,op,await cli(await ownerRelayFile(session,op)));
@@ -117,4 +117,63 @@ export async function ownerLocalMetadataFlow({session,bridgeId,cli,expect,stopOw
     expect((await read(bundle.kind,{nativeSourceRevision:'native_revision_8'})).items.length===1,'restart retains newer '+bundle.kind+' source snapshot');
   }
   expect((await invoke(exact)).replay,'restart retains exact accepted import receipt');
+  // Operational configuration uses live exact children, independently of the
+  // imported provenance above. Read current revisions for every signed CAS.
+  const worker=await launchChild(),reviewer=await launchChild();
+  try {
+    const chainRevision=async()=>JSON.parse((await call('chain.read')).body).revision;
+    const mutate=async(method:string,input:any)=>call(method,{expectedRevision:await chainRevision(),...input});
+    const join=await prepare('chain.member.set',{expectedRevision:await chainRevision(),instanceId:worker.instanceId,agentId:worker.agentId,memberRole:'worker'});
+    await invoke(join);
+    expect((await invoke(join)).replay,'real exact member retry returns original receipt');
+    await denied('chain.member.set',{expectedRevision:await chainRevision(),instanceId:worker.instanceId,agentId:reviewer.agentId},'member requires Bridge-observed durable agent identity');
+    await mutate('chain.member.set',{instanceId:reviewer.instanceId,agentId:reviewer.agentId,memberRole:'coordinator'});
+    await denied('chain.member.set',{expectedRevision:await chainRevision(),instanceId:reviewer.instanceId,agentId:reviewer.agentId,memberRole:'coordinator',enabled:false},'real sole coordinator removal rejected');
+    const directoryId=ownerId('dir_');
+    const directory={directory_id:directoryId,chain_id:chainId,owner_user_id:session.identity.userId,path:'/operational/界',bridge_id:bridgeId,vcs_kind:'git',vcs_info_json:'{ "branch": "original" }',created_at:'original-time',updated_at:'updated-time'};
+    const directoryOp=await prepare('chain.directory.set',{expectedRevision:await chainRevision(),directoryId,body:JSON.stringify(directory)});
+    await invoke(directoryOp);
+    expect((await invoke(directoryOp)).replay,'real directory retry preserves exact encrypted payload');
+    const consumer=ownerId('task_');
+    await mutate('task.create',{taskId:consumer,title:'Pinned input consumer',body:'Immutable output evidence'});
+    await call('fleet.edit',{taskId:consumer,expectedRevision:'1',instanceId:worker.instanceId,configurationRevision:'1'});
+    const config=(revision:string)=>({configuration_revision:revision,author_agent_id:worker.agentId,reviewer_agent_id:reviewer.agentId,reviewer_instance_id:reviewer.instanceId,directory_id:directoryId,merge_policy:'none',repository:'',worktree:'',source_branch:'',target_branch:'',base_head:''});
+    await call('lifecycle.configure',{taskId:consumer,expectedRevision:'2',lifecycleConfig:config('1')});
+    await denied('requirements.edit',{taskId:consumer,expectedRevision:'3',requirementsRevision:'1',body:JSON.stringify({goal:'Reject mutable input',acceptance:['Pinned only'],inputs:['output:'+taskId]})},'real requirements reject mutable latest output');
+    const inputRef='output:'+taskId+':3:1';
+    await call('requirements.edit',{taskId:consumer,expectedRevision:'3',requirementsRevision:'1',body:JSON.stringify({goal:'Read pinned native output',acceptance:['Preserve source'],inputs:[inputRef]})});
+    const request={protocol_version:'1',chain_id:chainId,task_id:consumer,lease_id:ownerId('lease_'),configuration_revision:'1',expected_revision:'4',operation_id:ownerId('op_'),method:'lease.claim',request_expires_ms:String(Date.now()+300000),capability:''};
+    const claim=worker.call(request);expect(claim.status===0,'real child claims pinned consumer');
+    const capability=JSON.parse(claim.data.body).capability;
+    const present={...request,method:'requirements.present',operation_id:ownerId('op_'),capability,payload:JSON.stringify({requirements_revision:'1'})};
+    const shown=worker.call(present);expect(shown.status===0,'real child presents pinned requirements');
+    const resolved=JSON.parse(JSON.parse(shown.data.body).resolved_inputs);
+    expect(resolved.length===1 && resolved[0].ref===inputRef && resolved[0].chain_id===chainId && resolved[0].account_id===session.identity.userId && resolved[0].body.includes('import_pending'),'real presentation returns exact scoped immutable output and unresolved artifact provenance');
+    await mutate('chain.member.set',{instanceId:worker.instanceId,agentId:worker.agentId,enabled:false});
+    expect(worker.call(present).status!==0,'removed real member cannot replay prior authorized content');
+    const removed=JSON.parse((await call('runtime.read',{taskId:consumer})).body);
+    expect(removed.leases.length===0,'member removal retires current lease');
+    const closed=JSON.parse((await call('attempt.read',{taskId:consumer,attempt:'1'})).body);
+    expect(closed.completeness==='full' && closed.outcome==='expired:replaced' && closed.ended_ms,'member removal preserves complete native attempt expiry evidence');
+    await mutate('chain.member.set',{instanceId:worker.instanceId,agentId:worker.agentId});
+    expect(worker.call({...present,operation_id:ownerId('op_')}).status!==0,'rejoin does not revive old lifecycle capability');
+    await call('fleet.edit',{taskId:consumer,expectedRevision:'5',instanceId:worker.instanceId,configurationRevision:'3'});
+    await call('lifecycle.configure',{taskId:consumer,expectedRevision:'6',lifecycleConfig:config('3')});
+    const fresh={...request,lease_id:ownerId('lease_'),configuration_revision:'3',expected_revision:'7',operation_id:ownerId('op_')};
+    const reclaim=worker.call(fresh);expect(reclaim.status===0,'explicit fresh fleet/lifecycle enrollment restores dispatch');
+    const newCap=JSON.parse(reclaim.data.body).capability;
+    await mutate('chain.directory.set',{directoryId,body:JSON.stringify({...directory,path:'/operational/replacement',updated_at:'later'})});
+    expect(worker.call({...fresh,method:'requirements.present',operation_id:ownerId('op_'),capability:newCap,payload:JSON.stringify({requirements_revision:'1'})}).status!==0,'changed directory invalidates active path binding and capability');
+    const pathClosed=JSON.parse((await call('attempt.read',{taskId:consumer,attempt:'2'})).body);
+    expect(pathClosed.completeness==='full' && pathClosed.outcome==='expired:replaced' && pathClosed.ended_ms,'directory mutation preserves complete native attempt expiry evidence');
+    await mutate('chain.directory.set',{directoryId,enabled:false,body:JSON.stringify({...directory,path:'/operational/replacement',updated_at:'removed'})});
+    const all:any[]=[];let cursor='';
+    do {const page=JSON.parse((await call('chain.metadata.read',{limit:3,cursor})).body);all.push(...page.items);cursor=page.next_cursor;} while(cursor);
+    expect(all.some((row:any)=>row.kind==='member' && row.current==='1' && row.entity_id===worker.instanceId && row.enabled==='1'),'real inventory consumes current operational membership');
+    expect(all.some((row:any)=>row.kind==='directory' && row.current==='1' && row.entity_id===directoryId && row.enabled==='0'),'real inventory preserves directory removal tombstone');
+    await stopOwner();await restartOwner();
+    expect((await invoke(join)).replay && (await invoke(directoryOp)).replay,'restart retains original operational receipts after later revocations');
+    expect(worker.call(present).status!==0,'restart preserves removed path authority fence');
+  } finally { await worker.stop();await reviewer.stop(); }
+
 }

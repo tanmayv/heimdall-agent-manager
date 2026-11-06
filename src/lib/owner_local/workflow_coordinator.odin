@@ -7,7 +7,7 @@ import "core:strings"
 import contracts "odin_test:contracts"
 
 coordinator_configure :: proc(s:^Store,c,p:json.Object,child:Child,now:i64,sign:Signer)->string {
-    if child.instance!=field(p,"instance_id") || child.agent_id!=field(p,"agent_id") || child.epoch=="" || child.run_count<1 || !contracts.owner_field_valid(child.token_generation,"hash") do return "invalid_scope"
+    if !member_authorized(s,field(c,"chain_id"),child) || child.instance!=field(p,"instance_id") || child.agent_id!=field(p,"agent_id") || child.epoch=="" || child.run_count<1 || !contracts.owner_field_valid(child.token_generation,"hash") do return "invalid_scope"
     chain:=field(c,"chain_id")
     rows,ok:=query(s.db,"SELECT COALESCE(max(revision),0) FROM local_workflow_coordinators WHERE chain_id=?",chain)
     if !ok || len(rows)!=1 do return "storage_error"
@@ -43,6 +43,10 @@ execute_coordinator_gate :: proc(s:^Store,raw,payload,cap_raw:string,child:Child
     tx:Transaction
     if !transaction_begin(s,&tx) do return fail("storage_error")
     defer transaction_rollback(&tx)
+    if !member_authorized(s,chain,child) do return fail("invalid_scope")
+    revoked,revoked_read:=query(s.db,"SELECT 1 FROM local_coordinator_revocations WHERE chain_id=? AND revision=?",chain,field(c,"configuration_revision"))
+    if !revoked_read do return fail("storage_error")
+    if len(revoked)>0 do return fail("invalid_scope")
     binding,ok:=query(s.db,"SELECT revision,agent_id,child_json,capability_json FROM local_workflow_coordinators WHERE chain_id=? ORDER BY revision DESC LIMIT 1",chain)
     if !ok do return fail("storage_error")
     if len(binding)!=1 || binding[0][0]!=field(c,"configuration_revision") || binding[0][1]!=child.agent_id || binding[0][2]!=encode(child) || binding[0][3]!=cap_raw do return fail("invalid_scope")

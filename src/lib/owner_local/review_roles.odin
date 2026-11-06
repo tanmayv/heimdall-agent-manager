@@ -30,7 +30,7 @@ role_configure :: proc(s:^Store,c:json.Object,body:string,children:[]Child,seq:i
         if !obj || !contracts.owner_document_valid("review_pair",o) || field(o,"agent_id")==field(config,"author_agent_id") do return "invalid_scope"
         found:=false
         for child in children {
-            if child.instance==field(o,"instance_id") && child.agent_id==field(o,"agent_id") && child.epoch!="" {
+            if member_authorized(s,chain,child) && child.instance==field(o,"instance_id") && child.agent_id==field(o,"agent_id") && child.epoch!="" {
                 found=true
                 if _,ok=query(s.db,"INSERT INTO local_role_pairs VALUES(?,?,?,?,?,?)",chain,task,field(p,"configuration_revision"),field(o,"role"),child.agent_id,encode(child));!ok do return "operation_conflict"
                 break

@@ -12,6 +12,8 @@ Lifecycle_Proof :: struct { author,reviewer:Child, paths_valid:bool }
 lifecycle_config :: proc(s:^Store,chain,task:string) -> (json.Object,[]string,bool) {
     rows,ok:=query(s.db,"SELECT config_json,author_child,reviewer_child,revision FROM lifecycle_configs WHERE chain_id=? AND task_id=? ORDER BY revision DESC LIMIT 1",chain,task)
     if !ok || len(rows)!=1 do return nil,nil,false
+    revoked,read:=query(s.db,"SELECT 1 FROM local_config_revocations WHERE chain_id=? AND task_id=? AND revision=?",chain,task,rows[0][3])
+    if !read || len(revoked)>0 do return nil,nil,false
     c,valid:=contracts.owner_parse(rows[0][0],"lifecycle_config_payload")
     return c,rows[0],valid
 }
@@ -33,7 +35,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
     chain,task,method:=field(c,"chain_id"),field(c,"task_id"),field(c,"method")
     switch method {
     case "lifecycle.configure":
-        if !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
+        if !directory_config_authorized(s,chain,p) || !member_authorized(s,chain,proof.author) || !member_authorized(s,chain,proof.reviewer) || !proof.paths_valid || proof.author.agent_id!=field(p,"author_agent_id") ||
            proof.reviewer.agent_id!=field(p,"reviewer_agent_id") || proof.author.agent_id==proof.reviewer.agent_id ||
            proof.reviewer.instance!=field(p,"reviewer_instance_id") || proof.author.instance==proof.reviewer.instance ||
            proof.author.epoch=="" || proof.reviewer.epoch=="" { return "invalid_scope" }
@@ -58,6 +60,7 @@ lifecycle_human :: proc(s:^Store,c,p:json.Object,body,raw,payload:string,proof:L
         if !ok do return "storage_error"
         if len(state)==1 && (state[0][0]=="merge_pending" || state[0][0]=="merge_blocked" || state[0][0]=="done") do return "operation_conflict"
         if _,ok=query(s.db,"INSERT INTO task_requirements VALUES(?,?,?,?,?,?,?)",chain,task,field(p,"requirements_revision"),body,field(p,"body_cipher"),field(c,"principal_id"),field(c,"operation_id"));!ok do return "storage_error"
+        if code:=brief_inputs_pin(s,chain,task,field(p,"requirements_revision"),body);code!="ok" do return code
         if _,ok=query(s.db,"UPDATE lifecycle_state SET state='ready' WHERE chain_id=? AND task_id=?",chain,task);!ok do return "storage_error"
     case "review.post":
         return lifecycle_review(s,c,p,"",true)
@@ -138,4 +141,12 @@ merge_prepare :: proc(s:^Store,claim:Intent_Claim,head:string) -> bool {
         if _,ok:=query(s.db,"INSERT INTO local_merge_preparations VALUES(?,?,?)",claim.id,claim.digest,head);!ok do return false
     }
     return transaction_commit(&tx)
+}
+
+
+// A revoked lifecycle cannot fall back to the generic lease-only protocol after
+// fleet re-enrollment. Only a fresh explicit lifecycle configuration restores it.
+lifecycle_path_current :: proc(s:^Store,chain,task:string) -> bool {
+    rows,ok:=query(s.db,"SELECT 1 FROM local_config_revocations r WHERE chain_id=? AND task_id=? AND revision=(SELECT max(revision) FROM lifecycle_configs c WHERE c.chain_id=r.chain_id AND c.task_id=r.task_id)",chain,task)
+    return ok && len(rows)==0
 }

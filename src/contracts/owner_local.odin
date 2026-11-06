@@ -39,7 +39,7 @@ owner_hex :: proc(s: string, n: int) -> bool {
 
 owner_method_valid :: proc(s: string) -> bool {
     switch s {
-    case "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
+    case "chain.member.set", "chain.directory.set", "chain.defaults.set", "chain.summary.set", "chain.metadata.read", "task.priority", "native.metadata.import", "native.metadata.read", "fleet.policy.set", "fleet.policy.read", "budget.activate", "native.history.import", "native.history.read", "native.history.fetch", "attempt.read", "history.read", "history.fetch", "context.read", "grant.set", "grant.revoke", "grant.read", "grant.policy", "grant.recover", "workflow.coordinator", "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "workflow.read", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "source.read", "dependency.edit", "review.roles", "task.hold", "task.release", "task.cancel", "task.reopen", "task.resolve", "merge.retry", "submission.read", "chain.edit", "task.edit", "task.delete", "chain.search", "chain.create", "task.create", "task.comment", "chain.read", "task.read", "receipt.read", "fleet.edit", "runtime.read", "lifecycle.configure", "requirements.edit", "review.post": return true
     }
     return false
 }
@@ -155,6 +155,8 @@ owner_document_valid :: proc(kind: string, o: json.Object) -> bool {
 
 owner_payload_kind :: proc(method: string) -> string {
     switch method {
+    case "chain.member.set": return "member_payload"
+    case "chain.directory.set": return "directory_payload"
     case "workflow.coordinator": return "coordinator_payload"
     case "workflow.gate.post": return "workflow_gate"
     case "workflow.cancel", "workflow.gate", "workflow.define", "workflow.run", "workflow.retry", "source.observe", "source.consume", "source.ack", "source.retire", "source.resolve", "source.escalate", "review.roles": return "control_payload"

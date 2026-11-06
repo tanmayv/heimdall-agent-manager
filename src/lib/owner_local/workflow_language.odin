@@ -217,6 +217,7 @@ language_materialize :: proc(s:^Store,row:[]string,stage:wf.Workflow_Stage_Spec,
         if _,ok=query(s.db,"INSERT INTO local_workflow_tasks VALUES(?,?,?,?,?)",chain,run,execution,key,task);!ok do return false
         if _,ok=query(s.db,"INSERT INTO local_workflow_language_items VALUES(?,?,?,?,?,?,?,?)",task,stage.key,fmt.tprintf("%d",item.index),("gate" if item.kind==.Gate else "task"),item.priority,fmt.tprintf("%d",item.max_parallel),("1" if item.requires_user_approval else "0"),item.generated_by_json);!ok do return false
         if _,ok=query(s.db,"INSERT INTO task_requirements VALUES(?,?,1,?,?,?,?)",chain,task,item.brief_json,"",row[6],row[7]);!ok do return false
+        if brief_inputs_pin(s,chain,task,"1",item.brief_json)!="ok" do return false
         if _,ok=query(s.db,"INSERT INTO lifecycle_state VALUES(?,?,?,0,'')",chain,task,("in_review" if item.kind==.Gate else "ready"));!ok do return false
         for dep in deps { if _,ok=query(s.db,"INSERT INTO local_dependencies VALUES(?,?,?)",chain,task,dep);!ok do return false }
         payload:=encode(doc(map[string]string{"task_id"=task,"title"=item.title,"metadata_revision"=receipts[0][0]}))

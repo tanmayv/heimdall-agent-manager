@@ -101,7 +101,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
             'lease.claim','lease.handoff','lease.switch','lease.block','lease.expired','lease.submit',
             'task.cancel','task.reopen','task.resolve','task.hold','task.release','fleet.edit','lifecycle.configure',
             'review.roles','requirements.edit','review.post','review.role.post','dependency.edit')) OR kind='lease.switch'
-            OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2))),
+            OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=local_events.seq AND r.chain_id=?1 AND r.task_id=?2))),
           decoded AS (SELECT *,NULLIF(json_extract(evidence,'$.command'),'') AS command,
             NULLIF(json_extract(evidence,'$.payload'),'') AS payload,
             NULLIF(json_extract(evidence,'$.content'),'') AS content FROM selected)
@@ -110,11 +110,12 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
             COALESCE(json_extract(payload,'$.verdict'),''),COALESCE(json_extract(payload,'$.destination_lease_id'),''),
             COALESCE(json_extract(content,'$.reason'),''),
             COALESCE((SELECT reason FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),''),
-            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),'')
+            COALESCE((SELECT lease_id FROM local_dependency_retirements d WHERE d.seq=decoded.seq AND d.chain_id=?1 AND d.task_id=?2),''),
+            COALESCE((SELECT cause FROM local_metadata_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2),'')
           FROM decoded WHERE chain_id=?1 AND task_id=?2 OR
             (kind='lease.switch' AND json_extract(payload,'$.destination_chain_id')=?1
               AND json_extract(payload,'$.destination_task_id')=?2)
-            OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2)
+            OR EXISTS(SELECT 1 FROM local_metadata_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2) OR EXISTS(SELECT 1 FROM local_task_retirements r WHERE r.seq=decoded.seq AND r.chain_id=?1 AND r.task_id=?2)
           ORDER BY seq LIMIT 128`,chain,task,after)
         if !read do return v,document,false
         for row in rows {
@@ -125,6 +126,7 @@ budget_view :: proc(s:^Store,chain,task:string)->(Budget_State,contracts.Owner_B
             content:=doc(map[string]string{"reason"=row[9],"dependency_retired"=row[11]})
             destination:=row[3]!=chain || row[4]!=task
             if !destination || row[1]=="lease.switch" do budget_local_event(&v,&pending,row[1],c,p,content,input,destination)
+            if row[12]!="" do budget_local_event(&v,&pending,"fleet.edit",c,p,content,input,false)
             if row[10]!="" {
                 if v.live do budget_event(&v,"lease_expired",`{"reason":"chain_closed"}`,input)
                 budget_event(&v,"cancelled","{}",input)
